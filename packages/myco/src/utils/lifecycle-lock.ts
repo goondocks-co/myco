@@ -333,17 +333,25 @@ export const LifecycleLock = {
     const flockApi = loadFlock();
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
-    const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+    let fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
     if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath);
-    const rc = flockApi.flock(fd, LOCK_EX | LOCK_NB);
-    if (rc !== 0) {
-      const holder = readHolderMetadata(fd);
-      fs.closeSync(fd);
-      return {
-        acquired: false,
-        holder,
-        holderPid: holder?.pid ?? null,
-      };
+    for (let attempt = 0; ; attempt++) {
+      const rc = flockApi.flock(fd, LOCK_EX | LOCK_NB);
+      if (rc !== 0) {
+        const holder = readHolderMetadata(fd);
+        fs.closeSync(fd);
+        return {
+          acquired: false,
+          holder,
+          holderPid: holder?.pid ?? null,
+        };
+      }
+      if (namesSameFile(fd, lockPath)) break;
+      // Locked a file that was unlinked under it: take the lock again on the file the path names now.
+      try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ }
+      try { fs.closeSync(fd); } catch { /* idem */ }
+      if (attempt >= LOCK_IDENTITY_RETRIES) throw new Error(`LifecycleLock: ${lockPath} kept changing under its lock`);
+      fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
     }
 
     const command = opts.command ?? process.argv.join(' ');
@@ -413,16 +421,54 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
   if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn);
   const flockApi = loadFlock();
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
-  try {
-    if (flockApi.flock(fd, LOCK_EX) !== 0) {
-      throw new Error(`withFileLockSync: flock(LOCK_EX) failed on ${lockPath}`);
+  for (let attempt = 0; ; attempt++) {
+    const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+    let held = false;
+    try {
+      if (flockApi.flock(fd, LOCK_EX) !== 0) {
+        throw new Error(`withFileLockSync: flock(LOCK_EX) failed on ${lockPath}`);
+      }
+      held = true;
+      // The file this lock is on must still be the one the path names: a lock on a file unlinked while this process
+      // waited for it excludes no one who opens the path now.
+      if (!namesSameFile(fd, lockPath)) {
+        if (attempt >= LOCK_IDENTITY_RETRIES) throw new Error(`withFileLockSync: ${lockPath} kept changing under its lock`);
+        continue;
+      }
+      return fn();
+    } finally {
+      if (held) { try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ } }
+      try { fs.closeSync(fd); } catch { /* idem */ }
     }
-    return fn();
-  } finally {
-    try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ }
-    try { fs.closeSync(fd); } catch { /* idem */ }
   }
+}
+
+/** How many times a lock is taken again when the path it was taken on was unlinked under it. */
+const LOCK_IDENTITY_RETRIES = 100;
+
+/**
+ * Whether the file `fd` is open on is the file `lockPath` names now (POSIX). A lock file another process unlinked
+ * while this one waited for its lock is still open here, and a lock on it no longer excludes a process that opens the
+ * path: that process creates a new file and locks it at once.
+ */
+function namesSameFile(fd: number, lockPath: string): boolean {
+  let held: fs.Stats;
+  try {
+    held = fs.fstatSync(fd);
+  } catch {
+    // Nothing to compare with is no evidence the path moved.
+    return true;
+  }
+  // A store that reports no file identity (an in-memory filesystem) gives nothing to compare, and is taken at its word.
+  if (!(held.ino > 0)) return true;
+  let named: fs.Stats;
+  try {
+    named = fs.statSync(lockPath);
+  } catch (err) {
+    // Gone from its path: unlinked under this lock.
+    return (err as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+  return held.ino === named.ino && held.dev === named.dev;
 }
 
 function writeHolderMetadata(fd: number, info: LockHolder): void {

@@ -37,8 +37,9 @@ import { MEMBER_DIR_MODE, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARAN
 import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
-import { pointerBehind, pointersOf, readSessionState, removeSessionState, updateSessionState } from './session-state.js';
-import { BLOBS_DIRNAME, type MemberSpool } from './spool.js';
+import { pointerBehind, pointersOf, readSessionState, readSessionStateUnlocked, retireSessionFiles, updateSessionState } from './session-state.js';
+import { BLOBS_DIRNAME, blobSourceOf, SPOOL_DIRNAME, type MemberSpool } from './spool.js';
+import { memberRoot } from './store.js';
 
 export interface RetentionResult {
   quarantined: string[];
@@ -83,9 +84,11 @@ export function prunePluginTranscripts(
   mycoHome?: string,
 ): number {
   let pruned = 0;
+  const home = mycoHome ?? resolveMycoHome({ env });
+  let behind: Set<string> | undefined;
   // A claim names the instance that speaks for a session. It outlives nothing:
   // once past the window no runtime holds it and no transcript needs it.
-  const claims = path.join(mycoHome ?? resolveMycoHome({ env }), 'member', 'claims');
+  const claims = path.join(home, 'member', 'claims');
   try {
     for (const entry of fs.readdirSync(claims, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.lock')) continue;
@@ -108,6 +111,8 @@ export function prunePluginTranscripts(
       const file = path.join(root, entry.name);
       try {
         if (now - fs.statSync(file).mtimeMs < MEMBER_TRANSCRIPT_RETENTION_MS) continue;
+        // A transcript a session's pointer has not shipped to its end is the only copy of those bytes: it waits.
+        if ((behind ??= behindTranscriptPaths(home)).has(path.resolve(file))) continue;
         fs.unlinkSync(file);
         pruned += 1;
       } catch { /* already gone, or not ours to remove */ }
@@ -115,6 +120,34 @@ export function prunePluginTranscripts(
   }
   return pruned;
 }
+
+/**
+ * Every transcript a session of this home still has bytes to ship from: the files named by a pointer, of any project's
+ * session, that is behind its file. Read without the session locks: a pointer that moves while this runs only keeps a
+ * file one pass longer.
+ */
+export function behindTranscriptPaths(mycoHome: string): Set<string> {
+  const files = new Set<string>();
+  const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
+  let projects: string[];
+  try { projects = fs.readdirSync(spoolRoot); } catch { return files; }
+  for (const project of projects) {
+    const dir = path.join(spoolRoot, project);
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith(STATE_SUFFIX)) continue;
+      try {
+        for (const pointer of pointersOf(readSessionStateUnlocked(dir, name.slice(0, -STATE_SUFFIX.length)))) {
+          if (pointerBehind(pointer)) files.add(path.resolve(pointer.path));
+        }
+      } catch { /* an unreadable state keeps nothing */ }
+    }
+  }
+  return files;
+}
+
+const STATE_SUFFIX = '.state.json';
 
 /** When the server last acknowledged one of this session's records; 0 when it never has. */
 export function lastAckAt(spool: MemberSpool, sessionId: string): number {
@@ -184,7 +217,8 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
     const referenced = new Set<string>();
     if (live.has(entry.name)) {
       for (const record of spool.readRecords(entry.name)) {
-        if (record?._blobSource) referenced.add(record._blobSource.sha256);
+        const source = blobSourceOf(record);
+        if (source) referenced.add(source.sha256);
       }
     }
     for (const file of files) {
@@ -254,7 +288,10 @@ export function pruneDeliveredSessionState(spool: MemberSpool, now: number = Dat
     if (state.highWater > 0 || now - state.updatedAt < MEMBER_SESSION_STATE_RETENTION_MS) continue;
     // The pointers themselves, not only the mark: a mark cleared while another hook set it again must not cost the bytes.
     if (pointersOf(state).some(pointerBehind)) continue;
-    removeSessionState(spool.dir, sessionId);
+    // Read again under the session's lock: a hook that wrote to the session since the check above keeps it.
+    const retired = retireSessionFiles(spool.dir, sessionId, (current) =>
+      current.highWater === 0 && now - current.updatedAt >= MEMBER_SESSION_STATE_RETENTION_MS && !pointersOf(current).some(pointerBehind));
+    if (!retired) continue;
     try { fs.rmdirSync(spool.blobsDirFor(sessionId)); } catch { /* absent, or still holding bytes the blob sweep owns */ }
     pruned += 1;
   }
@@ -283,11 +320,11 @@ export function applySpoolRetention(spool: MemberSpool, now: number = Date.now()
     if (now - unacknowledgedSince(spool, sessionId) < MEMBER_SPOOL_QUARANTINE_MS) continue;
     const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
     if (!fs.existsSync(quarantineDir)) fs.mkdirSync(quarantineDir, { mode: MEMBER_DIR_MODE });
-    const target = quarantineBufferFile(spool.dir, `${sessionId}.jsonl`);
+    const target = quarantineBufferFile(spool.dir, `${sessionId}.jsonl`, { keepLockCompanion: true });
     quarantineStagedBlobs(spool, sessionId, target);
     // The events move; the transcript pointers stay, so bytes still on disk are delivered once delivery resumes.
-    if (spool.hasTranscriptBacklog(sessionId)) updateSessionState(spool.dir, sessionId, (state) => { state.highWater = 0; delete state.eventRetry; }, now);
-    else removeSessionState(spool.dir, sessionId);
+    if (spool.hasTranscriptBacklog(sessionId)) updateSessionState(spool.dir, sessionId, (state) => { state.highWater = 0; state.markWater = 0; delete state.eventRetry; }, now);
+    else retireSessionFiles(spool.dir, sessionId, () => true);
     result.quarantined.push(target);
     process.stderr.write(`[myco] member: spool for session ${sessionId} had no acknowledgement for ${Math.round(MEMBER_SPOOL_QUARANTINE_MS / 86_400_000)} days — quarantined at ${target}\n`);
   }
