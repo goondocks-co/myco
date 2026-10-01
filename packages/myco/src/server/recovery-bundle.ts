@@ -374,9 +374,10 @@ export interface RetryBound { attempts: number; backoffMs: readonly number[] }
  * What a backup retries before it gives up.
  *
  * - `objectReads`: one object's read and store, retried only on a transient failure (`transientReadFailure`): a
- *   timeout, a reset or refused connection, or an HTTP 5xx or 429. A missing object, a refused credential, a size or
- *   digest mismatch and a local disk error fail at once. The waits add up to a little under two minutes, so a source
- *   that stalls one object for several minutes is ridden out inside one run.
+ *   timeout, a reset or refused connection, or an HTTP 5xx or 429. Cloudflare pre-header connection failures and
+ *   response timeouts use one elapsed network budget across this object's attempts; its exhaustion is terminal here.
+ *   A missing object, a refused credential, a size or digest mismatch and a local disk error fail at once. The waits
+ *   between this loop's attempts add up to a little under two minutes.
  * - `holdReads`: the reads that settle one hold question by its token, with a wait before each read after the first.
  * - `holdRounds`: how many times a hold question is asked again after its reads all went unanswered, or after the
  *   source answered a token this backup is opening absent. An opening round writes the same token again, which the
