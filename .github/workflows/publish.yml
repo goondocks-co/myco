@@ -633,6 +633,9 @@ jobs:
           printf '%s\n' "${assets[@]}" > release-assets.txt
           cat release-assets.txt
 
+      # The release is created as a draft, and made public only by the last step
+      # below, once every asset is attached: an installer reading the releases
+      # list never sees a release whose binaries or SHA256SUMS are still missing.
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -645,28 +648,19 @@ jobs:
           mapfile -t assets < release-assets.txt
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            edit_args=(
-              "$TAG_NAME"
-              --draft=false
-              --title "$RELEASE_TITLE"
-              --notes-file release-notes.md
-            )
-            # A prerelease never becomes the repository's latest release.
-            if [ "$IS_PRERELEASE" = "true" ]; then
-              edit_args+=(--prerelease --latest=false)
-            fi
-            gh release edit "${edit_args[@]}"
+            gh release edit "$TAG_NAME" --title "$RELEASE_TITLE" --notes-file release-notes.md
             gh release upload "$TAG_NAME" "${assets[@]}" --clobber
           else
             create_args=(
               "$TAG_NAME"
               "${assets[@]}"
               --verify-tag
+              --draft
               --title "$RELEASE_TITLE"
               --notes-file release-notes.md
             )
             if [ "$IS_PRERELEASE" = "true" ]; then
-              create_args+=(--prerelease --latest=false)
+              create_args+=(--prerelease)
             fi
             gh release create "${create_args[@]}"
           fi
@@ -702,6 +696,21 @@ jobs:
           ( cd raw-binaries-staging && sha256sum myco-darwin-arm64 myco-darwin-x64 myco-linux-x64 myco-linux-arm64 myco-windows-x64.exe > SHA256SUMS )
 
           gh release upload "$TAG_NAME" raw-binaries-staging/* --clobber
+
+      # Every asset is attached: only now does the release become public. A
+      # prerelease never becomes the repository's latest release.
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+          IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          publish_args=("$TAG_NAME" --draft=false)
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            publish_args+=(--prerelease --latest=false)
+          fi
+          gh release edit "${publish_args[@]}"
 
   publish:
     name: Publish to npmjs.org

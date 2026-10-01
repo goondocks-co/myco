@@ -38,11 +38,6 @@ irm https://myco.sh/install.ps1 | iex
 
 No Node runtime is required. On Windows, the PowerShell installer is still the Myco 1.4 one.
 
-If you already have Node, you can install with npm instead. This is a thin bootstrap that converges to the same native binary:
-```bash
-npm install -g @goondocks/myco
-```
-
 ### Plugin only
 
 The plugin is the other half of the install and stands on its own. Install it from your agent's plugin marketplace, give it your deployment's URL and an access key, and you get the Myco skills and tools with no binary on the machine. Capture starts when the binary is installed too; the `/myco-setup` skill covers that step.

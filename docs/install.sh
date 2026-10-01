@@ -28,6 +28,8 @@
 #   MYCO_BIN_DIR        Where the binary goes (default: $MYCO_HOME/bin)
 #   MYCO_REPLACE_LEGACY 1 is the same as --replace-1.4
 #   GITHUB_TOKEN        or GH_TOKEN: avoid GitHub API rate limits
+#   MYCO_REFRESH_TIMEOUT Seconds the agents' refresh on a joined machine may
+#                       take before it is stopped (default: 120)
 #   MYCO_INSTALL_FROM   A directory holding myco-<os>-<arch> and SHA256SUMS to
 #                       install from instead of a GitHub release (offline or
 #                       test installs); MYCO_INSTALL_VERSION names its version
@@ -124,20 +126,26 @@ probe() {
   return "$_ok"
 }
 
-# Run "$@" with a watchdog of $1 seconds; its stdout and stderr go to $RUN_OUT.
+# Run "$@" with a watchdog of $1 seconds: it is sent TERM when the time is up,
+# and KILL 5 seconds later if it has not stopped. Its stdout and stderr go to
+# $RUN_OUT; RUN_TIMED_OUT is 1 when the watchdog had to stop it.
 RUN_OUT=""
+RUN_TIMED_OUT=0
 run_bounded() {
   _limit="$1"; shift
   _run_file="$(mktemp)"
+  RUN_TIMED_OUT=0
   "$@" >"$_run_file" 2>&1 &
   _run=$!
-  ( sleep "$_limit"; kill -9 "$_run" 2>/dev/null ) >/dev/null 2>&1 &
+  ( sleep "$_limit"; : > "${_run_file}.timed-out"; kill -TERM "$_run" 2>/dev/null; sleep 5; kill -KILL "$_run" 2>/dev/null ) >/dev/null 2>&1 &
   _run_watchdog=$!
-  if wait "$_run"; then _run_ok=0; else _run_ok=1; fi
+  # The shell's own "Terminated"/"Killed" line for a stopped job is not the command's output.
+  if { wait "$_run"; } 2>/dev/null; then _run_ok=0; else _run_ok=1; fi
   kill "$_run_watchdog" 2>/dev/null || true
-  wait "$_run_watchdog" 2>/dev/null || true
+  { wait "$_run_watchdog"; } 2>/dev/null || true
   RUN_OUT="$(cat "$_run_file")"
-  rm -f "$_run_file"
+  if [ -f "${_run_file}.timed-out" ]; then RUN_TIMED_OUT=1; fi
+  rm -f "$_run_file" "${_run_file}.timed-out"
   return "$_run_ok"
 }
 
@@ -150,12 +158,34 @@ run_bounded() {
 # installed writes them again, as `myco upgrade` does (#1499).
 refresh_member_setup() {
   info "This machine is a member of a Deployment. Refreshing your agents' Myco setup..."
-  if run_bounded 120 env MYCO_HOME="$MYCO_HOME_DIR" "${BIN_DIR}/myco" member provision --refresh; then
+  if run_bounded "$REFRESH_SECONDS" env MYCO_HOME="$MYCO_HOME_DIR" "${BIN_DIR}/myco" member provision --refresh; then
     printf '%s\n' "$RUN_OUT" | sed '/^[[:space:]]*$/d; s/^/  /'
-    success "Your agents now use Myco ${VERSION}."
+    agents_binary_words
   else
     printf '%s\n' "$RUN_OUT" | sed '/^[[:space:]]*$/d; s/^/  /' >&2
-    warn "Your agents' Myco setup was not refreshed. Run: myco member provision --refresh"
+    if [ "$RUN_TIMED_OUT" = "1" ]; then
+      warn "Your agents' Myco setup was not refreshed: the refresh timed out after ${REFRESH_SECONDS} s. Run: myco member provision --refresh"
+    else
+      warn "Your agents' Myco setup was not refreshed. Run: myco member provision --refresh"
+    fi
+  fi
+}
+
+# Which binary the agents' hooks and MCP entries now run, said as it is.
+# Provisioning writes a machine pin (<home>/runtime.command) ahead of the
+# installed binary at <home>/bin/myco, so an agent runs this install only when
+# no pin names another binary and this is that path.
+agents_binary_words() {
+  _pin_file="${MYCO_HOME_DIR}/runtime.command"
+  _pin=""
+  if [ -s "$_pin_file" ]; then _pin="$(head -n 1 "$_pin_file")"; fi
+  if [ -n "$_pin" ] && [ "$_pin" != "${BIN_DIR}/myco" ]; then
+    warn "Your agents run the binary pinned in ${_pin_file} (${_pin}), not this install."
+    echo "  Remove that pin, then run \`myco member provision --refresh\`, for them to use Myco ${VERSION}."
+  elif [ -z "$_pin" ] && [ "$BIN_DIR" != "${MYCO_HOME_DIR}/bin" ]; then
+    warn "Your agents run ${MYCO_HOME_DIR}/bin/myco, not this install at ${BIN_DIR}/myco."
+  else
+    success "Your agents now use Myco ${VERSION}."
   fi
 }
 
@@ -185,12 +215,31 @@ cleanup() {
 # ---------------------------------------------------------------------------
 TAG_PATTERN='^myco/v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.]+)?$'
 
+# Whether GitHub marks the release of tag $1 as a prerelease, whatever its tag says.
+tag_is_prerelease() {
+  if command -v jq >/dev/null 2>&1; then
+    [ "$(jq -r --arg tag "$1" '[.[] | select(.tag_name == $tag) | .prerelease][0] // false' "$RELEASES_FILE")" = "true" ]
+  else
+    tr '\r\n' '  ' < "$RELEASES_FILE" | awk -v tag="$1" '
+      { n = split($0, parts, /"tag_name"[ \t]*:[ \t]*"/)
+        for (i = 2; i <= n; i++) {
+          if (substr(parts[i], 1, length(tag) + 1) != tag "\"") continue
+          if (parts[i] ~ /"prerelease"[ \t]*:[ \t]*true/) found = 1
+        }
+      }
+      END { exit found ? 0 : 1 }'
+  fi
+}
+
 # The newest usable tag: releases only ("release"), or releases and prereleases ("any").
+# A release is usable only once both this machine's binary and SHA256SUMS are
+# among its assets, so one still being published is passed over.
 pick_tag() {
   if command -v jq >/dev/null 2>&1; then
-    jq -r --arg want "$1" --argjson min "$MIN_MAJOR" --arg pattern "$TAG_PATTERN" '
+    jq -r --arg want "$1" --argjson min "$MIN_MAJOR" --arg pattern "$TAG_PATTERN" --arg asset "$ASSET" '
       [ .[]
         | select(.draft != true)
+        | select([.assets[]?.name] | (index($asset) != null) and (index("SHA256SUMS") != null))
         | select(.tag_name | test($pattern))
         | (.tag_name | ltrimstr("myco/v")) as $v
         | ($v | split("-")[0] | split(".") | map(tonumber)) as $core
@@ -204,13 +253,15 @@ pick_tag() {
   else
     # Without jq: each release's fields from its tag_name up to the next
     # release's, flattened to one line, ranked by a key that sorts as text.
-    tr '\r\n' '  ' < "$RELEASES_FILE" | awk -v want="$1" -v min="$MIN_MAJOR" -v pattern="$TAG_PATTERN" '
+    tr '\r\n' '  ' < "$RELEASES_FILE" | awk -v want="$1" -v min="$MIN_MAJOR" -v pattern="$TAG_PATTERN" -v asset="$ASSET" '
       { n = split($0, parts, /"tag_name"[ \t]*:[ \t]*"/)
         for (i = 2; i <= n; i++) {
           chunk = parts[i]
           tag = substr(chunk, 1, index(chunk, "\"") - 1)
           if (tag !~ pattern) continue
           if (chunk ~ /"draft"[ \t]*:[ \t]*true/) continue
+          if (chunk !~ ("\"name\"[ \t]*:[ \t]*\"" asset "\"")) continue
+          if (chunk !~ /"name"[ \t]*:[ \t]*"SHA256SUMS"/) continue
           v = substr(tag, 7)
           dash = index(v, "-")
           core = dash ? substr(v, 1, dash - 1) : v
@@ -238,6 +289,8 @@ main() {
   INSTALL_FROM="${MYCO_INSTALL_FROM:-}"
   REPLACE_LEGACY=0
   if [ "${MYCO_REPLACE_LEGACY:-}" = "1" ]; then REPLACE_LEGACY=1; fi
+  REFRESH_SECONDS="${MYCO_REFRESH_TIMEOUT:-120}"
+  PICKED_PRERELEASE=0
 
   DRY_RUN=0
   while [ $# -gt 0 ]; do
@@ -263,6 +316,8 @@ main() {
   esac
 
   trap cleanup EXIT
+  # An interrupted run exits through the EXIT trap, so dash removes what it staged too.
+  trap 'exit 130' INT TERM HUP
 
   # -------------------------------------------------------------------------
   # Platform
@@ -365,7 +420,7 @@ main() {
       TAG="$(pick_tag release)"
       if [ -z "$TAG" ]; then
         TAG="$(pick_tag any)"
-        if [ -n "$TAG" ]; then warn "No Myco 2 release yet; installing the newest prerelease, ${TAG}."; fi
+        if [ -n "$TAG" ]; then warn "No Myco 2 release yet; installing the newest prerelease, ${TAG}. This machine stays on the stable channel and moves to the first 2.x release."; fi
       fi
     fi
     if [ -z "$TAG" ]; then
@@ -377,6 +432,7 @@ main() {
       exit 1
     fi
     info "Found: ${TAG}"
+    if tag_is_prerelease "$TAG"; then PICKED_PRERELEASE=1; fi
     VERSION="$(printf '%s' "$TAG" | sed 's|^myco/v||')"
     SOURCE="https://github.com/${REPO}/releases/download/$(printf '%s' "$TAG" | sed 's|/|%2F|g')"
   fi
@@ -496,8 +552,12 @@ main() {
   fi
 
   mkdir -p "$MYCO_HOME_DIR"
-  printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco"\n}\n' \
-    "$CHANNEL" "$BIN_DIR" > "$MYCO_HOME_DIR/install.json"
+  # A prerelease is recorded as one, whatever channel asked for it.
+  PRERELEASE=false
+  case "$VERSION" in *-*) PRERELEASE=true ;; esac
+  if [ "$PICKED_PRERELEASE" = "1" ]; then PRERELEASE=true; fi
+  printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco",\n  "prerelease": %s\n}\n' \
+    "$CHANNEL" "$BIN_DIR" "$PRERELEASE" > "$MYCO_HOME_DIR/install.json"
 
   # -------------------------------------------------------------------------
   # PATH — idempotent rc edits. zsh reads .zshenv for every shell, so it is

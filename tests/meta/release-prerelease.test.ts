@@ -25,12 +25,14 @@ const step = (job: string, name: string): string => {
 
 /** Run the validate-tag step for `tag`: its exit status and what it writes to GITHUB_OUTPUT. */
 function runClassify(tag: string): { status: number | null; outputs: Record<string, string>; stderr: string } {
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-')), 'output');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-'));
+  const out = path.join(dir, 'output');
   fs.writeFileSync(out, '');
   const result = spawnSync('bash', ['-c', step('validate-tag', 'Extract package and version from tag')], {
     env: { PATH: process.env.PATH, TAG_NAME: tag, GITHUB_OUTPUT: out }, encoding: 'utf8',
   });
   const text = fs.readFileSync(out, 'utf8').trim();
+  fs.rmSync(dir, { recursive: true, force: true });
   return { status: result.status, stderr: result.stderr, outputs: Object.fromEntries(text ? text.split('\n').map((line) => line.split('=') as [string, string]) : []) };
 }
 
@@ -67,9 +69,45 @@ describe('a Myco 2.0 prerelease', () => {
   });
 
   it('is a GitHub prerelease that is never marked latest', () => {
-    const release = step('create-release', 'Create or update GitHub Release');
-    expect(release).toContain('edit_args+=(--prerelease --latest=false)');
-    expect(release).toContain('create_args+=(--prerelease --latest=false)');
+    expect(step('create-release', 'Create or update GitHub Release')).toContain('create_args+=(--prerelease)');
+    expect(step('create-release', 'Publish the GitHub Release')).toContain('publish_args+=(--prerelease --latest=false)');
+  });
+
+  it('stays a draft until its binaries and SHA256SUMS are attached, and is made public last', () => {
+    // The three release steps, run in order with a `gh` that records each call: the release is created as a draft, every
+    // asset is uploaded to it, and only the last call makes it public.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-order-'));
+    try {
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      const log = path.join(dir, 'gh.log');
+      fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 1; fi\necho "$*" >> '${log}'\n`);
+      fs.chmodSync(path.join(bin, 'gh'), 0o755);
+      if (spawnSync('sh', ['-c', 'command -v sha256sum']).status !== 0) {
+        fs.writeFileSync(path.join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n');
+        fs.chmodSync(path.join(bin, 'sha256sum'), 0o755);
+      }
+      fs.mkdirSync(path.join(dir, 'raw-binaries-staging'));
+      for (const name of ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe']) {
+        fs.writeFileSync(path.join(dir, 'raw-binaries-staging', name), name);
+      }
+      fs.writeFileSync(path.join(dir, 'release-assets.txt'), 'myco.tgz\n');
+      fs.writeFileSync(path.join(dir, 'release-notes.md'), 'notes\n');
+      const env = { PATH: `${bin}:${process.env.PATH}`, TAG_NAME: 'myco/v2.0.0-beta.1', IS_PRERELEASE: 'true', RELEASE_TITLE: 'Myco 2.0.0-beta.1', GH_TOKEN: 'x' };
+      for (const name of ['Create or update GitHub Release', 'Stage and upload raw binaries + SHA256SUMS (myco)', 'Publish the GitHub Release']) {
+        const ran = spawnSync('bash', ['-c', step('create-release', name)], { cwd: dir, env, encoding: 'utf8' });
+        expect({ name, status: ran.status, stderr: ran.stderr }).toEqual({ name, status: 0, stderr: '' });
+      }
+      const calls = fs.readFileSync(log, 'utf8').trim().split('\n');
+      expect(calls[0]).toMatch(/^release create myco\/v2\.0\.0-beta\.1 myco\.tgz --verify-tag --draft /);
+      expect(calls[1]).toMatch(/^release upload myco\/v2\.0\.0-beta\.1 .*SHA256SUMS.* --clobber$/);
+      expect(calls[1]).toContain('raw-binaries-staging/myco-darwin-arm64');
+      expect(calls[2]).toBe('release edit myco/v2.0.0-beta.1 --draft=false --prerelease --latest=false');
+      expect(calls).toHaveLength(3);
+      expect(calls.slice(0, 2).some((call) => call.includes('--draft=false'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('publishes every npm package under the tag it was classed with, never a bare publish', () => {
