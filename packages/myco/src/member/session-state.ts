@@ -108,8 +108,9 @@ export interface SessionState {
    */
   lastAckAt?: number;
   /**
-   * When the server last acknowledged anything of this session's: an event, a blob, a transcript segment, or a
-   * reslice of one. What a report shows as the session's last delivery.
+   * When the Deployment last took a record of this session's: an event acknowledged, or a transcript segment
+   * acknowledged or resliced. A blob alone is not a delivery: the record it belongs to may yet be refused. What a
+   * report shows as the session's last delivery.
    */
   lastDeliveryAt?: number;
   updatedAt: number;

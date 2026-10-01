@@ -423,7 +423,6 @@ export async function shipTranscriptSegments(
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
     }
-    spool.noteDelivery(sessionId, now());
     const outcome = await client.postEvent(event.envelope, clippedRequestBudget(budget, now()), { turnEnd: opts.turnEnd });
     switch (outcome.class) {
       case 'acked':

@@ -61,7 +61,7 @@ export function helperPass(projectId: string, mycoHome: string, deps: Pick<Helpe
       process.stderr.write(`[myco] helper: this home holds no membership for ${projectId}; nothing to ship\n`);
       return;
     }
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now, budget: deadlineBudget(deadline), force });
+    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now, budget: deadlineBudget(deadline), force, rescan: false });
     applySpoolRetention(new MemberSpool(projectId, { mycoHome }), now(), { tried: backlog.tried });
     const shipped = backlog.sessions.reduce((n, s) => n + (s.events?.acked ?? 0) + (typeof s.transcripts === 'object' ? s.transcripts.shipped : 0), 0);
     process.stderr.write(`[myco] helper: pass over ${backlog.sessions.length} session(s), ${shipped} record(s) and segment(s) delivered${force ? ' (past the offline latch)' : ''}, ended by ${backlog.endedBy}\n`);

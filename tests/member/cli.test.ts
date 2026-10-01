@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { MEMBER_INLINE_TEXT_MAX_BYTES } from '@myco/member/constants.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { listRegistryEntries } from '@myco/member/registry.js';
@@ -107,6 +108,22 @@ describe('myco member drain / status', () => {
     expect(out.join('\n')).toMatch(/last delivery: acknowledged /);
     const facts = projectDiagnostics(listRegistryEntries(mycoHome)[0], mycoHome, Date.now());
     expect(facts.spool.lastDeliveryAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('does not count a blob the Deployment took as a delivery when the record it belongs to is refused', async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    // A record too long to travel inline, of a kind the Deployment does not take: its bytes upload, the record is refused.
+    const event = promptEvent(ctxFor(spool, 'sess-blob'), { promptId: mintId(), text: 'x'.repeat(MEMBER_INLINE_TEXT_MAX_BYTES + 10) });
+    (event.envelope as { kind: string }).kind = 'future.kind';
+    spool.append('sess-blob', event);
+    await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+    expect(rig.rows('blobs')).toBe(1);
+    expect(rig.rows('events')).toBe(0);
+    expect(readSessionState(spool.dir, 'sess-blob').lastDeliveryAt).toBeUndefined();
+    const out: string[] = [];
+    await runMemberCli(['status'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: () => {} });
+    expect(out.join('\n')).toContain('last delivery: none acknowledged yet');
   });
 
   it('--all walks every registry entry; without an entry for the cwd the op says so and does nothing', async () => {

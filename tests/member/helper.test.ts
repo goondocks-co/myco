@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { helperPass, runHelperVerb } from '@myco/cli/member-helper.js';
-import { helperLogPath, helperPaths, kickHelper, runHelper, shipsInline, type KickOutcome } from '@myco/member/helper.js';
+import { HELPER_START_GRACE_MS, helperLogPath, helperPaths, kickHelper, runHelper, shipsInline, type KickOutcome } from '@myco/member/helper.js';
+import { updateSessionState } from '@myco/member/session-state.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -229,6 +230,24 @@ describe('no kick is lost on the way out', () => {
     expect(fs.existsSync(helperPaths(PROJECT, mycoHome).probe)).toBe(false);
   });
 
+  it('hands a forced pass\'s probe on when the pass runs out of time, so its successor is forced too', async () => {
+    const clock = fakeTime();
+    const paths = helperPaths(PROJECT, mycoHome);
+    kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => ({ started: false }) });
+    const forces: boolean[] = [];
+    await runHelper({
+      projectId: PROJECT, mycoHome, ...clock, deadlineMs: 10_000,
+      spawn: () => ({ started: true, pid: process.pid }),
+      pass: async (_deadline, opts) => { forces.push(opts.force); clock.advance(11_000); return { more: true }; },
+    });
+    expect(forces).toEqual([true]);
+    expect(fs.existsSync(paths.probe)).toBe(true);
+    // The successor's pass is forced.
+    try { fs.unlinkSync(paths.starting); } catch { /* none */ }
+    await runHelper({ projectId: PROJECT, mycoHome, ...fakeTime(), pass: async (_d, opts) => { forces.push(opts.force); } });
+    expect(forces).toEqual([true, true]);
+  });
+
   it('starts a successor at the deadline for work its last pass had no time for, though no kick came', async () => {
     const clock = fakeTime();
     const starts: string[][] = [];
@@ -242,6 +261,42 @@ describe('no kick is lost on the way out', () => {
     // A pass that finished leaves no successor behind it.
     const done = await runHelper({ projectId: PROJECT, mycoHome, ...fakeTime(), deadlineMs: 10_000, pass: async () => ({ more: false }) });
     expect(done).toEqual({ endedBy: 'idle', passes: 1 });
+  });
+
+  it('takes the lock again for a kick that found its start claim while another held the lock', async () => {
+    const paths = helperPaths(PROJECT, mycoHome);
+    // A kick's probe holds the lock as this helper starts, and the helper's own start claim is still there.
+    fs.mkdirSync(path.dirname(paths.lock), { recursive: true });
+    fs.writeFileSync(paths.starting, JSON.stringify({ at: Date.now(), pid: process.pid }));
+    const probe = LifecycleLock.acquire(paths.lock);
+    expect(probe.acquired).toBe(true);
+    let kicked: KickOutcome | null = null;
+    let passes = 0;
+    const result = await runHelper({
+      projectId: PROJECT, mycoHome, ...fakeTime(),
+      pass: async () => { passes += 1; },
+      // Between this helper's failed take and its claim's removal: the probe lets go, finds the claim, and the kick
+      // leaves only its mark.
+      onBusy: () => {
+        if (probe.acquired) probe.lock.release();
+        kicked = kickHelper({ projectId: PROJECT, mycoHome, reason: 'session-end', spawn: () => { throw new Error('a start under way is not started again'); } });
+      },
+    });
+    expect(kicked as KickOutcome | null).toEqual({ kind: 'starting' });
+    expect(result).toEqual({ endedBy: 'idle', passes: 1 });
+    expect(passes).toBe(1);
+    expect(fs.existsSync(paths.dirty)).toBe(false);
+  });
+
+  it('logs a successor it could not start as work left for the next kick, not as the caller shipping inline', async () => {
+    await runHelper({
+      projectId: PROJECT, mycoHome, ...fakeTime(),
+      spawn: () => ({ started: false }),
+      pass: async () => { throw new Error('broken'); },
+    }).catch(() => {});
+    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf-8');
+    expect(log).toContain('[myco] helper: a failed pass could not start a helper; the work waits for the next kick');
+    expect(log).not.toContain('ships inline');
   });
 
   it('leaves the marks for the next kick when the successor of a failure fails too, and starts nobody', async () => {
@@ -285,6 +340,28 @@ describe('the offline latch', () => {
   });
 });
 
+describe('a forced pass', () => {
+  it('dials past the latch, and still leaves a record inside its refusal wait alone', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const ctx = { agent: 'claude-code', sessionId: 'sess-wait', stage: spool.stagerFor('sess-wait'), version: 't' };
+    spool.append('sess-wait', promptEvent(ctx, { promptId: mintId(), text: 'held for now' }));
+    // A refusal set a wait that has not run out; the spool is also latched offline.
+    updateSessionState(spool.dir, 'sess-wait', (s) => { s.eventRetry = { at: Date.now() + 60_000, backoffMs: 60_000 }; });
+    spool.markOffline(Date.now());
+    kickHelper({ projectId: PROJECT, mycoHome, reason: 'session-end', spawn: () => ({ started: true }) });
+    await runHelperVerb(['--project', PROJECT, '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
+    expect(rig.rows('events')).toBe(0);
+    expect(spool.depth('sess-wait')).toBe(1);
+    // Once the wait is out, the next forced pass sends it.
+    updateSessionState(spool.dir, 'sess-wait', (s) => { s.eventRetry = { at: Date.now() - 1, backoffMs: 60_000 }; });
+    kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => ({ started: true }) });
+    await runHelperVerb(['--project', PROJECT, '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
+    expect(rig.rows('events')).toBe(1);
+  });
+});
+
 describe('a kick whose helper cannot outlive it', () => {
   it('is logged and answered so the caller ships inline: a start refused, or one held in the caller\'s Job Object', () => {
     const outcomes: KickOutcome[] = [
@@ -312,6 +389,43 @@ describe('a start under way', () => {
     fs.writeFileSync(helperPaths(PROJECT, mycoHome).starting, JSON.stringify({ at: Date.now(), pid: dead }));
     expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
     expect(started).toBe(2);
+  });
+
+  it('is spent past its grace even with a live process, and when dated after now, so neither a hung start nor a clock set back holds kicks off', () => {
+    let started = 0;
+    const spawn: DetachedSpawn = () => { started += 1; return { started: true, pid: process.pid }; };
+    const { starting } = helperPaths(PROJECT, mycoHome);
+    fs.mkdirSync(path.dirname(starting), { recursive: true });
+    const claims = [
+      // A live process (this one: a reused pid, or a start that hung) claimed past the grace.
+      { at: Date.now() - HELPER_START_GRACE_MS - 1_000, pid: process.pid },
+      // Claimed and not yet given a process, dated in the future.
+      { at: Date.now() + 3_600_000 },
+      // Given a live process, dated in the future.
+      { at: Date.now() + 3_600_000, pid: process.pid },
+    ];
+    for (const claim of claims) {
+      fs.writeFileSync(starting, JSON.stringify(claim));
+      expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    }
+    // A claim not yet written, its file dated in the future.
+    fs.writeFileSync(starting, '');
+    const future = new Date(Date.now() + 3_600_000);
+    fs.utimesSync(starting, future, future);
+    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    expect(started).toBe(4);
+  });
+
+  it('starts a helper when a spent claim cannot be cleared, rather than wait on a start that is not coming', () => {
+    let started = 0;
+    const spawn: DetachedSpawn = () => { started += 1; return { started: true, pid: process.pid }; };
+    const { starting } = helperPaths(PROJECT, mycoHome);
+    // Something that is not a claim stands at its path, old, and no unlink removes it.
+    fs.mkdirSync(starting, { recursive: true });
+    const old = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(starting, old, old);
+    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    expect(started).toBe(1);
   });
 
   it('is over once its helper takes the lock: a kick after that helper has gone starts the next', async () => {

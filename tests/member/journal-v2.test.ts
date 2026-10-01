@@ -154,6 +154,21 @@ describe('the journal, format 2', () => {
     expect(spool.pendingTurnEnds('sess-gone').map((p) => p.mark.atSize)).toEqual([4, 5]);
   });
 
+  it('starts a fresh generation behind a first write cut off in its header, and hides no later mark', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'h'.repeat(32), atSize });
+    // The hook that wrote the file's first line was killed part-way through its header.
+    fs.mkdirSync(spool.dir, { recursive: true });
+    fs.writeFileSync(turnsFileOf(spool.dir, 'sess-cuthead'), '{"t":"gen","_jour', { mode: 0o600 });
+    spool.appendTurnEnd('sess-cuthead', mark(1));
+    spool.appendTurnEnd('sess-cuthead', mark(2));
+    const pending = spool.pendingTurnEnds('sess-cuthead');
+    expect(pending.map((p) => p.mark.atSize)).toEqual([1, 2]);
+    // And they consume like any others.
+    spool.consumeTurnEnds('sess-cuthead', pending[1]);
+    expect(spool.pendingTurnEnds('sess-cuthead')).toEqual([]);
+  });
+
   it('keeps every mark when a consume is cut off part-way, and its next marks file is read from the start', () => {
     const spool = new MemberSpool('proj_1', { mycoHome });
     const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'f'.repeat(32), atSize });

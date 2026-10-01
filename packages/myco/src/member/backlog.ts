@@ -200,12 +200,14 @@ export async function drainEntryBacklog(
   entry: RegistryEntry,
   opts: {
     mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
-    /**
-     * Dial past the offline latch, and read every session's state rather than only the marked ones, ignoring the
-     * waits a refusal set. True for a person's `myco member drain` and `myco login`; the member helper dials past the
-     * latch only for a turn's or a session's end, and walks as a hook does.
-     */
+    /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
     force?: boolean;
+    /**
+     * Read every session's state rather than only the marked ones, and send records again whatever wait a refusal
+     * set. True by default, for a person's `myco member drain` and `myco login`; the member helper walks as a hook
+     * does, forced or not.
+     */
+    rescan?: boolean;
   },
 ): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
@@ -216,6 +218,7 @@ export async function drainEntryBacklog(
     current = readRegistryEntry(entry.root, opts.mycoHome) ?? entry;
   }
   const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
-  const force = opts.force ?? true;
-  return drainBacklog(spool, new ServerClient(current, fetchImpl), opts.budget ?? unboundedBudget(), { force, now, machineId: opts.machineId ?? getMachineId(), rescan: force });
+  return drainBacklog(spool, new ServerClient(current, fetchImpl), opts.budget ?? unboundedBudget(), {
+    force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true,
+  });
 }

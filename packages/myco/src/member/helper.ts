@@ -101,14 +101,18 @@ export function kickHelper(opts: { projectId: string; mycoHome: string; reason?:
   ensureMemberDir(path.dirname(paths.dirty), opts.mycoHome);
   fs.writeFileSync(paths.dirty, '', { mode: 0o600 });
   if (opts.reason === 'turn-end' || opts.reason === 'session-end') fs.writeFileSync(paths.probe, '', { mode: 0o600 });
-  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})` });
+  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback: 'the caller ships inline' });
 }
 
 /**
  * Start the project's helper unless one holds the lock or is on its way. The start is claimed first
  * (`helper.starting`, created exclusively), so of many kicks landing while a start is under way, one starts a helper.
  */
-function startHelper(opts: { projectId: string; mycoHome: string; spawn?: DetachedSpawn; now?: () => number; afterFailure?: boolean; why: string }): KickOutcome {
+function startHelper(opts: {
+  projectId: string; mycoHome: string; spawn?: DetachedSpawn; now?: () => number; afterFailure?: boolean;
+  /** Who asked, and what becomes of the work when no helper can carry it: both go in the log line. */
+  why: string; fallback: string;
+}): KickOutcome {
   const now = opts.now ?? Date.now;
   const paths = helperPaths(opts.projectId, opts.mycoHome);
   const probe = LifecycleLock.acquire(paths.lock, { command: 'myco member helper (probe)' });
@@ -120,12 +124,12 @@ function startHelper(opts: { projectId: string; mycoHome: string; spawn?: Detach
   const start = (opts.spawn ?? spawnDetached)(self.path, args, { cwd: opts.mycoHome });
   if (!start.started) {
     try { fs.unlinkSync(paths.starting); } catch { /* not claimed */ }
-    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} could not start a helper; the caller ships inline`);
+    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} could not start a helper; ${opts.fallback}`);
     return { kind: 'failed' };
   }
   writeStart(paths.starting, { at: now(), pid: start.pid });
   if (start.contained) {
-    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} started a helper inside the caller's Job Object, which ends it with the caller; the caller ships inline`);
+    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} started a helper inside the caller's Job Object, which ends it with the caller; ${opts.fallback}`);
     return { kind: 'started', contained: true };
   }
   return { kind: 'started', contained: false };
@@ -151,18 +155,23 @@ function writeStart(file: string, claim: StartClaim): void {
   }
 }
 
-/** Whether a claimed start is still under way: claimed moments ago, or given a process that is alive and young. */
+/**
+ * Whether a claimed start is still under way: claimed moments ago, or given a process that is alive and young. A
+ * claim dated after now (a clock set back) is spent: its age says nothing.
+ */
 function startUnderWay(file: string, now: number): boolean {
+  const young = (at: number, grace: number): boolean => now - at >= 0 && now - at < grace;
   let claim: Partial<StartClaim>;
   try {
     claim = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<StartClaim>;
   } catch {
     // Created and not yet written: a claim this moment old, or a file nothing can read, which is no claim.
-    try { return now - fs.statSync(file).mtimeMs < HELPER_CLAIM_GRACE_MS; } catch { return false; }
+    try { return young(fs.statSync(file).mtimeMs, HELPER_CLAIM_GRACE_MS); } catch { return false; }
   }
   if (typeof claim.at !== 'number') return false;
-  if (claim.pid === undefined) return now - claim.at < HELPER_CLAIM_GRACE_MS;
-  if (now - claim.at >= HELPER_START_GRACE_MS) return false;
+  if (claim.pid === undefined) return young(claim.at, HELPER_CLAIM_GRACE_MS);
+  // Past the grace a live pid is no proof: the helper hung on its way to the lock, or the pid was reused.
+  if (!young(claim.at, HELPER_START_GRACE_MS)) return false;
   try {
     process.kill(claim.pid, 0);
     return true;
@@ -184,7 +193,8 @@ function claimStart(file: string, now: number): boolean {
       try { fs.unlinkSync(file); } catch { /* another caller cleared it */ }
     }
   }
-  return false;
+  // Two spent claims in a row: start one regardless. A second helper finds the lock taken and exits.
+  return true;
 }
 
 /** One pass: ship what the project's spool holds, within `deadline`; `force` dials past the offline latch. */
@@ -210,6 +220,8 @@ export interface HelperRunOptions {
   afterFailure?: boolean;
   /** Called each time the lock is let go, before the last look for new work: where a late kick lands. */
   onReleased?: () => void;
+  /** Called when the lock was held at start, before the start claim is removed: where a racing kick lands. */
+  onBusy?: () => void;
 }
 
 export interface HelperRunResult {
@@ -239,13 +251,19 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
   const dirty = (): boolean => fs.existsSync(paths.dirty);
   /** Remove a mark, answering whether it was there: a kick after the removal writes it again, for the next look. */
   const take1 = (file: string): boolean => { try { fs.unlinkSync(file); return true; } catch { return false; } };
-  const successor = (afterFailure: boolean): KickOutcome =>
-    startHelper({ projectId: opts.projectId, mycoHome: opts.mycoHome, spawn: opts.spawn, now, afterFailure, why: afterFailure ? 'a failed pass' : 'the deadline' });
+  const successor = (afterFailure: boolean): KickOutcome => startHelper({
+    projectId: opts.projectId, mycoHome: opts.mycoHome, spawn: opts.spawn, now, afterFailure,
+    why: afterFailure ? 'a failed pass' : 'the deadline', fallback: 'the work waits for the next kick',
+  });
 
   let passes = 0;
   let held: LockHandle | null = take(paths.lock);
+  if (held === null) opts.onBusy?.();
   // Whichever helper holds the lock, a start under way has arrived.
   try { fs.unlinkSync(paths.starting); } catch { /* none claimed */ }
+  // The lock was held when this helper tried it, and a kick in between may have found this helper's claim and left
+  // only its mark: with the claim gone, take the lock again for that mark. A holder still there will read it.
+  if (held === null && dirty()) held = take(paths.lock);
   if (held === null) return { endedBy: 'busy', passes };
   let more = false;
   try {
@@ -256,6 +274,8 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
         const force = take1(paths.probe);
         try {
           more = (await opts.pass(deadline, { force }))?.more === true;
+          // A forced pass cut short by time leaves its probe for the pass, or the successor, that carries on.
+          if (force && more) fs.writeFileSync(paths.probe, '', { mode: 0o600 });
         } catch (err) {
           // The pass's work is undone: its marks go back, so neither the work nor the end that asked for a probe is lost.
           fs.writeFileSync(paths.dirty, '', { mode: 0o600 });

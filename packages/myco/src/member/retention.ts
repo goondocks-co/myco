@@ -149,7 +149,7 @@ export function behindTranscriptPaths(mycoHome: string): Set<string> {
 
 const STATE_SUFFIX = '.state.json';
 
-/** When the server last acknowledged one of this session's records; 0 when it never has. */
+/** When the server last acknowledged one of this session's spooled events (not a segment or a blob); 0 when it never has. */
 export function lastAckAt(spool: MemberSpool, sessionId: string): number {
   return readSessionState(spool.dir, sessionId).lastAckAt ?? 0;
 }

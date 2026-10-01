@@ -419,9 +419,16 @@ export class MemberSpool {
     if (lines.length > 0) ensurePrivateFile(file);
     withFileLockSync(lock, () => {
       if (lines.length > 0) {
-        const fresh = header !== undefined && fs.statSync(file).size === 0;
-        const body = [...(fresh ? [header()] : []), ...lines].map((line) => JSON.stringify(line) + '\n').join('');
-        fs.appendFileSync(file, (endsMidLine(file) ? '\n' : '') + body, { mode: MEMBER_FILE_MODE });
+        const toText = (out: readonly unknown[]): string => out.map((line) => JSON.stringify(line) + '\n').join('');
+        const existing = header === undefined || fs.statSync(file).size === 0 ? null : readTurnLines(file);
+        if (header !== undefined && existing !== null && generationOf(existing) === null) {
+          // The file's first write was cut off before its header was whole: begin a fresh generation, keeping every
+          // mark after it that reads whole, so no later mark is hidden behind a header nothing can read.
+          writePrivateFileAtomic(file, toText([header(), ...existing.filter(isTurnEndMark), ...lines]));
+        } else {
+          const body = toText([...(header !== undefined && existing === null ? [header()] : []), ...lines]);
+          fs.appendFileSync(file, (endsMidLine(file) ? '\n' : '') + body, { mode: MEMBER_FILE_MODE });
+        }
       }
       const state = readSessionStateUnlocked(this.dir, sessionId);
       if (state.startedAt === undefined) state.startedAt = now;
@@ -639,11 +646,6 @@ export class MemberSpool {
     }
     // A state a session has not written yet is one with no acknowledgement.
     return read.reason === 'missing' ? { readable: true, lastDeliveryAt: null } : { readable: false };
-  }
-
-  /** Record that the Deployment acknowledged something of the session's just now: a blob, a segment, a reslice. */
-  noteDelivery(sessionId: string, now: number): void {
-    updateSessionState(this.dir, sessionId, (s) => { s.lastDeliveryAt = now; }, now);
   }
 
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
@@ -964,8 +966,6 @@ export class MemberSpool {
           } else if (blobOutcome.class !== 'acked') {
             result.endedBy = this.endPass(blobOutcome, now());
             break;
-          } else {
-            this.noteDelivery(sessionId, now());
           }
         }
         const outcome = await activeClient.postEvent(toWire(record), clippedRequestBudget(budget, now()));
