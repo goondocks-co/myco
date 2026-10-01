@@ -3,7 +3,6 @@ import { registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { registerBlob } from './helpers/d1.js';
 import { searchProject, sanitizeFtsQuery, SEARCH_TYPES } from '@myco-server-worker/read/search.js';
 import { pendingSearchBlobs, reconcileSearchIndex, SEARCH_CHUNK_CHARS, SEARCH_CHUNKS_PER_PASS } from '@myco-server-worker/core/search-index.js';
-import { sanitizeFtsQuery as localSanitize } from '@myco/db/queries/search.js';
 import { BackupObjectsMissingError, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { runTick, POWER_THRESHOLDS } from '@myco-server-worker/core/tick.js';
 
@@ -126,7 +125,15 @@ describe('full-text search', () => {
     expect((await f.search('packages/myco/src/search.ts')).results.map((r) => r.id)).toEqual(['p']);
     f.sqlite.exec("DELETE FROM plans WHERE plan_key='p'");
     expect((await f.search('newword')).results).toEqual([]);
-    for (const q of ['one two', 'skill-evolve', 'a/b.ts', 'quote"value', 'ümlaut x']) expect(sanitizeFtsQuery(q)).toBe(localSanitize(q));
+    // The quoting 1.4's sanitizer gives each query, which the server's keeps.
+    const AS_1_4: ReadonlyArray<[string, string]> = [
+      ['one two', 'one two'],
+      ['skill-evolve', '"skill-evolve"'],
+      ['a/b.ts', '"a/b.ts"'],
+      ['quote"value', '"quote""value"'],
+      ['ümlaut x', '"ümlaut" x'],
+    ];
+    for (const [q, quoted] of AS_1_4) expect({ q, quoted: sanitizeFtsQuery(q) }).toEqual({ q, quoted });
   });
 
   it('indexes large blob bodies resumably, matches across chunks and title/body, and removes stale hits', async () => {

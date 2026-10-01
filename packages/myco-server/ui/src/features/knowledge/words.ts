@@ -4,14 +4,15 @@
  * a status by what it means for the reader, and whoever wrote a spore by name,
  * never by id.
  */
+import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import type { FilterDefinition, SelectOption, Tone } from '../../design';
 import { memberLabel } from '../../lib/member-name';
 import { count, MYCO_MEMBER_ID, shortDay, sporeTypeWord } from '../today/words';
 
 export { ago, count, dayHeading, shortDay, sporeTypeWord } from '../today/words';
 
-/** The spore types the harness writes, in the order the facets and filters offer them. */
-export const SPORE_TYPES = ['decision', 'gotcha', 'bug_fix', 'discovery', 'wisdom', 'pattern', 'architecture', 'trade_off', 'cross-cutting'] as const;
+/** The spore types the harness writes, in the order the facets and filters offer them: the one list the Deployment accepts. */
+export const SPORE_TYPES = OBSERVATION_TYPES;
 
 /** A spore type in the plural, as a facet row reads: "Decisions", "Fixes". */
 export function sporeTypePlural(type: string): string {

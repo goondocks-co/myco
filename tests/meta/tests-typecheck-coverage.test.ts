@@ -41,7 +41,7 @@ const AWAITING_THE_1_4_SWEEP = [
 const TYPED_INSIDE_A_DEFERRED_TREE = [
   path.join('cli', 'import.test.ts'),
   path.join('cli', 'login.test.ts'),
-  path.join('agent', 'repository-checkout.test.ts'),
+  path.join('agent', 'repository-checkout-container.test.ts'),
   path.join('agent', 'run-store-http.test.ts'),
   path.join('agent', 'server-runner.test.ts'),
   path.join('agent', 'server-tool-surface.test.ts'),

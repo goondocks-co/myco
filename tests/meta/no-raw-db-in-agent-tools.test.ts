@@ -23,7 +23,7 @@
  *                        where a tool grabs the handle and executes inline.
  *
  * We deliberately DO NOT blanket-ban `.exec(`: `RegExp.prototype.exec(str)` is
- * legitimate and common in tool files (e.g. skill-contamination.ts uses
+ * legitimate and common in tool files (e.g. skills/contamination.ts uses
  * `FRONTMATTER_PATTERN.exec(content)`). `.exec(` is caught ONLY in the chained
  * `getDatabase().exec(` form, which is unambiguously a DB execution. A bare
  * `getDatabase()` call that forwards the handle to a query function

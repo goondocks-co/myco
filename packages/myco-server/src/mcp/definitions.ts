@@ -13,6 +13,7 @@
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
+import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 
 /**
  * What the tenancy argument means on the member surface.
@@ -433,33 +434,13 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         },
         "type": {
           "type": "string",
-          "enum": [
-            "gotcha",
-            "bug_fix",
-            "decision",
-            "discovery",
-            "trade_off",
-            "cross-cutting",
-            "wisdom",
-            "pattern",
-            "architecture"
-          ],
-          "description": "Observation type for op: \"save\": gotcha, bug_fix, decision, discovery, trade_off, cross-cutting, wisdom, pattern, architecture"
+          "enum": OBSERVATION_TYPES,
+          "description": `Observation type for op: "save": ${OBSERVATION_TYPES.join(', ')}`
         },
         "observation_type": {
           "type": "string",
-          "enum": [
-            "gotcha",
-            "bug_fix",
-            "decision",
-            "discovery",
-            "trade_off",
-            "cross-cutting",
-            "wisdom",
-            "pattern",
-            "architecture"
-          ],
-          "description": "Observation type filter for op: \"list\" or consolidated note type for op: \"consolidate\": gotcha, bug_fix, decision, discovery, trade_off, cross-cutting, wisdom, pattern, architecture"
+          "enum": OBSERVATION_TYPES,
+          "description": `Observation type filter for op: "list" or consolidated note type for op: "consolidate": ${OBSERVATION_TYPES.join(', ')}`
         },
         "status": {
           "type": "string",

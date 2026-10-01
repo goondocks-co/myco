@@ -6,7 +6,7 @@
  */
 
 import { parse as parseYaml } from 'yaml';
-import { descriptionHardContaminationLength, scanForContamination } from './skill-contamination.js';
+import { descriptionHardContaminationLength, scanForContamination } from '../../skills/contamination.js';
 
 /** Maximum lines for a generated skill. */
 export const MAX_SKILL_LINES = 800;

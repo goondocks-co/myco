@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { RAW_ID } from '../helpers/raw-ids.ts';
 import { mintSporeId } from '../../packages/myco-server/src/core/spore-writes.ts';
-import { OBSERVATION_TYPES } from '../../packages/myco/src/vault/types.ts';
+import { OBSERVATION_TYPES } from '../../packages/myco-server/src/core/spores.ts';
 
 describe('the raw-id pattern', () => {
   it('matches a spore id of every observation type, as the server mints it', () => {

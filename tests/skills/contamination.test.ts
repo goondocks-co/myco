@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { scanForContamination } from '@myco/agent/tools/skill-contamination.js';
+import { scanForContamination } from '@myco/skills/contamination.js';
 import { validateSkillContent } from '@myco/agent/tools/skill-validator.js';
 
 function skill(body: string, frontmatter = ''): string {
