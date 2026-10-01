@@ -57,8 +57,6 @@ irm https://myco.sh/install.ps1 | iex
 
 Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` and changes nothing else. `myco login` with the invite link your Deployment's administrator sent you signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer installs nothing and says how to move over: `sh -s -- --replace-1.4` installs 2.0 in 1.4's place, then `myco login`, `myco cutover --dry-run` and `myco cutover` move the machine (see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md)).
 
-Already have Node? `npm install -g @goondocks/myco` also works — it's a thin bootstrap that converges to the same native binary.
-
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 
 ### Plugin only
