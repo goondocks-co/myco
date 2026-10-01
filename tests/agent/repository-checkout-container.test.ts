@@ -1,7 +1,7 @@
 /**
- * The container half of the repository checkout (retire-1.4 P0 split it from `repository-checkout.test.ts`): the 1.4
- * server runner prepares a held run's checkout over HTTP and hands the harness its committed files. It goes with the
- * container launch path (retire-1.4 P7); the worker's checkout is `repository-checkout.test.ts`'s.
+ * The repository checkout a container-launched run is given: the 1.4 server runner prepares a held run's checkout over
+ * HTTP and hands the harness its committed files. It goes with the container launch path (#1170 P7); the worker's
+ * checkout is `tests/runner/repository-checkout.test.ts`'s.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { access } from 'node:fs/promises';

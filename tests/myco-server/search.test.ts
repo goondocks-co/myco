@@ -125,7 +125,7 @@ describe('full-text search', () => {
     expect((await f.search('packages/myco/src/search.ts')).results.map((r) => r.id)).toEqual(['p']);
     f.sqlite.exec("DELETE FROM plans WHERE plan_key='p'");
     expect((await f.search('newword')).results).toEqual([]);
-    // What 1.4's sanitizer answered for each, frozen when the 1.4 vault left the tree.
+    // The quoting 1.4's sanitizer gives each query, which the server's keeps.
     const AS_1_4: ReadonlyArray<[string, string]> = [
       ['one two', 'one two'],
       ['skill-evolve', '"skill-evolve"'],

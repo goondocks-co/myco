@@ -24,11 +24,7 @@ import type { RelationalStore } from './adapters.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { containsPattern, inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
 
-/** The kinds of observation a spore records: the list `myco_spores` accepts and every page renders. */
-export const OBSERVATION_TYPES = [
-  'gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting', 'wisdom', 'pattern', 'architecture',
-] as const;
-export type ObservationType = (typeof OBSERVATION_TYPES)[number];
+export { OBSERVATION_TYPES, type ObservationType } from '@goondocks/myco-shared/member-protocol';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];

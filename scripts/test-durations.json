@@ -44,7 +44,7 @@
     "tests/agent/provider.test.ts": 1,
     "tests/agent/reasoning-levels.test.ts": 1,
     "tests/agent/registry.test.ts": 342,
-    "tests/agent/repository-checkout.test.ts": 2323,
+    "tests/runner/repository-checkout.test.ts": 2323,
     "tests/agent/run-accounting.test.ts": 8,
     "tests/agent/run-store-http.test.ts": 179,
     "tests/agent/run-store-local-conformance.test.ts": 27,

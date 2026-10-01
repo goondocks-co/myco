@@ -244,3 +244,27 @@ export function pathToEntry(closure: Closure, key: string): string[] {
   }
   return chain.reverse();
 }
+
+/** A module's text with its shebang line taken out, which the parser reads as source. */
+export const withoutShebang = (_file: string, text: string): string => text.replace(/^#!.*\n/, '');
+
+/**
+ * Every module the CLI (`<src>/cli.ts`) dispatches a verb to: read off the CLI's own relative imports, then off the lazy
+ * imports of each module found, so a verb a dispatcher (`cli/member-dispatch.ts`) loads with `import('./…')` is held
+ * without being listed. A module `exclude` answers true for is left out and not followed.
+ */
+export function cliVerbModules(src: string, exclude: (file: string) => boolean = () => false): Set<string> {
+  const cli = path.join(src, 'cli.ts');
+  const toModule = (from: string, specifier: string): string => path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts'));
+  const dispatched = runtimeEdges(withoutShebang(cli, fs.readFileSync(cli, 'utf-8')), cli).specifiers
+    .filter((s) => s.startsWith('./')).map((s) => toModule(cli, s)).filter((file) => fs.existsSync(file) && !exclude(file));
+  const modules = new Set(dispatched);
+  for (const queue = [...dispatched]; queue.length > 0;) {
+    const file = queue.pop()!;
+    for (const specifier of dynamicSpecifiers(fs.readFileSync(file, 'utf-8'), file).filter((s) => s.startsWith('./'))) {
+      const lazy = toModule(file, specifier);
+      if (fs.existsSync(lazy) && !exclude(lazy) && !modules.has(lazy)) { modules.add(lazy); queue.push(lazy); }
+    }
+  }
+  return modules;
+}

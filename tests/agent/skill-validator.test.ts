@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { checkFrontmatterPreservation, extractFrontmatterFields, MAX_SKILL_DESCRIPTION_CHARS } from '@myco/skills/validator.js';
+import { checkFrontmatterPreservation, extractFrontmatterFields, MAX_SKILL_DESCRIPTION_CHARS } from '@myco/agent/tools/skill-validator.js';
 import { descriptionHardContaminationLength } from '@myco/skills/contamination.js';
 
 /** Build valid SKILL.md content with the given description and optional body. */

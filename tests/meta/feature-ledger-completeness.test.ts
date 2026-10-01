@@ -30,6 +30,12 @@
  * `RETIRED_REGISTRIES`: a registry whose source is gone and is not named there fails,
  * so a move or an accidental deletion cannot pass for a retirement.
  *
+ * Each registry owns a §7 section, and its tokens are looked up there alone, so a token
+ * another section also names (`settings` in §7.1 and §7.2) is never answered by the
+ * wrong row. The other direction holds too: every KEEP or NEW row in a section a live
+ * registry owns must be a token one of its registries produces, so a kept capability
+ * whose code is deleted fails by name, not just a new one with no row.
+ *
  * The SURFACE half matters most. A row with a disposition but no surface is how a
  * capability ends up owned by nobody — the planning defect of the same class as a
  * property with no gate.
@@ -39,18 +45,13 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { parseLedger, REPO_ROOT } from '../helpers/ledger.ts';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
 import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
-const LEDGER_PATH = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
-
-/** Dispositions the ledger may assign: a 1.4 capability is kept, replaced or dropped; one 2.0 adds is NEW. */
-const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP', 'NEW']);
 
 /**
  * Config leaves whose children are dynamic — a record or array whose keys are not
@@ -59,60 +60,20 @@ const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP', 'NEW']);
  */
 const DYNAMIC_CONFIG_BLOCKS = ['agent.tasks', 'notifications.domains', 'symbionts', 'release_provenance.package_map'];
 
-/** The closed set of owning surfaces (§4). `—` is legal only alongside DROP. */
-const SURFACES = new Set(['M', 'MS', 'Core', 'W', 'C', 'UI', 'MCP']);
 
 /** CLI tokens that are flag aliases, not commands. */
 const CLI_FLAG_ALIASES = new Set(['--help', '-h', '--version', '-v']);
 
 const read = (p: string): string => fs.readFileSync(p, 'utf8');
 
-// ---------------------------------------------------------------------------
-// Ledger parse
-// ---------------------------------------------------------------------------
-
-interface LedgerRow {
-  token: string;
-  disposition: string;
-  surfaces: string[];
-  raw: string;
-}
-
-/**
- * Parse every §7 table row. A row's identity is the FIRST backticked token in its
- * first cell, so trailing qualifiers ("`settings` (project-scoped)") are cosmetic.
- * The disposition is cell 2; the surface cell is the first following cell whose
- * content is `—` or a comma-separated list drawn entirely from SURFACES — which
- * tolerates §7.6 carrying an extra Migration column without a second parser.
- */
-function parseLedger(): LedgerRow[] {
-  const rows: LedgerRow[] = [];
-  for (const line of read(LEDGER_PATH).split('\n')) {
-    if (!line.startsWith('| `')) continue;
-    const cells = line.split('|').slice(1, -1).map((c) => c.trim());
-    if (cells.length < 3) continue;
-
-    const token = cells[0].match(/`([^`]+)`/)?.[1];
-    if (!token) continue;
-
-    const disposition = cells[1];
-    if (!DISPOSITIONS.has(disposition)) continue;
-
-    let surfaces: string[] | null = null;
-    for (const cell of cells.slice(2)) {
-      if (cell === '—') { surfaces = []; break; }
-      const parts = cell.split(',').map((s) => s.trim());
-      if (parts.length > 0 && parts.every((s) => SURFACES.has(s))) { surfaces = parts; break; }
-    }
-    if (surfaces === null) continue;
-
-    rows.push({ token, disposition, surfaces, raw: line });
-  }
-  return rows;
-}
-
 const LEDGER = parseLedger();
-const BY_TOKEN = new Map(LEDGER.map((r) => [r.token, r]));
+/** The rows of each §7 section, by token. */
+const BY_SECTION = new Map<string, Map<string, (typeof LEDGER)[number]>>();
+for (const row of LEDGER) {
+  if (!BY_SECTION.has(row.section)) BY_SECTION.set(row.section, new Map());
+  BY_SECTION.get(row.section)!.set(row.token, row);
+}
+const rowIn = (section: string, token: string) => BY_SECTION.get(section)?.get(token);
 
 // ---------------------------------------------------------------------------
 // Registry scans
@@ -233,26 +194,27 @@ function configLeaves(): string[] {
   return [...out].sort();
 }
 
-/** A registry: what it is called, the repo path that holds it, and how its tokens are read. */
+/** A registry: what it is called, the repo path that holds it, the §7 section its rows sit in, and how its tokens are read. */
 interface Registry {
   label: string;
   source: string;
+  section: string;
   scan: () => string[];
 }
 
 const REGISTRIES: readonly Registry[] = [
-  { label: 'CLI commands', source: 'packages/myco/src/cli.ts', scan: cliCommands },
-  { label: 'dashboard routes', source: 'packages/myco/ui/src/App.tsx', scan: dashboardRoutes },
-  { label: 'MCP tools', source: 'packages/myco/src/tools/definitions.ts', scan: mcpTools },
-  { label: 'agent tasks', source: 'packages/myco/src/agent/definitions/tasks', scan: agentTasks },
-  { label: 'scheduled jobs', source: 'packages/myco/src/constants/power-jobs.ts', scan: scheduledJobs },
-  { label: 'data classes', source: 'packages/myco-server/src/db', scan: dataClasses },
-  { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', scan: configLeaves },
-  { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', scan: () => [...RETAINED_TASKS].sort() },
-  { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', scan: () => Object.keys(TASK_SCHEDULE).sort() },
-  { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
-  { label: 'Deployment settings leaves', source: 'packages/myco-server/src/core/settings.ts', scan: () => [...DEPLOYMENT_LEAVES].sort() },
-  { label: 'machine settings leaves', source: 'packages/myco-server/src/core/machine-settings.ts', scan: () => [...MACHINE_LEAVES].sort() },
+  { label: 'CLI commands', source: 'packages/myco/src/cli.ts', section: '7.1', scan: cliCommands },
+  { label: 'dashboard routes', source: 'packages/myco/ui/src/App.tsx', section: '7.2', scan: dashboardRoutes },
+  { label: 'MCP tools', source: 'packages/myco/src/tools/definitions.ts', section: '7.3', scan: mcpTools },
+  { label: 'agent tasks', source: 'packages/myco/src/agent/definitions/tasks', section: '7.4', scan: agentTasks },
+  { label: 'scheduled jobs', source: 'packages/myco/src/constants/power-jobs.ts', section: '7.5', scan: scheduledJobs },
+  { label: 'data classes', source: 'packages/myco-server/src/db', section: '7.6', scan: dataClasses },
+  { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', section: '7.8', scan: configLeaves },
+  { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', section: '7.4', scan: () => [...RETAINED_TASKS].sort() },
+  { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
+  { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', section: '7.5', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
+  { label: 'Deployment settings leaves', source: 'packages/myco-server/src/core/settings.ts', section: '7.8', scan: () => [...DEPLOYMENT_LEAVES].sort() },
+  { label: 'machine settings leaves', source: 'packages/myco-server/src/core/machine-settings.ts', section: '7.8', scan: () => [...MACHINE_LEAVES].sort() },
 ];
 
 /**
@@ -262,6 +224,17 @@ const REGISTRIES: readonly Registry[] = [
 const RETIRED_REGISTRIES: readonly string[] = [];
 
 const present = (registry: Registry): boolean => fs.existsSync(path.join(REPO_ROOT, registry.source));
+
+/**
+ * KEEP and NEW rows in a section a live registry owns that no registry produces, each with why. Each is a capability
+ * the registries cannot see yet, and leaves this list when one can.
+ */
+const UNPRODUCED_ROWS: Readonly<Record<string, string>> = {
+  '7.2 /p/:projectId/plans': "a 2.0 dashboard route: the routes registry reads the 1.4 dashboard's file until the 2.0 route table is exported",
+  '7.2 /measures': "a 2.0 dashboard route: the routes registry reads the 1.4 dashboard's file until the 2.0 route table is exported",
+  '7.2 /access': "a 2.0 dashboard route: the routes registry reads the 1.4 dashboard's file until the 2.0 route table is exported",
+  '7.6 member_credentials': "the Deployment's member credentials, held in the server's own migrations rather than a src/db schema file",
+};
 
 describe('feature-preservation ledger completeness', () => {
   it('parses a non-trivial ledger (guards against a silently empty parse)', () => {
@@ -281,14 +254,18 @@ describe('feature-preservation ledger completeness', () => {
       const tokens = scan();
       expect(tokens.length).toBeGreaterThan(0);
 
-      const missing = tokens.filter((t) => !BY_TOKEN.has(t));
+      const missing = tokens.filter((t) => !rowIn(registry.section, t));
       expect(
         missing,
-        `${label} with no ledger row in docs/architecture/myco-2.0.md §7 — every capability needs an explicit KEEP/REPLACE/DROP and an owning surface: ${missing.join(', ')}`,
+        `${label} with no ledger row in docs/architecture/myco-2.0.md §${registry.section} — every capability needs an explicit KEEP/REPLACE/DROP and an owning surface: ${missing.join(', ')}`,
       ).toEqual([]);
 
+      // A token another section also names (`settings` in §7.1 and §7.2) is answered by its own section's row.
+      const elsewhere = tokens.filter((t) => rowIn(registry.section, t)!.section !== registry.section);
+      expect(elsewhere, `${label} answered by a row outside §${registry.section}`).toEqual([]);
+
       const unowned = tokens.filter((t) => {
-        const row = BY_TOKEN.get(t)!;
+        const row = rowIn(registry.section, t)!;
         return row.disposition !== 'DROP' && row.surfaces.length === 0;
       });
       expect(
@@ -310,8 +287,28 @@ describe('feature-preservation ledger completeness', () => {
     // parseLedger only admits rows whose surface cell is drawn from SURFACES, so a
     // typo'd surface makes the row unparseable and the token reads as MISSING above.
     // This asserts the inverse directly: every registry token resolved to a row.
-    const allTokens = REGISTRIES.filter(present).flatMap((registry) => registry.scan());
-    const unresolved = allTokens.filter((t) => !BY_TOKEN.has(t));
+    const unresolved = REGISTRIES.filter(present).flatMap((registry) => registry.scan().filter((t) => !rowIn(registry.section, t)).map((t) => `${registry.section} ${t}`));
     expect(unresolved).toEqual([]);
+  });
+
+  it('owns every §7 section whose rows the ledger parses with a registry, live or retired', () => {
+    const sections = [...new Set(LEDGER.map((row) => row.section))].sort();
+    const owned = new Set(REGISTRIES.map((registry) => registry.section));
+    expect(sections.filter((section) => !owned.has(section)), 'a §7 section no registry owns: its rows answer to nothing').toEqual([]);
+  });
+
+  it('keeps no capability whose code is gone: every KEEP or NEW row in a live registry\'s section is a token one of them produces', () => {
+    const owned = new Map<string, Set<string>>();
+    for (const registry of REGISTRIES) {
+      if (!owned.has(registry.section)) owned.set(registry.section, new Set());
+      if (present(registry)) for (const token of registry.scan()) owned.get(registry.section)!.add(token);
+    }
+    // A section whose every registry is retired keeps its rows as the record, with nothing left to produce them.
+    const live = new Set(REGISTRIES.filter((registry) => !RETIRED_REGISTRIES.includes(registry.label)).map((registry) => registry.section));
+    const unproduced = LEDGER
+      .filter((row) => (row.disposition === 'KEEP' || row.disposition === 'NEW') && live.has(row.section) && !owned.get(row.section)!.has(row.token))
+      .map((row) => `${row.section} ${row.token}`);
+    expect(unproduced.filter((key) => !(key in UNPRODUCED_ROWS)), 'a KEEP or NEW row no registry produces: its code is gone, or it sits in the wrong section').toEqual([]);
+    expect(Object.keys(UNPRODUCED_ROWS).filter((key) => !unproduced.includes(key)), 'an UNPRODUCED_ROWS entry a registry now produces: delete it').toEqual([]);
   });
 });

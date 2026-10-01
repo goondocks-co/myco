@@ -175,7 +175,7 @@ describe('the spore stream', () => {
     await waitFor(() => expect(cards()).toHaveLength(3));
     const types = screen.getByRole('region', { name: 'Type' });
     const typeRows = within(types).getAllByRole('button');
-    expect(typeRows.map((b) => b.textContent)).toEqual(['Everything6', 'Decisions2', 'Gotchas3', 'Fixes1']);
+    expect(typeRows.map((b) => b.textContent)).toEqual(['Everything6', 'Gotchas3', 'Fixes1', 'Decisions2']);
     expect(typeRows[0]!.getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(within(types).getByRole('button', { name: /Decisions/ }));
     await asked(requested, '/api/spores?type=decision&status=active&limit=25');

@@ -45,7 +45,7 @@ import { detectDrift, type SkillDriftReport, type SkillFileFingerprint } from '@
 import {
   descriptionSimilarity,
   DESCRIPTION_DUPLICATE_THRESHOLD,
-} from '../skills/validator.js';
+} from './tools/skill-validator.js';
 import {
   getSkillSurveyEligibility,
   SKILL_SURVEY_WATERMARK_KEY,

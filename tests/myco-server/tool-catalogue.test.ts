@@ -16,15 +16,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SERVED_TOOLS, isServedTool } from '@myco-server-worker/core/tool-catalogue.js';
+// The ledger's closed vocabularies (§4, §7): a row outside them is malformed, and a malformed row must fail by name rather than fall out of the gate.
+import { DISPOSITIONS, SURFACES } from '../helpers/ledger.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 
 interface ToolRow { tool: string; disposition: string; surfaces: string[] }
 
-/** The ledger's closed vocabularies (§4, §7). A row outside them is malformed, and a malformed row must fail by name rather than fall out of the gate. */
-const DISPOSITIONS = new Set(['KEEP', 'REPLACE', 'DROP']);
-const SURFACES = new Set(['M', 'MS', 'Core', 'W', 'C', 'UI', 'MCP']);
 
 /** Every §7.3 row: first backticked token, disposition, and the surface cell split on commas. */
 function ledgerMcpRows(): ToolRow[] {

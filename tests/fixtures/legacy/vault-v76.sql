@@ -1,6 +1,6 @@
--- A Myco 1.4 vault's schema at v76, frozen for the tests of `myco import --legacy` (retire-1.4 P0).
--- Generated once from the 1.4 `db/schema.ts`; the 1.4 tree is deleted, and this file is what remains of its shape.
--- It goes with the legacy importer (retire-1.4 P12). Do not edit by hand.
+-- A Myco 1.4 vault's schema at v76: the shape `myco import --legacy` reads (#1170).
+-- Generated from the 1.4 `db/schema.ts`; the tests build their vault from this file rather than from the 1.4 tree.
+-- It goes with the legacy importer (#1170 P12). Do not edit by hand.
 
 CREATE TABLE schema_version (
     version    INTEGER PRIMARY KEY,
