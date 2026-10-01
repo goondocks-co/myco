@@ -206,34 +206,55 @@ test.describe('Today', () => {
     });
   }
 
+  /** Today as the owner with the repositories Myco isn't capturing yet opened to each, Ada's `gadget` in view. */
+  async function openRepositories(page: Page, viewport: ViewportName): Promise<Locator> {
+    const needsYou = page.locator('[data-needs-you]');
+    if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
+    await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
+    const gadget = needsYou.locator('[data-repository]').filter({ hasText: 'gadget isn’t being captured yet' });
+    await gadget.scrollIntoViewIfNeeded();
+    return gadget;
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`today repositories not captured yet ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the repositories are the fixture\'s');
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        const gadget = await openRepositories(page, viewport);
+        await expect(gadget.getByRole('button', { name: 'Connect gadget' })).toBeInViewport();
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'today-repositories', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
   for (const { viewport, mode } of SHOT_MATRIX) {
     test(`today connect a repository ${viewport} ${mode}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the repository is the fixture\'s');
       const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
       try {
-        const needsYou = page.locator('[data-needs-you]');
-        if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
-        await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
-        const gadget = needsYou.locator('[data-repository]').filter({ hasText: 'gadget isn’t being captured yet' });
-        await gadget.scrollIntoViewIfNeeded();
-        await expectFits(page, viewport);
-        await expectAxeClean(page);
-        await shoot(page, 'today-repositories', viewport, mode);
+        const gadget = await openRepositories(page, viewport);
         await gadget.getByRole('button', { name: 'Connect gadget' }).click();
         const dialog = page.getByRole('dialog', { name: 'Connect gadget' });
         await expect(dialog).toBeVisible();
         await expect(dialog).toContainText('Ada’s studio Mac starts capturing it at the next agent session there');
         // Past eight projects the choice is searchable; its trigger names the choice either way.
         await expect(dialog.getByRole('button', { name: /^Project: The project that holds github\.com\/acme\/gadget/ })).toHaveText('Let Myco choose');
+        await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
-        await shoot(page, 'today-connect', viewport, mode);
-        // The dialog is closed without connecting: the repository stays for every other check on this fixture.
-        await dialog.getByRole('button', { name: 'Cancel' }).click();
-        await expect(dialog).toHaveCount(0);
         expectQuiet(watch);
+        // Nothing is connected: the shot is the last step, and the repository stays for every other check on this fixture.
+        await shoot(page, 'today-connect', viewport, mode);
       } finally {
         await context.close();
       }
