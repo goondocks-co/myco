@@ -10,7 +10,7 @@
  * fallback" — this file used to call the orchestration functions in-process;
  * it now drives the SAME daemon route the Team page's attach control posts
  * to. Sibling to `cli/join.ts`: same flag parser (shared via
- * `cli/shared.ts#parseFlags`), same print-only responsibility.
+ * `cli/flags.ts#parseFlags`), same print-only responsibility.
  */
 import path from 'node:path';
 import { connectToGlobalDaemon, daemonErrorMessage } from './shared.js';

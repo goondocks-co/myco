@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { closureOf, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
+import { closureOf, dynamicSpecifiers, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const at = (rel: string): string => path.join(SRC, rel);
@@ -138,12 +138,26 @@ describe('a verb other than a hook', () => {
   });
 
   it('loads, for every verb but the daemon itself, a module that never reaches the 1.4 daemon\'s server', () => {
-    // The verb modules are read off the CLI's own imports, so a verb added there is held here without being listed.
+    // The verb modules are read off the CLI's own imports, then off the lazy imports of each module found, so a verb
+    // that a dispatcher (`cli/member-dispatch.ts`) loads with `import('./…')` is held here without being listed.
     const cli = at('cli.ts');
-    const edges = runtimeEdges(withoutShebang(cli, fs.readFileSync(cli, 'utf-8')), cli);
-    const modules = [...new Set([...edges.specifiers].filter((s) => s.startsWith('./')).map((s) => path.join(SRC, s.replace(/\.js$/, '.ts'))))]
-      .filter((file) => fs.existsSync(file) && path.relative(SRC, file) !== THE_DAEMON);
-    expect(modules.length).toBeGreaterThan(20);
+    const toModule = (from: string, specifier: string): string => path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts'));
+    const isDaemon = (file: string): boolean => path.relative(SRC, file) === THE_DAEMON;
+    const dispatched = runtimeEdges(withoutShebang(cli, fs.readFileSync(cli, 'utf-8')), cli).specifiers
+      .filter((s) => s.startsWith('./')).map((s) => toModule(cli, s)).filter((file) => fs.existsSync(file) && !isDaemon(file));
+    const modules = new Set(dispatched);
+    for (const queue = [...dispatched]; queue.length > 0;) {
+      const file = queue.pop()!;
+      for (const specifier of dynamicSpecifiers(fs.readFileSync(file, 'utf-8'), file).filter((s) => s.startsWith('./'))) {
+        const lazy = toModule(file, specifier);
+        if (fs.existsSync(lazy) && !isDaemon(lazy) && !modules.has(lazy)) { modules.add(lazy); queue.push(lazy); }
+      }
+    }
+    expect(modules.size).toBeGreaterThan(20);
+    // The member verbs `cli/member-dispatch.ts` loads lazily are among the modules held.
+    for (const verb of ['cli/member-reads.ts', 'cli/member-doctor.ts', 'cli/member-logs.ts', 'cli/member-config.ts']) {
+      expect({ verb, held: modules.has(at(verb)) }).toEqual({ verb, held: true });
+    }
     for (const file of modules) {
       const closure = closureOf([file], { staticOnly: true });
       const reached = closure.modules.has(DAEMON_SERVER) ? pathToEntry(closure, DAEMON_SERVER).join(' -> ') : null;

@@ -1,11 +1,8 @@
 import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import { resolveMycoHome } from '../paths/home.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import type { DaemonClient } from '../daemon/client.js';
 
-export { parseStringFlag, parseIntFlag } from '../logs/format.js';
+export { parseStringFlag } from '../logs/format.js';
 
 /**
  * Initialize the singleton database for direct CLI reads.
@@ -120,24 +117,4 @@ export function daemonErrorMessage(body: unknown): string | null {
 
 export function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-
-// Re-exported from `vault/gitignore.ts` so existing call sites
-// (`cli/init.ts`, `cli/update.ts`) keep their imports unchanged. The
-// canonical body lives there so activation/grove code can import it
-// without dragging in cli-level transitive dependencies.
-// Vault gitignore is now owned by ProjectVault — see
-// `@myco/vault/project-vault.ts`. Callers that need to refresh
-// `<projectRoot>/.myco/.gitignore` go through
-// `new ProjectVault(projectRoot).ensureGitignore()`; the helper isn't
-// re-exported here to keep the single-writer contract honest.
-
-/** Collapse an absolute home-dir path to its `~/` form for portable config storage. */
-export function collapseHomePath(absPath: string): string {
-  const home = os.homedir();
-  if (absPath.startsWith(home + path.sep) || absPath === home) {
-    return '~' + absPath.slice(home.length);
-  }
-  return absPath;
 }
