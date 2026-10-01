@@ -1,6 +1,6 @@
 import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
-import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 import { REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { repositoryIdentity } from './repositories.js';
 /**
@@ -1083,7 +1083,7 @@ export async function renewLease(env: ServerEnv, worker: { tokenId: string; now:
 export async function endLeasedRun(
   env: ServerEnv,
   worker: { tokenId: string; now: number; clock?: () => number },
-  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; attemptId?: string },
+  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; identity?: ExecutionIdentity; accountingVersion?: number; attemptId?: string },
 ): Promise<{ ended: boolean; reason?: string; status?: 'completed' | 'failed' }> {
   const clock = worker.clock ?? (() => worker.now);
   const prepared = await prepareWorkerEnd(env, { tokenId: worker.tokenId, clock }, run);

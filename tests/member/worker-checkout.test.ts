@@ -96,7 +96,15 @@ describe('worker repository checkout over the Deployment wire', () => {
         if (access !== 'invalid') {
           const accounting = e.sqlite.query(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data FROM agent_runs WHERE id='run_seed'`).get() as Record<string, unknown>;
           expect(accounting).toMatchObject({ tokens_used: 38, cost_usd: 0.125, actual_cost_usd: null, estimated_cost_usd: 0.125, cost_source: 'estimated' });
-          expect(JSON.parse(String(accounting.usage_data))).toEqual({ inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.125 });
+          expect(JSON.parse(String(accounting.usage_data))).toEqual({
+            inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.125,
+            accountingVersion: 1, costProvenance: 'harness_estimate', identity: {
+              status: 'reported', source: 'result.modelUsage', primary: { model: 'model', provider: 'anthropic' },
+              models: [{ model: 'model', provider: 'anthropic', source: 'result.modelUsage', usage: {
+                inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: null,
+              } }],
+            },
+          });
         }
         if (access === 'invalid') {
           expect(row.status).toBe('failed');

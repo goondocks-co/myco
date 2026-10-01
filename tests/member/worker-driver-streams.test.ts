@@ -933,7 +933,7 @@ describe('the agent-protocol driver', () => {
     expect(events.find((event) => event.kind === 'usage')).toEqual({
       kind: 'usage', provider: 'openai', model: 'gpt-5.6-sol', tokenScope: 'last_response',
       inputTokens: 10206, outputTokens: 9, cachedTokens: 9984, cacheCreationTokens: null,
-      reasoningTokens: null, costUsd: null, estimatedCostUsd: null,
+      reasoningTokens: null, costUsd: null, estimatedCostUsd: 0,
     });
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });

@@ -38,6 +38,7 @@ export const outcome = (over: Partial<WorkOutcome> & Pick<WorkOutcome, 'kind' | 
 });
 
 export const workRun = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
+  identity: { status: 'not_recorded' }, costProvenance: null, harness: null, model: null, provider: null,
   projectId: P, status: 'completed', result: 'produced', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 0 },
   sessionId: null, failure: null, tokens: 1000, costUsd: 0.1, ...over,
 });
@@ -86,6 +87,7 @@ const machine = (viewer: string, owner: { id: string; label: string }, credentia
 
 /** A run on a page of the project's list; it started five minutes before it ended unless it says otherwise. */
 export const runRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task'>): RunPageRow & Record<string, unknown> => ({
+  identity: { status: 'not_recorded' }, costProvenance: null,
   agentId: 'myco-agent', status: 'completed', model: null, startedAt: (over.completedAt ?? NOW - HOUR) - 5 * MINUTE, completedAt: NOW - HOUR, tokensUsed: 20_000, costUsd: 0.5,
   costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: 'claude-code', worker: null,
   startedBy: 'clock', targetSessionId: null, skipReason: null, outcome: { spores: 0, sessions: 0, readsRecorded: false },

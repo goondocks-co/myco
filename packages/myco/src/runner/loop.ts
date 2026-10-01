@@ -1,4 +1,5 @@
-import { parseWorkerUsage, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { ExecutionAccounting } from './accounting.js';
+import { parseWorkerUsage, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
  * The worker: claim one run, hold it on a lease, drive a harness, end it.
  *
@@ -286,7 +287,7 @@ const asRun = (value: unknown): ClaimedRun | null => {
  */
 async function drive(
   options: WorkerOptions, run: ClaimedRun, lease: { heartbeatMs: number; deadline: number }, wake: WakeWatch,
-): Promise<{ status: 'completed' | 'failed' | 'lost'; error: string | null; usage?: WorkerUsage | null }> {
+): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity } | { status: 'lost'; error: null }> {
   const { heartbeatMs } = lease;
   const clock = options.clock ?? Date.now;
   /** When the lease this worker holds lapses unless renewed, on this machine's clock. */
@@ -300,9 +301,9 @@ async function drive(
     return { status: 'lost', error: null };
   };
   // A run that fails before its harness starts has no event to log it by, so it is said here.
-  const failedBeforeStart = (error: string): { status: 'failed'; error: string } => {
+  const failedBeforeStart = (error: string): { status: 'failed'; error: string; identity: ExecutionIdentity } => {
     options.log(`run ${run.id} failed before its harness started: ${error}`);
-    return { status: 'failed', error };
+    return { status: 'failed', error, identity: { status: 'unknown', reason: 'harness_not_started' } };
   };
   const named = harnessById(run.harness);
   if (named !== null && !offerable(named)) return failedBeforeStart(`this worker does not drive ${run.harness}: ${WITHHELD_REASON}`);
@@ -399,6 +400,7 @@ async function drive(
 
   const events: RunEvent[] = [];
   let usage: WorkerUsage | null = null;
+  const accounting = new ExecutionAccounting();
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
   let failure: string | null = null;
@@ -423,10 +425,13 @@ async function drive(
       const step = await Promise.race([stream.next(), overrunReached]);
       if (step === 'overran' || step.done === true) break;
       events.push(step.value);
+      if (step.value.kind === 'identity') accounting.observe(step.value.identity, step.value.snapshot);
       if (step.value.kind === 'usage') {
         const { kind: _kind, ...reported } = step.value;
         const parsed = parseWorkerUsage(reported);
-        usage = Object.values(parsed).every((value) => value == null) ? null : parsed;
+        accounting.usage(parsed);
+        const { models: _models, ...totals } = parsed;
+        usage = Object.values(totals).every((value) => value == null) ? null : totals;
       }
       if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}${step.value.detail === undefined ? '' : ` (${step.value.detail})`}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
@@ -459,13 +464,14 @@ async function drive(
   // The budget is otherwise the outcome, whatever the harness wrote on its way
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
-  if (overran) return { status: 'failed', usage, error: `the run outlived its budget of ${run.timeoutSeconds}s` };
-  if (failure !== null) return { status: 'failed', error: failure, usage };
+  const identity = accounting.identity;
+  if (overran) return { status: 'failed', identity, usage, error: `the run outlived its budget of ${run.timeoutSeconds}s` };
+  if (failure !== null) return { status: 'failed', error: failure, identity, usage };
   const last = events.at(-1);
-  if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending', usage };
+  if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending', identity, usage };
   return last.stop === 'end_turn'
-    ? { status: 'completed', error: failedCallsNote(events), usage }
-    : { status: 'failed', usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
+    ? { status: 'completed', error: failedCallsNote(events), identity, usage }
+    : { status: 'failed', identity, usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
 }
 
 /** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
@@ -630,8 +636,11 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     // another's run. The Deployment refuses such a write anyway; not making it
     // is what keeps the two accounts of a run from disagreeing.
     if (outcome.status !== 'lost') {
+      const accounting: WorkerExecutionAccounting | Record<string, never> = run.attemptId === undefined ? {} : {
+        attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: outcome.identity,
+      };
       const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
-        ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId, usage: outcome.usage ?? null }),
+        ...accounting,
       }));
       if (ended.kind === 'refused') {
         options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);

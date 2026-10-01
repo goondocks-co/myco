@@ -19,7 +19,12 @@ describe('native harness accounting', () => {
         first: { inputTokens: 10, outputTokens: 3, cacheReadInputTokens: 20, cacheCreationInputTokens: 5 },
         second: { inputTokens: 4, outputTokens: 6, cacheReadInputTokens: 7, cacheCreationInputTokens: 0 },
       },
-    })).toEqual({ inputTokens: 46, outputTokens: 9, cachedTokens: 27, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.5 });
+    })).toEqual({ inputTokens: 46, outputTokens: 9, cachedTokens: 27, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.5,
+      models: [
+        { model: 'first', provider: 'anthropic', source: 'result.modelUsage', usage: { inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: null } },
+        { model: 'second', provider: 'anthropic', source: 'result.modelUsage', usage: { inputTokens: 11, outputTokens: 6, cachedTokens: 7, cacheCreationTokens: 0, costUsd: null, estimatedCostUsd: null } },
+      ],
+    });
   });
 
   it('keeps missing model components unknown and does not replace them with main-loop counts', () => {

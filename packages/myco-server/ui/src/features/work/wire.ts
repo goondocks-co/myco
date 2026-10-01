@@ -1,3 +1,5 @@
+import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
+
 /**
  * The shapes Myco's work reads off the wire beyond `/api/work` (whose shapes
  * live in `features/today/wire.ts`): a page of a project's runs, one run with
@@ -8,7 +10,7 @@
  * `api/harness.ts`) pull in the server's runtime modules, which this
  * dashboard's build does not carry, so the shapes are declared here and held to
  * the server's by `tests/myco-server/work-wire.test.ts`, which the tests
- * typecheck compiles. This file imports nothing, so that check can read it
+ * typecheck compiles. This file imports only shared accounting types, so that check can read it
  * outside the dashboard.
  */
 
@@ -28,6 +30,10 @@ export interface RunWorker {
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */
 export interface RunFields {
+  identity: RecordedIdentity;
+  costProvenance: CostProvenance | null;
+  provider: string | null;
+
   id: string;
   agentId: string;
   task: string | null;

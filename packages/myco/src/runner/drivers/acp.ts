@@ -276,6 +276,7 @@ export async function* turnOver(
     sessionId = stringOf(info.sessionId);
     events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), info);
     yield { kind: 'started', harness: id, sessionId };
+    yield* events.identity();
 
     const answered = await connection.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: spec.prompt }] });
     yield* updates();

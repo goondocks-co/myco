@@ -1,3 +1,4 @@
+import { modelSelection, reportedModel } from '../accounting.js';
 import { claudeUsage } from './usage.js';
 /**
  * Claude Code, driven natively.
@@ -115,10 +116,14 @@ export const claudeCodeDriver: Driver = {
       const type = stringOf(line.type);
       if (type === 'system' && stringOf(line.subtype) === 'init') {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
+        const model = stringOf(line.model);
+        if (model !== null) yield { kind: 'identity', identity: modelSelection(reportedModel(harness, model, 'system.init.model')) };
       } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
         if (firstReport(stringOf(line.tool_use_id))) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
         failure ??= stringOf(line.error);
+        const model = stringOf(recordOf(line.message)?.model);
+        if (model !== null && model !== '<synthetic>') yield { kind: 'identity', identity: modelSelection(reportedModel(harness, model, 'assistant.message.model')) };
         for (const block of blocksOf(recordOf(line.message))) {
           const kind = stringOf(block.type);
           if (kind === 'text') {
@@ -142,6 +147,8 @@ export const claudeCodeDriver: Driver = {
           yield { kind: 'tool_call', name, status: 'error', ...(detail === undefined ? {} : { detail }) };
         }
       } else if (type === 'result') {
+        const model = stringOf(line.model);
+        if (model !== null) yield { kind: 'identity', identity: modelSelection(reportedModel(harness, model, 'result.model')) };
         yield { kind: 'usage', ...claudeUsage(line) };
         ended = true;
         // A refused call outside the grant is the harness keeping the run to

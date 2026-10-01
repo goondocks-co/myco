@@ -1,3 +1,5 @@
+import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
+
 /**
  * The shapes Today reads off the wire: `/api/work`, `/api/attention`,
  * `/api/uncaptured` and its connect, the `capture` rows of `/api/status`, and
@@ -8,7 +10,7 @@
  * runtime modules, which this dashboard's build does not carry, so the shapes
  * are declared here and held to the server's by
  * `tests/myco-server/today-wire.test.ts`, which the tests typecheck compiles.
- * This file imports nothing, so that check can read it outside the dashboard.
+ * This file imports only shared accounting types, so that check can read it outside the dashboard.
  */
 
 /** What an outcome task produces. */
@@ -38,6 +40,12 @@ export type RunResult = 'produced' | 'failed' | 'failed_with_output';
 
 /** One run the timeline lists: one that produced something, or one that failed. */
 export interface WorkRun {
+  identity: RecordedIdentity;
+  costProvenance: CostProvenance | null;
+  provider: string | null;
+  harness: string | null;
+  model: string | null;
+
   id: string;
   projectId: string;
   task: string;
