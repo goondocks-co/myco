@@ -17,7 +17,8 @@
  * Flag parser is shared via `cli/shared.ts#parseFlags` — `cli/attach.ts` (the
  * sibling member command) uses the same one so the two parse identically.
  */
-import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
+import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage } from './shared.js';
+import { parseFlags } from './flags.js';
 
 export const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>
 

@@ -13,7 +13,8 @@
  * `cli/shared.ts#parseFlags`), same print-only responsibility.
  */
 import path from 'node:path';
-import { connectToGlobalDaemon, daemonErrorMessage, parseFlags } from './shared.js';
+import { connectToGlobalDaemon, daemonErrorMessage } from './shared.js';
+import { parseFlags } from './flags.js';
 
 const ATTACH_TIMEOUT_MS = 10_000;
 const DETACH_TIMEOUT_MS = 10_000;

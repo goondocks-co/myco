@@ -3,44 +3,9 @@ import { resolveMycoHome } from '../paths/home.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { OllamaBackend } from '../intelligence/ollama.js';
-import { LmStudioBackend } from '../intelligence/lm-studio.js';
-
-import { DaemonClient } from '../daemon/client.js';
-import { initDatabase, closeDatabase, vaultDbPath } from '../db/client.js';
-import { requestContextFromEnvironment } from '../grove/request-context.js';
+import type { DaemonClient } from '../daemon/client.js';
 
 export { parseStringFlag, parseIntFlag } from '../logs/format.js';
-
-export function isHelpRequest(args: readonly string[]): boolean {
-  return args.includes('--help') || args.includes('-h');
-}
-
-/**
- * Parse `--flag value` / `--flag=value` / bare `--flag` into positionals plus
- * a flag map. Shared by `cli/attach.ts` and `cli/join.ts` — the member-overlay
- * commands (`myco attach`/`detach`/`join`/`leave`) — so they parse identically.
- */
-export function parseFlags(args: string[]): { positionals: string[]; flags: Map<string, string> } {
-  const flags = new Map<string, string>();
-  const positionals: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (!arg.startsWith('--')) { positionals.push(arg); continue; }
-    const eq = arg.indexOf('=');
-    if (eq > 2) { flags.set(arg.slice(2, eq), arg.slice(eq + 1)); continue; }
-    const next = args[i + 1];
-    if (next !== undefined && !next.startsWith('--')) { flags.set(arg.slice(2), next); i += 1; }
-    else flags.set(arg.slice(2), 'true');
-  }
-  return { positionals, flags };
-}
-
-export function printHelpIfRequested(args: readonly string[], usage: string): boolean {
-  if (!isHelpRequest(args)) return false;
-  process.stdout.write(usage);
-  return true;
-}
 
 /**
  * Initialize the singleton database for direct CLI reads.
@@ -57,6 +22,7 @@ export function printHelpIfRequested(args: readonly string[], usage: string): bo
  */
 export async function initVaultDb(vaultDir: string): Promise<() => void> {
   const { resolveDaemonDataPaths } = await import('@myco/daemon/data-paths.js');
+  const { initDatabase, closeDatabase } = await import('../db/client.js');
   const { databasePath } = resolveDaemonDataPaths(vaultDir);
   initDatabase(databasePath);
   return closeDatabase;
@@ -72,6 +38,8 @@ function refuseForMemberHome(): void {
 
 /** Connect to the daemon, ensuring it's running. Exits on failure. */
 export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
+  const { DaemonClient } = await import('../daemon/client.js');
+  const { requestContextFromEnvironment } = await import('../grove/request-context.js');
   const client = new DaemonClient(vaultDir, {
     requestContext: requestContextFromEnvironment(process.env, vaultDir),
   });
@@ -97,6 +65,7 @@ export async function connectToDaemon(vaultDir: string): Promise<DaemonClient> {
  * is needed anyway.
  */
 export async function connectToGlobalDaemon(vaultDir: string): Promise<DaemonClient> {
+  const { DaemonClient } = await import('../daemon/client.js');
   const client = new DaemonClient(vaultDir);
   refuseForMemberHome();
   const healthy = await client.ensureRunning();
@@ -119,6 +88,7 @@ export async function connectToGlobalDaemon(vaultDir: string): Promise<DaemonCli
  * an up-front refusal with nothing spent.
  */
 export async function connectToRunningDaemon(vaultDir: string, refusal: string): Promise<DaemonClient> {
+  const { DaemonClient } = await import('../daemon/client.js');
   const client = new DaemonClient(vaultDir);
   if (!(await client.isHealthy())) {
     console.error(refusal);
@@ -148,18 +118,9 @@ export function daemonErrorMessage(body: unknown): string | null {
   return null;
 }
 
-/** Load .env from cwd (not script location — that's the plugin install dir). */
-export { loadEnv } from './env-file.js';
-
 export function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
-
-// --- Provider defaults (sourced from backend classes) ---
-export const PROVIDER_DEFAULTS: Record<string, { base_url: string }> = {
-  ollama: { base_url: OllamaBackend.DEFAULT_BASE_URL },
-  'lm-studio': { base_url: LmStudioBackend.DEFAULT_BASE_URL },
-};
 
 
 // Re-exported from `vault/gitignore.ts` so existing call sites

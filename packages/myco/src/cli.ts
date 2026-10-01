@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { isHelpRequest, loadEnv } from './cli/shared.js';
+import { isHelpRequest } from './cli/flags.js';
+import { loadEnv } from './cli/env-file.js';
 import { resolveVaultDir } from './vault/resolve.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
 import { isMemberVerb } from './cli/member-verbs.js';
