@@ -3,16 +3,33 @@
  * lock is created exclusively, so one attempt holds it whatever else races for it, and is taken over once the attempt
  * that held it is gone; and a join started apart from a hook runs on after the hook's process is done with it.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { acquireAutoJoinLock, AUTO_JOIN_LOCK_STALE_MS, autoJoinDir, releaseAutoJoinLock, spawnDetached } from '@myco/member/auto-join.js';
 import { appendPending, flushPending } from '@myco/member/pending.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { ensureMemberDir, memberRoot } from '@myco/member/store.js';
 
 const KEY = 'a'.repeat(16);
 const home = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'myco-auto-join-lock-'));
+
+describe('a member directory', () => {
+  it('is made when another process makes a level of it between the check and the mkdir', () => {
+    const mycoHome = home();
+    const dir = path.join(memberRoot(mycoHome), 'auto-join', 'left');
+    const real = fs.existsSync;
+    // Every level reads as absent, and each is already there by the time it is made: the first hooks of a new home racing.
+    const absent = spyOn(fs, 'existsSync').mockImplementation((p) => (String(p).startsWith(memberRoot(mycoHome)) ? (fs.mkdirSync(String(p), { recursive: true }), false) : real(p)));
+    try {
+      ensureMemberDir(dir, mycoHome);
+    } finally {
+      absent.mockRestore();
+    }
+    expect(fs.statSync(dir).isDirectory()).toBe(true);
+  });
+});
 
 describe('a repository lock', () => {
   it('is held by one attempt at a time, and free again once released', () => {

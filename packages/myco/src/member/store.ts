@@ -154,7 +154,10 @@ export function ensureMemberDir(dir: string, mycoHome: string = resolveMycoHome(
   fs.mkdirSync(path.dirname(root), { recursive: true });
   const levels = [root, ...(rel === '' ? [] : rel.split(path.sep).map((_, i, parts) => path.join(root, ...parts.slice(0, i + 1))))];
   for (const level of levels) {
-    if (!fs.existsSync(level)) fs.mkdirSync(level, { mode: MEMBER_DIR_MODE });
+    // Another process can make the level between the check and the mkdir: what it made is checked like any other.
+    if (!fs.existsSync(level)) {
+      try { fs.mkdirSync(level, { mode: MEMBER_DIR_MODE }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    }
     const stat = fs.statSync(level);
     if (!stat.isDirectory()) throw new Error(`ensureMemberDir: ${level} is not a directory`);
     const mode = stat.mode & 0o777;
