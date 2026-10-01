@@ -80,6 +80,13 @@ export interface TurnEndMark {
 
 export const TURN_END_MARK = 'te';
 
+/** A turn-end mark not yet consumed, with where it stands: the generation of its marks file and its line there. */
+export interface PendingTurnEnd {
+  generation: string;
+  line: number;
+  mark: TurnEndMark;
+}
+
 /** Whether a parsed marks-file line is a turn-end mark: a line this build cannot read is skipped, never acted on. */
 export const isTurnEndMark = (line: unknown): line is TurnEndMark =>
   line !== null && typeof line === 'object' && (line as { t?: unknown }).t === TURN_END_MARK;
@@ -170,6 +177,19 @@ function readTurnLines(file: string): Array<unknown> {
   return raw.split('\n').filter((line) => line.trim() !== '').map((line) => {
     try { return JSON.parse(line) as unknown; } catch { return null; }
   });
+}
+
+/** The first line of every marks file: the generation that names this file among every one the session has had. */
+interface TurnsHeader {
+  t: 'gen';
+  _journal: number;
+  generation: string;
+}
+
+/** The generation a marks file's lines name, or null where its first line is not a header (no file, or one cut off). */
+function generationOf(lines: readonly unknown[]): string | null {
+  const head = lines[0] as Partial<TurnsHeader> | null | undefined;
+  return head !== null && typeof head === 'object' && head.t === 'gen' && typeof head.generation === 'string' ? head.generation : null;
 }
 
 /**
@@ -380,7 +400,10 @@ export class MemberSpool {
    */
   appendTurnEnd(sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number }, record?: (state: SessionState) => void, now: number = Date.now()): void {
     const line: TurnEndMark & { timestamp: string } = { t: TURN_END_MARK, _journal: JOURNAL_VERSION, ...mark, at: now, timestamp: new Date(now).toISOString() };
-    this.appendLines(sessionId, this.turnsFile(sessionId), [line], record, now);
+    // A new marks file starts with a fresh generation: a consumer holding line numbers of a file since deleted can
+    // never consume this one's marks.
+    const header = (): TurnsHeader => ({ t: 'gen', _journal: JOURNAL_VERSION, generation: crypto.randomBytes(8).toString('hex') });
+    this.appendLines(sessionId, this.turnsFile(sessionId), [line], record, now, header);
   }
 
   /**
@@ -388,7 +411,7 @@ export class MemberSpool {
    * lock and in ONE write: a hook that is killed, or meets a full disk, part-way leaves at most a cut final line,
    * which `endsMidLine` closes before the next append so it never costs the line after it.
    */
-  private appendLines(sessionId: string, file: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number): void {
+  private appendLines(sessionId: string, file: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number, header?: () => object): void {
     if (lines.length === 0 && !record) return;
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
@@ -396,7 +419,8 @@ export class MemberSpool {
     if (lines.length > 0) ensurePrivateFile(file);
     withFileLockSync(lock, () => {
       if (lines.length > 0) {
-        const body = lines.map((line) => JSON.stringify(line) + '\n').join('');
+        const fresh = header !== undefined && fs.statSync(file).size === 0;
+        const body = [...(fresh ? [header()] : []), ...lines].map((line) => JSON.stringify(line) + '\n').join('');
         fs.appendFileSync(file, (endsMidLine(file) ? '\n' : '') + body, { mode: MEMBER_FILE_MODE });
       }
       const state = readSessionStateUnlocked(this.dir, sessionId);
@@ -410,42 +434,56 @@ export class MemberSpool {
   }
 
   /**
-   * The turn-end marks no pass has consumed yet, oldest first, each with its line in the marks file. A line this
-   * build cannot read (cut off, or not a mark) is skipped.
+   * The turn-end marks no pass has consumed yet, oldest first, each with its marks file's generation and its line in
+   * that file: what `consumeTurnEnds` takes back. A line this build cannot read (cut off, or not a mark) is skipped.
+   * A count kept for another generation of the file counts nothing in this one.
    */
-  pendingTurnEnds(sessionId: string): Array<{ line: number; mark: TurnEndMark }> {
+  pendingTurnEnds(sessionId: string): PendingTurnEnd[] {
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
     return withFileLockSync(lock, () => {
       const lines = readTurnLines(this.turnsFile(sessionId));
-      const from = readSessionStateUnlocked(this.dir, sessionId).markWater ?? 0;
-      const pending: Array<{ line: number; mark: TurnEndMark }> = [];
+      const generation = generationOf(lines);
+      if (generation === null) return [];
+      const state = readSessionStateUnlocked(this.dir, sessionId);
+      const from = state.markGeneration === generation ? Math.max(1, state.markWater ?? 0) : 1;
+      const pending: PendingTurnEnd[] = [];
       for (let i = from; i < lines.length; i++) {
         const line = lines[i];
-        if (isTurnEndMark(line)) pending.push({ line: i, mark: line });
+        if (isTurnEndMark(line)) pending.push({ generation, line: i, mark: line });
       }
       return pending;
     });
   }
 
   /**
-   * Consume every turn-end mark at or before marks-file line `through`: the pass that read them has acted on them.
-   * Once every line is consumed the marks file is deleted and the count starts again, under the lock an append takes,
-   * so a mark appended meanwhile is never deleted unread.
+   * Consume every turn-end mark at or before `through.line` of the marks file `through.generation` names: the pass
+   * that read them has acted on them. A generation that is not the file's names a file already gone, whose marks
+   * were consumed, and consumes nothing.
+   *
+   * Once every line is consumed the count is written back to zero first and the file deleted after, all under the
+   * lock an append takes: a mark appended meanwhile is never deleted unread, and a consume cut off between the two
+   * leaves its marks to be read again, never a count that skips the next file's.
    */
-  consumeTurnEnds(sessionId: string, through: number, now: number = Date.now()): void {
+  consumeTurnEnds(sessionId: string, through: { generation: string; line: number }, now: number = Date.now()): void {
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
     withFileLockSync(lock, () => {
       const file = this.turnsFile(sessionId);
+      const lines = readTurnLines(file);
+      if (generationOf(lines) !== through.generation) return;
       const state = readSessionStateUnlocked(this.dir, sessionId);
-      const markWater = Math.max(state.markWater ?? 0, through + 1);
-      if (markWater >= readTurnLines(file).length) {
-        try { fs.unlinkSync(file); } catch { /* already gone */ }
+      const from = state.markGeneration === through.generation ? (state.markWater ?? 0) : 0;
+      const markWater = Math.max(from, through.line + 1);
+      if (markWater >= lines.length) {
         state.markWater = 0;
-      } else {
-        state.markWater = markWater;
+        delete state.markGeneration;
+        writeSessionStateUnlocked(this.dir, sessionId, state, now);
+        try { fs.unlinkSync(file); } catch { /* already gone */ }
+        return;
       }
+      state.markWater = markWater;
+      state.markGeneration = through.generation;
       writeSessionStateUnlocked(this.dir, sessionId, state, now);
     });
   }

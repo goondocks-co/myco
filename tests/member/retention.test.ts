@@ -79,11 +79,11 @@ describe('spool retention', () => {
     // The event lane part-way through the journal, the first mark consumed, and the transcript still behind: the
     // state stays when the journal goes.
     updateSessionState(spool.dir, 'sess-q', (state) => { state.highWater = 2; });
-    spool.consumeTurnEnds('sess-q', 0);
+    spool.consumeTurnEnds('sess-q', spool.pendingTurnEnds('sess-q')[0]);
     spool.markTranscriptBacklog('sess-q');
     const t0 = Date.now();
     expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-q'] }).quarantined).toHaveLength(1);
-    expect(readSessionState(spool.dir, 'sess-q')).toMatchObject({ highWater: 0, markWater: 1 });
+    expect(readSessionState(spool.dir, 'sess-q')).toMatchObject({ highWater: 0, markWater: 2 });
 
     // The next journal is read from its first line; the marks file was never the journal's, and still holds the mark
     // no pass has read.

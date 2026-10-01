@@ -5,7 +5,7 @@
  * On Windows the child is asked to break away from any Job Object this process runs in (`CREATE_BREAKAWAY_FROM_JOB`):
  * a harness that runs its hooks in a kill-on-close job would otherwise end the child with the hook. A job that forbids
  * breakaway refuses that start (`ERROR_ACCESS_DENIED`), and the child is started inside the job instead, answered as
- * `contained`; a caller that must not lose the work does it in-process there (#1561 plan §4.4).
+ * `contained`, and ends with this process's job; a caller that must not lose the work does it in-process instead.
  *
  * Everything the child needs travels on its command line: the Windows start passes the environment this process
  * started with, not changes made to it since.
@@ -15,6 +15,8 @@ import { dlopen, FFIType, ptr } from 'bun:ffi';
 
 export interface DetachedStart {
   started: boolean;
+  /** The child's process id, where the start reports one. */
+  pid?: number;
   /** Windows only: the child runs inside this process's Job Object, which refused to let it break away. */
   contained?: boolean;
 }
@@ -26,7 +28,7 @@ const posixSpawnDetached: DetachedSpawn = (command, args, opts) => {
     const child = spawn(command, [...args], { cwd: opts.cwd, detached: true, stdio: 'ignore' });
     child.on('error', () => { /* a failed start is answered below, or found by the next caller */ });
     child.unref();
-    return { started: typeof child.pid === 'number' };
+    return typeof child.pid === 'number' ? { started: true, pid: child.pid } : { started: false };
   } catch {
     return { started: false };
   }
@@ -92,7 +94,7 @@ const winSpawnDetached: DetachedSpawn = (command, args, opts) => {
   }
   const application = Buffer.from(`${command}\0`, 'utf16le');
   const cwd = Buffer.from(`${opts.cwd}\0`, 'utf16le');
-  const attempt = (flags: number): { ok: boolean; error: number } => {
+  const attempt = (flags: number): { ok: boolean; error: number; pid?: number } => {
     // CreateProcessW may write into the command line, so each attempt gets a buffer of its own. Every buffer is held
     // in a local across the call: `ptr()` is a plain address, and a buffer collected before the call returns is a
     // dangling one.
@@ -105,14 +107,15 @@ const winSpawnDetached: DetachedSpawn = (command, args, opts) => {
     const view = new DataView(info.buffer);
     api.CloseHandle(view.getBigUint64(0, true));
     api.CloseHandle(view.getBigUint64(8, true));
-    return { ok: true, error: 0 };
+    // PROCESS_INFORMATION: hProcess, hThread, then dwProcessId.
+    return { ok: true, error: 0, pid: view.getUint32(16, true) };
   };
   const base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
   const free = attempt(base | CREATE_BREAKAWAY_FROM_JOB);
-  if (free.ok) return { started: true };
+  if (free.ok) return { started: true, pid: free.pid };
   if (free.error !== ERROR_ACCESS_DENIED) return { started: false };
   const inJob = attempt(base);
-  return inJob.ok ? { started: true, contained: true } : { started: false };
+  return inJob.ok ? { started: true, pid: inJob.pid, contained: true } : { started: false };
 };
 
 export const spawnDetached: DetachedSpawn = process.platform === 'win32' ? winSpawnDetached : posixSpawnDetached;

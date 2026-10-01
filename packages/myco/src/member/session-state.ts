@@ -61,6 +61,8 @@ export interface SessionState {
    * reaches the file's end, so no mark is deleted before it is read.
    */
   markWater?: number;
+  /** The generation of the marks file `markWater` counts in; a file of another generation is read from its start. */
+  markGeneration?: string;
   /**
    * Set once the event lane is past one of the session's `session.start` records, delivered or dropped for good. A
    * transcript waits for the session's start only until then: a start a later resume, compaction or clear writes is

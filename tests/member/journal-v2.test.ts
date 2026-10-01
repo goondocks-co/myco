@@ -69,7 +69,8 @@ describe('the journal, format 2', () => {
     expect(lines[0]!._memberProtocol).toBe(MEMBER_PROTOCOL);
     const [pending] = spool.pendingTurnEnds('sess-stamp');
     expect(isTurnEndMark(pending.mark)).toBe(true);
-    expect(pending).toMatchObject({ line: 0, mark: { t: 'te', _journal: JOURNAL_VERSION, slot: 'primary', atSize: 10, at: 1_234 } });
+    // Line 0 is the file's generation; the first mark is line 1.
+    expect(pending).toMatchObject({ generation: expect.stringMatching(/^[0-9a-f]{16}$/), line: 1, mark: { t: 'te', _journal: JOURNAL_VERSION, slot: 'primary', atSize: 10, at: 1_234 } });
     // Owner-only where the mode means anything; Windows reports none (#1550).
     if (process.platform !== 'win32') expect(fs.statSync(turnsFileOf(spool.dir, 'sess-stamp')).mode & 0o777).toBe(0o600);
     // Every build finds journals by listing `*.jsonl`: the marks file is never taken for a session's journal.
@@ -89,14 +90,15 @@ describe('the journal, format 2', () => {
     expect(drained).toMatchObject({ acked: 2, refused: 0, endedBy: 'drained' });
     expect(fs.existsSync(journal(spool, 'sess-mark'))).toBe(false);
     const pending = spool.pendingTurnEnds('sess-mark');
-    expect(pending.map((p) => p.line)).toEqual([0]);
+    expect(pending.map((p) => p.line)).toEqual([1]);
 
     // A mark appended after the consumer read is kept: the file goes only once every line in it is consumed.
     spool.appendTurnEnd('sess-mark', { slot: 'primary', transcriptId: 'tx_' + 'b'.repeat(32), atSize: 9 });
-    spool.consumeTurnEnds('sess-mark', pending[0].line);
-    expect(spool.pendingTurnEnds('sess-mark').map((p) => p.mark.atSize)).toEqual([9]);
-    expect(readSessionState(spool.dir, 'sess-mark').markWater).toBe(1);
-    spool.consumeTurnEnds('sess-mark', 1);
+    spool.consumeTurnEnds('sess-mark', pending[0]);
+    const later = spool.pendingTurnEnds('sess-mark');
+    expect(later.map((p) => p.mark.atSize)).toEqual([9]);
+    expect(readSessionState(spool.dir, 'sess-mark').markWater).toBe(2);
+    spool.consumeTurnEnds('sess-mark', later[0]);
     expect(spool.pendingTurnEnds('sess-mark')).toEqual([]);
     expect(fs.existsSync(turnsFileOf(spool.dir, 'sess-mark'))).toBe(false);
     expect(readSessionState(spool.dir, 'sess-mark')).toMatchObject({ highWater: 0, markWater: 0 });
@@ -119,6 +121,60 @@ describe('the journal, format 2', () => {
     for (const id of listBufferSessionIds(spool.dir)) fs.unlinkSync(path.join(spool.dir, `${id}.jsonl`));
     // The mark is still there to be read once this build is back.
     expect(spool.pendingTurnEnds('sess-rollback').map((p) => p.mark)).toEqual([expect.objectContaining({ t: 'te', atSize: 7 })]);
+  });
+
+  it('never lets a consumer holding an older marks file\'s place consume a newer file\'s mark', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'e'.repeat(32), atSize });
+    spool.appendTurnEnd('sess-stale', mark(1));
+    // Two consumers read the same mark; the first consumes it, and the file goes.
+    const [held] = spool.pendingTurnEnds('sess-stale');
+    spool.consumeTurnEnds('sess-stale', spool.pendingTurnEnds('sess-stale')[0]);
+    expect(fs.existsSync(turnsFileOf(spool.dir, 'sess-stale'))).toBe(false);
+    // A new turn's mark lands in a new file, at the same line the old one stood at.
+    spool.appendTurnEnd('sess-stale', mark(2));
+    const [fresh] = spool.pendingTurnEnds('sess-stale');
+    expect(fresh.line).toBe(held.line);
+    expect(fresh.generation).not.toBe(held.generation);
+    // The slow consumer acts on the old place: it consumes nothing of the new file.
+    spool.consumeTurnEnds('sess-stale', held);
+    expect(spool.pendingTurnEnds('sess-stale').map((p) => p.mark.atSize)).toEqual([2]);
+  });
+
+  it('counts nothing in a new marks file with the count kept for one that went some other way', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'g'.repeat(32), atSize });
+    for (const size of [1, 2, 3]) spool.appendTurnEnd('sess-gone', mark(size));
+    spool.consumeTurnEnds('sess-gone', spool.pendingTurnEnds('sess-gone')[1]);
+    expect(readSessionState(spool.dir, 'sess-gone').markWater).toBe(3);
+    // The file goes without the count being reset (removed by hand, or by a tool that knows nothing of the count).
+    fs.unlinkSync(turnsFileOf(spool.dir, 'sess-gone'));
+    spool.appendTurnEnd('sess-gone', mark(4));
+    spool.appendTurnEnd('sess-gone', mark(5));
+    expect(spool.pendingTurnEnds('sess-gone').map((p) => p.mark.atSize)).toEqual([4, 5]);
+  });
+
+  it('keeps every mark when a consume is cut off part-way, and its next marks file is read from the start', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'f'.repeat(32), atSize });
+    spool.appendTurnEnd('sess-cut', mark(1));
+    const [first] = spool.pendingTurnEnds('sess-cut');
+    // The process dies writing the session's state: the write is cut off there, whatever came before it stands.
+    const realRename = fs.renameSync;
+    fs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to).endsWith(`${'sess-cut'}.state.json`)) throw new Error('killed while writing the state');
+      return realRename(from, to);
+    }) as typeof fs.renameSync;
+    try {
+      expect(() => spool.consumeTurnEnds('sess-cut', first)).toThrow('killed while writing the state');
+    } finally {
+      fs.renameSync = realRename;
+    }
+    // Nothing the cut-off consume did not record is gone: the mark is read again, which is harmless.
+    expect(fs.existsSync(turnsFileOf(spool.dir, 'sess-cut'))).toBe(true);
+    expect(spool.pendingTurnEnds('sess-cut').map((p) => p.mark.atSize)).toEqual([1]);
+    spool.appendTurnEnd('sess-cut', mark(2));
+    expect(spool.pendingTurnEnds('sess-cut').map((p) => p.mark.atSize)).toEqual([1, 2]);
   });
 
   it('loses only a line a write cut off, never the record after it, and still deletes the journal once delivered (G4a)', async () => {

@@ -1,11 +1,13 @@
 /**
- * Gate G4b (#1561 PR 3a): a helper killed part-way through a request loses nothing and duplicates nothing.
+ * Gate G4b: a helper killed part-way through a request loses nothing and sends nothing twice but that request.
  *
  * A real `myco member helper` process ships a session over loopback to a test Deployment. When the request named by
  * the case arrives (an event, a blob upload, or a transcript segment), the helper is killed with SIGKILL while the
  * Deployment still holds the request; the Deployment then applies it anyway, as a server does when its client dies
  * after sending. The operating system releases the helper's lock, and the next helper finishes the work: every
- * event is held once, and the transcript's segments meet end to end and cover the file, none sent twice over. POSIX only: the Windows
+ * event is held, and the transcript's segments meet end to end and cover the file. The Deployment keeps one row per
+ * event id whatever it is sent, so the test counts what was sent: every event and every segment offset reaches it
+ * once, except the one request the kill cut off, sent at most once more. POSIX only: the Windows
  * start is covered by `tests/runtime/spawn-detached.test.ts`.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -43,14 +45,19 @@ afterEach(() => {
 
 type KillAt = 'event' | 'blob' | 'segment';
 
-/** What a request to the Deployment carries: a blob upload, a transcript segment, another event, or neither. */
-async function requestKind(req: Request): Promise<KillAt | null> {
+/**
+ * What a request to the Deployment carries, and what names it across resends: a blob upload (its digest), a
+ * transcript segment (its transcript and offset: a resent segment is a new event), another event (its id), or none.
+ */
+async function requestOf(req: Request): Promise<{ kind: KillAt; key: string } | null> {
   const { pathname } = new URL(req.url);
   if (req.method !== 'POST') return null;
-  if (pathname.startsWith('/blobs/')) return 'blob';
+  if (pathname.startsWith('/blobs/')) return { kind: 'blob', key: pathname };
   if (pathname !== '/events') return null;
-  const body = JSON.parse(await req.clone().text()) as { kind?: string };
-  return body.kind === 'transcript.segment' ? 'segment' : 'event';
+  const body = JSON.parse(await req.clone().text()) as { kind?: string; eventId?: string; payload?: { transcriptId?: string; baseOffset?: number } };
+  return body.kind === 'transcript.segment'
+    ? { kind: 'segment', key: `segment ${body.payload?.transcriptId}@${body.payload?.baseOffset}` }
+    : { kind: 'event', key: `event ${body.eventId}` };
 }
 
 describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)', () => {
@@ -61,11 +68,16 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
       const stalled = new Promise<void>((resolve) => { arrived = resolve; });
       let seen = 0;
       let killing = true;
+      let cutOff: string | null = null;
+      const sends = new Map<string, number>();
       const server = Bun.serve({
         hostname: '127.0.0.1',
         port: 0,
         async fetch(req) {
-          if (killing && (await requestKind(req)) === at && ++seen === (at === 'segment' ? 1 : 2)) {
+          const request = await requestOf(req);
+          if (request !== null) sends.set(request.key, (sends.get(request.key) ?? 0) + 1);
+          if (killing && request?.kind === at && ++seen === (at === 'segment' ? 1 : 2)) {
+            cutOff = request.key;
             arrived();
             // Held until the helper is dead, then applied: the client never reads the answer.
             await sleep(1_000);
@@ -124,6 +136,11 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
           next += segment.length;
         }
         expect(next).toBe(fs.statSync(tx).size);
+        // Nothing was sent twice but the request the kill cut off, and that one at most once more.
+        expect(cutOff).not.toBeNull();
+        const resent = [...sends].filter(([key, n]) => n > 1 && !key.startsWith('/blobs/'));
+        expect(resent.filter(([key]) => key !== cutOff)).toEqual([]);
+        expect(sends.get(cutOff!) ?? 0).toBeLessThanOrEqual(2);
         expect(fs.existsSync(path.join(spool.dir, `${SESSION}.jsonl`))).toBe(false);
         fs.rmSync(path.dirname(tx), { recursive: true, force: true });
         fs.rmSync(cwd, { recursive: true, force: true });
