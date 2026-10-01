@@ -196,7 +196,7 @@ jobs:
           name: libsqlite3-${{ matrix.target }}
           path: packages/myco/vendor-src/libsqlite3/${{ matrix.target }}/
 
-      # Build both dashboards before codegen embeds them in the binary.
+      # Build the Deployment dashboard before codegen embeds it in the binary.
       - run: npm run build:ui -w @goondocks/myco
 
       - run: npm run codegen -w @goondocks/myco
@@ -235,11 +235,8 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            packages/myco/ui/package-lock.json
 
       - run: npm ci
-      - name: Install myco UI deps
-        run: npm ci --prefix packages/myco/ui
       - name: Sync target package versions from tag
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
@@ -290,10 +287,6 @@ jobs:
             cp -R "$dir"/. "$destdir/"
           done
           rm -rf "$STAGING"
-
-      - name: Build myco UI
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
-        run: npm run build:ui -w @goondocks/myco
 
       # Verify every platform binary landed before packing.
       - name: Verify platform binaries

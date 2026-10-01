@@ -17,6 +17,7 @@ release_provenance:
   package_map:
     - path_glob: packages/myco/
       tag_pattern: refs/tags/myco/v*
+    # packages/myco-team left the repository; this entry classifies its past releases.
     - path_glob: packages/myco-team/
       tag_pattern: refs/tags/myco-team/v*
     - path_glob: packages/myco-shared/

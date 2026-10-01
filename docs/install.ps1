@@ -352,10 +352,11 @@ Write-Host ""
 Write-Host "Myco installed to $Exe" -ForegroundColor Green
 Write-Host ""
 if ($ServiceOk) {
-    Write-Host "  Open the dashboard to confirm setup and configure intelligence providers:"
+    Write-Host "  Next, sign this machine in with the invite link an admin gave you:"
     Write-Host ""
-    Write-Host "    myco open"
-    Write-Host "    http://localhost:20915/"
+    Write-Host "    myco login <link>"
+    Write-Host ""
+    Write-Host "  Or run your own Deployment with: myco server create"
 } else {
     Write-Host "  Could not start the Myco service automatically. Bring it up with:" -ForegroundColor Yellow
     Write-Host ""

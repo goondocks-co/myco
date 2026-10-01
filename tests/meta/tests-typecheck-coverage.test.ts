@@ -52,8 +52,7 @@ const TYPED_INSIDE_A_DEFERRED_TREE = [
 /**
  * Trees and files the UI packages' own configs typecheck: they are built
  * against the React and jsdom types under each package's own `ui` directory,
- * which this program does not load. The `typecheck:ui` and `check:ui` scripts
- * cover them.
+ * which this program does not load. The `check:ui` script covers them.
  */
 const TYPED_BY_THE_UI_CONFIGS = [
   'myco-server-ui',

@@ -30,13 +30,13 @@ jobs:
           fetch-tags: true
       - uses: ./.github/actions/ci-setup
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
-      - name: Standalone dashboards match committed bundles without shared build artifacts
+      - name: The standalone dashboard matches its committed bundle without shared build artifacts
         run: |
           test ! -d packages/myco-shared/dist
-          npm run build:ui -w @goondocks/myco
           npm run build:ui -w @goondocks/myco-server
+          rm packages/myco/src/server-ui-assets.generated.ts
           npx tsx packages/myco/scripts/gen-ui-assets.ts
-          git diff --exit-code -- packages/myco/src/ui-assets.generated.ts packages/myco/src/server-ui-assets.generated.ts
+          git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
       - name: Build from a clean checkout
         run: |
           test -z "$(git status --porcelain)"

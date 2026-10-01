@@ -602,8 +602,6 @@ export const HOST_SERVE_BEARER_SECRET = 'MYCO_HOST_SERVE_BEARER';
  * default) so `probeProviderAvailable`/`missingKeyReason` actually read it. A
  * key stored under this transport name instead would never be found by a real
  * dispatch (Task 8's cross-task invariant, fixing exactly that hazard).
- * Distinct from the legacy Team-Sync {@link TEAM_API_KEY_SECRET}, which
- * lives in the team-sync registry's own store, not a Grove.
  */
 export const TEAM_AGENT_KEY_SECRET = 'MYCO_TEAM_AGENT_KEY';
 /**
@@ -673,11 +671,8 @@ export const HOSTED_PROJECT_PRUNE_TTL_MS = 14 * MS_PER_DAY;
  * Wire protocol for member-daemon ↔ host-daemon overlay traffic. Bump on any
  * breaking change to the proxied request/response contract or tenancy headers.
  *
- * Distinct from {@link SYNC_PROTOCOL_VERSION}: team-sync (D1 replica) and
- * team-host (live daemon overlay) are independent wire contracts. The pair
- * `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]` is the inclusive window a
- * member accepts from a host, mirroring the sync
- * `[MIN_COMPAT_CLIENT_VERSION, SYNC_PROTOCOL_VERSION]` discipline.
+ * The pair `[HOST_MIN_COMPAT_VERSION, HOST_PROTOCOL_VERSION]` is the inclusive
+ * window a member accepts from a host.
  *
  * History:
  *   - v1: base overlay contract (proxied capture/serve + tenancy headers).

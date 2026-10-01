@@ -1,101 +1,58 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { vi } from '../helpers/vi-shim.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-
 /**
- * `myco open` targets the GLOBAL daemon dashboard, so it must resolve the
- * daemon port without any project/Grove context. Regression: a fresh host
- * whose MYCO_HOME has no project manifest must still open the dashboard
- * rather than throw "No Grove project id available for vault ~/.myco" — the
- * failure that surfaced when `open` routed through the tenant-scoped
- * `connectToDaemon`.
+ * `myco open` opens a Deployment's dashboard: the one the current repository joined, else this machine's default.
+ * With neither it opens nothing, never the retired 1.4 daemon, and says how to join one.
  */
-const { fakeProbe, openState } = vi.hoisted(() => {
-  const fakeProbe: { result: { myco: boolean } | null; calls: number[] } = {
-    result: { myco: true },
-    calls: [],
-  };
-  const openState: { urls: string[] } = { urls: [] };
-  return { fakeProbe, openState };
-});
-
-mock.module('@myco/cli/open-browser.js', () => ({
-  openBrowser: (url: string) => {
-    openState.urls.push(url);
-  },
-}));
-
-mock.module('@myco/daemon/eviction.js', () => ({
-  probeMycoDaemon: async (port: number) => {
-    fakeProbe.calls.push(port);
-    return fakeProbe.result;
-  },
-}));
+import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { run } from '@myco/cli/open.js';
-import { writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
-import { resolveGlobalDaemonPort } from '@myco/daemon/service-state.js';
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { JOIN_A_DEPLOYMENT } from '@myco/member/join-guidance.js';
+import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
-describe('myco open targets the global daemon without a project context', () => {
-  let testDir: string;
-  let originalHome: string | undefined;
+function scratch(): { home: string; root: string; outside: string } {
+  const dir = removeWhenTestsEnd(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-open-'))));
+  const root = path.join(dir, 'repo');
+  const outside = path.join(dir, 'elsewhere');
+  fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(outside, '.git'), { recursive: true });
+  return { home: path.join(dir, '.home'), root, outside };
+}
 
-  beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-open-'));
-    originalHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = path.join(testDir, '.home');
-    // A service dir but NO project manifest — the fresh-host shape that used
-    // to make `connectToDaemon` throw the Grove-id error.
-    fs.mkdirSync(path.join(process.env.MYCO_HOME, 'service'), { recursive: true });
-    fakeProbe.result = { myco: true };
-    fakeProbe.calls = [];
-    openState.urls = [];
-  });
+const join = (home: string, root: string, serverUrl: string): void => {
+  writeRegistryEntry({
+    version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl, token: 'mt_' + 'a'.repeat(40),
+    root, machineId: 'machine_1', joinedAt: 0, updatedAt: 0,
+  }, { mycoHome: home });
+};
 
-  afterEach(() => {
-    if (originalHome === undefined) delete process.env.MYCO_HOME;
-    else process.env.MYCO_HOME = originalHome;
-    fs.rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it('opens the dashboard on the global daemon port — no project manifest required', async () => {
-    const expectedPort = resolveGlobalDaemonPort();
-
-    await run([]);
-
-    // Probed the global port (context-free) and opened that exact URL.
-    expect(fakeProbe.calls).toEqual([expectedPort]);
-    expect(openState.urls).toEqual([`http://localhost:${expectedPort}/`]);
-  });
-
-  it('opens the Deployment dashboard for a root that has joined one, without probing the local daemon', async () => {
-    const root = path.join(testDir, 'repo');
-    fs.mkdirSync(path.join(root, '.git'), { recursive: true });
-    writeRegistryEntry({
-      version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: 'https://deployment.example/', token: 'mt_' + 'a'.repeat(40),
-      root, machineId: 'machine_1', joinedAt: 0, updatedAt: 0,
-    }, { mycoHome: process.env.MYCO_HOME });
+describe('myco open', () => {
+  it('opens the Deployment the repository joined', async () => {
+    const { home, root } = scratch();
+    join(home, root, 'https://deployment.example/');
     const opened: string[] = [];
-
-    await run([], { cwd: root, mycoHome: process.env.MYCO_HOME, openBrowser: (url) => opened.push(url) });
-
+    expect(await run([], { cwd: root, mycoHome: home, openBrowser: (url) => opened.push(url) })).toBe(true);
     expect(opened).toEqual(['https://deployment.example/']);
-    expect(fakeProbe.calls).toEqual([]);
   });
 
-  it('exits with an install hint when no daemon answers — does not open a dead URL', async () => {
-    fakeProbe.result = null;
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => {
-      throw new Error('__exit__');
-    }) as never);
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  it("opens this machine's default Deployment from a repository with no connection of its own", async () => {
+    const { home, root, outside } = scratch();
+    join(home, root, 'https://default.example');
+    recordDefaultDeployment('https://default.example', { mycoHome: home });
+    const opened: string[] = [];
+    expect(await run([], { cwd: outside, mycoHome: home, openBrowser: (url) => opened.push(url) })).toBe(true);
+    expect(opened).toEqual(['https://default.example/']);
+  });
 
-    await expect(run([])).rejects.toThrow('__exit__');
-    expect(openState.urls).toEqual([]);
-
-    exitSpy.mockRestore();
-    errSpy.mockRestore();
+  it('opens nothing with no Deployment, and says how to join one', async () => {
+    const { home, root } = scratch();
+    const opened: string[] = [];
+    const said: string[] = [];
+    expect(await run([], { cwd: root, mycoHome: home, openBrowser: (url) => opened.push(url), stderr: (line) => said.push(line) })).toBe(false);
+    expect(opened).toEqual([]);
+    expect(said).toEqual([`This machine has not joined a Deployment, so there is no dashboard to open. ${JOIN_A_DEPLOYMENT}`]);
   });
 });

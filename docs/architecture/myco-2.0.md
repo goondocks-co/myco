@@ -380,7 +380,9 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 
 **First administrator.** `myco server setup-owner --target local` holds the stopped native volume and issues an expiring GitHub account-link authority for its first administrator. Its member, setup receipt and link commit together. Retry replaces only the pending link; an existing or linked membership refuses setup. After connecting the account in the dashboard, the administrator invites a runtime through Members and the machine joins with `myco login`. Native first-use acceptance is tracked in **#1307**; Cloudflare first-owner setup remains required-target acceptance under **#1163**. `myco worker` (**#1151**) and `myco import` (**#1148**) take their rows above.
 
-### 7.2 Dashboard routes — `packages/myco/ui/src/App.tsx`
+### 7.2 Dashboard routes — `packages/myco/ui/src/App.tsx` (retired)
+
+The 1.4 dashboard is deleted (#1170 P2), and its rows below are the record of what became of each page.
 
 The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`). 2.0 is **project-first within one Deployment**, so every Grove-scoped and machine-scoped path drops as a *URL shape* even where the *page* is kept — the page's disposition is what the row records, and the redirect chains that exist only to forward 1.4 bookmarks drop with them.
 
@@ -389,8 +391,8 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/` | KEEP | UI, Core | Blk | Today: the day's sessions and Myco's work across every project, with Needs you and Capture beside it (#1518) | #918 |
 | `/onboarding` | REPLACE | UI | Blk | 1.4 onboards a local install; 2.0 onboards a member and a first Project | #918 |
 | `/g/:groveSlug/p/:projectSlug` | REPLACE | UI | Blk | Project dashboard at a Deployment-relative project path; the Grove segment goes | #918 |
-| `sessions` | KEEP | UI, Core | Blk | Read API shipped (#904); UI in #918 | #918 |
-| `sessions/:id` | KEEP | UI, Core | Blk | Session detail — facts, children, transcript | #918 |
+| `sessions` | REPLACE | UI, Core | Blk | A project's sessions table at `/p/:projectId/sessions`, and every project's at `/sessions` | #1518 |
+| `sessions/:id` | REPLACE | UI, Core | Blk | A session's reading page at `/p/:projectId/sessions/:sessionId`: its turns, plans and the raw data at its foot | #1518 |
 | `cortex` | DROP | — | Blk | **Dropped by #1162**: the page does not port. Its one surviving control is the `instructions.template` Settings field (§7.8); the digest and the code map keep their artifacts and their server routes until #1170 sweeps them, with both losses recorded there | #1162 |
 | `skills` | DROP | — | Blk | **Dropped by #1162**: with the generation pipeline going and skills hand-written in the plugins, the page has nothing to curate, and `myco_skills` answers from the catalogue Myco ships rather than from rows (#1156). A search hit of type `skill` therefore has no page and is rendered without a link. The candidate queue and the skills tables go with the pipeline in #1170 | #1162 |
 | `agent` | REPLACE | UI, Core | Blk | `agent_runs` is rows, not files. Replaced by a project's Myco's work at `/p/:projectId/work`, where the moved address `/p/:projectId/runs` leads: each outcome's runs with their close evidence; the 1.4 page is not ported (plan §2.8) | #1162 |
@@ -922,7 +924,7 @@ Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-p
 
 A ledger with no gate goes stale the first time someone adds a CLI command.
 
-`tests/meta/feature-ledger-completeness.test.ts` scans the registries that define the surface and asserts that **every token appears in a §7 table with both a disposition and an owning surface**, failing by name when either is missing. The 1.4 registries are the CLI dispatch in `packages/myco/src/cli.ts`, the routes in `packages/myco/ui/src/App.tsx`, the `TOOL_*` constants in `packages/myco/src/tools/definitions.ts`, the task YAML filenames, the `POWER_JOB_NAMES` values, and the 1.4 config schema's declared leaves; 2.0's are the dashboard's route table (`packages/myco-server/ui/src/routes/table.tsx`), the retained tasks, the task schedule, the server's tick jobs, and the Deployment's and a machine's settings leaves; the data classes are every `CREATE TABLE` under each package's `src/db/`.
+`tests/meta/feature-ledger-completeness.test.ts` scans the registries that define the surface and asserts that **every token appears in a §7 table with both a disposition and an owning surface**, failing by name when either is missing. The 1.4 registries are the CLI dispatch in `packages/myco/src/cli.ts`, the routes in `packages/myco/ui/src/App.tsx` (retired with that dashboard, its rows kept as the record), the `TOOL_*` constants in `packages/myco/src/tools/definitions.ts`, the task YAML filenames, the `POWER_JOB_NAMES` values, and the 1.4 config schema's declared leaves; 2.0's are the dashboard's route table (`packages/myco-server/ui/src/routes/table.tsx`), the retained tasks, the task schedule, the server's tick jobs, and the Deployment's and a machine's settings leaves; the data classes are every `CREATE TABLE` under each package's `src/db/`.
 
 Each registry owns a §7 section, and its tokens are looked up there alone. The check runs both ways: every KEEP or NEW row in a section a live registry owns must be a token one of its registries produces, so a kept capability whose code is deleted fails by name, and every section the ledger parses must be owned by a registry.
 

@@ -1,7 +1,7 @@
 /**
- * Both dashboards reach the compiled binary as bytes.
+ * The Deployment's dashboard reaches the compiled binary as bytes.
  *
- * The binary ships without an adjacent build tree, so each dashboard travels as
+ * The binary ships without an adjacent build tree, so the dashboard travels as
  * a generated module of base64 files. An empty module compiles, links, and
  * serves nothing — a blank page at every route, with every other build step
  * green. The generator refuses to write one; this refuses to ship one that was
@@ -17,15 +17,13 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { emitBundle, type UiBundle } from '@myco/../scripts/gen-ui-assets.js';
-import { BUNDLED_UI } from '@myco/ui-assets.generated.js';
 import { BUNDLED_SERVER_UI } from '@myco/server-ui-assets.generated.js';
 
 const BUNDLES: Array<[string, Readonly<Record<string, string>>]> = [
-  ['member dashboard', BUNDLED_UI],
   ['Deployment dashboard', BUNDLED_SERVER_UI],
 ];
 
-describe('the dashboards a compiled binary carries', () => {
+describe('the dashboard a compiled binary carries', () => {
   for (const [name, bundle] of BUNDLES) {
     it(`embeds the ${name} with a shell and its assets`, () => {
       const keys = Object.keys(bundle);
@@ -79,9 +77,8 @@ describe('the generator that embeds a dashboard', () => {
     mkdirSync(join(server, 'dist'), { recursive: true });
     writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
     writeFileSync(join(member, 'package.json'), JSON.stringify({ name: '@goondocks/myco', scripts: {
-      'build:ui': scripts['build:ui'], 'build:ui:member': 'node build.cjs',
+      'build:ui': scripts['build:ui'],
     } }));
-    writeFileSync(join(member, 'build.cjs'), '');
     writeFileSync(join(server, 'package.json'), JSON.stringify({ name: '@goondocks/myco-server', scripts: { 'build:ui': 'node build.cjs' } }));
     writeFileSync(join(server, 'build.cjs'), "require('node:fs').copyFileSync('source.html', 'dist/index.html');");
     writeFileSync(join(server, 'source.html'), '<html>updated source</html>');

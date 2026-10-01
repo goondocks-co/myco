@@ -299,9 +299,10 @@ async function main(): Promise<void> {
   if (cmd === 'upgrade') return (await import('./cli/upgrade.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
 
-  // open and restart target the global daemon and require no project myco.yaml.
+  // open reads the member registry, and restart targets the global daemon; neither requires a project myco.yaml.
   if (cmd === 'open') {
-    return (await import('./cli/open.js')).run(args);
+    if (!await (await import('./cli/open.js')).run(args)) process.exitCode = 1;
+    return;
   }
   if (cmd === 'restart') {
     const vaultDir = resolveVaultDir();

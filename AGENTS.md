@@ -86,7 +86,7 @@ The surface each actor touches is fixed:
 | **MCP tools** (`packages/myco/src/tools/` declares; `packages/myco-server/src/mcp/` serves) | Symbionts | Read project intelligence and record spores and plans. No administrative ops. |
 | **Skills** (`packages/myco/skills/` built-in + vault-generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
 | **CLI** (`packages/myco/src/cli/`) | Users (primary) and Symbionts (via skills) | Bootstrap + admin. |
-| **UI** (`packages/myco/ui/`) | Users | Primary interface for ongoing work. |
+| **UI** (`packages/myco-server/ui/`) | Users | Primary interface for ongoing work. |
 | **Run tools** (`packages/myco-server/src/mcp/run-surface.ts`) | Myco agent | A run's allowlist from `TASK_TOOLS` in the task catalogue; writes attributed to the run. Two sets: the catalogued tools where a run's work is a member's work, and run-only tools (`mcp/run-definitions.ts`) for the run's own bounded reads, state and cursor — never in `SERVED_TOOLS`, never on the member side. A run's prompt and its instructions file are the Deployment's (`core/task-inputs.ts`); `packages/myco/src/agent/` is the 1.4 executor awaiting the sweep and nothing in the server or in `config/` imports it (`tests/meta/agent-tree-import-boundary.test.ts`). |
 
 **Non-rules** (these are violations to push back on):

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 // The script is guarded by an is-main check (argv[1] vs import.meta.url), so
-// importing it MUST NOT run codegen against the real dist/ui. If that guard
-// regresses, this import would rewrite src/ui-assets.generated.ts mid-test.
+// importing it MUST NOT run codegen against the real dashboard build. If that
+// guard regresses, this import would rewrite src/server-ui-assets.generated.ts mid-test.
 import { findStaleAssets } from '../../packages/myco/scripts/gen-ui-assets';
 
 interface Fixture {

@@ -3,7 +3,8 @@
  *
  * A record changed inside `packages/myco-team/` should classify against
  * `myco-team-v*` rather than the umbrella `v*` tags — otherwise an unrelated
- * shipped tag silently marks worker-only work "released."
+ * shipped tag silently marks worker-only work "released." That package has left
+ * the repository; the mapping classifies its past releases.
  *
  * When changed paths span multiple package buckets (or none), we prefer
  * uncertainty over false precision and return null — the caller falls back

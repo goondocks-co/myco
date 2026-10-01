@@ -24,7 +24,6 @@ COPY packages/myco-darwin-arm64/package.json packages/myco-darwin-arm64/
 COPY packages/myco-darwin-x64/package.json packages/myco-darwin-x64/
 COPY packages/myco-linux-arm64/package.json packages/myco-linux-arm64/
 COPY packages/myco-linux-x64/package.json packages/myco-linux-x64/
-COPY packages/myco-member/package.json packages/myco-member/
 COPY packages/myco-server/package.json packages/myco-server/
 COPY packages/myco-shared/package.json packages/myco-shared/
 COPY packages/myco-windows-x64/package.json packages/myco-windows-x64/

@@ -1,7 +1,7 @@
 import { openBrowser } from './open-browser.js';
-import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
-import { probeMycoDaemon } from '../daemon/eviction.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
+import { defaultMembership } from '../member/default-deployment.js';
+import { JOIN_A_DEPLOYMENT } from '../member/join-guidance.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { resolveMycoHome } from '../paths/home.js';
 
@@ -9,38 +9,28 @@ export interface OpenDeps {
   cwd?: string;
   mycoHome?: string;
   openBrowser?: (url: string) => void;
-}
-
-/** The dashboard URL for the current root's Deployment, or null when this root has no membership. */
-export function deploymentDashboardUrl(deps: OpenDeps = {}): string | null {
-  const entry = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), deps.mycoHome ?? resolveMycoHome());
-  return entry === null ? null : `${entry.serverUrl.replace(/\/+$/, '')}/`;
+  stderr?: (line: string) => void;
 }
 
 /**
- * Opens the dashboard. A root that has joined a Deployment opens that
- * Deployment's dashboard; a root without a membership opens the local daemon's
- * dashboard, which remains until the local paths retire.
+ * The dashboard URL to open: the Deployment the current root has joined, else this machine's default Deployment, or
+ * null when this machine holds neither.
  */
-export async function run(_args: string[], deps: OpenDeps = {}): Promise<void> {
-  const open = deps.openBrowser ?? openBrowser;
-  const deployment = deploymentDashboardUrl(deps);
-  if (deployment !== null) {
-    open(deployment);
-    console.log(`Opened ${deployment}`);
-    return;
+export function deploymentDashboardUrl(deps: OpenDeps = {}): string | null {
+  const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const entry = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), mycoHome);
+  const serverUrl = entry?.serverUrl ?? defaultMembership(mycoHome)?.serverUrl;
+  return serverUrl === undefined ? null : `${serverUrl.replace(/\/+$/, '')}/`;
+}
+
+/** Opens the Deployment's dashboard, and whether it did. With no Deployment to open, prints how to join one and opens nothing. */
+export async function run(_args: string[], deps: OpenDeps = {}): Promise<boolean> {
+  const url = deploymentDashboardUrl(deps);
+  if (url === null) {
+    (deps.stderr ?? ((line: string) => console.error(line)))(`This machine has not joined a Deployment, so there is no dashboard to open. ${JOIN_A_DEPLOYMENT}`);
+    return false;
   }
-
-  const port = resolveGlobalDaemonPort();
-
-  if (!(await probeMycoDaemon(port))) {
-    console.error(
-      `No Myco daemon is answering on port ${port}. Install the platform service with: myco service install`,
-    );
-    process.exit(1);
-  }
-
-  const url = `http://localhost:${port}/`;
-  open(url);
+  (deps.openBrowser ?? openBrowser)(url);
   console.log(`Opened ${url}`);
+  return true;
 }

@@ -28,7 +28,6 @@ const PACKAGE_TARGETS = [
     files: [
       'package.json',
       'packages/myco/package.json',
-      'packages/myco/ui/package.json',
       'packages/myco-darwin-arm64/package.json',
       'packages/myco-darwin-x64/package.json',
       'packages/myco-linux-x64/package.json',

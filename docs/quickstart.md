@@ -26,7 +26,6 @@ When you're ready to enable intelligence features, you'll need:
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
-myco open
 ```
 
 On Windows x64 (PowerShell, beta):
@@ -104,13 +103,11 @@ You don't need to drive the loop manually. Myco captures knowledge in the backgr
 
 ## Dashboard
 
-Myco includes a local web dashboard for configuration and operations management. After the service starts, open it with:
+The dashboard is served by your Deployment, not by the local install. Sign this machine in with the invite link an admin gave you (`myco login <link>`), or run your own Deployment with `myco server create`. Then open the dashboard from any project that has joined it:
 
 ```bash
 myco open
 ```
-
-You can also open the dashboard directly at [http://localhost:20915/](http://localhost:20915/). If your local install reports a different service URL, `myco open` will open the right one.
 
 The dashboard lets you:
 
