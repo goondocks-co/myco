@@ -46,18 +46,18 @@ const BAD_BODY = refusal('body is not an object', 'parse');
 
 /**
  * Open the session's turn, past the answer: the prompt asking for context is the turn's start, and the answer never
- * waits on the write. It is registered before anything is composed, so a compose that is slow, fails, or is cut off by
- * a client that stopped waiting still leaves the turn open: the deferral outlives the request on both targets. The
- * write itself waits one turn of the event loop, so on the self-hosted target, where deferred work starts at once, it
- * does not run ahead of the answer's own statements. A write that fails, or cannot be deferred, is reported and leaves
- * the answer as it is; the session then reads as working only while its receipts are recent.
+ * waits on the write. It is registered before anything is composed, so a compose that is slow, fails, or is cut off
+ * by a client that stopped waiting still leaves the turn open: the deferral outlives the request on both targets.
+ * Nothing the answer does waits on it: on the hosted target the write runs beside the compose, and on the
+ * self-hosted target, where deferred work starts at once, it is one keyed UPDATE ahead of the compose's reads. A
+ * write that fails, or cannot be deferred, is reported and leaves the answer as it is; the session then reads as
+ * working only while its receipts are recent.
  */
 export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: string, promptId: string): void {
   const unrecorded = (err: unknown) => emit({ kind: 'turn_start_unrecorded', projectId: ctx.projectId, tokenId: ctx.tokenId, error: classify(err) });
   try {
     env.afterResponse(async () => {
       try {
-        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
         const at = turnStartedAt(promptId, ctx.now);
         if (at !== null) await startTurnStatement(env.db, { projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at }).run();
       } catch (err) {

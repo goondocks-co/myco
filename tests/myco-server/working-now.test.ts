@@ -285,7 +285,7 @@ describe('a session working now', () => {
     expect((sqlite.query(`SELECT working_since FROM sessions WHERE session_id = 'sess_1'`).get() as { working_since: number }).working_since).toBe(at);
   });
 
-  it('on the self-hosted target, writes the stamp after the answer\'s own statements, though it is registered before them', async () => {
+  it('on the self-hosted target, writes the stamp before the answer\'s reads, and composes the answer as before', async () => {
     const sqlite = new Database(':memory:');
     sqlite.exec('PRAGMA foreign_keys = ON');
     for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
@@ -307,7 +307,8 @@ describe('a session working now', () => {
     expect(answer.status).toBe(200);
     await bun.settle();
     const stamp = order.findIndex((sql) => /SET working_since = \?/.test(sql));
-    expect({ stamp, last: order.length - 1 }).toEqual({ stamp: order.length - 1, last: order.length - 1 });
+    // The stamp is registered before anything is read, and on this target deferred work starts at once.
+    expect(stamp).toBe(0);
     expect(order.some((sql) => /session_injections/.test(sql))).toBe(true);
     expect((sqlite.query(`SELECT working_since FROM sessions WHERE session_id = 'sess_1'`).get() as { working_since: number }).working_since).toBe(at);
   });
