@@ -4,12 +4,18 @@
  * redacted, expiry, spool depth, last ack/refusal, and the latch.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
 import path from 'node:path';
 import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { MEMBER_INLINE_TEXT_MAX_BYTES } from '@myco/member/constants.js';
+import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
+import { transcriptPointerFor } from '@myco/member/transcript.js';
+import { listRegistryEntries } from '@myco/member/registry.js';
+import { projectDiagnostics } from '@myco/member/diagnostics.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { MEMBER_HELP } from '@myco/cli/member.js';
-import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+import { memberRig, TEST_MACHINE_ID, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
 
 let mycoHome: string;
@@ -71,7 +77,7 @@ describe('myco member drain / status', () => {
     };
 
     spool.append('sess-acked', promptEvent(ctxFor(spool, 'sess-acked'), { promptId: mintId(), text: 'delivered' }));
-    expect(await status()).toContain('last event: none acknowledged yet');
+    expect(await status()).toContain('last delivery: none acknowledged yet');
 
     await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: (l) => err.push(l) });
     expect(spool.sessionIds()).toEqual([]);
@@ -79,8 +85,45 @@ describe('myco member drain / status', () => {
 
     const delivered = await status();
     expect(delivered).toContain('spool:      0 session file(s), 0 un-acknowledged event(s)');
-    expect(delivered).toMatch(/last event: acknowledged /);
+    expect(delivered).toMatch(/last delivery: acknowledged /);
     expect(err).toEqual([]);
+  });
+
+  it('status counts a transcript segment the Deployment acknowledged as a delivery, for a session that shipped nothing else', async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    // A session whose turns arrive only in its transcript (`turnRowSource: transcript`): no event of its own is spooled.
+    const dir = fs.mkdtempSync(path.join(mycoHome, 'tx-'));
+    const tx = path.join(dir, 'sess-segments.jsonl');
+    fs.writeFileSync(tx, JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }) + '\n');
+    updateSessionState(spool.dir, 'sess-segments', (s) => { s.transcript = transcriptPointerFor(tx, TEST_MACHINE_ID)!; s.agent = 'claude-code'; });
+    spool.markTranscriptBacklog('sess-segments');
+    const before = Date.now();
+    await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+    expect(rig.rows('transcript_segments')).toBe(1);
+    expect(readSessionState(spool.dir, 'sess-segments').lastAckAt).toBeUndefined();
+
+    const out: string[] = [];
+    await runMemberCli(['status'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: () => {} });
+    expect(out.join('\n')).toMatch(/last delivery: acknowledged /);
+    const facts = projectDiagnostics(listRegistryEntries(mycoHome)[0], mycoHome, Date.now());
+    expect(facts.spool.lastDeliveryAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('does not count a blob the Deployment took as a delivery when the record it belongs to is refused', async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    // A record too long to travel inline, of a kind the Deployment does not take: its bytes upload, the record is refused.
+    const event = promptEvent(ctxFor(spool, 'sess-blob'), { promptId: mintId(), text: 'x'.repeat(MEMBER_INLINE_TEXT_MAX_BYTES + 10) });
+    (event.envelope as { kind: string }).kind = 'future.kind';
+    spool.append('sess-blob', event);
+    await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+    expect(rig.rows('blobs')).toBe(1);
+    expect(rig.rows('events')).toBe(0);
+    expect(readSessionState(spool.dir, 'sess-blob').lastDeliveryAt).toBeUndefined();
+    const out: string[] = [];
+    await runMemberCli(['status'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: () => {} });
+    expect(out.join('\n')).toContain('last delivery: none acknowledged yet');
   });
 
   it('--all walks every registry entry; without an entry for the cwd the op says so and does nothing', async () => {

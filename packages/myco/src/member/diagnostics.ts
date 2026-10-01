@@ -64,7 +64,8 @@ export interface SpoolSessionFacts {
   unacknowledged: number | null;
   /** False where this session's state could not be read; its acknowledgement is then unknown, not absent. */
   stateReadable: boolean;
-  lastAckAt: number | null;
+  /** When the Deployment last acknowledged anything of the session's: an event, a blob, a transcript segment. */
+  lastDeliveryAt: number | null;
 }
 
 export interface SpoolFacts {
@@ -75,8 +76,8 @@ export interface SpoolFacts {
   sessionFiles: number;
   /** Null where any session file could not be read. */
   unacknowledgedTotal: number | null;
-  /** The newest acknowledgement across the spool, and null while any state is unreadable: a maximum over part of it is not the whole. */
-  lastAckAt: number | null;
+  /** The newest delivery across the spool, and null while any state is unreadable: a maximum over part of it is not the whole. */
+  lastDeliveryAt: number | null;
   /** One entry per spool file this project holds. */
   sessions: SpoolSessionFacts[];
 }
@@ -288,15 +289,15 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   const acked = new Map(spool.stateSessionIds().map((sessionId) => [sessionId, spool.readAck(sessionId)] as const));
   const spooled = spool.readSpool();
   // A session the listing named but whose state was never written is readable with nothing acknowledged.
-  const ackOf = (sessionId: string) => acked.get(sessionId) ?? { readable: true as const, lastAckAt: null };
+  const ackOf = (sessionId: string) => acked.get(sessionId) ?? { readable: true as const, lastDeliveryAt: null };
   const sessions = spooled.sessions.map(({ sessionId, unacknowledged }) => {
     const read = ackOf(sessionId);
-    const at = read.readable ? read.lastAckAt : null;
-    return { sessionId, unacknowledged, stateReadable: read.readable, lastAckAt: at !== null && at > 0 ? at : null };
+    const at = read.readable ? read.lastDeliveryAt : null;
+    return { sessionId, unacknowledged, stateReadable: read.readable, lastDeliveryAt: at !== null && at > 0 ? at : null };
   });
   const stateReadable = spooled.readable && [...acked.values()].every((read) => read.readable);
-  let lastAck = 0;
-  for (const read of acked.values()) if (read.readable && read.lastAckAt !== null) lastAck = Math.max(lastAck, read.lastAckAt);
+  let lastDelivery = 0;
+  for (const read of acked.values()) if (read.readable && read.lastDeliveryAt !== null) lastDelivery = Math.max(lastDelivery, read.lastDeliveryAt);
   const refused = spool.readRefused();
   const reported = refused.entries.slice(-MAX_REFUSALS_REPORTED).map(refusalOf);
   const latchRead = spool.readLatchResult();
@@ -316,7 +317,7 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
       unacknowledgedTotal: !spooled.readable || sessions.some((session) => session.unacknowledged === null)
         ? null
         : sessions.reduce((total, session) => total + (session.unacknowledged ?? 0), 0),
-      lastAckAt: stateReadable && lastAck > 0 ? lastAck : null,
+      lastDeliveryAt: stateReadable && lastDelivery > 0 ? lastDelivery : null,
       sessions,
     },
     latch: latch === null ? null : { since: latch.since, nextProbeAt: latch.nextProbeAt, backoffMs: latch.backoffMs },

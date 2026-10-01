@@ -51,6 +51,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   'packages/myco/src/hooks/session-start.ts': {
     calls: 1, form: 'awaited', bound: "one short re-read of a transcript the IDE writes after the hook fires, inside the hook's own budget",
   },
+  'packages/myco/src/member/helper.ts': {
+    calls: 1, form: 'awaited', bound: "a helper's poll for new work while it lingers, inside its own deadline, injectable by a caller",
+  },
   'packages/myco/src/member/transport.ts': {
     calls: 2, form: 'cleared', bound: 'request deadlines that abort HTTP calls',
   },

@@ -332,7 +332,7 @@ describe('a spool a report could not read', () => {
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.readable).toBe(true);
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: true, lastAckAt: null }]);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: true, lastDeliveryAt: null }]);
     expect(facts.spool.unacknowledgedTotal).toBeNull();
   });
 
@@ -355,7 +355,7 @@ describe('a spool a report could not read', () => {
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.readable).toBe(true);
     expect(facts.spool.stateReadable).toBe(false);
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastDeliveryAt: null }]);
     expect(facts.spool.unacknowledgedTotal).toBeNull();
 
     // And the export a person runs answers rather than crashing.
@@ -444,8 +444,8 @@ describe('a session state the report could not use', () => {
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.readable).toBe(true);
     expect(facts.spool.stateReadable).toBe(false);
-    expect(facts.spool.lastAckAt).toBeNull();
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.lastDeliveryAt).toBeNull();
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastDeliveryAt: null }]);
   });
 });
 
@@ -494,7 +494,7 @@ describe('a state file the report can reach but cannot trust', () => {
     fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 1, highWater: 'two', prompts: {} }), { mode: 0o600 });
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastDeliveryAt: null }]);
     expect(facts.spool.unacknowledgedTotal).toBeNull();
     expect(facts.spool.stateReadable).toBe(false);
   });
@@ -513,8 +513,8 @@ describe('a state file the report can reach but cannot trust', () => {
     // The report will not count or date it.
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool.stateReadable).toBe(false);
-    expect(facts.spool.lastAckAt).toBeNull();
-    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastAckAt: null }]);
+    expect(facts.spool.lastDeliveryAt).toBeNull();
+    expect(facts.spool.sessions).toEqual([{ sessionId: 'sess-a', unacknowledged: null, stateReadable: false, lastDeliveryAt: null }]);
 
     // The runtime still holds the mark, so nothing acknowledged is drained again.
     const after = updateSessionState(spool.dir, 'sess-a', () => {});

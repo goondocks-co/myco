@@ -357,6 +357,8 @@ export async function shipTranscriptSegments(
     let applied = false;
     updateSessionState(spool.dir, sessionId, (s) => {
       const stored = slotPointer(s, slot);
+      // Called on the Deployment's answer for a segment (acknowledged, or resliced to what it holds): a delivery.
+      s.lastDeliveryAt = now();
       if (stored?.transcriptId !== next.transcriptId) return;
       setSlotPointer(s, slot, { ...stored, nextOffset: next.nextOffset });
       applied = true;

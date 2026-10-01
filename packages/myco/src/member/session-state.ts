@@ -56,11 +56,13 @@ export interface SessionState {
   /** Spool records (from the start of the current file) acknowledged: acked or refused. */
   highWater: number;
   /**
-   * Journal lines (from the start of the current file) whose turn-end marks are consumed: every mark at a line below
-   * it has been read by the pass that acts on it. Absent reads as 0. A journal is deleted only when both this and
-   * `highWater` reach its end, so no mark is deleted before it is read.
+   * Lines of the session's marks file (`turnsFileOf`) consumed: every mark at a line below it has been read by the
+   * pass that acts on it. Absent reads as 0. The marks file is deleted, and this starts again at 0, only once it
+   * reaches the file's end, so no mark is deleted before it is read.
    */
   markWater?: number;
+  /** The generation of the marks file `markWater` counts in; a file of another generation is read from its start. */
+  markGeneration?: string;
   /**
    * Set once the event lane is past one of the session's `session.start` records, delivered or dropped for good. A
    * transcript waits for the session's start only until then: a start a later resume, compaction or clear writes is
@@ -100,8 +102,17 @@ export interface SessionState {
   eventRetry?: RefusalRetry;
   /** When this session first appended to the spool; the clock retention measures from until an acknowledgement arrives. */
   startedAt?: number;
-  /** When the server last acknowledged one of this session's records. */
+  /**
+   * When the server last acknowledged one of this session's spooled events: retention's clock for quarantining a
+   * journal nothing is taking. Transcript segments and blobs do not move it (`lastDeliveryAt` does).
+   */
   lastAckAt?: number;
+  /**
+   * When the Deployment last took a record of this session's: an event acknowledged, or a transcript segment
+   * acknowledged or resliced. A blob alone is not a delivery: the record it belongs to may yet be refused. What a
+   * report shows as the session's last delivery.
+   */
+  lastDeliveryAt?: number;
   updatedAt: number;
 }
 
@@ -125,6 +136,14 @@ export function emptySessionState(now: number = Date.now()): SessionState {
 
 export function sessionStatePath(spoolDir: string, sessionId: string): string {
   return path.join(spoolDir, `${sessionId}.state.json`);
+}
+
+/**
+ * A session's turn-end marks file (`TurnEndMark`), `.<session>.turns`: apart from its journal, and not a `*.jsonl`,
+ * so no build lists it as a session's journal (#1561 D8).
+ */
+export function turnsFileOf(spoolDir: string, sessionId: string): string {
+  return path.join(spoolDir, `.${sessionId}.turns`);
 }
 
 /** The buffer lock companion `EventBuffer` serializes appends on; session-state shares it. */
@@ -161,8 +180,10 @@ const rendersAsInstant = (value: unknown): boolean =>
 export function readSessionStateResultUnlocked(spoolDir: string, sessionId: string): SessionStateRead {
   const read = readStateFile(spoolDir, sessionId);
   if (!read.ok) return read;
-  const { highWater, lastAckAt } = read.state;
-  const reportable = Number.isSafeInteger(highWater) && highWater >= 0 && (lastAckAt === undefined || rendersAsInstant(lastAckAt));
+  const { highWater, lastAckAt, lastDeliveryAt } = read.state;
+  const reportable = Number.isSafeInteger(highWater) && highWater >= 0
+    && (lastAckAt === undefined || rendersAsInstant(lastAckAt))
+    && (lastDeliveryAt === undefined || rendersAsInstant(lastDeliveryAt));
   return reportable ? read : { ok: false, reason: 'invalid', detail: 'a reported field is not a number a report can use' };
 }
 
@@ -277,6 +298,8 @@ export function retireSessionFiles(spoolDir: string, sessionId: string, stillRet
     if (fs.existsSync(journal)) return false;
     if (!stillRetired(readSessionStateUnlocked(spoolDir, sessionId))) return false;
     try { fs.unlinkSync(sessionStatePath(spoolDir, sessionId)); } catch { /* absent */ }
+    // A mark is read against the state's transcript pointers: without them it has nothing left to wait for.
+    try { fs.unlinkSync(turnsFileOf(spoolDir, sessionId)); } catch { /* absent */ }
     if (process.platform !== 'win32') {
       try { fs.unlinkSync(lock); } catch { /* absent */ }
     }
