@@ -33,6 +33,25 @@ const FORBIDDEN: ReadonlyArray<[string, string]> = [
   ['packages/myco-server/', 'the Deployment'],
 ];
 
+/** What only the CLI may load: the native artifacts' registration opens the sqlite and ripgrep files a hook never needs. */
+const HOOK_CHUNK_ONLY_FORBIDDEN: ReadonlyArray<[string, string]> = [
+  ['packages/myco/src/runtime/native-deps.ts', 'the native artifacts (sqlite, ripgrep)'],
+];
+
+const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'];
+
+/** A per-target entry with its embedded-file imports (`with { type: 'file' }`) taken out: those embed bytes, not code. */
+const withoutEmbeds = (_file: string, text: string): string =>
+  text.replace(/^import\s+\w+\s+from\s+['"][^'"]+['"]\s+with\s*\{\s*type:\s*['"]file['"]\s*\};?\s*$/gm, '');
+
+/** Every forbidden module a closure reaches, with the chain that reaches it. */
+function forbiddenIn(closure: ReturnType<typeof closureOf>, forbidden: ReadonlyArray<[string, string]>): string[] {
+  return [...closure.modules.keys()].flatMap((key) => {
+    const hit = forbidden.find(([prefix]) => key === prefix || key.startsWith(prefix));
+    return hit ? [`${hit[1]}: ${pathToEntry(closure, key).join(' -> ')}`] : [];
+  });
+}
+
 /** The most the hook's chunk may weigh, minified. */
 const HOOK_CHUNK_MAX_BYTES = 400_000;
 
@@ -40,20 +59,27 @@ describe('the hook entry', () => {
   it('is reached from the dispatcher before anything else loads, and the dispatcher loads nothing heavier first', () => {
     const edges = runtimeEdges(fs.readFileSync(at('entries/dispatch.ts'), 'utf-8'), at('entries/dispatch.ts'));
     expect([...edges.specifiers].sort()).toEqual([...DISPATCH_STATIC, ...DISPATCH_DYNAMIC].sort());
-    for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64']) {
+    for (const target of TARGETS) {
       const entry = fs.readFileSync(at(`entries/cli.${target}.ts`), 'utf-8');
       expect({ target, dispatches: /await dispatch\(\(\) => registerEmbeddedNativeDeps\(/.test(entry) }).toEqual({ target, dispatches: true });
       expect({ target, importsCli: /import\(['"]\.\/cli\.js['"]\)/.test(entry) }).toEqual({ target, importsCli: false });
     }
   });
 
-  it('reaches none of the CLI, the daemon, the vault, the worker or the Deployment', () => {
+  it('loads, before it dispatches, only what every verb needs: each target entry\'s static closure reaches none of the CLI, the daemon or the Deployment', () => {
+    for (const target of TARGETS) {
+      const closure = closureOf([at(`entries/cli.${target}.ts`)], { staticOnly: true, source: withoutEmbeds });
+      expect({ target, reached: forbiddenIn(closure, FORBIDDEN) }).toEqual({ target, reached: [] });
+      // No npm package loads before the dispatch: a package on this path is parsed by every hook.
+      expect({ target, externals: [...closure.externals.keys()] }).toEqual({ target, externals: [] });
+      expect({ target, dispatcher: closure.modules.has('packages/myco/src/entries/dispatch.ts') }).toEqual({ target, dispatcher: true });
+    }
+  });
+
+  it('reaches, in its own chunk, none of the CLI, the daemon, the vault, the worker, the Deployment, an npm package or the native artifacts', () => {
     const closure = closureOf([at('hooks/entry.ts'), ...DISPATCH_STATIC.map((s) => path.join(SRC, 'entries', s.replace(/\.js$/, '.ts')))]);
-    const reached = [...closure.modules.keys()].flatMap((key) => {
-      const hit = FORBIDDEN.find(([prefix]) => key === prefix || key.startsWith(prefix));
-      return hit ? [`${hit[1]}: ${pathToEntry(closure, key).join(' -> ')}`] : [];
-    });
-    expect(reached).toEqual([]);
+    expect(forbiddenIn(closure, [...FORBIDDEN, ...HOOK_CHUNK_ONLY_FORBIDDEN])).toEqual([]);
+    expect([...closure.externals.keys()]).toEqual([]);
     expect([...closure.unknowable.keys()]).toEqual([]);
   });
 

@@ -8,6 +8,7 @@
  * executor integration (Task 5).
  */
 
+import { isBundledPath } from '../runtime/self-exec.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,10 +81,6 @@ const PLACEHOLDER_CONTEXT_RESULTS = '{{context_results}}';
 /** Cached prompt template — loaded once, reused across calls. */
 let cachedPromptTemplate: string | undefined;
 
-function isBunVirtualPath(candidate: string): boolean {
-  return candidate.startsWith('/$bunfs/') || candidate.startsWith('B:\\~BUN\\');
-}
-
 export function resolveOrchestratorPromptTemplate(scriptDir: string): string {
   // Check sibling prompts/ directory first (tsc output or dev mode)
   const adjacentPath = path.join(scriptDir, 'prompts', ORCHESTRATOR_PROMPT_FILE);
@@ -105,7 +102,7 @@ export function resolveOrchestratorPromptTemplate(scriptDir: string): string {
     }
   }
 
-  if (isBunVirtualPath(adjacentPath)) {
+  if (isBundledPath(adjacentPath)) {
     const bundled = BUNDLED_AGENT_PROMPTS[ORCHESTRATOR_PROMPT_FILE];
     if (bundled !== undefined) {
       return bundled;

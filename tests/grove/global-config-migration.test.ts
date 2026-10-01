@@ -8,7 +8,7 @@ import {
   scrubEscapedSmokeLaunchers,
   scrubGeminiTrustedHooks,
 } from '@myco/grove/global-config-migration.js';
-import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 function withTmpFile<T>(fn: (filePath: string) => T): T {
@@ -441,20 +441,17 @@ describe('runGlobalConfigMigration — symbiont-config claim deferral', () => {
     // run uniquely returns outcomes:[]. The deferred path never invokes the impl,
     // so no real home config is read or written — hermetic.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mig-home-'));
-    const claimsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mig-claims-'));
+    const claimsHome = resolveClaimsHome();
     const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mig-peer-')));
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
     const prevHome = process.env.MYCO_HOME;
-    const prevClaims = process.env.MYCO_CLAIMS_HOME;
     process.env.MYCO_HOME = home;
-    process.env.MYCO_CLAIMS_HOME = claimsHome;
     try {
       expect(runGlobalConfigMigration()).toEqual({ outcomes: [], noOp: true });
     } finally {
       if (prevHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = prevHome;
-      if (prevClaims === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = prevClaims;
       fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(claimsHome, { recursive: true, force: true });
+      releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });
     }
   });
 });

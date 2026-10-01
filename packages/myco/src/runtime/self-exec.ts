@@ -12,6 +12,11 @@
  */
 const BUNDLED_ENTRY = ['/$bunfs/', 'B:\\~BUN\\', 'B:/~BUN/'];
 
+/** Whether a path names a file inside a compiled binary's own virtual filesystem, which nothing outside it can open. */
+export function isBundledPath(candidate: string): boolean {
+  return BUNDLED_ENTRY.some((prefix) => candidate.startsWith(prefix));
+}
+
 export interface SelfExec {
   /** The executable to run: this binary, or the runtime a checkout is running under. */
   path: string;
@@ -26,7 +31,7 @@ export interface SelfExec {
  * process says so with `selfExec()`.
  */
 export function selfExecOf(execPath: string, argv1: string | undefined): SelfExec {
-  const entry = argv1 === undefined || argv1 === '' || BUNDLED_ENTRY.some((prefix) => argv1.startsWith(prefix))
+  const entry = argv1 === undefined || argv1 === '' || isBundledPath(argv1)
     ? null
     : argv1;
   return { path: execPath, args: entry === null ? [] : [entry] };

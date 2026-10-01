@@ -21,7 +21,7 @@ if (!binary || !fs.existsSync(binary)) {
   process.stderr.write(`[hook-startup] no binary at ${binary ?? '(none given)'}\n`);
   process.exit(2);
 }
-const runs = Number(flag('--runs', '20'));
+const runs = Number(flag('--runs', '30'));
 const maxP95 = Number(flag('--max-p95-ms', process.platform === 'win32' ? '150' : '80'));
 const prefix = flag('--prefix', '').split(' ').filter(Boolean);
 

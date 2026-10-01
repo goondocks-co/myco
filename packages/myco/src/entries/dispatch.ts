@@ -12,14 +12,23 @@ import { keepLoopbackOffProxy } from '../cli/loopback-proxy.js';
 /** Whether argv asks for help, which the CLI answers for every verb. */
 const asksForHelp = (args: readonly string[]): boolean => args.includes('--help') || args.includes('-h');
 
+/**
+ * Runs the verb argv names. A failure is reported as the CLI reports one (`cli.ts`): `myco: <message>` on stderr and
+ * exit 1, never a stack.
+ */
 export async function dispatch(registerNativeDeps: () => Promise<void>): Promise<void> {
-  const [cmd, ...args] = process.argv.slice(2);
-  if (cmd === 'hook' && !asksForHelp(args)) {
-    loadEnv();
-    keepLoopbackOffProxy();
-    await (await import('../hooks/entry.js')).runHook(args);
-    return;
+  try {
+    const [cmd, ...args] = process.argv.slice(2);
+    if (cmd === 'hook' && !asksForHelp(args)) {
+      loadEnv();
+      keepLoopbackOffProxy();
+      await (await import('../hooks/entry.js')).runHook(args);
+      return;
+    }
+    await registerNativeDeps();
+    await import('../cli.js');
+  } catch (err) {
+    console.error(`myco: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
-  await registerNativeDeps();
-  await import('../cli.js');
 }

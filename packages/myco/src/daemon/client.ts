@@ -1,4 +1,5 @@
 import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
+import { selfExecOf } from '../runtime/self-exec.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, type SpawnOptions } from 'node:child_process';
@@ -78,11 +79,8 @@ export interface DaemonInfo {
  * is its own entry and no extra argv element is needed.
  */
 export function resolveCliEntryPath(): { execPath: string; cliEntry: string | null } {
-  const argv1 = process.argv[1];
-  if (!argv1 || argv1.startsWith('/$bunfs/') || argv1.startsWith('B:\\~BUN\\')) {
-    return { execPath: process.execPath, cliEntry: null };
-  }
-  return { execPath: process.execPath, cliEntry: argv1 };
+  const self = selfExecOf(process.execPath, process.argv[1]);
+  return { execPath: self.path, cliEntry: self.args[0] ?? null };
 }
 
 /** Build the argv for re-exec'ing this binary with a subcommand. */
