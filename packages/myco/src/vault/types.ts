@@ -64,17 +64,8 @@ export const PlanFrontmatterSchema = z.object({
  * search ranks them uniformly, and downstream consumers should treat the
  * whole set as the renderable universe.
  */
-export const OBSERVATION_TYPES = [
-  'gotcha',
-  'bug_fix',
-  'decision',
-  'discovery',
-  'trade_off',
-  'cross-cutting',
-  'wisdom',
-  'pattern',
-  'architecture',
-] as const;
+import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
+export { OBSERVATION_TYPES };
 
 // Canonical spore status set lives in constants/spore-status.ts; re-exported
 // here for the many call sites that import it from vault/types.

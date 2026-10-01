@@ -22,7 +22,7 @@
  *                      member's vault schema and the Deployment's
  *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
  *
- * and, of 2.0's own: the retained tasks, the task schedule, the server's tick jobs,
+ * and, of 2.0's own: the dashboard's route table, the retained tasks, the task schedule, the server's tick jobs,
  * the Deployment's settings leaves and a machine's settings leaves.
  *
  * A 1.4 registry is retired by deleting the code that holds it. Its §7 rows stay as
@@ -177,6 +177,13 @@ function dataClasses(): string[] {
  * A coverage gate reading a defaulted parse is blind precisely where coverage
  * matters most.
  */
+/**
+ * The 2.0 dashboard's route table, the one `App.tsx` renders. It is the dashboard's own TSX, which the tests typecheck
+ * program does not compile, so it is loaded by path and read for its paths alone.
+ */
+const ROUTE_TABLE = path.join(REPO_ROOT, 'packages', 'myco-server', 'ui', 'src', 'routes', 'table.tsx');
+const { routePaths } = (await import(ROUTE_TABLE)) as { routePaths: () => string[] };
+
 const DECLARED_LEAVES = path.join(SRC_ROOT, 'config', 'declared-leaves.ts');
 
 /** The 1.4 config schema's declared leaves, read only while the schema is there to read. */
@@ -210,6 +217,7 @@ const REGISTRIES: readonly Registry[] = [
   { label: 'scheduled jobs', source: 'packages/myco/src/constants/power-jobs.ts', section: '7.5', scan: scheduledJobs },
   { label: 'data classes', source: 'packages/myco-server/src/db', section: '7.6', scan: dataClasses },
   { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', section: '7.8', scan: configLeaves },
+  { label: '2.0 dashboard routes', source: 'packages/myco-server/ui/src/routes/table.tsx', section: '7.2', scan: () => [...new Set(routePaths())].sort() },
   { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', section: '7.4', scan: () => [...RETAINED_TASKS].sort() },
   { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
   { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', section: '7.5', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
@@ -230,9 +238,6 @@ const present = (registry: Registry): boolean => fs.existsSync(path.join(REPO_RO
  * the registries cannot see yet, and leaves this list when one can.
  */
 const UNPRODUCED_ROWS: Readonly<Record<string, string>> = {
-  '7.2 /p/:projectId/plans': "a 2.0 dashboard route: the routes registry reads the 1.4 dashboard's file until the 2.0 route table is exported",
-  '7.2 /measures': "a 2.0 dashboard route: the routes registry reads the 1.4 dashboard's file until the 2.0 route table is exported",
-  '7.2 /access': "a 2.0 dashboard route: the routes registry reads the 1.4 dashboard's file until the 2.0 route table is exported",
   '7.6 member_credentials': "the Deployment's member credentials, held in the server's own migrations rather than a src/db schema file",
 };
 
