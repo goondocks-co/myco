@@ -26,7 +26,7 @@ import { WranglerNotReady, deploymentRecordPath, peekDeploymentRecord, readDeplo
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type CreatePlan, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
-import { parseFlags } from './shared.js';
+import { parseFlags } from './flags.js';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { readDeploymentMembership } from '../member/registry.js';

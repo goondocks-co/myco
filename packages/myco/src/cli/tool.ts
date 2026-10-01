@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import { StreamableHTTPClientTransport, type Client } from '@modelcontextprotocol/client';
-import { DaemonClient } from '@myco/daemon/client.js';
 import { buildBridgeRequestHeaders } from '@myco/mcp/stdio-bridge.js';
 import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream, withoutCredentialFlag } from '@myco/mcp/deployment-upstream.js';
 import { extractStructuredResult, withMcpClient as withTransportClient, type ToolCallError, type ToolCallOutcome } from '@myco/mcp/client-call.js';
@@ -152,6 +151,8 @@ async function transportFor(vaultDir: string, source: CredentialSource | null): 
     if (!upstream) return { ok: false, error: { code: 'credential_unavailable', message: `No member credential resolves for ${CREDENTIAL_FLAG} ${source}; the reason is on stderr.` } };
     return { ok: true, transport: deploymentTransport(upstream) };
   }
+  // The 1.4 daemon's client loads only on the path that talks to it, never for a credential's Deployment.
+  const { DaemonClient } = await import('@myco/daemon/client.js');
   const daemonClient = new DaemonClient(vaultDir);
   const refusal = daemonClient.memberHomeRefusal();
   if (refusal !== null) return { ok: false, error: { code: 'member_home', message: refusal } };

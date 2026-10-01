@@ -14,10 +14,11 @@
  * The command NAME is load-bearing: the Task 1.4 affiliation hint tells users to
  * run exactly `myco join <host_id>`.
  *
- * Flag parser is shared via `cli/shared.ts#parseFlags` — `cli/attach.ts` (the
+ * Flag parser is shared via `cli/flags.ts#parseFlags` — `cli/attach.ts` (the
  * sibling member command) uses the same one so the two parse identically.
  */
-import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage, parseFlags } from './shared.js';
+import { connectToGlobalDaemon, connectToRunningDaemon, daemonErrorMessage } from './shared.js';
+import { parseFlags } from './flags.js';
 
 export const JOIN_HELP = `Usage: myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>
 

@@ -11,11 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { findCorePackageRoot } from '../utils/find-package-root.js';
 import { getPluginVersion } from '../version.js';
-import { readDaemonState, resolveDaemonServiceState } from '../daemon/service-state.js';
-import {
-  createDaemonStateAuthority,
-  type StateMutationLogger,
-} from '../daemon/daemon-state-authority.js';
+import type { StateMutationLogger } from '../daemon/daemon-state-authority.js';
 import { resolveProjectRoot } from '../vault/resolve.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { describeCaptureOnly, isCaptureOnly } from '../config/capabilities.js';
@@ -1210,6 +1206,8 @@ export async function checkOverlayResidue(opts: {
 }
 
 export async function checkDaemon(vaultDir: string): Promise<DoctorCheck> {
+  // The 1.4 daemon's state readers load only for the checks that read it, never for a member verb's checks.
+  const { readDaemonState, resolveDaemonServiceState } = await import('../daemon/service-state.js');
   const serviceState = resolveDaemonServiceState(vaultDir, { env: process.env });
   const daemonFile = serviceState.statePath;
   if (!fs.existsSync(daemonFile)) {
@@ -1955,6 +1953,8 @@ export async function checkMigrationStatus(vaultDir: string): Promise<DoctorChec
  * there is no detail-text matching here.
  */
 export async function fix(vaultDir: string, checks: DoctorCheck[]): Promise<string[]> {
+  const { resolveDaemonServiceState } = await import('../daemon/service-state.js');
+  const { createDaemonStateAuthority } = await import('../daemon/daemon-state-authority.js');
   const service = resolveDaemonServiceState(vaultDir, { env: process.env });
   const authority = createDaemonStateAuthority(service, doctorLogger());
   const ctx: DoctorFixContext = { vaultDir, authority };

@@ -187,6 +187,12 @@ function staticSpecifiers(source: string, file: string): string[] {
   return transpilerFor(file).scanImports(source).filter((entry) => entry.kind === 'import-statement').map((entry) => entry.path);
 }
 
+/** The literal specifiers a module loads with `import()`: chunks it reads only when the call is reached. */
+export function dynamicSpecifiers(source: string, file: string): string[] {
+  if (isJsonModule(file)) return [];
+  return transpilerFor(file).scanImports(source).filter((entry) => entry.kind === 'dynamic-import').map((entry) => entry.path);
+}
+
 /** Walk every module reachable from these entries. */
 export function closureOf(entries: readonly string[], opts: ClosureOptions = {}): Closure {
   const closure: Closure = { modules: new Map(), via: new Map(), externals: new Map(), unknowable: new Map() };

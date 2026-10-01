@@ -11,7 +11,8 @@
  *   task run <name> [--instruction TEXT] [--dry-run] Run a task via the agent
  */
 
-import { connectToDaemon, printHelpIfRequested } from './shared.js';
+import { connectToDaemon } from './shared.js';
+import { printHelpIfRequested } from './flags.js';
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -5,7 +5,8 @@
  * The daemon's /api/agent/run endpoint fires-and-forgets the run.
  */
 
-import { connectToDaemon, printHelpIfRequested } from './shared.js';
+import { connectToDaemon } from './shared.js';
+import { printHelpIfRequested } from './flags.js';
 
 const AGENT_USAGE = `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
 
