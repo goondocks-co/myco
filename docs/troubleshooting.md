@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with two commands, run from a project this machine has connected:
+Start with two commands, run in a repository this machine has connected:
 
 ```bash
 myco doctor
@@ -9,15 +9,15 @@ myco member status
 
 `myco doctor` checks, in order:
 
-- the membership;
-- whether the Deployment answers and serves its tools;
-- the credential and its renewal;
+- this machine's sign-in;
+- whether the server answers and serves its tools;
+- when the sign-in renews;
 - anything waiting to be delivered;
 - which of your agents capture;
 - each agent's Myco MCP entry;
 - the worker.
 
-A failing row names what to do and makes the command exit non-zero. `myco member status` shows the same membership in detail: when the credential expires, how many events are waiting per session, the last one the Deployment acknowledged, and any capture that found no membership. `myco member export` prints the same facts as one JSON document that carries no token and no captured content, which is the thing to attach to a bug report.
+A failing row names what to do and makes the command exit non-zero. `myco member status` shows the same sign-in in detail: when it expires, how many events are waiting per session, the last one the server acknowledged, and any capture in a folder that is not connected. `myco member export` prints the same facts as one JSON document that carries no token and no captured content, which is the thing to attach to a bug report.
 
 Below are the messages people meet most, what each means, and what to do.
 
@@ -45,9 +45,9 @@ The PowerShell installer (`install.ps1`) installs Myco 1.4. There is no Myco 2.0
 
 > this machine already belongs to a member of <url> (identity_claimed)
 
-A machine belongs to one member of a Deployment. Every Myco home on it signs in as the same machine, unless that home holds a `machine_id` file of its own. The machine stays that member's even after the member is removed, and nothing moves a machine to another member.
+A machine belongs to one member of a server. Every Myco home on it signs in as the same machine, unless that home holds a `machine_id` file of its own. The machine stays that member's even after the member is removed, and nothing moves a machine to another member.
 
-To sign this machine in again, ask a Deployment administrator for a link **for your existing member**, not a new one. On the dashboard that is **People & machines** → **Add a machine**, with **For** set to you. Run `myco login <link>` with the link it gives. An invitation for a new member is refused on this machine.
+To sign this machine in again, ask a server administrator for a link **for your existing member**, not a new one. On the dashboard that is **People & machines** → **Add a machine**, with **For** set to you. Run `myco login <link>` with the link it gives. An invitation for a new member is refused on this machine.
 
 ### The invitation is refused
 
@@ -58,8 +58,8 @@ To sign this machine in again, ask a Deployment administrator for a link **for y
 | `enrollment_used` | The link was already used. Each link works once. |
 | `enrollment_expired` | The link expired. A link lasts an hour or a day, as the administrator chose. |
 | `enrollment_revoked` | An administrator withdrew it. |
-| `enrollment_unknown` | The Deployment does not know this link; check you copied all of it. |
-| `unreachable` | The Deployment did not answer at the link's address. |
+| `enrollment_unknown` | The server does not know this link; check you copied all of it. |
+| `unreachable` | The server did not answer at the link's address. |
 
 For every one of these, ask for a fresh link. A link that is not a link at all is refused before anything is sent, with messages such as "a join link path must be /join" or "that link carries no invitation". A link must be `https`, or `http` only to this machine's own loopback address.
 
@@ -77,9 +77,19 @@ You are signed in, but no repository on this machine is connected, so nothing is
 
 Your agents' Myco hooks run in every folder, and this folder is not connected to a project. Nothing from it is captured. Connected folders are unaffected.
 
-To capture here, run `myco member join` in the repository. Your agents' earlier sessions there are brought in when it connects, as far back as the Deployment allows, and `myco import` reaches further.
+To capture here, run `myco member join` in the repository. Your agents' earlier sessions there are brought in when it connects, as far back as the server allows, and `myco import` reaches further.
 
-> **Coming in beta.1:** repositories under `~/Repos` will connect on their own, and a repository that cannot will be listed on **Today** ([#1547](https://github.com/goondocks-co/myco/issues/1547)).
+> **Coming in beta.1:** repositories under `~/Repos` will connect on their own, and a repository that cannot will show as **Not captured** on your **Today**, with a way to connect it ([#1547](https://github.com/goondocks-co/myco/issues/1547)).
+
+### Sessions are waiting to be delivered
+
+When the server cannot be reached, your agents' sessions wait on the machine and are sent when it answers again. `myco member status` shows how many are waiting. To send them now, run:
+
+```bash
+myco member drain
+```
+
+Add `--all` for every connected repository on the machine, not only this one.
 
 ### An agent captures nothing
 
@@ -97,7 +107,7 @@ See [Agents](agents.md) for the agents that capture and their names.
 
 > <home> is a Myco 2.0 member home, so the Myco 1.4 local daemon does not run here.
 
-This home belongs to a Deployment, so the 1.4 local service never runs in it, and commands that need that service refuse. Your agents reach the Deployment instead. To call a tool by hand, use `myco tool call <tool> --credential registry`. To give an agent its hooks and MCP entry, use `myco member provision <agent>`.
+This home belongs to a server, so the 1.4 local service never runs in it, and commands that need that service refuse. Your agents reach the server instead. To call a tool by hand, use `myco tool call <tool> --credential registry`. To give an agent its hooks and MCP entry, use `myco member provision <agent>`.
 
 ### "holds Myco 1.4 vaults that no cutover has moved"
 
@@ -136,10 +146,12 @@ The task needs a switch the project does not have on: **Learning** for learning,
 
 ## Workers
 
+`myco logs` shows this machine's worker log, and the events the server refused, newest last. Add `--tail <n>` for more or fewer lines.
+
 ### "no worker: this membership is not an administrator's"
 
-Only an administrator's machine runs work for a Deployment, so a member's machine installs no worker. Nothing is wrong; the Deployment's work runs on an administrator's machine.
+Only an administrator's machine runs work for a server, so a member's machine installs no worker. Nothing is wrong; the server's work runs on an administrator's machine.
 
 ### "no harness a worker offers is logged in"
 
-A worker runs the Deployment's work through a coding agent on its machine (Claude Code, Codex, OpenCode, Cursor or Antigravity). Sign in to one of them on that machine, then run `myco worker status`.
+A worker runs the server's work through a coding agent on its machine (Claude Code, Codex, OpenCode, Cursor or Antigravity). Sign in to one of them on that machine, then run `myco worker status`.

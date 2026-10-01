@@ -1,12 +1,12 @@
 # The dashboard
 
-The dashboard is where your team sees what its agents did and what Myco learned from it. It is served by your Deployment. Open it from a connected project with:
+The dashboard is where your team sees what its agents did and what Myco learned from it. It runs on your server. Open it from a connected repository with:
 
 ```bash
 myco open
 ```
 
-You sign in with GitHub. Your GitHub account reaches the dashboard through your membership. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. On a brand-new Deployment with no administrator yet, `myco member link-github` prints that link on a machine that has joined.
+You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. The one exception is a brand-new server where no administrator has connected GitHub yet: there, `myco member link-github` on an administrator's machine prints the link, so the first administrator can connect their own account.
 
 ## Your projects
 
@@ -16,7 +16,7 @@ Today, Sessions, Knowledge and Myco's work each show one project, or every proje
 
 **Today** shows what happened today: the sessions your agents captured, and what Myco made of them, in a timeline. Earlier days are a click away.
 
-Beside the timeline, **Capture** shows which agents have sent sessions lately, and from which machines. An administrator also sees **Needs you**: anything on the Deployment that is waiting for an administrator.
+Beside the timeline, **Capture** shows which agents have sent sessions lately, and from which machines. An administrator also sees **Needs you**: anything on the server that is waiting for an administrator.
 
 ### Sessions
 
@@ -63,7 +63,7 @@ An administrator sets what Myco does in each project under **Project settings**:
 
 ### Machine names
 
-A machine is named for its host name when it signs in. That name is shown only to you and to the administrators who manage machines. On Today, on a session and on Myco's work, a teammate sees your work as **from** your name, never your machine's. You see your own as **on** the machine's name, or **on your machine**.
+A machine is named for its host name when it signs in. You see your own work as **on** the machine's name, or **on your machine**. Other members see it as **from** you, never your machine. Administrators see every machine's name only on **People & machines** and **Health**. On Today, Sessions and Myco's work, even an administrator sees another member's work as **from** that member.
 
 ## For administrators
 
@@ -71,7 +71,7 @@ These pages sit at the foot of the menu, and only administrators see them.
 
 ### People & machines
 
-**People & machines** lists the Deployment's members, each with their machines and the invitations still open.
+**People & machines** lists the server's members, each with their machines and the invitations still open.
 
 - **Invite a teammate** makes a one-time link for someone new. It is good for an hour or a day, and it shows the exact `myco login` command to send.
 - **Add a machine** makes the same kind of link for a member who is already here. Use it for a second machine of theirs, or one whose sign-in ended.
@@ -82,7 +82,7 @@ These pages sit at the foot of the menu, and only administrators see them.
 
 ### Settings
 
-**Settings** holds everything that applies to the whole Deployment, in five sections:
+**Settings** holds everything that applies to the whole server, in five sections:
 
 - Myco's work
 - Models and keys
@@ -94,10 +94,10 @@ These pages sit at the foot of the menu, and only administrators see them.
 
 ### Health
 
-**Health** is one page about the Deployment itself:
+**Health** is one page about the server itself:
 
 - **Needs you:** what is waiting for an administrator.
-- **Status:** whether the Deployment is set up to hold your team's knowledge, and what each project last sent.
+- **Status:** whether the server is set up to hold your team's knowledge, and what each project last sent.
 - **Workers:** which machines run Myco's work, and when each last checked in.
 - **Backups:** the backups it holds, and how its automatic backups are doing.
 - **Upkeep:** the housekeeping, search upkeep and store checks it does on its own, with a way to run each now.

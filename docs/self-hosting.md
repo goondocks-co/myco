@@ -19,9 +19,16 @@ The first command prepares your server and generates its storage keys. The secon
 
 Open the private link printed by `setup-owner`. Sign in with GitHub, check the account shown, and click **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become this server's administrator.
 
-To capture from this laptop too, open **People & machines**, choose **Add a machine** with **For** set to yourself, and run the `myco login` command it shows. The server runs its own worker for Myco's work from its next start.
+To capture from this laptop too, open **People & machines**, choose **Add a machine** with **For** set to yourself, and run the `myco login` command it shows. Then restart the server, so it starts its own worker for Myco's work:
 
-Owner setup requires a stopped server. If its link expires, stop the server, rerun `setup-owner`, and start it again; the replacement link invalidates the previous one. Once an account is connected, setup refuses. Existing or restored memberships use their existing sign-in and invitation flow; setup does not replace them.
+```bash
+myco server uninstall --target local
+myco server install --target local
+```
+
+Both keep your data. Until it restarts, the server serves without a worker, and Myco's work waits.
+
+Owner setup requires a stopped server. If its link expires, stop the server, rerun `setup-owner`, and start it again; the replacement link invalidates the previous one. Once an account is connected, setup refuses. Members already on the server, or restored onto it, keep their sign-ins and invitations; setup does not replace them.
 
 Your server lives at `http://127.0.0.1:8787` and listens only on your own machine. Nothing outside your laptop can reach it until you choose to expose it.
 
@@ -132,7 +139,7 @@ It stops the server, brings its storage up to date, and starts it again. Running
 
 ## Backing it up
 
-The Deployment backs itself up. Set how often, and how many copies to keep, under **Settings** → **Backups**. **Health** → **Backups** shows how the last one went.
+The server backs itself up. Set how often, and how many copies to keep, under **Settings** → **Backups**. **Health** → **Backups** shows how the last one went.
 
 - **On your laptop or a VM**, each automatic backup is a complete, verified copy.
 - **On Cloudflare**, an automatic backup is staged inside your Cloudflare account. It is not yet a copy you can restore from, and **Health** says so. For one you can restore from, take a backup yourself, as below.
@@ -146,7 +153,7 @@ myco server backup --to <dir> --target cloudflare
 
 It snapshots the database and every stored file into `<dir>`, and checks each file it copied. Running the same command again resumes a copy that was interrupted. Use a new directory for each backup you want to keep.
 
-A backup holds your team's data but not the server's keys. Keep these four somewhere safe of their own, as `NAME=value` lines in one file: `SECRET_WRAP_KEY`, `SESSION_SECRET`, `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`. On a laptop they are in `~/.myco/server/local/secrets.env`. Without `SECRET_WRAP_KEY`, the keys stored on the Deployment cannot be read back.
+A backup holds your team's data but not the server's keys. Keep these four somewhere safe of their own, as `NAME=value` lines in one file: `SECRET_WRAP_KEY`, `SESSION_SECRET`, `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`. On a laptop they are in `~/.myco/server/local/secrets.env`. Without `SECRET_WRAP_KEY`, the keys stored on the server cannot be read back.
 
 To restore, start from a fresh Myco home, so nothing you are running is touched:
 
@@ -154,5 +161,5 @@ To restore, start from a fresh Myco home, so nothing you are running is touched:
 MYCO_HOME=<fresh home> myco server restore --target local --from <dir> --secrets-from <keys file> --yes
 ```
 
-On Cloudflare the same command takes `--target cloudflare --account-id <your account id>`, and it creates a new Deployment beside the old one, at its own address. Each restore keeps the backup and the original as they were.
+On Cloudflare the same command takes `--target cloudflare --account-id <your account id>`, and it creates a new server beside the old one, at its own address. Each restore keeps the backup and the original as they were.
 

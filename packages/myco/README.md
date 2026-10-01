@@ -10,16 +10,16 @@ myco login <invite link>
 myco member join
 ```
 
-`myco login` signs the machine in to your team's Deployment and sets up your coding agents. `myco member join`, run in a repository, connects it to a project there.
+`myco login` signs the machine in to your team's server and sets up your coding agents. `myco member join`, run in a repository, connects it to a project there.
 
 This npm package is a thin bootstrap that converges to the same native binary, for people who prefer installing through npm (this path needs Node 22+).
 
 ## What you can do
 
-- Capture your coding agents' sessions to your team's Deployment, which you run on Cloudflare or on your own machine.
+- Capture your coding agents' sessions to your team's server, which you run on Cloudflare or on your own machine.
 - Give every agent on the team the project's spores, session-start instructions and code map, without replacing its own memory or workflow.
-- See what your agents did, and what Myco learned from it, on your Deployment's dashboard.
-- Run a Deployment yourself with `myco server`.
+- See what your agents did, and what Myco learned from it, on your server's dashboard.
+- Run a server yourself with `myco server`.
 - Move a Myco 1.4 machine to 2.0 with `myco cutover`.
 
 ## Learn more

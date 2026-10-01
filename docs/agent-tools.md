@@ -1,6 +1,6 @@
 # Agent tools
 
-Every agent connected to a Deployment reaches the project's knowledge through [Model Context Protocol](https://modelcontextprotocol.io) tools. `myco login` gives each agent on the machine its Myco MCP entry (`myco member provision <agent>` repairs one), which points at the Deployment's `/mcp` address. When the agent connects, it asks `myco` for the sign-in details, so no token is written into the agent's config. See [Agents](agents.md).
+Every agent connected to a server reaches the project's knowledge through [Model Context Protocol](https://modelcontextprotocol.io) tools. `myco login` gives each agent on the machine its Myco MCP entry (`myco member provision <agent>` repairs one), which points at the server's `/mcp` address. When the agent connects, it asks `myco` for the sign-in details, so no token is written into the agent's config. See [Agents](agents.md).
 
 The tools read and curate knowledge. They do not administer Myco: settings, members and backups live in the dashboard and the `myco server` commands.
 
@@ -18,16 +18,28 @@ The tools read and curate knowledge. They do not administer Myco: settings, memb
 
 A read with no `project` uses the caller's project. A write must name its `project` and is refused otherwise.
 
-Some operations are not offered by a Deployment and answer `not_served`:
+Some operations are not offered by a server and answer `not_served`:
 
 - `myco_cortex` ops `digest`, `canopy_entry`, `notifications` and `maintenance_summary`;
 - `myco_plans` op `delete`.
+
+## From your terminal
+
+The same knowledge answers in a terminal, in any repository this machine has connected:
+
+```bash
+myco search "why do we pin the port"
+myco session latest
+myco stats
+```
+
+`myco search` searches the project's spores, sessions, plans and prompts. `myco session` shows one session, the latest by default. `myco stats` sums up the project on its server: sessions, activity and Myco's runs.
 
 ## Agents that are not members
 
 A hosted code reviewer or an automation platform has no Myco session and signs in as no one. An administrator can give it an access key for one project. It can then search and read that project and record spores of its own. See [External agents](external-agents.md).
 
-The Myco plugin in your agent's plugin marketplace uses the same kind of key. It carries the skills and the tools and needs no binary. Paste in your Deployment's address and an access key, and the tools answer. Nothing is captured until the machine is also [signed in](quickstart.md).
+The Myco plugin in your agent's plugin marketplace uses the same kind of key. It carries the skills and the tools and needs no binary. Paste in your server's address and an access key, and the tools answer. Nothing is captured until the machine is also [signed in](quickstart.md).
 
 ## Skills
 

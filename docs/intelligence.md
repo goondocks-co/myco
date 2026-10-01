@@ -16,13 +16,13 @@ Capture is only the input. What makes Myco worth running is what happens after a
 
 ## Where the work runs
 
-Myco's work runs on a **worker**: a coding agent you already use, such as Claude Code, Codex, OpenCode, Cursor or Antigravity, driven by the `myco` binary on an administrator's machine. The Deployment keeps the queue and decides which agent each task uses (see [Configuration](configuration.md)). The worker takes a task, runs it, and the Deployment checks the result before counting the task done.
+Myco's work runs on a **worker**: a coding agent you already use, such as Claude Code, Codex, OpenCode, Cursor or Antigravity, driven by the `myco` binary on an administrator's machine. The server keeps the queue and decides which agent each task uses (see [Configuration](configuration.md)). The worker takes a task, runs it, and the server checks the result before counting the task done.
 
-- A laptop Deployment started with `myco server run` or `myco server install` runs its own worker.
-- On any other Deployment, an administrator's machine runs the worker. `myco login` sets it up for an administrator, and it starts whenever they log in.
+- A laptop server started with `myco server run` or `myco server install` runs its own worker, once that laptop has signed in with `myco login` and the server has been restarted since. See [Self-hosting](self-hosting.md#on-your-laptop).
+- On any other server, an administrator's machine runs the worker. `myco login` sets it up for an administrator, and it starts whenever they log in.
 - `myco worker status` shows whether this machine's worker is installed and running.
 
-Only an administrator's machine runs work. A member's machine captures and reads, and runs nothing on the Deployment's behalf. Work waits in the queue until a worker takes it; nothing is refused because no worker happened to be free. **Health** shows which machines run work, and when each last checked in.
+Only an administrator's machine runs work. A member's machine captures and reads, and runs nothing on the server's behalf. Work waits in the queue until a worker takes it; nothing is refused because no worker happened to be free. **Health** shows which machines run work, and when each last checked in.
 
 ## When it runs
 
@@ -41,7 +41,7 @@ You don't have to wait for the schedule. On the dashboard's **Myco's work** page
 
 ## What agents get back
 
-**At session start** an agent gets its project's id and, if the project has **Context for sessions** on, the Deployment's session-start instructions.
+**At session start** an agent gets its project's id and, if the project has **Context for sessions** on, the server's session-start instructions.
 
 **With each prompt** it gets the relevant spores it has not seen yet in that session. They come in a small budget, so they help without crowding the prompt. When the prompt talks about planning, it also gets a reminder to save the plan.
 

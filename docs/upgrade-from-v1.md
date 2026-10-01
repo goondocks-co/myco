@@ -1,10 +1,10 @@
 # Upgrading from Myco 1.4
 
-Myco 2.0 keeps your team's knowledge on a Deployment instead of in a vault on each laptop. Moving a machine over is one command, and it brings everything with it: every session, prompt, spore and plan your 1.4 vaults hold, and the agent transcripts still on disk. Your 1.4 vaults are copied, never changed or deleted.
+Myco 2.0 keeps your team's knowledge on a server instead of in a vault on each laptop. Moving a machine over is one command, and it brings everything with it: every session, prompt, spore and plan your 1.4 vaults hold, and the agent transcripts still on disk. Your 1.4 vaults are copied, never changed or deleted.
 
 ## Before you start
 
-You need a Deployment to move to, and an invite link for it. If your team already runs one, ask its administrator for a link. If you are the first, set one up with the [Quickstart](quickstart.md), then make a link for your own machine with **Add a machine** on **People & machines**.
+You need a server to move to, and an invite link for it. If your team already runs one, ask its administrator for a link. If you are the first, set one up with the [Quickstart](quickstart.md), then make a link for your own machine with **Add a machine** on **People & machines**.
 
 ## Move a machine
 
@@ -19,17 +19,17 @@ myco cutover
 
 On a machine with Myco 1.4 the installer installs nothing unless you pass `--replace-1.4`, because 2.0 takes 1.4's place and 1.4 stops capturing from that moment until the cutover finishes. Nothing of 1.4 is moved or deleted by the installer, so run the rest straight away.
 
-`myco login` signs this machine in to your Deployment.
+`myco login` signs this machine in to your server.
 
 `myco cutover --dry-run` reads everything and changes nothing. It prints every change the real run would make, in order, and stops without changing anything if something on the machine belongs to another installation. Read it before you go on.
 
 `myco cutover` then:
 
 - backs up every agent settings file it is about to change;
-- connects every project folder your 1.4 vaults name to that project on the Deployment;
+- connects every project folder your 1.4 vaults name to that project on the server;
 - points your agents at 2.0, and takes 1.4 out of every agent it had registered with, including agents 2.0 does not capture (it says which);
 - stops the 1.4 service and removes it, so it does not come back at the next login;
-- copies each 1.4 vault, checks the copy, and brings its history to the Deployment, with your 1.4 session titles;
+- copies each 1.4 vault, checks the copy, and brings its history to the server, with your 1.4 session titles;
 - brings in the agent transcripts still on disk.
 
 It is safe to run again. A second run finishes whatever the first left, and imports nothing twice.
@@ -43,7 +43,7 @@ Every settings file, service file and link the cutover changed is copied first i
 - `manifest.json` lists every file, entry and link the cutover changed, with a checksum of each copy.
 - `restore.md` holds the commands that put each one back, in the right order.
 
-To go back to 1.4 by hand, run the commands in `restore.md`, then start the 1.4 service again from its restored file. Your Deployment keeps what was imported.
+To go back to 1.4 by hand, run the commands in `restore.md`, then start the 1.4 service again from its restored file. Your server keeps what was imported.
 
 ## Several machines, or several homes
 
