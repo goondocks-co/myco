@@ -24,12 +24,16 @@ const RUN_BOUND_MS = 90_000;
 
 interface RunnerResult { status: number | null; output: string; elapsedMs: number }
 
-/** Run the runner on one target. Its stdin is a pipe this side never closes, as a harness's can be. */
+/**
+ * Run the runner on one target. Its stdin is a pipe this side never closes, as a harness's can be. The outer
+ * run's own runner settings (a CI shard, a test kind, a plan file) are not passed on: the nested run is one group.
+ */
 function runRunner(target: string, env: Record<string, string>): Promise<RunnerResult> {
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const child = spawn('node', ['scripts/run-bun-tests.mjs', target], {
-      cwd: REPO, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: REPO, env: { ...inherited, ...env }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
