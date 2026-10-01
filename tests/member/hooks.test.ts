@@ -30,6 +30,8 @@ import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
 import { FEATURES_HEADER, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { run as runMemberCli } from '@myco/cli/member.js';
+import { runHelperVerb } from '@myco/cli/member-helper.js';
+import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
 
 let mycoHome: string;
 let rig: MemberRig;
@@ -424,6 +426,54 @@ describe('member hooks through the worker: turn ends told by the transcript alon
     fs.appendFileSync(tx, line('after'));
     await hook('session-end', {}, undefined, 'run');
     expect(segments().slice(3)).toEqual([{ end: fs.statSync(tx).size, marked: false, at: undefined }]);
+  });
+});
+
+describe('member hooks through the worker: a session its harness left without its end', () => {
+  it('holds what the transcript holds past the last turn\'s end until the session has gone 15 minutes without a hook, then ships it', async () => {
+    const fetch: typeof rig.fetch = async (input, init) => {
+      const res = await fetchSpy.fetch(input, init);
+      const headers = new Headers(res.headers);
+      headers.delete(FEATURES_HEADER);
+      return new Response(await res.text(), { status: res.status, headers });
+    };
+    const id = 'sess-killed';
+    const line = (text: string) => `${JSON.stringify({ type: 'user', uuid: `u-${text}`, message: { role: 'user', content: text } })}\n`;
+    const tx = transcript([], id);
+    fs.writeFileSync(tx, line('one'));
+    const t0 = Date.now();
+    const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
+      runHook(name, { session_id: id, transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers: 'record', fetch, now: () => t0 });
+    await hook('session-start', {});
+    await hook('stop', { last_assistant_message: 'x' });
+    const ended = fs.statSync(tx).size;
+    // The next turn was under way when the harness was killed: no Stop, no SessionEnd.
+    fs.appendFileSync(tx, line('two, never finished'));
+    const pass = (at: number) => runHelperVerb(['--project', 'proj_1', '--home', mycoHome], { fetch, now: () => at, lingerMs: 0, keepStderr: true });
+    const ends = () => fetchSpy.requests
+      .filter((r) => r.path === '/events' && r.body !== undefined)
+      .map((r) => JSON.parse(r.body!) as { kind: string; sessionId: string; payload: { baseOffset: number; length: number } })
+      .filter((e) => e.kind === 'transcript.segment' && e.sessionId === id)
+      .map((e) => e.payload.baseOffset + e.payload.length);
+
+    await pass(t0 + TAIL_IDLE_MS - 1_000);
+    expect(ends()).toEqual([ended]);
+    await pass(t0 + TAIL_IDLE_MS + 1_000);
+    expect(ends()).toEqual([ended, fs.statSync(tx).size]);
+  });
+});
+
+describe('member hooks through the worker: a session resumed after its end', () => {
+  it('is live again: the end it recorded is cleared by its next hook', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }], 'sess-resumed');
+    const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown> = {}) =>
+      runHook(name, { session_id: 'sess-resumed', transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers: 'record', fetch: fetchSpy.fetch });
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    await hook('session-start');
+    await hook('session-end');
+    expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeNumber();
+    await hook('session-start', { source: 'resume' });
+    expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeUndefined();
   });
 });
 

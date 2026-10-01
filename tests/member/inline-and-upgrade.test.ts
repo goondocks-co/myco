@@ -24,6 +24,8 @@ import { ServerClient } from '@myco/member/transport.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { helperPass } from '@myco/member/helper-pass.js';
+import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
+import { updateProjectContext } from '@myco/member/context-cache.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 
@@ -159,6 +161,31 @@ describe('a turn\'s end that ships inline', () => {
     expect(spool().depth('sess-held')).toBe(0);
     await holder;
   });
+
+  it('waits only for what the turn\'s end appended: a transcript of the session waiting out a refusal holds it no longer', async () => {
+    const tx = transcript('sess-own');
+    await runHook('user-prompt-submit', { session_id: 'sess-own', prompt: 'own', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: true, pid: process.pid, contained: true }) });
+    // The Deployment takes `turn`: the turn's end is a record of its own, not a mark on the transcript.
+    updateProjectContext(spool().dir, mycoHome, (cache) => { cache.features = ['turn']; });
+    // The session's transcripts wait out a refusal for ten minutes: the session as a whole is not delivered before then.
+    updateSessionState(spool().dir, 'sess-own', (state) => { state.transcriptRetry = { at: Date.now() + 600_000, backoffMs: 600_000 }; });
+    // A helper the harness's job holds takes the lock and keeps it for eight seconds, delivering as it goes.
+    let passStarted = false;
+    const deliver = helperPass('proj_1', mycoHome, { fetch: rig.fetch });
+    const holder = runHelper({
+      projectId: 'proj_1', mycoHome, contained: true, lingerMs: 8_000, deadlineMs: 8_000,
+      pass: async (deadline, o) => { passStarted = true; await Bun.sleep(300); return deliver(deadline, o); },
+    });
+    while (!passStarted) await Bun.sleep(5);
+    const started = Date.now();
+    await runHook('stop', { session_id: 'sess-own', last_assistant_message: 'own reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
+    // Back once its own records are delivered, not when the helper lets go or the session's transcript ships.
+    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(rig.rows('responses')).toBe(1);
+    expect(spool().pendingTurnEnds('sess-own')).toEqual([]);
+    expect(fs.statSync(tx).size).toBeGreaterThan(readSessionState(spool().dir, 'sess-own').transcript?.nextOffset ?? 0);
+    await holder;
+  }, 20_000);
 
   it('leaves an ordinary hook\'s capture to the helper even when no helper could be started', async () => {
     const tx = transcript('sess-capture');

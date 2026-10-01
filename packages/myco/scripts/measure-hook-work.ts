@@ -1,14 +1,15 @@
 // Gate G1, timed (#1561): how long a compiled binary takes to answer each hook doing its real work.
 //
-// Usage: bun scripts/measure-hook-work.ts <binary> [--runs N] [--scale S] [--prefix "arch -x86_64"]
+// Usage: bun scripts/measure-hook-work.ts <binary> [--runs N (30)] [--scale S] [--prefix "arch -x86_64"]
 //
 // Each run is one session of the harness that wires every hook (session start, a prompt, a tool call's pre and post,
-// a delegated agent's start and stop, the turn's end and the session's end), in a git repository joined to a
-// Deployment that is never reached, once with the credential read from the registry and once from the environment.
-// Each hook's p95 must stay inside its budget times `--scale` (1 where Linux runs natively; the shared macOS and
-// Windows runners start a process about twice as slowly). A hook that waited on the network, or did work that grows
-// with the spool, would cross it. The environment's turn and session ends deliver in the hook by design, against a
-// Deployment that refuses the connection at once.
+// a delegated agent's start and stop, the turn's end and the session's end), in a git repository joined to a loopback
+// port nothing listens on, which refuses every connection at once: once with the credential read from the registry
+// and once from the environment, whose turn and session ends deliver in the hook by design. Each hook's p95 over
+// `--runs` sessions must stay inside its budget times `--scale` (1 where Linux runs natively; the shared macOS and
+// Windows runners start a process about twice as slowly). This measures how long each hook's own work takes; that
+// no hook dials the Deployment is G1's to prove (`tests/member/hook-no-network.test.ts`, against one that never
+// answers).
 //
 // Everything runs under a scratch directory and a scratch MYCO_HOME, removed at the end; the detached helpers the
 // registry's hooks start are waited for first.
@@ -31,7 +32,9 @@ if (!binary || !fs.existsSync(binary)) {
   process.stderr.write(`[hook-work] no binary at ${binary ?? '(none given)'}\n`);
   process.exit(2);
 }
-const runs = Number(flag('--runs', '10'));
+// Thirty sessions: a p95 over them leaves out the one slowest run, so a single stall on a shared runner (a scan, a
+// page-in) is not what the gate measures, and the budget still holds the other twenty-nine.
+const runs = Number(flag('--runs', '30'));
 const scale = Number(flag('--scale', process.platform === 'linux' ? '1' : '2'));
 const prefix = flag('--prefix', '').split(' ').filter(Boolean);
 
@@ -123,7 +126,7 @@ try {
       const budget = BUDGET_MS[name] * scale;
       const over = pick(0.95) > budget;
       failed ||= over;
-      process.stdout.write(`[hook-work] ${source.padEnd(8)} ${name.padEnd(18)} p50 ${pick(0.5).toFixed(1).padStart(6)} ms  p95 ${pick(0.95).toFixed(1).padStart(6)} ms  (budget ${budget} ms)${over ? '  OVER' : ''}\n`);
+      process.stdout.write(`[hook-work] ${source.padEnd(8)} ${name.padEnd(18)} p50 ${pick(0.5).toFixed(1).padStart(6)} ms  p95 ${pick(0.95).toFixed(1).padStart(6)} ms  max ${sorted.at(-1)!.toFixed(1).padStart(6)} ms  (budget ${budget} ms)${over ? '  OVER' : ''}\n`);
     }
   }
 } finally {

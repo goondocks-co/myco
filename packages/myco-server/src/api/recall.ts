@@ -119,7 +119,8 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
   // a malformed request. Refusing it would cost that repository its whole
   // session block — the Project line, the instructions, everything — on every
   // session, to bind a name no caller looks up.
-  const named = body.remote;
+  // A preview binds nothing: no session start has named this repository yet.
+  const named = preview ? undefined : body.remote;
   if (named !== undefined) {
     if (typeof named !== 'string' || named.length > MAX_REMOTE_CHARS) {
       return Response.json(refused(ctx, refusal(`remote must be a string of at most ${MAX_REMOTE_CHARS} characters`, 'parse')));

@@ -427,10 +427,10 @@ describe('a helper that ends with the harness, found by a later kick', () => {
 });
 
 describe('the sweep a helper ends with', () => {
-  it('kicks every other project holding undelivered work, once a sweep interval, and none with nothing waiting', async () => {
+  it('kicks every other project holding undelivered work, once a sweep interval, and none with nothing waiting or latched offline', async () => {
     const rig = await memberRig();
-    const roots = ['a', 'b', 'c'].map((name) => fs.mkdtempSync(path.join(mycoHome, `root-${name}-`)));
-    for (const [i, projectId] of ['proj_1', 'proj_2', 'proj_3'].entries()) {
+    const roots = ['a', 'b', 'c', 'd'].map((name) => fs.mkdtempSync(path.join(mycoHome, `root-${name}-`)));
+    for (const [i, projectId] of ['proj_1', 'proj_2', 'proj_3', 'proj_4'].entries()) {
       registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId, expiresAt: rig.expiresAt, serverUrl: 'https://s', root: roots[i] });
     }
     // proj_2's last turn never reached the Deployment; proj_3 holds nothing.
@@ -438,8 +438,12 @@ describe('the sweep a helper ends with', () => {
     waiting.append('sess-left', promptEvent({ agent: 'claude-code', sessionId: 'sess-left', stage: waiting.stagerFor('sess-left') }, { promptId: mintId(), text: 'the last turn' }));
     fs.mkdirSync(new MemberSpool('proj_3', { mycoHome }).dir, { recursive: true });
     const starts: string[][] = [];
+    // proj_4 holds work too, but its Deployment is latched offline for the next hour: its own probe decides when it dials.
+    const latched = new MemberSpool('proj_4', { mycoHome });
+    latched.append('sess-latched', promptEvent({ agent: 'claude-code', sessionId: 'sess-latched', stage: latched.stagerFor('sess-latched') }, { promptId: mintId(), text: 'offline' }));
     const spawn: DetachedSpawn = (_command, args) => { starts.push([...args]); return { started: false }; };
     const clock = fakeTime(Date.now());
+    latched.markOffline(clock.now(), 3_600_000);
     const helperOf = () => runHelperVerb(['--project', 'proj_1', '--home', mycoHome], { keepStderr: true, now: clock.now, sleep: clock.sleep, lingerMs: 0, spawn, pass: async () => {} });
 
     await helperOf();

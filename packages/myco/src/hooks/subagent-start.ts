@@ -29,13 +29,14 @@ export async function main(opts: HookMainOptions = {}) {
     // served it names the session it reached.
     const due = takesInjection && !state.delivered.includes(delivered);
     const served = due ? renderedBlock(run.spool.dir, run.credential.projectId, 'subagent') : undefined;
+    // Delivered once the Deployment's block was: a delegation told its Project alone is served the block if it starts again.
     return {
       // The transcript carries the child's own turns for a symbiont that keeps
       // one; the start row would be a second write keyed to a minted parent.
       events: transcriptWritesTurnRows(run.agent) ? [] : [subagentStartEvent(run.ctx, run.input, { parentPromptId: state.promptId })],
-      response: served === undefined ? undefined : { additionalContext: served },
+      response: served === undefined ? undefined : { additionalContext: served.text },
       ask: due ? ask : undefined,
-      record: served === undefined ? undefined : (next) => { if (!next.delivered.includes(delivered)) next.delivered.push(delivered); },
+      record: served?.complete !== true ? undefined : (next) => { if (!next.delivered.includes(delivered)) next.delivered.push(delivered); },
     };
   });
 }

@@ -25,13 +25,13 @@ import type { DetachedSpawn as JoinSpawn } from './auto-join.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
-import { sessionDelivered } from './backlog.js';
+import { hookDelivered, type HookAppended } from './backlog.js';
 import { helperPass } from './helper-pass.js';
 import { refreshableRoot } from './refresh.js';
 import { readRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getMachineId } from '../machine-id.js';
 import type { SessionState } from './session-state.js';
-import { MemberSpool, type TurnEndMark } from './spool.js';
+import { MemberSpool, turnEndIdentity, type TurnEndMark } from './spool.js';
 import type { FetchLike } from './transport.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
 
@@ -221,6 +221,8 @@ export async function runMemberHook(
     const record = outcome.events.length > 0 || outcome.record || outcome.ask ? (state: SessionState) => {
       state.agent ??= input.agent;
       state.hookAt = now();
+      // A session id that hooks again after its end has resumed: its transcript waits on turn ends once more.
+      if (hookName !== 'session-end') delete state.endedAt;
       outcome.record?.(state);
       if (outcome.ask) state.contextAsks = withAsk(state.contextAsks, outcome.ask);
     } : undefined;
@@ -244,12 +246,16 @@ export async function runMemberHook(
       // in-process. That holds after a join code is redeemed too, though the credential then resolves from the
       // registry: what the command declares says where the hook runs, what it resolves only says what it holds.
       const detachable = source === 'registry';
+      const appended: HookAppended = {
+        eventIds: outcome.events.map((event) => event.envelope.eventId),
+        ...(outcome.turnEnd !== undefined ? { turnEnd: turnEndIdentity(outcome.turnEnd) } : {}),
+      };
       if (!detachable || (outcome.ends !== undefined && shipsInlineFlag(argv))) {
         markWork(target);
-        if (outcome.ends !== undefined) await shipInline(run, opts);
+        if (outcome.ends !== undefined) await shipInline(run, opts, appended);
       } else {
         const kicked: KickOutcome = kickHelper({ ...target, spawn: opts.helperSpawn, now });
-        if (outcome.ends !== undefined && shipsInline(kicked)) await shipInline(run, opts);
+        if (outcome.ends !== undefined && shipsInline(kicked)) await shipInline(run, opts, appended);
       }
     }
 
@@ -273,10 +279,11 @@ const INLINE_WAIT_MS = 100;
  * Run the member helper's pass in this process, within what is left of the hook's budget, and start no helper after
  * it: what a hook does when no helper can outlive it. Its own session's capture is delivered before any context is
  * asked for. A helper already holding the lock (one started inside the harness's Job Object, say) is delivering the
- * same work: the hook waits on it until its own session is delivered, or its budget is spent. A helper clears its
- * marks as a pass begins, not as it ends, so the marks say nothing of whether the work has reached the Deployment.
+ * same work: the hook waits on it until what this hook appended (`appended`) is delivered, or its budget is spent. A
+ * helper clears its marks as a pass begins, not as it ends, so the marks say nothing of whether the work has reached
+ * the Deployment; and the rest of the session (a subagent's transcript still growing) is not this hook's to wait on.
  */
-async function shipInline(run: HookRun, opts: HookMainOptions): Promise<void> {
+async function shipInline(run: HookRun, opts: HookMainOptions, appended: HookAppended): Promise<void> {
   const { projectId } = run.credential;
   const entry = run.credential.source === 'registry' ? undefined : environmentEntry(run.credential, run.mycoHome);
   const pass = helperPass(projectId, run.mycoHome, { fetch: opts.fetch, now: run.now, entry, captureFirst: true });
@@ -285,7 +292,7 @@ async function shipInline(run: HookRun, opts: HookMainOptions): Promise<void> {
     if (left <= 0) return;
     const result = await runHelper({ projectId, mycoHome: run.mycoHome, pass, now: run.now, deadlineMs: left, lingerMs: 0, noSuccessor: true });
     if (result.endedBy !== 'busy') return;
-    if (sessionDelivered(run.spool, run.sessionId)) return;
+    if (hookDelivered(run.spool, run.sessionId, appended)) return;
     if (run.budget.deadline - run.now() <= INLINE_WAIT_MS) return;
     await new Promise((resolve) => setTimeout(resolve, INLINE_WAIT_MS));
   }

@@ -1,7 +1,7 @@
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun } from '../member/capture.js';
 import { toolUseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planFileCapture, planRootFor, planWritePath } from '../member/plan-files.js';
-import { renderedBlock } from '../member/context-cache.js';
+import { projectLineOnly, renderedBlock } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
@@ -17,11 +17,14 @@ function sessionBlock(run: HookRun, state: SessionState): Pick<HookOutcome, 'res
   if (state.delivered.includes(delivered)) return {};
   const block = renderedBlock(run.spool.dir, run.credential.projectId, 'start');
   if (block === undefined) return {};
+  // Served whole once the helper has cached the block; until then the Project line, once, and the block asked for.
+  const servedAs = block.complete ? delivered : projectLineOnly(delivered);
+  if (state.delivered.includes(servedAs)) return {};
   return {
-    response: { additionalContext: block },
-    // Asked for by the session that renders it, once: the Deployment's record of having served it names this session.
+    response: { additionalContext: block.text },
+    // Asked for by the session that renders it: the Deployment's record of having served it names this session.
     ask: { kind: 'start', at: run.now() },
-    record: (next) => { if (!next.delivered.includes(delivered)) next.delivered.push(delivered); },
+    record: (next) => { if (!next.delivered.includes(servedAs)) next.delivered.push(servedAs); },
   };
 }
 

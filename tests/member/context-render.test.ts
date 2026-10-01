@@ -172,10 +172,12 @@ describe('a session start', () => {
 
   it('is asked for by the session that renders it, once: a resumed start asks nothing, and a block rendered on a tool call is asked for there', async () => {
     instructions('Asked by the renderer.');
+    // An earlier session's ask cached the block.
+    await runHook('session-start', { session_id: 'sess-earlier', transcript_path: transcript('sess-earlier'), cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch });
     const tx = transcript('sess-asker');
     await runHook('session-start', { session_id: 'sess-asker', transcript_path: tx, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch });
     const recorded = () => (rig.env.sqlite.query(`SELECT session_id FROM session_injections WHERE kind = 'cortex' ORDER BY session_id`).all() as Array<{ session_id: string }>).map((r) => r.session_id);
-    expect(recorded()).toEqual(['sess-asker']);
+    expect(recorded()).toEqual(['sess-asker', 'sess-earlier']);
     // Resumed: served nothing again, and nothing asked.
     const offline: FetchLike = async () => { throw new TypeError('fetch failed'); };
     await runHook('session-start', { session_id: 'sess-asker', transcript_path: tx, cwd: process.cwd(), source: 'resume' }, { fetch: offline });
@@ -183,7 +185,24 @@ describe('a session start', () => {
     // A harness that is served the block on its first tool call: that session renders it from the cache, and asks.
     const cursor = await runHook('post-tool-use', { session_id: 'sess-tool', transcript_path: transcript('sess-tool'), tool_name: 'Read', tool_input: { file_path: '/a' }, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch, symbiont: 'cursor' });
     expect(contextOf(cursor.stdout)).toContain('Asked by the renderer.');
-    expect(recorded()).toEqual(['sess-asker', 'sess-tool']);
+    expect(recorded()).toEqual(['sess-asker', 'sess-earlier', 'sess-tool']);
+  });
+
+  it('serves a session whose start found nothing cached its whole block on the next hook that can inject, once the helper has it', async () => {
+    instructions('Served whole, later.');
+    const tx = transcript('sess-late-block');
+    const input = { session_id: 'sess-late-block', transcript_path: tx, cwd: process.cwd(), tool_name: 'Read', tool_input: { file_path: '/a' } };
+    // Nothing cached: the Project line alone, which delivers no block. The helper this start kicks caches it.
+    const start = await runHook('session-start', input, { helpers: 'run', fetch: rig.fetch, symbiont: 'cursor' });
+    expect(contextOf(start.stdout)).not.toContain('Served whole, later.');
+    expect(readSessionState(spool().dir, 'sess-late-block').delivered).not.toContain('cortex');
+    const tool = () => runHook('post-tool-use', input, { helpers: 'run', fetch: rig.fetch, symbiont: 'cursor' });
+    const first = contextOf((await tool()).stdout);
+    expect(first).toContain(projectLine('proj_1'));
+    expect(first).toContain('Served whole, later.');
+    expect(readSessionState(spool().dir, 'sess-late-block').delivered).toContain('cortex');
+    // Once.
+    expect(contextOf((await tool()).stdout)).not.toContain('Served whole, later.');
   });
 
   it('serves a delegated agent its block once per delegation', async () => {

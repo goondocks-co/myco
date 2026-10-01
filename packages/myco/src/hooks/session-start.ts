@@ -5,7 +5,7 @@ import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../m
 import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
 import { compactionStart, recordCompaction } from '../member/compaction.js';
-import { renderedBlock, type ContextAsk, type SessionBlockKind } from '../member/context-cache.js';
+import { projectLineOnly, renderedBlock, type ContextAsk, type SessionBlockKind } from '../member/context-cache.js';
 import { BLOCK_JOIN } from '@goondocks/myco-shared/recall';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
@@ -22,11 +22,11 @@ export { readAntigravityPromptsFromTranscript } from '../member/transcript-promp
  * the session id under it: each on its own line, separated by a blank line, in the shape the harness receives them
  * in. Served once per session and kind.
  */
-function sessionStartBlock(run: HookRun, kind: SessionBlockKind, branch: string | undefined): HookResponse | undefined {
+function sessionStartBlock(run: HookRun, kind: SessionBlockKind, branch: string | undefined): { response: HookResponse; complete: boolean } | undefined {
   const block = renderedBlock(run.spool.dir, run.credential.projectId, kind);
   if (block === undefined) return undefined;
-  const lines = [block, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${run.sessionId}\``];
-  return { additionalContext: lines.join(BLOCK_JOIN) };
+  const lines = [block.text, ...(branch ? [`Branch:: \`${branch}\``] : []), `Session:: \`${run.sessionId}\``];
+  return { response: { additionalContext: lines.join(BLOCK_JOIN) }, complete: block.complete };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -65,7 +65,8 @@ export async function main(opts: HookMainOptions = {}) {
     // A symbiont whose harness discards a SessionStart answer is served nothing, and the helper fetches nothing for it.
     // One that has been served this kind already (a resumed session) is served nothing again, and asks nothing.
     const due = HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true && !readSessionState(run.spool.dir, sessionId).delivered.includes(delivered);
-    const response = due ? sessionStartBlock(run, ask.kind === 'compact' ? 'compact' : 'start', git.branch) : undefined;
+    const served = due ? sessionStartBlock(run, ask.kind === 'compact' ? 'compact' : 'start', git.branch) : undefined;
+    const response = served?.response;
     // A harness with no prompt hook writes its prompts only to its transcript: the helper reads them from it.
     const backfill = agent === TRANSCRIPT_PROMPTS_AGENT && transcriptPath ? { transcriptPath, at: run.now() } : undefined;
     return {
@@ -76,7 +77,9 @@ export async function main(opts: HookMainOptions = {}) {
       notice: HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true ? withNotice : undefined,
       record: (state) => {
         if (compacted) recordCompaction(state);
-        if (response !== undefined && !state.delivered.includes(delivered)) state.delivered.push(delivered);
+        // Delivered once the Deployment's block was; the Project line alone leaves it for a later hook to serve whole.
+        const servedAs = served === undefined ? undefined : served.complete ? delivered : projectLineOnly(delivered);
+        if (servedAs !== undefined && !state.delivered.includes(servedAs)) state.delivered.push(servedAs);
         if (backfill !== undefined) state.promptBackfill = backfill;
       },
     };

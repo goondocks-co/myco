@@ -164,7 +164,8 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   await seedMachineSettings({ serverUrl: code.serverUrl, token: answer.token }, { mycoHome, fetch: deps.fetch });
   // And the Project's blocks: the first session in the folder is served them whole.
   if (answer.projectId !== null && root !== undefined) {
-    await warmProjectContext({ serverUrl: code.serverUrl, token: answer.token, projectId: answer.projectId }, { mycoHome, fetch: deps.fetch, now: deps.now });
+    // A warm that fails costs the first session its block, never the sign-in.
+    await warmProjectContext({ serverUrl: code.serverUrl, token: answer.token, projectId: answer.projectId }, { mycoHome, fetch: deps.fetch, now: deps.now }).catch(() => 0);
   }
 
   const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);

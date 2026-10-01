@@ -496,6 +496,9 @@ describe('POST /context/session', () => {
       expect(String(sub.context)).toContain(SUBAGENT_CORTEX_GUIDANCE);
     }
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM session_injections`).get()).toEqual({ n: 0 });
+    // Nor does a preview bind the repository it names: no session start has named it.
+    expect((await answer(e, token, { kind: 'start', preview: true, remote: 'https://github.com/acme/previewed.git' })).persisted).toBe(true);
+    expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM project_remotes`).get()).toEqual({ n: 0 });
     // A preview names no session; one that does is refused, and the session's own start is served as ever.
     expect((await answer(e, token, { sessionId: 's1', kind: 'start', preview: true })).code).toBe('parse');
     expect((await answer(e, token, { sessionId: 's1', kind: 'start' })).context).toContain('Keep the plan current.');

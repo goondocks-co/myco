@@ -116,15 +116,20 @@ export function removeSessionContext(spoolDir: string, sessionId: string): void 
  * The block a session is served for `kind`, rendered here: the Project line, written from the session's own project
  * id, then what the Deployment composed for that kind as this machine last cached it (a compaction falls back to the
  * start's). A session is told its Project whether or not anything is cached yet: the line every Myco write needs comes
- * from no answer. A run with no project yet (a repository still joining) is served nothing.
+ * from no answer. `complete` says the Deployment's block was cached and rendered: only then is the block delivered,
+ * and a later hook that can inject renders it once it is. A run with no project yet (a repository still joining) is
+ * served nothing.
  */
-export function renderedBlock(spoolDir: string, projectId: string, kind: SessionBlockKind): string | undefined {
+export function renderedBlock(spoolDir: string, projectId: string, kind: SessionBlockKind): { text: string; complete: boolean } | undefined {
   if (projectId.length === 0) return undefined;
   const blocks = readProjectContext(spoolDir).blocks;
   const block = kind === 'compact' ? blocks.compact ?? blocks.start : blocks[kind];
   const body = block === undefined ? '' : withoutProjectLine(block.context);
-  return [projectLine(projectId), ...(body.length > 0 ? [body] : [])].join(BLOCK_JOIN);
+  return { text: [projectLine(projectId), ...(body.length > 0 ? [body] : [])].join(BLOCK_JOIN), complete: block !== undefined };
 }
+
+/** What a session's delivered list records when it was served the Project line of `delivered` alone. */
+export const projectLineOnly = (delivered: string): string => `${delivered}:project-line`;
 
 /** Whether the Deployment named `feature` on its last answer this machine holds. */
 export function featureAdvertised(spoolDir: string, feature: MemberFeature): boolean {

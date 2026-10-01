@@ -28,7 +28,7 @@ import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
 import { clearNonRotatingRefusal, refreshDue, refreshMemberCredential, rotatedCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
 import { pointerBehind, pointersOf, readSessionState, retryWaiting, turnsFileOf, updateSessionState, type SessionState } from './session-state.js';
-import { HOLD_ENDS, MemberSpool, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
+import { HOLD_ENDS, MemberSpool, turnEndIdentity, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
 import { featureAdvertised } from './context-cache.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
@@ -172,13 +172,22 @@ function labelSession(spool: MemberSpool, sessionId: string, state: SessionState
   return agent;
 }
 
+/** What one hook appended to a session: the records it spooled, and the turn-end mark it left (`turnEndIdentity`). */
+export interface HookAppended {
+  eventIds: readonly string[];
+  turnEnd?: string;
+}
+
 /**
- * Whether everything a session captured has reached the Deployment: no record left in its journal, no turn-end mark
- * left unconsumed, and no transcript behind its pointer. What a hook that must deliver before it exits waits for.
+ * Whether what one hook appended has reached the Deployment: none of its records is still waiting in the session's
+ * journal, and its turn-end mark has been consumed. What a hook that must deliver before it exits waits for: nothing
+ * else the session holds (a subagent's transcript still growing, a transcript waiting out a refusal) is its to wait on.
  */
-export function sessionDelivered(spool: MemberSpool, sessionId: string): boolean {
-  if (spool.depth(sessionId) > 0 || spool.pendingTurnEnds(sessionId).length > 0) return false;
-  return !pointersOf(readSessionState(spool.dir, sessionId)).some(pointerBehind);
+export function hookDelivered(spool: MemberSpool, sessionId: string, appended: HookAppended): boolean {
+  if (appended.turnEnd !== undefined && spool.pendingTurnEnds(sessionId).some((p) => turnEndIdentity(p.mark) === appended.turnEnd)) return false;
+  if (appended.eventIds.length === 0) return true;
+  const waiting = new Set(spool.readRecords(sessionId).slice(readSessionState(spool.dir, sessionId).highWater).flatMap((r) => (r === null ? [] : [r.eventId])));
+  return !appended.eventIds.some((id) => waiting.has(id));
 }
 
 /**
