@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test';
-import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch } from '@myco/server/cloudflare.js';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch, OPERATOR_NETWORK_RETRY_BUDGET_MS } from '@myco/server/cloudflare.js';
 import { refusedAccountCode, transientReadFailure } from '@myco/server/object-read.js';
 import { CommandFailed, CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
@@ -143,7 +143,11 @@ it('refuses oversized uploads and malformed acknowledgements without exposing re
 describe('the windows an object read waits in', () => {
   const login: CommandRunner = { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } };
   const timeouts = { responseMs: 150, stallMs: 150 };
-  const reader = (fetch: CloudflareFetch) => cloudflareBlobReader({ ...options, runner: login, fetch, timeouts });
+  const reader = (fetch: CloudflareFetch) => {
+    let clock = 0;
+    return cloudflareBlobReader({ ...options, runner: login, fetch, timeouts, report: () => {},
+      networkRetry: { now: () => clock, sleep: async () => { clock += OPERATOR_NETWORK_RETRY_BUDGET_MS; } } });
+  };
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   /** A request that answers only by honouring its signal, as a connection that never responds does. */
   const unanswered: CloudflareFetch = (_url, init) => new Promise((_, reject) => {
@@ -229,11 +233,11 @@ describe('the windows an object read waits in', () => {
     expect(signal?.aborted).toBe(true);
   }, 5_000);
 
-  it('ends a request whose response never begins, as a failure worth retrying', async () => {
+  it('ends a request whose response never begins after its connection budget is exhausted', async () => {
     const started = Date.now();
     const failure = await settled(reader(unanswered)('project/silent'));
-    expect(String(failure)).toContain('did not begin answering the read of project/silent');
-    expect(transientReadFailure(failure)).toBe(true);
+    expect(String(failure)).toContain('network unreachable after 15 minutes');
+    expect(transientReadFailure(failure)).toBe(false);
     expect(Date.now() - started).toBeLessThan(timeouts.responseMs * 10);
   }, 5_000);
 
@@ -254,10 +258,12 @@ describe('the failures a read may try again', () => {
     const unresolved = await settled(fetch('http://myco-recovery-fixture.invalid/'));
     expect(unresolved).not.toBeNull();
     expect(transientReadFailure(unresolved)).toBe(true);
-    // The same failure reaches a backup through the object reader unchanged.
+    // Exhausting the object reader's connection budget is terminal to the backup.
     const login: CommandRunner = { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } };
-    const read = cloudflareBlobReader({ ...options, runner: login, fetch: (_url, init) => fetch('http://127.0.0.1:1/', init) });
-    expect(transientReadFailure(await settled(read('project/key')))).toBe(true);
+    let clock = 0;
+    const read = cloudflareBlobReader({ ...options, runner: login, fetch: (_url, init) => fetch('http://127.0.0.1:1/', init),
+      networkRetry: { now: () => clock, sleep: async () => { clock += OPERATOR_NETWORK_RETRY_BUDGET_MS; } } });
+    expect(transientReadFailure(await settled(read('project/key')))).toBe(false);
   });
 
   it('tries again after a compressed body cut short, as the runtime reports it for each encoding', async () => {
@@ -320,5 +326,161 @@ describe('the provider command failures a read may try again', () => {
     expect(refusedAccountCode(new Error('wrapped', { cause: apiError('Authentication error [code: 10000]') }))).toBe('10000');
     expect(refusedAccountCode(apiError('Internal error [code: 10001]'))).toBeNull();
     expect(refusedAccountCode(new CommandTimedOut('npx', ['wrangler'], 60_000, 'ended'))).toBeNull();
+  });
+});
+
+describe('shared pre-header connection retries', () => {
+  it('retries explicit network failures for GET and PUT and response timeouts for GET with fresh upload bodies', async () => {
+    for (const method of ['GET', 'PUT'] as const) {
+      for (const error of [
+        Object.assign(new Error('DNS failed'), { code: 'ENOTFOUND' }),
+        Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }),
+        new Error('Unable to connect'),
+        ...(method === 'GET' ? [new DOMException('Cloudflare did not begin answering within 60 s', 'TimeoutError')] : []),
+      ]) {
+        let clock = 0;
+        let requests = 0;
+        let bodies = 0;
+        const store = cloudflareObjectStore({ ...options,
+          runner: { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } },
+          networkRetry: { now: () => clock, sleep: async (ms) => { clock += ms; }, random: () => 0.5 }, report: () => {},
+          fetch: async (_url, init) => {
+            requests++;
+            if (clock < 10 * 60_000) throw error;
+            if (method === 'PUT') expect(await new Response(init.body).text()).toBe('payload');
+            return method === 'GET' ? new Response('payload') : Response.json({ success: true });
+          },
+        });
+        if (method === 'GET') expect(await new Response(await store.get('project/key')).text()).toBe('payload');
+        else {
+          await store.put('project/key', () => { bodies++; return new Blob(['payload']); });
+          expect(bodies).toBe(requests);
+        }
+        expect(requests).toBeGreaterThan(6);
+        expect(clock).toBeGreaterThanOrEqual(10 * 60_000);
+        expect(clock).toBeLessThan(OPERATOR_NETWORK_RETRY_BUDGET_MS);
+      }
+    }
+  });
+
+  it('does not extend an error body or a timeout after response headers', async () => {
+    let pauses = 0;
+    let requests = 0;
+    const store = cloudflareObjectStore({ ...options,
+      runner: { async run() { return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' }; } },
+      networkRetry: { sleep: async () => { pauses++; } },
+      fetch: async (_url, init) => {
+        requests++;
+        return init.method === 'PUT' ? Response.json({ success: false, errors: ['Unable to connect'] })
+          : new Response(new ReadableStream({ start(controller) { controller.error(new DOMException('body timed out', 'TimeoutError')); } }));
+      },
+    });
+    await expect(new Response(await store.get('project/key')).text()).rejects.toThrow('body timed out');
+    await expect(store.put('project/key', () => new Blob())).rejects.toThrow('did not confirm');
+    expect(requests).toBe(2);
+    expect(pauses).toBe(0);
+  });
+});
+
+
+describe('object retry review contracts', () => {
+  const runner: CommandRunner = { async run() {
+    return { code: 0, stdout: JSON.stringify({ type: 'oauth', token: 'fixture' }), stderr: '' };
+  } };
+  function clock() {
+    let at = 0;
+    const pauses: number[] = [];
+    return { retry: { now: () => at, sleep: async (ms: number) => { pauses.push(ms); at += ms; }, random: () => 0.5 },
+      advance: (ms: number) => { at += ms; }, get at() { return at; }, pauses };
+  }
+
+  it('fails a slowly consumed PUT at its upload window after one attempt without network retries', async () => {
+    const time = clock();
+    let requests = 0;
+    let fireWindow: (() => void) | undefined;
+    const set = globalThis.setTimeout;
+    const timer = set(() => {}, 0);
+    clearTimeout(timer);
+    const schedule = Object.assign((handler: Parameters<typeof set>[0], ms?: number, ...args: unknown[]) => {
+      if (ms !== 120_000 || typeof handler !== 'function') return set(handler, ms, ...args);
+      fireWindow = () => handler(...args);
+      return timer;
+    }, set);
+    const window = spyOn(globalThis, 'setTimeout').mockImplementation(schedule);
+    try {
+      const store = cloudflareObjectStore({ ...options, runner, networkRetry: time.retry, report: () => {},
+        fetch: async (_url, init) => {
+          requests++;
+          if (!(init.body instanceof Blob)) throw new Error('expected an upload Blob');
+          const body = init.body.stream().getReader();
+          expect((await body.read()).value!.byteLength).toBeGreaterThan(0);
+          time.advance(60_000);
+          expect((await body.read()).value!.byteLength).toBeGreaterThan(0);
+          time.advance(60_001);
+          fireWindow!();
+          await body.cancel();
+          expect(init.signal!.aborted).toBe(true);
+          throw init.signal!.reason;
+        },
+      });
+      const failure = await store.put('project/slow-upload', () => new Blob([new Uint8Array(256 * 1024)]))
+        .then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(DOMException);
+      expect(String(failure)).toContain('within 120 s');
+      expect(String(failure)).not.toContain('network unreachable');
+      expect(requests).toBe(1);
+      expect(time.pauses).toEqual([]);
+    } finally { window.mockRestore(); }
+  });
+
+  it('rejects TLS and redirect errors immediately for GET and PUT without sleeping', async () => {
+    for (const method of ['GET', 'PUT'] as const) {
+      for (const error of [
+        new TypeError('fetch failed', { cause: Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' }) }),
+        new TypeError('unexpected redirect'),
+      ]) {
+        const time = clock();
+        let requests = 0;
+        const store = cloudflareObjectStore({ ...options, runner, networkRetry: time.retry, report: () => {},
+          fetch: async () => { requests++; throw error; },
+        });
+        const call = method === 'GET' ? store.get('project/tls') : store.put('project/tls', () => new Blob());
+        expect(await call.then(() => null, (failure: unknown) => failure)).toBe(error);
+        expect(requests).toBe(1);
+        expect(time.pauses).toEqual([]);
+      }
+    }
+  });
+
+  it('keeps the object deadline through a credential refresh after recovery at fourteen minutes', async () => {
+    for (const method of ['GET', 'PUT'] as const) {
+      const time = clock();
+      let refreshed = false;
+      let logins = 0;
+      const store = cloudflareObjectStore({ ...options,
+        runner: { async run(...args) { logins++; return runner.run(...args); } },
+        networkRetry: time.retry, report: () => {}, fetch: async () => {
+          if (time.at >= 14 * 60_000 && !refreshed) { refreshed = true; return new Response(null, { status: 401 }); }
+          throw Object.assign(new Error('DNS still unavailable after refresh'), { code: 'EAI_AGAIN' });
+        },
+      });
+      const call = method === 'GET' ? store.get('project/refresh') : store.put('project/refresh', () => new Blob());
+      await expect(call).rejects.toThrow('network unreachable after 15 minutes');
+      expect(refreshed).toBe(true);
+      expect(logins).toBe(2);
+      expect(time.at).toBe(OPERATOR_NETWORK_RETRY_BUDGET_MS);
+    }
+  });
+
+  it('names the object key and the nested connection cause when its budget expires', async () => {
+    const time = clock();
+    const store = cloudflareObjectStore({ ...options, runner, networkRetry: time.retry, report: () => {}, fetch: async () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('DNS fixture unavailable'), { code: 'ENOTFOUND' }) });
+    } });
+    const failure = await store.get('project/diagnostic-object').then(() => '', (error: unknown) => String(error));
+    expect(failure).toContain('network unreachable after 15 minutes');
+    expect(failure).toContain('project/diagnostic-object');
+    expect(failure).toContain('fetch failed');
+    expect(failure).toContain('DNS fixture unavailable');
   });
 });

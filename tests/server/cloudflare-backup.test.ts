@@ -34,6 +34,15 @@ const literal = (value: unknown): string => {
   return String(value);
 };
 
+function simulatedNetwork() {
+  let at = 0;
+  const pauses: number[] = [];
+  return {
+    retry: { now: () => at, sleep: async (ms: number) => { pauses.push(ms); at += ms; }, random: () => 0.5 },
+    advance: (ms: number) => { at += ms; }, get at() { return at; }, pauses,
+  };
+}
+
 function fixture() {
   const source = sqliteEnv();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cloud-backup-'));
@@ -173,9 +182,9 @@ function fixture() {
     blobSource: `proj_1/${digest}~${generation}`,
     fetchObject,
     drift: () => { drift = true; }, downloadFails: (value: boolean) => { downloadFails = value; },
-    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; report?: (line: string) => void; retry?: RecoveryRetryPolicy; d1Export?: Parameters<typeof backupCloudflareDeployment>[0]['d1Export']; destination?: string } = {}) =>
+    backup: (use: { fetch?: CloudflareFetch; runner?: CommandRunner; timeouts?: OperatorObjectTimeouts; networkRetry?: Parameters<typeof backupCloudflareDeployment>[0]['networkRetry']; report?: (line: string) => void; retry?: RecoveryRetryPolicy; d1Export?: Parameters<typeof backupCloudflareDeployment>[0]['d1Export']; destination?: string } = {}) =>
       backupCloudflareDeployment({ accountId: record.accountId, mycoHome, destination: use.destination ?? destination, runner: use.runner ?? runner,
-        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, report: use.report, d1Export: use.d1Export ?? { pollMs: 0, sleep: async () => {} } }),
+        fetch: use.fetch ?? fetchObject, retry: use.retry ?? IMMEDIATE_RETRY, timeouts: use.timeouts, networkRetry: use.networkRetry ?? simulatedNetwork().retry, report: use.report, d1Export: use.d1Export ?? { pollMs: 0, sleep: async () => {} } }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -391,10 +400,7 @@ it('retries an object read that times out, and completes a verified artifact', a
     const result = await f.backup({ fetch, report: (line) => reports.push(line) });
     expect(result.status).toBe('complete');
     expect(reads).toBe(3);
-    expect(reports.filter((line) => line.includes('The operation timed out.'))).toEqual([
-      expect.stringContaining(`(attempt 2 of ${RECOVERY_RETRY.objectReads.attempts})`),
-      expect.stringContaining(`(attempt 3 of ${RECOVERY_RETRY.objectReads.attempts})`),
-    ]);
+    expect(reports.filter((line) => line.includes('attempt'))).toEqual([]);
     expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
     expect(new Uint8Array(fs.readFileSync(path.join(f.destination, 'blobs', 'proj_1', f.digest)))).toEqual(f.bytes);
   } finally { f.cleanup(); }
@@ -451,7 +457,7 @@ it('fails at once on a credential refused after its refresh, without retrying it
   } finally { f.cleanup(); }
 });
 
-it('gives up on an object whose every read times out, naming how many attempts it made', async () => {
+it('gives up on an object whose response never begins, naming its total network budget', async () => {
   const f = fixture();
   try {
     let reads = 0;
@@ -459,9 +465,8 @@ it('gives up on an object whose every read times out, naming how many attempts i
       if (String(input).endsWith(f.blobSource)) { reads += 1; throw timedOut(); }
       return f.fetchObject(input, init);
     };
-    const { attempts } = RECOVERY_RETRY.objectReads;
-    await expect(f.backup({ fetch })).rejects.toThrow(`was not stored after ${attempts} attempts: The operation timed out.`);
-    expect(reads).toBe(attempts);
+    await expect(f.backup({ fetch })).rejects.toThrow('network unreachable after 15 minutes');
+    expect(reads).toBeGreaterThan(RECOVERY_RETRY.objectReads.attempts);
     expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('content');
   } finally { f.cleanup(); }
 });
@@ -973,4 +978,159 @@ it('ends the source read when the destination fails to store its bytes', async (
     await expect(f.backup({ fetch })).rejects.toThrow('was not stored: no space left on device');
     expect(signal?.aborted).toBe(true);
   } finally { full.mockRestore(); f.cleanup(); }
+});
+
+describe('hosted backup connection outage budget', () => {
+  function outage(f: ReturnType<typeof fixture>, clock: ReturnType<typeof simulatedNetwork>, answer: () => Response, duration = 10 * 60_000) {
+    let connections = 0;
+    let responses = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.endsWith(f.blobSource)) return f.fetchObject(url, init);
+      if (clock.at < duration) {
+        connections++;
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('DNS lookup failed'), { code: 'EAI_AGAIN' }) });
+      }
+      responses++;
+      return answer();
+    };
+    return { fetch, connections: () => connections, responses: () => responses };
+  }
+
+  it('completes and verifies a backup when a connection outage clears after ten simulated minutes', async () => {
+    const f = fixture();
+    try {
+      const clock = simulatedNetwork();
+      const api = outage(f, clock, () => new Response(f.bytes));
+      expect((await f.backup({ fetch: api.fetch, networkRetry: clock.retry })).status).toBe('complete');
+      expect(clock.at).toBeGreaterThanOrEqual(10 * 60_000);
+      expect(clock.at).toBeLessThan(15 * 60_000);
+      expect(api.connections()).toBeGreaterThan(RECOVERY_RETRY.objectReads.attempts);
+      expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+      expect(clock.pauses.every((ms) => ms > 0 && ms <= cloudflare.OPERATOR_NETWORK_BACKOFF_MAX_MS)).toBe(true);
+    } finally { f.cleanup(); }
+  });
+
+  it('fails a persistent connection outage after fifteen minutes without restarting the budget', async () => {
+    const f = fixture();
+    try {
+      const clock = simulatedNetwork();
+      const api = outage(f, clock, () => new Response(f.bytes), Infinity);
+      await expect(f.backup({ fetch: api.fetch, networkRetry: clock.retry })).rejects.toThrow('network unreachable after 15 minutes');
+      expect(clock.at).toBe(cloudflare.OPERATOR_NETWORK_RETRY_BUDGET_MS);
+      expect(api.responses()).toBe(0);
+      expect(api.connections()).toBeGreaterThan(RECOVERY_RETRY.objectReads.attempts);
+    } finally { f.cleanup(); }
+  });
+
+  it('retains the six-attempt HTTP 500 bound after a connection outage clears', async () => {
+    const f = fixture();
+    try {
+      const clock = simulatedNetwork();
+      const api = outage(f, clock, () => new Response('unavailable', { status: 500 }));
+      await expect(f.backup({ fetch: api.fetch, networkRetry: clock.retry })).rejects.toThrow('after 6 attempts');
+      expect(api.responses()).toBe(RECOVERY_RETRY.objectReads.attempts);
+      expect(api.connections()).toBeGreaterThan(RECOVERY_RETRY.objectReads.attempts);
+      expect(clock.at).toBeLessThan(cloudflare.OPERATOR_NETWORK_RETRY_BUDGET_MS);
+    } finally { f.cleanup(); }
+  });
+
+  it('fails a checksum mismatch immediately after a connection outage clears', async () => {
+    const f = fixture();
+    try {
+      const clock = simulatedNetwork();
+      const api = outage(f, clock, () => new Response(new Uint8Array([9, 9, 9, 9, 9])));
+      await expect(f.backup({ fetch: api.fetch, networkRetry: clock.retry })).rejects.toThrow('sha256');
+      expect(api.responses()).toBe(1);
+      expect(api.connections()).toBeGreaterThan(RECOVERY_RETRY.objectReads.attempts);
+      expect(storedFiles(f.destination).filter((name) => name.startsWith('proj_1'))).toEqual([]);
+    } finally { f.cleanup(); }
+  });
+
+  it('reports a continuing outage at most once per simulated minute', async () => {
+    const f = fixture();
+    try {
+      const clock = simulatedNetwork();
+      const api = outage(f, clock, () => new Response(f.bytes));
+      const reports: { at: number; line: string }[] = [];
+      await f.backup({ fetch: api.fetch, networkRetry: clock.retry, report: (line) => {
+        if (line.startsWith('network unreachable;')) reports.push({ at: clock.at, line });
+      } });
+      expect(reports.length).toBeGreaterThan(0);
+      for (let i = 0; i < reports.length; i++) {
+        expect(reports[i]!.line).toBe(`network unreachable; still retrying (${Math.floor(reports[i]!.at / 60_000)}m)`);
+        expect(reports[i]!.at - (reports[i - 1]?.at ?? 0)).toBeGreaterThanOrEqual(60_000);
+      }
+    } finally { f.cleanup(); }
+  });
+});
+
+
+it('keeps one object deadline when a fourteen-minute outage clears and the response body then resets', async () => {
+  const f = fixture();
+  try {
+    const clock = simulatedNetwork();
+    let answered = false;
+    let responses = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.endsWith(f.blobSource)) return f.fetchObject(url, init);
+      if (clock.at >= 14 * 60_000 && !answered) {
+        answered = true;
+        responses++;
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+          controller.enqueue(f.bytes.slice(0, 2));
+          controller.error(Object.assign(new Error('response body reset'), { code: 'ECONNRESET' }));
+        } }));
+      }
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('DNS outage returned'), { code: 'EAI_AGAIN' }) });
+    };
+    const failure = await f.backup({ fetch, networkRetry: clock.retry }).then(() => '', (error: unknown) => String(error));
+    expect(responses).toBe(1);
+    expect(failure).toContain('network unreachable after 15 minutes');
+    expect(failure).toContain(f.blobSource);
+    expect(failure).toContain('DNS outage returned');
+    expect(clock.at).toBe(cloudflare.OPERATOR_NETWORK_RETRY_BUDGET_MS);
+    expect(storedFiles(f.destination).filter((name) => name.startsWith('proj_1'))).toEqual([]);
+  } finally { f.cleanup(); }
+});
+
+
+it('gives each backup object its own connection retry budget', async () => {
+  const f = fixture();
+  try {
+    const clock = simulatedNetwork();
+    const started = new Map<string, number>();
+    const fetch: CloudflareFetch = async (url, init) => {
+      const key = [f.blobSource, f.backupKey].find((candidate) => url.endsWith(candidate));
+      if (key === undefined) return f.fetchObject(url, init);
+      if (!started.has(key)) started.set(key, clock.at);
+      if (clock.at - started.get(key)! < 10 * 60_000) throw Object.assign(new Error('DNS unavailable'), { code: 'EAI_AGAIN' });
+      return f.fetchObject(url, init);
+    };
+    expect((await f.backup({ fetch, networkRetry: clock.retry })).status).toBe('complete');
+    expect(started.size).toBe(2);
+    expect(clock.at).toBeGreaterThanOrEqual(20 * 60_000);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+  } finally { f.cleanup(); }
+});
+
+it('retains HTTP attempt bounds after a healthy long body outlasts an earlier connection budget', async () => {
+  const f = fixture();
+  try {
+    const clock = simulatedNetwork();
+    let answered = false;
+    let httpFailures = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.endsWith(f.blobSource)) return f.fetchObject(url, init);
+      if (answered) { httpFailures++; return new Response(null, { status: 500 }); }
+      if (clock.at < 14 * 60_000) throw Object.assign(new Error('DNS unavailable'), { code: 'EAI_AGAIN' });
+      answered = true;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(f.bytes.slice(0, 2));
+        clock.advance(20 * 60_000);
+        controller.error(Object.assign(new Error('body reset'), { code: 'ECONNRESET' }));
+      } }));
+    };
+    await expect(f.backup({ fetch, networkRetry: clock.retry })).rejects.toThrow('after 6 attempts: Cloudflare object read failed');
+    expect(httpFailures).toBe(RECOVERY_RETRY.objectReads.attempts - 1);
+  } finally { f.cleanup(); }
 });
