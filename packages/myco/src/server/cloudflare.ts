@@ -21,7 +21,7 @@ import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 import { withCloudflareOperation } from './cloudflare-operation.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
-import { connectionFailure, ObjectReadError, transientStatus } from './object-read.js';
+import { connectionFailure, objectReadFailureDetail, ObjectReadError, transientStatus } from './object-read.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
 export class AccountNotSelected extends Error {
@@ -470,6 +470,13 @@ export interface OperatorObjectOptions {
   networkRetry?: OperatorNetworkRetry;
   report?: (line: string) => void;
 }
+interface OperatorObjectBudget {
+  started: number | null;
+  deadline: number;
+  lastReport: number;
+  backoff: number;
+  failure: unknown;
+}
 export type CloudflareFetch = (url: string, init: RequestInit) => Promise<Response>;
 const headerValue = z.string().min(1).regex(/^[\x21-\x7e]+$/);
 const operatorCredentials = z.discriminatedUnion('type', [
@@ -555,7 +562,7 @@ export function operatorLogin(options: CloudflareOptions): OperatorLogin {
 /** Stream R2 transfers through one origin and one in-memory operator credential. */
 export function cloudflareObjectStore(
   options: CloudflareOptions & OperatorObjectOptions,
-): { get(key: string): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
+): { get(key: string, readScope?: object): Promise<ReadableStream | null>; put(key: string, body: () => Blob): Promise<void> } {
   const fetchObject = options.fetch ?? globalThis.fetch;
   const timeouts = options.timeouts ?? OPERATOR_OBJECT_TIMEOUTS;
   const operator = options.login ?? operatorLogin(options);
@@ -563,24 +570,23 @@ export function cloudflareObjectStore(
   const sleep = options.networkRetry?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const random = options.networkRetry?.random ?? Math.random;
   const report = options.report ?? ((line: string) => console.error(line));
-  const connectedFetch = async (url: string, init: () => RequestInit, responseMs: number, message: string): Promise<{ response: Response; abort: (reason: Error) => void; finish: () => void }> => {
-    const started = now();
-    const deadline = started + OPERATOR_NETWORK_RETRY_BUDGET_MS;
-    let lastReport = started;
-    let backoff = OPERATOR_NETWORK_BACKOFF_MIN_MS;
-    let failure: unknown;
+  const budgets = new WeakMap<object, OperatorObjectBudget>();
+  const connectedFetch = async (key: string, url: string, init: () => RequestInit, responseMs: number, message: string, budget: OperatorObjectBudget): Promise<{ response: Response; abort: (reason: Error) => void; finish: () => void }> => {
+    let retrying = false;
     const exhausted = (): ObjectReadError => new ObjectReadError(
-      `Cloudflare network unreachable after ${OPERATOR_NETWORK_RETRY_BUDGET_MS / 60_000} minutes; object request did not receive response headers`,
-      { transient: false, cause: failure },
+      `Cloudflare network unreachable after ${OPERATOR_NETWORK_RETRY_BUDGET_MS / 60_000} minutes for object ${key}; no response headers: ${objectReadFailureDetail(budget.failure)}`,
+      { transient: false, cause: budget.failure },
     );
     for (;;) {
-      if (now() >= deadline) throw exhausted();
+      if (retrying && now() >= budget.deadline) throw exhausted();
       const requestInit = init();
       const ending = new AbortController();
       const abort = (reason: Error): void => { ending.abort(reason); };
       const attemptStarted = now();
       const timeout = (): void => abort(new DOMException(message, 'TimeoutError'));
-      let timer = setTimeout(timeout, Math.min(responseMs, deadline - now()));
+      const windowMs = requestInit.method === 'PUT' ? responseMs
+        : Math.min(responseMs, budget.deadline > now() ? budget.deadline - now() : responseMs);
+      let timer = setTimeout(timeout, windowMs);
       try {
         const response = await fetchObject(url, { ...requestInit, signal: ending.signal });
         clearTimeout(timer);
@@ -588,31 +594,43 @@ export function cloudflareObjectStore(
         return { response, abort, finish: () => clearTimeout(timer) };
       } catch (error) {
         clearTimeout(timer);
-        failure = ending.signal.aborted ? ending.signal.reason : error;
-        if (!connectionFailure(failure)) throw error;
+        const failure = ending.signal.aborted ? ending.signal.reason : error;
+        if (!connectionFailure(failure, requestInit.method !== 'PUT')) throw error;
+        budget.failure = failure;
+        if (budget.started === null) {
+          budget.started = attemptStarted;
+          budget.deadline = attemptStarted + OPERATOR_NETWORK_RETRY_BUDGET_MS;
+          budget.lastReport = attemptStarted;
+        }
+        retrying = true;
       }
-      const elapsed = now() - started;
-      if (now() >= deadline) throw exhausted();
-      if (now() - lastReport >= OPERATOR_NETWORK_REPORT_INTERVAL_MS) {
+      const elapsed = now() - budget.started!;
+      if (now() >= budget.deadline) throw exhausted();
+      if (now() - budget.lastReport >= OPERATOR_NETWORK_REPORT_INTERVAL_MS) {
         report(`network unreachable; still retrying (${Math.floor(elapsed / 60_000)}m)`);
-        lastReport = now();
+        budget.lastReport = now();
       }
-      const jittered = backoff * (OPERATOR_NETWORK_JITTER_FLOOR + random() * (1 - OPERATOR_NETWORK_JITTER_FLOOR));
-      await sleep(Math.min(jittered, deadline - now()));
-      backoff = Math.min(backoff * 2, OPERATOR_NETWORK_BACKOFF_MAX_MS);
+      const jittered = budget.backoff * (OPERATOR_NETWORK_JITTER_FLOOR + random() * (1 - OPERATOR_NETWORK_JITTER_FLOOR));
+      await sleep(Math.min(jittered, Math.max(0, budget.deadline - now())));
+      budget.backoff = Math.min(budget.backoff * 2, OPERATOR_NETWORK_BACKOFF_MAX_MS);
     }
   };
   /**
    * One request, with the credential refreshed once on a 401 or 403. A read's window closes when its response begins,
    * and `abort` ends the request afterwards; an upload's window covers the request and its acknowledgement.
    */
-  const request = async (key: string, method: 'GET' | 'PUT', body?: () => Blob): Promise<{ response: Response; abort: (reason: Error) => void; finish: () => void }> => {
+  const request = async (key: string, method: 'GET' | 'PUT', body?: () => Blob, readScope: object = {}): Promise<{ response: Response; abort: (reason: Error) => void; finish: () => void }> => {
     const segment = (value: string): string => {
       if (value === '' || value === '.' || value === '..') throw new Error('Cloudflare object path has an invalid segment');
       return encodeURIComponent(value);
     };
     const objectPath = key.split('/').map(segment).join('/');
     const url = `https://api.cloudflare.com/client/v4/accounts/${segment(options.accountId)}/r2/buckets/${segment(options.bucketName)}/objects/${objectPath}`;
+    let budget = budgets.get(readScope);
+    if (budget === undefined) {
+      budget = { started: null, deadline: Infinity, lastReport: 0, backoff: OPERATOR_NETWORK_BACKOFF_MIN_MS, failure: undefined };
+      budgets.set(readScope, budget);
+    }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const used = operator.current();
       const headers = new Headers(await used);
@@ -620,7 +638,7 @@ export function cloudflareObjectStore(
         // R2 otherwise gzips the object in transit; asking for its stored bytes avoids a decode a lost connection can cut short.
         headers.set('accept-encoding', 'identity');
       }
-      const { response, abort, finish } = await connectedFetch(url, () => {
+      const { response, abort, finish } = await connectedFetch(key, url, () => {
         const content = body?.();
         if (content !== undefined) {
           if (content.size > OPERATOR_UPLOAD_MAX_BYTES) throw new Error('Cloudflare operator uploads are limited to 300 MB per object');
@@ -630,7 +648,7 @@ export function cloudflareObjectStore(
         return { method, headers, ...(content === undefined ? {} : { body: content }), redirect: 'error' };
       }, method === 'GET' ? timeouts.responseMs : OPERATOR_UPLOAD_TIMEOUT_MS,
       method === 'GET' ? `Cloudflare did not begin answering the read of ${key} within ${seconds(timeouts.responseMs)}`
-        : `Cloudflare did not begin answering the write of ${key} within ${seconds(OPERATOR_UPLOAD_TIMEOUT_MS)}`);
+        : `Cloudflare did not begin answering the write of ${key} within ${seconds(OPERATOR_UPLOAD_TIMEOUT_MS)}`, budget);
       if ((response.status === 401 || response.status === 403) && attempt === 0) {
         try { await response.body?.cancel(); } finally { finish(); }
         operator.refused(used);
@@ -641,8 +659,8 @@ export function cloudflareObjectStore(
     throw new Error('Cloudflare refused the refreshed operator credential');
   };
   return {
-    async get(key) {
-      const { response, abort } = await request(key, 'GET');
+    async get(key, readScope) {
+      const { response, abort } = await request(key, 'GET', undefined, readScope);
       if (response.status === 404) { await response.body?.cancel(); return null; }
       if (response.status !== 200 || response.body === null) {
         await response.body?.cancel();
@@ -667,10 +685,10 @@ export function cloudflareObjectStore(
 /** Required backup objects must exist; a missing source is a failed backup. */
 export function cloudflareBlobReader(
   options: CloudflareOptions & OperatorObjectOptions,
-): (key: string) => Promise<ReadableStream> {
+): (key: string, readScope?: object) => Promise<ReadableStream> {
   const store = cloudflareObjectStore(options);
-  return async (key) => {
-    const body = await store.get(key);
+  return async (key, readScope) => {
+    const body = await store.get(key, readScope);
     if (body === null) throw new ObjectReadError(`Cloudflare object read failed for ${key} (HTTP 404); retry the backup after resolving the source failure`, { transient: false });
     return body;
   };

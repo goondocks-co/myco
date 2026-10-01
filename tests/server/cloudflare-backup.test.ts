@@ -39,7 +39,7 @@ function simulatedNetwork() {
   const pauses: number[] = [];
   return {
     retry: { now: () => at, sleep: async (ms: number) => { pauses.push(ms); at += ms; }, random: () => 0.5 },
-    get at() { return at; }, pauses,
+    advance: (ms: number) => { at += ms; }, get at() { return at; }, pauses,
   };
 }
 
@@ -1062,4 +1062,75 @@ describe('hosted backup connection outage budget', () => {
       }
     } finally { f.cleanup(); }
   });
+});
+
+
+it('keeps one object deadline when a fourteen-minute outage clears and the response body then resets', async () => {
+  const f = fixture();
+  try {
+    const clock = simulatedNetwork();
+    let answered = false;
+    let responses = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.endsWith(f.blobSource)) return f.fetchObject(url, init);
+      if (clock.at >= 14 * 60_000 && !answered) {
+        answered = true;
+        responses++;
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+          controller.enqueue(f.bytes.slice(0, 2));
+          controller.error(Object.assign(new Error('response body reset'), { code: 'ECONNRESET' }));
+        } }));
+      }
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('DNS outage returned'), { code: 'EAI_AGAIN' }) });
+    };
+    const failure = await f.backup({ fetch, networkRetry: clock.retry }).then(() => '', (error: unknown) => String(error));
+    expect(responses).toBe(1);
+    expect(failure).toContain('network unreachable after 15 minutes');
+    expect(failure).toContain(f.blobSource);
+    expect(failure).toContain('DNS outage returned');
+    expect(clock.at).toBe(cloudflare.OPERATOR_NETWORK_RETRY_BUDGET_MS);
+    expect(storedFiles(f.destination).filter((name) => name.startsWith('proj_1'))).toEqual([]);
+  } finally { f.cleanup(); }
+});
+
+
+it('gives each backup object its own connection retry budget', async () => {
+  const f = fixture();
+  try {
+    const clock = simulatedNetwork();
+    const started = new Map<string, number>();
+    const fetch: CloudflareFetch = async (url, init) => {
+      const key = [f.blobSource, f.backupKey].find((candidate) => url.endsWith(candidate));
+      if (key === undefined) return f.fetchObject(url, init);
+      if (!started.has(key)) started.set(key, clock.at);
+      if (clock.at - started.get(key)! < 10 * 60_000) throw Object.assign(new Error('DNS unavailable'), { code: 'EAI_AGAIN' });
+      return f.fetchObject(url, init);
+    };
+    expect((await f.backup({ fetch, networkRetry: clock.retry })).status).toBe('complete');
+    expect(started.size).toBe(2);
+    expect(clock.at).toBeGreaterThanOrEqual(20 * 60_000);
+    expect((await verifyRecoveryBundle(f.destination)).status).toBe('complete');
+  } finally { f.cleanup(); }
+});
+
+it('retains HTTP attempt bounds after a healthy long body outlasts an earlier connection budget', async () => {
+  const f = fixture();
+  try {
+    const clock = simulatedNetwork();
+    let answered = false;
+    let httpFailures = 0;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!url.endsWith(f.blobSource)) return f.fetchObject(url, init);
+      if (answered) { httpFailures++; return new Response(null, { status: 500 }); }
+      if (clock.at < 14 * 60_000) throw Object.assign(new Error('DNS unavailable'), { code: 'EAI_AGAIN' });
+      answered = true;
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(f.bytes.slice(0, 2));
+        clock.advance(20 * 60_000);
+        controller.error(Object.assign(new Error('body reset'), { code: 'ECONNRESET' }));
+      } }));
+    };
+    await expect(f.backup({ fetch, networkRetry: clock.retry })).rejects.toThrow('after 6 attempts: Cloudflare object read failed');
+    expect(httpFailures).toBe(RECOVERY_RETRY.objectReads.attempts - 1);
+  } finally { f.cleanup(); }
 });

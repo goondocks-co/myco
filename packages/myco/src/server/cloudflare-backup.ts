@@ -152,6 +152,6 @@ export async function backupCloudflareDeployment(
       releaseD1Export(exportContext);
       return { configuration: { ...recorded }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
     },
-    blob: async (blob) => readBlob(blob.source),
+    blob: async (blob) => readBlob(blob.source, blob),
   }, options.report, options.retry);
 }
