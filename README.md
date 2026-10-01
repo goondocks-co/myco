@@ -55,9 +55,9 @@ On Windows x64 (PowerShell):
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents. Then `myco open` launches the dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
+Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents. Once a project has joined a Deployment, `myco open` opens that Deployment's dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
 
-You can also open the dashboard directly at [http://localhost:20915/](http://localhost:20915/). If your local install reports a different service URL, `myco open` will open the right one.
+The dashboard is served by your Deployment, not by the local install: open it at the Deployment's address, or run `myco open` inside a project that has joined it.
 
 Already have Node? `npm install -g @goondocks/myco` also works — it's a thin bootstrap that converges to the same native binary.
 
@@ -71,9 +71,9 @@ See [Quickstart](docs/quickstart.md) for setup details and platform notes, and [
 
 ## Upgrade
 
-Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page.
+Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle.
 
-No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel stable|beta`, but the automatic and dashboard paths are the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
+No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel stable|beta`, but the automatic path is the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
 
 Team Host operator commands (`myco host`, `myco join`, `myco attach`) are part of the main binary and upgrade with it — no separate package.
 
@@ -127,7 +127,7 @@ Agents can still use their own memory and tools. Myco adds shared project contex
 
 ### Dashboard
 
-A local web dashboard provides configuration and operations management. Manage Groves and projects, configure providers, approve skill candidates, trigger intelligence and digest cycles, monitor service health, and view live logs.
+Your Deployment serves the web dashboard. Read the day's sessions and Myco's work across every project, browse the spores and plans it keeps, manage members and their machines, configure models, capture, backups and sign-in, and watch the Deployment's health.
 
 Use the [Grove Management guide](docs/groves.md) to decide when to create additional Groves, move or archive projects, and toggle per-project capabilities such as Cortex, Canopy, Skills, and Vault Evolution.
 

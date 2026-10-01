@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev worktree-sweep ui-dev daemon-dev dev ui ui-myco
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev worktree-sweep daemon-dev
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -71,55 +71,13 @@ watch:
 clean:
 	rm -rf packages/myco/dist packages/myco-shared/dist
 
-# Build the daemon UI bundle without running the
-# rest of the quality gate or the host-target compile. Useful when iterating
-# on frontend changes that ship inside the daemon binary — re-run after
-# editing UI source so `bun packages/myco/src/entries/cli.ts daemon` picks up
-# the freshly built `dist/`.
-ui: ui-myco
-
-ui-myco:
-	cd packages/myco/ui && npx vite build
-
 install:
 	npm install
-
-ui-dev:
-	@port=$${MYCO_DAEMON_PORT:-$$(node -e ' \
-		var fs=require("fs"),p=require("path"),v=p.join(require("os").homedir(),".myco/service"); \
-		try{console.log(JSON.parse(fs.readFileSync(p.join(v,"daemon.json"),"utf-8")).port);process.exit(0)}catch{} \
-		try{var y=fs.readFileSync(p.join(v,"myco.yaml"),"utf-8"),m=y.match(/^\\s*port:\\s*(\\d+)/m);if(m){console.log(m[1]);process.exit(0)}}catch{} \
-		console.log(19200)')}; \
-	echo "Proxying API to daemon on port $$port (override with MYCO_DAEMON_PORT=<port> make ui-dev)"; \
-	cd packages/myco/ui && MYCO_DAEMON_PORT=$$port npx vite dev
-
 
 daemon-dev:
 	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
 	echo "Starting watched daemon with UI dev proxy $$proxy (MYCO_HOME=$(HOME)/.myco-dev)"; \
 	MYCO_HOME=$(HOME)/.myco-dev MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
-
-dev:
-	@ui_port=$${MYCO_UI_DEV_PORT:-5173}; \
-	daemon_port=$${MYCO_DAEMON_PORT:-$$(node -e ' \
-		var fs=require("fs"),p=require("path"); \
-		var root=process.cwd(); \
-		var daemonJson=p.join(root,".myco","daemon.json"); \
-		var configPath=p.join(root,".myco","myco.yaml"); \
-		try{console.log(JSON.parse(fs.readFileSync(daemonJson,"utf-8")).port);process.exit(0)}catch{} \
-		try{var y=fs.readFileSync(configPath,"utf-8"),m=y.match(/^\s*port:\s*(\d+)/m);if(m){console.log(m[1]);process.exit(0)}}catch{} \
-		console.log(19200)')}; \
-	proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:$$ui_port}; \
-	echo "Starting watched daemon (expected port $$daemon_port) with UI proxy $$proxy"; \
-	echo "Open http://127.0.0.1:$$daemon_port/ for integrated dev or http://127.0.0.1:$$ui_port/ for raw Vite"; \
-	trap 'kill $$vite_pid 2>/dev/null || true' EXIT INT TERM; \
-	(cd packages/myco/ui && MYCO_DAEMON_PORT=$$daemon_port npx vite dev --host 127.0.0.1 --port $$ui_port) & vite_pid=$$!; \
-	MYCO_UI_DEV_PROXY_TARGET="$$proxy" npx tsx watch \
-		--exclude ".myco/**" \
-		--exclude ".playwright-cli/**" \
-		--exclude "packages/myco/ui/**" \
-		--exclude "packages/myco/dist/**" \
-		packages/myco/src/entries/cli.ts daemon
 
 HOST_TARGET := $(shell node -e "\
 process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \

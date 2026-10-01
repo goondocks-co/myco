@@ -14,7 +14,7 @@
  * disposition and an owning surface, failing by name when either is missing:
  *
  *   - CLI commands   — `cmd === '<name>'` / `case '<name>':` in `packages/myco/src/cli.ts`
- *   - Dashboard routes — `path="<literal>"` in `packages/myco/ui/src/App.tsx`
+ *   - Dashboard routes — `path="<literal>"` in `packages/myco/ui/src/App.tsx` (retired)
  *   - MCP tools      — `TOOL_* = 'myco_*'` in `packages/myco/src/tools/definitions.ts`
  *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
  *   - Scheduled jobs — `POWER_JOB_NAMES` values in `src/constants/power-jobs.ts`
@@ -27,8 +27,9 @@
  *
  * A 1.4 registry is retired by deleting the code that holds it. Its §7 rows stay as
  * the record of what became of each capability, and the registry is named in
- * `RETIRED_REGISTRIES`: a registry whose source is gone and is not named there fails,
- * so a move or an accidental deletion cannot pass for a retirement.
+ * `RETIRED_REGISTRIES` with the tokens its source held: a registry whose source is gone
+ * and is not named there fails, so a move or an accidental deletion cannot pass for a
+ * retirement, and each held token keeps its row, disposition and owning surface.
  *
  * Each registry owns a §7 section, and its tokens are looked up there alone, so a token
  * another section also names (`settings` in §7.1 and §7.2) is never answered by the
@@ -238,24 +239,34 @@ const REGISTRIES: readonly Registry[] = [
 ];
 
 /**
- * The 1.4 registries deleted with the code that held them. Each one's §7 rows stay as the record of the retired
- * surface; its scan does not run. A label joins this list in the change that deletes its source, and only then.
+ * The 1.4 registries deleted with the code that held them, each with the tokens its last scan read. Those tokens stand
+ * in for the scan, so each one's §7 row stays as the record of the retired surface. A label joins this list in the
+ * change that deletes its source, and only then.
  */
-const RETIRED_REGISTRIES: readonly string[] = [];
+const RETIRED_REGISTRIES: Readonly<Record<string, readonly string[]>> = {
+  'dashboard routes': [
+    '*', '/', '/agent', '/agent/:id', '/cortex', '/g/:groveSlug/dashboard', '/g/:groveSlug/maintenance',
+    '/g/:groveSlug/operations', '/g/:groveSlug/p/:projectSlug', '/g/:groveSlug/settings', '/g/:groveSlug/team',
+    '/g/:groveSlug/team/maintenance', '/groves', '/logs', '/machine', '/machine/settings', '/mycelium', '/onboarding',
+    '/operations', '/sessions', '/sessions/:id', '/settings', '/skills', '/symbionts', '/system', '/team', 'agent',
+    'agent/:id', 'cortex', 'mycelium', 'operations', 'sessions', 'sessions/:id', 'settings', 'skills', 'team',
+  ],
+};
 
 const present = (registry: Registry): boolean => fs.existsSync(path.join(REPO_ROOT, registry.source));
+const retired = (registry: Registry): boolean => registry.label in RETIRED_REGISTRIES;
+
+/** A registry's tokens: its scan while its source is there, the tokens it held once retired. */
+const tokensOf = (registry: Registry): string[] => (present(registry) ? registry.scan() : [...(RETIRED_REGISTRIES[registry.label] ?? [])]);
 
 /** The tokens of a section that have no row there. */
 const missingRows = (section: string, tokens: readonly string[]): string[] => tokens.filter((t) => !rowIn(section, t));
 
 /**
- * KEEP and NEW rows in a section whose answering registry does not produce them, each with why: a row the 1.4 surface
- * produces that 2.0 does not answer at, until #1170 re-disposes it.
+ * KEEP and NEW rows in a section whose answering registry does not produce them, each with why: a row a live 1.4
+ * registry produces that 2.0 does not answer at, until it is re-disposed.
  */
-const UNANSWERED_KEPT_ROWS: Readonly<Record<string, string>> = {
-  '7.2 sessions': "a 1.4 dashboard route, relative to the 1.4 project shell; #1170 P2 re-disposes it when the 1.4 dashboard's registry retires",
-  '7.2 sessions/:id': "a 1.4 dashboard route, relative to the 1.4 project shell; #1170 P2 re-disposes it when the 1.4 dashboard's registry retires",
-};
+const UNANSWERED_KEPT_ROWS: Readonly<Record<string, string>> = {};
 
 /**
  * KEEP and NEW rows in a section a live registry owns that no registry produces, each with why. Each is a capability
@@ -272,15 +283,15 @@ describe('feature-preservation ledger completeness', () => {
 
   it('scans every registry whose source is there, and names every other one retired', () => {
     const gone = REGISTRIES.filter((registry) => !present(registry)).map((registry) => registry.label);
-    expect(gone.filter((label) => !RETIRED_REGISTRIES.includes(label)), 'a registry\'s source is gone but it is not named in RETIRED_REGISTRIES: name it there only when its code is deliberately retired').toEqual([]);
-    const stale = RETIRED_REGISTRIES.filter((label) => !REGISTRIES.some((registry) => registry.label === label) || REGISTRIES.some((registry) => registry.label === label && present(registry)));
+    expect(gone.filter((label) => !(label in RETIRED_REGISTRIES)), 'a registry\'s source is gone but it is not named in RETIRED_REGISTRIES: name it there only when its code is deliberately retired').toEqual([]);
+    const stale = Object.keys(RETIRED_REGISTRIES).filter((label) => !REGISTRIES.some((registry) => registry.label === label) || REGISTRIES.some((registry) => registry.label === label && present(registry)));
     expect(stale, 'RETIRED_REGISTRIES names a registry that is unknown or whose source is still there').toEqual([]);
   });
 
   for (const registry of REGISTRIES) {
-    const { label, scan } = registry;
-    it.skipIf(!present(registry))(`every ${label} entry carries a disposition and an owning surface`, () => {
-      const tokens = scan();
+    const { label } = registry;
+    it.skipIf(!present(registry) && !retired(registry))(`every ${label} entry carries a disposition and an owning surface`, () => {
+      const tokens = tokensOf(registry);
       expect(tokens.length).toBeGreaterThan(0);
 
       const missing = missingRows(registry.section, tokens);
@@ -316,7 +327,7 @@ describe('feature-preservation ledger completeness', () => {
     // parseLedger only admits rows whose surface cell is drawn from SURFACES, so a
     // typo'd surface makes the row unparseable and the token reads as MISSING above.
     // This asserts the inverse directly: every registry token resolved to a row.
-    const unresolved = REGISTRIES.filter(present).flatMap((registry) => registry.scan().filter((t) => !rowIn(registry.section, t)).map((t) => `${registry.section} ${t}`));
+    const unresolved = REGISTRIES.filter((registry) => present(registry) || retired(registry)).flatMap((registry) => tokensOf(registry).filter((t) => !rowIn(registry.section, t)).map((t) => `${registry.section} ${t}`));
     expect(unresolved).toEqual([]);
   });
 
@@ -352,11 +363,19 @@ describe('feature-preservation ledger completeness', () => {
       if (present(registry)) for (const token of registry.scan()) owned.get(registry.section)!.add(token);
     }
     // A section whose every registry is retired keeps its rows as the record, with nothing left to produce them.
-    const live = new Set(REGISTRIES.filter((registry) => !RETIRED_REGISTRIES.includes(registry.label)).map((registry) => registry.section));
+    const live = new Set(REGISTRIES.filter((registry) => !retired(registry)).map((registry) => registry.section));
     const unproduced = LEDGER
       .filter((row) => (row.disposition === 'KEEP' || row.disposition === 'NEW') && live.has(row.section) && !owned.get(row.section)!.has(row.token))
       .map((row) => `${row.section} ${row.token}`);
     expect(unproduced.filter((key) => !(key in UNPRODUCED_ROWS)), 'a KEEP or NEW row no registry produces: its code is gone, or it sits in the wrong section').toEqual([]);
     expect(Object.keys(UNPRODUCED_ROWS).filter((key) => !unproduced.includes(key)), 'an UNPRODUCED_ROWS entry a registry now produces: delete it').toEqual([]);
+  });
+
+  it('holds a retired registry to the tokens it had: every row in its section is a token a registry produces or held', () => {
+    for (const section of new Set(REGISTRIES.filter(retired).map((registry) => registry.section))) {
+      const held = new Set(REGISTRIES.filter((registry) => registry.section === section).flatMap(tokensOf));
+      const unheld = LEDGER.filter((row) => row.section === section && !held.has(row.token)).map((row) => `${row.section} ${row.token}`);
+      expect(unheld, 'a row no registry produces or held: a token dropped from RETIRED_REGISTRIES, or a row in the wrong section').toEqual([]);
+    }
   });
 });

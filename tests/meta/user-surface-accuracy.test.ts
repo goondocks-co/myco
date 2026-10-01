@@ -170,38 +170,4 @@ describe('user-facing surface matches the shipped transport', () => {
       + 'not an error. Document only real flags (see HOST_HELP / JOIN_HELP).\n\n' + phantom.join('\n'),
     ).toEqual([]);
   });
-
-  test('no dashboard copy names the retired transport', () => {
-    // The comment gate (`comments-describe-current-state`) covers ui/ COMMENTS;
-    // this covers ui/ COPY. Matched as multi-word phrases + retired product
-    // names, so a modal `DialogOverlay`, a CSS `overlay-opacity`, or the
-    // `overlaySupported` capability flag never trip it — only prose that names
-    // the dead networking does.
-    const uiPhrases: Array<{ label: string; re: RegExp }> = [
-      { label: '--server-url', re: /--server-url/i },
-      { label: '--overlay-address', re: /--overlay-address/i },
-      { label: 'headscale', re: /headscale/i },
-      { label: 'wireguard', re: /wireguard/i },
-      { label: 'overlay client', re: /overlay client/i },
-      { label: 'overlay connection', re: /overlay connection/i },
-      { label: 'overlay network', re: /overlay network/i },
-      { label: 'encrypted overlay', re: /encrypted overlay/i },
-      { label: 'control plane', re: /control plane/i },
-    ];
-    const hits: string[] = [];
-    for (const abs of filesUnder(path.join(REPO_ROOT, 'packages', 'myco', 'ui', 'src'), ['.ts', '.tsx'])) {
-      if (abs.endsWith('.test.ts') || abs.endsWith('.test.tsx')) continue;
-      const rel = path.relative(REPO_ROOT, abs).split(path.sep).join('/');
-      read(rel).split('\n').forEach((line, i) => {
-        for (const { label, re } of uiPhrases) {
-          if (re.test(line)) hits.push(`${rel}:${i + 1}  [${label}]  ${line.trim().slice(0, 100)}`);
-        }
-      });
-    }
-    expect(
-      hits,
-      'Dashboard source still names the retired overlay transport. Rewrite the copy to the '
-      + 'Funnel-address model.\n\n' + hits.join('\n'),
-    ).toEqual([]);
-  });
 });

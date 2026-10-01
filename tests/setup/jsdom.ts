@@ -28,7 +28,6 @@ Bun.plugin({
 
 // Warn when nested React copies still exist; `npm test` strips them before jsdom.
 const NESTED_UI_NODE_MODULES = [
-  path.join(repoRoot, 'packages/myco/ui/node_modules'),
   path.join(repoRoot, 'packages/myco-server/ui/node_modules'),
 ];
 const NESTED_REACT_PKGS = ['react', 'react-dom', 'react-router-dom', 'react-router', '@tanstack/react-query'];

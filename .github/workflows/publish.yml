@@ -235,11 +235,8 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            packages/myco/ui/package-lock.json
 
       - run: npm ci
-      - name: Install myco UI deps
-        run: npm ci --prefix packages/myco/ui
       - name: Sync target package versions from tag
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}

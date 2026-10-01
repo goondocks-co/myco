@@ -2,9 +2,8 @@
 // verified the UI bundle.
 //
 // Checks:
-//   1. UI bundle exists at dist/ui/index.html.
-//   2. The host-target binary exists at ../myco-<host>/bin/myco (or myco.exe).
-//   3. The host-target binary's baked --version matches package.json.
+//   1. The host-target binary exists at ../myco-<host>/bin/myco (or myco.exe).
+//   2. The host-target binary's baked --version matches package.json.
 //      (Catches the version-skew class of bug where sync-package-versions
 //      ran AFTER the binary was already built — the binary embeds
 //      `pkg.version` at compile time via setPluginVersion in
@@ -33,9 +32,6 @@ function hostTarget() {
   if (platform === 'win32') return 'windows-x64';
   fail(`Unsupported host platform: ${platform}-${arch}`);
 }
-
-const uiIndex = path.join(pkgRoot, 'dist', 'ui', 'index.html');
-if (!fs.existsSync(uiIndex)) fail(`missing UI bundle: ${uiIndex}`);
 
 const target = hostTarget();
 const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';

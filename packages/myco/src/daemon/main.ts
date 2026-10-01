@@ -1364,9 +1364,9 @@ export async function main(): Promise<void> {
   if (uiDir) {
     logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
   } else if (hasEmbeddedUi()) {
-    // Standalone binary: no adjacent dist/ui/ on disk, but the dashboard
-    // bundle was compiled in. The server serves it from BUNDLED_UI.
-    logger.debug(LOG_KINDS.DAEMON_START, 'Serving embedded UI bundle (no disk dist/ui)');
+    // Standalone binary with no adjacent dist/ui/ on disk: every page
+    // answers with the retired-dashboard notice.
+    logger.debug(LOG_KINDS.DAEMON_START, 'Serving the retired-dashboard page (no disk dist/ui)');
   }
 
   // Always-on diagnostic for event-loop pinning. Catches stalls regardless

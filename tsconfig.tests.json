@@ -37,7 +37,6 @@
   "exclude": [
     "node_modules",
     "dist",
-    "packages/myco/ui",
     "packages/myco-server/ui",
     "packages/myco/src/symbionts/templates",
     "packages/myco/src/entries/cli.*.ts",

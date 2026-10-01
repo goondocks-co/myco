@@ -9,7 +9,6 @@ runs:
         cache: npm
         cache-dependency-path: |
           package-lock.json
-          packages/myco/ui/package-lock.json
           packages/myco-server/ui/package-lock.json
     - uses: oven-sh/setup-bun@v2
       with:

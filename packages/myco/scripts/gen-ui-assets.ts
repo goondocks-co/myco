@@ -10,9 +10,8 @@ const ENTRY_FILE = 'index.html';
  * One dashboard build to embed: where it was built, which files were copied in
  * rather than referenced, and the module it becomes.
  *
- * Two dashboards ship in the one binary — the member's and the Deployment's —
- * and they are built to different places by different packages. One generator
- * embeds both, so a rule tightened for one applies to the other.
+ * The binary ships the Deployment's dashboard, built by its own package into
+ * its own `dist/`.
  */
 export interface UiBundle {
   name: string;
@@ -29,15 +28,6 @@ export interface UiBundle {
    */
   exclude?: readonly string[];
 }
-
-export const MEMBER_UI: UiBundle = {
-  name: 'member dashboard',
-  uiDir: path.resolve(PACKAGE_ROOT, 'dist/ui'),
-  publicDir: path.resolve(PACKAGE_ROOT, 'ui/public'),
-  outputPath: path.resolve(PACKAGE_ROOT, 'src/ui-assets.generated.ts'),
-  exportName: 'BUNDLED_UI',
-  origin: 'dist/ui/',
-};
 
 export const SERVER_UI: UiBundle = {
   name: 'Deployment dashboard',
@@ -77,10 +67,10 @@ function walkFiles(root: string, dir: string = root): string[] {
  * Return the subset of `files` that is neither copied from `ui/public/` nor
  * reachable from the entry file — i.e. stale build artifacts.
  *
- * Two-part trust model, mirroring where dist/ui content comes from:
+ * Two-part trust model, mirroring where the build directory's content comes from:
  *
  * 1. Files whose relative path exists in `ui/public/` are trusted verbatim.
- *    Vite copies public/ into dist/ui unchanged; those files are deliberate,
+ *    Vite copies public/ into the build directory unchanged; those files are deliberate,
  *    source-controlled additions and may be addressed by runtime-constructed
  *    paths (`/favicon-${theme}.svg`) that no static scan can see.
  * 2. Everything else is Vite-emitted output and must be reachable from
@@ -91,11 +81,11 @@ function walkFiles(root: string, dir: string = root): string[] {
  *    contains that basename verbatim, so a file is referenced iff its
  *    basename appears in the text of a reached file.
  *
- * This guard exists because the embed step used to trust `dist/ui` blindly:
+ * An embed step that trusts the build directory blindly ships its leftovers:
  * a leftover chunk from a previous build (interrupted build, older checkout,
  * second writer into the out-of-root dist dir) was embedded, committed, and
  * shipped 2.2MB of dead weight in every binary. Whatever puts a stale file in
- * `dist/ui`, it fails HERE — at the consumption point — instead of silently
+ * the build directory, it fails HERE — at the consumption point — instead of silently
  * bloating the bundle. A stale hashed chunk can satisfy neither branch: it is
  * never in public/, and nothing current references its hash.
  */
@@ -143,7 +133,7 @@ function readUiAssetMap(bundle: UiBundle): Record<string, string> {
       `[gen-ui-assets] ${path.relative(PACKAGE_ROOT, bundle.uiDir)} contains ${stale.length} file(s) that are not copied ` +
         `from ui/public/ and that nothing reachable from ${ENTRY_FILE} references:\n` +
         stale.map((file) => `  - ${file}`).join('\n') +
-        `\nThis is almost always a stale artifact from a previous build left in dist/ui. ` +
+        `\nThis is almost always a stale artifact from a previous build left in the build directory. ` +
         `Delete ${bundle.origin}, rerun the UI build (\`npm run build:ui\`), then rerun codegen. ` +
         `Embedding it would ship dead weight in every compiled binary, so this build refuses.`,
     );
@@ -180,7 +170,7 @@ export const ${bundle.exportName}: Readonly<Record<string, string>> = ${JSON.str
 }
 
 function main(): void {
-  for (const bundle of [MEMBER_UI, SERVER_UI]) emitBundle(bundle);
+  emitBundle(SERVER_UI);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

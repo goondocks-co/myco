@@ -19,8 +19,8 @@ export function deploymentDashboardUrl(deps: OpenDeps = {}): string | null {
 
 /**
  * Opens the dashboard. A root that has joined a Deployment opens that
- * Deployment's dashboard; a root without a membership opens the local daemon's
- * dashboard, which remains until the local paths retire.
+ * Deployment's dashboard; a root without a membership opens the local daemon,
+ * which answers with the retired-dashboard page until the local paths retire.
  */
 export async function run(_args: string[], deps: OpenDeps = {}): Promise<void> {
   const open = deps.openBrowser ?? openBrowser;
