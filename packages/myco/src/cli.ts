@@ -199,36 +199,8 @@ async function main(): Promise<void> {
     runLaunchPreamble('mcp', args);
     return (await import('./mcp/stdio-bridge.js')).main();
   }
-  if (cmd === 'hook') {
-    runLaunchPreamble('hook', args);
-    const hookName = args[0];
-    const HOOK_DISPATCH: Record<string, () => Promise<{ main: (opts: import('./member/capture.js').HookMainOptions) => Promise<void> }>> = {
-      'session-start': () => import('./hooks/session-start.js'),
-      'session-end': () => import('./hooks/session-end.js'),
-      'stop': () => import('./hooks/stop.js'),
-      'user-prompt-submit': () => import('./hooks/user-prompt-submit.js'),
-      'pre-tool-use': () => import('./hooks/pre-tool-use.js'),
-      'post-tool-use': () => import('./hooks/post-tool-use.js'),
-      'post-tool-use-failure': () => import('./hooks/post-tool-use-failure.js'),
-      'subagent-start': () => import('./hooks/subagent-start.js'),
-      'subagent-stop': () => import('./hooks/subagent-stop.js'),
-      'stop-failure': () => import('./hooks/stop-failure.js'),
-      'task-completed': () => import('./hooks/task-completed.js'),
-      'pre-compact': () => import('./hooks/pre-compact.js'),
-      'post-compact': () => import('./hooks/post-compact.js'),
-      'error-occurred': () => import('./hooks/error-occurred.js'),
-      'notification': () => import('./hooks/notification.js'),
-    };
-    const loader = HOOK_DISPATCH[hookName];
-    if (!loader) {
-      console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);
-      process.exit(1);
-    }
-    // The credential source is declared on the hook command (`--credential
-    // registry|env`) and handed down; a hook never infers it.
-    const { parseCredentialFlag } = await import('./member/credential.js');
-    return (await loader()).main({ credential: parseCredentialFlag(args) });
-  }
+  // One hook path for compiled binaries and source runs alike: `hooks/entry.ts`.
+  if (cmd === 'hook') return (await import('./hooks/entry.js')).runHook(args);
   if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
   // Supervisor lifecycle — manages the platform service + daemon binary, never a
   // project vault. Belongs above the myco.yaml gate alongside daemon/update/remove,

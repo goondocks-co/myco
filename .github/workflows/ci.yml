@@ -34,6 +34,75 @@ jobs:
         run: git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
       - run: TARGET=linux-x64 npm run build:binary -w @goondocks/myco
 
+  # Gate G2 (#1561): a compiled binary answers a no-op hook within its ceiling on every release target a runner here
+  # can run. Each target is built the way the release builds it (`--compile --splitting`, darwin signed in place)
+  # and measured where it runs: natively, and windows-x64 cross-compiled here and measured on a Windows runner by
+  # `hook-startup-windows`. darwin-x64 has no runner that can run it (an x64 build raises SIGILL under the macOS
+  # runner's Rosetta), so it is measured under Rosetta on an Apple Silicon Mac and recorded in the release checklist.
+  #
+  # The ceilings are per runner: 80 ms where Linux runs natively, 150 ms on the macOS and Windows runners, whose
+  # shared virtual machines start a process far slower than hardware (the same build answers in 25 ms on an M-series
+  # Mac). Every ceiling stays well under the 175 ms the unsplit binary takes on that hardware.
+  hook-startup:
+    name: hook startup (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64, os: ubuntu-latest, rg: linux-x64, ceiling: 80 }
+          - { target: linux-arm64, os: ubuntu-24.04-arm, rg: linux-arm64, ceiling: 80 }
+          - { target: darwin-arm64, os: macos-14, rg: darwin-arm64, ceiling: 150 }
+          - { target: windows-x64, os: ubuntu-latest, rg: win32-x64, cross: true, measure_elsewhere: true }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-setup
+      - name: Install the target's native subpackages
+        if: matrix.cross
+        env:
+          TARGET: ${{ matrix.target }}
+          RG_PLATFORM: ${{ matrix.rg }}
+        run: |
+          SQLITE_VEC_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/sqlite-vec/package.json', 'utf8')).version")"
+          RG_VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('./node_modules/@vscode/ripgrep/package.json', 'utf8')).version")"
+          npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" "@vscode/ripgrep-${RG_PLATFORM}@${RG_VERSION}" --no-save --ignore-scripts --force
+      - name: Install the mingw toolchain
+        if: matrix.target == 'windows-x64'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
+      - run: bash packages/myco/scripts/build-libsqlite3-target.sh "${{ matrix.target }}"
+      - run: npm run build:ui -w @goondocks/myco
+      - run: npm run codegen -w @goondocks/myco
+      - run: TARGET="${{ matrix.target }}" npm run build:binary -w @goondocks/myco
+      - name: Measure a no-op hook
+        if: ${{ !matrix.measure_elsewhere }}
+        run: node packages/myco/scripts/measure-hook-startup.mjs "packages/myco-${{ matrix.target }}/bin/myco" --prefix "${{ matrix.prefix }}" --max-p95-ms "${{ matrix.ceiling }}"
+      - name: Hand the Windows binary to its runner
+        if: matrix.measure_elsewhere
+        uses: actions/upload-artifact@v7
+        with:
+          name: hook-startup-${{ matrix.target }}
+          path: packages/myco-${{ matrix.target }}/bin/myco.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  hook-startup-windows:
+    name: hook startup (windows-x64, measured)
+    needs: hook-startup
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          name: hook-startup-windows-x64
+          path: hook-startup-bin
+      - name: Measure a no-op hook
+        run: node packages/myco/scripts/measure-hook-startup.mjs hook-startup-bin/myco.exe
+
   tests:
     name: tests (${{ matrix.kind }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
@@ -127,7 +196,7 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, build, tests, parity, self-hosted-container, windows-native, ui-screens]
+    needs: [lint, build, tests, parity, self-hosted-container, windows-native, ui-screens, hook-startup, hook-startup-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -296,6 +365,7 @@ jobs:
           tests/server/runner.test.ts
           tests/install/place-binary.test.ts
           tests/upgrade/apply-binary.test.ts
+          tests/meta/binary-replaced-mid-run.test.ts
       - name: Compile Windows native contract executable
         shell: pwsh
         run: |

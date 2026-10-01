@@ -29,7 +29,7 @@ import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
 import { runGit, runGitAnswer } from '../utils/git.js';
-import { resolveRuntimeCommand, resolveRuntimeHome } from '../daemon/update-checker.js';
+import { resolveRuntimeCommand, resolveRuntimeHome } from '../runtime/runtime-pin.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { loadMergedConfig } from '../config/loader.js';

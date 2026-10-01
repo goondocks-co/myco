@@ -210,7 +210,9 @@ dev-link: dev-build
 	@# user is working inside this repo. Outside it, `myco` resolves to the
 	@# globally-installed binary as users expect.
 	@mkdir -p $(PWD)/.myco
-	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.command
+	@# The pin names the binary itself, never the myco-dev shim: the home comes from the runtime.home pin below,
+	@# and a pin whose realpath is the hook's own binary runs in-process instead of starting a second process.
+	@printf '%s/.myco-dev/bin/myco\n' "$(HOME)" > $(PWD)/.myco/runtime.command
 	@# Set up the dev home directory and pin runtime.home so the daemon reads
 	@# from ~/.myco-dev instead of ~/.myco, keeping dev state isolated.
 	@mkdir -p $(HOME)/.myco-dev
@@ -246,7 +248,7 @@ dev-link: dev-build
 	fi
 	@echo "✓ myco-dev → $(HOME)/.myco-dev/bin/myco (standalone, mirrors prod ~/.myco/bin/myco)"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
-	@echo "✓ $(PWD)/.myco/runtime.command set to $(HOME)/.local/bin/myco-dev"
+	@echo "✓ $(PWD)/.myco/runtime.command set to $(HOME)/.myco-dev/bin/myco"
 	@# Regenerate symbiont configs across every registered project so any
 	@# that opt into `substituteRuntimeCommand` (opencode today) get the
 	@# runtime.command alias baked into their MCP command. Symbionts that

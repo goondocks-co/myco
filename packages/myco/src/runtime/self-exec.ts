@@ -6,8 +6,11 @@
  * it names no file anything can run, and it is answered as no entry.
  */
 
-/** The argv a compiled binary reports for an entry inside itself, which names no file on disk. */
-const BUNDLED_ENTRY = ['/$bunfs/', 'B:\\~BUN\\'];
+/**
+ * The argv a compiled binary reports for an entry inside itself, which names no file on disk. A Windows build reports
+ * it with forward slashes (`B:/~BUN/root/myco.exe`, observed on Bun 1.3.13), and either separator is matched.
+ */
+const BUNDLED_ENTRY = ['/$bunfs/', 'B:\\~BUN\\', 'B:/~BUN/'];
 
 export interface SelfExec {
   /** The executable to run: this binary, or the runtime a checkout is running under. */
