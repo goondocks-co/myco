@@ -140,11 +140,11 @@ describe('model-specific execution accounting', () => {
     try {
       const wire = await fixtureRun(harnessById('codex')!, 'success', async (body) => Response.json(await r.end({ ...body, attemptId: r.claimed.run.attemptId })));
       expect(wire).toHaveProperty('identity.primary', { model: 'gpt-5.4-mini', provider: 'openai' });
-      const stored = r.e.sqlite.query('SELECT model,provider,usage_data,cost_usd FROM agent_runs WHERE id=?').get('run_usage') as { model: string; provider: string; usage_data: string; cost_usd: number };
-      expect(stored).toMatchObject({ model: 'gpt-5.4-mini', provider: 'openai', cost_usd: 0.000138 });
+      const stored = r.e.sqlite.query('SELECT model,provider,usage_data,cost_usd,error_code FROM agent_runs WHERE id=?').get('run_usage') as { model: string; provider: string; usage_data: string; cost_usd: number; error_code: string };
+      expect(stored).toMatchObject({ model: 'gpt-5.4-mini', provider: 'openai', cost_usd: 0.000138, error_code: 'run_failed' });
       expect(JSON.parse(stored.usage_data)).toHaveProperty('identity.primary.model', 'gpt-5.4-mini');
-      expect((await r.detail())?.run).toHaveProperty('identity.primary.model', 'gpt-5.4-mini');
-      expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]).toHaveProperty('model', 'gpt-5.4-mini');
+      expect((await r.detail())?.run).toMatchObject({ identity: { primary: { model: 'gpt-5.4-mini' } }, errorCode: 'run_failed', costProvenance: 'model_pricing' });
+      expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]).toMatchObject({ model: 'gpt-5.4-mini', failure: { code: 'run_failed' }, identity: { primary: { model: 'gpt-5.4-mini' } }, costProvenance: 'model_pricing' });
     } finally { r.e.sqlite.close(); }
   });
   for (const [label, model, reported, expected] of [
