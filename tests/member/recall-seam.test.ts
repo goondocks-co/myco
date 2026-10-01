@@ -167,11 +167,56 @@ describe('the sub-budget', () => {
         expect(answered.stderr).toBe('');
         expect(rig.rows('prompt_batches')).toBe(1);
       } else {
+        // A recall that outlives its capped share is slow, not offline: it says which step it stopped in, latches
+        // nothing, and the drain behind it ships the turn.
         expect(answered.stdout).toBe(`Session:: \`${SESSION}\``);
-        expect(answered.stderr).toContain('recall skipped (retry)');
-        expect(new MemberSpool('proj_1', { mycoHome }).depth(SESSION)).toBe(1);
+        expect(answered.stderr).toMatch(/recall skipped \(slow: timed out waiting for the answer to start after \d+ ms\)/);
+        const spool = new MemberSpool('proj_1', { mycoHome });
+        expect(spool.readLatch()).toBeNull();
+        expect(spool.depth(SESSION)).toBe(0);
+        expect(rig.rows('prompt_batches')).toBe(1);
       }
     } finally { await server.stop(true); }
+  });
+
+  it('names the body as the step when the answer started and stalled, and still latches nothing', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() {
+      const body = new ReadableStream({ async start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"persisted":true,'));
+        await Bun.sleep(RECALL_CAP_MS + 300);
+        controller.enqueue(new TextEncoder().encode('"context":"late","skipped":[]}'));
+        controller.close();
+      } });
+      return new Response(body, { headers: { 'content-type': 'application/json' } });
+    } });
+    try {
+      const answered = await drive(
+        { prompt: 'a typed prompt', transcript_path: transcript() },
+        (run) => outcomeFor(run, async () => {
+          const context = await servedContext(run, '/context/prompt', { sessionId: run.sessionId, promptId: 'p', text: 'a typed prompt' });
+          return context === undefined ? undefined : { additionalContext: context };
+        }),
+        (url, init) => new URL(String(url)).pathname === '/context/prompt' ? fetch(server.url, init) : rig.fetch(url, init),
+      );
+      expect(answered.stderr).toMatch(/recall skipped \(slow: timed out waiting for the answer to finish after \d+ ms\)/);
+      expect(new MemberSpool('proj_1', { mycoHome }).readLatch()).toBeNull();
+      expect(rig.rows('prompt_batches')).toBe(1);
+    } finally { await server.stop(true); }
+  });
+
+  it('latches on a Deployment answering 503, as a drain would, and keeps the turn spooled for the next probe', async () => {
+    const answered = await drive(
+      { prompt: 'a typed prompt', transcript_path: transcript() },
+      (run) => outcomeFor(run, async () => {
+        const context = await servedContext(run, '/context/prompt', { sessionId: run.sessionId, promptId: 'p', text: 'a typed prompt' });
+        return context === undefined ? undefined : { additionalContext: context };
+      }),
+      (url, init) => new URL(String(url)).pathname === '/context/prompt' ? Promise.resolve(new Response('busy', { status: 503 })) : rig.fetch(url, init),
+    );
+    expect(answered.stderr).toContain('recall skipped (retry: http 503)');
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    expect(spool.readLatch()).not.toBeNull();
+    expect(spool.depth(SESSION)).toBe(1);
   });
 
   it('takes a third of what a 5 s hook has left, capped, so the drain still ships', () => {
@@ -181,7 +226,7 @@ describe('the sub-budget', () => {
     expect([budget.hookBudgetMs, budget.connectTimeoutMs]).toEqual([4_000, 1_333]);
 
     const atStart = subRequestBudget(budget, RECALL_CAP_MS, start);
-    expect(atStart).toEqual({ connectTimeoutMs: 1_333, requestTimeoutMs: 1_333 });
+    expect(atStart).toEqual({ connectTimeoutMs: 1_333, requestTimeoutMs: 1_333, capped: true });
     expect(atStart.requestTimeoutMs).toBeLessThanOrEqual(RECALL_CAP_MS);
 
     // A longer hook budget is held to the cap rather than to its own third.
@@ -280,7 +325,7 @@ describe('the prompt hook', () => {
       { session_id: SESSION, hook_event_name: 'UserPromptSubmit', transcript_path: transcript(), prompt: 'a typed prompt' },
       { fetch: failing },
     );
-    expect(out.stderr).toContain('[myco] user-prompt-submit: recall skipped (retry)');
+    expect(out.stderr).toContain('[myco] user-prompt-submit: recall skipped (retry: connection refused)');
     expect(out.stdout).toBe(`Session:: \`${SESSION}\``);
 
     // A transport failure on recall is a failure of the whole Deployment: the
@@ -514,7 +559,7 @@ describe('the session-start hook', () => {
     admit();
     guidance();
     const out = await start(darkTo('/context/session'));
-    expect(out.stderr).toContain('[myco] session-start: recall skipped (retry)');
+    expect(out.stderr).toMatch(/\[myco\] session-start: recall skipped \(retry: /);
     expect(out.stdout).toBe('');
     expect(delivered()).toEqual([]);
     expect(new MemberSpool('proj_1', { mycoHome }).shouldDial(Date.now())).toBe(false);
@@ -635,7 +680,7 @@ describe('the subagent-start hook', () => {
     admit();
     guidance();
     const out = await delegate(darkTo('/context/session'));
-    expect(out.stderr).toContain('[myco] subagent-start: recall skipped (retry)');
+    expect(out.stderr).toMatch(/\[myco\] subagent-start: recall skipped \(retry: /);
     expect(out.stdout).toBe('');
     expect(delivered()).toEqual([]);
   });

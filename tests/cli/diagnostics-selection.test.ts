@@ -187,7 +187,7 @@ describe('member status over a spool it could not read', () => {
     expect(lines.some((l) => /^spool: .*sess-a — unknown un-acknowledged/.test(l.replace(/\s+/g, ' ')))).toBe(true);
     expect(lines.some((l) => /unknown un-acknowledged event\(s\)/.test(l))).toBe(true);
     expect(lines.some((l) => /null/.test(l))).toBe(false);
-    expect(lines.some((l) => /^last ack: +unknown/.test(l.replace(/ +/g, ' ')))).toBe(true);
+    expect(lines.some((l) => /^last event: +unknown/.test(l.replace(/ +/g, ' ')))).toBe(true);
   });
 
   it('says the latch is unknown rather than reporting the member online', () => {
