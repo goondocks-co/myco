@@ -109,7 +109,7 @@ mock.module('@myco/agent/provider.js', () => {
 });
 
 mock.module('@myco/agent/harness/claude-code-executable.js', () => ({
-  resolveClaudeCodeExecutable: () => '/tmp/fake-claude',
+  resolveClaudeCodeExecutable: () => '/fixture/fake-claude',
 }));
 
 // ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ describe('ClaudeSdkHarness.execute', () => {
 
     await runtime.execute(makeInput());
 
-    expect(queryCalls[0].options.pathToClaudeCodeExecutable).toBe('/tmp/fake-claude');
+    expect(queryCalls[0].options.pathToClaudeCodeExecutable).toBe('/fixture/fake-claude');
   });
 
   it('omits abortController when not supplied', async () => {

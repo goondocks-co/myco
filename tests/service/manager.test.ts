@@ -48,9 +48,9 @@ describe('getServiceManager', () => {
   });
 
   test('darwin manager honors MYCO_LAUNCH_AGENTS_DIR override — sandbox plist never lands in real ~/Library/LaunchAgents', () => {
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-xyz/Library/LaunchAgents';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-xyz/Library/LaunchAgents';
     const mgr = getServiceManager({ platform: 'darwin' }) as LaunchdServiceManager;
-    expect(mgr.agentsDir).toBe('/tmp/sandbox-xyz/Library/LaunchAgents');
+    expect(mgr.agentsDir).toBe('/fixture/sandbox-xyz/Library/LaunchAgents');
     expect(mgr.agentsDir).not.toBe(path.join(os.homedir(), 'Library', 'LaunchAgents'));
   });
 
@@ -60,8 +60,8 @@ describe('getServiceManager', () => {
   });
 
   test('linux manager honors MYCO_LAUNCH_AGENTS_DIR override', () => {
-    process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-xyz/systemd/user';
+    process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-xyz/systemd/user';
     const mgr = getServiceManager({ platform: 'linux' }) as SystemdUserServiceManager;
-    expect(mgr.unitDir).toBe('/tmp/sandbox-xyz/systemd/user');
+    expect(mgr.unitDir).toBe('/fixture/sandbox-xyz/systemd/user');
   });
 });

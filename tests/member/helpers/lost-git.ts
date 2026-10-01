@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { __resetGitBinaryCacheForTest, findGitBinary } from '@myco/utils/git.js';
+import { removeWhenTestsEnd } from '../../support/remove-when-tests-end.js';
 
 export interface LostGit {
   /** The real git, for setting fixtures up. */
@@ -26,7 +27,7 @@ export interface LostGit {
 
 export function installLostGit(): LostGit {
   const realGit = findGitBinary();
-  const bin = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lost-git-')));
+  const bin = removeWhenTestsEnd(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-lost-git-'))));
   const armFile = path.join(bin, 'armed');
   fs.writeFileSync(path.join(bin, 'git'), [
     '#!/bin/sh',

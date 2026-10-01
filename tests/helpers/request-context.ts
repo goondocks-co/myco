@@ -19,7 +19,7 @@ import { resolveLegacyRequestContext } from '@myco/grove/request-context.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
 import { assertGroveProjectId, type GroveProjectId } from '@myco/grove/ids.js';
 
-const TEST_VAULT_DIR = '/tmp/myco-test/.myco';
+const TEST_VAULT_DIR = '/fixture/myco-test/.myco';
 
 /**
  * A project id carrying the brand every `project_id` writer takes, minted

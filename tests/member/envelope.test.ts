@@ -36,7 +36,7 @@ afterAll(() => {
 
 const SESSION = 'sess-envelope-1';
 const ctx = (sessionId = SESSION): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: stager.stage, version: '2.0.0-test' });
-const input = (raw: Record<string, unknown>) => normalizeHookInput({ session_id: SESSION, transcript_path: '/tmp/t.jsonl', ...raw });
+const input = (raw: Record<string, unknown>) => normalizeHookInput({ session_id: SESSION, transcript_path: '/fixture/t.jsonl', ...raw });
 
 /** Post an outbound event as the rig's member, uploading its blob first when it has one. */
 async function deliver(rig: MemberRig, out: OutboundEvent): Promise<Record<string, unknown>> {
@@ -68,7 +68,7 @@ describe('member envelope — every kind through the worker', () => {
     { kind: 'error', build: () => errorEvent(ctx(), input({ message: 'boom', code: 'E_NET' })) },
     { kind: 'plan', build: () => planEvent(ctx(), { planKey: planKeyForTag(SESSION, 'ultraplan', 0), content: '# Plan\n\ndo it', title: 'Plan', status: 'active', originPath: '/work/repo/.claude/plans/p.md', tags: ['ultraplan'] }) },
     { kind: 'attachment', build: () => attachmentEvent(ctx(), { blobSource: stager.stage(new Uint8Array([137, 80, 78, 71]), 'image/png'), promptId, description: 'screenshot' }) },
-    { kind: 'transcript.segment', build: () => transcriptSegmentEvent(ctx(), { transcriptId: `tx_${'a'.repeat(32)}`, baseOffset: 0, blobSource: stager.stage(new TextEncoder().encode('{"type":"user"}\n'), 'text/plain; charset=utf-8'), originPath: '/tmp/t.jsonl' }) },
+    { kind: 'transcript.segment', build: () => transcriptSegmentEvent(ctx(), { transcriptId: `tx_${'a'.repeat(32)}`, baseOffset: 0, blobSource: stager.stage(new TextEncoder().encode('{"type":"user"}\n'), 'text/plain; charset=utf-8'), originPath: '/fixture/t.jsonl' }) },
     { kind: 'session.end', build: () => sessionEndEvent(ctx(), { endedAt: Date.now() }) },
     { kind: 'turn', build: () => turnEvent(ctx(), { phase: 'start', promptId }) },
   ];

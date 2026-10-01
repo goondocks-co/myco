@@ -12,6 +12,118 @@ import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 
 // ---------------------------------------------------------------------------
+// Per-run temp root
+// ---------------------------------------------------------------------------
+// Every temp file the run creates lands under one root that the runner owns:
+// TMPDIR (TEMP/TMP on Windows) points there for the runner itself and every
+// process it spawns, so os.tmpdir() in a test, a preload, a spawned binary or
+// a grandchild resolves inside it, whatever cleanup that code does or skips.
+// The root is removed when the runner exits, on an error or a signal too. A
+// runner killed outright cannot remove its root; the next run sweeps every
+// root whose owning runner is no longer alive. The name is short: socket paths
+// tests derive from os.tmpdir() must stay under the 104-byte limit.
+const RUN_ROOT_PREFIX = 'mt-';
+/** A run root as mkdtemp names it, or as a sweep renames it to claim it. */
+const RUN_ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
+const RUN_ROOT_OWNER_FILE = '.owner';
+/** A root with no readable owner is swept once it is this old. */
+const OWNERLESS_ROOT_GRACE_MS = 60 * 60 * 1000;
+const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
+
+function pidIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function runRootOwnerPid(root) {
+  try {
+    const pid = Number.parseInt(fs.readFileSync(path.join(root, RUN_ROOT_OWNER_FILE), 'utf8').trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function runRootIsStale(root) {
+  const pid = runRootOwnerPid(root);
+  if (pid !== null) return !pidIsAlive(pid);
+  try {
+    return Date.now() - fs.statSync(root).mtimeMs > OWNERLESS_ROOT_GRACE_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove every run root in `parent` left by a runner that is no longer
+ * alive. A stale root is first renamed to a name of this runner's own, so two
+ * runners sweeping at once never delete the same tree; the renamed root
+ * keeps the dead owner's file, so a sweep interrupted mid-delete is finished
+ * by the next one.
+ */
+function sweepStaleRunRoots(parent) {
+  let names;
+  try { names = fs.readdirSync(parent); } catch { return 0; }
+  let swept = 0;
+  for (const name of names) {
+    if (!RUN_ROOT_NAME.test(name)) continue;
+    const root = path.join(parent, name);
+    if (!runRootIsStale(root)) continue;
+    const claimed = path.join(parent, `${RUN_ROOT_PREFIX}sweep-${process.pid}-${swept}`);
+    try { fs.renameSync(root, claimed); } catch { continue; }
+    try { fs.rmSync(claimed, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next sweep retries */ }
+    swept += 1;
+  }
+  return swept;
+}
+
+const PARENT_TMPDIR = os.tmpdir();
+const sweptRunRoots = sweepStaleRunRoots(PARENT_TMPDIR);
+if (sweptRunRoots > 0) console.log(`[run-bun-tests] removed ${sweptRunRoots} temp root(s) left by earlier runs`);
+let parentTmpdirBefore;
+try { parentTmpdirBefore = new Set(fs.readdirSync(PARENT_TMPDIR)); } catch { parentTmpdirBefore = null; }
+const RUN_ROOT = fs.mkdtempSync(path.join(PARENT_TMPDIR, RUN_ROOT_PREFIX));
+fs.writeFileSync(path.join(RUN_ROOT, RUN_ROOT_OWNER_FILE), `${process.pid}\n`);
+for (const name of TEMP_ENV_NAMES) process.env[name] = RUN_ROOT;
+// The directory the root sits in, for tests that measure paths a run builds under it.
+process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;
+
+/** Kills the running group's process tree; null between groups. */
+let killActiveGroup = null;
+/** Puts the canonical bunfig back while a group runs under a swapped one; null otherwise. */
+let restoreSwappedBunfig = null;
+// However the runner exits (the end of the run, a signal, an uncaught error),
+// the group it was running dies with it, the bunfig is put back and the root
+// goes.
+process.on('exit', () => {
+  try { killActiveGroup?.('SIGKILL'); } catch { /* best-effort */ }
+  try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
+  try { fs.rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next run sweeps it */ }
+});
+for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
+  process.on(signal, () => process.exit(128 + number));
+}
+
+/**
+ * Print how many entries appeared in the parent temp directory while this
+ * run was going: anything a test wrote around the run root rather than into
+ * it. Other processes writing there at the same time are counted too; other
+ * runners' roots are not.
+ */
+function reportParentTmpdirLeftovers() {
+  if (parentTmpdirBefore === null) return;
+  let after;
+  try { after = fs.readdirSync(PARENT_TMPDIR); } catch { return; }
+  const left = after.filter((name) => !parentTmpdirBefore.has(name) && !RUN_ROOT_NAME.test(name));
+  const sample = left.slice(0, 10).join(', ');
+  console.log(`[run-bun-tests] temp entries left in ${PARENT_TMPDIR}: ${left.length}${left.length > 0 ? ` (${sample}${left.length > 10 ? ', ...' : ''})` : ''}`);
+}
+
+// ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME
 // ---------------------------------------------------------------------------
 // Tests must never touch the real ~/.myco. An unsandboxed write to
@@ -21,11 +133,7 @@ import { redactSecrets } from './redact-secrets.mjs';
 // per-run sandbox home instead. An explicitly-set MYCO_HOME is honored so a
 // debugging run can still target a fixture home.
 if (!process.env.MYCO_HOME) {
-  const sandboxMycoHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));
-  process.env.MYCO_HOME = sandboxMycoHome;
-  process.on('exit', () => {
-    try { fs.rmSync(sandboxMycoHome, { recursive: true, force: true }); } catch { /* best-effort */ }
-  });
+  process.env.MYCO_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));
 }
 
 // ---------------------------------------------------------------------------
@@ -51,11 +159,7 @@ if (process.env.MYCO_TEAM_LEGACY_HOMES === undefined) {
 // per-run sandbox instead. An explicit value is honored so a debugging run
 // can target a fixture team home (the registry/routing tests set it per-test).
 if (!process.env.MYCO_TEAM_HOME) {
-  const sandboxTeamHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-team-home-'));
-  process.env.MYCO_TEAM_HOME = sandboxTeamHome;
-  process.on('exit', () => {
-    try { fs.rmSync(sandboxTeamHome, { recursive: true, force: true }); } catch { /* best-effort */ }
-  });
+  process.env.MYCO_TEAM_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-team-home-'));
 }
 
 // ---------------------------------------------------------------------------
@@ -66,11 +170,7 @@ if (!process.env.MYCO_TEAM_HOME) {
 // runner-owned root through a test-only handoff and pass an explicit lock
 // namespace dependency into the operations they exercise.
 const TEST_PER_USER_LOCKS_ROOT_ENV = 'MYCO_TEST_PER_USER_LOCKS_ROOT';
-const sandboxPerUserLocksRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-locks-'));
-process.env[TEST_PER_USER_LOCKS_ROOT_ENV] = sandboxPerUserLocksRoot;
-process.on('exit', () => {
-  try { fs.rmSync(sandboxPerUserLocksRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
-});
+process.env[TEST_PER_USER_LOCKS_ROOT_ENV] = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-locks-'));
 
 // ---------------------------------------------------------------------------
 // Watchdog diagnostics
@@ -701,7 +801,8 @@ function expandTargets(targets) {
     const stat = fs.statSync(full);
     const files = stat.isDirectory() ? findTests(full) : [full];
     for (const file of files) {
-      if (file.endsWith('.test.tsx')) dom.push(file);
+      // An explicitly named tsx test, `*.test.tsx` or a `*_test.tsx` fixture, runs under the DOM config.
+      if (/[._]test\.tsx$/.test(file)) dom.push(file);
       else nonDom.push(file);
     }
   }
@@ -940,11 +1041,19 @@ async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
   // duration of the run.
   const canonical = path.join(REPO, 'bunfig.toml');
   const backup = path.join(REPO, '.bunfig.toml.runner-backup');
-  let restored = false;
+  let swapped = false;
+  const restoreBunfig = () => {
+    if (!swapped) return;
+    swapped = false;
+    restoreSwappedBunfig = null;
+    fs.rmSync(canonical, { force: true });
+    if (fs.existsSync(backup)) fs.renameSync(backup, canonical);
+  };
   if (bunfig && bunfig !== canonical) {
     if (fs.existsSync(canonical)) fs.renameSync(canonical, backup);
     fs.copyFileSync(bunfig, canonical);
-    restored = true;
+    swapped = true;
+    restoreSwappedBunfig = restoreBunfig;
   }
   try {
     console.log(`\n=== bun test (${label}) ===`);
@@ -997,10 +1106,7 @@ async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
     }
     return status;
   } finally {
-    if (restored) {
-      fs.rmSync(canonical, { force: true });
-      if (fs.existsSync(backup)) fs.renameSync(backup, canonical);
-    }
+    restoreBunfig();
   }
 }
 
@@ -1121,6 +1227,8 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
+
+    killActiveGroup = (signal) => killPhaseTree(signal);
 
     let killedForHang = false;
     let killedForBudget = false;
@@ -1244,6 +1352,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     function settle(code) {
       if (settled) return;
       settled = true;
+      killActiveGroup = null;
       clearInterval(watchdog);
       clearTimeout(budgetTimer);
       const totalMs = Date.now() - startMs;
@@ -1465,7 +1574,7 @@ const shard = parseShard(process.env.MYCO_TEST_SHARD);
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
 const DEFAULT_FILE_DURATION_MS = 100;
 const built = buildArgs();
-const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /\.test\.tsx?$/.test(arg));
+const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /[._]test\.tsx?$/.test(arg));
 const bundledFiles = (file) => (file.startsWith('target/test-bundles/')
   ? [...fs.readFileSync(path.join(REPO, file), 'utf8').matchAll(/import '\.\.\/\.\.\/\.\.\/(.*?)';/g)].map((match) => match[1])
   : [file]);
@@ -1580,4 +1689,5 @@ if (exitCode !== 0) {
   printFailureSummary(phaseReports);
   printOverBudgetSummary();
 }
+reportParentTmpdirLeftovers();
 process.exit(exitCode);

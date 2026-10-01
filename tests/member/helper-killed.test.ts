@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
@@ -30,9 +31,9 @@ const SESSION = 'sess-killed';
 const CLI = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'entries', 'cli.ts');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const scratchDirs: string[] = [];
-/** A directory under /tmp, removed when the case ends however it ends. */
+/** A directory under the temp directory, removed when the case ends however it ends. */
 function scratch(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join('/tmp', prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   scratchDirs.push(dir);
   return dir;
 }
@@ -112,7 +113,6 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
         updateSessionState(spool.dir, SESSION, (s) => { s.transcript = transcriptPointerFor(tx, TEST_MACHINE_ID)!; s.agent = 'claude-code'; });
         spool.markTranscriptBacklog(SESSION);
 
-        // Under /tmp: a macOS per-user $TMPDIR can make every process started in it slow to launch.
         const cwd = scratch('myco-killed-cwd-');
         const child = spawn(process.execPath, [CLI, 'member', 'helper', '--project', PROJECT, '--home', mycoHome], {
           cwd, env: { ...process.env, MYCO_HOME: mycoHome }, stdio: 'ignore',

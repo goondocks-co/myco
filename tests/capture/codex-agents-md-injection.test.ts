@@ -18,7 +18,7 @@ describe('codex AGENTS.md context injection', () => {
   it('drops the injection when it starts the prompt', () => {
     const decision = evaluateUserPromptRules('codex', {
       prompt: '# AGENTS.md instructions for /repo\n\nsome guidance',
-      transcriptPath: '/tmp/rollout.jsonl',
+      transcriptPath: '/fixture/rollout.jsonl',
     });
     expect(decision.action).toBe('drop');
   });
@@ -28,7 +28,7 @@ describe('codex AGENTS.md context injection', () => {
       prompt:
         '<recommended_plugins>\nplugin list\n</recommended_plugins>\n' +
         '# AGENTS.md instructions for /Users/chris/Repos/myco\n\n<INSTRUCTIONS>guidance</INSTRUCTIONS>',
-      transcriptPath: '/tmp/rollout.jsonl',
+      transcriptPath: '/fixture/rollout.jsonl',
     });
     expect(decision.action).toBe('drop');
   });
@@ -36,7 +36,7 @@ describe('codex AGENTS.md context injection', () => {
   it('leaves a real prompt that merely mentions AGENTS.md alone', () => {
     const decision = evaluateUserPromptRules('codex', {
       prompt: 'please update AGENTS.md with the new build step',
-      transcriptPath: '/tmp/rollout.jsonl',
+      transcriptPath: '/fixture/rollout.jsonl',
     });
     expect(decision.action).toBe('pass');
   });
@@ -47,7 +47,7 @@ describe('codex AGENTS.md context injection', () => {
     // unrecoverable — only proven noise may be dropped.
     const decision = evaluateUserPromptRules('codex', {
       prompt: 'why does the rule key on "# AGENTS.md instructions" instead of a tag?',
-      transcriptPath: '/tmp/rollout.jsonl',
+      transcriptPath: '/fixture/rollout.jsonl',
     });
     expect(decision.action).toBe('pass');
   });
@@ -55,7 +55,7 @@ describe('codex AGENTS.md context injection', () => {
   it('keeps an envelope-prefixed prompt that does NOT carry the marker', () => {
     const decision = evaluateUserPromptRules('codex', {
       prompt: '<recommended_plugins>\nplugin list\n</recommended_plugins>\nplease review this',
-      transcriptPath: '/tmp/rollout.jsonl',
+      transcriptPath: '/fixture/rollout.jsonl',
     });
     expect(decision.action).not.toBe('drop');
   });

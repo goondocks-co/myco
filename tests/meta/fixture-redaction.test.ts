@@ -41,7 +41,7 @@ describe('published fixtures', () => {
   });
 
   it('admits the placeholders a fixture is allowed to carry', () => {
-    const allowed = ['"cwd":"/tmp/fixture"', '"cwd":"/Users/fixture/repo"', 'someone@example.com', 'listening on 127.0.0.1', 'peer 10.0.0.4', 'gateway 192.168.1.1'];
+    const allowed = ['"cwd":"/fixture/fixture"', '"cwd":"/Users/fixture/repo"', 'someone@example.com', 'listening on 127.0.0.1', 'peer 10.0.0.4', 'gateway 192.168.1.1'];
     for (const line of allowed) {
       const hit = FORBIDDEN.find(({ pattern }) => pattern.test(line));
       expect({ line, forbiddenBy: hit?.name ?? null }).toEqual({ line, forbiddenBy: null });

@@ -36,7 +36,7 @@ const runner = (result: Partial<CommandResult> = {}): CommandRunner => ({
 beforeEach(() => { calls = []; });
 
 const ACCOUNT = 'b134c2135129c4800082e677fbffb286';
-const base = () => ({ accountId: ACCOUNT, configDir: '/tmp/cfg' });
+const base = () => ({ accountId: ACCOUNT, configDir: '/fixture/cfg' });
 
 describe('memory vector provisioning', () => {
   const metadata = VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }));
@@ -79,7 +79,7 @@ describe('account selection', () => {
   it('GATE: refuses to run with no account named', async () => {
     // Wrangler picks nothing when several accounts are reachable; this refuses
     // before a command can create anything in the wrong one.
-    await expect(deployWorker({ accountId: '', configDir: '/tmp/cfg', runner: runner() }))
+    await expect(deployWorker({ accountId: '', configDir: '/fixture/cfg', runner: runner() }))
       .rejects.toThrow(AccountNotSelected);
   });
 

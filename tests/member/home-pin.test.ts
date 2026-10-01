@@ -559,7 +559,7 @@ describe('the record of missed captures', () => {
     tmpDirs.push(home);
     const project = pinnedProject(home);
     process.chdir(project);
-    const stale = '/tmp/some-old-checkout';
+    const stale = '/fixture/some-old-checkout';
     const fresh = resolveMemberProjectRoot(project);
     const now = Date.now();
     recordMissingMembership(stale, { mycoHome: home, now: () => now - MISSING_MEMBERSHIP_RETENTION_MS - 1 });
@@ -577,12 +577,12 @@ describe('the record of missed captures', () => {
     const home = tempMycoHome();
     tmpDirs.push(home);
     const now = Date.now();
-    recordMissingMembership('/tmp/a-checkout', { mycoHome: home, now: () => now - MISSING_MEMBERSHIP_RETENTION_MS - 1 });
+    recordMissingMembership('/fixture/a-checkout', { mycoHome: home, now: () => now - MISSING_MEMBERSHIP_RETENTION_MS - 1 });
     const [{ file }] = readMissingMemberships(home);
     // A record whose `root` no longer hashes to the file holding it: recomputing
     // the path would leave this one standing and delete some other root's.
     const tampered = JSON.parse(fs.readFileSync(file, 'utf-8')) as { root: string };
-    tampered.root = '/tmp/a-different-checkout';
+    tampered.root = '/fixture/a-different-checkout';
     fs.writeFileSync(file, JSON.stringify(tampered), { mode: 0o600 });
 
     expect(pruneMissingMemberships(home, now)).toBe(1);

@@ -28,7 +28,7 @@ describe('runChecks', () => {
     // $HOME after install" flow, not a failure. Only an unparseable
     // config fails the Vault row.
     const checks = await runChecks(
-      '/tmp/nonexistent-vault-' + Date.now(),
+      '/fixture/nonexistent-vault-' + Date.now(),
       testPerUserLockNamespace,
     );
     const vaultCheck = checks.find((c) => c.name === 'Vault');
@@ -51,7 +51,7 @@ describe('runChecks', () => {
 
   it('returns all expected check names', async () => {
     const checks = await runChecks(
-      '/tmp/nonexistent-vault-' + Date.now(),
+      '/fixture/nonexistent-vault-' + Date.now(),
       testPerUserLockNamespace,
     );
     const names = checks.map((c) => c.name);
@@ -364,7 +364,7 @@ describe('checkMigrationStatus', () => {
 
   it('reports greenfield state when the migration log is empty', async () => {
     await withScopedDb(async () => {
-      const rows = await checkMigrationStatus('/tmp/unused');
+      const rows = await checkMigrationStatus('/fixture/unused');
       expect(rows).toHaveLength(1);
       expect(rows[0]!.status).toBe('ok');
       expect(rows[0]!.detail).toContain('greenfield');
@@ -388,7 +388,7 @@ describe('checkMigrationStatus', () => {
           {
             groveId: 'g1',
             projectId: 'proj_clean',
-            projectRoot: '/tmp/clean',
+            projectRoot: '/fixture/clean',
             alreadyDone: false,
             noLegacyArtifacts: false,
             archivedFiles: [],
@@ -398,7 +398,7 @@ describe('checkMigrationStatus', () => {
           {
             groveId: 'g1',
             projectId: 'proj_locked',
-            projectRoot: '/tmp/locked-proj',
+            projectRoot: '/fixture/locked-proj',
             alreadyDone: false,
             noLegacyArtifacts: false,
             archivedFiles: [],
@@ -409,7 +409,7 @@ describe('checkMigrationStatus', () => {
           {
             groveId: 'g1',
             projectId: 'proj_denied',
-            projectRoot: '/tmp/denied-proj',
+            projectRoot: '/fixture/denied-proj',
             alreadyDone: false,
             noLegacyArtifacts: false,
             archivedFiles: [],
@@ -420,7 +420,7 @@ describe('checkMigrationStatus', () => {
         ],
       });
 
-      const rows = await checkMigrationStatus('/tmp/unused');
+      const rows = await checkMigrationStatus('/fixture/unused');
       expect(rows).toHaveLength(2);
       for (const row of rows) {
         expect(row.status).toBe('warn');
@@ -428,8 +428,8 @@ describe('checkMigrationStatus', () => {
         expect(row.detail).toContain('myco doctor --fix');
       }
       const detailsByRoot = new Map(rows.map((r) => [r.detail.match(/project (\/[^:]+):/)?.[1] ?? '', r.detail]));
-      expect(detailsByRoot.get('/tmp/locked-proj')).toContain('EBUSY');
-      expect(detailsByRoot.get('/tmp/denied-proj')).toContain('EACCES');
+      expect(detailsByRoot.get('/fixture/locked-proj')).toContain('EBUSY');
+      expect(detailsByRoot.get('/fixture/denied-proj')).toContain('EACCES');
     });
   });
 });
@@ -463,7 +463,7 @@ describe('doctor --fix stale smoke-launcher scrub', () => {
         },
       }), 'utf-8');
 
-      const actions = await fix('/tmp/unused', [{
+      const actions = await fix('/fixture/unused', [{
         name: 'Edge cases',
         status: 'warn',
         detail: `Stale escaped smoke-launcher hooks in ${claude} (1 group(s)). Run \`myco doctor --fix\` to scrub them.`,
@@ -570,7 +570,7 @@ describe('doctor --fix migration retry', () => {
 
   it('returns no migration actions when no Migration checks are fixable', async () => {
     await withScopedDb(async () => {
-      const actions = await fix('/tmp/unused', [
+      const actions = await fix('/fixture/unused', [
         { name: 'Migration', status: 'ok', detail: 'No issues.', fixable: false },
       ]);
       expect(actions.some((a) => a.startsWith('Retried migration'))).toBe(false);

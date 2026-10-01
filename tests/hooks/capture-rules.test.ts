@@ -520,7 +520,7 @@ describe('transcript_meta_field_equals condition', () => {
     it('passes when the field is missing', () => {
       const result = evaluateSessionStartRules([execRule], 'codex', {
         transcriptPath: '/some/path.jsonl',
-        transcriptMeta: { cwd: '/tmp/project' },
+        transcriptMeta: { cwd: '/fixture/project' },
       });
       expect(result).toEqual({ action: 'pass' });
     });

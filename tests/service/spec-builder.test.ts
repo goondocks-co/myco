@@ -173,11 +173,11 @@ describe('buildServiceSpec', () => {
     });
 
     test('plist env carries MYCO_LAUNCH_AGENTS_DIR through to the supervisor-spawned child', () => {
-      process.env[SERVICE_UNIT_DIR_ENV] = '/tmp/sandbox-abc/Library/LaunchAgents';
+      process.env[SERVICE_UNIT_DIR_ENV] = '/fixture/sandbox-abc/Library/LaunchAgents';
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-'));
       const bin = makeFakeBinary();
       const spec = buildServiceSpec({ mycoHome: home, executable: bin });
-      expect(spec.env[SERVICE_UNIT_DIR_ENV]).toBe('/tmp/sandbox-abc/Library/LaunchAgents');
+      expect(spec.env[SERVICE_UNIT_DIR_ENV]).toBe('/fixture/sandbox-abc/Library/LaunchAgents');
     });
 
     test('whitespace-only env value is not propagated', () => {

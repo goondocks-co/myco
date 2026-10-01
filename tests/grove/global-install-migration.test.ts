@@ -101,7 +101,7 @@ describe('migrateProjectToGlobalInstall', () => {
   });
 
   it('writes the sentinel on a clean project with no legacy artifacts', () => {
-    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
     expect(result.alreadyDone).toBe(false);
     expect(result.noLegacyArtifacts).toBe(true);
     expect(result.archivedFiles).toEqual([]);
@@ -115,10 +115,10 @@ describe('migrateProjectToGlobalInstall', () => {
   });
 
   it('is idempotent — second call returns alreadyDone with no side effects', () => {
-    const first = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    const first = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
     const sentinelMtime = fs.statSync(resolveSentinelPath(projectRoot)).mtimeMs;
 
-    const second = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    const second = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
     expect(second.alreadyDone).toBe(true);
     expect(second.passId).not.toBe(first.passId);  // new id is generated but not used
     // Sentinel on disk is unchanged.
@@ -135,7 +135,7 @@ describe('migrateProjectToGlobalInstall', () => {
     );
 
     const manifest = makeFakeManifest();
-    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [manifest], packageRoot: '/tmp' });
+    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [manifest], packageRoot: '/fixture' });
 
     expect(result.archivedFiles.length).toBeGreaterThan(0);
     expect(result.archiveDir).toContain('.archive-pre-global-install-');
@@ -149,7 +149,7 @@ describe('migrateProjectToGlobalInstall', () => {
   it('propagates a project-scope machine_id into ~/.myco/machine_id when global is absent', () => {
     fs.writeFileSync(path.join(projectRoot, '.myco/machine_id'), 'legacy_machine_aaaa1111', 'utf-8');
 
-    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
     expect(result.machineIdPropagated).toBe(true);
     const global = fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim();
     expect(global).toBe('legacy_machine_aaaa1111');
@@ -159,7 +159,7 @@ describe('migrateProjectToGlobalInstall', () => {
     fs.writeFileSync(path.join(mycoHome, 'machine_id'), 'global_pre_existing', 'utf-8');
     fs.writeFileSync(path.join(projectRoot, '.myco/machine_id'), 'legacy_machine_bbbb2222', 'utf-8');
 
-    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
     expect(result.machineIdPropagated).toBe(false);
     const global = fs.readFileSync(path.join(mycoHome, 'machine_id'), 'utf-8').trim();
     expect(global).toBe('global_pre_existing');
@@ -168,7 +168,7 @@ describe('migrateProjectToGlobalInstall', () => {
   it('skips archive step for manifests whose registration targets are absent on disk', () => {
     const result = migrateProjectToGlobalInstall(projectRoot, {
       manifests: [makeFakeManifest()],
-      packageRoot: '/tmp',
+      packageRoot: '/fixture',
     });
     expect(result.archivedFiles).toEqual([]);
     expect(result.archiveDir).toBeNull();
@@ -185,7 +185,7 @@ describe('migrateProjectToGlobalInstall', () => {
     fs.writeFileSync(path.join(projectRoot, '.myco/installer-audit/x.json'), '{}', 'utf-8');
     fs.writeFileSync(path.join(projectRoot, '.myco/secrets.env'), 'API_KEY=oldvalue', 'utf-8');
 
-    migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
 
     expect(fs.existsSync(path.join(projectRoot, '.myco/last-update-version'))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '.myco/restart-reason.json'))).toBe(false);
@@ -213,7 +213,7 @@ describe('migrateProjectToGlobalInstall', () => {
     fs.writeFileSync(path.join(projectRoot, '.myco/secrets.env'), 'API_KEY=hush', 'utf-8');
     fs.writeFileSync(path.join(projectRoot, '.myco/restart-reason.json'), '{"r":"x"}', 'utf-8');
 
-    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/tmp' });
+    const result = migrateProjectToGlobalInstall(projectRoot, { manifests: [], packageRoot: '/fixture' });
 
     expect(fs.existsSync(path.join(projectRoot, '.myco/team'))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '.myco/attachments'))).toBe(false);

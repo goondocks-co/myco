@@ -17,8 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// Under /tmp on POSIX: a macOS per-user $TMPDIR can make every process started in it slow to launch.
-const ROOT = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-g8-'));
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-g8-'));
 afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }));
 
 const EXE = process.platform === 'win32' ? '.exe' : '';

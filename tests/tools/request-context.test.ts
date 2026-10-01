@@ -63,11 +63,11 @@ function withRegisteredProject<T>(fn: (args: {
 
 describe('tool request context', () => {
   it('builds a request context from explicit projectId, validating the brand', () => {
-    const vaultDir = path.join('/tmp', 'project', '.myco');
+    const vaultDir = path.join('/fixture', 'project', '.myco');
     const projectId = assertGroveProjectId(createProjectId());
     const context = resolveLegacyRequestContext(vaultDir, { projectId, machineId: 'machine-1' });
 
-    expect(context.projectRoot).toBe(path.join('/tmp', 'project'));
+    expect(context.projectRoot).toBe(path.join('/fixture', 'project'));
     expect(context.projectId).toBe(projectId);
     expect(context.projectVaultDir).toBe(vaultDir);
     expect(context.databasePath).toBe(path.join(vaultDir, 'myco.db'));
@@ -267,7 +267,7 @@ describe('tool request context', () => {
     withRegisteredProject(({ vaultDir, projectId }) => {
       const fallbackVaultDir = vaultDir;
       const claimedProjectId = assertGroveProjectId(createProjectId());
-      const legacy = resolveLegacyRequestContext(path.join('/tmp', 'claimed-project', '.myco'), {
+      const legacy = resolveLegacyRequestContext(path.join('/fixture', 'claimed-project', '.myco'), {
         projectId: claimedProjectId,
         machineId: 'machine-a',
         sessionId: 'sess-a',
@@ -328,7 +328,7 @@ describe('tool request context', () => {
 
   it('does not emit empty optional headers', () => {
     const projectId = assertGroveProjectId(createProjectId());
-    const context = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+    const context = resolveLegacyRequestContext(path.join('/fixture', 'project', '.myco'), {
       projectId,
       machineId: 'machine-1',
       groveId: null,
@@ -337,18 +337,18 @@ describe('tool request context', () => {
 
     const headers = requestContextHeaders(context);
 
-    expect(headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(path.join('/tmp', 'project'));
+    expect(headers[REQUEST_CONTEXT_HEADERS.projectRoot]).toBe(path.join('/fixture', 'project'));
     expect(headers[REQUEST_CONTEXT_HEADERS.groveId]).toBeUndefined();
     expect(headers[REQUEST_CONTEXT_HEADERS.sessionId]).toBeUndefined();
   });
 
   it('maps request contexts to row project scope: NULL for non-Grove, projectId for Grove', () => {
     const projectId = assertGroveProjectId(createProjectId());
-    const nonGrove = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+    const nonGrove = resolveLegacyRequestContext(path.join('/fixture', 'project', '.myco'), {
       projectId,
       groveId: null,
     });
-    const grove = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+    const grove = resolveLegacyRequestContext(path.join('/fixture', 'project', '.myco'), {
       projectId,
       groveId: 'grove-a',
     });
@@ -408,19 +408,19 @@ describe('tool request context', () => {
 
     it('round-trips callerRoot through requestContextHeaders', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const context = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), {
+      const context = resolveLegacyRequestContext(path.join('/fixture', 'project', '.myco'), {
         projectId,
-        callerRoot: path.join('/tmp', 'worktrees', 'feature-y'),
+        callerRoot: path.join('/fixture', 'worktrees', 'feature-y'),
       });
 
       const headers = requestContextHeaders(context);
 
-      expect(headers[REQUEST_CONTEXT_HEADERS.callerRoot]).toBe(path.join('/tmp', 'worktrees', 'feature-y'));
+      expect(headers[REQUEST_CONTEXT_HEADERS.callerRoot]).toBe(path.join('/fixture', 'worktrees', 'feature-y'));
     });
 
     it('does not emit x-myco-caller-root when callerRoot is null', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const context = resolveLegacyRequestContext(path.join('/tmp', 'project', '.myco'), { projectId });
+      const context = resolveLegacyRequestContext(path.join('/fixture', 'project', '.myco'), { projectId });
 
       const headers = requestContextHeaders(context);
 
@@ -429,7 +429,7 @@ describe('tool request context', () => {
 
     it('uses projectRoot as the live filesystem root when callerRoot is absent', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const projectRoot = path.join('/tmp', 'project');
+      const projectRoot = path.join('/fixture', 'project');
       const context = resolveLegacyRequestContext(path.join(projectRoot, '.myco'), {
         projectId,
         projectRoot,
@@ -440,8 +440,8 @@ describe('tool request context', () => {
 
     it('uses callerRoot as the live filesystem root without changing registered projectRoot', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const projectRoot = path.join('/tmp', 'project');
-      const worktreeRoot = path.join('/tmp', 'worktrees', 'feature-y');
+      const projectRoot = path.join('/fixture', 'project');
+      const worktreeRoot = path.join('/fixture', 'worktrees', 'feature-y');
       const context = resolveLegacyRequestContext(path.join(projectRoot, '.myco'), {
         projectId,
         projectRoot,
@@ -454,9 +454,9 @@ describe('tool request context', () => {
   });
 
   it('rejects a path-string project id at the brand boundary', () => {
-    expect(() => resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+    expect(() => resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
       // @ts-expect-error — exercising the runtime brand check on bad input
-      projectId: '/tmp/p',
+      projectId: '/fixture/p',
     })).toThrow(/Grove project id/);
   });
 
@@ -480,7 +480,7 @@ describe('tool request context', () => {
 
     it('returns GLOBAL_SCOPE for legacy non-Grove caller contexts', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const legacy = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const legacy = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: null,
         tenancySource: 'caller',
@@ -492,7 +492,7 @@ describe('tool request context', () => {
 
     it('scopes caller-supplied Grove-bound contexts to their project id', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const grove = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const grove = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: 'grove-a',
         tenancySource: 'caller',
@@ -508,7 +508,7 @@ describe('tool request context', () => {
       // unauthorized request. It must resolve to GLOBAL_SCOPE
       // (project_id IS NULL → zero cross-project rows) regardless of groveId.
       const projectId = assertGroveProjectId(createProjectId());
-      const synthesized = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const synthesized = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: 'grove-anchor',
         tenancySource: 'synthesized',
@@ -520,7 +520,7 @@ describe('tool request context', () => {
 
     it('scopes daemon-internal Grove registry contexts to their project id', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const daemon = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const daemon = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: 'grove-internal',
         tenancySource: 'daemon',
@@ -713,17 +713,17 @@ describe('tool request context', () => {
 
     it('agrees with the seam: caller and daemon scope to project, synthesized stays global', () => {
       const projectId = assertGroveProjectId(createProjectId());
-      const caller = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const caller = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: 'grove-a',
         tenancySource: 'caller',
       });
-      const synthesized = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const synthesized = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: 'grove-a',
         tenancySource: 'synthesized',
       });
-      const daemon = resolveLegacyRequestContext(path.join('/tmp', 'p', '.myco'), {
+      const daemon = resolveLegacyRequestContext(path.join('/fixture', 'p', '.myco'), {
         projectId,
         groveId: 'grove-a',
         tenancySource: 'daemon',

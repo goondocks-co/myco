@@ -60,7 +60,7 @@ describe('assertGroveProjectId', () => {
 
   it('rejects path-string project ids (the legacy bug)', () => {
     expect(() => assertGroveProjectId('/Users/chris/Repos/myco')).toThrow();
-    expect(() => assertGroveProjectId('/tmp/example')).toThrow();
+    expect(() => assertGroveProjectId('/fixture/example')).toThrow();
   });
 
   it('rejects null, undefined, empty string', () => {

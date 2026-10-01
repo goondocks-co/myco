@@ -36,7 +36,7 @@ describe('assertSafeProjectRoot', () => {
 
   it('accepts a normal nested project path', () => {
     expect(() => assertSafeProjectRoot('/Users/anyone/Repos/some-project')).not.toThrow();
-    expect(() => assertSafeProjectRoot('/tmp/myco-test-fixture')).not.toThrow();
+    expect(() => assertSafeProjectRoot('/fixture/myco-test-fixture')).not.toThrow();
   });
 
   it('resolves relative paths before checking', () => {

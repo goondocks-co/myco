@@ -40,7 +40,7 @@ const PLUGIN_FILE_MARKER = 'myco:plugin-marker';
  * `project` scope. The actual path is irrelevant — we only inspect what
  * the resolver returns, never touch the filesystem.
  */
-const FAKE_PROJECT_ROOT = '/tmp/myco-invariant-fake-project';
+const FAKE_PROJECT_ROOT = '/fixture/myco-invariant-fake-project';
 
 /** Stable fake HOME so `~/...` paths in manifests resolve deterministically. */
 let stableHomeDir: string;

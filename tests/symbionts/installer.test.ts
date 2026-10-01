@@ -997,9 +997,9 @@ describe('installSkills', () => {
     fs.mkdirSync(path.join(projectRoot, '.agents/skills'), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, '.claude/skills'), { recursive: true });
 
-    fs.symlinkSync('/tmp/old-rules-skill', path.join(projectRoot, '.agents/skills/rules'));
+    fs.symlinkSync('/fixture/old-rules-skill', path.join(projectRoot, '.agents/skills/rules'));
     fs.symlinkSync('../../.agents/skills/rules', path.join(projectRoot, '.claude/skills/rules'));
-    fs.symlinkSync('/tmp/old-curate-skill', path.join(projectRoot, '.agents/skills/myco-curate'));
+    fs.symlinkSync('/fixture/old-curate-skill', path.join(projectRoot, '.agents/skills/myco-curate'));
     fs.symlinkSync('../../.agents/skills/myco-curate', path.join(projectRoot, '.claude/skills/myco-curate'));
 
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
@@ -1311,7 +1311,7 @@ describe('gitignore management', () => {
     expect(gitignore).toContain('docs/design/');
     expect(gitignore).toContain('docs/specs/');
     expect(gitignore).not.toContain('~/plans');
-    expect(gitignore).not.toContain('/tmp/plans');
+    expect(gitignore).not.toContain('/fixture/plans');
   });
 
   it('removes custom plan dirs from the managed block when the flag is disabled', () => {

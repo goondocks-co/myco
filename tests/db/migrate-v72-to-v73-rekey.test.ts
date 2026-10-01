@@ -85,7 +85,7 @@ function seedV72Vault(): Database {
     (11, 'proj_a', 'sess1', 2, 'Edit', 1001, 1001)`);
   db.exec(`INSERT INTO plans (id, project_id, logical_key, session_id, prompt_batch_id, created_at) VALUES ('plan_1', 'proj_a', 'lk', 'sess1', 3, 1002)`);
   db.exec(`INSERT INTO spores (id, project_id, agent_id, session_id, prompt_batch_id, observation_type, content, created_at) VALUES ('spore_1', 'proj_a', 'agent1', 'sess1', 1, 'decision', 'a decision', 1000)`);
-  db.exec(`INSERT INTO attachments (id, project_id, session_id, prompt_batch_id, file_path, created_at) VALUES ('att_1', 'proj_a', 'sess1', 1, '/tmp/x.png', 1000)`);
+  db.exec(`INSERT INTO attachments (id, project_id, session_id, prompt_batch_id, file_path, created_at) VALUES ('att_1', 'proj_a', 'sess1', 1, '/fixture/x.png', 1000)`);
   db.exec(`INSERT INTO knowledge_git_provenance (project_id, machine_id, identity_key, session_id, prompt_batch_id, capture_point, captured_at, status_hash, created_at) VALUES ('proj_a', 'local', 'ik1', 'sess1', 1, 'pre', 1000, 'sh', 1000)`);
   db.exec(`INSERT INTO knowledge_release_state (project_id, machine_id, identity_key, namespace, record_id, source_session_id, source_prompt_batch_id, state, confidence, checked_at, created_at) VALUES ('proj_a', 'local', 'ik2', 'ns', 'rec1', 'sess1', 3, 'released', 'high', 1000, 1000)`);
   db.exec(`INSERT INTO graph_edges (id, project_id, agent_id, source_id, source_type, target_id, target_type, type, created_at) VALUES

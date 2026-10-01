@@ -209,8 +209,8 @@ describe('expandRoot', () => {
     });
 
     it('resolves ~ under process.env.HOME when it is set', () => {
-      process.env.HOME = '/tmp/sandbox-home-xyz';
-      expect(expandRoot('~/.claude/projects')).toBe('/tmp/sandbox-home-xyz/.claude/projects');
+      process.env.HOME = '/fixture/sandbox-home-xyz';
+      expect(expandRoot('~/.claude/projects')).toBe('/fixture/sandbox-home-xyz/.claude/projects');
     });
 
     it('falls back to os.homedir() when HOME is unset', () => {
@@ -224,9 +224,9 @@ describe('expandRoot', () => {
     });
 
     it('honours an explicit env argument over process.env.HOME', () => {
-      process.env.HOME = '/tmp/should-not-be-used';
-      expect(expandRoot('~/.claude/projects', { HOME: '/tmp/explicit-home' })).toBe(
-        '/tmp/explicit-home/.claude/projects',
+      process.env.HOME = '/fixture/should-not-be-used';
+      expect(expandRoot('~/.claude/projects', { HOME: '/fixture/explicit-home' })).toBe(
+        '/fixture/explicit-home/.claude/projects',
       );
     });
   });

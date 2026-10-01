@@ -89,7 +89,7 @@ describe('Grove project activation', () => {
       YAML.stringify({
         version: 3,
         backup: {
-          dir: '/tmp/legacy-activation-backups',
+          dir: '/fixture/legacy-activation-backups',
         },
       }),
       'utf-8',
@@ -129,7 +129,7 @@ describe('Grove project activation', () => {
     expect(marker.grove_id).toBe(grove.id);
     // After the three-tier split, backup config moved from project to Grove
     // tier — read it from the merged view scoped to the activated Grove.
-    expect(loadMergedConfig(vaultDir, { groveId: grove.id, mycoHome }).backup.dir).toBe('/tmp/legacy-activation-backups');
+    expect(loadMergedConfig(vaultDir, { groveId: grove.id, mycoHome }).backup.dir).toBe('/fixture/legacy-activation-backups');
 
     const requestContext = requestContextFromEnvironment({}, vaultDir);
     expect(requestContext.groveId).toBe(grove.id);

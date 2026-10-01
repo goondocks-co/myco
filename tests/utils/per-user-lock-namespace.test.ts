@@ -35,7 +35,7 @@ void structurallyForgedNamespace;
 
 describe('per-user lock namespace', () => {
   test('resolves legacy namespace directories beneath an explicitly injected root', () => {
-    const root = path.resolve('/tmp/myco-explicit-lock-root');
+    const root = path.resolve('/fixture/myco-explicit-lock-root');
     const namespace = createPerUserLockNamespace(() => root);
 
     expect(namespace.resolve('secrets')).toBe(path.join(root, 'secrets'));
@@ -47,7 +47,7 @@ describe('per-user lock namespace', () => {
   });
 
   test('rejects paths that could escape the injected root', () => {
-    const namespace = createPerUserLockNamespace(() => path.resolve('/tmp/myco-lock-root'));
+    const namespace = createPerUserLockNamespace(() => path.resolve('/fixture/myco-lock-root'));
 
     for (const invalid of ['', '.', '..', '../escape', 'nested/escape', '/absolute']) {
       expect(() => namespace.resolve(invalid as never)).toThrow();
@@ -55,18 +55,18 @@ describe('per-user lock namespace', () => {
   });
 
   test('pins the first verified root and rejects provider drift', () => {
-    let root = path.resolve('/tmp/myco-lock-root-a');
+    let root = path.resolve('/fixture/myco-lock-root-a');
     const namespace = createPerUserLockNamespace(() => root);
 
     expect(namespace.resolve('secrets')).toBe(path.join(root, 'secrets'));
-    root = path.resolve('/tmp/myco-lock-root-b');
+    root = path.resolve('/fixture/myco-lock-root-b');
     expect(() => namespace.resolve('secrets'))
       .toThrow('Per-user lock namespace root changed after initialization');
     expect(Object.isFrozen(namespace)).toBe(true);
   });
 
   test('revalidates its provider on every resolution', () => {
-    const root = path.resolve('/tmp/myco-lock-root');
+    const root = path.resolve('/fixture/myco-lock-root');
     let calls = 0;
     const namespace = createPerUserLockNamespace(() => {
       calls += 1;
@@ -82,7 +82,7 @@ describe('per-user lock namespace', () => {
 
   test('the production namespace resolves only through the native verified provider', () => {
     const previous = process.env.MYCO_LOCK_ROOT;
-    process.env.MYCO_LOCK_ROOT = path.resolve('/tmp/untrusted-lock-root');
+    process.env.MYCO_LOCK_ROOT = path.resolve('/fixture/untrusted-lock-root');
     try {
       expect(nativePerUserLockNamespace.resolve('secrets'))
         .toBe(path.join(resolvePerUserLocksDir(), 'secrets'));

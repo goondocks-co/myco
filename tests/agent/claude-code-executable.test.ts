@@ -30,12 +30,12 @@ describe('resolveClaudeCodeExecutable', () => {
   it('resolves the optional CLI package from the installed package root on disk', () => {
     const optionalPackage = expectedOptionalPackage();
     const executableName = expectedExecutableName();
-    const packageJsonPath = `/tmp/node_modules/${optionalPackage}/package.json`;
-    const executablePath = `/tmp/node_modules/${optionalPackage}/${executableName}`;
+    const packageJsonPath = `/fixture/node_modules/${optionalPackage}/package.json`;
+    const executablePath = `/fixture/node_modules/${optionalPackage}/${executableName}`;
     const calls: string[] = [];
     const executable = resolveClaudeCodeExecutable({
       importMetaUrl: runtimeModuleUrl(),
-      execPath: '/tmp/vendor/myco',
+      execPath: '/fixture/vendor/myco',
       realpathSync: (value) => value as ReturnType<typeof Bun.file>,
       existsSync: (value) => value === executablePath,
       requireFactory: (_from) => ({

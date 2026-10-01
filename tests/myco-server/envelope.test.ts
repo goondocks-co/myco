@@ -9,7 +9,7 @@ const good = envelope();
 
 describe('envelope', () => {
   it('refuses the pre-2.0 hook body shape', () => {
-    const legacy = { type: 'user_prompt_submit', prompt: 'hi', session_id: 'sess_1', agent: 'claude-code', transcript_path: '/tmp/t.jsonl' };
+    const legacy = { type: 'user_prompt_submit', prompt: 'hi', session_id: 'sess_1', agent: 'claude-code', transcript_path: '/fixture/t.jsonl' };
     const p = parseEnvelope(legacy);
     expect(p.ok).toBe(false);
     if (!p.ok) expect(p.reason).toBe('unknown field type');

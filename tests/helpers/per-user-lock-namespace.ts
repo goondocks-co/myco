@@ -14,28 +14,19 @@
  * limitations under the License.
  */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { createPerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 export const TEST_PER_USER_LOCKS_ROOT_ENV = 'MYCO_TEST_PER_USER_LOCKS_ROOT';
 
+/** The lock root the runner or the test preload (tests/setup/sandbox-preload.ts) made for this test process. */
 function resolveTestPerUserLocksRoot(): string {
-  const runnerRoot = process.env[TEST_PER_USER_LOCKS_ROOT_ENV];
-  if (runnerRoot !== undefined) {
-    if (!path.isAbsolute(runnerRoot) || !fs.statSync(runnerRoot).isDirectory()) {
-      throw new Error(`${TEST_PER_USER_LOCKS_ROOT_ENV} must name an existing absolute directory`);
-    }
-    return runnerRoot;
+  const root = process.env[TEST_PER_USER_LOCKS_ROOT_ENV];
+  if (root === undefined || !path.isAbsolute(root) || !fs.statSync(root).isDirectory()) {
+    throw new Error(`${TEST_PER_USER_LOCKS_ROOT_ENV} must name an existing absolute directory`);
   }
-
-  const directRunRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-locks-'));
-  process.env[TEST_PER_USER_LOCKS_ROOT_ENV] = directRunRoot;
-  process.on('exit', () => {
-    try { fs.rmSync(directRunRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
-  });
-  return directRunRoot;
+  return root;
 }
 
 export const testPerUserLocksRoot = resolveTestPerUserLocksRoot();

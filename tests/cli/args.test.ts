@@ -27,7 +27,7 @@ describe('parseStrictFlags', () => {
   });
 
   it('parses boolean, required-value, and optional-value flags', () => {
-    const parsed = parseStrictFlags('myco fake', ['--force', '--name', 'alpha', '--project', '/tmp/x'], [
+    const parsed = parseStrictFlags('myco fake', ['--force', '--name', 'alpha', '--project', '/fixture/x'], [
       { name: '--force' },
       { name: '--name', value: 'required' },
       { name: '--project', value: 'optional' },
@@ -35,7 +35,7 @@ describe('parseStrictFlags', () => {
 
     expect(parsed.has('--force')).toBe(true);
     expect(parsed.value('--name')).toBe('alpha');
-    expect(parsed.value('--project')).toBe('/tmp/x');
+    expect(parsed.value('--project')).toBe('/fixture/x');
     expect(parsed.has('--absent')).toBe(false);
     expect(parsed.value('--absent')).toBeUndefined();
   });

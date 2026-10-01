@@ -68,7 +68,7 @@ describe('registerScheduledTasks', () => {
       replaceGroup: vi.fn(),
     };
     const baseDeps = {
-      definitionsDir: '/tmp/defs',
+      definitionsDir: '/fixture/defs',
       vaultDir,
       resolveEmbeddingManager: () => ({} as never),
       logger: logger as never,

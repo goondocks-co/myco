@@ -81,8 +81,8 @@ describe('the resume command and line', () => {
   });
 
   it('quotes a POSIX folder so nothing in it runs', () => {
-    expect(resumeCommandFor('codex', ID, "/tmp/it's here")!.line).toBe(`cd '/tmp/it'\\''s here' && codex resume ${ID}`);
-    expect(resumeCommandFor('codex', ID, '/tmp/$(id)/`whoami`;rm -rf x')!.line).toBe(`cd '/tmp/$(id)/\`whoami\`;rm -rf x' && codex resume ${ID}`);
+    expect(resumeCommandFor('codex', ID, "/fixture/it's here")!.line).toBe(`cd '/fixture/it'\\''s here' && codex resume ${ID}`);
+    expect(resumeCommandFor('codex', ID, '/fixture/$(id)/`whoami`;rm -rf x')!.line).toBe(`cd '/fixture/$(id)/\`whoami\`;rm -rf x' && codex resume ${ID}`);
     expect(resumeCommandFor('codex', ID, '')!.line).toBe(`codex resume ${ID}`);
   });
 
@@ -93,7 +93,7 @@ describe('the resume command and line', () => {
   });
 
   it('gives nothing for a folder carrying a control character', () => {
-    for (const path of ['/tmp/a\nb', '/tmp/a\u0000b', '/tmp/a\u001bb', 'C:\\a\rb', '/tmp/a\u007fb']) {
+    for (const path of ['/fixture/a\nb', '/fixture/a\u0000b', '/fixture/a\u001bb', 'C:\\a\rb', '/fixture/a\u007fb']) {
       expect({ path, resume: resumeCommandFor('codex', ID, path) }).toEqual({ path, resume: null });
     }
   });

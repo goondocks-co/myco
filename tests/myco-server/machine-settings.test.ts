@@ -42,7 +42,7 @@ describe('a machine\'s settings', () => {
 
   it('refuse a folder that is, or resolves to, the filesystem root, the home or the project root, and any that climbs out', async () => {
     const e = rig();
-    const broad = ['/', '//', '/./', '~', '~/', '~/.', '~//', '.', './', './/.', '..', '../plans', 'docs/../../plans', '~/../plans', '/tmp/../etc', '~root/plans'];
+    const broad = ['/', '//', '/./', '~', '~/', '~/.', '~//', '.', './', './/.', '..', '../plans', 'docs/../../plans', '~/../plans', '/fixture/../etc', '~root/plans'];
     const refused = await Promise.all(broad.map(async (entry) => [entry, (await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', [entry], 'mem_a', NOW)).applied] as const));
     expect(Object.fromEntries(refused)).toEqual(Object.fromEntries(broad.map((entry) => [entry, false])));
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['./docs/plans', '~/notes/plans', '/srv/plans', 'a..b/plans'], 'mem_a', NOW)).toEqual({ applied: true });

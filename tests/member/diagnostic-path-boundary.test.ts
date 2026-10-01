@@ -4,7 +4,7 @@
  * A member path is held inside the member root before anything is created,
  * opened or locked, so a component replaced by a link out of the root is
  * refused rather than followed. The root itself may sit under links — a home
- * under `/tmp` on macOS resolves elsewhere — so the root is resolved once and
+ * under `/fixture` on macOS resolves elsewhere — so the root is resolved once and
  * only what lies beneath it is held to the rule.
  *
  * Absence is its own answer: a leaf that is not there under a directory is

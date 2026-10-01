@@ -22,8 +22,7 @@ function cli(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }): { s
 
 describe('the symbiont-config claim, read from the dogfood home through the bare-binary pin', () => {
   it('names the released home as the owner, and refuses the dogfood home a claim it does not force', () => {
-    // Under /tmp: a macOS per-user $TMPDIR can make every process started in it slow to launch.
-    const userHome = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-claims-pin-'));
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-claims-pin-'));
     const prod = path.join(userHome, '.myco');
     const dev = path.join(userHome, '.myco-dev');
     const project = path.join(userHome, 'repo');

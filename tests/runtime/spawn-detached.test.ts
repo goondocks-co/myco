@@ -11,7 +11,7 @@ import { spawnDetached, windowsArgument } from '@myco/runtime/spawn-detached.js'
 
 describe('a detached start', () => {
   it('runs the command with its arguments in the directory it is given, and answers at once', async () => {
-    const dir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-detached-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-detached-'));
     const out = path.join(dir, 'out.json');
     const script = path.join(dir, 'child.ts');
     fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));\n`);

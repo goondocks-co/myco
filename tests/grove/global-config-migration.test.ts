@@ -186,7 +186,7 @@ describe('scrubEscapedSmokeLaunchers', () => {
   });
 
   // Generalized signature-based scrub: catches Myco's own escaped/old launcher
-  // entries at ANY path (not just the smoke-specific `/tmp/myco-*/home/` one),
+  // entries at ANY path (not just the smoke-specific `/fixture/myco-*/home/` one),
   // by the full `<launcher.cjs> hook <known-event> --symbiont <known-agent>`
   // signature, while leaving foreign hooks, genuine user wrappers, and the new
   // marker-bearing binary form untouched.

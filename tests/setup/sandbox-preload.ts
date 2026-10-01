@@ -5,15 +5,29 @@
 //   1. Redirect os.homedir()/userInfo()/HOME to a throwaway per-process sandbox,
 //      so home-derived paths resolve INSIDE the sandbox (current + future subsystems).
 //   2. Fence fs mutations whose resolved target is under the REAL ~/.myco* — throw.
+import { afterAll } from 'bun:test';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
+import { removeRegisteredTestPaths } from '../support/remove-when-tests-end.js';
 
 configureSqliteLibrary();
 
 const REAL_HOME = os.homedir();
-const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-home-'));
+// A short name: socket paths derived from the home (an external-MCP listener
+// binds `<home>/.myco-emcp/<tag>.sock`) must stay under the 104-byte limit.
+const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
+
+// The per-user lock root tests use (tests/helpers/per-user-lock-namespace.ts).
+// The runner hands every test process one; a run outside the runner gets one
+// made here and removed with the sandbox home. Under --isolate Bun resets
+// process.env between files, so each file's preload makes and removes its own.
+const LOCKS_ROOT_ENV = 'MYCO_TEST_PER_USER_LOCKS_ROOT';
+const OWN_LOCKS_ROOT = process.env[LOCKS_ROOT_ENV]
+  ? null
+  : fs.mkdtempSync(path.join(os.tmpdir(), 'myco-test-locks-'));
+if (OWN_LOCKS_ROOT !== null) process.env[LOCKS_ROOT_ENV] = OWN_LOCKS_ROOT;
 
 // Expose the real home for the proof test (it cannot recompute it post-redirect).
 (globalThis as Record<string, unknown>).__MYCO_TEST_REAL_HOME__ = REAL_HOME;
@@ -121,8 +135,20 @@ setUserInfo((opts?: unknown) => ({ ...origUserInfo(opts), homedir: SANDBOX_HOME 
 process.env.HOME = SANDBOX_HOME;
 process.env.USERPROFILE = SANDBOX_HOME;
 
-// Clean the throwaway sandbox on process exit (bypass the fence via the captured orig).
-process.on('exit', () => { try { origRmSync(SANDBOX_HOME, { recursive: true, force: true }); } catch { /* ignore */ } });
+// Remove the throwaway sandbox when the test process is done with it, through the
+// captured original so the fence never sees it. Bun's test runner runs a preload's
+// `afterAll` after every file's own hooks (once per file under --isolate, where this
+// preload also runs once per file) and does not emit process 'exit'; the 'exit'
+// listener covers any other host.
+function removeSandboxHome(): void {
+  removeRegisteredTestPaths(origRmSync);
+  try { origRmSync(SANDBOX_HOME, { recursive: true, force: true }); } catch { /* ignore */ }
+  if (OWN_LOCKS_ROOT !== null) {
+    try { origRmSync(OWN_LOCKS_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+afterAll(removeSandboxHome);
+process.on('exit', removeSandboxHome);
 
 // `cloudflare:workers` is a workerd builtin; the containers package imports it
 // at module load, and the Worker index re-exports the harness container class.
