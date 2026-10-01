@@ -69,23 +69,27 @@ describe('spool retention', () => {
     expect(fs.existsSync(quarantined)).toBe(false);
   });
 
-  it('starts a quarantined session\'s next journal from its first line, its turn-end marks included', () => {
+  it('starts a quarantined session\'s next journal from its first line, and keeps its unconsumed turn-end marks', () => {
     const spool = new MemberSpool('proj_1', { mycoHome });
     const ctx = ctxFor(spool, 'sess-q');
-    const mark = { slot: 'primary' as const, transcriptId: 'tx_' + 'q'.repeat(32), atSize: 10 };
-    for (const text of ['one', 'two']) spool.append('sess-q', promptEvent(ctx, { promptId: mintId(), text }));
-    spool.appendTurnEnd('sess-q', mark);
-    // Both lanes part-way through it, and its transcript still behind: the state stays when the journal goes.
-    updateSessionState(spool.dir, 'sess-q', (state) => { state.highWater = 2; state.markWater = 3; });
+    const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'q'.repeat(32), atSize });
+    for (const text of ['one', 'two', 'three']) spool.append('sess-q', promptEvent(ctx, { promptId: mintId(), text }));
+    spool.appendTurnEnd('sess-q', mark(10));
+    spool.appendTurnEnd('sess-q', mark(20));
+    // The event lane part-way through the journal, the first mark consumed, and the transcript still behind: the
+    // state stays when the journal goes.
+    updateSessionState(spool.dir, 'sess-q', (state) => { state.highWater = 2; });
+    spool.consumeTurnEnds('sess-q', spool.pendingTurnEnds('sess-q')[0]);
     spool.markTranscriptBacklog('sess-q');
     const t0 = Date.now();
     expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-q'] }).quarantined).toHaveLength(1);
-    expect(readSessionState(spool.dir, 'sess-q')).toMatchObject({ highWater: 0, markWater: 0 });
+    expect(readSessionState(spool.dir, 'sess-q')).toMatchObject({ highWater: 0, markWater: 2 });
 
-    // The next journal's lines are read from its start: an event at line 0 and the turn's mark at line 1.
+    // The next journal is read from its first line; the marks file was never the journal's, and still holds the mark
+    // no pass has read.
     spool.append('sess-q', promptEvent(ctx, { promptId: mintId(), text: 'after' }));
-    spool.appendTurnEnd('sess-q', mark);
-    expect(spool.pendingTurnEnds('sess-q').map((m) => m.line)).toEqual([1]);
+    expect(spool.depth('sess-q')).toBe(1);
+    expect(spool.pendingTurnEnds('sess-q').map((m) => m.mark.atSize)).toEqual([20]);
   });
 
   it('a session that keeps acknowledging is never quarantined, and a fully acknowledged spool needs no retention', async () => {

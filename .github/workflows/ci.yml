@@ -367,6 +367,8 @@ jobs:
           tests/upgrade/apply-binary.test.ts
           tests/meta/binary-replaced-mid-run.test.ts
           tests/member/journal-v2.test.ts
+          tests/runtime/spawn-detached.test.ts
+          tests/member/helper.test.ts
       - name: Compile Windows native contract executable
         shell: pwsh
         run: |
