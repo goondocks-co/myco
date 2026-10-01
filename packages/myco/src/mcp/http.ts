@@ -267,8 +267,7 @@ export function createStreamableMcpHttpHandler(
       // BEFORE the served-grove filter below ever runs. An overlay caller
       // gets the same uniform 404 `not_found` refusal shape the filter emits
       // a few lines down instead; loopback keeps the descriptive 503
-      // unchanged (see `(e) loopback requests are entirely unaffected` in
-      // `tests/daemon/host-serve-grove-filter.test.ts`).
+      // unchanged.
       if (overlayRequest) {
         res.statusCode = 404;
         res.setHeader('Content-Type', 'application/json');

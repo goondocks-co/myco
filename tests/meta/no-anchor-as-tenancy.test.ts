@@ -55,8 +55,7 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 // tenancy source" from "this vaultDir is config/db routing only" without
 // data-flow analysis. A blanket ban would fail the build on correct code, so
 // per the task's own guidance we rely on gate #1 below (the precise,
-// high-signal `resolveRequestContextForVault` rule) plus the cross-tenant
-// suite (tests/integration/multi-tenancy-invariant-e2e.test.ts) instead.
+// high-signal `resolveRequestContextForVault` rule) instead.
 
 // ---------------------------------------------------------------------------
 // Deliberate exemption — the notification banner READ/MUTATE routes are GLOBAL
@@ -85,8 +84,7 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 // This gate does NOT flag these handlers (they call
 // `projectScopeFromRequestContext`, not `resolveRequestContextForVault`); the
 // note exists so the exemption is a reviewed, recorded decision rather than an
-// oversight. The corresponding positive behavior — synthesized reads SUCCEED,
-// leak-safe — is pinned in tests/daemon/api/notifications-read-scope.test.ts.
+// oversight.
 
 // ---------------------------------------------------------------------------
 // Allowlist — the ONLY src files permitted to call

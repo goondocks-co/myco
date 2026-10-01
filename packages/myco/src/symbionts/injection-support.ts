@@ -33,8 +33,7 @@ function hasAnySignal(template: string, signals: readonly string[]): boolean {
 export function detectSymbiontInjectionSupport(manifest: SymbiontManifest): SymbiontInjectionSupport {
   return {
     // sessionStartInjection is now a declared manifest capability. The
-    // template scan via SESSION_START_SIGNALS is retained only for the
-    // drift check in tests/symbionts/injection-support.test.ts.
+    // template scan via SESSION_START_SIGNALS is no longer what decides it.
     supportsSessionStartInjection: manifest.capabilities?.sessionStartInjection ?? false,
     supportsPromptSubmitInjection: hasAnySignal(readHooksTemplate(manifest), PROMPT_SUBMIT_SIGNALS),
   };

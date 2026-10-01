@@ -38,8 +38,7 @@
  * packages) are walked and literal-scanned like source; bare npm specifiers are
  * externals — named in the report, forbidden on an enforced leaf.
  *
- * Static source scan (node:fs), no daemon boot — same shape as
- * `tests/meta/host-transport-seam-singularity.test.ts`.
+ * Static source scan (node:fs), no daemon boot.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
