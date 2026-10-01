@@ -62,8 +62,7 @@ describe('no hook waits on the network (G1)', () => {
     it(`${symbiont} ${hook}${event ? ` (${event})` : ''}, ${source} credential: no request, an answer at once, and a kick only where a helper outlives the hook`, async () => {
       const rig = await memberRig();
       const mycoHome = tempMycoHome();
-      // Under /tmp: a macOS per-user $TMPDIR can make every process started in it slow to launch.
-      const dir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-g1-'));
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-g1-'));
       scratch.push(dir, mycoHome);
       if (source === 'registry') registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
       const credentialEnv = source === 'env'
