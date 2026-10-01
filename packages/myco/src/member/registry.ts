@@ -503,11 +503,18 @@ export function removeRegistryEntry(root: string, mycoHome: string = resolveMyco
     const read = readPrivateJson<ProjectBinding>(file);
     const serverUrl = read.ok && isBinding(read.value) ? read.value.serverUrl : null;
     fs.unlinkSync(file);
-    if (serverUrl !== null && !anyBindingMayName(serverUrl, mycoHome)) {
+    // The machine's default Deployment keeps its membership with no binding left: new repositories join through it.
+    if (serverUrl !== null && !anyBindingMayName(serverUrl, mycoHome) && !isDefaultDeployment(serverUrl, mycoHome)) {
       fs.rmSync(deploymentPath(serverUrl, mycoHome), { force: true });
     }
     return true;
   }, mycoHome);
+}
+
+/** Whether `serverUrl` is the Deployment this machine's new repositories join (`default-deployment.ts`). */
+function isDefaultDeployment(serverUrl: string, mycoHome: string): boolean {
+  const read = readPrivateJson<{ serverUrl?: unknown }>(path.join(memberRoot(mycoHome), 'default.json'));
+  return read.ok && typeof read.value?.serverUrl === 'string' && deploymentUrl(read.value.serverUrl) === deploymentUrl(serverUrl);
 }
 
 /** Whether a binding names `serverUrl`, or an unreadable binding prevents ruling out that reference. Caller holds the registry lock. */

@@ -29,6 +29,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_sessions_capture', 'capture recency is read per machine and agent across every Project, over a recent window of receipts'],
   ['idx_sessions_working', 'the sessions working now are read across every Project, the open turns alone'],
   ['idx_agent_runs_actor_entry', 'an actor\'s daily ceiling is counted across every Project, by task, actor and instant'],
+  ['idx_uncaptured_roots_member', 'a repository a machine could not capture belongs to a machine and its member, not a Project: a member\'s own are read by member, most recently missed first'],
+  ['idx_uncaptured_roots_seen', 'an administrator reads every machine\'s repositories that could not be captured, most recently missed first'],
   ['idx_machine_claims_member', 'a machine belongs to a member, not a Project: a viewer\'s own machines are named, and a member\'s page of machines read, by member'],
 ]);
 

@@ -18,7 +18,11 @@ import { resolveMycoHome } from '../paths/home.js';
 import { getMachineId } from '../machine-id.js';
 import { drainBacklog, sessionHeld, sessionTried } from './backlog.js';
 import { parseCredentialFlag, redeemsJoinCode, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
-import { deliveryNotice } from './delivery-notice.js';
+import { deliveryNotice, withNotice } from './delivery-notice.js';
+import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
+import { appendPending } from './pending.js';
+import { flushHeldCapture } from './held.js';
+import type { DetachedSpawn } from './auto-join.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { refreshDue, refreshMemberCredential, refreshableRoot, rotatedCredential, clearNonRotatingRefusal } from './refresh.js';
@@ -38,6 +42,8 @@ export interface HookMainOptions {
   startedAt?: number;
   /** The environment a join code is read from; defaults to this process's. */
   env?: NodeJS.ProcessEnv;
+  /** How a repository's join is started apart from the hook; defaults to a detached process. */
+  spawn?: DetachedSpawn;
 }
 
 /** What a hook handler receives once input and credential are in hand. */
@@ -57,6 +63,11 @@ export interface HookRun {
   mycoHome: string;
   /** The extra plan folders the Deployment holds for this machine, read from this run's own home; each reader asks here rather than naming a home. */
   machinePlanDirs: () => string[];
+  /**
+   * Set for a run in a repository that is joining a project and has none yet (`auto-join-hook.ts`): its capture goes
+   * to the repository's pending spool, nothing is dialled, and nothing keyed to a project is derived.
+   */
+  pending?: boolean;
 }
 
 export interface HookOutcome {
@@ -185,25 +196,47 @@ export async function runMemberHook(
         env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(cwd), mycoHome, budget,
       });
     }
-    const credential = resolveCredential(source, { cwd, env, mycoHome, invokedBy: `hook ${hookName}` });
-    if (!credential) return;
+    // A repository with no connection of its own joins the default Deployment apart from this hook, which meanwhile
+    // spools into the repository's pending spool, or, once left, captures nothing. Either way it is no missed membership.
+    const unconnected: { answer: AutoJoinHold | typeof LEFT_ALONE | null } = { answer: null };
+    let credential = resolveCredential(source, {
+      cwd, env, mycoHome, invokedBy: `hook ${hookName}`,
+      claimsUnconnected: (root) => {
+        unconnected.answer = autoJoinHold({ root, hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.spawn });
+        return unconnected.answer !== null;
+      },
+    });
+    const hold = unconnected.answer === LEFT_ALONE ? null : unconnected.answer;
+    if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
+    if (credential === null) {
+      if (hold === null || hold.spool === null) return;
+      credential = hold.credential;
+    }
 
-    const spool = new MemberSpool(credential.projectId, { mycoHome });
+    // A repository connected while its hooks held capture: what they held joins this run's spool first.
+    if (hold === null && credential.root !== undefined) flushHeldCapture(credential.root, credential.projectId, { mycoHome, now: now() });
+    const spool = hold?.spool ?? new MemberSpool(credential.projectId, { mycoHome });
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const client = new ServerClient(credential, opts.fetch ?? globalThis.fetch);
+    const serverUrl = credential.serverUrl;
     const run: HookRun = {
       hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, client, now, argv, mycoHome,
-      machinePlanDirs: () => machinePlanDirs(credential.serverUrl, mycoHome),
+      machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
+      ...(hold !== null ? { pending: true } : {}),
     };
 
     const outcome = await handle(run);
     response = outcome.response ?? {};
+    if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     const record = outcome.events.length > 0 || outcome.record ? (state: SessionState) => {
       state.agent ??= input.agent;
       outcome.record?.(state);
     } : undefined;
-    spool.appendAndRecord(sessionId, outcome.events, record, now());
-    if (budget.drains) {
+    // Capture held for a repository still joining lands under the repository's lock: in its pending spool, or in the
+    // project's spool once the join has connected it.
+    if (hold !== null) appendPending(hold.repo, sessionId, outcome.events, record, { mycoHome, now: now() });
+    else spool.appendAndRecord(sessionId, outcome.events, record, now());
+    if (budget.drains && hold === null) {
       const fetchImpl = opts.fetch ?? globalThis.fetch;
       const root = refreshableRoot(credential);
       // Rotation goes first: a token inside its window renews, and a lapsed one delivers nothing until it has.

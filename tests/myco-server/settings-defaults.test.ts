@@ -16,6 +16,7 @@ import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { readDispatchLimits } from '@myco-server-worker/core/limits.js';
 import { recallLeaves } from '@myco-server-worker/core/recall.js';
 import { importPolicy } from '@myco-server-worker/core/import-policy.js';
+import { autoCreateProjects } from '@myco-server-worker/api/member-projects.js';
 import { runRetentionDays } from '@myco-server-worker/core/jobs-run.js';
 import { backupRetentionPolicy } from '@myco-server-worker/core/backup-retention.js';
 import { keptStagings } from '@myco-server-worker/core/staging-retention.js';
@@ -62,6 +63,7 @@ describe('the settings page\'s defaults', () => {
       'cortex.canopy.refresh.background_enabled': mapSchedule.enabled,
       'cortex.canopy.refresh.background_period_minutes': (mapSchedule.intervalSeconds ?? declaredMap.intervalSeconds) / 60,
       'cortex.canopy.exclude.default_patterns': CANOPY_DEFAULT_EXCLUDE_PATTERNS,
+      'capture.auto_create_projects': await autoCreateProjects(db),
       'import.enabled': imports.enabled,
       'import.window_days': imports.windowDays,
       'import.max_sessions_per_harness': imports.maxPerAgent,

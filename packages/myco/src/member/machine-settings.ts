@@ -47,6 +47,39 @@ export function machinePlanDirs(serverUrl: string, mycoHome: string): string[] {
   return Array.isArray(dirs) ? dirs.filter((d): d is string => typeof d === 'string' && d.length > 0 && planFolderRefusal(d) === null) : [];
 }
 
+/** The folders this machine captures repositories under without being asked. */
+export const AUTO_JOIN_ROOTS_LEAF = 'capture.auto_join_roots';
+/** What the Deployment answers for the folders when it has answered nothing: the value it applies to an unset leaf. */
+export const DEFAULT_AUTO_JOIN_ROOTS: readonly string[] = ['~/Repos'];
+/** The repositories this machine is told to connect from "Needs you", by key: a project id, or `''` for the one its remote names or one created for it. */
+export const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
+
+/** The leaves auto-join reads, as `serverUrl` last answered them for this machine, each at its default where nothing is cached. */
+export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { autoJoinRoots: string[]; connectRoots: Record<string, string> } {
+  const file = machineSettingsPath(serverUrl, mycoHome);
+  const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
+  const leaves = read !== null && read.ok ? machineBlockOf(read.value)?.leaves ?? {} : {};
+  const roots = leaves[AUTO_JOIN_ROOTS_LEAF];
+  const connect = leaves[CONNECT_ROOTS_LEAF];
+  return {
+    autoJoinRoots: Array.isArray(roots) ? roots.filter((d): d is string => typeof d === 'string' && d.length > 0) : [...DEFAULT_AUTO_JOIN_ROOTS],
+    connectRoots: typeof connect === 'object' && connect !== null && !Array.isArray(connect)
+      ? Object.fromEntries(Object.entries(connect as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string'))
+      : {},
+  };
+}
+
+/** Forget, in this machine's cache, that `serverUrl` told it to connect a repository it left; the Deployment is told so too. */
+export function forgetConnectRoot(serverUrl: string, rootKey: string, mycoHome: string): void {
+  const file = machineSettingsPath(serverUrl, mycoHome);
+  const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
+  const block = read !== null && read.ok ? machineBlockOf(read.value) : null;
+  const connect = block?.leaves[CONNECT_ROOTS_LEAF];
+  if (block === null || typeof connect !== 'object' || connect === null || !Object.prototype.hasOwnProperty.call(connect, rootKey)) return;
+  const kept = Object.fromEntries(Object.entries(connect as Record<string, unknown>).filter(([key]) => key !== rootKey));
+  writePrivateFileAtomic(file, `${JSON.stringify({ leaves: { ...block.leaves, [CONNECT_ROOTS_LEAF]: kept } })}\n`);
+}
+
 /** Where a Deployment answers its settings, with this machine's own among them. */
 export const SETTINGS_READ_PATH = '/members/settings';
 

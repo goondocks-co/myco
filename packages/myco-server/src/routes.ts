@@ -3,6 +3,7 @@ import { handleRepository, handleSaveRepository, handleRemoveRepository, handleR
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
 import { handleMachines, handleRenameMachine } from './api/machines.js';
+import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { CredentialContext, UnboundMemberContext } from './context.js';
@@ -13,7 +14,7 @@ import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
 import { handleMemberStatus, handleStatus } from './api/status.js';
-import { handleCreateMemberProject, handleMemberProjectList } from './api/member-projects.js';
+import { handleCreateMemberProject, handleMemberProjectList, handleReportUncaptured, handleUncapturedState, handleResolveMemberProject } from './api/member-projects.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch, handleSearchAcross } from './api/search.js';
 import { handleWake } from './api/wake.js';
@@ -183,6 +184,9 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, mintsAuthority: true, handler: handleLinkGithub },
   // Deployment Settings as a member's CLI reads them: Deployment-wide, so no Project is read or created; writes stay on the dashboard's admin routes.
   { method: 'POST', path: '/members/projects', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleCreateMemberProject },
+  { method: 'POST', path: '/members/projects/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleResolveMemberProject },
+  { method: 'POST', path: '/members/uncaptured', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleReportUncaptured },
+  { method: 'POST', path: '/members/uncaptured/state', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleUncapturedState },
   { method: 'POST', path: '/members/projects/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberProjectList },
   { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
   // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.
@@ -273,6 +277,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetProjectCapability },
   // A machine's own settings (#1393): any member may ask, and the handlers answer only the member who claims the machine.
   { method: 'GET', path: '/api/machines', auth: 'session', authority: 'member', handler: handleMachines },
+  { method: 'GET', path: '/api/uncaptured', auth: 'session', authority: 'member', handler: handleListUncaptured },
+  { method: 'POST', path: '/api/uncaptured/{machineId}/{rootKey}/connect', pattern: /^\/api\/uncaptured\/(?<machineId>[A-Za-z0-9._-]{1,64})\/(?<rootKey>[0-9a-f]{16,64})\/connect$/, auth: 'session', authority: 'member', handler: handleConnectUncaptured },
   { method: 'PATCH', path: '/api/machines/{machineId}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'member', handler: handleRenameMachine },
   { method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'session', authority: 'member', handler: handleMachineSettings },
   { method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'member', handler: handleSetMachineSetting },
