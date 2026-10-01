@@ -68,6 +68,7 @@ function cwdsOf(top: string): string[] {
 const LAYOUTS: Array<{ name: string; make: (dir: string) => string; fromFiles: boolean }> = [
   { name: 'a regular checkout', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); return r; }, fromFiles: true },
   { name: 'packed refs', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); git(r, 'pack-refs', '--all'); return r; }, fromFiles: true },
+  { name: 'packed refs, then a new commit (the loose ref is newer)', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); git(r, 'pack-refs', '--all'); commit(r, 'b.txt'); return r; }, fromFiles: true },
   { name: 'a detached HEAD', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); commit(r, 'b.txt'); git(r, 'checkout', '-q', '--detach', 'HEAD~1'); return r; }, fromFiles: true },
   { name: 'a branch with no commit yet', make: (d) => repo(path.join(d, 'r')), fromFiles: true },
   { name: 'a branch named with a slash', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); git(r, 'checkout', '-q', '-b', 'feat/deep/name'); return r; }, fromFiles: true },
@@ -85,6 +86,26 @@ const LAYOUTS: Array<{ name: string; make: (dir: string) => string; fromFiles: b
     },
   },
   { name: 'a config that includes another', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); git(r, 'config', 'include.path', 'absent.gitconfig'); return r; }, fromFiles: false },
+  ...['true', 'yes', 'on', '1', null].map((value) => ({
+    name: `a repository marked bare (${value === null ? 'the key alone' : `bare = ${value}`})`, fromFiles: false,
+    make: (d: string) => {
+      const r = repo(path.join(d, 'r')); commit(r);
+      const config = path.join(r, '.git', 'config');
+      fs.writeFileSync(config, fs.readFileSync(config, 'utf-8').replace(/^\s*bare\s*=.*$/m, value === null ? '\tbare' : `\tbare = ${value}`));
+      return r;
+    },
+  })),
+  {
+    name: 'a .git git cannot use, inside a repository (git walks on past it)', fromFiles: false,
+    make: (d) => {
+      const r = repo(path.join(d, 'r')); commit(r);
+      // A config, but no HEAD, objects or refs: not a git directory, as git judges one.
+      const inner = path.join(r, 'inner');
+      fs.mkdirSync(path.join(inner, '.git'), { recursive: true });
+      fs.copyFileSync(path.join(r, '.git', 'config'), path.join(inner, '.git', 'config'));
+      return inner;
+    },
+  },
   ...(supportsReftable ? [{ name: 'reftable refs', make: (d: string) => { const r = repo(path.join(d, 'r'), ['--ref-format=reftable']); commit(r); return r; }, fromFiles: false }] : []),
 ];
 
@@ -96,10 +117,64 @@ describe('a repository read from its own files', () => {
         expect({ cwd, ...memberSays(cwd) }).toEqual({ cwd, ...gitSays(cwd) });
         const read = readRepoLayout(cwd, {});
         const decided = read !== UNUSUAL && read !== null && readRepoHead(read) !== UNUSUAL;
-        expect({ cwd, decided }).toEqual({ cwd, decided: layout.fromFiles });
+        // On Windows git is always asked: Git for Windows refuses a repository by an owner this reader cannot read.
+        expect({ cwd, decided }).toEqual({ cwd, decided: layout.fromFiles && process.platform !== 'win32' });
       }
     });
   }
+
+  it('asks git from inside a git directory, where git finds no work tree', () => {
+    const r = repo(path.join(base(), 'r'));
+    commit(r);
+    const inside = path.join(r, '.git', 'refs');
+    expect(memberSays(inside)).toEqual(gitSays(inside));
+    expect(readRepoLayout(inside, {})).toBe(UNUSUAL);
+  });
+
+  it.skipIf(process.platform === 'win32')('answers as git does through a symlink leading out of the work tree: to a plain folder, and into another repository', () => {
+    const d = base();
+    const r = repo(path.join(d, 'r'));
+    commit(r);
+    const plain = path.join(d, 'plain');
+    fs.mkdirSync(plain);
+    const other = repo(path.join(d, 'other'));
+    commit(other);
+    fs.mkdirSync(path.join(other, 'sub'));
+    fs.symlinkSync(plain, path.join(r, 'to-plain'));
+    fs.symlinkSync(path.join(other, 'sub'), path.join(r, 'to-other'));
+    for (const cwd of [path.join(r, 'to-plain'), path.join(r, 'to-other')]) {
+      expect({ cwd, ...memberSays(cwd) }).toEqual({ cwd, ...gitSays(cwd) });
+      expect({ cwd, read: readRepoLayout(cwd, {}) }).toEqual({ cwd, read: UNUSUAL });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('asks git about a repository another user owns: its work tree, or its git directory', () => {
+    const r = repo(path.join(base(), 'r'));
+    commit(r);
+    const mine = process.getuid!();
+    expect(readRepoLayout(r, {}, { uid: () => mine })).not.toBe(UNUSUAL);
+    expect(readRepoLayout(r, {}, { uid: () => mine + 1 })).toBe(UNUSUAL);
+    // The work tree is the user's and the git directory another's, or the other way round: git refuses either.
+    const owner = (other: string) => (dir: string) => (dir === other ? mine + 1 : mine);
+    expect(readRepoLayout(r, {}, { uid: () => mine, ownerOf: owner(path.join(r, '.git')) })).toBe(UNUSUAL);
+    expect(readRepoLayout(r, {}, { uid: () => mine, ownerOf: owner(r) })).toBe(UNUSUAL);
+  });
+
+  it('asks git where no owner can be read, as on Windows, whose git refuses a repository by its owner', () => {
+    const r = repo(path.join(base(), 'r'));
+    commit(r);
+    expect(readRepoLayout(r, {}, { uid: () => null })).toBe(UNUSUAL);
+  });
+
+  it('asks git when the way up crosses a filesystem boundary, where git stops', () => {
+    const r = repo(path.join(base(), 'r'));
+    commit(r);
+    const mounted = path.join(r, 'volume');
+    fs.mkdirSync(mounted);
+    const uid = () => (process.platform === 'win32' ? 0 : process.getuid!());
+    expect(readRepoLayout(mounted, {}, { uid, deviceOf: () => 1 })).not.toBe(UNUSUAL);
+    expect(readRepoLayout(mounted, {}, { uid, deviceOf: (dir) => (dir === mounted ? 2 : 1) })).toBe(UNUSUAL);
+  });
 
   it('says a directory outside any repository is none, as git does', () => {
     const dir = path.join(base(), 'plain');

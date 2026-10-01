@@ -1,8 +1,10 @@
 /**
  * What git a hook starts (#1561): a repository's identity (its root, branch and commit) is read from git's own files,
- * so a session's start, its prompts and its turn ends start no git process at all, and its end starts only the two
- * questions of whether tracked files changed, which are git's to answer. Each git process costs 5 to 20 ms on a hook
- * someone is waiting for.
+ * so a hook's own work starts no git process but at a session's end, which asks git the two questions of whether
+ * tracked files changed, at once. Each git process costs 5 to 20 ms on a hook someone is waiting for.
+ *
+ * A hook that delivers in itself (a sandbox's turn and session ends, `--credential env`) also runs the helper's pass,
+ * which asks git for the repository remote the start's context ask carries: that is the only other git it starts.
  *
  * Every hook runs as a hook process with a `git` on PATH that logs each call before running the real one.
  */
@@ -50,11 +52,12 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
     registerTestMember({ mycoHome, token: 'mt_tok', projectId: 'proj_1', root: repo });
     const tx = path.join(dir, 'sess-git.jsonl');
     fs.writeFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
-    const calls = (hook: string, extra: Record<string, unknown> = {}): string[] => {
+    const calls = (hook: string, extra: Record<string, unknown> = {}, source: 'registry' | 'env' = 'registry'): string[] => {
       fs.writeFileSync(log, '');
-      const result = spawnSync(process.execPath, [HOOK_PROCESS, hook, '--symbiont', 'claude-code', '--credential', 'registry'], {
+      const credential = source === 'env' ? { MYCO_SERVER_URL: 'https://member-test.invalid', MYCO_MEMBER_TOKEN: 'mt_tok', MYCO_PROJECT: 'proj_1' } : {};
+      const result = spawnSync(process.execPath, [HOOK_PROCESS, hook, '--symbiont', 'claude-code', '--credential', source], {
         cwd: repo,
-        env: { ...process.env, PATH: `${shim}${path.delimiter}${process.env.PATH}`, MYCO_HOME: mycoHome, MYCO_TEST_REFUSE_FETCH: '1', MYCO_TEST_KICK_LOG: path.join(dir, 'kick.log') },
+        env: { ...process.env, PATH: `${shim}${path.delimiter}${process.env.PATH}`, MYCO_HOME: mycoHome, ...credential, MYCO_TEST_REFUSE_FETCH: '1', MYCO_TEST_KICK_LOG: path.join(dir, 'kick.log') },
         input: JSON.stringify({ session_id: 'sess-git', transcript_path: tx, cwd: repo, prompt: 'p', last_assistant_message: 'x', ...extra }),
         encoding: 'utf-8', timeout: 20_000,
       });
@@ -69,5 +72,13 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
     // Asked at once: each started before the other ended.
     const [a, b] = fs.readFileSync(spans, 'utf-8').trim().split('\n').map((line) => line.split(' ').map(Number));
     expect({ overlap: a[0] < b[1] && b[0] < a[1] }).toEqual({ overlap: true });
+
+    // A sandbox: its ends run the helper's pass in the hook, which asks git for the remote the start's ask carries.
+    const remote = 'remote get-url origin';
+    const env = { session_id: 'sess-git-env' };
+    expect(calls('session-start', { ...env, hook_event_name: 'SessionStart' }, 'env')).toEqual([]);
+    expect(calls('user-prompt-submit', { ...env, hook_event_name: 'UserPromptSubmit' }, 'env')).toEqual([]);
+    expect(calls('stop', { ...env, hook_event_name: 'Stop' }, 'env').filter((c) => c !== remote)).toEqual([]);
+    expect(calls('session-end', { ...env, hook_event_name: 'SessionEnd' }, 'env').filter((c) => c !== remote).sort()).toEqual(['diff --cached --quiet --', 'diff --quiet --']);
   }, 60_000);
 });

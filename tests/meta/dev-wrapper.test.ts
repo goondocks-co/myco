@@ -1,9 +1,8 @@
 /**
  * The dev wrapper a runtime pin names (`make dev-wrapper`, which `dev-install` and `dev-link-worktree` write), run as
  * the trampoline runs it: the launch preamble re-executes a hook into the pinned wrapper, and the wrapper starts the
- * binary under the dev home, ~/.myco-dev, only when no MYCO_HOME is set. A test or a measurement that isolates its
- * home and runs in a pinned repository stays in that home (the 2026-10-01 leak: an isolated home was replaced by the
- * dev one, and a measurement's sessions reached the live Deployment).
+ * binary under the dev home, ~/.myco-dev, only when no MYCO_HOME is set. An explicitly set MYCO_HOME wins, as at every
+ * other layer: a test or a measurement that isolates its home and runs in a pinned repository stays in that home.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
