@@ -1,0 +1,74 @@
+/**
+ * What a hook does in a repository it holds no connection for (#1547): spool into the repository's pending spool, start
+ * the join apart from the hook when one is due, and say once per session why a repository is not captured, and what is
+ * held of it. Nothing here dials the Deployment: the hook's budget is spent on the harness alone.
+ */
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
+import {
+  autoJoinDue, clearLeft, isLeft, noticeOnce, notCapturedNotice, placeRepository, readAutoJoinState, recordSessionSeen, rootKeyFor, settingsMoved, silentRepository,
+  startAutoJoin, startSweep,
+  type DetachedSpawn,
+} from './auto-join.js';
+import type { CredentialRecord } from './credential.js';
+import { defaultMembership } from './default-deployment.js';
+import { machineAutoJoinLeaves } from './machine-settings.js';
+import { pendingSpool, readHeldEnd } from './pending.js';
+import type { MemberSpool } from './spool.js';
+
+/** What a hook holds in a repository with no connection: the pending spool and the credential it is built under, and what to tell the person. */
+export interface AutoJoinHold {
+  /** The repository the hook is in. */
+  repo: { root: string; rootKey: string };
+  /** The pending spool, read and staged through, or null where the repository spools nothing: outside the folders, or past the cap. */
+  spool: MemberSpool | null;
+  /** The default Deployment's membership, as the record a pending run is built under. It names no project. */
+  credential: CredentialRecord;
+  notice: string | null;
+}
+
+/** Whether a hook's answer reaches the agent, so a notice in it is read: a session start that takes an injection, or a prompt. */
+export function hookTakesNotice(hookName: string, agent: string): boolean {
+  if (hookName === 'user-prompt-submit') return true;
+  return hookName === 'session-start' && HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true;
+}
+
+/**
+ * The hold for a hook at `root`, or null where the hook captures nothing and says nothing: no default Deployment, a
+ * repository the machine never captures, or one left with `myco member leave`.
+ */
+export function autoJoinHold(opts: {
+  root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
+}): AutoJoinHold | null {
+  const membership = defaultMembership(opts.mycoHome);
+  if (membership === null) return null;
+  // Repositories met before auto-join existed are swept once, apart from any hook.
+  startSweep({ mycoHome: opts.mycoHome, now: opts.now, env: opts.env, spawn: opts.spawn });
+  if (silentRepository(opts.root, { mycoHome: opts.mycoHome, env: opts.env })) return null;
+  const rootKey = rootKeyFor(opts.root, opts.mycoHome);
+  const leaves = machineAutoJoinLeaves(membership.serverUrl, opts.mycoHome);
+  const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
+  // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again.
+  if (isLeft(rootKey, opts.mycoHome)) {
+    if (connectTo === null) return null;
+    clearLeft(rootKey, opts.mycoHome);
+  }
+  recordSessionSeen(rootKey, opts.sessionId, opts.mycoHome);
+  // The cached settings can be newer than the ones the last attempt read: a repository they place elsewhere (its
+  // folder now captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
+  const placement = placeRepository({ root: opts.root, rootKey }, leaves);
+  const state = readAutoJoinState(rootKey, opts.mycoHome);
+  const moved = settingsMoved(state, placement, connectTo);
+  if (moved || autoJoinDue(state, opts.now)) startAutoJoin(opts.root, rootKey, { mycoHome: opts.mycoHome, now: opts.now, env: opts.env, spawn: opts.spawn });
+  // Every repository that has not joined holds what its hooks capture, for the TTL or to the cap: connecting it, from
+  // "Needs you" or with `myco member join`, delivers it.
+  const spool = pendingSpool({ root: opts.root, rootKey }, { mycoHome: opts.mycoHome, now: opts.now });
+  const text = state === null ? null : notCapturedNotice({ ...state, serverUrl: membership.serverUrl }, leaves.autoJoinRoots, readHeldEnd(rootKey, opts.mycoHome));
+  const notice = text !== null && hookTakesNotice(opts.hookName, opts.agent) && noticeOnce(opts.sessionId, opts.mycoHome, opts.now) ? text : null;
+  if (text !== null) process.stderr.write(`[myco] ${text}\n`);
+  return {
+    repo: { root: opts.root, rootKey },
+    spool,
+    credential: { serverUrl: membership.serverUrl, token: membership.token, tokenId: membership.tokenId, projectId: '', source: 'registry', root: opts.root },
+    notice,
+  };
+}

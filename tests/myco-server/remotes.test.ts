@@ -45,6 +45,14 @@ describe('normalizeRemote', () => {
       'ftp://github.com/goondocks/myco.git',
       'not a remote at all',
       `https://github.com/${'a'.repeat(MAX_REMOTE_CHARS)}`,
+      // Local paths on Windows, by drive letter, forward slashes, or a share.
+      'C:\\Users\\chris\\upstream.git',
+      'c:\\Users\\chris\\upstream',
+      'C:/Users/chris/upstream.git',
+      'D:repos/upstream.git',
+      '\\\\server\\share\\upstream.git',
+      'git@host:repos\\upstream.git',
+      'file:///Users/chris/upstream.git',
     ];
     expect(notRemotes.map(normalizeRemote)).toEqual(notRemotes.map(() => null));
   });

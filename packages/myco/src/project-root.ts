@@ -88,13 +88,13 @@ const HOME_PARENT_DIRS = new Set(['/Users', '/home', '/root', '/var/root']);
  * cleanly: no project gets auto-registered, no buffer is created in an
  * unexpected location, no Canopy scan kicks off scanning `~`.
  */
-export function isSafeProjectRoot(projectRoot: string): boolean {
+export function isSafeProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): boolean {
   try {
     assertSafeProjectRoot(projectRoot);
   } catch {
     return false;
   }
-  if (process.env.MYCO_PROJECT_ROOT || process.env.MYCO_VAULT_DIR) return true;
+  if (env.MYCO_PROJECT_ROOT || env.MYCO_VAULT_DIR) return true;
   const resolved = path.resolve(projectRoot);
   try {
     runGitAnswer(['rev-parse', '--git-common-dir'], resolved);

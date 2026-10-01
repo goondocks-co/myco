@@ -285,9 +285,11 @@ export class MemberSpool {
    * directory belongs — and report it. It is not a read-only spool: the writing
    * methods write and create their required directories.
    */
-  constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean } = {}) {
+  constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean; dir?: string } = {}) {
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();
-    this.dir = spoolDirFor(projectId, this.mycoHome);
+    // `dir` holds capture for a repository that has no project yet (`pending.ts`): a directory inside the member root.
+    if (opts.dir !== undefined) assertMemberPathContained(opts.dir, this.mycoHome);
+    this.dir = opts.dir ?? spoolDirFor(projectId, this.mycoHome);
     this.blobsDir = path.join(this.dir, BLOBS_DIRNAME);
     if (opts.initialize === false) return;
     ensureMemberDir(this.dir, this.mycoHome);

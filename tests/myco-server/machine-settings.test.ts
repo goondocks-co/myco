@@ -9,6 +9,12 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 const NOW = 1_800_000_000_000;
+/** The auto-join leaves a machine holds (#1547), at their defaults. */
+const AT_DEFAULT = { 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
+const DEFAULT_ROWS = [
+  { leaf: 'capture.auto_join_roots', configured: false, value: ['~/Repos'], updatedAt: null, updatedBy: null },
+  { leaf: 'capture.connect_roots', configured: false, value: {}, updatedAt: null, updatedBy: null },
+];
 
 function rig() {
   const e = sqliteEnv();
@@ -31,7 +37,7 @@ describe('a machine\'s settings', () => {
     await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['docs/plans'], 'mem_a', NOW);
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['elsewhere'], 'mem_admin', NOW + 1)).toEqual({ applied: false, reason: 'absent' });
     await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', [], 'mem_admin', NOW + 2);
-    expect(await machineBlockFor(e.db, 'mem_a', 'm_a')).toEqual({ leaves: { 'capture.plan_dirs': ['docs/plans'] } });
+    expect(await machineBlockFor(e.db, 'mem_a', 'm_a')).toEqual({ leaves: { ...AT_DEFAULT, 'capture.plan_dirs': ['docs/plans'] } });
   });
 
   it('refuse a folder that is, or resolves to, the filesystem root, the home or the project root, and any that climbs out', async () => {
@@ -54,7 +60,7 @@ describe('a machine\'s settings', () => {
     expect((await as('9102', 'GET', '/api/machines/m_a/settings')).status).toBe(403);
     expect((await as('9101', 'PUT', '/api/machines/m_a/settings/capture.plan_dirs', { value: ['plans'], machineId: 'm_b' })).status).toBe(200);
     expect({ a: await machineBlockFor(e.db, 'mem_a', 'm_a'), b: await machineBlockFor(e.db, 'mem_b', 'm_b') })
-      .toEqual({ a: { leaves: { 'capture.plan_dirs': ['plans'] } }, b: { leaves: { 'capture.plan_dirs': [] } } });
+      .toEqual({ a: { leaves: { ...AT_DEFAULT, 'capture.plan_dirs': ['plans'] } }, b: { leaves: { ...AT_DEFAULT, 'capture.plan_dirs': [] } } });
     expect(e.sqlite.query(`SELECT machine_id FROM machine_settings`).all()).toEqual([{ machine_id: 'm_a' }]);
     expect((await as('9101', 'GET', '/api/machines/m_a/settings')).status).toBe(200);
   });
@@ -67,18 +73,18 @@ describe('a machine\'s settings', () => {
     expect(await setMachineLeaf(e.db, 'm_a', 'update.channel', 'beta', 'mem_a', NOW)).toEqual({ applied: false, reason: 'unknown_leaf' });
     expect(await setMachineLeaf(e.db, 'm_nobody', 'capture.plan_dirs', ['plans'], 'mem_a', NOW)).toEqual({ applied: false, reason: 'absent' });
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['docs/plans', '~/notes', '/abs/plans'], 'mem_a', NOW)).toEqual({ applied: true });
-    expect(await readMachineSettings(e.db, 'm_a')).toEqual([{ leaf: 'capture.plan_dirs', configured: true, value: ['docs/plans', '~/notes', '/abs/plans'], updatedAt: NOW, updatedBy: 'mem_a' }]);
+    expect(await readMachineSettings(e.db, 'm_a')).toEqual([{ leaf: 'capture.plan_dirs', configured: true, value: ['docs/plans', '~/notes', '/abs/plans'], updatedAt: NOW, updatedBy: 'mem_a' }, ...DEFAULT_ROWS]);
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', [], 'mem_a', NOW + 1)).toEqual({ applied: true });
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings`).get()).toEqual({ n: 0 });
-    expect(await readMachineSettings(e.db, 'm_a')).toEqual([{ leaf: 'capture.plan_dirs', configured: false, value: [], updatedAt: null, updatedBy: null }]);
+    expect(await readMachineSettings(e.db, 'm_a')).toEqual([{ leaf: 'capture.plan_dirs', configured: false, value: [], updatedAt: null, updatedBy: null }, ...DEFAULT_ROWS]);
   });
 
   it('are answered to the member that claims the machine, and to nobody asking from a machine it does not claim', async () => {
     const e = rig();
     await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['docs/plans'], 'mem_a', NOW);
-    expect(await machineBlockFor(e.db, 'mem_a', 'm_a')).toEqual({ leaves: { 'capture.plan_dirs': ['docs/plans'] } });
+    expect(await machineBlockFor(e.db, 'mem_a', 'm_a')).toEqual({ leaves: { ...AT_DEFAULT, 'capture.plan_dirs': ['docs/plans'] } });
     expect(await machineBlockFor(e.db, 'mem_b', 'm_a')).toBeNull();
-    expect(await machineBlockFor(e.db, 'mem_b', 'm_b')).toEqual({ leaves: { 'capture.plan_dirs': [] } });
+    expect(await machineBlockFor(e.db, 'mem_b', 'm_b')).toEqual({ leaves: { ...AT_DEFAULT, 'capture.plan_dirs': [] } });
     // A run's credential names the harness member, which claims no machine.
     expect(await machineBlockFor(e.db, 'mem_harness', 'harness-runtime')).toBeNull();
   });

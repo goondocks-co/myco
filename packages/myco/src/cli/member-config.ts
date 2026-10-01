@@ -21,7 +21,7 @@ import { membershipProblem, openDeployment, type DeploymentHandle, type MemberVe
 /** The §7.8 leaves whose tier is Member; `tests/cli/member-config.test.ts` holds this equal to the ledger. */
 export const MEMBER_TIER_LEAVES = [
   'daemon.log_level', 'daemon.log_retention_days',
-  'capture.transcript_paths', 'capture.plan_dirs',
+  'capture.transcript_paths', 'capture.plan_dirs', 'capture.auto_join_roots', 'capture.connect_roots',
   'symbionts', 'update.channel',
   'appearance.theme', 'appearance.mode', 'appearance.font', 'appearance.density',
 ] as const;
@@ -30,7 +30,10 @@ export const MEMBER_TIER_LEAVES = [
  * The Member leaves a machine honours today: held by the Deployment per machine, set on the dashboard (Access ›
  * Runtimes › Settings), and cached by the machine at each session start (`member/machine-settings.ts`).
  */
-export const MACHINE_SETTING_LEAVES: readonly string[] = ['capture.plan_dirs'];
+export const MACHINE_SETTING_LEAVES: readonly string[] = ['capture.plan_dirs', 'capture.auto_join_roots', 'capture.connect_roots'];
+
+/** The machine leaf written by connecting a repository, never set directly. */
+const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
 
 /** Where a machine's settings are set: the dashboard's Access page, on this machine's runtime. */
 const machineSettingsAt = (serverUrl: string | null): string =>
@@ -83,6 +86,11 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   if (sub === 'set') {
     if (leaf === undefined || rest.length !== 1) { err(USAGE); return false; }
+    if (leaf === CONNECT_ROOTS_LEAF) {
+      const deployment = await openDeployment(source, deps);
+      err(`myco config: ${leaf} is set by connecting a repository from "Needs you"${deployment === null ? '' : ` on ${deployment.serverUrl}`}, or with \`myco member join\` in it; nothing sets it directly. Nothing was changed.`);
+      return false;
+    }
     if (MACHINE_SETTING_LEAVES.includes(leaf)) {
       const deployment = await openDeployment(source, deps);
       err(`myco config: ${leaf} is this machine's setting, set in ${machineSettingsAt(deployment?.serverUrl ?? null)}; this command only reads it. Nothing was changed.`);

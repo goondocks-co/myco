@@ -16,6 +16,7 @@
  * bind their first project afterwards with `myco member join --project`.
  */
 import { seedMachineSettings } from '../member/machine-settings.js';
+import { readDefaultDeployment, recordDefaultDeployment } from '../member/default-deployment.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { getMachineId } from '../machine-id.js';
 import path from 'node:path';
@@ -44,14 +45,19 @@ Options:
                  Defaults to the project you are in.
   --no-agents    Sign in without setting up your agents. Set them up later
                  with \`myco member provision\`.
+  --default      Make this deployment the one new repositories join, when
+                 this machine is signed in to another already.
 
 Every agent installed on this machine (Claude Code, Codex, Cursor, OpenCode, ...)
 is set up to capture. An agent whose settings belong to another Myco
 installation is left as it is and named.
 
 If the invite names a project, that project is connected and your agents start
-capturing there. If it does not, connect your first project afterwards with
-\`myco member join\`.
+capturing there. Any other git repository under your capture folders (~/Repos
+unless you change them in the dashboard) joins the deployment the first time an
+agent works in it: the project that already holds its remote, or a new one named
+after the folder. A repository you connect elsewhere with \`myco member join\`
+stays where you put it.
 
 In a sandbox or a CI job, set MYCO_JOIN_CODE to the same link instead of running
 this command. The first agent session redeems it and captures from then on, with
@@ -80,6 +86,7 @@ interface LoginArgs {
   url?: string;
   root?: string;
   noAgents?: boolean;
+  makeDefault?: boolean;
   error?: string;
 }
 
@@ -97,6 +104,8 @@ function parseArgs(args: readonly string[]): LoginArgs {
       else parsed.root = next;
     } else if (arg === '--no-agents') {
       parsed.noAgents = true;
+    } else if (arg === '--default') {
+      parsed.makeDefault = true;
     } else if (arg.startsWith('-')) {
       refuse(`unknown option ${arg.split('=')[0]}`);
     } else if (parsed.url === undefined) {
@@ -149,6 +158,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   const chosen = deps.mycoHome === undefined ? memberHomeFor(folder) : null;
   const mycoHome = deps.mycoHome ?? chosen!.home;
   recordJoinAnswer(code, answer, { mycoHome, root, now: deps.now?.() ?? Date.now(), machineId });
+  const isDefault = recordDefaultDeployment(code.serverUrl, { mycoHome, now: deps.now?.() ?? Date.now(), replace: parsed.makeDefault });
   // The settings the Deployment holds for this machine, cached before the first session reads them.
   await seedMachineSettings({ serverUrl: code.serverUrl, token: answer.token }, { mycoHome, fetch: deps.fetch });
 
@@ -158,7 +168,9 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   // An administrator's machine runs the Deployment's work; a sign-in keeps its worker running at login.
   if (answer.role === ADMIN_ROLE) out(`  ${ensuredWorkerWords(await ensureWorkerService(code.serverUrl, { ...deps.worker, mycoHome })).line}`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
-  else out('  No project yet — connect your first one with `myco member join`.');
+  else out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
+  const held = readDefaultDeployment(mycoHome);
+  if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default <invite link>\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
   // Every agent installed here captures from now on: its hooks and MCP entry are written for this Deployment, and an
   // agent whose entries belong to another installation is left as it is and named.
   if (!parsed.noAgents) {

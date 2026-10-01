@@ -160,6 +160,11 @@ describe('a joined member with no 1.4 vault', () => {
     expect(set.answered).toBe(false);
     expect(set.stderr).toContain('capture.plan_dirs is this machine\'s setting, set in the dashboard');
     expect(rig.env.sqlite.query(`SELECT value FROM machine_settings`).all()).toEqual([{ value: '["docs/plans"]' }]);
+    // The repositories a machine is told to connect are set by connecting one, never by a setting.
+    const connect = await verb('config', ['set', 'capture.connect_roots', '{}'], rig.fetch);
+    expect(connect.answered).toBe(false);
+    expect(connect.stderr).toContain('capture.connect_roots is set by connecting a repository from "Needs you"');
+    expect(connect.stderr).not.toContain('set in the dashboard');
   });
 
   it('config never carries a stored provider credential', async () => {

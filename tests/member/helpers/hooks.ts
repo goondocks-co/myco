@@ -30,6 +30,8 @@ export interface RunHookOptions {
   /** Extra argv after `--symbiont <name>` (e.g. `--phases response`). */
   argv?: string[];
   now?: () => number;
+  /** How a repository's join is started; a test that meets an unconnected repository records it instead of starting it. */
+  spawn?: HookMainOptions['spawn'];
 }
 
 /** Run one hook in-process with `raw` as its stdin; argv is restored afterwards. */
@@ -46,7 +48,7 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
   (process.stderr as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { err.push(String(chunk)); return true; }) as never;
   try {
     const mod = await HOOKS[name]();
-    await mod.main({ credential: opts.credential === undefined ? 'registry' : opts.credential, fetch: opts.fetch, now: opts.now, argv: process.argv, startedAt: Date.now() });
+    await mod.main({ credential: opts.credential === undefined ? 'registry' : opts.credential, fetch: opts.fetch, now: opts.now, argv: process.argv, startedAt: Date.now(), ...(opts.spawn ? { spawn: opts.spawn } : {}) });
   } finally {
     (process.stdout as unknown as { write: unknown }).write = origOut;
     (process.stderr as unknown as { write: unknown }).write = origErr;

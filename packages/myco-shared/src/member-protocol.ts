@@ -190,3 +190,76 @@ export function planFolderRefusal(entry: string): string | null {
   const named = segments.slice(entry.startsWith('~') ? 1 : 0).filter((s) => s !== '' && s !== '.');
   return named.length === 0 ? `expected a folder under ${rooted}, not ${rooted} itself` : null;
 }
+
+/**
+ * Why a repository a member's machine met is not captured (#1547): outside the folders the machine captures, without
+ * a remote, or refused by the Deployment: refused outright, refused while the Deployment keeps project creation with
+ * admins, or held by an archived project.
+ */
+export const UNCAPTURED_REASONS = ['outside_folders', 'no_remote', 'refused', 'auto_create_off', 'archived'] as const;
+export type UncapturedReason = (typeof UNCAPTURED_REASONS)[number];
+export const isUncapturedReason = (value: unknown): value is UncapturedReason => (UNCAPTURED_REASONS as readonly unknown[]).includes(value);
+/** The reasons only the machine can know, and so reports itself; the Deployment records the others as it refuses. */
+export const MACHINE_UNCAPTURED_REASONS = ['outside_folders', 'no_remote'] as const;
+
+/** Where a machine asks which project a repository joins: `{ rootKey, label, remote? }`. */
+export const RESOLVE_PROJECT_PATH = '/members/projects/resolve';
+/** Where a machine reports a repository it will not join on its own: `{ rootKey, label, remote?, reason }`. */
+export const REPORT_UNCAPTURED_PATH = '/members/uncaptured';
+/**
+ * Where a machine says what became of a repository it reported: `{ rootKey, state }`. `connected` forgets the report
+ * (a `myco member join` connected it); `left` forgets it and stops the machine being told to connect it (`myco member
+ * leave` opted it out); `full` and `expired` record that the machine stopped holding its capture.
+ *
+ * Every report and resolve also carries `held` (what the machine holds of the repository's capture now) and
+ * `sessions` (how many sessions met it after the machine last reported it).
+ */
+export const UNCAPTURED_STATE_PATH = '/members/uncaptured/state';
+/** What a machine holds for a repository it could not capture: its capture, held; held no more past the cap; or discarded with age. */
+export const HELD_STATES = ['held', 'full', 'expired'] as const;
+export type HeldState = (typeof HELD_STATES)[number];
+/** A repository key: the hex digest a machine derives from the repository's path, which never leaves the machine. */
+export const ROOT_KEY_PATTERN = /^[0-9a-f]{16,64}$/;
+
+/** The forms a git remote may arrive in; anything else is not a remote. Credentials, port and scheme never reach the name. */
+const SCP_FORM = /^(?:(?<user>[^@/\s]+)@)?(?<host>[^:/\s]+):(?<path>[^\s]+)$/;
+const URL_SCHEMES = new Set(['ssh:', 'git:', 'http:', 'https:', 'git+ssh:', 'git+https:']);
+
+/** The most a stored remote may carry, bounding a caller that would grow one without limit. */
+export const MAX_REMOTE_CHARS = 512;
+
+const tidy = (host: string, rawPath: string): string | null => {
+  const path = rawPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+  if (path.length === 0) return null;
+  const name = `${host.toLowerCase()}/${path}`;
+  return name.length <= MAX_REMOTE_CHARS ? name : null;
+};
+
+/**
+ * One repository's canonical name — `<host>/<path>` — or null when the value is
+ * not a git remote at all.
+ *
+ * Null is what keeps the tenancy argument's two branches disjoint: a value the
+ * Project id grammar accepts is an id, a value this accepts is a remote, and
+ * anything else resolves to nothing.
+ */
+export function normalizeRemote(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_REMOTE_CHARS) return null;
+
+  if (trimmed.includes('://')) {
+    let url: URL;
+    try { url = new URL(trimmed); } catch { return null; }
+    if (!URL_SCHEMES.has(url.protocol) || url.hostname.length === 0) return null;
+    return tidy(url.hostname, url.pathname);
+  }
+
+  // A local path is never a remote: a drive letter is no host, and no remote's path holds a backslash.
+  if (trimmed.includes('\\')) return null;
+  const scp = SCP_FORM.exec(trimmed);
+  if (scp?.groups === undefined) return null;
+  const { host, path } = scp.groups;
+  if (host === undefined || path === undefined || path.startsWith('/') || /^[A-Za-z]$/.test(host)) return null;
+  return tidy(host, path);
+}
+

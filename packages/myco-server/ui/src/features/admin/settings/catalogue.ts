@@ -179,6 +179,15 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
+    id: 'new-repositories',
+    section: 'capture',
+    label: 'New repositories',
+    note: 'What happens when someone works in a repository no project holds yet, inside the folders their machine captures.',
+    leaves: [
+      { leaf: 'capture.auto_create_projects', label: 'Create a project for it', kind: 'toggle', note: 'Off means the repository waits in Needs you until an admin connects it. A repository whose remote a project already holds joins that project either way.' },
+    ],
+  },
+  {
     id: 'import',
     section: 'capture',
     label: 'Importing past sessions',

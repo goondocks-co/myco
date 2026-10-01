@@ -10,6 +10,10 @@
  */
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
+import { listAutoJoinStates } from '../member/auto-join.js';
+import { optOut, settleConnection } from './member-auto-join.js';
+import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
+import { listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DoctorCheck } from './doctor.js';
@@ -68,8 +72,9 @@ Ops:
                      left, then exits (at most 120 s). Hooks start it detached; its log is
                      <home>/logs/helper.log (\`--stderr\` keeps it on stderr).
   status [--all]     The registry entry (token redacted), expiry, spool depth per session,
-                     last acknowledgement and refusal, the offline latch, and any capture
-                     attempts that found no membership.
+                     last acknowledgement and refusal, the offline latch, any capture
+                     attempts that found no membership, the default Deployment, and the
+                     repositories that did not join or are still joining.
   export [--all]     The same facts as status, as one JSON document, with the binary, runtime-pin
                      and MCP-resolution checks. Carries no token, no captured content and no
                      free-text detail; the document's omissions list names what is left out.
@@ -84,6 +89,10 @@ Ops:
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
+  auto-join (--root <dir> | --sweep)
+                     Join a repository with no connection to this machine's default Deployment, or
+                     record why it cannot; --sweep does it for every repository met before. Your
+                     agents' hooks start it on their own; \`status\` shows what it did.
   mcp-headers --credential registry|env --server <server-url>
                      Print this project's MCP request headers as JSON, for an agent that reaches the
                      server's MCP over HTTP and asks a command for its headers. Prints nothing unless
@@ -287,6 +296,8 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
     updatedAt: now(),
   };
   writeRegistryEntry(entry, { mycoHome });
+  // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   // The misses this root accumulated while unjoined are answered by the join itself.
@@ -411,6 +422,8 @@ async function connectFolder(
     machineId: membership.machineId ?? getMachineId(), joinedAt: existing?.joinedAt ?? now(), updatedAt: now(),
   };
   writeRegistryEntry(entry, { mycoHome });
+  // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
+  await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
   const pinned = pinProjectHome(root, mycoHome);
   const machinePinned = pinMachineHome(mycoHome, deps);
   clearMissingMembership(root, mycoHome);
@@ -747,7 +760,9 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   }
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
-  out(`left ${entry.projectId} for ${root}`);
+  // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
+  void optOut(root, defaultMembership(mycoHome) ?? readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch });
+  out(`left ${entry.projectId} for ${root}; auto-join leaves it alone until you join it again`);
   // The last binding on a Deployment takes its membership with it, and a worker
   // service left behind would restart all day with nothing to claim under.
   if (readDeploymentMembership(entry.serverUrl, mycoHome) === null && describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })?.installed === true) {
@@ -867,6 +882,32 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     err(`myco member: no registry entry for ${selection.root} — run \`myco member join <server-url> --project <id>\``);
   }
   reportMissedCapture(out, selection, deps);
+  reportAutoJoin(out, selection, deps);
+}
+
+/**
+ * Where auto-join stands (#1547): the Deployment new repositories join, the repositories that did not join and why,
+ * and the capture held for repositories still joining, with when it is discarded: every repository with `--all`, and
+ * this one alone without it.
+ */
+function reportAutoJoin(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
+  const mycoHome = homeFor(deps);
+  const now = (deps.now ?? Date.now)();
+  const held = readDefaultDeployment(mycoHome);
+  out(`default:    ${held === null ? 'none — `myco login` records the Deployment new repositories join' : `${held.serverUrl} (new repositories join it)`}`);
+  const mine = (root: string): boolean => selection.all || (selection.root !== null && path.resolve(root) === path.resolve(selection.root));
+  for (const state of listAutoJoinStates(mycoHome).filter((s) => s.outcome !== 'joined' && mine(s.root))) {
+    const why = state.outcome === 'outside_folders' ? 'outside the folders this machine captures'
+      : state.outcome === 'unreachable' ? `the Deployment could not be reached (${state.detail ?? 'no answer'}); tried again at the next hook`
+      : `${state.reason ?? 'refused'}${state.detail ? ` — ${state.detail}` : ''}`;
+    out(`not joined: ${state.root} — ${why} (last tried ${when(state.attemptAt)})`);
+  }
+  for (const pending of listPending({ mycoHome, now }).filter((p) => mine(p.root))) {
+    out(`pending:    ${pending.root} — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`);
+  }
+  for (const end of listHeldEnds(mycoHome).filter((e) => mine(e.root))) {
+    out(`held no more: ${end.root} — ${end.held === 'full' ? `the ${PENDING_MAX_RECORDS} events kept for it were reached` : `capture older than ${PENDING_TTL_MS / 86_400_000} days was discarded`} (${when(end.at)})`);
+  }
 }
 
 /** A safe Git project root, or null outside one. */
@@ -1206,6 +1247,7 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'link-github': await runLinkGithub(rest, deps); return;
     case 'provision': runProvision(rest, deps); return;
     case 'mcp-headers': runMcpHeaders(rest, deps); return;
+    case 'auto-join': await (await import('./member-auto-join.js')).runAutoJoin(rest, deps); return;
     default:
       (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(MEMBER_HELP.trimEnd());
       process.exitCode = 2;
