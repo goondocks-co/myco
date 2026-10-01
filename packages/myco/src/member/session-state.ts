@@ -61,6 +61,12 @@ export interface SessionState {
    * `highWater` reach its end, so no mark is deleted before it is read.
    */
   markWater?: number;
+  /**
+   * Set once the event lane is past one of the session's `session.start` records, delivered or dropped for good. A
+   * transcript waits for the session's start only until then: a start a later resume, compaction or clear writes is
+   * the same session again, and the Deployment already holds it. Kept when the journal is deleted.
+   */
+  startSettled?: true;
   /** The current prompt, minted by UserPromptSubmit. */
   promptId?: string;
   /** sha256(text) → promptId for every prompt this session has captured. */

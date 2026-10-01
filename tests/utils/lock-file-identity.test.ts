@@ -8,11 +8,13 @@
  * again on the file the path names, and runs only after `late`. POSIX only: a lock file another process holds open
  * cannot be unlinked on Windows.
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
 const LOCK_MODULE = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'utils', 'lifecycle-lock.ts');
 
@@ -107,4 +109,37 @@ describe.skipIf(process.platform === 'win32')('a lock file unlinked under a wait
     expect({ waiterAndAfterOverlap: w.in < a.out && a.in < w.out }).toEqual({ waiterAndAfterOverlap: false });
     fs.rmSync(dir, { recursive: true, force: true });
   }, 30_000);
+});
+
+describe.skipIf(process.platform === 'win32')('a lifecycle lock whose file is replaced between its open and its lock', () => {
+  const realOpen = fs.openSync;
+  afterEach(() => { fs.openSync = realOpen; });
+
+  it('is refused while another holder has the file the path names now, not granted on the unlinked one', () => {
+    const dir = fs.mkdtempSync(path.join('/tmp', 'myco-lock-identity-'));
+    const lockPath = path.join(dir, '.helper.lock');
+    let other: ReturnType<typeof LifecycleLock.acquire> | undefined;
+    // The first open of the path returns the old file; before the taker locks it, the path is unlinked and another
+    // process (here, another open file) takes the lock on the file made in its place.
+    fs.openSync = ((file: fs.PathLike, ...rest: unknown[]) => {
+      const fd = (realOpen as (...a: unknown[]) => number)(file, ...rest);
+      if (file === lockPath && other === undefined) {
+        other = { acquired: false, holder: null, holderPid: null };
+        fs.unlinkSync(lockPath);
+        other = LifecycleLock.acquire(lockPath, { command: 'the other holder' });
+      }
+      return fd;
+    }) as typeof fs.openSync;
+
+    const taken = LifecycleLock.acquire(lockPath, { command: 'the taker' });
+    fs.openSync = realOpen;
+    expect(other?.acquired).toBe(true);
+    expect(taken).toMatchObject({ acquired: false, holder: { command: 'the other holder' } });
+    if (other?.acquired) other.lock.release();
+    // Once the other lets go, the path's file is the taker's to lock.
+    const after = LifecycleLock.acquire(lockPath);
+    expect(after.acquired).toBe(true);
+    if (after.acquired) after.lock.release();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });

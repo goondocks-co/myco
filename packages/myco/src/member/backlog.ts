@@ -157,13 +157,15 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
         force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor, honourRetry: opts.rescan !== true,
       });
       session.events = events;
-      if (events.skipped !== undefined) {
-        if (events.skipped !== 'deferred') skipped = true;
+      if (events.skipped === undefined) {
+        if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
+        report.tried.push(sessionId);
+      } else if (events.skipped !== 'deferred') {
+        skipped = true;
         continue;
       }
-      if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
-      report.tried.push(sessionId);
-      // A held event holds its own lane only: the session's transcripts still ship below, once its start is delivered.
+      // A held event holds its own lane only, through its wait as well: the session's transcripts still ship below,
+      // once its start is delivered.
     }
     if (!spool.hasTranscriptBacklog(sessionId)) continue;
     const state = readSessionState(spool.dir, sessionId);

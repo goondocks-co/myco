@@ -417,14 +417,16 @@ export class MemberSpool {
   }
 
   /**
-   * Whether the session's start is still waiting in its journal: an undelivered `session.start` at or past the
-   * acknowledged mark. A transcript ships only after its session's start, so the Deployment always holds the session a
-   * transcript belongs to, whatever else of the session is held.
+   * Whether the session's start is still waiting in its journal: no start of the session's is settled yet
+   * (`startSettled`), and one lies at or past the acknowledged mark. A transcript ships only after its session's
+   * start, so the Deployment always holds the session a transcript belongs to, whatever else of the session is held.
+   * Once one start is settled, a later one (a resume, a compaction, a clear) holds no transcript back.
    */
   sessionStartPending(sessionId: string): boolean {
+    const state = readSessionState(this.dir, sessionId);
+    if (state.startSettled === true) return false;
     const lines = this.readRecords(sessionId);
-    const from = readSessionState(this.dir, sessionId).highWater;
-    for (let i = from; i < lines.length; i++) {
+    for (let i = state.highWater; i < lines.length; i++) {
       const line = lines[i];
       if (line !== null && !isTurnEndMark(line) && line.kind === 'session.start') return true;
     }
@@ -803,10 +805,11 @@ export class MemberSpool {
           fs.unlinkSync(source.path);
         } catch { /* already gone */ }
       };
-      // A high-water past the held record ends the wait it set.
-      const persist = (highWater: number, acked?: boolean) => updateSessionState(this.dir, sessionId, (s) => {
+      // A high-water past the held record ends the wait it set; one past a start settles the session's start.
+      const persist = (highWater: number, acked?: boolean, passed?: SpoolRecord) => updateSessionState(this.dir, sessionId, (s) => {
         s.highWater = highWater;
         if (acked) s.lastAckAt = now();
+        if (passed?.kind === 'session.start') s.startSettled = true;
         delete s.eventRetry;
       }, now());
       /**
@@ -841,7 +844,7 @@ export class MemberSpool {
         result.refused += 1;
         i += 1;
         release(record);
-        persist(i);
+        persist(i, false, record);
         return true;
       };
 
@@ -894,7 +897,7 @@ export class MemberSpool {
             result.acked += 1;
             i += 1;
             release(record);
-            persist(i, true);
+            persist(i, true, record);
             continue;
           case 'refused':
             if (refuse(record, outcome.code, outcome.reason, sourceGone)) continue;

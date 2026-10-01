@@ -202,6 +202,89 @@ describe('the two lanes (G4f)', () => {
   });
 });
 
+describe('the two lanes past a held record (G4f)', () => {
+  const startOf = (ctx: EnvelopeContext) => sessionStartEvent(ctx, { branch: 'main', startedAt: Date.now(), originPath: '/work' });
+  const held = (ctx: EnvelopeContext) => {
+    const future = prompt(ctx);
+    (future.envelope as { kind: string }).kind = 'future.kind';
+    return future;
+  };
+  const segments = (rig: MemberRig, sessionId: string) =>
+    (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = ? AND kind = 'transcript.segment'`).get(sessionId) as { n: number }).n;
+  function behind(spool: MemberSpool, sessionId: string, lines = 3): string {
+    const file = transcriptFile(sessionId, lines);
+    updateSessionState(spool.dir, sessionId, (s) => { s.transcript = transcriptPointerFor(file, 'machine_1')!; s.agent = 'claude-code'; });
+    spool.markTranscriptBacklog(sessionId);
+    return file;
+  }
+
+  it('ships the transcript when a resume, compaction or clear writes another start behind a held record', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-compact');
+    spool.append('sess-compact', startOf(ctx));
+    spool.append('sess-compact', held(ctx));
+    // The compaction's start: the same session again, behind the held record.
+    spool.append('sess-compact', startOf(ctx));
+    behind(spool, 'sess-compact');
+    const walk = await drainBacklog(spool, clientFor(rig), unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(walk.sessions.find((s) => s.sessionId === 'sess-compact')!.events).toMatchObject({ acked: 1, endedBy: 'refused', remaining: 2 });
+    expect(segments(rig, 'sess-compact')).toBe(1);
+    // The Stop path ships the session's own transcript the same way.
+    const file = transcriptFile('sess-compact-more', 2);
+    fs.appendFileSync(readSessionState(spool.dir, 'sess-compact').transcript!.path, fs.readFileSync(file));
+    expect(await shipSessionTranscripts(ctx, spool, clientFor(rig), unboundedBudget(), { machineId: 'machine_1' })).toEqual({ shipped: 1, endedBy: 'done' });
+  });
+
+  it('remembers the settled start once its journal is delivered and deleted, through a start behind a held record in the next', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-resumed');
+    spool.append('sess-resumed', startOf(ctx));
+    await spool.drainSession('sess-resumed', clientFor(rig), unboundedBudget());
+    expect(fs.existsSync(journal(spool, 'sess-resumed'))).toBe(false);
+    spool.append('sess-resumed', held(ctx));
+    spool.append('sess-resumed', startOf(ctx));
+    behind(spool, 'sess-resumed');
+    expect(await shipSessionTranscripts(ctx, spool, clientFor(rig), unboundedBudget(), { machineId: 'machine_1' })).toEqual({ shipped: 1, endedBy: 'done' });
+  });
+
+  it('still holds the transcript for a first start that waits behind a held record', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-first');
+    spool.append('sess-first', held(ctx));
+    spool.append('sess-first', startOf(ctx));
+    behind(spool, 'sess-first');
+    await drainBacklog(spool, clientFor(rig), unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(segments(rig, 'sess-first')).toBe(0);
+    expect(await shipSessionTranscripts(ctx, spool, clientFor(rig), unboundedBudget(), { machineId: 'machine_1' })).toEqual({ shipped: 0, endedBy: 'ordered' });
+  });
+
+  it('ships transcripts on a later walk inside the held record\'s wait, as on the walk that set it', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const ctx = ctxFor(spool, 'sess-wait');
+    spool.append('sess-wait', startOf(ctx));
+    spool.append('sess-wait', held(ctx));
+    const file = behind(spool, 'sess-wait');
+    const first = await drainBacklog(spool, clientFor(rig), unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(first.sessions[0].events).toMatchObject({ acked: 1, endedBy: 'refused' });
+    expect(readSessionState(spool.dir, 'sess-wait').eventRetry!.at).toBeGreaterThan(Date.now());
+    expect(segments(rig, 'sess-wait')).toBe(1);
+
+    // More of the transcript, and a second walk before the wait is out: the events wait, the transcript does not.
+    fs.appendFileSync(file, JSON.stringify({ type: 'user', message: { role: 'user', content: 'later' } }) + '\n');
+    spool.markTranscriptBacklog('sess-wait');
+    const second = await drainBacklog(spool, clientFor(rig), unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(second.sessions[0].events).toMatchObject({ skipped: 'deferred' });
+    expect(second.sessions[0].transcripts).toMatchObject({ endedBy: 'done', shipped: 1 });
+    expect(segments(rig, 'sess-wait')).toBe(2);
+    // A walk that only waited is no answer from the Deployment: the session is not counted as tried.
+    expect(second.tried).toEqual([]);
+  });
+});
+
 describe('turn-end marks are satisfied (G4j)', () => {
   const at = (pointer: ReturnType<typeof transcriptPointerFor>, atSize: number): TurnEndMark =>
     ({ t: 'te', _journal: JOURNAL_VERSION, slot: 'primary', transcriptId: pointer!.transcriptId, atSize, at: 1 });
@@ -262,7 +345,8 @@ describe('a session\'s lock file', () => {
     expect(retireSessionFiles(spool.dir, 'sess-lock', () => false)).toBe(false);
     expect(retireSessionFiles(spool.dir, 'sess-lock', () => true)).toBe(true);
     expect(fs.existsSync(sessionStatePath(spool.dir, 'sess-lock'))).toBe(false);
-    expect(fs.existsSync(bufferLockPath(spool.dir, 'sess-lock'))).toBe(process.platform === 'win32' ? fs.existsSync(bufferLockPath(spool.dir, 'sess-lock')) : false);
+    // Gone on every platform: on Windows it is unlinked once the lock is let go, and nothing else holds it open here.
+    expect(fs.existsSync(bufferLockPath(spool.dir, 'sess-lock'))).toBe(false);
   });
 });
 
