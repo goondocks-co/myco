@@ -21,7 +21,7 @@ import {
   SHIPPED_SKILL_LISTING_TOTAL_MAX_BYTES,
   SHIPPED_SKILL_MAX_LINES,
 } from '@myco/skills/names.js';
-import { scanForContamination } from '@myco/agent/tools/skill-contamination.js';
+import { scanForContamination } from '@myco/skills/contamination.js';
 import { WHITESPACE_PATH_REFUSAL } from '@myco/symbionts/installer.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');

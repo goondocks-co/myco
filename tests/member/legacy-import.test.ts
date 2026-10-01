@@ -26,8 +26,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
+import { Database } from 'bun:sqlite';
 import {
   groupLegacySessions, legacySessionId, legacyVaultFiles, readLegacyVault, runLegacyImport, LEGACY_PRODUCER, UNREACHABLE,
 } from '@myco/member/legacy-import.js';
@@ -68,6 +67,16 @@ const PI_RAN_THEN = '019de5b4-cd62-76bf-8430-8f37da948654';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
 
+/** A 1.4 vault's schema, frozen from the 1.4 `db/schema.ts` at v76: the shape of every vault this import reads. */
+const VAULT_SCHEMA = fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8');
+
+/** Open a vault as 1.4 kept one: in WAL mode. */
+function openVault(file: string): Database {
+  const db = new Database(file);
+  db.run('PRAGMA journal_mode = WAL');
+  return db;
+}
+
 interface Fixture {
   rig: MemberRig;
   mycoHome: string;
@@ -83,12 +92,12 @@ interface Fixture {
   cleanup: () => void;
 }
 
-/** A 1.4 vault built with the 1.4 schema, holding one project and every session shape the import meets. */
+/** A 1.4 vault built to the frozen 1.4 schema, holding one project and every session shape the import meets. */
 function buildVault(dir: string, root: string, home: string): string {
   const file = path.join(dir, 'groves', 'grove_test', 'myco.db');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = openDatabase(file);
-  createSchema(db);
+  const db = openVault(file);
+  db.exec(VAULT_SCHEMA);
   // The rows stand alone: the agents and entities a real vault's foreign keys name are not what this reads.
   db.run('PRAGMA foreign_keys = OFF');
   const session = (id: string, agent: string, startedAt: number, extra: Record<string, unknown> = {}) => {
@@ -430,7 +439,7 @@ describe('importing a 1.4 vault', () => {
   });
 
   it('keeps a session stored twice when a person deleted one of its rows', async () => {
-    const db = openDatabase(f.vault);
+    const db = openVault(f.vault);
     db.run(`INSERT INTO session_tombstones (session_id, project_id, deleted_at, source) VALUES (?, ?, ?, 'api_delete')`, ['sess_0000000000000000000000000000aaaa', PROJECT, at(29)]);
     db.run('PRAGMA wal_checkpoint(TRUNCATE)');
     db.close();
@@ -630,7 +639,7 @@ describe('importing a 1.4 vault', () => {
   it('leaves out every session a deletion with no row may name, not only the id 1.4 stored', async () => {
     const uuid = '019ef000-0000-7000-8000-00000000abcd';
     const stored = `2026-06-17T10-00-00-000Z_${uuid}`;
-    const db = openDatabase(f.vault);
+    const db = openVault(f.vault);
     db.run(`INSERT INTO session_tombstones (session_id, project_id, deleted_at, source) VALUES (?, ?, ?, 'api_delete')`, [stored, PROJECT, at(10)]);
     db.run('PRAGMA wal_checkpoint(TRUNCATE)');
     db.close();

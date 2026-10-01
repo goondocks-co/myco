@@ -148,6 +148,8 @@ export interface Closure {
   externals: Map<string, string>;
   /** Modules with `import(expr)` / `require(expr)` call sites the walk cannot follow → count. */
   unknowable: Map<string, number>;
+  /** Every module edge the walk followed or met: importer key → the keys it imports. */
+  edges: Map<string, Set<string>>;
 }
 
 /** Repo-relative, forward-slashed key of a module. */
@@ -179,6 +181,8 @@ export function entryFiles(root: string, patterns: readonly string[]): string[] 
 export interface ClosureOptions {
   staticOnly?: boolean;
   source?: (file: string, text: string) => string;
+  /** A module this answers true for is reached and recorded, but the walk goes no further into it. */
+  stopAt?: (key: string) => boolean;
 }
 
 /** The specifiers a module imports statically: what loads with it. */
@@ -195,7 +199,7 @@ export function dynamicSpecifiers(source: string, file: string): string[] {
 
 /** Walk every module reachable from these entries. */
 export function closureOf(entries: readonly string[], opts: ClosureOptions = {}): Closure {
-  const closure: Closure = { modules: new Map(), via: new Map(), externals: new Map(), unknowable: new Map() };
+  const closure: Closure = { modules: new Map(), via: new Map(), externals: new Map(), unknowable: new Map(), edges: new Map() };
   const queue: string[] = [];
   for (const entry of entries) {
     const key = moduleKey(entry);
@@ -218,10 +222,13 @@ export function closureOf(entries: readonly string[], opts: ClosureOptions = {})
         continue;
       }
       const key = moduleKey(resolved.file);
+      const from = moduleKey(file);
+      if (!closure.edges.has(from)) closure.edges.set(from, new Set());
+      closure.edges.get(from)!.add(key);
       if (closure.modules.has(key)) continue;
       closure.modules.set(key, resolved.file);
-      closure.via.set(key, moduleKey(file));
-      queue.push(resolved.file);
+      closure.via.set(key, from);
+      if (opts.stopAt?.(key) !== true) queue.push(resolved.file);
     }
   }
   return closure;
@@ -236,4 +243,28 @@ export function pathToEntry(closure: Closure, key: string): string[] {
     at = closure.via.get(at);
   }
   return chain.reverse();
+}
+
+/** A module's text with its shebang line taken out, which the parser reads as source. */
+export const withoutShebang = (_file: string, text: string): string => text.replace(/^#!.*\n/, '');
+
+/**
+ * Every module the CLI (`<src>/cli.ts`) dispatches a verb to: read off the CLI's own relative imports, then off the lazy
+ * imports of each module found, so a verb a dispatcher (`cli/member-dispatch.ts`) loads with `import('./…')` is held
+ * without being listed. A module `exclude` answers true for is left out and not followed.
+ */
+export function cliVerbModules(src: string, exclude: (file: string) => boolean = () => false): Set<string> {
+  const cli = path.join(src, 'cli.ts');
+  const toModule = (from: string, specifier: string): string => path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts'));
+  const dispatched = runtimeEdges(withoutShebang(cli, fs.readFileSync(cli, 'utf-8')), cli).specifiers
+    .filter((s) => s.startsWith('./')).map((s) => toModule(cli, s)).filter((file) => fs.existsSync(file) && !exclude(file));
+  const modules = new Set(dispatched);
+  for (const queue = [...dispatched]; queue.length > 0;) {
+    const file = queue.pop()!;
+    for (const specifier of dynamicSpecifiers(fs.readFileSync(file, 'utf-8'), file).filter((s) => s.startsWith('./'))) {
+      const lazy = toModule(file, specifier);
+      if (fs.existsSync(lazy) && !exclude(lazy) && !modules.has(lazy)) { modules.add(lazy); queue.push(lazy); }
+    }
+  }
+  return modules;
 }

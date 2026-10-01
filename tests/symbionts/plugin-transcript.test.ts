@@ -7,7 +7,7 @@ import { describe, it, expect } from 'bun:test';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { expandRoot, manifestTranscriptDiscovery } from '@myco/symbionts/transcript-discovery.js';
 import { memberOwnedTranscriptRoots } from '@myco/member/retention.js';
-import { TOOL_DEFINITIONS } from '@myco/tools/definitions.js';
+import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 
 /**
  * The native plugins' transcript contract.
@@ -192,7 +192,7 @@ describe('pi tool registration', () => {
   });
 
   it('spells no served tool name, so no schema can drift from the catalogue', () => {
-    // Names come from the member's own catalogue, never spelled here.
+    // Names come from the catalogue the Deployment serves, never spelled here.
     const named = TOOL_DEFINITIONS.map((tool) => tool.name).filter((name) => source.includes(name));
     expect(named).toEqual([]);
   });

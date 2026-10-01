@@ -13,7 +13,7 @@ import {
   type InjectionItem, type InjectionLeaves,
 } from '@myco-server-worker/core/injection.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
-import { OBSERVATION_TYPES } from '@myco/vault/types.js';
+import { OBSERVATION_TYPES } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';

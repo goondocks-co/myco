@@ -210,6 +210,15 @@ export function captureFolderRefusal(entry: string): string | null {
 }
 
 /**
+ * The kinds of observation a spore records: the types `myco_spores` accepts, the Deployment stores and the dashboard
+ * names, in one list.
+ */
+export const OBSERVATION_TYPES = [
+  'gotcha', 'bug_fix', 'decision', 'discovery', 'trade_off', 'cross-cutting', 'wisdom', 'pattern', 'architecture',
+] as const;
+export type ObservationType = (typeof OBSERVATION_TYPES)[number];
+
+/**
  * How long a machine holds what its agents do in a repository that has not joined (#1547): past it, the held capture
  * is discarded and the Deployment told `expired`.
  */
