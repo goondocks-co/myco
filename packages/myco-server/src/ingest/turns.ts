@@ -14,6 +14,8 @@
  *   the next turn;
  * - every end moves the session's `last_turn_end_at`, and a stamp not newer than it opens nothing, so a prompt's stamp
  *   landing after its own turn's end never reopens that turn;
+ * - a stamp older than the open turn's moves nothing, so a start drained late never dates the open turn back to an
+ *   instant an earlier turn's end would close it at: the turn reads the same in any delivery order;
  * - a prompt id whose instant is more than `MAX_CLOCK_SKEW_MS` from the Deployment's clock, either way, opens nothing:
  *   the session reads as Live through its receipts alone, and no instant of the Deployment's clock is ever set against
  *   ends in the member's.
@@ -80,8 +82,9 @@ export function turnStartedAt(promptId: string, nowMs: number): number | null {
 export function startTurnStatement(db: RelationalStore, s: { projectId: string; sessionId: string; machineId: string; at: number }): PreparedStatement {
   return db.prepare(
     `UPDATE sessions SET working_since = ?
-      WHERE project_id = ? AND session_id = ? AND machine_id = ? AND (last_turn_end_at IS NULL OR last_turn_end_at < ?)`,
-  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at);
+      WHERE project_id = ? AND session_id = ? AND machine_id = ? AND (last_turn_end_at IS NULL OR last_turn_end_at < ?)
+        AND (working_since IS NULL OR working_since < ?)`,
+  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at, s.at);
 }
 
 /**
@@ -94,8 +97,9 @@ export function startTurnFromEventStatement(
   return db.prepare(
     `UPDATE sessions SET working_since = ?
       WHERE project_id = ? AND session_id = ? AND machine_id = ? AND (last_turn_end_at IS NULL OR last_turn_end_at < ?)
+        AND (working_since IS NULL OR working_since < ?)
         AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`,
-  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at, s.projectId, s.eventId, s.nonce);
+  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at, s.at, s.projectId, s.eventId, s.nonce);
 }
 
 /**

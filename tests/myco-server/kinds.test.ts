@@ -77,7 +77,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 55;
+const PLANNED_STATEMENTS = 56;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 10, group: 1 };
@@ -844,7 +844,9 @@ describe('kind catalogue', () => {
         if (spec.name === 'transcript.segment') { full.blob = segKey; full.length = segBytes.byteLength; }
         const payload = shape === 'full' ? full : Object.fromEntries(Object.entries(full).filter(([field]) => spec.fields[field]?.required === true));
         if (spec.name === 'transcript.segment') { payload.baseOffset = offset; offset += segBytes.byteLength; }
-        for (const createdAt of [3_000, 3_001]) {
+        // A turn start opens a turn only within the clock bound, so it is sent near now: the statement it opens with runs here too.
+        const at = spec.name === 'turn' ? Date.now() - 10_000 : 3_000;
+        for (const createdAt of [at, at + 1]) {
           await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), sessionId: `sess_${shape}`, kind: spec.name, createdAt, payload })), e.env);
         }
       }

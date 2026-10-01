@@ -368,12 +368,42 @@ describe('a turn the member ships as events', () => {
   const turn = (phase: string, createdAt: number, over: Record<string, unknown> = {}) =>
     ({ kind: 'turn', sessionId: 'sess_1', createdAt, payload: { phase }, ...over });
 
-  it('names the turn feature on every answer to an authenticated member, and on none to anyone else', async () => {
+  it('names the turn feature on every answer to an authenticated member, refusals and context answers included, and on none to anyone else', async () => {
     const r = await rig();
     const res = await worker.fetch(memberPost(r.token, envelope({ eventId: uuid(900), ...turn('start', r.now - 1_000) }), '/events'), r.e.env, r.e.deferred);
-    expect(featuresNamed(res.headers.get(FEATURES_HEADER))).toEqual(['turn']);
+    expect({ status: res.status, features: featuresNamed(res.headers.get(FEATURES_HEADER)) }).toEqual({ status: 200, features: ['turn'] });
+    // A refusal names it too: a member reads its Deployment's features from whatever answer it gets.
+    const refused = await worker.fetch(memberPost(r.token, envelope({ eventId: uuid(901), ...turn('start', r.now - 1_000) }), '/events', { 'x-myco-protocol': '999' }), r.e.env, r.e.deferred);
+    expect({ status: refused.status, features: featuresNamed(refused.headers.get(FEATURES_HEADER)) }).toEqual({ status: 409, features: ['turn'] });
+    const context = await worker.fetch(new Request('https://s/context/prompt', {
+      method: 'POST', headers: memberHeaders(r.token), body: JSON.stringify({ sessionId: 'sess_1', promptId: promptIdAt(r.now - 1_000), text: 'let us keep going' }),
+    }), r.e.env, r.e.deferred);
+    await r.e.deferred.settle();
+    expect({ status: context.status, features: featuresNamed(context.headers.get(FEATURES_HEADER)) }).toEqual({ status: 200, features: ['turn'] });
     const anonymous = await worker.fetch(new Request('https://s/health'), r.e.env, r.e.deferred);
     expect(anonymous.headers.get(FEATURES_HEADER)).toBeNull();
+  });
+
+  it('reads the same in any delivery order: a start drained late never dates the open turn back for an earlier end to close', async () => {
+    const r = await rig();
+    const t1 = r.now - 60_000;
+    const t2 = r.now - 50_000;
+    const t3 = r.now - 40_000;
+    // Turn 3's start lands first; turn 1's start and end, held in the spool, drain after it.
+    await r.event(turn('start', t3));
+    await r.event(turn('start', t1));
+    expect(r.workingSince('sess_1')).toBe(t3);
+    await r.event(turn('end', t2));
+    expect(r.workingSince('sess_1')).toBe(t3);
+  });
+
+  it('keeps a context request\'s late stamp from dating the open turn back, with no end between them', async () => {
+    const r = await rig();
+    const earlier = r.now - 60_000;
+    const later = r.now - 40_000;
+    await r.event(turn('start', later));
+    await r.prompt('sess_1', promptIdAt(earlier));
+    expect(r.workingSince('sess_1')).toBe(later);
   });
 
   it('opens the turn at the start\'s own instant and closes it at the end\'s, with no context request at all', async () => {
