@@ -79,7 +79,6 @@ describe('the generator that embeds a dashboard', () => {
     writeFileSync(join(member, 'package.json'), JSON.stringify({ name: '@goondocks/myco', scripts: {
       'build:ui': scripts['build:ui'],
     } }));
-    writeFileSync(join(member, 'build.cjs'), '');
     writeFileSync(join(server, 'package.json'), JSON.stringify({ name: '@goondocks/myco-server', scripts: { 'build:ui': 'node build.cjs' } }));
     writeFileSync(join(server, 'build.cjs'), "require('node:fs').copyFileSync('source.html', 'dist/index.html');");
     writeFileSync(join(server, 'source.html'), '<html>updated source</html>');

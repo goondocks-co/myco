@@ -12,7 +12,7 @@
 // service unit on its next startup via `ensureSelfInstalledAsService`, so
 // the postinstall does NOT need to call any service-install logic — doing so
 // would require `dist/src/` modules that are never emitted in the published
-// tarball (the build only produces a bun binary + `dist/ui/`).
+// tarball (the build only produces a bun binary).
 //
 // The path-layout helpers come from `./managed-paths.mjs` — a shared plain-ESM
 // module imported BOTH here and (re-exported) by `src/install/managed-binary.ts`,

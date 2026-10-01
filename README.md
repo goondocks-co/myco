@@ -46,7 +46,6 @@ macOS is the primary supported platform. Linux and Windows are in beta. On Windo
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
-myco open
 ```
 
 On Windows x64 (PowerShell):

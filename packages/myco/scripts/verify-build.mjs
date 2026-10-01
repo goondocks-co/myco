@@ -1,5 +1,4 @@
-// Post-build sanity check. Replaces the old inline one-liner that only
-// verified the UI bundle.
+// Post-build sanity check.
 //
 // Checks:
 //   1. The host-target binary exists at ../myco-<host>/bin/myco (or myco.exe).

@@ -353,6 +353,12 @@ describe('feature-preservation ledger completeness', () => {
         .map((row) => `${row.section} ${row.token}`);
       expect(unanswered.filter((key) => !(key in UNANSWERED_KEPT_ROWS)), `a KEEP or NEW §${registry.section} row ${registry.label} does not answer at`).toEqual([]);
       expect(Object.keys(UNANSWERED_KEPT_ROWS).filter((key) => key.startsWith(`${registry.section} `) && !unanswered.includes(key)), 'an UNANSWERED_KEPT_ROWS entry now answered: delete it').toEqual([]);
+      // A replaced row that names where 2.0 serves it names a path 2.0 answers at.
+      const unserved = LEDGER
+        .filter((row) => row.section === registry.section && row.disposition === 'REPLACE')
+        .flatMap((row) => [...row.raw.split('|').slice(2).join('|').matchAll(/`(\/[^`\s]*)`/g)]
+          .map((m) => m[1]!).filter((named) => !answered.has(named)).map((named) => `${row.token} → ${named}`));
+      expect(unserved, `a REPLACE §${registry.section} row names a path ${registry.label} does not answer at`).toEqual([]);
     }
   });
 

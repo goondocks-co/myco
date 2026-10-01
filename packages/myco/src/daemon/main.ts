@@ -24,8 +24,6 @@ import { loadMachineConfig, loadMergedConfig, setTierParseFailureListener } from
 import { TranscriptMiner } from '../capture/transcript-miner.js';
 import { createPerProjectAdapter } from '../symbionts/adapter.js';
 import { claudeCodeAdapter } from '../symbionts/claude-code.js';
-import { findCorePackageRoot } from '../utils/find-package-root.js';
-import { hasEmbeddedUi } from './static.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveVaultDir, resolveProjectRoot, projectTreeAvailable } from '../vault/resolve.js';
@@ -1335,40 +1333,6 @@ export async function main(): Promise<void> {
     logger.warn(LOG_KINDS.AGENT_ERROR, 'Failed to clean stale runs', { error: errorMessage(err) });
   }
 
-  // Resolve dist/ui/ from @goondocks/myco core. Two candidate origins —
-  // `import.meta.url` works under tsx/bun run and the tsup output;
-  // `process.execPath` is needed in the Bun-compiled binary where
-  // `import.meta.url` is a `/$bunfs/` virtual path. `dist/ui/` only
-  // ships in core, never in the platform sub-package.
-  let uiDir: string | null = null;
-  const uiDevProxyTarget = process.env.MYCO_UI_DEV_PROXY_TARGET || null;
-  {
-    const origins: string[] = [];
-    try {
-      origins.push(path.dirname(new URL(import.meta.url).pathname));
-    } catch { /* bunfs URL — fall through to execPath */ }
-    try {
-      origins.push(path.dirname(fs.realpathSync(process.execPath)));
-    } catch { /* no real path — ignore */ }
-
-    for (const origin of origins) {
-      const root = findCorePackageRoot(origin);
-      if (!root) continue;
-      const candidate = path.join(root, 'dist', 'ui');
-      if (fs.existsSync(candidate)) { uiDir = candidate; break; }
-    }
-  }
-  if (uiDevProxyTarget) {
-    logger.info(LOG_KINDS.DAEMON_START, 'UI dev proxy enabled', { target: uiDevProxyTarget });
-  }
-  if (uiDir) {
-    logger.debug(LOG_KINDS.DAEMON_START, 'Static UI directory found', { path: uiDir });
-  } else if (hasEmbeddedUi()) {
-    // Standalone binary with no adjacent dist/ui/ on disk: every page
-    // answers with the retired-dashboard notice.
-    logger.debug(LOG_KINDS.DAEMON_START, 'Serving the retired-dashboard page (no disk dist/ui)');
-  }
-
   // Always-on diagnostic for event-loop pinning. Catches stalls regardless
   // of cause (sync bun:sqlite, multi-MB JSON.parse, microtask cascade in a
   // streaming SDK aggregator). Stopped during shutdown alongside the
@@ -1541,8 +1505,6 @@ export async function main(): Promise<void> {
         ? EXTERNAL_MCP_ACTIVE_POSTURE
         : EXTERNAL_MCP_ACTIVATION_POSTURE
     ),
-    uiDir: uiDir ?? undefined,
-    uiDevProxyTarget: uiDevProxyTarget ?? undefined,
     runtimeCache,
     hostServe,
     hostProxyDeps: captureProxyDeps,

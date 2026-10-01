@@ -34,6 +34,7 @@ jobs:
         run: |
           test ! -d packages/myco-shared/dist
           npm run build:ui -w @goondocks/myco-server
+          rm packages/myco/src/server-ui-assets.generated.ts
           npx tsx packages/myco/scripts/gen-ui-assets.ts
           git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
       - name: Build from a clean checkout

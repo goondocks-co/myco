@@ -75,9 +75,8 @@ install:
 	npm install
 
 daemon-dev:
-	@proxy=$${MYCO_UI_DEV_PROXY_TARGET:-http://127.0.0.1:5173}; \
-	echo "Starting watched daemon with UI dev proxy $$proxy (MYCO_HOME=$(HOME)/.myco-dev)"; \
-	MYCO_HOME=$(HOME)/.myco-dev MYCO_UI_DEV_PROXY_TARGET="$$proxy" bun --watch packages/myco/src/entries/cli.ts daemon
+	@echo "Starting watched daemon (MYCO_HOME=$(HOME)/.myco-dev)"
+	MYCO_HOME=$(HOME)/.myco-dev bun --watch packages/myco/src/entries/cli.ts daemon
 
 HOST_TARGET := $(shell node -e "\
 process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
@@ -244,8 +243,8 @@ WIN_HOST ?= chris@10.211.55.3
 WIN_SSH := -o ControlMaster=auto -o ControlPath=/tmp/myco-win-ssh -o ControlPersist=3m -o StrictHostKeyChecking=accept-new
 
 dev-build-windows:
-	@# UI bundle first (served by the daemon, embedded into the binary) — must
-	@# precede codegen so gen-ui-assets can bundle it. Parity with `dev-build`.
+	@# The Deployment dashboard first: codegen embeds its build into the binary.
+	@# Parity with `dev-build`.
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
 	@# npm skips foreign-platform optionalDeps; pull the windows-x64 native deps explicitly.
@@ -254,12 +253,10 @@ dev-build-windows:
 	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs
 
 dev-link-windows: dev-build-windows
-	tar -czf /tmp/myco-win-ui.tgz -C packages/myco/dist ui
 	scp $(WIN_SSH) packages/myco-windows-x64/bin/myco.exe $(WIN_HOST):myco.exe
-	scp $(WIN_SSH) /tmp/myco-win-ui.tgz $(WIN_HOST):ui.tgz
 	scp $(WIN_SSH) scripts/win-dev-link.ps1 $(WIN_HOST):win-dev-link.ps1
 	ssh $(WIN_SSH) $(WIN_HOST) 'powershell -NoProfile -ExecutionPolicy Bypass -File win-dev-link.ps1'
-	@echo "✓ wired on $(WIN_HOST) — daemon running + UI staged (see the printed port)."
+	@echo "✓ wired on $(WIN_HOST) — daemon running (see the printed port)."
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
