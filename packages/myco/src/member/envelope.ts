@@ -19,14 +19,14 @@ import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
 
 export type { MemberKind } from '@goondocks/myco-shared/member-protocol';
-import { filesNamedByToolInput, type PlanStatus, type TranscriptRole, type WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
+import { filesNamedByToolInput, TURN_KIND, type PlanStatus, type TranscriptRole, type TurnPhase, type WireKind, type WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 export type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
-type MemberKind = import('@goondocks/myco-shared/member-protocol').MemberKind;
+export type { WireKind } from '@goondocks/myco-shared/member-protocol';
 
 export interface MemberEnvelope {
   eventId: string;
   sessionId: string;
-  kind: MemberKind;
+  kind: WireKind;
   createdAt: number;
   channel: OutboundChannel;
   producer: { adapter: string; version: string };
@@ -176,7 +176,7 @@ export function producerIdentifier(value: string): string {
   return normalized.length > 0 ? normalized : 'unknown';
 }
 
-function envelope(ctx: EnvelopeContext, kind: MemberKind, payload: Record<string, unknown>, blobSource?: BlobSource): OutboundEvent {
+function envelope(ctx: EnvelopeContext, kind: WireKind, payload: Record<string, unknown>, blobSource?: BlobSource): OutboundEvent {
   const env: MemberEnvelope = {
     eventId: mintId(),
     sessionId: ctx.sessionId,
@@ -318,6 +318,14 @@ export function subagentStartEvent(ctx: EnvelopeContext, input: NormalizedHookIn
 
 export function subagentStopEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { parentPromptId?: string } = {}): OutboundEvent {
   return envelope(ctx, 'subagent.stop', subagentPayload(ctx, input, opts.parentPromptId));
+}
+
+/**
+ * A turn's start or end, timed by the envelope's own `createdAt`. It is an advertised kind: build it only for a
+ * Deployment that names the `turn` feature.
+ */
+export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; promptId?: string }): OutboundEvent {
+  return envelope(ctx, TURN_KIND, { phase: opts.phase, promptId: opts.promptId });
 }
 
 export function compactionEvent(ctx: EnvelopeContext, phase: 'pre' | 'post', input: NormalizedHookInput): OutboundEvent {

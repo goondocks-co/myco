@@ -13,8 +13,8 @@ import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import {
   attachmentEvent, compactionEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
   promptEvent, queuedPromptIdFor, responseEvent, sessionEndEvent, sessionStartEvent, stopFailureEvent, subagentIdFor,
-  subagentStartEvent, subagentStopEvent, taskCompletedEvent, toolFailureEvent, toolUseEvent, transcriptSegmentEvent, wireOrigin,
-  type EnvelopeContext, type MemberKind, type OutboundEvent,
+  subagentStartEvent, subagentStopEvent, taskCompletedEvent, toolFailureEvent, toolUseEvent, transcriptSegmentEvent, turnEvent, wireOrigin,
+  type EnvelopeContext, type OutboundEvent, type WireKind,
 } from '@myco/member/envelope.js';
 import { MEMBER_INLINE_TEXT_MAX_BYTES } from '@myco/member/constants.js';
 import { TOOL_OUTPUT_CAPTURE_CHARS } from '@myco/constants.js';
@@ -52,7 +52,7 @@ const PROJECTION_TABLE: Record<string, string> = {
 describe('member envelope — every kind through the worker', () => {
   const promptId = mintId();
 
-  const cases: Array<{ kind: MemberKind; build: () => OutboundEvent }> = [
+  const cases: Array<{ kind: WireKind; build: () => OutboundEvent }> = [
     { kind: 'session.start', build: () => sessionStartEvent(ctx(), { branch: 'main', startedAt: Date.now(), originPath: '/work/repo', parentSessionId: 'sess-parent', parentReason: 'resume' }) },
     { kind: 'prompt', build: () => promptEvent(ctx(), { promptId, text: 'hello', origin: 'human' }) },
     { kind: 'tool.use', build: () => toolUseEvent(ctx(), input({ tool_name: 'Read', tool_input: { file_path: '/work/repo/a.ts' }, tool_output: 'x'.repeat(500) }), { promptId }) },
@@ -70,6 +70,7 @@ describe('member envelope — every kind through the worker', () => {
     { kind: 'attachment', build: () => attachmentEvent(ctx(), { blobSource: stager.stage(new Uint8Array([137, 80, 78, 71]), 'image/png'), promptId, description: 'screenshot' }) },
     { kind: 'transcript.segment', build: () => transcriptSegmentEvent(ctx(), { transcriptId: `tx_${'a'.repeat(32)}`, baseOffset: 0, blobSource: stager.stage(new TextEncoder().encode('{"type":"user"}\n'), 'text/plain; charset=utf-8'), originPath: '/tmp/t.jsonl' }) },
     { kind: 'session.end', build: () => sessionEndEvent(ctx(), { endedAt: Date.now() }) },
+    { kind: 'turn', build: () => turnEvent(ctx(), { phase: 'start', promptId }) },
   ];
 
   it('covers every kind of the server catalogue exactly once', () => {
