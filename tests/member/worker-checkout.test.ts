@@ -43,6 +43,12 @@ if (process.argv.includes('status')) process.exit(0);
     listing: fs.existsSync(${JSON.stringify(RUN_REPOSITORY_DIGESTS_FILE)}) ? fs.readFileSync(${JSON.stringify(RUN_REPOSITORY_DIGESTS_FILE)}, 'utf8') : null,
     gitConfig: fs.readFileSync('repo/.git/config', 'utf8'), gitTokenPresent: process.env.MYCO_GIT_TOKEN !== undefined };
   if (${JSON.stringify(task)} === 'map') {
+    // The calls a harness reports: a read and a history listing, each naming the checkout by its absolute path.
+    const repo = require('node:path').join(process.cwd(), 'repo');
+    console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_read', name: 'Read', input: { file_path: repo + '/AGENTS.md' } }] } }));
+    console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_read', content: 'rules' }] } }));
+    console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_tree', name: 'Bash', input: { command: 'git -C ' + repo + ' ls-tree -r HEAD' } }] } }));
+    console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_tree', content: 'blob AGENTS.md' }] } }));
     const entry = (observed.listing || '').split('\\n').map((line) => line.split('  ')).find(([, path]) => path === 'AGENTS.md');
     if (!entry) throw new Error('The listing does not list AGENTS.md: ' + observed.listing);
     const groundedIn = [{ path: 'AGENTS.md', sha256: entry[0] }];
@@ -176,6 +182,9 @@ describe('worker repository checkout over the Deployment wire', () => {
       const map = e.sqlite.query(`SELECT source_run_id AS runId, repository_commit AS commitId, artifact FROM canopy_maps WHERE project_id='proj_1'`).get() as { runId: string; commitId: string; artifact: string };
       expect({ runId: map.runId, commitId: map.commitId, grounded: JSON.parse(map.artifact).domains[0].files[0].groundedIn })
         .toEqual({ runId: 'run_map', commitId: source.second, grounded: [{ path: 'AGENTS.md', sha256: digest }] });
+      // The step log names a file in the checkout relative to it, never by the run's random directory.
+      const steps = e.sqlite.query(`SELECT kind, target FROM agent_run_steps WHERE run_id='run_map' AND kind IN ('read', 'command') ORDER BY seq`).all();
+      expect(steps).toEqual([{ kind: 'read', target: 'AGENTS.md' }, { kind: 'command', target: 'git -C . ls-tree -r …' }]);
     } finally {
       process.env.PATH = previousPath;
       server.stop(true);

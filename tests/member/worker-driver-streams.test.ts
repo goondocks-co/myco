@@ -1426,8 +1426,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'other', status: 'started' },
-      { kind: 'tool_call', name: 'other', status: 'ok' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'started' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'ok' },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1575,9 +1575,10 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     });
     const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
+    // Cursor names the server and tool in an update after the call starts, so the call reads as Myco's from then on.
     expect(toolCalls(events)).toEqual([
       { kind: 'tool_call', name: 'other', status: 'started' },
-      { kind: 'tool_call', name: 'other', status: 'ok' },
+      { kind: 'tool_call', name: 'mcp__myco__noop_ping', status: 'ok' },
     ]);
   });
 

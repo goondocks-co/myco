@@ -148,7 +148,17 @@ runner:
     # How each call in its stream reads as a step of the run's step log: by the agent protocol's own kind of the
     # call, its target read from the call's locations and raw input. Its free-text title, contents and output are never read.
     stepTool: category
+    # How its calls name one of the tools Myco's server lists for the run: the protocol gives a call no tool name, so
+    # its title is compared whole with each form, `{tool}` standing for one of the run's tools, or its input names
+    # the server and the tool apart, as Cursor's does. The grant and the step log both read a call through this.
+    mycoCalls:
+      names: ['mcp__myco__{tool}', 'myco_{tool}']
+      input: { server: rawInput.providerIdentifier, tool: rawInput.toolName }
+    # Session updates its driver does not read that never carry a call: the agent's plan, its commands, its mode and
+    # the user's own message.
+    notSteps: [session/update:plan, session/update:available_commands_update, session/update:current_mode_update, session/update:user_message_chunk]
     steps:
+      - { toolPrefix: mcp__myco__, kind: myco, target: [rawInput.op, rawInput.args.op, rawInput.arguments.op] }
       - { category: read, kind: read, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path] }
       - { category: search, kind: search, target: [locations.0.path, rawInput.path] }
       - { category: edit, kind: edit, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path] }
@@ -156,6 +166,8 @@ runner:
       - { category: move, kind: edit, target: [locations.0.path, rawInput.path] }
       - { category: execute, kind: command, target: [rawInput.command, rawInput.cmd] }
       - { category: fetch, kind: fetch, target: [rawInput.url, rawInput.query] }
+      - { category: think, kind: tool, target: [], words: Thought it through }
+      - { category: switch_mode, kind: tool, target: [], words: Switched its mode }
     accounting:
       reported: acp-session
       zeroDollars: unavailable

@@ -23,7 +23,7 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
  * (`keep-awake.ts`), and on waking from a sleep that outlasted its lease stops
  * the harness at once rather than spend a session on a run it no longer holds.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
 import { driverFor } from './drivers/registry.js';
@@ -456,6 +456,7 @@ async function drive(
         if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
         return answer.body;
       }, { gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task) });
+      stepLog?.within(checkout.root, resolvedPath(checkout.root));
     }
     stopping.signal.throwIfAborted();
     if (clock() >= deadline) losing(`the lease on ${run.id} lapsed before its harness started; leaving the run to the Deployment`);
@@ -536,6 +537,15 @@ function sweepStepLogs(options: WorkerOptions): void {
 }
 
 /** Write an attempt's step log to the outbox; a log that cannot be written is said in the worker's log. */
+/** A directory as the filesystem resolves it, so a step naming it either way is read as inside it; itself where it can't be resolved. */
+function resolvedPath(dir: string): string {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
 function keepStepLog(options: WorkerOptions, run: ClaimedRun, stepLog: StepLog, now: number): void {
   const { steps, overflow, unrecognized } = stepLog.result();
   try {
