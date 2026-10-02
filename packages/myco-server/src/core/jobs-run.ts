@@ -13,7 +13,7 @@ import { expireGrants } from '../auth/grants.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, expireLeases, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { classify, emit } from '../telemetry.js';
 import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 import { releaseRun } from './release.js';
 import { pendingSearchBlobs, reconcileSearchIndex } from './search-index.js';
 import { dispatchEmbeddingWork } from './embedding/jobs.js';
@@ -30,10 +30,8 @@ import { reconcileReleaseProvenance } from './release-provenance.js';
 import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 
-/** The retention window when the leaf is unset, and the bounds the leaf itself declares. */
+/** The retention window when the leaf is unset; the leaf's own rule bounds a stored one. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
-const RUN_RETENTION_DAYS_MIN = 1;
-const RUN_RETENTION_DAYS_MAX = 365;
 const DAY_MS = 86_400_000;
 
 /** How many rows one pass of a job touches before it yields; the next tick continues. */
@@ -105,12 +103,8 @@ async function pruneRecoveryStagings(env: ServerEnv, _now: number): Promise<numb
 
 /** The retention window in days from the Deployment's leaf, clamped to the leaf's bounds; unset means the default. */
 export async function runRetentionDays(env: ServerEnv): Promise<number> {
-  const raw = (await leafValues(env.db, ['agent.run_retention_days'])).get('agent.run_retention_days');
-  if (raw === undefined) return RUN_RETENTION_DAYS_DEFAULT;
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return RUN_RETENTION_DAYS_DEFAULT; }
-  if (typeof parsed !== 'number' || !Number.isFinite(parsed)) return RUN_RETENTION_DAYS_DEFAULT;
-  return Math.min(RUN_RETENTION_DAYS_MAX, Math.max(RUN_RETENTION_DAYS_MIN, Math.floor(parsed)));
+  const raw = (await settingTexts(env.db, ['agent.run_retention_days'])).get('agent.run_retention_days');
+  return raw === undefined ? RUN_RETENTION_DAYS_DEFAULT : JSON.parse(raw) as number;
 }
 
 /**

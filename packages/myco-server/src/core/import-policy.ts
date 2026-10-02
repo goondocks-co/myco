@@ -25,7 +25,7 @@
 import type { RelationalStore } from './adapters.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 
 export const IMPORT_ENABLED_LEAF = 'import.enabled';
 export const IMPORT_WINDOW_DAYS_LEAF = 'import.window_days';
@@ -79,7 +79,7 @@ const clamp = (value: number, max: number): number => Math.min(max, Math.max(1, 
  * Deployment's bound.
  */
 export async function importPolicy(db: RelationalStore, ask: ImportPolicyAsk = {}): Promise<ImportPolicy> {
-  const values = await leafValues(db, IMPORT_LEAVES);
+  const values = await settingTexts(db, IMPORT_LEAVES);
   return {
     enabled: !leafIsOff(values.get(IMPORT_ENABLED_LEAF)),
     windowDays: clamp(ask.windowDays ?? storedInteger(values.get(IMPORT_WINDOW_DAYS_LEAF), IMPORT_WINDOW_DAYS_DEFAULT), IMPORT_WINDOW_DAYS_MAX),

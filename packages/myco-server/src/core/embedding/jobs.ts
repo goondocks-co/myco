@@ -1,7 +1,7 @@
 import type { RelationalStore, ServerEnv } from '../adapters.js';
 import { AlreadyRunning, dispatchPrepared, prepareDispatch, hasTaskRuntime } from '../harness.js';
 import { hasLiveTaskRunAnywhere, lastTaskEntryAt } from '../runs.js';
-import { leafValues } from '../settings.js';
+import { settingTexts } from '../settings.js';
 import { listProjects } from '../../read/sessions.js';
 import { SPORE_VECTORS, hubnessPending } from './hubness.js';
 import { resolveSemanticSearch } from '../search.js';
@@ -9,6 +9,7 @@ import { DELETION_DUE, SOURCE_HELD, deletionDueBinds } from './reconcile.js';
 
 export const EMBEDDING_RETRY_MS = 60_000;
 export const EMBEDDING_TASK = 'embedding-reconcile';
+export const PREVENT_DEEP_SLEEP_LEAF = 'embedding.prevent_deep_sleep';
 
 /** The backlog includes sources awaiting a write, deletions that are due and pending spore calibration. */
 export async function hasEmbeddingWork(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
@@ -20,10 +21,14 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
   return count >= 2 && hubnessPending(db, projectId, model, now);
 }
 
+/** Whether embedding work holds the Deployment awake while it waits: on unless an admin turned it off. */
+export async function keepsEmbeddingWhileIdle(db: RelationalStore): Promise<boolean> {
+  return (await settingTexts(db, [PREVENT_DEEP_SLEEP_LEAF])).get(PREVENT_DEEP_SLEEP_LEAF) !== JSON.stringify(false);
+}
+
 export async function embeddingKeepsAwake(env: ServerEnv, now: number): Promise<boolean> {
   if (!hasTaskRuntime(env, EMBEDDING_TASK) || env.origin === undefined) return false;
-  const leaves = await leafValues(env.db, ['embedding.prevent_deep_sleep']);
-  if (leaves.get('embedding.prevent_deep_sleep') === 'false') return false;
+  if (!(await keepsEmbeddingWhileIdle(env.db))) return false;
   const semantic = await resolveSemanticSearch(env);
   if (semantic === null) return false;
   for (const project of await listProjects(env.db)) if (await hasEmbeddingWork(env.db, project.projectId, semantic.provider.modelKey, now)) return true;

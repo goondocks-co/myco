@@ -1311,6 +1311,7 @@ describe('gates', () => {
       'session:admin POST /api/transcripts/reread',
       'session:admin POST /api/wake',
       'session:admin PUT /api/agents/{agentId}',
+      'session:admin PUT /api/embedding',
       'session:admin PUT /api/projects/{projectId}/capabilities/{capability}',
       'session:admin PUT /api/projects/{projectId}/release-provenance',
       'session:admin PUT /api/projects/{projectId}/repository',

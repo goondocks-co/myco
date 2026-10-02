@@ -18,7 +18,7 @@ import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, ty
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
-import { enabledCapabilities, isScheduleCount, leafValues, type ProjectCapability } from './settings.js';
+import { enabledCapabilities, isScheduleCount, settingTexts, type ProjectCapability } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
@@ -73,11 +73,13 @@ export interface ScheduleReport {
   skipped: number;
 }
 
-interface ScheduleLeaves {
+export interface ScheduleLeaves {
   enabled: boolean;
   coldThresholdDays: number;
   activeWindowDays: number;
   overrides: Record<string, unknown>;
+  /** The code map's refresh as the clock runs it, and which parts of it a per-task override sets over the leaves. */
+  mapRefresh: { enabled: boolean; intervalSeconds: number; overridden: { enabled: boolean; interval: boolean } };
 }
 
 const parse = (value: string | undefined): unknown => {
@@ -89,7 +91,7 @@ const parse = (value: string | undefined): unknown => {
 export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
   const mapEnabled = 'cortex.canopy.refresh.background_enabled';
   const mapPeriod = 'cortex.canopy.refresh.background_period_minutes';
-  const byLeaf = await leafValues(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks', mapEnabled, mapPeriod]);
+  const byLeaf = await settingTexts(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks', mapEnabled, mapPeriod]);
   const days = (leaf: string, fallback: number): number => {
     const v = parse(byLeaf.get(leaf));
     return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
@@ -97,15 +99,17 @@ export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
   const overrides = parse(byLeaf.get('agent.tasks'));
   const tasks = overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides as Record<string, unknown> : {};
   // Unset, the map refresh is off and keeps the interval `TASK_SCHEDULE` declares.
-  const enabled: unknown = byLeaf.has(mapEnabled) ? JSON.parse(byLeaf.get(mapEnabled)!) : false;
-  const period: unknown = byLeaf.has(mapPeriod) ? JSON.parse(byLeaf.get(mapPeriod)!) : null;
-  if (typeof enabled !== 'boolean' || (period !== null && (typeof period !== 'number' || !Number.isSafeInteger(period) || period < 1))) throw new Error('Canopy refresh requires a boolean and a positive whole number of minutes.');
+  const enabled = parse(byLeaf.get(mapEnabled)) === true;
+  const period = parse(byLeaf.get(mapPeriod));
   const mapOverride = tasks[MAP_TASK];
   const mapTask = mapOverride !== null && typeof mapOverride === 'object' && !Array.isArray(mapOverride) ? mapOverride as Record<string, unknown> : {};
   const configured = scheduleOverride(MAP_TASK, tasks);
   const mapSchedule = configured !== null && typeof configured === 'object' && !Array.isArray(configured) ? configured as Record<string, unknown> : {};
-  tasks[MAP_TASK] = { ...mapTask, schedule: { ...(period === null ? {} : { intervalSeconds: period * 60 }), ...mapSchedule, enabled: enabled && mapSchedule.enabled !== false } };
+  tasks[MAP_TASK] = { ...mapTask, schedule: { ...(typeof period === 'number' ? { intervalSeconds: period * 60 } : {}), ...mapSchedule, enabled: enabled && mapSchedule.enabled !== false } };
+  const map = scheduleFor(MAP_TASK, TASK_SCHEDULE[MAP_TASK]!, tasks);
   return {
+    mapRefresh: { enabled: map.enabled !== false, intervalSeconds: map.intervalSeconds,
+      overridden: { enabled: mapSchedule.enabled === false, interval: mapSchedule.intervalSeconds !== undefined } },
     enabled: parse(byLeaf.get('agent.scheduled_tasks_enabled')) === true,
     coldThresholdDays: days('agent.cold_project_threshold_days', COLD_PROJECT_THRESHOLD_DAYS_DEFAULT),
     activeWindowDays: days('agent.scheduled_tasks_active_window_days', ACTIVE_WINDOW_DAYS_DEFAULT),
@@ -169,7 +173,7 @@ export async function readScheduleFacts(env: ServerEnv, tasks: readonly string[]
  * or null when the task should be dispatched. Pure over the facts it is handed
  * (read for this Project alone where none are) and the named conditions it asks.
  */
-export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: ScheduleLeaves, now: number, facts?: ScheduleFacts): Promise<ScheduleSkip | null> {
+export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: Pick<ScheduleLeaves, 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts?: ScheduleFacts): Promise<ScheduleSkip | null> {
   if (schedule.enabled === false) return 'disabled';
   if (lastReceivedAt === null || now - lastReceivedAt > leaves.activeWindowDays * DAY_MS) return 'quiet';
   if (schedule.runWhenCold !== true && now - lastReceivedAt > leaves.coldThresholdDays * DAY_MS) return 'cold';

@@ -25,7 +25,7 @@ export function useCapabilities(projectId: string) {
 /** What the server said when it refused a settings change, in the person's words. */
 export function settingsRefusalText(err: unknown): string {
   if (err instanceof ApiError) {
-    const body = err.body as { error?: unknown; reason?: unknown } | null;
+    const body = err.body as { error?: unknown; reason?: unknown; detail?: unknown } | null;
     if (body?.error === 'conflict') return 'This changed since the page read it. Refresh before saving again.';
     if (body?.error === 'bad_request') return 'The server could not accept that.';
     switch (body?.reason) {
@@ -36,7 +36,7 @@ export function settingsRefusalText(err: unknown): string {
       case 'retired':
         return 'That setting is retired.';
       case 'invalid_value':
-        return 'The server refused that value.';
+        return typeof body.detail === 'string' && body.detail !== '' ? `The server refused that value: ${body.detail.replace(/\.$/, '')}.` : 'The server refused that value.';
       case 'unknown_capability':
         return 'The server does not offer that here.';
       default:
@@ -61,6 +61,11 @@ export function useSettingsActions() {
       gcTime: 0,
       mutationFn: (v: { leaf: string }) => deleteJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`),
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
+    }),
+    setEmbedding: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { provider: string; model?: string; endpoint?: string }) => putJson<{ applied: true }>('/api/embedding', v),
+      onSuccess: () => refresh('settings'),
     }),
     setTaskTier: useMutation({
       gcTime: 0,

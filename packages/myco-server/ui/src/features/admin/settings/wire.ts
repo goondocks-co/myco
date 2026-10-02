@@ -1,14 +1,17 @@
 /**
  * The shapes Settings reads, as the server sends them: the Deployment's
- * leaves, its provider keys and where titling imported sessions stands.
+ * leaves with what each resolves to, the embedding choices, its provider keys
+ * and where titling imported sessions stands.
  *
- * Declared here with no imports, since the dashboard cannot import the
- * server's declarations; `tests/myco-server/settings-wire.test.ts` holds each
- * to the server's own under `typecheck:tests`.
+ * Declared here, with only the shared contract's serializable types imported,
+ * since the dashboard cannot import the server's declarations;
+ * `tests/myco-server/settings-wire.test.ts` holds each to the server's own
+ * under `typecheck:tests`.
  */
+import type { EffectiveSetting, EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 
-/** `GET /api/settings`: one leaf and whatever is stored for it. */
-export interface LeafRow {
+/** `GET /api/settings`: one leaf, what is stored for it, and the effective answer of the policy that acts on it. */
+export type LeafRow = {
   leaf: string;
   configured: boolean;
   value: unknown;
@@ -16,19 +19,19 @@ export interface LeafRow {
   updatedBy: string | null;
   /** Retired editable contract: stored values are read-only metadata. */
   retired: boolean;
-  /** Present for execution profiles and derived metadata: the live value. */
-  effectiveValue?: unknown;
+  /** The effective value, under the name older readers use. */
+  effectiveValue: unknown;
   editableValue?: unknown;
   retiredValue?: Record<string, unknown>;
-  source?: 'configured' | 'default' | 'unset' | 'invalid' | 'derived';
   error?: 'invalid_value';
   remedy?: string;
   repair?: 'reset-leaf';
-}
+} & EffectiveSetting;
 
 export interface SettingsAnswer {
   leaves: LeafRow[];
   taskTiers: TaskTierRow[];
+  embedding: EmbeddingChoices;
 }
 
 /** One worker outcome's effective reasoning tier. */

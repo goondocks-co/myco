@@ -116,7 +116,7 @@ it('never runs on a request wake, so ordinary traffic starts no export', async (
 });
 
 it('reads the interval as hours, and treats anything unusable as off', async () => {
-  for (const [stored, expected] of [[6, 6], [1, 1], [720, 720], [1000, 720], [0, null], [-4, null], ['soon', null], [2.7, 2]] as Array<[number | string, number | null]>) {
+  for (const [stored, expected] of [[6, 6], [1, 1], [720, 720], [1000, null], [0, null], [-4, null], ['soon', null], [2.7, null]] as Array<[number | string, number | null]>) {
     const d = await deployment({ intervalHours: stored });
     try {
       expect(await scheduledIntervalHours(d.env as never)).toBe(expected as never);

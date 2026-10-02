@@ -13,7 +13,8 @@ import { PROFILE_HARNESSES, REASONING_TIERS } from '@goondocks/myco-shared/execu
  * How a setting is edited. `agent` is one of the agents a machine can run
  * Myco's work with; `agents` is an ordered list of them.
  */
-export type LeafKind = 'toggle' | 'number' | 'text' | 'textarea' | 'select' | 'json' | 'patterns' | 'agent' | 'agents';
+export type LeafKind = 'toggle' | 'number' | 'text' | 'textarea' | 'select' | 'json' | 'patterns' | 'agent' | 'agents'
+  | 'embedding-provider' | 'embedding-model' | 'embedding-endpoint';
 
 export interface LeafField {
   leaf: string;
@@ -148,11 +149,11 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     id: 'embedding',
     section: 'models',
     label: 'Search embeddings',
-    note: 'What makes search find things by meaning. On Cloudflare this is Workers AI with bge-m3; the provider, model and endpoint apply to a self-hosted server. Keeping embeddings while idle applies to both.',
+    note: 'What makes search find things by meaning: the provider and model that turn text into vectors. A new model embeds every source again; one whose vectors are a different size from the ones search holds needs a re-index first.',
     leaves: [
-      { leaf: 'embedding.provider', label: 'Embedding provider', kind: 'select', options: ['ollama', 'openai-compatible', 'openrouter', 'openai'] },
-      { leaf: 'embedding.model', label: 'Embedding model', kind: 'text' },
-      { leaf: 'embedding.base_url', label: 'Embedding endpoint', kind: 'text', note: 'Where embeddings are computed.' },
+      { leaf: 'embedding.provider', label: 'Embedding provider', kind: 'embedding-provider' },
+      { leaf: 'embedding.model', label: 'Embedding model', kind: 'embedding-model' },
+      { leaf: 'embedding.base_url', label: 'Embedding endpoint', kind: 'embedding-endpoint', note: 'Where a server on your network answers embedding requests.' },
       { leaf: 'embedding.prevent_deep_sleep', label: 'Keep embedding while idle', kind: 'toggle' },
     ],
   },

@@ -14,6 +14,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
 import { agentListRefusal, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
+import { defaultValueOf } from '../../packages/myco-server/ui/src/features/admin/settings/defaults';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server/src/core/settings';
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
@@ -39,12 +40,35 @@ const MEMBERS = { members: [
 const NOW = Date.now();
 const SECRET = 'sk-full-secret-value-1234567890';
 
+/** What a hosted server stores nothing for the embedding leaves resolves them to. */
+const HOSTED_EMBEDDING: Readonly<Record<string, unknown>> = { 'embedding.provider': 'workers-ai', 'embedding.model': '@cf/baai/bge-m3' };
+/** What the server applies to a leaf nobody wrote. */
+const effectiveOf = (leaf: string): unknown => HOSTED_EMBEDDING[leaf] ?? defaultValueOf(leaf) ?? null;
 /** One leaf as the server answers it, marked retired as the server marks it (`RETIRED_LEAVES`). */
-const rowFor = (leaf: string) => ({ leaf, configured: false, value: null as unknown, updatedAt: null as number | null, updatedBy: null as string | null, retired: RETIRED_LEAVES.has(leaf) });
+const rowFor = (leaf: string) => ({
+  leaf, configured: false, value: null as unknown, updatedAt: null as number | null, updatedBy: null as string | null, retired: RETIRED_LEAVES.has(leaf),
+  stored: null, effective: effectiveOf(leaf), effectiveValue: effectiveOf(leaf), source: effectiveOf(leaf) === null ? 'unset' : 'default', state: 'active', reason: null,
+  appliesTo: leaf === 'embedding.base_url' ? ['bun'] : ['cloudflare', 'bun'], revision: '0',
+});
+/** The embedding picker's choices on a hosted server whose index holds bge-m3 vectors. */
+const HOSTED_CHOICES = {
+  target: 'cloudflare',
+  providers: [
+    { id: 'workers-ai', label: 'Cloudflare Workers AI', defaultModel: '@cf/baai/bge-m3', customModels: false, credential: null, endpoint: { editable: false, url: null },
+      models: [{ id: '@cf/baai/bge-m3', dimensions: 1024, refusal: null }, { id: '@cf/baai/bge-base-en-v1.5', dimensions: 768, refusal: '@cf/baai/bge-base-en-v1.5 produces 768-dimension vectors and search holds 1024-dimension bge-m3 vectors; switching needs a re-index of every source' }] },
+    { id: 'openrouter', label: 'OpenRouter', defaultModel: 'openai/text-embedding-3-small', customModels: false, credential: 'openrouter', endpoint: { editable: false, url: 'https://openrouter.ai/api/v1' },
+      models: [{ id: 'openai/text-embedding-3-small', dimensions: 1536, refusal: 'needs a re-index' }, { id: 'baai/bge-m3', dimensions: 1024, refusal: null }] },
+  ],
+  selection: { provider: 'workers-ai', model: '@cf/baai/bge-m3', endpoint: null, dimensions: 1024 },
+  reason: null,
+  held: [{ model: '@cf/baai/bge-m3', dimensions: 1024 }],
+  capacity: 1536,
+};
 /** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
 const RETIRED_FIELDS = [...RETIRED_LEAVES].map((leaf) => ({ leaf }));
 const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
+  embedding: HOSTED_CHOICES,
   taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })),
   leaves: DEPLOYMENT_LEAVES.map((leaf) => {
     const f = { leaf };
@@ -166,7 +190,7 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json({
         ...leaves({ [leaf]: { value: 'impossible' } }),
         leaves: leaves({ [leaf]: { value: 'impossible' } }).leaves.map((row) => row.leaf === leaf
-          ? { ...row, source: 'invalid', error: 'invalid_value', remedy: 'Stored value is invalid. Correct it or reset this setting.' } : row),
+          ? { ...row, source: 'invalid', state: 'invalid', error: 'invalid_value', remedy: 'Stored value is invalid. Correct it or reset this setting.' } : row),
       }),
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
@@ -316,8 +340,8 @@ describe('Settings, in five sections', () => {
     for (const id of ['work', 'models', 'capture', 'backups'] as const) expect(groupsOf(id).length).toBeGreaterThan(0);
   });
 
-  it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
-    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/embedding.model': () => Response.json({ applied: true }) }));
+  it('saves a toggle on change and a typed leaf on blur, each to its own leaf', async () => {
+    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.scheduled_tasks_active_window_days': () => Response.json({ applied: true }) }));
     mount('/settings');
     // The server serves spores unless told not to, so with nothing stored the switch reads on, and a flip turns it off.
     const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
@@ -325,30 +349,48 @@ describe('Settings, in five sections', () => {
     fireEvent.click(spores);
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.spores.inject_on_prompt_submit', body: { value: false } });
-    await section('Models and keys');
-    const model = await screen.findByLabelText('Embedding model');
-    fireEvent.change(model, { target: { value: 'claude-opus' } });
-    fireEvent.blur(model);
+    const window = await screen.findByLabelText('Treat a project as active for');
+    fireEvent.change(window, { target: { value: '30' } });
+    fireEvent.blur(window);
     await waitFor(() => expect(sent).toHaveLength(2));
-    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/embedding.model', body: { value: 'claude-opus' } });
+    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.scheduled_tasks_active_window_days', body: { value: 30 } });
   });
 
-  it('applies an endpoint change directly on the member session, with no dialog and no extra header', async () => {
-    const { sent } = server(base({ '/api/settings/embedding.base_url': () => Response.json({ applied: true }) }));
+  it('names the embedding search uses on a hosted server that stores nothing, and changes provider and model in one write', async () => {
+    const { sent } = server(base({ '/api/embedding': () => Response.json({ applied: true }) }));
     mount('/settings/models');
-    const url = await screen.findByLabelText('Embedding endpoint');
-    fireEvent.change(url, { target: { value: 'https://llm.example' } });
-    fireEvent.blur(url);
+    await screen.findByLabelText('Embedding provider');
+    await waitFor(() => expect(statusOf('embedding.provider')).toBe('In use: Cloudflare Workers AI · bge-m3 (1024 dimensions)'));
+    expect(screen.queryByRole('textbox', { name: 'Embedding endpoint' })).toBeNull();
+    await pick('Embedding provider', 'OpenRouter');
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/embedding.base_url', body: { value: 'https://llm.example' } });
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/embedding', body: { provider: 'openrouter', model: 'baai/bge-m3' } });
     expect(Object.keys(sent[0]!.headers).some((h) => h.startsWith('x-myco-'))).toBe(false);
-    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('says why a model of another size needs a re-index, and sends nothing', async () => {
+    const { sent } = server(base({ '/api/embedding': () => Response.json({ applied: true }) }));
+    mount('/settings/models');
+    await pick('Embedding model', '@cf/baai/bge-base-en-v1.5 · 768 dimensions · needs a re-index');
+    await waitFor(() => expect(statusOf('embedding.model')).toContain('switching needs a re-index'));
+    expect(sent).toEqual([]);
+  });
+
+  it('shows a stored provider this server does not offer as not in use, with its remedy and a reset', async () => {
+    server(base({
+      '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === 'embedding.provider'
+        ? { ...row, configured: true, value: 'ollama', stored: 'ollama', state: 'not-applicable', reason: 'Ollama is not offered on Cloudflare; this server offers Cloudflare Workers AI, OpenRouter. Reset the provider to use Cloudflare Workers AI.' }
+        : row) }),
+    }));
+    mount('/settings/models');
+    await waitFor(() => expect(statusOf('embedding.provider')).toContain('Reset the provider'));
+    expect(screen.getByRole('button', { name: 'Reset Embedding provider' })).toBeTruthy();
   });
 
   it('says the refusal in the person\'s words: a foreign leaf is named as not held, any other refusal carries its status, and a bad number never leaves', async () => {
     const { sent } = server(base({
       '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: false, reason: 'not_deployment_tier', leaf: 'cortex.spores.inject_on_prompt_submit' }, { status: 400 }),
-      '/api/settings/embedding.model': () => Response.json({ error: 'nope' }, { status: 503 }),
+      '/api/settings/agent.scheduled_tasks_active_window_days': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
     mount('/settings');
     fireEvent.click(await screen.findByRole('switch', { name: 'Spores on every prompt' }));
@@ -357,12 +399,11 @@ describe('Settings, in five sections', () => {
     fireEvent.change(limit, { target: { value: '11' } });
     fireEvent.blur(limit);
     await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('Enter a number from 0 to 10.'));
-    await section('Models and keys');
-    const model = await screen.findByLabelText('Embedding model');
-    fireEvent.change(model, { target: { value: 'nomic' } });
-    fireEvent.blur(model);
-    await waitFor(() => expect(statusOf('embedding.model')).toBe('The server refused (503).'));
-    expect(sent.map((s) => s.path)).toEqual(['/api/settings/cortex.spores.inject_on_prompt_submit', '/api/settings/embedding.model']);
+    const window = await screen.findByLabelText('Treat a project as active for');
+    fireEvent.change(window, { target: { value: '20' } });
+    fireEvent.blur(window);
+    await waitFor(() => expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('The server refused (503).'));
+    expect(sent.map((s) => s.path)).toEqual(['/api/settings/cortex.spores.inject_on_prompt_submit', '/api/settings/agent.scheduled_tasks_active_window_days']);
   });
 
 
@@ -601,7 +642,7 @@ describe('Settings, in five sections', () => {
     const limit = await screen.findByLabelText('Items per prompt');
     fireEvent.change(limit, { target: { value: '3' } });
     fireEvent.blur(limit);
-    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value.'));
+    await waitFor(() => expect(statusOf('cortex.spores.max_per_prompt')).toBe('The server refused that value: expected a whole number.'));
   });
 
   it('words where a value stands, naming a person only by a name', () => {

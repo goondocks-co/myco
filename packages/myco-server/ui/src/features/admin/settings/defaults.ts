@@ -48,9 +48,10 @@ export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
   'cortex.canopy.exclude.patterns': { value: [] },
   'cortex.canopy.exclude.default_patterns': { value: CANOPY_DEFAULT_EXCLUDE_PATTERNS },
   'agent.tasks': { value: {} },
-  // core/embedding/configured-provider.ts; core/embedding/jobs.ts keeps embedding unless the leaf is false.
-  'embedding.provider': { unset: 'None' },
-  'embedding.model': { unset: 'None' },
+  // core/embedding/policy.ts resolves these per server; the picker shows the server's answer, these words only stand in before it arrives.
+  // core/embedding/jobs.ts keeps embedding unless the leaf is false.
+  'embedding.provider': { unset: 'Workers AI on Cloudflare; none when self-hosted' },
+  'embedding.model': { unset: 'The provider’s default' },
   'embedding.base_url': { unset: 'The provider’s own' },
   'embedding.prevent_deep_sleep': { value: true },
   // core/import-policy.ts importPolicy.

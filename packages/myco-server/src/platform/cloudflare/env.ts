@@ -23,6 +23,13 @@ import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
 import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';
 import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from './embedding-runtime.js';
 import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
+import { configuredEmbeddingProvider, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
+
+/** This Worker's embedding platform: the Cloudflare target, and Workers AI where the binding is declared. */
+export function embeddingPlatform(bindings: Pick<CloudflareBindings, 'AI'>): EmbeddingPlatform {
+  const ai = bindings.AI;
+  return { target: 'cloudflare', ...(ai === undefined ? {} : { bindingProvider: (selection) => cloudflareEmbeddingProvider(ai, selection) }) };
+}
 
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
 export interface CloudflareBindings extends OwnerBindings {
@@ -186,9 +193,17 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     throw new Error('CLOCK_MODE=manual is accepted only beside HARNESS_LAUNCH_MODE=record: a Deployment that serves keeps its own clock');
   }
   const embeddingRuntime = deferred !== undefined && bindings.MYCO_ORIGIN !== undefined && bindings.MYCO_ORIGIN !== '';
+  // A Secrets Store binding rather than a plain secret: its only retrieval is
+  // `await …get()`, which is why the core takes a handle and not a string.
+  const wrappingKey = wrappingKeyFromText(
+    async () => bindings.SECRET_WRAP_KEY === undefined ? undefined : bindings.SECRET_WRAP_KEY.get(),
+    'SECRET_WRAP_KEY',
+  );
+  const outbound: ServerEnv['outbound'] = (input, init) => fetch(input, init);
   return {
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
-    embeddingProvider: async () => bindings.AI === undefined ? null : cloudflareEmbeddingProvider(bindings.AI),
+    embeddingProvider: () => configuredEmbeddingProvider(bindings.MYCO_DB, wrappingKey, outbound, embeddingPlatform(bindings)),
+    embeddingPlatform: embeddingPlatform(bindings),
     ...(recoveryPort(bindings) === undefined ? {} : { recovery: recoveryPort(bindings) }),
     ...(bindings.MYCO_DB === undefined ? {} : { storeMaintenance: d1StoreMaintenance(bindings.MYCO_DB) }),
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) }
@@ -204,19 +219,14 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
       },
     }),
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
-    outbound: (input, init) => fetch(input, init),
+    outbound,
     platform: cloudflarePlatform(bindings, embeddingRuntime),
     harnessCredentialSource: 'deployment',
     db: bindings.MYCO_DB,
     blobs: bindings.BUCKET,
     sourceLimit: bindings.SOURCE_LIMIT,
     tokenLimit: bindings.TOKEN_LIMIT,
-    // A Secrets Store binding rather than a plain secret: its only retrieval is
-    // `await …get()`, which is why the core takes a handle and not a string.
-    wrappingKey: wrappingKeyFromText(
-      async () => bindings.SECRET_WRAP_KEY === undefined ? undefined : bindings.SECRET_WRAP_KEY.get(),
-      'SECRET_WRAP_KEY',
-    ),
+    wrappingKey,
     secrets: {
       GITHUB_CLIENT_ID: bindings.GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET: bindings.GITHUB_CLIENT_SECRET,

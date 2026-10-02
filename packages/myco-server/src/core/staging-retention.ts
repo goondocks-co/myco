@@ -13,7 +13,7 @@
  * nothing.
  */
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 import { openRecoveryHold } from './object-release.js';
 import { within } from './recovery-inventory.js';
 import { classify, emit } from '../telemetry.js';
@@ -48,12 +48,8 @@ export const PRUNE_FILE_BUDGET = 200;
 
 /** How many complete stagings this Deployment keeps now, with the default for a leaf never written. */
 export async function keptStagings(db: RelationalStore): Promise<number> {
-  const raw = (await leafValues(db, [KEEP_STAGINGS_SETTING])).get(KEEP_STAGINGS_SETTING);
-  if (raw === undefined) return KEEP_STAGINGS_DEFAULT;
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return KEEP_STAGINGS_DEFAULT; }
-  if (typeof parsed !== 'number' || !Number.isFinite(parsed)) return KEEP_STAGINGS_DEFAULT;
-  return Math.max(KEEP_STAGINGS_MIN, Math.floor(parsed));
+  const raw = (await settingTexts(db, [KEEP_STAGINGS_SETTING])).get(KEEP_STAGINGS_SETTING);
+  return raw === undefined ? KEEP_STAGINGS_DEFAULT : JSON.parse(raw) as number;
 }
 
 /** How long a pass waits for the producer's own reading before this wake leaves retention alone. */

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
-import { cloudflareEmbeddingProvider } from '../../packages/myco-server/src/platform/cloudflare/embedding.js';
+import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '../../packages/myco-server/src/platform/cloudflare/embedding.js';
 import { dispatchEmbeddingWork, embeddingKeepsAwake } from '../../packages/myco-server/src/core/embedding/jobs.js';
 import { settingsWriter } from '../../packages/myco-server/src/core/settings.js';
 import type { ServerEnv } from '../../packages/myco-server/src/core/adapters.js';
@@ -14,7 +14,7 @@ test('embedding backlog dispatches once without LLM credentials and respects the
     f.sqlite.query("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,?)").run(now);
     f.sqlite.query("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','spore','myco-agent','project architecture','decision',?)").run(now);
     const env: ServerEnv = { ...f.serverEnv, origin: 'https://myco.example', vectors: cloudflareVectorStore(indexFixture()),
-      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }),
+      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) }),
       harnessLaunch: async (spec) => { launched.push(spec.runId); },
     };
     expect(await embeddingKeepsAwake(env, now)).toBe(true);
@@ -39,7 +39,7 @@ test('keeps one embedding run in flight across the Deployment: the next Project 
       f.sqlite.query("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES(?,'spore','myco-agent','project architecture','decision',?)").run(project, now);
     }
     const env: ServerEnv = { ...f.serverEnv, origin: 'https://myco.example', vectors: cloudflareVectorStore(indexFixture()),
-      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }),
+      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) }),
       harnessLaunch: async (spec) => { launched.push(spec.runId); },
     };
     const runs = () => f.sqlite.query("SELECT project_id FROM agent_runs WHERE task = 'embedding-reconcile' ORDER BY started_at, project_id").all();

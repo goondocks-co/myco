@@ -23,7 +23,7 @@ import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-b
 import { handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleMemberSettings, handleResetSetting, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
+  handleMemberSettings, handleResetSetting, handleSetEmbedding, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
@@ -269,6 +269,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._-]{1,96})$/, auth: 'session', authority: 'admin', handler: handleSetSetting },
   { method: 'PATCH', path: '/api/settings/agent.tasks', auth: 'session', authority: 'admin', handler: handleSetTaskTier },
+  { method: 'PUT', path: '/api/embedding', auth: 'session', authority: 'admin', handler: handleSetEmbedding },
   { method: 'DELETE', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._-]{1,96})$/, auth: 'session', authority: 'admin', handler: handleResetSetting },
   { method: 'GET', path: '/api/secrets', auth: 'session', authority: 'admin', handler: handleSecrets },
   { method: 'PUT', path: '/api/secrets/{name}', pattern: /^\/api\/secrets\/(?<name>[a-z0-9_-]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetSecret },

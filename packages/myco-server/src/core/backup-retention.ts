@@ -6,7 +6,7 @@
  * changed follows the policy in force.
  */
 import type { RelationalStore } from './adapters.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 
 export const KEEP_DAILY_DEFAULT = 14;
 export const KEEP_WEEKLY_DEFAULT = 8;
@@ -26,7 +26,7 @@ const leafNumber = (raw: string | undefined, fallback: number): number => {
 
 /** The retention policy the settings leaves hold now, with the defaults for a leaf never written. */
 export async function backupRetentionPolicy(db: RelationalStore): Promise<BackupRetentionPolicy> {
-  const leaves = await leafValues(db, ['backup.retention.keep_daily', 'backup.retention.keep_weekly']);
+  const leaves = await settingTexts(db, ['backup.retention.keep_daily', 'backup.retention.keep_weekly']);
   return {
     keepDaily: leafNumber(leaves.get('backup.retention.keep_daily'), KEEP_DAILY_DEFAULT),
     keepWeekly: leafNumber(leaves.get('backup.retention.keep_weekly'), KEEP_WEEKLY_DEFAULT),

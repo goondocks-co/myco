@@ -32,7 +32,7 @@
  * Relevance uses Mutual Proximity over the current semantic candidates.
  */
 import type { RelationalStore } from './adapters.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 import { listSporesByIds, type SporeRow } from './spores.js';
 import { getPlan } from '../read/plans.js';
 import type { ReadScope } from '../read/scope.js';
@@ -147,7 +147,7 @@ const parse = (value: string | undefined): unknown => {
 
 /** The Deployment's stored injection leaves, defaulted. */
 export async function readInjectionLeaves(db: RelationalStore): Promise<InjectionLeaves> {
-  const byLeaf = await leafValues(db, INJECTION_LEAVES);
+  const byLeaf = await settingTexts(db, INJECTION_LEAVES);
   return injectionLeaves(Object.fromEntries(INJECTION_LEAVES.map((leaf) => [leaf, parse(byLeaf.get(leaf))])));
 }
 

@@ -13,7 +13,9 @@
  * `ServerEnv` rather than the core learning one platform's binding vocabulary.
  */
 
+import type { DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import type { EmbeddingProvider } from './embedding/provider.js';
+import type { EmbeddingPlatform } from './embedding/configured-provider.js';
 import type { VectorStore } from './embedding/vectors.js';
 
 // ---------------------------------------------------------------------------
@@ -195,8 +197,8 @@ export interface CapabilityStatus {
 }
 
 export interface PlatformDescriptor {
-  /** Short platform name, as the deployment target calls itself. */
-  name: string;
+  /** The deployment target this platform is. */
+  name: DeploymentTarget;
   /**
    * What this deployment can do, and which of its own names an operator would
    * fix. One entry per capability, present or not, so a surface can state the
@@ -244,6 +246,8 @@ export interface JobBudget {
 export interface ServerEnv {
   vectors?: VectorStore;
   embeddingProvider?: () => Promise<EmbeddingProvider | null>;
+  /** What the embedding policy resolves against: absent, the platform's target with no embedding binding of its own. */
+  embeddingPlatform?: EmbeddingPlatform;
   platform: PlatformDescriptor;
   /** Built-in source for harness credentials, supplied by the deployment target. */
   harnessCredentialSource: 'deployment' | 'worker-login';

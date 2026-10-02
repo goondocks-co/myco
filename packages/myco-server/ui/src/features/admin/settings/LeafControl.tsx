@@ -11,6 +11,7 @@ import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
 import { LEAF_DEFAULTS } from './defaults';
 import { isRetired } from './retired';
+import { EmbeddingRow } from './EmbeddingFields';
 import type { LeafRow } from './wire';
 
 /** The agents a machine can run Myco's work with: the harnesses the server opens a credential for, by the same table. */
@@ -82,6 +83,12 @@ const STACKED: ReadonlySet<LeafField['kind']> = new Set(['text', 'textarea', 'js
  * read-only `select` or `textarea` today.
  */
 export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
+  if (field.kind === 'embedding-provider' || field.kind === 'embedding-model' || field.kind === 'embedding-endpoint') return <EmbeddingRow field={field} row={row} />;
+  return <ValueControl field={field} row={row} />;
+}
+
+/** A setting whose value is written on its own. */
+function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
   const admin = useIsAdmin();
   const retired = isRetired(field, row);
@@ -235,13 +242,13 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
       status={error ?? (retired ? 'Nothing on this server reads it any more.'
-        : row?.source === 'invalid' ? row.remedy
+        : row?.state === 'invalid' || row?.state === 'not-applicable' ? row.remedy ?? row.reason
         // A setting Myco keeps shows its value in full; a status would only repeat it.
         : field.readOnly === true ? undefined
         // An empty field or select already shows the default in words, so the status names it only for a switch.
         : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), field.resettable && row?.source === 'default'
           ? valueWords(field, row.effectiveValue) : field.kind === 'toggle' || field.resettable ? defaultWords(field) : null))}
-      refused={error !== null || row?.source === 'invalid'}
+      refused={error !== null || row?.state === 'invalid' || row?.state === 'not-applicable'}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}
       control={field.resettable || row?.repair === 'reset-leaf' ? <div className="flex w-full items-center gap-s2">{control}{row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}</div> : control}

@@ -145,8 +145,8 @@ it('asks for the default policy where the leaf holds no value, rather than leavi
   } finally { d.close(); }
 });
 
-it('reads the leaf as a count, clamped to the one staging the floor keeps', async () => {
-  for (const [stored, expected] of [[1, 1], [5, 5], [0, 1], [-2, 1], ['two', 2], [3.7, 3]] as Array<[number | string, number]>) {
+it('reads the leaf as a count, and a count its rule refuses as the default', async () => {
+  for (const [stored, expected] of [[1, 1], [5, 5], [0, 2], [-2, 2], ['two', 2], [3.7, 2]] as Array<[number | string, number]>) {
     const d = await deployment({ keep: stored });
     try {
       expect(await keptStagings((d.env as unknown as { db: Parameters<typeof keptStagings>[0] }).db)).toBe(expected);

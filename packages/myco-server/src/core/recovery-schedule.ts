@@ -10,7 +10,7 @@
  * cadence.
  */
 import type { ServerEnv } from './adapters.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 import { deferringOperatorHold } from './object-release.js';
 import type { ExportWait, ProducerRefusal, RecoveryProducerStatus } from './recovery-producer.js';
 
@@ -20,9 +20,6 @@ export const INTERVAL_SETTING = 'backup.auto_interval_hours';
 export { SCHEDULE_JOB } from './jobs.js';
 
 const HOUR_MS = 60 * 60 * 1000;
-/** The hours the dashboard's own control offers; a stored value outside them is clamped rather than obeyed. */
-const INTERVAL_MIN_HOURS = 1;
-const INTERVAL_MAX_HOURS = 720;
 
 /** The stages an attempt rests in: it advances no further, whatever it reached. */
 const RESTING = ['complete', 'failed'] as const;
@@ -86,12 +83,8 @@ export interface RecoverySchedule {
  * unreadable value schedules nothing at all: no Deployment exports merely by existing.
  */
 export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promise<number | null> {
-  const held = (await leafValues(env.db, [INTERVAL_SETTING])).get(INTERVAL_SETTING);
-  if (held === undefined) return null;
-  let parsed: unknown;
-  try { parsed = JSON.parse(held); } catch { return null; }
-  if (typeof parsed !== 'number' || !Number.isFinite(parsed) || parsed < INTERVAL_MIN_HOURS) return null;
-  return Math.min(INTERVAL_MAX_HOURS, Math.floor(parsed));
+  const held = (await settingTexts(env.db, [INTERVAL_SETTING])).get(INTERVAL_SETTING);
+  return held === undefined ? null : JSON.parse(held) as number;
 }
 
 /** Whether the last attempt is still going: it has settled in none of the stages an attempt rests in. */

@@ -23,6 +23,7 @@
       "@goondocks/myco-shared/worker-usage": ["./packages/myco-shared/src/worker-usage.ts"],
       "@goondocks/myco-shared/execution-profile": ["./packages/myco-shared/src/execution-profile.ts"],
       "@goondocks/myco-shared/call-words": ["./packages/myco-shared/src/call-words.ts"],
+      "@goondocks/myco-shared/settings-contract": ["./packages/myco-shared/src/settings-contract.ts"],
       "@goondocks/myco-shared/redact-secrets": ["./packages/myco-shared/src/redact-secrets.ts"],
       "@goondocks/myco-shared/canopy": ["./packages/myco-shared/src/canopy.ts"],
       "@goondocks/myco-shared/skills": ["./packages/myco-shared/src/skills.generated.ts"],
