@@ -10,6 +10,7 @@
  *   named, and stops the moment an answer no longer names them; the session's transcripts keep shipping.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +18,7 @@ import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { readProjectContext } from '@myco/member/context-cache.js';
 import { projectLine } from '@goondocks/myco-shared/recall';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { readSessionState } from '@myco/member/session-state.js';
@@ -113,6 +115,22 @@ describe('a prompt', () => {
     const served = servingPrompts((body) => `Recalled for: ${body.text}`);
     await runHook('stop', { session_id: 'sess-q', last_assistant_message: 'ok', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
     expect(served.asked.map((a) => a.text)).toEqual(['while offline']);
+  });
+});
+
+describe('a session start\'s repository remote', () => {
+  it('is asked of git by the helper, which sends it with the start: the Deployment binds it to the Project', async () => {
+    const repo = removeWhenTestsEnd(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remote-'))));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'a');
+    git('remote', 'add', 'origin', 'https://github.com/acme/remote-binding.git');
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt, root: repo });
+    // The hook names where to ask, and reads no remote itself.
+    await runHook('session-start', { session_id: 'sess-remote', transcript_path: transcript('sess-remote'), cwd: repo }, { fetch: rig.fetch });
+    expect(readSessionState(spool().dir, 'sess-remote').contextAsks).toEqual([expect.objectContaining({ kind: 'start', remoteFrom: repo })]);
+    await runHook('user-prompt-submit', { session_id: 'sess-remote', prompt: 'p', transcript_path: transcript('sess-remote'), cwd: repo }, { helpers: 'run', fetch: rig.fetch });
+    expect(rig.env.sqlite.query(`SELECT remote FROM project_remotes`).all()).toEqual([{ remote: 'github.com/acme/remote-binding' }]);
   });
 });
 

@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev worktree-sweep daemon-dev
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-wrapper dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev worktree-sweep daemon-dev
 
 # `make build` runs the fast unit-test profile + build. Integration / smoke
 # tests are deliberately excluded from the inner dev loop — they pair real
@@ -99,8 +99,15 @@ dev-install:
 	@perl -e 'alarm 30; exec @ARGV or die' $(HOME)/.myco-dev/bin/myco.new --version >/dev/null || { rm -f $(HOME)/.myco-dev/bin/myco.new; echo "the new build does not run here within 30s; ~/.myco-dev/bin/myco is unchanged" >&2; exit 1; }
 	@mv -f $(HOME)/.myco-dev/bin/myco.new $(HOME)/.myco-dev/bin/myco
 	@rm -f $(HOME)/.local/bin/myco-dev
-	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexec "$$HOME/.myco-dev/bin/myco" "$$@"\n' > $(HOME)/.local/bin/myco-dev
-	@chmod +x $(HOME)/.local/bin/myco-dev
+	@$(MAKE) -s dev-wrapper OUT="$(HOME)/.local/bin/myco-dev" WRAPPED="$(HOME)/.myco-dev/bin/myco"
+
+# The dev wrapper a runtime pin names: run WRAPPED under the dev home, ~/.myco-dev, unless MYCO_HOME is set. An
+# explicitly set MYCO_HOME wins, as it does at every other layer (src/paths/home.ts, myco-run.cjs): a test or a
+# measurement that isolates its home in a pinned repository stays in that home. WRAPPED is the binary's absolute
+# path. tests/meta/dev-wrapper.test.ts runs it.
+dev-wrapper:
+	@printf '#!/bin/sh\nexport MYCO_HOME="$${MYCO_HOME:-$$HOME/.myco-dev}"\nexec "%s" "$$@"\n' "$(WRAPPED)" > "$(OUT)"
+	@chmod +x "$(OUT)"
 
 # Deploy + restart, but only when this machine is already set up for dogfood.
 # A machine that has never run `dev-link` has nothing to deploy into, so this
@@ -296,8 +303,7 @@ dev-link-worktree: dev-build
 	@# ~/.local/bin/myco-dev symlink is untouched; the wrapper is worktree-local
 	@# and gitignored. Routing + shared-vault caveat: see the `dogfood-worktree` skill.
 	@rm -f $(PWD)/.myco/runtime-exec
-	@printf '#!/bin/sh\nexport MYCO_HOME="$$HOME/.myco-dev"\nexec "%s/packages/myco-%s/bin/myco" "$$@"\n' "$(PWD)" "$(HOST_TARGET)" > $(PWD)/.myco/runtime-exec
-	@chmod +x $(PWD)/.myco/runtime-exec
+	@$(MAKE) -s dev-wrapper OUT="$(PWD)/.myco/runtime-exec" WRAPPED="$(PWD)/packages/myco-$(HOST_TARGET)/bin/myco"
 	@printf '%s/.myco/runtime-exec\n' "$(PWD)" > $(PWD)/.myco/runtime.command
 	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
 	@chmod 0644 $(PWD)/.myco/runtime.home
