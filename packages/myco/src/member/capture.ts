@@ -11,6 +11,7 @@
 import { machinePlanDirs } from './machine-settings.js';
 import fs from 'node:fs';
 import { readHookInput } from '../hooks/input.js';
+import { NO_AGENT } from '../hooks/normalize.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { resolveHookBudget, type HookBudget } from './budget.js';
@@ -160,6 +161,11 @@ export async function runMemberHook(
   let response: HookResponse = {};
   try {
     const input = await readHookInput();
+    // A hook command names its harness (`--symbiont`); one that names none, or one no manifest knows, is not guessed at.
+    if (input.agent === NO_AGENT) {
+      process.stderr.write('[myco] member: hook command must declare --symbiont <harness> — no capture\n');
+      return;
+    }
     symbiont = input.agent;
     const sessionId = input.sessionId;
     if (!sessionId) return;

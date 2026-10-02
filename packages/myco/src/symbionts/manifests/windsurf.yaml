@@ -4,6 +4,7 @@ binary: windsurf
 configDir: .windsurf
 detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
+projectDirEnvVar: WINDSURF_PROJECT_DIR
 hookFields:
   # Windsurf hook payloads wrap event-specific data in a `tool_info` bag.
   # The session identity is top-level (`trajectory_id`), but prompt text,

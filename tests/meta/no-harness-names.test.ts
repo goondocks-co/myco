@@ -18,7 +18,8 @@
  * In scope: the 2.0 member closure (what the hooks, the member seam, the worker and the member verbs reach), and the
  * shared and Deployment packages whole. Allowed to name harnesses: the registries that exist to be per-harness.
  *
- * KNOWN is a ratchet: today's offenders, by file and count. It may only shrink, and #1561 PR 7 empties it.
+ * KNOWN is a ratchet: today's offenders, by file and count. It may only shrink: what is left is the worker's harness
+ * facts, which the manifests' `runner:` block takes (#1561), and then it is empty.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
@@ -45,25 +46,11 @@ const REGISTRIES: readonly RegExp[] = [
   /\.generated\.ts$/,
 ];
 
-/** Today's offenders: file → how many places name a harness. Only shrinks; #1561 PR 7 folds each into manifest data. */
+/** Today's offenders: file → how many places name a harness. Only shrinks; the `runner:` block (#1561) folds what is left. */
 const KNOWN: Readonly<Record<string, number>> = {
   'packages/myco-shared/src/harness-providers.ts': 7,
   // The worker's credential slot named for a harness (`codex`): the manifest's `runner:` block.
   'packages/myco-shared/src/secret-slots.ts': 2,
-  // The harness a capture rule applies to when none is named: a manifest's default flag.
-  'packages/myco-shared/src/capture-rules.ts': 1,
-  // Each harness's project-directory variable (`projectDirEnvVar`), and Antigravity's workspace read from stdin
-  // (`hookInput.workspaceFromStdin`).
-  'packages/myco/src/cli/launch-preamble.ts': 4,
-  // Cursor's session id read from its transcript path (`hookFields.sessionIdFromTranscriptPath`), and the harness a
-  // hook assumes when none is named (`DEFAULT_AGENT_NAME`).
-  'packages/myco/src/hooks/normalize.ts': 2,
-  // Copilot's subagent answer shape: `registration.hookResponse.shapes`.
-  'packages/myco/src/hooks/response.ts': 1,
-  // Antigravity's prompts read from its transcript by the helper: `capture.promptsFromTranscript`.
-  'packages/myco/src/member/transcript-prompts.ts': 1,
-  // Claude Code's post-compaction start: `hookEvents.SessionStart.compactionWhen`.
-  'packages/myco/src/member/compaction.ts': 1,
 };
 
 const NAMES = new Set(BUNDLED_MANIFESTS.map((m) => m.name));

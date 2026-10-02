@@ -168,7 +168,8 @@ function serializeSubagentStartEnvelope(
   response: HookResponse,
 ): string {
   if (!response.additionalContext) return '';
-  if (symbiont === 'copilot') {
+  // The harness's manifest says where it reads a subagent's context (`registration.hookResponse.shapes`).
+  if (symbiont !== undefined && HOOK_CONFIG[symbiont]?.hookResponse?.shapes?.SubagentStart === 'flat') {
     return JSON.stringify({ additionalContext: response.additionalContext });
   }
   return JSON.stringify({

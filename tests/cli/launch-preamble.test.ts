@@ -147,12 +147,26 @@ describe('runLaunchPreamble — cwd anchor (hook only)', () => {
     expect(h.chdirCalls).toContain('/work/project');
   });
 
-  it('first matching project-dir env var wins (CURSOR before CLAUDE)', () => {
+  it('the project directory the named harness sets wins over another harness\'s', () => {
     process.env.CURSOR_PROJECT_DIR = '/work/cursor';
     process.env.CLAUDE_PROJECT_DIR = '/work/claude';
+    for (const [harness, dir] of [['cursor', '/work/cursor'], ['claude-code', '/work/claude']] as const) {
+      const h = makeHarness({ pin: null });
+      runLaunchPreamble('hook', ['session-start', `--symbiont=${harness}`], h.deps);
+      expect({ harness, chdir: h.chdirCalls }).toEqual({ harness, chdir: [dir] });
+    }
+  });
+
+  it('starts in any harness\'s project directory, then MYCO_PROJECT_ROOT, when the named harness sets none', () => {
+    process.env.WINDSURF_PROJECT_DIR = '/work/windsurf';
+    process.env.MYCO_PROJECT_ROOT = '/work/myco';
     const h = makeHarness({ pin: null });
-    runLaunchPreamble('hook', ['session-start', '--symbiont', 'cursor'], h.deps);
-    expect(h.chdirCalls).toEqual(['/work/cursor']);
+    runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], h.deps);
+    expect(h.chdirCalls).toEqual(['/work/windsurf']);
+    delete process.env.WINDSURF_PROJECT_DIR;
+    const g = makeHarness({ pin: null });
+    runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], g.deps);
+    expect(g.chdirCalls).toEqual(['/work/myco']);
   });
 
   it('ignores a "." project-dir value', () => {

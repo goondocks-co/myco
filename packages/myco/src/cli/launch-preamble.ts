@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { resolveRuntimePinForCwd } from '../runtime/runtime-pin.js';
 import { setBufferedStdin } from '../hooks/read-stdin.js';
 import { startingJobEnv } from '../runtime/spawn-detached.js';
+import { PROJECT_DIR_ENV_VARS, STDIN_WORKSPACE_FIELDS } from './launch-preamble.generated.js';
 
 export type LaunchCommand = 'hook' | 'mcp' | 'tool';
 
@@ -37,12 +38,23 @@ interface ExecOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-const PROJECT_DIR_ENV_VARS = [
-  'CURSOR_PROJECT_DIR',
-  'CLAUDE_PROJECT_DIR',
-  'WINDSURF_PROJECT_DIR',
-  'MYCO_PROJECT_ROOT',
-];
+/**
+ * Where a hook starts: the project directory its harness names (its manifest's `projectDirEnvVar`), then any other
+ * harness's, then `MYCO_PROJECT_ROOT`. The first that is set and can be entered wins.
+ */
+function projectDirEnvVars(harness: string | undefined): string[] {
+  const own = harness === undefined ? undefined : PROJECT_DIR_ENV_VARS[harness];
+  return [...new Set([...(own === undefined ? [] : [own]), ...Object.values(PROJECT_DIR_ENV_VARS), 'MYCO_PROJECT_ROOT'])];
+}
+
+/** The harness a hook command names (`--symbiont <name>` or `--symbiont=<name>`). */
+function harnessNamed(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--symbiont') return argv[i + 1];
+    if (argv[i]!.startsWith('--symbiont=')) return argv[i]!.slice('--symbiont='.length);
+  }
+  return undefined;
+}
 
 /**
  * PATHEXT fallback when the env var is unset. Mirrors the Windows default
@@ -77,8 +89,9 @@ function defaultDeps(): LaunchPreambleDeps {
  * Pre-processing that lets the binary be a hook/MCP/tool entry point directly.
  *
  * For `hook` it guards against recursion, anchors cwd to the spawning agent's
- * project dir, and buffers Antigravity's stdin (the workspace lives in the
- * stdin JSON, so it must be read here and re-fed in-process). These guards are
+ * project dir, and buffers the stdin of a harness that names its workspace only
+ * there (its manifest's `hookInput.workspaceFromStdin`), so it must be read here
+ * and re-fed in-process. These guards are
  * hook-only: an agent firing a hook may run from its own dir and provides the
  * project via env or stdin, whereas MCP/tool are invoked by the harness from a
  * known cwd.
@@ -94,7 +107,7 @@ export function runLaunchPreamble(
   argv: string[],
   deps: LaunchPreambleDeps = defaultDeps(),
 ): void {
-  let bufferedAntigravityStdin: Buffer | null = null;
+  let bufferedStdin: Buffer | null = null;
 
   if (command === 'hook') {
     // Hook-only on purpose: MCP/tool under a Myco agent session must still
@@ -105,19 +118,22 @@ export function runLaunchPreamble(
       return;
     }
 
-    for (const name of PROJECT_DIR_ENV_VARS) {
+    const harness = harnessNamed(argv);
+    for (const name of projectDirEnvVars(harness)) {
       const value = process.env[name];
       if (value && value !== '.') {
         try { deps.chdir(value); break; } catch { /* try next */ }
       }
     }
 
-    if (argv.includes('--symbiont') && argv[argv.indexOf('--symbiont') + 1] === 'antigravity') {
+    const workspaceField = harness === undefined ? undefined : STDIN_WORKSPACE_FIELDS[harness];
+    if (workspaceField !== undefined) {
       try {
-        bufferedAntigravityStdin = deps.readFd0();
-        if (bufferedAntigravityStdin.length > 0) {
-          const payload = JSON.parse(bufferedAntigravityStdin.toString('utf-8')) as { workspacePaths?: unknown };
-          const workspace = Array.isArray(payload?.workspacePaths) ? payload.workspacePaths[0] : null;
+        bufferedStdin = deps.readFd0();
+        if (bufferedStdin.length > 0) {
+          const payload = JSON.parse(bufferedStdin.toString('utf-8')) as Record<string, unknown> | null;
+          const named = payload?.[workspaceField];
+          const workspace = Array.isArray(named) ? named[0] : named;
           if (typeof workspace === 'string' && workspace.length > 0) {
             try { deps.chdir(workspace); } catch { /* fall through with original cwd */ }
           }
@@ -128,14 +144,14 @@ export function runLaunchPreamble(
 
   const pin = deps.resolveRuntimePin(deps.cwd());
   if (pin && !process.env.MYCO_TRAMPOLINED && pinPointsElsewhere(pin, deps)) {
-    reExec(command, argv, pin, bufferedAntigravityStdin, deps);
+    reExec(command, argv, pin, bufferedStdin, deps);
     return;
   }
 
-  // Fall-through: the handler runs in-process. Re-feed Antigravity's stdin so
+  // Fall-through: the handler runs in-process. Re-feed the stdin read above so
   // its readStdin() sees the buffered payload, not a drained fd 0. On the
   // re-exec path above the buffer is forwarded to the child via `input:`.
-  if (bufferedAntigravityStdin !== null) setBufferedStdin(bufferedAntigravityStdin);
+  if (bufferedStdin !== null) setBufferedStdin(bufferedStdin);
 }
 
 /**

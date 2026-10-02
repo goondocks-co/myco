@@ -628,3 +628,15 @@ describe('member hooks through the worker: hook-source agents', () => {
     expect((rig.env.sqlite.query('SELECT prompt_id FROM tool_calls').get() as { prompt_id: string }).prompt_id).toBe(promptId);
   });
 });
+
+describe('a hook command that names no harness (#1561)', () => {
+  it('captures nothing and says why, rather than taking the hook for a harness it did not name', async () => {
+    const cases: Array<[string, string | null]> = [['no --symbiont', null], ['a harness no manifest knows', 'no-such-harness']];
+    for (const [what, symbiont] of cases) {
+      const out = await runHook('session-start', { session_id: `sess-unnamed-${String(symbiont)}`, hook_event_name: 'SessionStart', cwd: process.cwd() }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont });
+      expect({ what, refused: out.stderr.includes('hook command must declare --symbiont <harness>'), spooled: new MemberSpool('proj_1', { mycoHome }).stateSessionIds() })
+        .toEqual({ what, refused: true, spooled: [] });
+    }
+    expect(dialled()).toEqual([]);
+  });
+});

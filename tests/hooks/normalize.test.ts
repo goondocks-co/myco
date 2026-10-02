@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '@myco/hooks/normalize.js';
+import { NO_AGENT, normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '@myco/hooks/normalize.js';
+import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 
 // Detection reads the build-time generated hook config; mock it with a
 // mutable table so each test declares exactly the symbionts it needs.
@@ -149,6 +150,8 @@ describe('normalizeHookInput', () => {
         toolName: 'tool_name',
         toolInput: 'tool_input',
         toolOutput: 'tool_output',
+        // Where Cursor's own manifest says its transcript path holds the session id.
+        sessionIdFromTranscriptPath: BUNDLED_MANIFESTS.find((m) => m.name === 'cursor')!.hookFields.sessionIdFromTranscriptPath,
       },
     };
 
@@ -176,6 +179,9 @@ describe('normalizeHookInput', () => {
       });
       expect(result.agent).toBe('cursor');
       expect(result.sessionId).toBe('94f4087c-1121-463e-bc1b-9d5248e48d27');
+      // The flat layout, on Windows too.
+      _resetManifestCache();
+      expect(normalizeHookInput({ transcript_path: 'C:\\Users\\chris\\.cursor\\projects\\x\\agent-transcripts\\abc-123.txt' }).sessionId).toBe('abc-123');
     });
 
     it('does not derive a Cursor sessionId from an unsupported transcript path', () => {
@@ -479,12 +485,12 @@ describe('normalizeHookInput', () => {
       expect(result.sessionId).toBe('embedded-runtime-session');
     });
 
-    it('unknown --symbiont value falls through to heuristic detection', () => {
+    it('unknown --symbiont value falls through to heuristic detection, and to no harness at all', () => {
       setHookConfig([claudeManifest, codexManifest]);
       process.argv = ['node', 'myco-run', 'hook', 'session-start', '--symbiont', 'bogus'];
-      // No env var, no transcript match → defaults to claude-code.
+      // No env var, no transcript match: no harness, which the hook refuses rather than guessing one.
       const result = normalizeHookInput({ session_id: 'abc' });
-      expect(result.agent).toBe('claude-code');
+      expect(result.agent).toBe(NO_AGENT);
     });
 
     it('falls back to env var when --symbiont flag is absent', () => {
@@ -580,11 +586,10 @@ describe('normalizeHookInput', () => {
       expect(result.agent).toBe('codex');
     });
 
-    it('defaults to claude-code when neither env var, transcript_path, nor cwd carry a marker', () => {
+    it('names no harness when neither the flag, an env var, transcript_path nor cwd carry a marker', () => {
       setHookConfig([claudeManifest, codexManifest]);
       const result = normalizeHookInput({ session_id: 'abc', prompt: 'hi' });
-      // Falls through to the DEFAULT_AGENT_NAME default.
-      expect(result.agent).toBe('claude-code');
+      expect(result.agent).toBe(NO_AGENT);
     });
 
     it('env-var detection still wins over payload detection', () => {

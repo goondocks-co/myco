@@ -12,7 +12,6 @@
 import { HOOK_CONFIG, type HookConfigEntry } from './hook-config.generated.js';
 import type { HookFieldPath } from '../symbionts/adapter.js';
 import { getAtPath } from '../utils/dot-path.js';
-import path from 'node:path';
 
 /** Default field mappings when no agent manifest is detected (Claude Code conventions). */
 const DEFAULT_HOOK_FIELDS = {
@@ -40,8 +39,8 @@ export interface NormalizedHookInput {
   raw: Record<string, unknown>;
 }
 
-/** Default agent name when no manifest is detected. */
-const DEFAULT_AGENT_NAME = 'claude-code';
+/** The agent of a hook no manifest was detected for: none. The hook refuses to capture it (`member/capture.ts`). */
+export const NO_AGENT = '';
 
 /** The identity facts detection reads for one symbiont, from the generated hook config. */
 interface HookSymbiont {
@@ -175,8 +174,8 @@ function detectManifest(input?: Record<string, unknown>): HookSymbiont | null {
 }
 
 /**
- * Normalize a raw hook input using the active agent's manifest field mappings.
- * Falls back to Claude Code field names if no agent is detected.
+ * The session id a harness writes into its transcript path, for a payload that carries none: the first group of the
+ * first of its manifest's `hookFields.sessionIdFromTranscriptPath` patterns that matches the path (forward slashes).
  */
 function deriveSessionIdFromTranscriptPath(
   manifest: HookSymbiont | null,
@@ -184,14 +183,10 @@ function deriveSessionIdFromTranscriptPath(
 ): string | undefined {
   if (!manifest || !transcriptPath) return undefined;
 
-  if (manifest.name === 'cursor') {
-    const normalized = transcriptPath.replace(/\\/g, '/');
-    const basename = path.posix.basename(normalized);
-    const jsonlMatch = normalized.match(/\/agent-transcripts\/([^/]+)\/\1\.jsonl$/);
-    if (jsonlMatch) return jsonlMatch[1];
-
-    const textMatch = basename.match(/^([^.]+)\.txt$/);
-    if (textMatch) return textMatch[1];
+  const normalized = transcriptPath.replace(/\\/g, '/');
+  for (const pattern of manifest.hookFields.sessionIdFromTranscriptPath ?? []) {
+    const match = new RegExp(pattern).exec(normalized);
+    if (match?.[1]) return match[1];
   }
 
   return undefined;
@@ -228,7 +223,7 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     ?? process.env.MYCO_SESSION_ID;
 
   return {
-    agent: manifest?.name ?? DEFAULT_AGENT_NAME,
+    agent: manifest?.name ?? NO_AGENT,
     sessionId,
     transcriptPath,
     lastResponse: getFirstAtPath(input, fields.lastResponse) as string | undefined,

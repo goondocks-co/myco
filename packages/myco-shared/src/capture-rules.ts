@@ -1,7 +1,9 @@
 import type { CaptureRule } from './capture-rule-schema.js';
 import { getAtPath } from './dot-path.js';
+import { DEFAULT_CAPTURE_AGENT } from './capture-rules.generated.js';
 
-export const DEFAULT_CAPTURE_AGENT = 'claude-code';
+/** The harness rules scoped `any_agent` apply to as well as their own: the manifest that declares `capture.anyAgentRules`. */
+export { DEFAULT_CAPTURE_AGENT };
 
 export interface CaptureRuleBundle {
   name: string;
