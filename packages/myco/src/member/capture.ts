@@ -192,17 +192,24 @@ export async function runMemberHook(
     // A repository with no connection of its own joins the default Deployment apart from this hook, which meanwhile
     // spools into the repository's pending spool, or, once left, captures nothing. Either way it is no missed membership.
     const unconnected: { answer: AutoJoinHold | typeof LEFT_ALONE | null } = { answer: null };
+    // The join's request and kick, run once this hook's capture is appended, each on its own: neither can lose it.
+    const afterCapture: Array<() => void> = [];
+    const joinSteps = (): void => {
+      for (const step of afterCapture.splice(0)) {
+        try { step(); } catch { /* the next hook in the repository asks again */ }
+      }
+    };
     let credential = resolveCredential(source, {
       cwd, env, mycoHome, invokedBy: `hook ${hookName}`,
       claimsUnconnected: (root) => {
-        unconnected.answer = autoJoinHold({ root, hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.helperSpawn });
+        unconnected.answer = autoJoinHold({ root, hookName, agent: input.agent, sessionId, mycoHome, now: now(), env, spawn: opts.helperSpawn, later: (step) => afterCapture.push(step) });
         return unconnected.answer !== null;
       },
     });
     const hold = unconnected.answer === LEFT_ALONE ? null : unconnected.answer;
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     if (credential === null) {
-      if (hold === null || hold.spool === null) return;
+      if (hold === null || hold.spool === null) { joinSteps(); return; }
       credential = hold.credential;
     }
 
@@ -232,12 +239,17 @@ export async function runMemberHook(
     // project's spool once the join has connected it. It is delivered once the repository is connected, by the helper
     // its next hook kicks; until then nothing is dialled and no helper is started.
     if (hold !== null) {
-      appendPending(hold.repo, sessionId, outcome.events, record, { mycoHome, now: now() });
-      if (outcome.turnEnd !== undefined) appendPendingTurnEnd(hold.repo, sessionId, outcome.turnEnd, undefined, { mycoHome, now: now() });
+      try {
+        appendPending(hold.repo, sessionId, outcome.events, record, { mycoHome, now: now() });
+        if (outcome.turnEnd !== undefined) appendPendingTurnEnd(hold.repo, sessionId, outcome.turnEnd, undefined, { mycoHome, now: now() });
+      } finally {
+        joinSteps();
+      }
     } else {
       spool.appendAndRecord(sessionId, outcome.events, record, now());
       if (outcome.turnEnd !== undefined) spool.appendTurnEnd(sessionId, outcome.turnEnd, undefined, now());
     }
+    joinSteps();
 
     // Work for the helper: records appended, context asked for, or a turn's or a session's end to deliver.
     if (hold === null && (outcome.events.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {

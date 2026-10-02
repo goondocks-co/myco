@@ -30,6 +30,7 @@ import { runGitAnswer } from '../utils/git.js';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
+import { machineAutoJoinLeaves } from './machine-settings.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -45,6 +46,7 @@ const NOTICE_MARKER_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;
 const STATE_VERSION = 1;
 const SWEEP_MARKER = 'sweep.json';
 const REQUESTS_DIRNAME = 'requests';
+const IMPORTS_DIRNAME = 'imports';
 
 /**
  * The member helper's bucket for repositories joining a project (`member/helper.ts`): its lock and marks live in the
@@ -305,15 +307,35 @@ export function markSweepDone(mycoHome: string, now: number): void {
   writePrivateFileAtomic(path.join(autoJoinDir(mycoHome), SWEEP_MARKER), `${JSON.stringify({ doneAt: now })}\n`);
 }
 
-/** A repository a hook asked the helper to try joining, and when. */
-export interface JoinRequest { root: string; rootKey: string; at: number }
+/**
+ * Where a repository stands for a join now, by the rule every caller applies (the hook that asks for one, and the
+ * helper's pass that makes it): `left` while `myco member leave` holds it and "Needs you" has not connected it since;
+ * `due` when never tried, past its backoff, or placed elsewhere by settings newer than the last attempt read; `waiting`
+ * otherwise. A repository left and then connected from "Needs you" is no longer left.
+ */
+export function joinStanding(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): {
+  standing: 'left' | 'due' | 'waiting'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
+} {
+  const leaves = machineAutoJoinLeaves(serverUrl, mycoHome);
+  const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
+  const state = readAutoJoinState(rootKey, mycoHome);
+  if (isLeft(rootKey, mycoHome)) {
+    if (connectTo === null) return { standing: 'left', leaves, state };
+    clearLeft(rootKey, mycoHome);
+  }
+  const moved = settingsMoved(state, placeRepository({ root, rootKey }, leaves), connectTo);
+  return { standing: moved || autoJoinDue(state, now) ? 'due' : 'waiting', leaves, state };
+}
+
+/** A repository a hook asked the helper to try joining, when, and for which Deployment. */
+export interface JoinRequest { root: string; rootKey: string; at: number; serverUrl?: string }
 
 const requestPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME, `${rootKey}.json`);
 
-/** Ask the helper to try joining a repository: kept until an attempt is made, one per repository. */
-export function requestJoin(root: string, rootKey: string, mycoHome: string, now: number): void {
+/** Ask the helper to try joining a repository, with the Deployment it was asked for: kept until an attempt is made, one per repository. */
+export function requestJoin(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): void {
   ensureMemberDir(path.dirname(requestPath(rootKey, mycoHome)), mycoHome);
-  writePrivateFileAtomic(requestPath(rootKey, mycoHome), `${JSON.stringify({ root, rootKey, at: now })}\n`);
+  writePrivateFileAtomic(requestPath(rootKey, mycoHome), `${JSON.stringify({ root, rootKey, at: now, serverUrl })}\n`);
 }
 
 /** Every repository waiting for an attempt, the oldest asked first. */
@@ -331,6 +353,36 @@ export function clearJoinRequest(request: JoinRequest, mycoHome: string): void {
   const held = readPrivateJson<JoinRequest>(requestPath(request.rootKey, mycoHome));
   if (held.ok && held.value?.at !== request.at) return;
   fs.rmSync(requestPath(request.rootKey, mycoHome), { force: true });
+}
+
+/** Drop whatever request a repository holds: it was joined, or left, by other means. */
+export function dropJoinRequest(rootKey: string, mycoHome: string): void {
+  fs.rmSync(requestPath(rootKey, mycoHome), { force: true });
+}
+
+/** A joined repository's past sessions, still to bring: the helper's join pass brings them a step at a time. */
+export interface PendingImport { root: string; rootKey: string; projectId: string; serverUrl: string; at: number }
+
+const importPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME, `${rootKey}.json`);
+
+export function queueImport(record: PendingImport, mycoHome: string): void {
+  ensureMemberDir(path.dirname(importPath(record.rootKey, mycoHome)), mycoHome);
+  writePrivateFileAtomic(importPath(record.rootKey, mycoHome), `${JSON.stringify(record)}\n`);
+}
+
+/** Every joined repository whose past sessions are still to bring, the oldest joined first. */
+export function listPendingImports(mycoHome: string): PendingImport[] {
+  let names: string[];
+  try { names = fs.readdirSync(path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)).filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)); } catch { return []; }
+  return names
+    .map((name) => readPrivateJson<PendingImport>(importPath(name.slice(0, -'.json'.length), mycoHome)))
+    .flatMap((read) => (read.ok && typeof read.value?.root === 'string' && typeof read.value.rootKey === 'string'
+      && typeof read.value.projectId === 'string' && typeof read.value.serverUrl === 'string' && typeof read.value.at === 'number' ? [read.value] : []))
+    .sort((a, b) => a.at - b.at);
+}
+
+export function clearPendingImport(rootKey: string, mycoHome: string): void {
+  fs.rmSync(importPath(rootKey, mycoHome), { force: true });
 }
 
 const CONNECT_HINT = 'or run `myco member join` in it';

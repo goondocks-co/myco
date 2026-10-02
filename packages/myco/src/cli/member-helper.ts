@@ -46,11 +46,16 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
     process.exitCode = 2;
     return null;
   }
+  // The home this helper serves is the one every lookup in it, and every process it starts, resolves: a start on Windows
+  // carries the starter's original environment, and a wrapper's default home must not stand in for this one.
+  const priorHome = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = mycoHome;
   const restoreStderr = deps.keepStderr || args.includes('--stderr') ? () => {} : routeStderrToHelperLog(mycoHome, projectId);
   try {
     return await helperPasses(projectId, mycoHome, args.includes('--after-failure'), deps);
   } finally {
     restoreStderr();
+    if (priorHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = priorHome;
   }
 }
 

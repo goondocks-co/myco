@@ -105,7 +105,9 @@ export function shipsInline(outcome: KickOutcome): boolean {
  */
 export function kickHelper(opts: { projectId: string; mycoHome: string; reason?: KickReason; spawn?: DetachedSpawn; now?: () => number }): KickOutcome {
   markWork(opts);
-  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback: 'the caller ships inline' });
+  // A join's caller ships nothing itself: its request stays, and the next hook in the repository kicks again.
+  const fallback = opts.projectId === JOIN_BUCKET ? 'the join waits for the next hook' : 'the caller ships inline';
+  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback });
 }
 
 /**

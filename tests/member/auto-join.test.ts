@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import {
-  AUTO_JOIN_RETRY_MS, isLeft, JOIN_BUCKET, listJoinRequests, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
+  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, requestJoin, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -25,7 +25,11 @@ import { MemberSpool } from '@myco/member/spool.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { joinPass, runAutoJoin } from '@myco/cli/member-auto-join.js';
 import { helperPass } from '@myco/cli/member-helper.js';
-import { kickHelper, runHelper, type HelperPass } from '@myco/member/helper.js';
+import { helperLogPath, kickHelper, runHelper, type HelperPass } from '@myco/member/helper.js';
+import { runHelperVerb } from '@myco/cli/member-helper.js';
+import { defaultDeploymentPath } from '@myco/member/default-deployment.js';
+import { RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
+import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { autoJoinHold } from '@myco/member/auto-join-hook.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
@@ -336,11 +340,14 @@ describe('many hooks in a repository still joining (G4d, with pending capture)',
           spool.append(sessionId, event);
           kickHelper({ projectId: entry.projectId, mycoHome, spawn: startFor(entry.projectId, helperPass(entry.projectId, mycoHome, { fetch: rig.fetch })) });
         } else {
-          const hold = autoJoinHold({ root, hookName: 'user-prompt-submit', agent: 'claude-code', sessionId, mycoHome, now: Date.now(), spawn: joinStart });
+          const steps: Array<() => void> = [];
+          const hold = autoJoinHold({ root, hookName: 'user-prompt-submit', agent: 'claude-code', sessionId, mycoHome, now: Date.now(), spawn: joinStart, later: (step) => steps.push(step) });
           if (hold === null || hold === 'left' || hold.spool === null) throw new Error('the repository held nothing');
           const event = promptEvent({ agent: 'claude-code', sessionId, stage: hold.spool.stagerFor(sessionId), version: 't' }, { promptId: mintId(), text: `${sessionId} ${h}` });
           sent.push(event.envelope.eventId);
           appendPending(hold.repo, sessionId, [event], undefined, { mycoHome, now: Date.now() });
+          // The join is asked for once the hook's capture is appended.
+          for (const step of steps) step();
         }
         await sleep(Math.floor(Math.random() * 30));
       }
@@ -849,5 +856,197 @@ describe('the default Deployment', () => {
     await runHook('session-start', { session_id: 'sess-d', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-d'), cwd: root }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });
     expect(spawned).toEqual([]);
     expect(listPending({ mycoHome, now: Date.now() })).toEqual([]);
+  });
+});
+
+describe('the join pass keeps to what was asked of it (#1595 review)', () => {
+  const pass = (deadline = Date.now() + 60_000, fetch = rig.fetch) => joinPass(mycoHome, { fetch })(deadline, { force: false });
+  const connected = (root: string): boolean => readRegistryEntry(root, mycoHome) !== null;
+  const ask = (root: string, sessionId: string) =>
+    runHook('user-prompt-submit', { session_id: sessionId, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, helperSpawn: spawn });
+  const leave = (root: string) => runMemberCli(['leave', '--root', root], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+
+  it('leaves a repository left after a join alone: a request made before the join never joins it again', async () => {
+    const joiners: Array<[string, (root: string) => Promise<unknown>]> = [
+      ['myco member join', (root) => runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} })],
+      ['myco member auto-join --root', (root) => join(['--root', root])],
+    ];
+    for (const [how, joinIt] of joiners) {
+      const root = repository(path.join(base, 'Repos'), `left-${how.split(' ').pop()!.replace(/\W/g, '')}`, 'https://github.com/acme/widget.git');
+      await ask(root, `sess-left-${how}`);
+      expect({ how, requested: requested() }).toEqual({ how, requested: [root] });
+      await joinIt(root);
+      // Joined: the request is answered.
+      expect({ how, answered: requested() }).toEqual({ how, answered: [] });
+      // One that lands after the join anyway is dropped by the leave.
+      requestJoin(root, rootKeyFor(root, mycoHome), SERVER_URL, mycoHome, Date.now());
+      await leave(root);
+      expect({ how, droppedByLeave: requested() }).toEqual({ how, droppedByLeave: [] });
+      await pass();
+      expect({ how, connected: connected(root), left: isLeft(rootKeyFor(root, mycoHome), mycoHome), requested: requested(), imports: listPendingImports(mycoHome).length })
+        .toEqual({ how, connected: false, left: true, requested: [], imports: 0 });
+    }
+    // A request that reaches the pass anyway (written by an older build) is checked again, and dropped.
+    const root = repository(path.join(base, 'Repos'), 'left-stale', 'https://github.com/acme/widget.git');
+    await join(['--root', root]);
+    await leave(root);
+    requestJoin(root, rootKeyFor(root, mycoHome), SERVER_URL, mycoHome, Date.now());
+    await pass();
+    expect({ connected: connected(root), left: isLeft(rootKeyFor(root, mycoHome), mycoHome), requested: requested() }).toEqual({ connected: false, left: true, requested: [] });
+    // No attempt joins it, by hand included, and none made over the repositories met before auto-join.
+    expect((await join(['--root', root]))[0]).toMatchObject({ result: 'left' });
+    recordMissingMembership(root, { mycoHome });
+    fs.rmSync(path.join(autoJoinDir(mycoHome), 'sweep.json'));
+    await pass();
+    expect({ connected: connected(root), left: isLeft(rootKeyFor(root, mycoHome), mycoHome) }).toEqual({ connected: false, left: true });
+  });
+
+  it('answers a hook\'s request with an attempt made by hand, whatever it came to', async () => {
+    const root = repository(path.join(base, 'Repos'), 'by-hand', null);
+    await ask(root, 'sess-by-hand');
+    expect((await join(['--root', root]))[0]).toMatchObject({ result: 'missed', reason: 'no_remote' });
+    expect(requested()).toEqual([]);
+  });
+
+  it('carries the sweep on where its deadline stopped it, trying no repository twice', async () => {
+    const met = ['quiet-a', 'quiet-b'].map((name) => repository(path.join(base, 'Repos'), name, null));
+    for (const root of met) recordMissingMembership(root, { mycoHome });
+    fs.rmSync(path.join(autoJoinDir(mycoHome), 'sweep.json'));
+    let resolves = 0;
+    let late = false;
+    const fetch: typeof rig.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes(RESOLVE_PROJECT_PATH)) { resolves += 1; late = true; }
+      return rig.fetch(input, init);
+    };
+    const deadline = Date.now() + 60_000;
+    // The clock reaches the deadline once the first attempt has asked the Deployment.
+    const first = await joinPass(mycoHome, { fetch, now: () => (late ? deadline : Date.now()) })(deadline, { force: false });
+    expect({ resolves, more: first?.more, swept: sweepDone(mycoHome) }).toEqual({ resolves: 1, more: true, swept: false });
+    await pass(Date.now() + 60_000, fetch);
+    expect({ resolves, swept: sweepDone(mycoHome) }).toEqual({ resolves: 2, swept: true });
+  });
+
+  it('makes no second attempt for a hook that asked while an attempt was refused, and backs off once', async () => {
+    const root = repository(path.join(base, 'Repos'), 'notes', null);
+    await ask(root, 'sess-burst-0');
+    let resolves = 0;
+    const fetch: typeof rig.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes(RESOLVE_PROJECT_PATH)) {
+        resolves += 1;
+        // A hook in the repository while the attempt is under way: the repository is still due as far as it can tell.
+        await ask(root, `sess-burst-${resolves}`);
+      }
+      return rig.fetch(input, init);
+    };
+    await pass(Date.now() + 60_000, fetch);
+    await pass(Date.now() + 60_000, fetch);
+    expect({ resolves, repeats: readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome)?.repeats, requested: requested() }).toEqual({ resolves: 1, repeats: 1, requested: [] });
+  });
+
+  it('joins a repository a hook asked about before a slow sweep, and leaves the sweep to the next pass at its deadline', async () => {
+    const asked = repository(path.join(base, 'Repos'), 'asked', 'https://github.com/acme/asked.git');
+    const met = ['met-a', 'met-b', 'met-c'].map((name) => repository(path.join(base, 'Repos'), name, `https://github.com/acme/${name}.git`));
+    for (const root of met) recordMissingMembership(root, { mycoHome });
+    fs.rmSync(path.join(autoJoinDir(mycoHome), 'sweep.json'));
+    await ask(asked, 'sess-sweep');
+    const slow: typeof rig.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes(RESOLVE_PROJECT_PATH)) await Bun.sleep(150);
+      return rig.fetch(input, init);
+    };
+    const first = await pass(Date.now() + 250, slow);
+    expect({ asked: connected(asked), more: first?.more, swept: sweepDone(mycoHome), met: met.filter(connected).length < met.length })
+      .toEqual({ asked: true, more: true, swept: false, met: true });
+    await pass(Date.now() + 60_000, slow);
+    expect({ swept: sweepDone(mycoHome), met: met.filter(connected).length }).toEqual({ swept: true, met: 3 });
+  });
+
+  it('joins every repository asked about before bringing any one\'s past sessions, which a later pass resumes', async () => {
+    const history = repository(path.join(base, 'Repos'), 'history', 'https://github.com/acme/history.git');
+    const next = repository(path.join(base, 'Repos'), 'next', 'https://github.com/acme/next.git');
+    // A past session of the first repository, as Claude Code keeps it.
+    const store = path.join(os.homedir(), '.claude', 'projects', `-${rootSlug(history)}`);
+    fs.mkdirSync(store, { recursive: true });
+    const sessionId = '00000000-0000-4000-8000-000000001595';
+    const file = path.join(store, `${sessionId}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'user', cwd: history, message: { content: `past ${'x'.repeat(5000)}` }, timestamp: '2026-09-01T10:00:00Z' })}\n`);
+    const old = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(file, old, old);
+    try {
+      await ask(history, 'sess-history');
+      await ask(next, 'sess-next');
+      const slowPlans: typeof rig.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/import/plan')) await Bun.sleep(400);
+        return rig.fetch(input, init);
+      };
+      const first = await pass(Date.now() + 300, slowPlans);
+      // Both joined; the first one's history stopped at the deadline, and the second's is still to come.
+      expect({ history: connected(history), next: connected(next), more: first?.more, imports: listPendingImports(mycoHome).map((p) => p.root) })
+        .toEqual({ history: true, next: true, more: true, imports: [history, next] });
+      await pass(Date.now() + 60_000, slowPlans);
+      expect({ imports: listPendingImports(mycoHome), imported: (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = ?`).get(sessionId) as { n: number }).n > 0 })
+        .toEqual({ imports: [], imported: true });
+    } finally {
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+
+  it('drops a request asked for under another Deployment than the default, or under none', async () => {
+    const root = repository(path.join(base, 'Repos'), 'moved', 'https://github.com/acme/moved.git');
+    await ask(root, 'sess-moved');
+    const other = 'https://other-deployment.invalid';
+    writeDeploymentMembership({ serverUrl: other, token: 'mt_other', tokenId: 'tok_other', memberId: 'mem_other', machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome });
+    recordDefaultDeployment(other, { mycoHome, replace: true });
+    const dialled: string[] = [];
+    const fetch: typeof rig.fetch = async (input, init) => {
+      dialled.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      return rig.fetch(input, init);
+    };
+    await pass(Date.now() + 60_000, fetch);
+    // Nothing is asked of either Deployment for it, and no attempt is recorded.
+    expect({ requested: requested(), dialled, connected: connected(root), tried: readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome) })
+      .toEqual({ requested: [], dialled: [], connected: false, tried: null });
+
+    recordDefaultDeployment(SERVER_URL, { mycoHome, replace: true });
+    await ask(root, 'sess-moved-2');
+    expect(requested()).toEqual([root]);
+    fs.rmSync(defaultDeploymentPath(mycoHome));
+    await pass(Date.now() + 60_000, fetch);
+    expect(requested()).toEqual([]);
+  });
+
+  it('runs with the home its command line names as MYCO_HOME, whatever the environment it was started with', async () => {
+    const elsewhere = tempMycoHome();
+    let seen: string | undefined;
+    await runHelperVerb(['--join', '--home', elsewhere], { keepStderr: true, lingerMs: 0, pass: async () => { seen = process.env.MYCO_HOME; } });
+    expect({ seen, restored: process.env.MYCO_HOME }).toEqual({ seen: elsewhere, restored: mycoHome });
+  });
+});
+
+describe('a join kick that cannot leave the hook\'s job (#1595 review)', () => {
+  it('says the join waits for the next hook, and keeps the request for it', async () => {
+    const root = repository(path.join(base, 'Repos'), 'contained', 'https://github.com/acme/contained.git');
+    const contained: DetachedSpawn = () => ({ started: true, pid: process.pid, contained: true });
+    await runHook('user-prompt-submit', { session_id: 'sess-contained', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { fetch: rig.fetch, helperSpawn: contained });
+    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf-8');
+    expect({ waits: log.includes('the join waits for the next hook'), inline: log.includes('the caller ships inline'), requested: requested() })
+      .toEqual({ waits: true, inline: false, requested: [root] });
+    expect(kickHelper({ projectId: JOIN_BUCKET, mycoHome, spawn: contained })).toMatchObject({ contained: true });
+  });
+});
+
+describe('a hook whose join cannot be asked for (#1595 review)', () => {
+  it('still holds its own capture', async () => {
+    const root = repository(path.join(base, 'Repos'), 'unwritable', 'https://github.com/acme/unwritable.git');
+    // The requests folder cannot be made: a file stands where it would be.
+    fs.mkdirSync(autoJoinDir(mycoHome), { recursive: true });
+    fs.writeFileSync(path.join(autoJoinDir(mycoHome), 'requests'), '');
+    const hook = await runHook('session-start', { session_id: 'sess-unwritable', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-unwritable'), cwd: root }, { fetch: rig.fetch, helperSpawn: spawn });
+    // The capture is held, the helper still kicked, and the hook ends as any other.
+    expect({ records: listPending({ mycoHome, now: Date.now() }).map((p) => p.records), requested: requested(), kicked: spawned.map((k) => k.args.slice(-5)), stderr: hook.stderr })
+      .toEqual({ records: [1], requested: [], kicked: [joinKick()], stderr: '' });
   });
 });

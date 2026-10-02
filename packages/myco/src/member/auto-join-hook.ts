@@ -7,14 +7,12 @@
  */
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import {
-  autoJoinDue, clearLeft, isLeft, JOIN_BUCKET, noticeOnce, notCapturedNotice, placeRepository, readAutoJoinState, recordSessionSeen, requestJoin, rootKeyFor,
-  settingsMoved, silentRepository, sweepDone,
+  joinStanding, JOIN_BUCKET, noticeOnce, notCapturedNotice, recordSessionSeen, requestJoin, rootKeyFor, silentRepository, sweepDone,
 } from './auto-join.js';
 import { kickHelper } from './helper.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { CredentialRecord } from './credential.js';
 import { defaultMembership } from './default-deployment.js';
-import { machineAutoJoinLeaves } from './machine-settings.js';
 import { pendingSpool, readHeldEnd } from './pending.js';
 import type { MemberSpool } from './spool.js';
 
@@ -42,33 +40,30 @@ export const LEFT_ALONE = 'left';
  * The hold for a hook at `root`; {@link LEFT_ALONE} for a repository left with `myco member leave`; or null where
  * auto-join has no say: no default Deployment, or a repository the machine never captures. The notice reaches the
  * agent in the hook's answer, and nothing is written to stderr.
+ *
+ * Asking for a join, and kicking the helper's join bucket, are handed to `later`, never done here: the hook runs them
+ * once its own capture is appended, so a request that cannot be written costs the join a hook, never the capture.
  */
 export function autoJoinHold(opts: {
   root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
+  later: (step: () => void) => void;
 }): AutoJoinHold | typeof LEFT_ALONE | null {
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   const join = (): void => { kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now }); };
   // Repositories met before auto-join existed are swept once, by the helper's join bucket.
-  if (!sweepDone(opts.mycoHome)) join();
+  if (!sweepDone(opts.mycoHome)) opts.later(join);
   if (silentRepository(opts.root, { mycoHome: opts.mycoHome, env: opts.env })) return null;
   const rootKey = rootKeyFor(opts.root, opts.mycoHome);
-  const leaves = machineAutoJoinLeaves(membership.serverUrl, opts.mycoHome);
-  const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
-  // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again.
-  if (isLeft(rootKey, opts.mycoHome)) {
-    if (connectTo === null) return LEFT_ALONE;
-    clearLeft(rootKey, opts.mycoHome);
-  }
+  // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again. The
+  // cached settings can be newer than the ones the last attempt read: a repository they place elsewhere (its folder now
+  // captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
+  const { standing, leaves, state } = joinStanding(opts.root, rootKey, membership.serverUrl, opts.mycoHome, opts.now);
+  if (standing === 'left') return LEFT_ALONE;
   recordSessionSeen(rootKey, opts.sessionId, opts.mycoHome);
-  // The cached settings can be newer than the ones the last attempt read: a repository they place elsewhere (its
-  // folder now captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
-  const placement = placeRepository({ root: opts.root, rootKey }, leaves);
-  const state = readAutoJoinState(rootKey, opts.mycoHome);
-  const moved = settingsMoved(state, placement, connectTo);
-  if (moved || autoJoinDue(state, opts.now)) {
-    requestJoin(opts.root, rootKey, opts.mycoHome, opts.now);
-    join();
+  if (standing === 'due') {
+    opts.later(() => requestJoin(opts.root, rootKey, membership.serverUrl, opts.mycoHome, opts.now));
+    opts.later(join);
   }
   // Every repository that has not joined holds what its hooks capture, for the TTL or to the cap: connecting it, from
   // "Needs you" or with `myco member join`, delivers it.
