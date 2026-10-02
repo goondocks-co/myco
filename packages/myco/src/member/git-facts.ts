@@ -9,12 +9,13 @@
  *
  * Each hook reads only the facts it carries, and the cheapest way it can
  * (#1561): the branch and the commit come from git's own files
- * (`utils/git-files.ts`), and git is asked only where those files do not
- * decide. Whether tracked files changed is git's to say, since it means
+ * (`utils/git-files.ts`), once git has confirmed them where they do not decide
+ * alone (`git-verdict.ts`), and git is asked only where neither does. Whether tracked files changed is git's to say, since it means
  * comparing the index and the working tree: its two questions run at once.
  */
 import { gitExitStatusAsync, runGitAnswer } from '../utils/git.js';
-import { readRepoHead, readRepoLayout, UNUSUAL } from '../utils/git-files.js';
+import { readRepoHead, UNUSUAL } from '../utils/git-files.js';
+import { repoVerdict, type GitVerdictDeps } from './git-verdict.js';
 
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
@@ -26,25 +27,26 @@ export interface GitFacts {
   dirty?: boolean;
 }
 
-const read = (args: string[], cwd: string): string | undefined => {
-  try { return runGitAnswer(args, cwd); } catch { return undefined; }
+const read = (args: string[], cwd: string, ask: (args: string[], cwd: string) => string = runGitAnswer): string | undefined => {
+  try { return ask(args, cwd); } catch { return undefined; }
 };
 
 /**
  * Where `HEAD` stands: its branch (`HEAD` when it names a commit) and the commit it resolves to. Nothing outside a
  * repository, or on a branch with no commit yet.
  */
-export function gitHead(cwd: string): Pick<GitFacts, 'branch' | 'headSha'> {
-  const layout = readRepoLayout(cwd);
-  if (layout === null) return {};
-  if (layout !== UNUSUAL) {
+export function gitHead(cwd: string, deps: GitVerdictDeps = {}): Pick<GitFacts, 'branch' | 'headSha'> {
+  const verdict = repoVerdict(cwd, process.env, deps);
+  if (verdict === null) return {};
+  const layout = verdict === UNUSUAL ? null : verdict.layout;
+  if (layout !== null) {
     const head = readRepoHead(layout);
     if (head === null) return {};
     if (head !== UNUSUAL) return head;
   }
-  const branch = read(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  const branch = read(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, deps.askGit);
   if (branch === undefined) return {};
-  const head = read(['rev-parse', 'HEAD'], cwd);
+  const head = read(['rev-parse', 'HEAD'], cwd, deps.askGit);
   return { branch, ...(head !== undefined && COMMIT_SHA.test(head) ? { headSha: head } : {}) };
 }
 

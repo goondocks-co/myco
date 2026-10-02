@@ -3,20 +3,23 @@
  * root, the vault dir that hangs off it, and the safety predicate every
  * registration site applies before treating a directory as a project.
  *
- * A leaf: Node built-ins plus `utils/git.ts` and `utils/git-files.ts` only, so a
- * capture hook (and the member seam) can resolve a project root without pulling
- * vault, Grove, or daemon code into its import closure. `vault/resolve.ts`
- * re-exports everything here for the rest of the binary.
+ * A leaf: Node built-ins plus `utils/git.ts`, `utils/git-files.ts` and
+ * `member/git-verdict.ts` only, so a capture hook (and the member seam) can
+ * resolve a project root without pulling vault, Grove, or daemon code into its
+ * import closure. `vault/resolve.ts` re-exports everything here for the rest of
+ * the binary.
  *
- * The repository is read from git's own files (`readRepoLayout`): every hook
- * resolves its project root, and a git process costs 5 to 20 ms a time. A
- * layout those files do not decide is asked of git, which answers as before.
+ * The repository is read from git's own files, or from git's verdict on them
+ * kept under the member home (`repoVerdict`): every hook resolves its project
+ * root, and a git process costs 5 to 20 ms a time. A layout neither decides is
+ * asked of git, which answers as before.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { runGitAnswer } from './utils/git.js';
-import { readRepoLayout, UNUSUAL } from './utils/git-files.js';
+import { UNUSUAL } from './utils/git-files.js';
+import { repoVerdict, type GitVerdictDeps } from './member/git-verdict.js';
 
 /**
  * Resolve the vault directory.
@@ -94,7 +97,7 @@ const HOME_PARENT_DIRS = new Set(['/Users', '/home', '/root', '/var/root']);
  * cleanly: no project gets auto-registered, no buffer is created in an
  * unexpected location, no Canopy scan kicks off scanning `~`.
  */
-export function isSafeProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): boolean {
+export function isSafeProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env, deps: GitVerdictDeps = {}): boolean {
   try {
     assertSafeProjectRoot(projectRoot);
   } catch {
@@ -102,10 +105,10 @@ export function isSafeProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = 
   }
   if (env.MYCO_PROJECT_ROOT || env.MYCO_VAULT_DIR) return true;
   const resolved = path.resolve(projectRoot);
-  const layout = readRepoLayout(resolved, env);
-  if (layout !== UNUSUAL) return layout !== null;
+  const verdict = repoVerdict(resolved, env, deps);
+  if (verdict !== UNUSUAL) return verdict !== null;
   try {
-    runGitAnswer(['rev-parse', '--git-common-dir'], resolved);
+    (deps.askGit ?? runGitAnswer)(['rev-parse', '--git-common-dir'], resolved);
     return true;
   } catch {
     return false;
@@ -147,11 +150,11 @@ export function assertSafeProjectRoot(projectRoot: string): void {
  * Falls back to cwd if not in a git repo.
  */
 function resolveRepoRoot(cwd: string): string {
-  const layout = readRepoLayout(cwd);
-  if (layout === null) return cwd;
+  const verdict = repoVerdict(cwd);
+  if (verdict === null) return cwd;
   // Git answers its common directory relative to `cwd` from inside the main checkout, and absolute (resolved through
   // symlinks) from a linked worktree: the root is that directory's parent either way.
-  if (layout !== UNUSUAL) return path.dirname(layout.commonDir);
+  if (verdict !== UNUSUAL) return verdict.from === 'files' ? path.dirname(verdict.layout.commonDir) : verdict.root;
   try {
     const gitCommon = runGitAnswer(['rev-parse', '--git-common-dir'], cwd);
     return path.resolve(cwd, gitCommon, '..');
@@ -167,12 +170,13 @@ function resolveRepoRoot(cwd: string): string {
  * repo at all.
  */
 export function resolveWorktreeRoot(cwd: string = process.cwd()): string | null {
-  const layout = readRepoLayout(cwd);
-  if (layout === null) return null;
+  const verdict = repoVerdict(cwd);
+  if (verdict === null) return null;
+  if (verdict !== UNUSUAL && verdict.from === 'git') return verdict.top;
   // Git answers the top level resolved through symlinks (and short names), with forward slashes on Windows too.
-  if (layout !== UNUSUAL) {
+  if (verdict !== UNUSUAL) {
     try {
-      return process.platform === 'win32' ? fs.realpathSync.native(layout.top).replaceAll('\\', '/') : fs.realpathSync(layout.top);
+      return process.platform === 'win32' ? fs.realpathSync.native(verdict.layout.top).replaceAll('\\', '/') : fs.realpathSync(verdict.layout.top);
     } catch { /* git decides */ }
   }
   try {

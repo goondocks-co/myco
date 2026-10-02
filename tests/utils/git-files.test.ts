@@ -180,8 +180,8 @@ describe('a repository read from its own files', () => {
     const dir = path.join(base(), 'plain');
     fs.mkdirSync(dir);
     expect(memberSays(dir)).toEqual(gitSays(dir));
-    // From the files where they decide; on Windows, git says.
-    expect(readRepoLayout(dir, {})).toBe(process.platform === 'win32' ? UNUSUAL : null);
+    // From the files, on Windows too: with no `.git` above it, git has no repository to refuse.
+    expect(readRepoLayout(dir, {})).toBe(null);
   });
 
   it('asks git when the environment steers where git looks', () => {

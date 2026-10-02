@@ -10,11 +10,14 @@
  *   boundary crossed on the way up (git stops there), a `.git` that is not a git directory (no `HEAD`, `objects` or
  *   `refs`; git walks on past it), a directory inside a git directory, or the environment steering git's discovery
  *   (`GIT_DIR`, `GIT_CEILING_DIRECTORIES`, …);
- * - where git might refuse: a work tree or git directory another user owns (git's `safe.directory` check), or any
- *   repository on Windows, where Git for Windows applies that check by an owner this reader cannot read;
- * - where the files say more than this reader reads: a bare repository, reftable or another ref storage, a
- *   `core.worktree` or per-worktree config, a config that includes another, a symbolic ref, or a `HEAD` naming anything
- *   but a branch or a commit.
+ * - where the files say more than this reader reads: a config that includes another, a symbolic ref, or a `HEAD`
+ *   naming anything but a branch or a commit.
+ *
+ * Two more leave a `.git` found but unconfirmed (`locateRepo`'s `unverified`), which git confirms once and the member
+ * keeps (`member/git-verdict.ts`): `owner`, where git might refuse a work tree or git directory another user owns
+ * (its `safe.directory` check), which is any repository on Windows, where Git for Windows applies that check by an
+ * owner this reader cannot read; and `config`, a bare repository, reftable or another ref storage, or a
+ * `core.worktree` or per-worktree config.
  *
  * A leaf: Node built-ins only.
  */
@@ -41,7 +44,9 @@ const STEERING_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_CEILING
  * Repository config that changes the layout or the ref storage: present, git is asked. `bare` is true as git reads a
  * boolean: `true`, `yes`, `on`, `1`, or the key alone.
  */
-const UNUSUAL_CONFIG = /^\s*(?:refstorage|worktree|worktreeconfig)\b|^\s*bare\s*(?:=\s*(?:true|yes|on|1)\s*)?(?:[#;].*)?$|^\s*\[\s*include/im;
+const UNUSUAL_CONFIG = /^\s*(?:refstorage|worktree|worktreeconfig)\b|^\s*bare\s*(?:=\s*(?:true|yes|on|1)\s*)?(?:[#;].*)?$/im;
+/** A config that includes another (`[include]`, `[includeIf …]`). */
+const INCLUDE_CONFIG = /^\s*\[\s*include/im;
 
 /** How this reader sees the filesystem and the user: the system's, or a test's stand-in. */
 export interface RepoFilesDeps {
@@ -68,10 +73,30 @@ const readText = (file: string): string | null => {
  * repository"), `UNUSUAL` when git must be asked.
  */
 export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env, deps: RepoFilesDeps = {}): RepoLayout | null | Unusual {
+  const found = locateRepo(cwd, env, deps);
+  if (found === null || found === UNUSUAL) return found;
+  return found.unverified === null ? found.layout : UNUSUAL;
+}
+
+/**
+ * What git must still confirm about a layout these files found: `owner`, that it accepts a repository whose owner
+ * this reader could not match with the user (another user's, or any on Windows); `config`, the layout or ref storage
+ * its config changes, which only git reads.
+ */
+export type Unverified = 'owner' | 'config';
+
+export interface LocatedRepo {
+  layout: RepoLayout;
+  /** Null when the files decide the layout; otherwise what only git can confirm. */
+  unverified: Unverified | null;
+}
+
+/**
+ * The `.git` git would find from `cwd`, read from its files, with what about it only git can confirm: null when no
+ * `.git` is found above it, `UNUSUAL` when git might find another, or none, or read the files differently.
+ */
+export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, deps: RepoFilesDeps = {}): LocatedRepo | null | Unusual {
   if (STEERING_ENV.some((name) => env[name] !== undefined && env[name] !== '')) return UNUSUAL;
-  const uid = (deps.uid ?? systemUid)();
-  // Git for Windows refuses a repository by an owner this reader cannot read: git decides there.
-  if (uid === null) return UNUSUAL;
   const deviceOf = deps.deviceOf ?? systemDevice;
   const start = path.resolve(cwd);
   // A directory inside a git directory is where git finds a bare repository, not a work tree.
@@ -105,10 +130,10 @@ export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env
     // on past any other `.git`; so does the decision, to git.
     if (!isFile(path.join(gitDir, 'HEAD')) || !isDirectory(path.join(commonDir, 'objects')) || !isDirectory(path.join(commonDir, 'refs'))) return UNUSUAL;
     const config = readText(path.join(commonDir, 'config'));
-    if (config === null || UNUSUAL_CONFIG.test(config)) return UNUSUAL;
-    if (path.resolve(gitDir) !== path.resolve(commonDir) && readText(path.join(gitDir, 'config.worktree')) !== null) return UNUSUAL;
-    const ownerOf = deps.ownerOf ?? systemOwner;
-    if (!ownedBy(dir, uid, ownerOf) || !ownedBy(gitDir, uid, ownerOf)) return UNUSUAL;
+    // An included config is read from files no caller of this reader watches: git is asked every time.
+    if (config === null || INCLUDE_CONFIG.test(config)) return UNUSUAL;
+    const configUnusual = UNUSUAL_CONFIG.test(config)
+      || (path.resolve(gitDir) !== path.resolve(commonDir) && readText(path.join(gitDir, 'config.worktree')) !== null);
     // Reached through a symlink leading out of the work tree, the start is somewhere git looks from elsewhere.
     try {
       const real = fs.realpathSync(start);
@@ -117,14 +142,19 @@ export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env
     } catch {
       return UNUSUAL;
     }
-    return { top: dir, gitDir, commonDir };
+    // Git refuses a repository another user owns unless it is marked safe; Git for Windows applies that check by an
+    // owner this reader cannot read.
+    const uid = (deps.uid ?? systemUid)();
+    const ownerOf = deps.ownerOf ?? systemOwner;
+    const owned = uid !== null && ownedBy(dir, uid, ownerOf) && ownedBy(gitDir, uid, ownerOf);
+    return { layout: { top: dir, gitDir, commonDir }, unverified: configUnusual ? 'config' : owned ? null : 'owner' };
   }
 }
 
 const isFile = (file: string): boolean => { try { return fs.statSync(file).isFile(); } catch { return false; } };
 const isDirectory = (dir: string): boolean => { try { return fs.statSync(dir).isDirectory(); } catch { return false; } };
 
-/** Git refuses a repository another user owns unless it is marked safe: that decision is git's to make. */
+/** Whether `dir` belongs to `uid`; an owner that cannot be read is no match. */
 function ownedBy(dir: string, uid: number, ownerOf: (dir: string) => number): boolean {
   try { return ownerOf(dir) === uid; } catch { return false; }
 }
