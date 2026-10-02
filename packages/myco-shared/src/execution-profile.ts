@@ -1,3 +1,5 @@
+import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
+
 /** The server resolves and records every claimed run's execution profile. */
 export const EXECUTION_PROFILE_FEATURE = 'execution-profile';
 
@@ -24,26 +26,14 @@ interface HarnessProfileDefaults {
   modelPattern: string;
   modelHint: string;
   modelFamilies?: readonly string[];
+  /** How a dated id of a family begins: an alias `sonnet` resolves to `<prefix>sonnet-…`. */
+  modelFamilyPrefix?: string;
 }
 
-const UNSET_MODELS = { low: null, default: null, high: null };
-const TIER_EFFORTS = { low: 'low', default: 'medium', high: 'high' };
-const MODEL_ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$';
-
-/** Model defaults and validation vocabulary for each harness's settings. */
-export const PROFILE_HARNESSES: Readonly<Record<string, HarnessProfileDefaults>> = {
-  'claude-code': {
-    models: { low: 'haiku', default: 'sonnet', high: 'opus' }, efforts: TIER_EFFORTS,
-    allowedEfforts: ['low', 'medium', 'high', 'xhigh'],
-    modelPattern: '^(haiku|sonnet|opus|fable|claude-[A-Za-z0-9][A-Za-z0-9._-]{0,240})$',
-    modelHint: 'Use haiku, sonnet, opus, fable, or a claude-* model ID.',
-    modelFamilies: ['haiku', 'sonnet', 'opus', 'fable'],
-  },
-  codex: { models: UNSET_MODELS, efforts: TIER_EFFORTS, allowedEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], modelPattern: MODEL_ID_PATTERN, modelHint: 'Use a Codex model ID. An unset model holds runs at this tier.' },
-  opencode: { models: UNSET_MODELS, efforts: TIER_EFFORTS, allowedEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$', modelHint: 'Use provider/model. An unset model holds runs at this tier.' },
-  cursor: { models: UNSET_MODELS, efforts: TIER_EFFORTS, allowedEfforts: [], modelPattern: MODEL_ID_PATTERN, modelHint: 'Model selection is unavailable for this agent.' },
-  antigravity: { models: UNSET_MODELS, efforts: TIER_EFFORTS, allowedEfforts: [], modelPattern: MODEL_ID_PATTERN, modelHint: 'Model selection is unavailable for this agent.' },
-};
+/** Model defaults and validation vocabulary for each harness's settings, from its manifest's `runner.profile`, in the order a worker ranks them. */
+export const PROFILE_HARNESSES: Readonly<Record<string, HarnessProfileDefaults>> = Object.fromEntries(
+  RUNNER_HARNESSES.map((harness) => [harness.id, harness.profile as HarnessProfileDefaults]),
+);
 
 export const CONFIGURABLE_PROFILE_HARNESSES = Object.keys(PROFILE_HARNESSES).filter((id) => PROFILE_HARNESSES[id]!.allowedEfforts.length > 0);
 
@@ -91,8 +81,9 @@ export function requestedProfile(raw: unknown): ExecutionProfile | null {
 
 /** Alias family resolution is accepted; an explicit SKU requires the same id. */
 export function profileModelMatches(harness: string, requested: string, actual: string): boolean {
-  const families = PROFILE_HARNESSES[harness]?.modelFamilies ?? [];
-  return requested === actual || (families.includes(requested) && actual.startsWith(`claude-${requested}-`));
+  const spec = PROFILE_HARNESSES[harness];
+  const families = spec?.modelFamilies ?? [];
+  return requested === actual || (families.includes(requested) && actual.startsWith(`${spec?.modelFamilyPrefix ?? ''}${requested}-`));
 }
 
 /**
@@ -124,14 +115,10 @@ export type Asking =
   | { kind: 'run-home'; env: string }
   | { kind: 'unheld' };
 
-/** The boundary each worker applies when it offers this agent. */
-export const HARNESS_ASKING: Readonly<Record<string, Asking>> = {
-  'claude-code': { kind: 'native' },
-  codex: { kind: 'sandbox' },
-  opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT', extensionsOff: { OPENCODE_PURE: '1' } },
-  cursor: { kind: 'run-home', env: 'CURSOR_CONFIG_DIR' },
-  antigravity: { kind: 'unheld' },
-};
+/** The boundary each worker applies when it offers this agent, from its manifest's `runner.asking`. */
+export const HARNESS_ASKING: Readonly<Record<string, Asking>> = Object.fromEntries(
+  RUNNER_HARNESSES.map((harness) => [harness.id, harness.asking as Asking]),
+);
 
 /** A worker offers only agents whose runs can be bounded. */
 export const canOfferHarness = (asking: Asking): boolean => asking.kind !== 'unheld';

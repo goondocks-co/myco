@@ -8,15 +8,17 @@
  * Deployment secret by this, and the worker's manifest declares the same ids,
  * so the two cannot name different harnesses.
  *
- * A harness absent here has no Deployment credential to inject and runs under
- * its own login, which is the ordinary case on a machine a person uses.
+ * Each harness declares its own in its manifest's `runner.credential`. A harness
+ * with none has no Deployment credential to inject and runs under its own login,
+ * which is the ordinary case on a machine a person uses.
  *
  * A harness reads the Deployment secret slot named here and no other
- * (`secret-slots.ts`). Codex reads a slot of its own rather than the `openai`
- * slot the embedding provider reads: a key stored for embeddings is not a login
- * for every Codex run (#1212). A harness whose slot is null, or empty, runs
- * under the worker machine's own login.
+ * (`secret-slots.ts`): a shared provider slot, or a slot of its own its manifest
+ * declares (a key stored for embeddings is not a login for every run of a
+ * harness that reads OpenAI's variables, #1212). A harness whose slot is null,
+ * or empty, runs under the worker machine's own login.
  */
+import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 import type { SecretSlotName } from './secret-slots.js';
 
 export type HarnessProvider = 'anthropic' | 'openai' | 'google';
@@ -33,13 +35,10 @@ export interface HarnessCredential {
   accepts?: readonly HarnessCredentialKind[];
 }
 
-export const HARNESS_CREDENTIALS: Readonly<Record<string, HarnessCredential>> = {
-  'claude-code': { provider: 'anthropic', slot: 'anthropic', variables: ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'], accepts: ['subscription', 'api-key'] },
-  codex: { provider: 'openai', slot: 'codex', variables: ['OPENAI_API_KEY'] },
-  opencode: { provider: 'anthropic', slot: 'anthropic', variables: ['ANTHROPIC_API_KEY'] },
-  cursor: { provider: 'anthropic', slot: 'anthropic', variables: ['ANTHROPIC_API_KEY'] },
-  antigravity: { provider: 'google', slot: null, variables: ['GEMINI_API_KEY'] },
-};
+/** Each harness's credential, from its manifest's `runner.credential` (`runner-harnesses.generated.ts`), in the order a worker ranks them. */
+export const HARNESS_CREDENTIALS: Readonly<Record<string, HarnessCredential>> = Object.fromEntries(
+  RUNNER_HARNESSES.map((harness) => [harness.id, harness.credential as HarnessCredential]),
+);
 
 /** The environment a harness can use for this credential; unsupported kinds inject nothing. */
 export function credentialEnvFor(harness: string, key: string): Record<string, string> {

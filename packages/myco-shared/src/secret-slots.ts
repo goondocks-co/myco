@@ -2,15 +2,20 @@
  * The secret slots a Deployment stores, and what each one is used for.
  *
  * One slot means one thing. A key stored for one use never becomes the key for
- * another: an OpenAI key stored for embeddings is not a login for Codex runs,
- * which read a slot of their own (#1212). Which harness runs read a slot is
+ * another: an OpenAI key stored for embeddings is not a login for the runs of
+ * a harness whose manifest declares a slot of its own (#1212). Which harness runs read a slot is
  * `HARNESS_CREDENTIALS` (`harness-providers.ts`), so the words a surface shows
  * for a slot are built from the table the server reads (`slotUse`), and cannot
  * name a use the server does not make.
  */
 import { HARNESS_CREDENTIALS } from './harness-providers.js';
+import { RUNNER_OWN_SLOTS } from './runner-harnesses.generated.js';
 
-export type SecretSlotName = 'anthropic' | 'codex' | 'openai' | 'openrouter' | 'github';
+/** The slots a provider's key fills, which any harness or server use may read. */
+type ProviderSlotName = 'anthropic' | 'openai' | 'openrouter' | 'github';
+/** A slot a harness's manifest declares as its own (`runner.credential.slot: own`), named after the harness. */
+type HarnessOwnSlotName = (typeof RUNNER_OWN_SLOTS)[number]['name'];
+export type SecretSlotName = ProviderSlotName | HarnessOwnSlotName;
 
 export interface SecretSlot {
   name: SecretSlotName;
@@ -20,10 +25,10 @@ export interface SecretSlot {
   alsoUsedFor: string | null;
 }
 
-/** Every slot, in the order the settings page lists them. */
+/** Every slot, in the order the settings page lists them: the harnesses' own slots follow Anthropic's. */
 export const SECRET_SLOTS: readonly SecretSlot[] = [
   { name: 'anthropic', label: 'Anthropic', alsoUsedFor: null },
-  { name: 'codex', label: 'Codex (OpenAI)', alsoUsedFor: null },
+  ...RUNNER_OWN_SLOTS.map((slot): SecretSlot => ({ name: slot.name, label: slot.label, alsoUsedFor: null })),
   { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
   { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
   { name: 'github', label: 'GitHub', alsoUsedFor: null },

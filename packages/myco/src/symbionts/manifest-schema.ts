@@ -682,6 +682,115 @@ export type StopPhase = z.infer<typeof StopPhaseSchema>;
 export type HookEventDeclaration = z.infer<typeof HookEventDeclarationSchema>;
 export type HooksManifest = z.infer<typeof HooksManifestSchema>;
 
+const ReasoningTiersOf = <T extends z.ZodTypeAny>(value: T) => z.object({ low: value, default: value, high: value }).strict();
+
+/**
+ * What a worker needs to know to run this harness for the Deployment: where it ranks among the harnesses a worker
+ * can run, the credential its runs read, and the models and efforts each reasoning tier asks of it. Generated into
+ * myco-shared (`runner-harnesses.generated.ts`), which the Deployment and the worker both read.
+ */
+const Strings = z.array(z.string().min(1));
+
+/**
+ * How a worker runs the harness: what it launches, where its login is, how a run is kept apart from the machine's own
+ * use, whether its shell reaches the run's git through the worker's shim, how the tier's model reaches it, and how a
+ * run's usage is read back. How it is held to a run's grant is the shared \`asking\` beside it. `runner/harnesses.ts` holds the
+ * types each mirrors, and reads the generated table typed by them.
+ */
+const RunnerWorkerSchema = z.object({
+  /** What to look for on PATH. */
+  binary: z.string().min(1),
+  launch: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('native') }).strict(),
+    z.object({ kind: z.literal('subcommand'), args: Strings }).strict(),
+    z.object({ kind: z.literal('sidecar'), binary: z.string().min(1) }).strict(),
+  ]),
+  /** Where the harness keeps its login: a file, a command that answers, or a file with a command to fall back to. */
+  login: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('file'), path: z.string().min(1), requires: Strings }).strict(),
+    z.object({ kind: z.literal('command'), args: Strings }).strict(),
+    z.object({ kind: z.literal('file-or-command'), path: z.string().min(1), requires: Strings, args: Strings }).strict(),
+  ]),
+  isolation: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('flag'), args: Strings }).strict(),
+    z.object({ kind: z.literal('home'), env: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('additive') }).strict(),
+  ]),
+  sourceGit: z.enum(['shim', 'none']),
+  /** How the tier's model reaches the harness: a flag, its run configuration, or not at all. */
+  modelSetting: z.enum(['flag', 'config', 'none']),
+  accounting: z.object({
+    reported: z.enum(['claude-stream', 'codex-session', 'acp-session']),
+    modelSources: Strings,
+    launchFallback: z.enum(['none', 'resolved-config']),
+    primarySources: Strings.optional(),
+    modelVariants: z.array(z.object({ suffix: z.string().min(1), context: z.literal('1m') }).strict()).optional(),
+    zeroDollars: z.enum(['reported', 'unavailable']).optional(),
+    provider: z.discriminatedUnion('kind', [
+      z.object({
+        kind: z.literal('environment'), default: z.string().min(1),
+        selectors: z.array(z.object({ variable: z.string().min(1), provider: z.string().min(1) }).strict()),
+        unknownIfSet: Strings,
+      }).strict(),
+      z.object({ kind: z.literal('fixed'), id: z.string().min(1) }).strict(),
+      z.object({ kind: z.literal('session-config'), default: z.string().min(1) }).strict(),
+      z.object({ kind: z.literal('model-prefix') }).strict(),
+      z.object({ kind: z.literal('unavailable') }).strict(),
+    ]),
+    tokenScope: z.enum(['attempt', 'unverified']),
+    lastResponseVersions: Strings.optional(),
+  }).strict(),
+}).strict();
+
+const RunnerManifestSchema = z.object({
+  /** Where a worker ranks this harness among those it can run: lower first. */
+  order: z.number().int().min(1),
+  /**
+   * How the harness comes to ask before a call, or what bounds a run on one that never asks (\`Asking\` in
+   * myco-shared's \`execution-profile.ts\`): the Deployment offers only a harness whose runs can be bounded.
+   */
+  asking: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('native') }).strict(),
+    z.object({ kind: z.literal('sandbox') }).strict(),
+    z.object({ kind: z.literal('run-agent'), env: z.string().min(1), extensionsOff: z.record(z.string(), z.string()) }).strict(),
+    z.object({ kind: z.literal('run-home'), env: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('unheld') }).strict(),
+  ]),
+  credential: z.object({
+    /** The provider the harness authenticates against: a harness is not a provider. */
+    provider: z.enum(['anthropic', 'openai', 'google']),
+    /**
+     * The Deployment secret slot its runs read: a shared provider slot (`secret-slots.ts`), `own` for a slot of its
+     * own named after the harness (labelled `ownSlotLabel`), or null where the Deployment holds none for it.
+     */
+    slot: z.string().min(1).nullable(),
+    ownSlotLabel: z.string().min(1).optional(),
+    /** The variables the harness reads its credential from, in the order a value is matched to one. */
+    variables: z.array(z.string().min(1)).min(1),
+    /** Credential kinds it can use from its slot; absent means API keys only. */
+    accepts: z.array(z.enum(['api-key', 'subscription'])).optional(),
+  }).strict(),
+  profile: z.object({
+    /** The model each tier asks for; null holds runs at that tier until one is configured. */
+    models: ReasoningTiersOf(z.string().min(1).nullable()),
+    efforts: ReasoningTiersOf(z.string().min(1)),
+    allowedEfforts: z.array(z.string().min(1)),
+    /** What a configured model id must match, as a regular expression. */
+    modelPattern: z.string().min(1),
+    modelHint: z.string().min(1),
+    /** Model aliases a run may resolve to a dated id of the family. */
+    modelFamilies: z.array(z.string().min(1)).optional(),
+    /** How a dated id of a family begins: the alias follows it (`claude-` + `sonnet` + `-…`). */
+    modelFamilyPrefix: z.string().min(1).optional(),
+  }).strict(),
+  worker: RunnerWorkerSchema,
+}).strict().refine((r) => (r.credential.slot === 'own') === (r.credential.ownSlotLabel !== undefined), {
+  message: 'credential.ownSlotLabel is required for, and only for, credential.slot: own',
+  path: ['credential', 'ownSlotLabel'],
+});
+
+export type RunnerManifest = z.infer<typeof RunnerManifestSchema>;
+
 const HookFieldPathSchema = z.union([
   z.string().min(1),
   z.array(z.string().min(1)).min(1),
@@ -766,6 +875,8 @@ export const SymbiontManifestSchema = z.object({
    * that need phase-aware dispatch.
    */
   hooks: HooksManifestSchema.optional(),
+  /** What a worker needs to run this harness for the Deployment; absent for a harness no worker runs. */
+  runner: RunnerManifestSchema.optional(),
 }).strict().refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];

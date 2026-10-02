@@ -18,8 +18,7 @@
  * In scope: the 2.0 member closure (what the hooks, the member seam, the worker and the member verbs reach), and the
  * shared and Deployment packages whole. Allowed to name harnesses: the registries that exist to be per-harness.
  *
- * KNOWN is a ratchet: today's offenders, by file and count. It may only shrink: what is left is the worker's harness
- * facts, which the manifests' `runner:` block takes (#1561), and then it is empty.
+ * KNOWN is empty: every harness fact outside the registries is manifest data (#1561).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
@@ -32,25 +31,19 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MEMBER_ENTRIES = ['hooks/**', 'member/**', 'runner/**', 'cli/member-dispatch.ts', 'cli/member-verbs.ts'];
 const WHOLE_PACKAGES = [path.join(REPO_ROOT, 'packages', 'myco-shared', 'src'), path.join(REPO_ROOT, 'packages', 'myco-server', 'src')];
 
-/** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data and its loader. */
+/** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data, its loader and what it generates. */
 const REGISTRIES: readonly RegExp[] = [
-  /^packages\/myco-shared\/src\/execution-profile\.ts$/,
   /^packages\/myco\/src\/symbionts\/(claude-code|codex|cursor|copilot|windsurf|antigravity)\.ts$/,
   /^packages\/myco\/src\/symbionts\/parsers\//,
   /^packages\/myco\/src\/symbionts\/templates\//,
   /^packages\/myco\/src\/symbionts\/(registry|detect|manifest-schema)\.ts$/,
   /^packages\/myco\/src\/runner\/drivers\//,
-  /^packages\/myco\/src\/runner\/harnesses\.ts$/,
   /^packages\/myco-server\/src\/ingest\/parsers\//,
   /\.generated\.ts$/,
 ];
 
-/** Today's offenders: file → how many places name a harness. Only shrinks; the `runner:` block (#1561) folds what is left. */
-const KNOWN: Readonly<Record<string, number>> = {
-  'packages/myco-shared/src/harness-providers.ts': 7,
-  // The worker's credential slot named for a harness (`codex`): the manifest's `runner:` block.
-  'packages/myco-shared/src/secret-slots.ts': 2,
-};
+/** Files that name a harness outside the registries: none. A new one fails by name. */
+const KNOWN: Readonly<Record<string, number>> = {};
 
 const NAMES = new Set(BUNDLED_MANIFESTS.map((m) => m.name));
 // Read from the manifests themselves, not from what the hook config carries of them: a field the hooks stop reading
