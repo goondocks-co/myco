@@ -390,6 +390,14 @@ runner:
       answer: { where: { id: 2 }, list: result.data }
       page: { cursor: result.nextCursor, param: params.cursor }
       fields: { id: id, label: displayName, isDefault: isDefault, upgrade: upgrade, efforts: 'supportedReasoningEfforts[].reasoningEffort' }
+    # How each item in its stream reads as a step of the run's step log: the driver names an item by its type, and a
+    # Myco call by its tool under the `mcp` category. Contents and output are never read.
+    stepTool: name
+    steps:
+      - { tool: command_execution, kind: command, target: [command] }
+      - { tool: file_change, kind: edit, target: [changes.0.path] }
+      - { tool: web_search, kind: fetch, target: [query] }
+      - { category: mcp, kind: myco, target: [op] }
     accounting:
       reported: codex-session
       modelSources: [session.turn_context.model]

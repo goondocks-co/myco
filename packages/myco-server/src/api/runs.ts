@@ -30,6 +30,7 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
 import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { closeErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -266,12 +267,12 @@ type RunWrite = { refused: Response } | { changed: number };
  */
 async function endRunAsCaller(
   env: ServerEnv, ctx: RouteContext, runId: string, before: RunRow | null,
-  update: RunUpdate, options: { replaced?: boolean } = {},
+  update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode } = {},
 ): Promise<RunWrite> {
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return { refused: foreign };
   const scope = { projectId: ctx.projectId };
-  const changed = await applyRunUpdate(env.db, scope, runId, update);
+  const changed = await applyRunUpdate(env.db, scope, runId, update, undefined, options.errorCode);
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, update.status);
     if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
@@ -335,7 +336,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (runUpdate.status === 'completed') {
     const missing = before === null ? null : await runCloseRefusal(env.db, scope, before);
     if (missing !== null) {
-      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate);
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate, { errorCode: closeErrorCode(missing) });
       if ('refused' in written) return written.refused;
       const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;
@@ -393,11 +394,11 @@ export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Prom
   if (runId === null || agentId === null || action === null || summary === null || details === undefined) {
     return Response.json(refused(ctx, refusal('a report requires runId, agentId, action and summary within bounds', 'parse')));
   }
-  const recorded = await recordReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, createdAt: ctx.now });
+  const recorded = await recordReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, audit: body.audit, createdAt: ctx.now });
   if (!recorded.recorded) {
     return Response.json(refused(ctx, refusal(recorded.reason === 'unaccepted' ? recorded.error : 'report names a run this Project does not hold, or an agent this Deployment does not know', 'parse')));
   }
-  return Response.json({ persisted: true, recorded: true });
+  return Response.json({ persisted: true, recorded: true, ...(recorded.auditError === null ? {} : { auditError: recorded.auditError }) });
 }
 
 /** Record a burst of run events. Rows are validated one by one; a burst with any malformed row is refused whole. */

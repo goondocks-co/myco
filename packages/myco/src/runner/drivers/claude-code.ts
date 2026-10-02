@@ -79,6 +79,22 @@ function failureDetail(content: unknown): string | undefined {
   return after === undefined ? callFailureDetail(said) : callFailureDetail(`${after} (exit code ${exit[1]})`);
 }
 
+/** A failed shell call's exit code, from the line its result opens with; undefined for any other result. */
+function exitCodeOf(content: unknown): number | undefined {
+  const said = resultText(content);
+  const exit = said === null ? null : EXIT_CODE_LINE.exec(said);
+  return exit === null ? undefined : Number(exit[1]);
+}
+
+/** A stream line's shape: its type, and its subtype where it carries one. */
+const shapeOf = (line: Record<string, unknown>): string => {
+  const subtype = stringOf(line.subtype);
+  return `${stringOf(line.type) ?? 'untyped'}${subtype === null ? '' : `/${subtype}`}`;
+};
+
+/** The fields a call event carries where the harness gave them: its id. */
+const callOf = (id: string | null): { callId?: string } => (id === null ? {} : { callId: id });
+
 /** The calls a turn's result says were refused: the tool each named, and its call id where it carries one. */
 function refusalsOf(result: Record<string, unknown>): { tool: string; id: string | null }[] {
   const denials = Array.isArray(result.permission_denials) ? result.permission_denials : [];
@@ -142,7 +158,8 @@ export const claudeCodeDriver: Driver = {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
         yield* accounting.events(line);
       } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
-        if (firstReport(stringOf(line.tool_use_id))) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
+        const id = stringOf(line.tool_use_id);
+        if (firstReport(id)) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error', refused: true, ...callOf(id) };
       } else if (type === 'assistant') {
         failure ??= stringOf(line.error);
         yield* accounting.events(line);
@@ -154,8 +171,9 @@ export const claudeCodeDriver: Driver = {
           } else if (kind === 'tool_use') {
             const name = stringOf(block.name) ?? 'tool';
             const id = stringOf(block.id);
+            const input = recordOf(block.input);
             if (id !== null) calls.set(id, name);
-            yield { kind: 'tool_call', name, status: 'started' };
+            yield { kind: 'tool_call', name, status: 'started', ...callOf(id), ...(input === null ? {} : { input }) };
           }
         }
       } else if (type === 'user') {
@@ -164,9 +182,10 @@ export const claudeCodeDriver: Driver = {
           const id = stringOf(block.tool_use_id);
           if (!firstReport(id)) continue;
           const name = (id === null ? undefined : calls.get(id)) ?? 'tool';
-          if (block.is_error !== true) { yield { kind: 'tool_call', name, status: 'ok' }; continue; }
+          if (block.is_error !== true) { yield { kind: 'tool_call', name, status: 'ok', ...callOf(id) }; continue; }
           const detail = failureDetail(block.content);
-          yield { kind: 'tool_call', name, status: 'error', ...(detail === undefined ? {} : { detail }) };
+          const exitCode = exitCodeOf(block.content);
+          yield { kind: 'tool_call', name, status: 'error', ...callOf(id), ...(detail === undefined ? {} : { detail }), ...(exitCode === undefined ? {} : { exitCode }) };
         }
       } else if (type === 'result') {
         yield* accounting.events(line);
@@ -179,12 +198,14 @@ export const claudeCodeDriver: Driver = {
         // is judged granted here.
         const refusals = refusalsOf(line);
         for (const { tool, id } of refusals) {
-          if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error' };
+          if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error', refused: true, ...callOf(id) };
         }
         const refused = refusals.filter(({ tool }) => grantsWhole(grant, tool)).map(({ tool }) => tool);
         if (refused.length > 0) { yield { kind: 'ended', stop: 'error', detail: `permission refused for ${[...new Set(refused)].join(', ')}` }; break; }
         const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
         yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
+      } else {
+        yield { kind: 'unrecognized', shape: shapeOf(line) };
       }
     }
     const code = await started.exit;

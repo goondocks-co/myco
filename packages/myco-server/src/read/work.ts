@@ -21,7 +21,7 @@ import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/wo
  * drown every other run, so the read answers when the index last succeeded, how many of its runs failed in the window,
  * and how many have failed after that success. A failure a later success followed is a retry, not a failure.
  */
-import { runErrorCode } from '../core/reader-codes.js';
+import { runErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../core/task-catalogue.js';
@@ -379,6 +379,43 @@ export async function failingOutcomes(db: RelationalStore, tasks: readonly strin
     latestRunId: String(row.latest_run),
   }));
 }
+
+/** Runs, in one Project, that ended without the agent's account of its steps, against the runs that owed one. */
+export interface AuditFailures {
+  projectId: string;
+  runs: number;
+  closed: number;
+  since: number;
+  latestAt: number;
+  latestRunId: string;
+}
+
+/**
+ * Per Project, the runs of `tasks` a worker claimed that ended from `lookbackFrom` on, and how many of them ended
+ * without their audit (`report_without_audit`), for each Project where any did.
+ */
+export async function auditFailures(db: RelationalStore, tasks: readonly string[], lookbackFrom: number): Promise<AuditFailures[]> {
+  if (tasks.length === 0) return [];
+  const projects = projectsDriving({ all: true }, 'r.project_id');
+  const { results } = await db.prepare(
+    `SELECT r.project_id, COUNT(*) AS closed, SUM(r.error_code = ?) AS runs,
+            MIN(CASE WHEN r.error_code = ? THEN r.completed_at END) AS since, MAX(CASE WHEN r.error_code = ? THEN r.completed_at END) AS latest_at,
+            (SELECT l.id FROM agent_runs l WHERE l.project_id = r.project_id AND l.error_code = ? AND l.completed_at >= ?
+              ORDER BY l.completed_at DESC, l.id DESC LIMIT 1) AS latest_run
+       FROM ${RUNS_BY_TASK}
+      WHERE ${projects.sql} AND r.task IN (${list(tasks)}) AND r.status IN ('completed', 'failed') AND r.completed_at >= ?
+        AND EXISTS (SELECT 1 FROM agent_run_attempts a WHERE a.project_id = r.project_id AND a.run_id = r.id)
+      GROUP BY r.project_id
+     HAVING SUM(r.error_code = ?) > 0
+      ORDER BY latest_at DESC`,
+  ).bind(AUDIT_CODE, AUDIT_CODE, AUDIT_CODE, AUDIT_CODE, lookbackFrom, ...projects.params, ...tasks, lookbackFrom, AUDIT_CODE).all<Record<string, unknown>>();
+  return results.map((row) => ({
+    projectId: String(row.project_id), runs: num(row.runs), closed: num(row.closed),
+    since: num(row.since), latestAt: num(row.latest_at), latestRunId: String(row.latest_run),
+  }));
+}
+
+const AUDIT_CODE: RunErrorCode = 'report_without_audit';
 
 /** Queued runs of Projects that accept capture held for a worker capability from before `queuedBefore`, by the capability that holds them. */
 export async function capabilityHolds(db: RelationalStore, capabilities: readonly string[], queuedBefore: number): Promise<{ capability: string; runs: number; since: number }[]> {

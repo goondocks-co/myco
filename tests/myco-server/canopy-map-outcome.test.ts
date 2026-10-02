@@ -32,6 +32,7 @@ import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const ORIGIN = 'https://s';
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
@@ -221,7 +222,7 @@ describe('a map run a worker claimed', () => {
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: JSON.stringify(ARTIFACT) })).toMatchObject({ written: true, commit: COMMIT_A });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: { ...ARTIFACT, domains: [{ ...ARTIFACT.domains[0]!, title: 'Other' }] } }))
       .toEqual({ ok: false, error: 'this run already stored its map; a run writes one map' });
-    await r.call(run.runToken, 'myco_run', { op: 'report', action: MAP_ACTION, summary: 'mapped' });
+    await r.call(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_ACTION, summary: 'mapped' });
     expect(await r.end(run.id)).toEqual({ ended: true, status: 'completed' });
     expect(r.e.sqlite.query(`SELECT source_run_id AS runId, repository_commit AS commitId FROM canopy_maps WHERE project_id = 'proj_1'`).get())
       .toEqual({ runId: run.id, commitId: COMMIT_A });
@@ -239,19 +240,19 @@ describe('a map run a worker claimed', () => {
     const first = await r.claimMap();
     await r.pinCommit(first.id, COMMIT_A);
     await r.call(first.runToken, 'myco_run_map', { op: 'write', artifact: ARTIFACT });
-    await r.call(first.runToken, 'myco_run', { op: 'report', action: MAP_ACTION, summary: 'mapped' });
+    await r.call(first.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_ACTION, summary: 'mapped' });
     expect(await r.end(first.id)).toEqual({ ended: true, status: 'completed' });
 
     const second = await r.claimMap();
     await r.pinCommit(second.id, COMMIT_A);
     expect(await r.call(second.runToken, 'myco_run_map', { op: 'get' })).toMatchObject({ commit: COMMIT_A, unchanged: true, map: { commit: COMMIT_A, artifact: ARTIFACT } });
-    await r.call(second.runToken, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
+    await r.call(second.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
     expect(await r.end(second.id)).toEqual({ ended: true, status: 'completed' });
 
     const third = await r.claimMap();
     await r.pinCommit(third.id, COMMIT_B);
     expect(await r.call(third.runToken, 'myco_run_map', { op: 'get' })).toMatchObject({ commit: COMMIT_B, unchanged: false });
-    await r.call(third.runToken, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
+    await r.call(third.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
     expect(await r.end(third.id)).toEqual({ ended: true, status: 'failed' });
     expect(r.e.sqlite.query(`SELECT error FROM agent_runs WHERE id = ?`).get(third.id)).toEqual({ error: RUN_CLOSE_ARTIFACT_ERROR });
   });
@@ -308,7 +309,7 @@ describe('when the clock maps a Project', () => {
     const first = await r.claimMap();
     await r.pinCommit(first.id, COMMIT_A);
     await r.call(first.runToken, 'myco_run_map', { op: 'write', artifact: ARTIFACT });
-    await r.call(first.runToken, 'myco_run', { op: 'report', action: MAP_ACTION, summary: 'mapped' });
+    await r.call(first.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_ACTION, summary: 'mapped' });
     expect(await r.end(first.id)).toEqual({ ended: true, status: 'completed' });
     expect(await capturedSinceMap(r.e.db, scope)).toBe(false);
 
@@ -316,7 +317,7 @@ describe('when the clock maps a Project', () => {
     expect(await capturedSinceMap(r.e.db, scope)).toBe(true);
     const second = await r.claimMap();
     await r.pinCommit(second.id, COMMIT_A);
-    await r.call(second.runToken, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
+    await r.call(second.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
     expect(await r.end(second.id)).toEqual({ ended: true, status: 'completed' });
     expect(await capturedSinceMap(r.e.db, scope)).toBe(false);
 
@@ -324,7 +325,7 @@ describe('when the clock maps a Project', () => {
     capture('s3');
     const failed = await r.claimMap();
     await r.pinCommit(failed.id, COMMIT_B);
-    await r.call(failed.runToken, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
+    await r.call(failed.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'nothing moved' });
     expect(await r.end(failed.id)).toEqual({ ended: true, status: 'failed' });
     expect(await capturedSinceMap(r.e.db, scope)).toBe(true);
   });

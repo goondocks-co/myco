@@ -29,7 +29,7 @@ async function rig() {
   const workerCredential = await issueMemberToken(fixture.db, { memberId: 'mem_worker', machineId: 'sirkirby-mbp' }, NOW);
   const runCredential = await issueMemberToken(fixture.db, { memberId: 'mem_harness', machineId: 'harness' }, NOW);
   const claim = () => claimQueuedRun(fixture.db, CANDIDATE, {
-    dispatchedBy: runCredential.tokenId, leasedBy: workerCredential.tokenId, leaseExpiresAt: LEASE_UNTIL, harness: 'codex', now: NOW,
+    dispatchedBy: runCredential.tokenId, leasedBy: workerCredential.tokenId, machineId: 'sirkirby-mbp', leaseExpiresAt: LEASE_UNTIL, harness: 'codex', now: NOW,
     profile: { tier: 'low', model: 'gpt-fixture', effort: 'low', sources: { tier: 'task', model: 'configured' } },
   }, { limits: NO_LIMITS, now: NOW });
   const get = async (path: string): Promise<Record<string, unknown>> => {

@@ -7,6 +7,8 @@
  *
  * - the last backup is older than twice its interval, or there is none while automatic backups are configured;
  * - a learning or map outcome failed, and no later run of that task completed in that Project;
+ * - runs a worker claimed ended without the agent's account of its steps (`report_without_audit`), with how many
+ *   runs ended in all, so the rate is read where it is said;
  * - the search index is behind: text has waited for it longer than `SEARCH_BEHIND_MS`, or its updates have failed
  *   for that long with no success after them;
  * - transcripts the current parser stopped on a fault;
@@ -23,7 +25,8 @@ import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
-import { capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
+import { auditFailures, capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
+import { RUN_CLOSE_RULES } from './run-postconditions.js';
 import { stoppedTranscripts } from '../ingest/parse.js';
 import { searchBacklog } from './search-index.js';
 import { latestBackupAt } from './backup.js';
@@ -49,12 +52,16 @@ export const OUTCOME_LOOKBACK_MS = 7 * DAY_MS;
 /** How long the recovery producer is given to say what its last attempt did. */
 const PRODUCER_STATUS_MS = 5_000;
 
+/** The tasks whose runs owe an audit. */
+const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.audited === true).map(([task]) => task);
+
 /** The outcome tasks whose failure needs someone: learning and the code map. */
 export const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
+  | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number> }
   | { kind: 'runs_held_for_capability'; tone: 'warn'; capability: string; runs: number; since: number }
@@ -106,6 +113,12 @@ const RULES: readonly Rule[] = [
     read: async (env, now) => (await failingOutcomes(env.db, WATCHED_OUTCOME_TASKS, now - OUTCOME_LOOKBACK_MS)).map((f) => ({
       kind: 'outcome_failed', tone: 'bad', projectId: f.projectId, outcome: f.kind, task: f.task,
       failures: f.failures, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
+    })),
+  },
+  {
+    kind: 'runs_without_audit',
+    read: async (env, now) => (await auditFailures(env.db, AUDITED_TASKS, now - OUTCOME_LOOKBACK_MS)).map((f) => ({
+      kind: 'runs_without_audit', tone: 'warn', projectId: f.projectId, runs: f.runs, closed: f.closed, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
     })),
   },
   {

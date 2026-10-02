@@ -111,7 +111,7 @@ describe('the listings the manifests declare', () => {
 
 describe('reporting what was listed', () => {
   const catalog = (harness: string): ModelCatalog => ({ harness, source: { kind: 'command', command: harness }, signIn: 'worker-login', fetchedAt: 1, models: [{ id: `${harness}/m`, label: `${harness}/m` }] });
-  const ANSWERED: WorkerAnswer = { kind: 'answered', body: { persisted: true, recorded: true }, accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true };
+  const ANSWERED: WorkerAnswer = { kind: 'answered', body: { persisted: true, recorded: true }, accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true, steps: true };
   const settle = () => Bun.sleep(5);
 
   function rig(answers: WorkerAnswer[], listed: HarnessListing[] = [{ ok: true, catalog: catalog('codex') }, { ok: true, catalog: catalog('opencode') }]) {

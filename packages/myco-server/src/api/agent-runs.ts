@@ -9,7 +9,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { listReports } from '../core/runs.js';
-import { getRunCalls, getRunDetail, listRuns } from '../read/runs.js';
+import { getRunCalls, getRunDetail, getRunSteps, listRuns } from '../read/runs.js';
 import { runReads } from '../read/run-reads.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { paging } from './sessions.js';
@@ -86,5 +86,19 @@ export async function handleProjectRunCalls(env: ServerEnv, ctx: OwnerContext): 
   const calls = paging(ctx.url);
   if (calls instanceof Response) return calls;
   const answer = await getRunCalls(env.db, scope, runId, calls);
+  return answer === null ? notFound() : ok(answer);
+}
+
+/** One page of the step log one attempt's worker observed — the latest attempt unless `attempt` names another — in step order. */
+export async function handleProjectRunSteps(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const runId = runIdParam(ctx.params.runId ?? '');
+  if (runId === null) return notFound();
+  const steps = paging(ctx.url);
+  if (steps instanceof Response) return steps;
+  const attempt = filterParam(ctx.url, 'attempt');
+  if (attempt instanceof Response) return attempt;
+  const answer = await getRunSteps(env.db, scope, runId, attempt, steps);
   return answer === null ? notFound() : ok(answer);
 }
