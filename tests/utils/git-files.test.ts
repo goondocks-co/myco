@@ -52,16 +52,22 @@ function gitSays(cwd: string) {
 const memberSays = (cwd: string) => ({ root: resolveMainRepoRoot(cwd), top: resolveWorktreeRoot(cwd), head: gitHead(cwd), repository: isSafeProjectRoot(cwd, {}) });
 
 /**
- * Every working directory a hook may run from in `top`: the top, a subdirectory, and the top through a symlink (not
- * on Windows, where making one takes a privilege a runner does not have).
+ * Every working directory a hook may run from in `top`: the top, a subdirectory, the top through a symlink beside it,
+ * and the top through a symlink to the directory above it, where a relative path resolved from the top as reached
+ * lands somewhere else than from the real top (not on Windows, where making a symlink takes a privilege a runner does
+ * not have).
  */
-function cwdsOf(top: string): string[] {
+function cwdsOf(top: string, parent: string): string[] {
   const sub = path.join(top, 'pkg', 'src');
   fs.mkdirSync(sub, { recursive: true });
   if (process.platform === 'win32') return [top, sub];
   const link = `${top}-link`;
   fs.symlinkSync(top, link);
-  return [top, sub, link, path.join(link, 'pkg')];
+  const alias = `${parent}-alias`;
+  fs.symlinkSync(parent, alias);
+  removeWhenTestsEnd(alias);
+  const viaAlias = path.join(alias, path.relative(parent, top));
+  return [top, sub, link, path.join(link, 'pkg'), viaAlias, path.join(viaAlias, 'pkg')];
 }
 
 /** Each layout: how it is made, and whether the files alone decide it. */
@@ -75,6 +81,40 @@ const LAYOUTS: Array<{ name: string; make: (dir: string) => string; fromFiles: b
   {
     name: 'a linked worktree', fromFiles: true,
     make: (d) => { const r = repo(path.join(d, 'r')); commit(r); git(r, 'worktree', 'add', '-q', path.join(d, 'wt'), '-b', 'wt-branch'); return path.join(d, 'wt'); },
+  },
+  {
+    // As `git worktree add --relative-paths` (git 2.48) writes it, on any git.
+    name: 'a linked worktree whose .git file names its git directory relatively', fromFiles: true,
+    make: (d) => {
+      const r = repo(path.join(d, 'r')); commit(r);
+      git(r, 'worktree', 'add', '-q', path.join(d, 'wt'), '-b', 'wt-branch');
+      fs.writeFileSync(path.join(d, 'wt', '.git'), `gitdir: ${path.relative(path.join(d, 'wt'), path.join(r, '.git', 'worktrees', 'wt')).replaceAll('\\', '/')}\n`);
+      return path.join(d, 'wt');
+    },
+  },
+  {
+    // Git writes `commondir` relative; one naming the common directory through a symlink is resolved as git does.
+    name: 'a linked worktree whose commondir names the common directory through a symlink', fromFiles: true,
+    make: (d) => {
+      const r = repo(path.join(d, 'r')); commit(r);
+      git(r, 'worktree', 'add', '-q', path.join(d, 'wt'), '-b', 'wt-branch');
+      // Windows: making a symlink takes a privilege a runner does not have, and the worktree stays as git made it.
+      if (process.platform !== 'win32') {
+        fs.symlinkSync(r, path.join(d, 'r-link'));
+        fs.writeFileSync(path.join(r, '.git', 'worktrees', 'wt', 'commondir'), `${path.join(d, 'r-link', '.git')}\n`);
+      }
+      return path.join(d, 'wt');
+    },
+  },
+  {
+    // A `.git` file naming a git directory with no `commondir`, relatively.
+    name: 'a checkout whose git directory is kept apart, named relatively', fromFiles: true,
+    make: (d) => {
+      fs.mkdirSync(path.join(d, 'store'));
+      const r = repo(path.join(d, 'r'), ['--separate-git-dir', path.join(d, 'store', 'r.git')]); commit(r);
+      fs.writeFileSync(path.join(r, '.git'), `gitdir: ${path.relative(r, path.join(d, 'store', 'r.git')).replaceAll('\\', '/')}\n`);
+      return r;
+    },
   },
   {
     name: 'a submodule', fromFiles: false,
@@ -112,8 +152,9 @@ const LAYOUTS: Array<{ name: string; make: (dir: string) => string; fromFiles: b
 describe('a repository read from its own files', () => {
   for (const layout of LAYOUTS) {
     it(`answers what git answers for ${layout.name}${layout.fromFiles ? ', from the files alone' : ', by asking git'}`, () => {
-      const top = layout.make(base());
-      for (const cwd of cwdsOf(top)) {
+      const parent = base();
+      const top = layout.make(parent);
+      for (const cwd of cwdsOf(top, parent)) {
         expect({ cwd, ...memberSays(cwd) }).toEqual({ cwd, ...gitSays(cwd) });
         const read = readRepoLayout(cwd, {});
         const decided = read !== UNUSUAL && read !== null && readRepoHead(read) !== UNUSUAL;
@@ -158,6 +199,11 @@ describe('a repository read from its own files', () => {
     const owner = (other: string) => (dir: string) => (dir === other ? mine + 1 : mine);
     expect(readRepoLayout(r, {}, { uid: () => mine, ownerOf: owner(path.join(r, '.git')) })).toBe(UNUSUAL);
     expect(readRepoLayout(r, {}, { uid: () => mine, ownerOf: owner(r) })).toBe(UNUSUAL);
+    // A linked worktree's `.git` file, which git checks as well.
+    const wt = path.join(path.dirname(r), 'wt');
+    git(r, 'worktree', 'add', '-q', wt, '-b', 'wt');
+    expect(readRepoLayout(wt, {}, { uid: () => mine })).not.toBe(UNUSUAL);
+    expect(readRepoLayout(wt, {}, { uid: () => mine, ownerOf: owner(path.join(wt, '.git')) })).toBe(UNUSUAL);
   });
 
   it('asks git where no owner can be read, as on Windows, whose git refuses a repository by its owner', () => {

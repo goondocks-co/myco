@@ -46,7 +46,7 @@ const STEERING_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_CEILING
  */
 const UNUSUAL_CONFIG = /^\s*(?:refstorage|worktree|worktreeconfig)\b|^\s*bare\s*(?:=\s*(?:true|yes|on|1)\s*)?(?:[#;].*)?$/im;
 /** A config that includes another (`[include]`, `[includeIf …]`). */
-const INCLUDE_CONFIG = /^\s*\[\s*include/im;
+export const INCLUDE_CONFIG = /^\s*\[\s*include/im;
 
 /** How this reader sees the filesystem and the user: the system's, or a test's stand-in. */
 export interface RepoFilesDeps {
@@ -120,12 +120,17 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
     } else if (stat.isFile()) {
       const named = /^gitdir:\s*(.+?)\s*$/m.exec(readText(dotGit) ?? '');
       if (named === null) return UNUSUAL;
-      gitDir = path.resolve(dir, named[1]);
+      // Git resolves the directory a `.git` file names through symlinks, and the common directory from there: a
+      // relative `gitdir:` reached through a symlinked parent names the real one, not one beside the alias.
+      try { gitDir = fs.realpathSync(path.resolve(dir, named[1])); } catch { return UNUSUAL; }
     } else {
       return UNUSUAL;
     }
     const common = readText(path.join(gitDir, 'commondir'));
-    const commonDir = common === null ? gitDir : path.resolve(gitDir, common.trim());
+    let commonDir = gitDir;
+    if (common !== null) {
+      try { commonDir = stat.isFile() ? fs.realpathSync(path.resolve(gitDir, common.trim())) : path.resolve(gitDir, common.trim()); } catch { return UNUSUAL; }
+    }
     // A git directory as git recognises one: `HEAD` in it, `objects` and `refs` in the directory it shares. Git walks
     // on past any other `.git`; so does the decision, to git.
     if (!isFile(path.join(gitDir, 'HEAD')) || !isDirectory(path.join(commonDir, 'objects')) || !isDirectory(path.join(commonDir, 'refs'))) return UNUSUAL;
@@ -142,11 +147,12 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
     } catch {
       return UNUSUAL;
     }
-    // Git refuses a repository another user owns unless it is marked safe; Git for Windows applies that check by an
-    // owner this reader cannot read.
+    // Git refuses a repository another user owns unless it is marked safe: it checks the work tree, the `.git` file
+    // that names a git directory, and the git directory. Git for Windows applies that check by an owner this reader
+    // cannot read.
     const uid = (deps.uid ?? systemUid)();
     const ownerOf = deps.ownerOf ?? systemOwner;
-    const owned = uid !== null && ownedBy(dir, uid, ownerOf) && ownedBy(gitDir, uid, ownerOf);
+    const owned = uid !== null && ownedBy(dir, uid, ownerOf) && (!stat.isFile() || ownedBy(dotGit, uid, ownerOf)) && ownedBy(gitDir, uid, ownerOf);
     return { layout: { top: dir, gitDir, commonDir }, unverified: configUnusual ? 'config' : owned ? null : 'owner' };
   }
 }

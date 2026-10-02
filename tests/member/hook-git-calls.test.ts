@@ -123,6 +123,8 @@ function withPathFirst(dir: string): NodeJS.ProcessEnv {
 }
 
 const VERDICT_QUERY = 'rev-parse --show-toplevel --git-dir --git-common-dir';
+/** What git is asked once for a verdict: the verdict, and where its system config lives (`--exec-path` before git 2.42). */
+const VERDICT_QUERIES = [VERDICT_QUERY, 'var GIT_CONFIG_SYSTEM', '--exec-path'];
 const HEAD_QUERIES = ['rev-parse --abbrev-ref HEAD', 'rev-parse HEAD'];
 
 describe.skipIf(realGit === '')('the git a second hook in a repository starts', () => {
@@ -163,8 +165,8 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
     const first = calls('session-start', 'SessionStart');
     // Windows: git's verdict on the repository, and nothing else; elsewhere the files decide.
     if (process.platform === 'win32') {
-      expect(first.length).toBeGreaterThan(0);
-      expect(first.filter((call) => call !== VERDICT_QUERY)).toEqual([]);
+      expect(first).toContain(VERDICT_QUERY);
+      expect(first.filter((call) => !VERDICT_QUERIES.includes(call))).toEqual([]);
     } else {
       expect(first).toEqual([]);
     }
@@ -177,7 +179,8 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
     if (!fs.existsSync(bin)) loggingGit(bin, log);
     const calls = joinedRepo('worktree-config', [['extensions.worktreeConfig', 'true']]);
     const first = calls('session-start', 'SessionStart');
-    expect(first.filter((call) => call !== VERDICT_QUERY).sort()).toEqual(HEAD_QUERIES);
+    expect(first).toContain(VERDICT_QUERY);
+    expect(first.filter((call) => !VERDICT_QUERIES.includes(call)).sort()).toEqual(HEAD_QUERIES);
     expect(calls('session-start', 'SessionStart').sort()).toEqual(HEAD_QUERIES);
     expect(calls('user-prompt-submit', 'UserPromptSubmit')).toEqual([]);
     expect(calls('stop', 'Stop')).toEqual([]);
