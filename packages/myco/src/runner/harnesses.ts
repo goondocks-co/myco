@@ -1,8 +1,10 @@
 /**
  * Every harness a worker can drive, and the facts that differ between them.
  *
- * Detection, the three drivers and `myco doctor` all read this one table, so a
- * fact about a harness is stated once. The facts that differ:
+ * Each harness's manifest declares them (its `runner:` block, generated into
+ * `harnesses.generated.ts` and myco-shared); this module types them and reads
+ * them. Detection, the three drivers and `myco doctor` all read this one table,
+ * so a fact about a harness is stated once, in its manifest. The facts that differ:
  *
  * - **`binary`** — what to look for on PATH.
  * - **`launch`** — three shapes, not two. A harness may speak the protocol
@@ -29,6 +31,7 @@
 
 import { expandHome } from '../paths/home.js';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canOfferHarness, type Asking, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { HARNESS_FACTS } from './harnesses.generated.js';
 
 /** How a harness is started so it speaks the agent protocol, or that it does not speak it at all. */
 export type LaunchShape =
@@ -95,77 +98,18 @@ export interface Harness {
   profile: ProfileCapability;
 }
 
-export const HARNESSES: readonly Harness[] = [
-  {
-    id: 'claude-code',
-    profile: { model: 'flag', efforts: PROFILE_HARNESSES['claude-code']!.allowedEfforts },
-    accounting: { reported: 'claude-stream', modelSources: ['system.init.model', 'assistant.message.model', 'result.modelUsage'], primarySources: ['system.init.model'], modelVariants: [{ suffix: '[1m]', context: '1m' }], zeroDollars: 'reported', launchFallback: 'none', provider: { kind: 'environment', default: 'anthropic', selectors: [{ variable: 'CLAUDE_CODE_USE_BEDROCK', provider: 'bedrock' }, { variable: 'CLAUDE_CODE_USE_VERTEX', provider: 'vertex' }, { variable: 'CLAUDE_CODE_USE_FOUNDRY', provider: 'foundry' }], unknownIfSet: ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL'] }, tokenScope: 'attempt' },
-    binary: 'claude',
-    launch: { kind: 'native' },
-    // The value lives in the OS keyring on macOS and in the file elsewhere, so
-    // the file answers where it exists and the binary answers where it does not.
-    credential: { kind: 'file-or-command', path: '~/.claude/.credentials.json', requires: ['claudeAiOauth', 'accessToken'], args: ['auth', 'status'] },
-    isolation: { kind: 'flag', args: ['--strict-mcp-config'] },
-    asking: HARNESS_ASKING['claude-code']!,
-    sourceGit: 'shim',
-  },
-  {
-    id: 'codex',
-    profile: { model: 'config', efforts: PROFILE_HARNESSES.codex!.allowedEfforts },
-    accounting: { reported: 'codex-session', modelSources: ['session.turn_context.model'], launchFallback: 'resolved-config', provider: { kind: 'session-config', default: 'openai' }, tokenScope: 'attempt' },
-    binary: 'codex',
-    launch: { kind: 'native' },
-    // A file holding none of the three is a logged-out file, not a login.
-    credential: { kind: 'file', path: '~/.codex/auth.json', requires: ['OPENAI_API_KEY', 'tokens', 'personal_access_token'] },
-    isolation: { kind: 'home', env: 'CODEX_HOME' },
-    // It never asks: approvals would wait on a terminal nobody is at.
-    asking: HARNESS_ASKING.codex!,
-    // Its driver holds a run to a sandbox rather than to the run's grant.
-    sourceGit: 'none',
-  },
-  {
-    id: 'opencode',
-    profile: { model: 'config', efforts: PROFILE_HARNESSES.opencode!.allowedEfforts },
-    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'model-prefix' }, tokenScope: 'unverified', lastResponseVersions: ['1.18.21', '1.18.29'] },
-    binary: 'opencode',
-    launch: { kind: 'subcommand', args: ['acp'] },
-    credential: { kind: 'file', path: '~/.local/share/opencode/auth.json', requires: [] },
-    isolation: { kind: 'additive' },
-    // Its default configuration allows every tool without asking, and a plugin
-    // it loads can answer a permission request before the driver does.
-    asking: HARNESS_ASKING.opencode!,
-    sourceGit: 'shim',
-  },
-  {
-    id: 'cursor',
-    profile: { model: 'none', efforts: PROFILE_HARNESSES.cursor!.allowedEfforts },
-    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
-    binary: 'cursor-agent',
-    launch: { kind: 'subcommand', args: ['acp'] },
-    credential: { kind: 'command', args: ['status'] },
-    isolation: { kind: 'additive' },
-    // Its allow list and Run Everything mode live in its configuration
-    // directory; its login lives in the keychain, outside it.
-    asking: HARNESS_ASKING.cursor!,
-    // Its shell puts the system directories first on PATH before each command.
-    sourceGit: 'none',
-  },
-  {
-    id: 'antigravity',
-    profile: { model: 'none', efforts: PROFILE_HARNESSES.antigravity!.allowedEfforts },
-    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
-    binary: 'agy',
-    launch: { kind: 'sidecar', binary: 'agy_acp_server.par' },
-    credential: { kind: 'file', path: '~/.gemini/antigravity-cli/settings.json', requires: [] },
-    isolation: { kind: 'additive' },
-    // It reads its allow list from `~/.gemini/antigravity-cli/settings.json`,
-    // and neither its CLI nor its protocol server is known to take a variable
-    // or flag that moves it.
-    asking: HARNESS_ASKING.antigravity!,
-    // Its shell has not been seen reaching the run's git.
-    sourceGit: 'none',
-  },
-];
+/** What a harness's manifest declares of how a worker runs it (\`runner.worker\`): all but what the shared tables hold. */
+export type HarnessFacts = Omit<Harness, 'profile' | 'asking'> & { modelSetting: ProfileCapability['model'] };
+
+/**
+ * Every harness a worker can drive, in the order it ranks them, from the manifests: how a worker runs it
+ * (\`harnesses.generated.ts\`), how it is held to a run's grant (\`HARNESS_ASKING\`), and its efforts from its tier profile.
+ */
+export const HARNESSES: readonly Harness[] = HARNESS_FACTS.map(({ modelSetting, ...facts }) => ({
+  ...facts,
+  asking: HARNESS_ASKING[facts.id]!,
+  profile: { model: modelSetting, efforts: PROFILE_HARNESSES[facts.id]!.allowedEfforts },
+}));
 
 const BY_ID = new Map(HARNESSES.map((h) => [h.id, h]));
 

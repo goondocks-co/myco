@@ -31,14 +31,13 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MEMBER_ENTRIES = ['hooks/**', 'member/**', 'runner/**', 'cli/member-dispatch.ts', 'cli/member-verbs.ts'];
 const WHOLE_PACKAGES = [path.join(REPO_ROOT, 'packages', 'myco-shared', 'src'), path.join(REPO_ROOT, 'packages', 'myco-server', 'src')];
 
-/** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data and its loader. */
+/** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data, its loader and what it generates. */
 const REGISTRIES: readonly RegExp[] = [
   /^packages\/myco\/src\/symbionts\/(claude-code|codex|cursor|copilot|windsurf|antigravity)\.ts$/,
   /^packages\/myco\/src\/symbionts\/parsers\//,
   /^packages\/myco\/src\/symbionts\/templates\//,
   /^packages\/myco\/src\/symbionts\/(registry|detect|manifest-schema)\.ts$/,
   /^packages\/myco\/src\/runner\/drivers\//,
-  /^packages\/myco\/src\/runner\/harnesses\.ts$/,
   /^packages\/myco-server\/src\/ingest\/parsers\//,
   /\.generated\.ts$/,
 ];

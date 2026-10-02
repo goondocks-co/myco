@@ -141,3 +141,19 @@ runner:
     allowedEfforts: []
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
     modelHint: Model selection is unavailable for this agent.
+  # How a worker runs it.
+  worker:
+    binary: cursor-agent
+    launch: { kind: subcommand, args: [acp] }
+    login: { kind: command, args: [status] }
+    isolation: { kind: additive }
+    # Its shell puts the system directories first on PATH before each command.
+    sourceGit: none
+    modelSetting: none
+    accounting:
+      reported: acp-session
+      zeroDollars: unavailable
+      modelSources: [session.models, session.configOptions, session.currentModelId]
+      launchFallback: none
+      provider: { kind: unavailable }
+      tokenScope: unverified

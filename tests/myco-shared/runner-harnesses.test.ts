@@ -11,6 +11,7 @@ import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/ha
 import { SECRET_SLOTS, SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/myco-shared/secret-slots';
 import { CONFIGURABLE_PROFILE_HARNESSES, HARNESS_ASKING, OFFERABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, profileModelMatches } from '@goondocks/myco-shared/execution-profile';
 import { RUNNER_HARNESSES } from '../../packages/myco-shared/src/runner-harnesses.generated.ts';
+import { HARNESSES } from '@myco/runner/harnesses.js';
 
 const BEFORE = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../fixtures/runner-harnesses-before-manifests.json'), 'utf-8')) as Record<string, unknown>;
 /** The same value through JSON, as the fixture holds it: key order and readonly arrays are not facts. */
@@ -51,6 +52,13 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
     expect(profileModelMatches('claude-code', 'sonnet', 'claude-opus-4-1')).toBe(false);
     expect(profileModelMatches('claude-code', 'sonnet', 'sonnet-4')).toBe(false);
     expect(profileModelMatches('codex', 'gpt-5', 'gpt-5')).toBe(true);
+  });
+
+  it('are how a worker runs each harness: binary, launch, login, isolation, permissions, source git, model setting and accounting, in rank order', () => {
+    expect(HARNESSES.map((h) => h.id)).toEqual((BEFORE.HARNESSES as Array<{ id: string }>).map((h) => h.id));
+    for (const [i, harness] of HARNESSES.entries()) {
+      expect({ harness: harness.id, facts: asJson(harness) }).toEqual({ harness: harness.id, facts: (BEFORE.HARNESSES as unknown[])[i] });
+    }
   });
 
   it('inject each harness\'s credential under the variable it reads, and nothing for one with no slot', () => {

@@ -369,3 +369,19 @@ runner:
     allowedEfforts: [minimal, low, medium, high, xhigh]
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
     modelHint: Use a Codex model ID. An unset model holds runs at this tier.
+  # How a worker runs it.
+  worker:
+    binary: codex
+    launch: { kind: native }
+    # A file holding none of the three is a logged-out file, not a login.
+    login: { kind: file, path: ~/.codex/auth.json, requires: [OPENAI_API_KEY, tokens, personal_access_token] }
+    isolation: { kind: home, env: CODEX_HOME }
+    # Its driver holds a run to a sandbox rather than to the run's grant.
+    sourceGit: none
+    modelSetting: config
+    accounting:
+      reported: codex-session
+      modelSources: [session.turn_context.model]
+      launchFallback: resolved-config
+      provider: { kind: session-config, default: openai }
+      tokenScope: attempt

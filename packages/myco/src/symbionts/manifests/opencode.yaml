@@ -116,3 +116,19 @@ runner:
     allowedEfforts: [minimal, low, medium, high, xhigh, max]
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$'
     modelHint: Use provider/model. An unset model holds runs at this tier.
+  # How a worker runs it.
+  worker:
+    binary: opencode
+    launch: { kind: subcommand, args: [acp] }
+    login: { kind: file, path: ~/.local/share/opencode/auth.json, requires: [] }
+    isolation: { kind: additive }
+    sourceGit: shim
+    modelSetting: config
+    accounting:
+      reported: acp-session
+      zeroDollars: unavailable
+      modelSources: [session.models, session.configOptions, session.currentModelId]
+      launchFallback: none
+      provider: { kind: model-prefix }
+      tokenScope: unverified
+      lastResponseVersions: [1.18.21, 1.18.29]

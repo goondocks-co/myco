@@ -420,3 +420,29 @@ runner:
     modelHint: Use haiku, sonnet, opus, fable, or a claude-* model ID.
     modelFamilies: [haiku, sonnet, opus, fable]
     modelFamilyPrefix: claude-
+  # How a worker runs it.
+  worker:
+    binary: claude
+    launch: { kind: native }
+    # The login lives in the OS keyring on macOS and in the file elsewhere, so the file answers where it exists and the
+    # binary answers where it does not.
+    login: { kind: file-or-command, path: ~/.claude/.credentials.json, requires: [claudeAiOauth, accessToken], args: [auth, status] }
+    isolation: { kind: flag, args: [--strict-mcp-config] }
+    sourceGit: shim
+    modelSetting: flag
+    accounting:
+      reported: claude-stream
+      modelSources: [system.init.model, assistant.message.model, result.modelUsage]
+      primarySources: [system.init.model]
+      modelVariants: [{ suffix: '[1m]', context: 1m }]
+      zeroDollars: reported
+      launchFallback: none
+      provider:
+        kind: environment
+        default: anthropic
+        selectors:
+          - { variable: CLAUDE_CODE_USE_BEDROCK, provider: bedrock }
+          - { variable: CLAUDE_CODE_USE_VERTEX, provider: vertex }
+          - { variable: CLAUDE_CODE_USE_FOUNDRY, provider: foundry }
+        unknownIfSet: [ANTHROPIC_BASE_URL, CLAUDE_CODE_CLIENT_DATA_URL]
+      tokenScope: attempt

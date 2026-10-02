@@ -158,6 +158,37 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "allowedEfforts": [],
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
         "modelHint": "Model selection is unavailable for this agent."
+      },
+      "worker": {
+        "binary": "agy",
+        "launch": {
+          "kind": "sidecar",
+          "binary": "agy_acp_server.par"
+        },
+        "login": {
+          "kind": "file",
+          "path": "~/.gemini/antigravity-cli/settings.json",
+          "requires": []
+        },
+        "isolation": {
+          "kind": "additive"
+        },
+        "sourceGit": "none",
+        "modelSetting": "none",
+        "accounting": {
+          "reported": "acp-session",
+          "modelSources": [
+            "session.models",
+            "session.configOptions",
+            "session.currentModelId"
+          ],
+          "launchFallback": "none",
+          "zeroDollars": "unavailable",
+          "provider": {
+            "kind": "unavailable"
+          },
+          "tokenScope": "unverified"
+        }
       }
     }
   },
@@ -552,6 +583,74 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "fable"
         ],
         "modelFamilyPrefix": "claude-"
+      },
+      "worker": {
+        "binary": "claude",
+        "launch": {
+          "kind": "native"
+        },
+        "login": {
+          "kind": "file-or-command",
+          "path": "~/.claude/.credentials.json",
+          "requires": [
+            "claudeAiOauth",
+            "accessToken"
+          ],
+          "args": [
+            "auth",
+            "status"
+          ]
+        },
+        "isolation": {
+          "kind": "flag",
+          "args": [
+            "--strict-mcp-config"
+          ]
+        },
+        "sourceGit": "shim",
+        "modelSetting": "flag",
+        "accounting": {
+          "reported": "claude-stream",
+          "modelSources": [
+            "system.init.model",
+            "assistant.message.model",
+            "result.modelUsage"
+          ],
+          "launchFallback": "none",
+          "primarySources": [
+            "system.init.model"
+          ],
+          "modelVariants": [
+            {
+              "suffix": "[1m]",
+              "context": "1m"
+            }
+          ],
+          "zeroDollars": "reported",
+          "provider": {
+            "kind": "environment",
+            "default": "anthropic",
+            "selectors": [
+              {
+                "variable": "CLAUDE_CODE_USE_BEDROCK",
+                "provider": "bedrock"
+              },
+              {
+                "variable": "CLAUDE_CODE_USE_VERTEX",
+                "provider": "vertex"
+              },
+              {
+                "variable": "CLAUDE_CODE_USE_FOUNDRY",
+                "provider": "foundry"
+              }
+            ],
+            "unknownIfSet": [
+              "ANTHROPIC_BASE_URL",
+              "CLAUDE_CODE_CLIENT_DATA_URL"
+            ]
+          },
+          "tokenScope": "attempt"
+        }
       }
     }
   },
@@ -1052,6 +1151,39 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
         "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
+      },
+      "worker": {
+        "binary": "codex",
+        "launch": {
+          "kind": "native"
+        },
+        "login": {
+          "kind": "file",
+          "path": "~/.codex/auth.json",
+          "requires": [
+            "OPENAI_API_KEY",
+            "tokens",
+            "personal_access_token"
+          ]
+        },
+        "isolation": {
+          "kind": "home",
+          "env": "CODEX_HOME"
+        },
+        "sourceGit": "none",
+        "modelSetting": "config",
+        "accounting": {
+          "reported": "codex-session",
+          "modelSources": [
+            "session.turn_context.model"
+          ],
+          "launchFallback": "resolved-config",
+          "provider": {
+            "kind": "session-config",
+            "default": "openai"
+          },
+          "tokenScope": "attempt"
+        }
       }
     }
   },
@@ -1536,6 +1668,40 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "allowedEfforts": [],
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
         "modelHint": "Model selection is unavailable for this agent."
+      },
+      "worker": {
+        "binary": "cursor-agent",
+        "launch": {
+          "kind": "subcommand",
+          "args": [
+            "acp"
+          ]
+        },
+        "login": {
+          "kind": "command",
+          "args": [
+            "status"
+          ]
+        },
+        "isolation": {
+          "kind": "additive"
+        },
+        "sourceGit": "none",
+        "modelSetting": "none",
+        "accounting": {
+          "reported": "acp-session",
+          "modelSources": [
+            "session.models",
+            "session.configOptions",
+            "session.currentModelId"
+          ],
+          "launchFallback": "none",
+          "zeroDollars": "unavailable",
+          "provider": {
+            "kind": "unavailable"
+          },
+          "tokenScope": "unverified"
+        }
       }
     }
   },
@@ -1701,6 +1867,43 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
         "modelHint": "Use provider/model. An unset model holds runs at this tier."
+      },
+      "worker": {
+        "binary": "opencode",
+        "launch": {
+          "kind": "subcommand",
+          "args": [
+            "acp"
+          ]
+        },
+        "login": {
+          "kind": "file",
+          "path": "~/.local/share/opencode/auth.json",
+          "requires": []
+        },
+        "isolation": {
+          "kind": "additive"
+        },
+        "sourceGit": "shim",
+        "modelSetting": "config",
+        "accounting": {
+          "reported": "acp-session",
+          "modelSources": [
+            "session.models",
+            "session.configOptions",
+            "session.currentModelId"
+          ],
+          "launchFallback": "none",
+          "zeroDollars": "unavailable",
+          "provider": {
+            "kind": "model-prefix"
+          },
+          "tokenScope": "unverified",
+          "lastResponseVersions": [
+            "1.18.21",
+            "1.18.29"
+          ]
+        }
       }
     }
   },
