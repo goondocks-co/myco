@@ -3,7 +3,7 @@ import type { DeploymentTarget } from '@goondocks/myco-shared/settings-contract'
 import { EMBEDDING_CATALOGUE } from '@goondocks/myco-shared/settings-contract';
 import { storedEmbedding } from '../settings.js';
 import { openProviderCredential, providerCredentialReady } from '../provider-credentials.js';
-import { embeddingText, embeddingValues, EmbeddingUnavailable, EMBEDDING_TIMEOUT_MS, type EmbeddingProvider } from './provider.js';
+import { embeddingText, embeddingValues, failureDetail, retryAfterMs, EmbeddingUnavailable, EMBEDDING_TIMEOUT_MS, type EmbeddingProvider } from './provider.js';
 import { resolveEmbedding, type EmbeddingResolution, type EmbeddingSelection, type StoredEmbedding } from './policy.js';
 
 /** What the platform contributes to embedding: its target, and the provider its own binding serves a model through, where it has one. */
@@ -44,11 +44,17 @@ function httpEmbeddingProvider(selection: EmbeddingSelection & { url: string }, 
           headers: { 'content-type': 'application/json', ...(credential === null ? {} : { authorization: `Bearer ${credential}` }) },
           body: JSON.stringify({ model: selection.model, input: [embeddingText(text)] }),
         });
-      } catch { throw new EmbeddingUnavailable('embedding provider could not be reached'); }
-      if (!response.ok) throw new EmbeddingUnavailable(`embedding provider returned HTTP ${response.status}`);
+      } catch (error) {
+        if (signal.aborted) throw new EmbeddingUnavailable('embedding provider timed out', { kind: 'timeout' });
+        throw new EmbeddingUnavailable('embedding provider could not be reached', { kind: 'unreachable', detail: failureDetail(error) });
+      }
+      if (!response.ok) {
+        throw new EmbeddingUnavailable(`embedding provider returned HTTP ${response.status}`,
+          { kind: 'http', status: response.status, retryAfterMs: retryAfterMs(response.headers.get('retry-after'), Date.now()) });
+      }
       let body: { embeddings?: unknown[]; data?: Array<{ embedding?: unknown }> };
       try { body = await response.json(); }
-      catch (error) { if (signal.aborted) throw new EmbeddingUnavailable('embedding provider timed out'); throw error; }
+      catch (error) { if (signal.aborted) throw new EmbeddingUnavailable('embedding provider timed out', { kind: 'timeout' }); throw error; }
       return embeddingValues(ollama ? body.embeddings?.[0] : body.data?.[0]?.embedding);
     },
   };

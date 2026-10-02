@@ -13,7 +13,7 @@ import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/sett
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
-import { cancelEmbeddingSwitch, embeddingSwitchStatus, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
+import { cancelEmbeddingSwitch, embeddingSwitchStatus, estimateEmbeddingSwitch, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
 
 /**
  * The Deployment Settings surface.
@@ -189,11 +189,15 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 
+/** The embedding choice a request body names: a provider, and its model and endpoint where the body carries them. */
+const choiceOf = (body: Record<string, unknown>) =>
+  ({ provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) });
+
 /** `PUT /api/embedding`: set the embedding provider, and its model and endpoint, in one write. */
 export async function handleSetEmbedding(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
-  const choice = { provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) };
+  const choice = choiceOf(body);
   const result = await writerFor(env).setEmbedding(choice, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
@@ -204,8 +208,8 @@ const switchAnswer = (answer: SwitchAnswer): Response => answer.applied
   : Response.json({ applied: false, leaf: 'embedding.model', ...answer.refusal }, { status: answer.refusal.reason === 'conflict' ? 409 : 400 });
 
 /** `GET /api/embedding/switch`: the switch of the embedding model under way, or null. */
-export async function handleEmbeddingSwitch(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
-  return ok({ switch: await embeddingSwitchStatus(env) });
+export async function handleEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return ok({ switch: await embeddingSwitchStatus(env, ctx.now) });
 }
 
 /**
@@ -216,8 +220,20 @@ export async function handleStartEmbeddingSwitch(env: ServerEnv, ctx: OwnerConte
   const body = await readJsonObject(ctx.request);
   if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
   if (body.confirm !== true) return malformed('embedding.model', 'a switch of the embedding model must be confirmed');
-  const choice = { provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) };
+  const choice = choiceOf(body);
   return switchAnswer(await startEmbeddingSwitch(env, choice, ctx.member.id, ctx.now));
+}
+
+/**
+ * `POST /api/embedding/switch/estimate`: what switching search to the provider and model the body names would read and
+ * cost, judged as starting the switch is. The page shows it in the confirmation before the switch starts.
+ */
+export async function handleEstimateEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const body = await readJsonObject(ctx.request);
+  if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
+  const answer = await estimateEmbeddingSwitch(env, choiceOf(body));
+  return answer.applied ? ok({ applied: true, estimate: answer.estimate })
+    : Response.json({ applied: false, leaf: 'embedding.model', ...answer.refusal }, { status: answer.refusal.reason === 'conflict' ? 409 : 400 });
 }
 
 /** `DELETE /api/embedding/switch/{switchId}`: cancel the switch; search keeps its current model. */

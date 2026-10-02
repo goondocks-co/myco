@@ -65,14 +65,33 @@ export interface EmbeddingSwitchStatus {
   /** The model search answers with meanwhile, or null when none is in use. */
   from: { model: string; dimensions: number | null } | null;
   state: 'building' | 'paused';
-  /** Why the switch is paused, in the reader's words. */
+  /** Why the switch is paused, or why its model is held off until `retryAt`, in the reader's words. */
   reason: string | null;
-  /** Sources holding a vector under the new model, and every source search covers, the ones added meanwhile included. */
+  /** While building, the instant the new model is asked again after it failed, or null. */
+  retryAt: number | null;
+  /** Why a building switch has not moved for a while, or null while it moves. */
+  stalled: string | null;
+  /**
+   * Sources done under the new model (built, or skipped as unreadable), and every source search covers in Projects that
+   * are not archived, the ones added meanwhile included.
+   */
   done: number;
   total: number;
+  /** Sources the new model could not read, which count as done, with each reason and how many it covers. */
+  skipped: { count: number; reasons: Array<{ reason: string; count: number }> };
   startedAt: number;
   /** The tokens the new model is estimated to read, and what that costs where the provider publishes a price. */
   estimatedTokens: number;
+  estimatedUsd: number | null;
+}
+
+/** What switching search to a model would read and cost, answered before an admin confirms it. */
+export interface EmbeddingSwitchEstimate {
+  provider: EmbeddingProviderId;
+  model: string;
+  sources: number;
+  estimatedTokens: number;
+  /** Null where the provider publishes no price. */
   estimatedUsd: number | null;
 }
 

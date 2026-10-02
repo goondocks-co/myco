@@ -6,10 +6,12 @@ import { reconcileHubness } from './hubness.js';
 import { registeredObjectKeySql } from '../blob-objects.js';
 
 /**
- * `provider` writes every source and calibrates spores. While an embedding switch runs, `building` writes every source
- * too, once `provider` has none left to write, and `retain` names every model whose vectors are kept: a receipt under any
- * other model is retired. `vectorWriteTimeoutMs` bounds each vector write and delete; it defaults to
- * `VECTOR_WRITE_TIMEOUT_MS`.
+ * `provider` writes every source and, unless `calibrate` names another model, calibrates spores. While an embedding
+ * switch runs, `building` writes every source too, once `provider` has none left to write, skipping each source
+ * `buildingHeld` (a condition over source `s`, binding nothing) holds; `retain` names every model whose vectors are kept:
+ * a receipt under any other model is retired. With `retireOnly`, a step writes and calibrates nothing and only retires;
+ * with `skipWrites`, it writes nothing and retires and calibrates.
+ * `vectorWriteTimeoutMs` bounds each vector write and delete; it defaults to `VECTOR_WRITE_TIMEOUT_MS`.
  */
 export interface EmbeddingContext {
   db: RelationalStore;
@@ -17,7 +19,11 @@ export interface EmbeddingContext {
   vectors: VectorStore;
   provider: EmbeddingProvider;
   building?: EmbeddingProvider;
+  buildingHeld?: string;
   retain?: readonly string[];
+  calibrate?: string;
+  retireOnly?: boolean;
+  skipWrites?: boolean;
   vectorWriteTimeoutMs?: number;
 }
 export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }
@@ -32,11 +38,19 @@ export async function resetEmbeddingIndex(db: RelationalStore, projectId: string
   ]);
 }
 
+/** A source whose text cannot be read, under the model that asked for it: its stored body is missing or is not text. */
+export class EmbeddingSourceUnreadable extends Error {
+  constructor(readonly source: { projectId: string; type: string; recordId: string; revision: string }, readonly modelKey: string, readonly reason: string) {
+    super(`embedding source ${source.type} ${source.recordId}: ${reason}`);
+  }
+}
+
 /** Blob-backed plans use a bounded text prefix for their embedding. Full text remains in the search index. */
-async function sourceText(blobs: BlobStore, source: EmbeddingSource & { object_key: string | null }): Promise<string> {
+async function sourceText(blobs: BlobStore, source: EmbeddingSource & { object_key: string | null }, modelKey: string): Promise<string> {
   if (source.blob_key === null) return source.text;
+  const unreadable = (reason: string) => new EmbeddingSourceUnreadable({ projectId: source.project_id, type: source.type, recordId: source.record_id, revision: source.revision }, modelKey, reason);
   const blob = source.object_key === null ? null : await blobs.get(source.object_key);
-  if (blob === null) throw new Error('embedding source blob is missing');
+  if (blob === null) throw unreadable('its stored text is missing');
   const reader = blob.body.getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let text = source.text;
@@ -46,6 +60,9 @@ async function sourceText(blobs: BlobStore, source: EmbeddingSource & { object_k
       text += done ? decoder.decode() : decoder.decode(value, { stream: true });
       if (done) break;
     }
+  } catch (error) {
+    if (error instanceof TypeError) throw unreadable('its stored text is not readable text');
+    throw error;
   } finally { await reader.cancel(); reader.releaseLock(); }
   return text.slice(0, EMBEDDING_TEXT_CHARS);
 }
@@ -108,9 +125,11 @@ async function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T
 export async function reconcileEmbedding(context: EmbeddingContext, projectId: string, now: number): Promise<EmbeddingStep> {
   const { db, vectors } = context;
   const limit = context.vectorWriteTimeoutMs ?? VECTOR_WRITE_TIMEOUT_MS;
-  const written = await writeSource(context, context.provider, projectId, now)
-    ?? (context.building === undefined ? null : await writeSource(context, context.building, projectId, now));
-  if (written !== null) return written;
+  if (context.retireOnly !== true && context.skipWrites !== true) {
+    const written = await writeSource(context, context.provider, projectId, now)
+      ?? (context.building === undefined ? null : await writeSource(context, context.building, projectId, now, context.buildingHeld));
+    if (written !== null) return written;
+  }
   const orphan = await db.prepare(`SELECT r.* FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}
     ORDER BY r.updated_at, r.id LIMIT 1`).bind(projectId, ...deletionDueBinds(retainedModels(context), now))
     .first<{ id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number }>();
@@ -134,11 +153,12 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
     }
     return { phase: 'orphans', processed: 1 };
   }
-  return reconcileHubness(context, projectId, now);
+  if (context.retireOnly === true) return { phase: 'settled', processed: 0 };
+  return reconcileHubness(context.calibrate === undefined ? context : { ...context, provider: { ...context.provider, modelKey: context.calibrate } }, projectId, now);
 }
 
-/** Write one source `provider` holds no vector for, or answer null when it holds one for every source. */
-async function writeSource(context: EmbeddingContext, provider: EmbeddingProvider, projectId: string, now: number): Promise<EmbeddingStep | null> {
+/** Write one source `provider` holds no vector for, passing over each source `held` holds, or answer null when none is left. */
+export async function writeSource(context: EmbeddingContext, provider: EmbeddingProvider, projectId: string, now: number, held?: string): Promise<EmbeddingStep | null> {
   const { db, blobs, vectors } = context;
   const limit = context.vectorWriteTimeoutMs ?? VECTOR_WRITE_TIMEOUT_MS;
   const scope = { projectId, modelKey: provider.modelKey };
@@ -148,7 +168,7 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
     const type = VECTOR_TYPES[index];
     const source = await db.prepare(`SELECT s.*, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key, EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id) AS stale
       FROM embedding_sources s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id
-      WHERE s.project_id = ? AND s.type = ? AND NOT ${SOURCE_HELD}
+      WHERE s.project_id = ? AND s.type = ? AND NOT ${SOURCE_HELD}${held === undefined ? '' : ` AND NOT (${held})`}
       ORDER BY stale, v.attempted_at, s.record_id LIMIT 1`).bind(projectId, type, provider.modelKey).first<EmbeddingSource & { object_key: string | null; stale: number }>();
     if (source === null) continue;
     const id = await vectorId(scope, source.type, source.record_id, source.revision);
@@ -160,7 +180,7 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
         ON CONFLICT(project_id, model_key, id) DO UPDATE SET updated_at = excluded.updated_at`)
         .bind(...receipt, type, source.record_id, source.revision, now),
     ]);
-    const values = await provider.embed(await sourceText(blobs, source));
+    const values = await provider.embed(await sourceText(blobs, source, provider.modelKey));
     const phase = provider === context.building ? 'switch' : source.stale ? 'stale' : 'missing';
     const rejournaled = await db.prepare(`UPDATE embedding_receipts SET updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled}`)
       .bind(now, ...receipt).run();

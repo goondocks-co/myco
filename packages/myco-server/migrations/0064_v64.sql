@@ -11,8 +11,19 @@ CREATE TABLE IF NOT EXISTS embedding_switches (
      estimated_tokens INTEGER NOT NULL,
      state            TEXT NOT NULL CHECK (state IN ('building', 'paused')),
      reason           TEXT,
+     retry_at         INTEGER,
+     failures         INTEGER NOT NULL DEFAULT 0,
      started_at       INTEGER NOT NULL,
      started_by       TEXT NOT NULL,
      updated_at       INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS embedding_switch_skips (
+     project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),
+     type       TEXT NOT NULL,
+     record_id  TEXT NOT NULL,
+     revision   TEXT NOT NULL,
+     reason     TEXT NOT NULL,
+     skipped_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, type, record_id));
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '64');

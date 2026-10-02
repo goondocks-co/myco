@@ -345,7 +345,7 @@ export async function effectiveSettings(env: ServerEnv): Promise<Map<string, Eff
 export async function embeddingChoices(env: ServerEnv): Promise<EmbeddingChoices> {
   const target = env.platform.name;
   const [resolution, held, stored, underWay] = await Promise.all([
-    embeddingResolution(env.db, env.wrappingKey, embeddingPlatformOf(env)), heldPartitions(env.db), storedEmbedding(env.db), embeddingSwitchStatus(env),
+    embeddingResolution(env.db, env.wrappingKey, embeddingPlatformOf(env)), heldPartitions(env.db), storedEmbedding(env.db), embeddingSwitchStatus(env, Date.now()),
   ]);
   const current = resolveEmbedding(stored, target).selection;
   const providers = embeddingProvidersFor(target).map((id): EmbeddingProviderChoice => {

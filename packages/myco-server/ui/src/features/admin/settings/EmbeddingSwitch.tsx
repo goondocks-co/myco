@@ -1,39 +1,71 @@
 import { useState } from 'react';
-import type { EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
+import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
 import { Button, ConfirmDialog, Progress, StatusChip } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { switchRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { formatCount } from '../../../lib/format';
-import { ago } from '../../today/words';
+import { ago, when } from '../../today/words';
 
 /** A model's name without its provider's prefix: `@cf/baai/bge-m3` reads as `bge-m3`. */
 export const shortModel = (id: string): string => id.split('/').at(-1) ?? id;
 
 const sizeWords = (dimensions: number | null): string => dimensions === null ? '' : ` (${dimensions} dimensions)`;
 
+/** An amount in US dollars as a person reads an estimate of it. */
+const dollars = (usd: number): string => usd < 0.01 ? 'under $0.01' : `about $${usd.toFixed(2)}`;
+
 /** What a switch is estimated to cost, where its provider publishes a price. */
 export function costWords(usd: number | null, tokens: number): string | null {
-  if (usd === null) return null;
-  const spend = usd < 0.01 ? 'under $0.01' : `about $${usd.toFixed(2)}`;
-  return `Estimated cost: ${spend}, for about ${formatCount(tokens, 'token')}.`;
+  return usd === null ? null : `Estimated cost: ${dollars(usd)}, for about ${formatCount(tokens, 'token')}.`;
 }
 
-/** The switch in the reader's words: what search is moving to, how far it has come, and what search uses meanwhile. */
-export function switchWords(sw: EmbeddingSwitchStatus, now: number): { headline: string; detail: string[] } {
+/** What a switch would read and cost, as the confirmation states it before it starts. */
+export function estimateWords(estimate: EmbeddingSwitchEstimate): string {
+  const reads = `It reads about ${formatCount(estimate.sources, 'source')}, about ${formatCount(estimate.estimatedTokens, 'token')} in all.`;
+  return estimate.estimatedUsd === null
+    ? `${reads} No price is published for this model.`
+    : `${reads} Estimated cost: ${dollars(estimate.estimatedUsd)}.`;
+}
+
+export interface SwitchLine { text: string; tone: 'bad' | 'warn' | 'muted' }
+
+/**
+ * The switch in the reader's words: its state, what search is moving to, how far it has come, why it waits or has not
+ * moved, the sources left out, and what search uses meanwhile.
+ */
+export function switchWords(sw: EmbeddingSwitchStatus, now: number): { chip: string; headline: string; detail: SwitchLine[] } {
   const to = `${shortModel(sw.model)}${sizeWords(sw.dimensions)}`;
   const share = sw.total === 0 ? 100 : Math.floor((sw.done / sw.total) * 100);
   const count = `${sw.done.toLocaleString()} of ${formatCount(sw.total, 'source')} done (${share}%)`;
-  const meanwhile = sw.from === null
-    ? 'Search matches words only until it is done.'
-    : `Search keeps using ${shortModel(sw.from.model)} until every source is done, then moves to ${shortModel(sw.model)} on its own.`;
-  const cost = costWords(sw.estimatedUsd, sw.estimatedTokens);
-  const started = `Started ${ago(sw.startedAt, now)}.`;
+  const from = sw.from === null ? null : shortModel(sw.from.model);
+  const muted = (text: string): SwitchLine => ({ text, tone: 'muted' });
+  const skipped: SwitchLine[] = sw.skipped.count === 0 ? [] : [{
+    tone: 'warn',
+    text: `${formatCount(sw.skipped.count, 'source')} could not be read and ${sw.skipped.count === 1 ? 'is' : 'are'} left out: ${sw.skipped.reasons.map((r) => `${r.reason} (${r.count})`).join('; ')}.`,
+  }];
+  const started = muted(`Started ${ago(sw.startedAt, now)}.`);
   if (sw.state === 'paused') {
-    const held = sw.from === null ? 'Search matches words only meanwhile.' : `Search keeps using ${shortModel(sw.from.model)} meanwhile.`;
-    return { headline: `Rebuilding search with ${to} is paused at ${count}.`, detail: [sw.reason ?? 'It waits for you to resume it.', held, started] };
+    return {
+      chip: 'Paused',
+      headline: `Rebuilding search with ${to} is paused at ${count}.`,
+      detail: [{ text: sw.reason ?? 'It waits for you to resume it.', tone: 'bad' }, ...skipped,
+        muted(from === null ? 'Search matches words only meanwhile.' : `Search keeps using ${from} meanwhile.`), started],
+    };
   }
-  return { headline: `Rebuilding search with ${to}: ${count}.`, detail: [meanwhile, started, ...(cost === null ? [] : [cost])] };
+  const meanwhile = muted(from === null
+    ? 'Search matches words only until it is done.'
+    : `Search keeps using ${from} until every source is done, then moves to ${shortModel(sw.model)} on its own.`);
+  const cost = costWords(sw.estimatedUsd, sw.estimatedTokens);
+  const waiting: SwitchLine[] = sw.retryAt === null ? [] : [{ text: `${sw.reason ?? 'The new model failed.'} Next try ${when(sw.retryAt, now)}.`, tone: 'warn' }];
+  const stalled: SwitchLine[] = sw.stalled === null ? [] : [{ text: sw.stalled, tone: 'warn' }];
+  return {
+    chip: sw.retryAt === null ? 'Rebuilding' : 'Waiting',
+    headline: `Rebuilding search with ${to}: ${count}.`,
+    detail: [...waiting, ...stalled, ...skipped, meanwhile, started, ...(cost === null ? [] : [muted(cost)])],
+  };
 }
+
+const TONE = { bad: 'text-bad', warn: 'text-ink-2', muted: 'text-muted' } as const;
 
 /**
  * A switch of the embedding model under way, with its progress and, for an admin, Cancel and Resume. Shown on Settings
@@ -47,13 +79,13 @@ export function EmbeddingSwitchPanel({ sw, now }: { sw: EmbeddingSwitchStatus; n
   const words = switchWords(sw, now);
   const from = sw.from === null ? 'no model' : shortModel(sw.from.model);
   return (
-    <div className="flex w-full flex-col gap-s2" data-embedding-switch={sw.state}>
+    <div className="flex w-full flex-col gap-s2" data-embedding-switch={sw.state} data-embedding-waiting={sw.retryAt === null ? undefined : ''}>
       <p className="flex flex-wrap items-center gap-s2 t-body text-ink">
-        <StatusChip tone={sw.state === 'paused' ? 'warn' : 'ok'}>{sw.state === 'paused' ? 'Paused' : 'Rebuilding'}</StatusChip>
+        <StatusChip tone={sw.state === 'paused' ? 'warn' : sw.retryAt === null ? 'ok' : 'warn'}>{words.chip}</StatusChip>
         <span>{words.headline}</span>
       </p>
       <Progress done={sw.done} total={Math.max(sw.total, 1)} label={`Sources rebuilt with ${shortModel(sw.model)}`} />
-      {words.detail.map((line) => <p key={line} className={`t-small ${sw.state === 'paused' && line === sw.reason ? 'text-bad' : 'text-muted'}`}>{line}</p>)}
+      {words.detail.map((line) => <p key={line.text} className={`t-small ${TONE[line.tone]}`}>{line.text}</p>)}
       {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
       {admin && (
         <div className="flex flex-wrap gap-s2">

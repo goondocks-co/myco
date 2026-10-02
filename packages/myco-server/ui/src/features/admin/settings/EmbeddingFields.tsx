@@ -7,7 +7,7 @@ import { settingsRefusalText, switchRefusalText, useSettings, useSettingsActions
 import { useNow } from '../../../hooks/use-today';
 import { SettingRow } from '../AdminFrame';
 import type { LeafField } from './catalogue';
-import { EmbeddingSwitchPanel, shortModel } from './EmbeddingSwitch';
+import { EmbeddingSwitchPanel, estimateWords, shortModel } from './EmbeddingSwitch';
 import type { LeafRow } from './wire';
 
 export { shortModel } from './EmbeddingSwitch';
@@ -25,10 +25,10 @@ function offerWords(offer: SwitchOffer, choices: EmbeddingChoices): string {
     + (current === null ? 'Search matches words only until it is done.' : `Search keeps working with ${current} meanwhile, and moves to ${shortModel(offer.model)} once every source is done.`);
 }
 
-/** What the provider charges for the model, where it publishes a price. */
+/** What the provider charges for the model per million tokens, where it publishes a price. */
 function priceWords(offer: SwitchOffer): string {
   const price = embeddingPrice(offer.provider, offer.model);
-  return price === null ? '' : ` ${offer.label} charges $${price} per million tokens; the estimate for every source shows once the switch starts.`;
+  return price === null ? '' : ` ${offer.label} charges $${price} per million tokens.`;
 }
 
 const dimensionWords = (dimensions: number | null): string => dimensions === null ? 'size not published' : `${dimensions} dimensions`;
@@ -124,9 +124,17 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
     if (refusal !== null) { setError(refusal); return; }
     choose({ provider: provider.id, model: next, ...endpointOf() });
   };
-  const startSwitch = () => {
+  const offered = (o: SwitchOffer) => ({ provider: o.provider, model: o.model, ...(o.endpoint === undefined ? {} : { endpoint: o.endpoint }) });
+  const confirmSwitch = () => {
     if (offer === null) return;
-    actions.startSwitch.mutate({ provider: offer.provider, model: offer.model, ...(offer.endpoint === undefined ? {} : { endpoint: offer.endpoint }) }, {
+    actions.startSwitch.reset();
+    actions.estimateSwitch.reset();
+    actions.estimateSwitch.mutate(offered(offer));
+    setConfirming(true);
+  };
+  const startSwitch = () => {
+    if (offer === null || actions.estimateSwitch.data === undefined) return;
+    actions.startSwitch.mutate(offered(offer), {
       onSuccess: () => { setOffer(null); setConfirming(false); setDraft(null); setPendingProvider(null); },
     });
   };
@@ -174,7 +182,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
           <div className="flex flex-col items-start gap-s2" data-embedding-offer="">
             <p className="t-small text-ink-2">{offerWords(offer, choices)}</p>
             <div className="flex flex-wrap gap-s2">
-              <Button size="sm" variant="primary" onClick={() => { actions.startSwitch.reset(); setConfirming(true); }}>Switch to this model</Button>
+              <Button size="sm" variant="primary" onClick={confirmSwitch}>Switch to this model</Button>
               <Button size="sm" variant="ghost" onClick={() => { setOffer(null); setDraft(null); }}>Keep {model === null ? 'the current model' : shortModel(model)}</Button>
             </div>
             <ConfirmDialog
@@ -185,9 +193,16 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
               description={`${offerWords(offer, choices)}${priceWords(offer)} You can cancel the switch until it is done.`}
               confirmLabel="Switch to this model"
               pending={actions.startSwitch.isPending}
-              error={actions.startSwitch.isError ? switchRefusalText(actions.startSwitch.error) : null}
+              confirmDisabled={actions.estimateSwitch.data === undefined}
+              error={actions.startSwitch.isError ? switchRefusalText(actions.startSwitch.error)
+                : actions.estimateSwitch.isError ? switchRefusalText(actions.estimateSwitch.error) : null}
               onConfirm={startSwitch}
-            />
+            >
+              <p className="t-body text-ink" data-switch-estimate="">
+                {actions.estimateSwitch.data !== undefined ? estimateWords(actions.estimateSwitch.data)
+                  : actions.estimateSwitch.isError ? 'Myco could not estimate what this switch reads and costs, so it cannot start.' : 'Estimating what this switch reads and costs…'}
+              </p>
+            </ConfirmDialog>
           </div>
         )}
         {underWay !== null && <EmbeddingSwitchPanel sw={underWay} now={now} />}

@@ -2,8 +2,10 @@
  * Switch embedding model, on both targets through their shipped env and request handler: search keeps answering by
  * meaning at every step while the new model's vectors are built, reconcile retires neither model's vectors meanwhile,
  * search moves only once every source (one added meanwhile included) holds a vector under the new model, a cancel
- * leaves search on its model and retires the partial vectors, a restart resumes, a failure of the new model pauses the
- * switch with its reason, and a model larger than search stores stays refused.
+ * leaves search on its model and retires the partial vectors, a restart resumes, a failure the provider may recover from
+ * is tried again after a wait while one that needs an admin pauses the switch with its reason, an archived Project or
+ * a source the model cannot read never holds the switch back, the new model is calibrated before search moves to it,
+ * and a model larger than search stores stays refused.
  */
 import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -19,7 +21,11 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { advanceEmbedding } from '@myco-server-worker/core/embedding/step.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
-import { embeddingWorkPlan } from '@myco-server-worker/core/embedding/switch.js';
+import { SWITCH_STALL_MS, completeEmbeddingSwitch, embeddingSwitchStatus, embeddingWorkPlan } from '@myco-server-worker/core/embedding/switch.js';
+import { RECOVERED_SWITCH, holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { searchProject } from '@myco-server-worker/read/search.js';
 import { VECTOR_DELETE_CONFIRM_MS } from '@myco-server-worker/core/embedding/provider.js';
@@ -42,8 +48,12 @@ function vectorFor(text: string, dimensions: number): number[] {
   return Array.from({ length: dimensions }, (_, i) => i === 0 ? (about ? 1 : 0) : i === 1 ? (about ? 0 : 1) : i === 2 ? 0.05 : 0);
 }
 
-/** What each target's models answer, and which of them fail. */
-interface Models { failing: Map<string, number>; calls: Map<string, number> }
+/**
+ * What each target's models answer, and which of them fail: a self-hosted model answers the HTTP status and headers
+ * set for it, and a hosted model throws the words set for it, as the Workers AI binding does.
+ */
+interface Failing { status: number; headers?: Record<string, string>; words: string }
+interface Models { failing: Map<string, Failing>; calls: Map<string, number> }
 
 interface Target {
   name: 'hosted' | 'self-hosted';
@@ -76,7 +86,8 @@ function hosted(): Target {
   } };
   const ai = { run: async (model: string, input: { text: string[] }) => {
     models.calls.set(model, (models.calls.get(model) ?? 0) + 1);
-    if (models.failing.has(model)) throw new Error('quota exceeded');
+    const failing = models.failing.get(model);
+    if (failing !== undefined) throw new Error(failing.words);
     return { data: [vectorFor(input.text[0]!, DIMENSIONS[model]!)] };
   } };
   const bindings = { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP }, AI: ai, VECTORIZE: vectorize };
@@ -108,7 +119,7 @@ function selfHosted(): Target {
       const body = await request.json() as { model: string; input: string[] };
       models.calls.set(body.model, (models.calls.get(body.model) ?? 0) + 1);
       const failing = models.failing.get(body.model);
-      if (failing !== undefined) return new Response('refused', { status: failing });
+      if (failing !== undefined) return new Response('refused', { status: failing.status, headers: failing.headers ?? {} });
       return Response.json({ data: [{ embedding: vectorFor(body.input[0]!, DIMENSIONS[body.model]!) }] });
     },
   });
@@ -182,7 +193,7 @@ for (const make of [hosted, selfHosted]) {
 
         let added = false;
         let moved = false;
-        for (let i = 0; i < 20 && !moved; i++) {
+        for (let i = 0; i < 40 && !moved; i++) {
           // Between every two steps search answers by meaning, with the model it started with until the switch completes.
           expect(await meaning(t.env())).toEqual({ unavailable: false, ids: added ? ['four', 'one', 'two'] : ['one', 'two'] });
           const sw = await status(t);
@@ -199,6 +210,8 @@ for (const make of [hosted, selfHosted]) {
         expect(newKey).not.toBe(t.currentKey);
         expect(JSON.parse(storedModel(t)!)).toBe(target.model);
         expect(receipts(t, newKey)).toEqual([{ ready: 1, n: 4 }]);
+        // Every spore is calibrated under the new model by the time search moves to it.
+        expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE model_key = ? AND type = 'spore' AND neighbor_mean IS NULL`).get(newKey)).toEqual({ n: 0 });
         expect(await meaning(t.env())).toEqual({ unavailable: false, ids: ['four', 'one', 'two'] });
         // The old model's vectors are retired by the reconcile that already runs, once search has moved.
         for (let i = 0; i < 12; i++) await t.step(10_000 + i);
@@ -241,7 +254,7 @@ for (const make of [hosted, selfHosted]) {
       expect((await status(t))!.state).toBe('building');
       // A fresh env over the same store is a restarted server: the switch continues from what is stored.
       let moved = false;
-      for (let i = 0; i < 10 && !moved; i++) {
+      for (let i = 0; i < 20 && !moved; i++) {
         expect(await meaning(t.env())).toEqual({ unavailable: false, ids: ['one', 'two'] });
         await t.step(3_000 + i);
         moved = (await status(t)) === null;
@@ -250,29 +263,187 @@ for (const make of [hosted, selfHosted]) {
       expect(JSON.parse(storedModel(t)!)).toBe(t.otherSize.model);
     });
 
-    it('pauses with the reason when the new model fails, keeps the current model in use, and resumes', async () => {
+    it('waits and tries again after a provider error, keeping the current model in use, and clears the wait once the model writes', async () => {
       const t = await built(make);
-      const started = await json(await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true })));
-      const id = (started.switch as EmbeddingSwitchStatus).id;
-      t.models.failing.set(t.otherSize.model, 429);
+      await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+      t.models.failing.set(t.otherSize.model, { status: 503, words: 'AiError: 3001: Internal server error' });
       await t.step(2_000);
-      const paused = (await status(t))!;
-      expect(paused.state).toBe('paused');
-      expect(paused.reason).toMatch(t.name === 'hosted' ? /could not be reached/ : /HTTP 429.*quota or rate limit/);
+      const waiting = (await status(t))!;
+      expect({ state: waiting.state, retryAt: waiting.retryAt }).toEqual({ state: 'building', retryAt: 2_000 + 60_000 });
+      expect(waiting.reason).toMatch(t.name === 'hosted' ? /could not answer \(“AiError: 3001: Internal server error”\)/ : /had a problem \(HTTP 503\)/);
       expect(receipts(t, t.currentKey)).toEqual([{ ready: 1, n: 3 }]);
       expect(await meaning(t.env())).toEqual({ unavailable: false, ids: ['one', 'two'] });
-      // While paused, the new model is not asked again.
+      // Until the wait is over the new model is not asked; then it is, and a second failure waits twice as long.
       const asked = t.models.calls.get(t.otherSize.model) ?? 0;
       for (let i = 0; i < 3; i++) await t.step(2_100 + i);
       expect(t.models.calls.get(t.otherSize.model) ?? 0).toBe(asked);
+      await t.step(62_000);
+      expect(t.models.calls.get(t.otherSize.model)).toBe(asked + 1);
+      expect((await status(t))!.retryAt).toBe(62_000 + 120_000);
       t.models.failing.delete(t.otherSize.model);
-      expect(await json(await t.fetch(await asOwnerPost(`/api/embedding/switch/${id}/resume`)))).toMatchObject({ applied: true, switch: { state: 'building', reason: null } });
-      for (let i = 0; i < 10 && (await status(t)) !== null; i++) await t.step(3_000 + i);
+      await t.step(182_000);
+      expect(await status(t)).toMatchObject({ state: 'building', retryAt: null, reason: null });
+      for (let i = 0; i < 20 && (await status(t)) !== null; i++) await t.step(183_000 + i);
       expect(await status(t)).toBeNull();
       expect(JSON.parse(storedModel(t)!)).toBe(t.otherSize.model);
     });
+
+    it('waits for a spent quota to renew, as the provider says', async () => {
+      const t = await built(make);
+      await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+      const now = Date.UTC(2026, 9, 2, 15, 30);
+      t.models.failing.set(t.otherSize.model, t.name === 'hosted'
+        ? { status: 0, words: 'AiError: 4006: you have used up your daily free allocation of 10,000 neurons, please upgrade' }
+        : { status: 429, headers: { 'retry-after': '600' }, words: '' });
+      await t.step(now);
+      const waiting = (await status(t))!;
+      expect(waiting.state).toBe('building');
+      expect(waiting.retryAt).toBe(t.name === 'hosted' ? Date.UTC(2026, 9, 3) : now + 600_000);
+      expect(waiting.reason).toMatch(t.name === 'hosted' ? /daily allowance is used up.*renews/ : /asked Myco to slow down \(HTTP 429\)/);
+    });
   });
 }
+
+describe('a provider that turns the key down', () => {
+  it('pauses the switch with the reason, asks nothing more, and resumes on request', async () => {
+    const t = await built(selfHosted);
+    const started = await json(await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true })));
+    const id = (started.switch as EmbeddingSwitchStatus).id;
+    t.models.failing.set(t.otherSize.model, { status: 401, words: '' });
+    await t.step(2_000);
+    expect(await status(t)).toMatchObject({ state: 'paused', retryAt: null, reason: expect.stringMatching(/turned down its key \(HTTP 401\)/) });
+    const asked = t.models.calls.get(t.otherSize.model) ?? 0;
+    for (let i = 0; i < 3; i++) await t.step(10_000_000 + i);
+    expect(t.models.calls.get(t.otherSize.model) ?? 0).toBe(asked);
+    expect(await meaning(t.env())).toEqual({ unavailable: false, ids: ['one', 'two'] });
+    t.models.failing.delete(t.otherSize.model);
+    expect(await json(await t.fetch(await asOwnerPost(`/api/embedding/switch/${id}/resume`)))).toMatchObject({ applied: true, switch: { state: 'building', reason: null } });
+    for (let i = 0; i < 20 && (await status(t)) !== null; i++) await t.step(3_000 + i);
+    expect(await status(t)).toBeNull();
+  });
+});
+
+describe('what never holds a switch back', () => {
+  it('builds and counts only Projects that are not archived, and retires an archived Project\'s old vectors once search moves', async () => {
+    const t = await built(selfHosted);
+    t.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, content, observation_type, created_at) VALUES ('proj_2', 'old-1', 'agent', 'archived architecture', 'decision', 1), ('proj_2', 'old-2', 'agent', 'archived notes', 'decision', 1)`);
+    for (let i = 0; i < 10; i++) await advanceEmbedding(t.env(), 'proj_2', 1_500 + i);
+    expect(receipts(t, t.currentKey)).toEqual([{ ready: 1, n: 5 }]);
+    t.sqlite.run(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_2'`);
+    const started = await json(await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true })));
+    expect(started).toMatchObject({ switch: { total: 3 } });
+    // An archived Project is stepped only to retire, so it writes nothing under the new model while the switch stands.
+    expect(await advanceEmbedding(t.env(), 'proj_2', 1_900)).toMatchObject({ phase: 'settled', processed: 0 });
+    for (let i = 0; i < 30 && (await status(t)) !== null; i++) await t.step(2_000 + i);
+    expect(await status(t)).toBeNull();
+    const newKey = (await t.env().embeddingProvider!())!.modelKey;
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE project_id = 'proj_2' AND model_key = ?`).get(newKey)).toEqual({ n: 0 });
+    const plan = (await embeddingWorkPlan(t.env(), 5_000))!;
+    expect(await hasEmbeddingWork(t.env().db, 'proj_2', plan.model, 5_000, { ...plan, retireOnly: true })).toBe(true);
+    for (let i = 0; i < 4; i++) await advanceEmbedding(t.env(), 'proj_2', 5_000 + i);
+    for (let i = 0; i < 4; i++) await advanceEmbedding(t.env(), 'proj_2', 5_000 + VECTOR_DELETE_CONFIRM_MS + i);
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE project_id = 'proj_2'`).get()).toEqual({ n: 0 });
+    expect(await hasEmbeddingWork(t.env().db, 'proj_2', plan.model, 5_000 + VECTOR_DELETE_CONFIRM_MS + 10, { ...plan, retireOnly: true })).toBe(false);
+  });
+
+  it('records a source neither model can read as skipped with its reason, and completes', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+    const reported: unknown[] = [];
+    for (let i = 0; i < 30 && (await status(t)) !== null; i++) {
+      const sw = (await status(t))!;
+      expect(sw.total).toBe(4);
+      const answer = await t.step(2_000 + i);
+      if (answer.unreadable !== undefined) reported.push(answer.unreadable);
+    }
+    expect(await status(t)).toBeNull();
+    expect(JSON.parse(storedModel(t)!)).toBe(t.otherSize.model);
+    expect(reported[0]).toMatch(/plan unreadable: its stored text is missing/);
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_switch_skips`).get()).toEqual({ n: 0 });
+  });
+
+  it('shows the skipped source while the switch stands', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+    for (let i = 0; i < 10 && (await status(t))!.skipped.count === 0; i++) await t.step(2_000 + i);
+    expect((await status(t))!.skipped).toEqual({ count: 1, reasons: [{ reason: 'its stored text is missing', count: 1 }] });
+  });
+
+  it('says why a building switch has not moved for a while', async () => {
+    const t = await built(selfHosted);
+    const started = await json(await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true })));
+    const at = (started.switch as EmbeddingSwitchStatus).startedAt;
+    expect((await embeddingSwitchStatus(t.env(), at + SWITCH_STALL_MS - 1))!.stalled).toBeNull();
+    expect((await embeddingSwitchStatus(t.env(), at + SWITCH_STALL_MS + 60_000))!.stalled).toBe('No embedding run has started in the last 31 minutes, so rebuilding search has not moved.');
+  });
+});
+
+describe('guards the completion and the settings writer carry', () => {
+  /** The store, with `before` run once just ahead of its next batch: a write that lands between a check and the batch. */
+  const racing = (db: RelationalStore, before: () => void): RelationalStore => {
+    let armed = true;
+    return { ...db, prepare: db.prepare.bind(db), batch: async (statements) => { if (armed) { armed = false; before(); } return db.batch(statements); } } as RelationalStore;
+  };
+
+  it('does not move search when a source arrives between the completion check and its batch', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    const env = t.env();
+    // Build every source and calibrate, without letting a step complete the switch.
+    for (let i = 0; i < 20; i++) await reconcileEmbedding({ db: env.db, blobs: env.blobs, vectors: env.vectors!, provider: (await env.embeddingProvider!())!,
+      building: (await env.embeddingProviderFor!({ 'embedding.provider': t.otherSize.provider, 'embedding.model': t.otherSize.model, 'embedding.base_url': t.otherSize.endpoint })).provider!,
+      retain: [t.currentKey], calibrate: (await embeddingWorkPlan(env, 3_000))!.switching! }, PROJECT, 3_000 + i);
+    const raced = { ...env, db: racing(env.db, () => t.spore('late', 'architecture arriving late')) };
+    expect(await completeEmbeddingSwitch(raced, 4_000)).toBe(false);
+    expect(await status(t)).toMatchObject({ state: 'building' });
+    expect(JSON.parse(storedModel(t)!)).toBe(t.start.model);
+  });
+
+  it('refuses a settings write when a switch starts between its check and its batch', async () => {
+    const t = hosted();
+    const db = racing(sqliteRelationalStore(t.sqlite), () => t.sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, state, reason, started_at, started_by, updated_at)
+      VALUES ('deployment', 'raced', 'workers-ai', '@cf/baai/bge-base-en-v1.5', NULL, 'k2', 'k1', 0, 'building', NULL, 1, 'mem_machine_1', 1)`));
+    const written = await settingsWriter(db, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai', model: '@cf/baai/bge-large-en-v1.5' }, 'mem_machine_1', 5_000);
+    expect(written).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider' } });
+    expect(storedModel(t)).toBeUndefined();
+  });
+});
+
+describe('a recovered copy', () => {
+  it('holds the switch it carries, saying why, so it spends nothing until an admin resumes it', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    await holdRecoveredSwitch(t.env().db, 9_000);
+    expect(await status(t)).toMatchObject({ state: 'paused', reason: RECOVERED_SWITCH });
+    const asked = t.models.calls.get(t.otherSize.model) ?? 0;
+    await t.step(9_100);
+    expect(t.models.calls.get(t.otherSize.model) ?? 0).toBe(asked);
+  });
+
+  it('holds nothing in a store that predates the switch', async () => {
+    const sqlite = seededSqlite();
+    sqlite.run('DROP TABLE embedding_switches');
+    await holdRecoveredSwitch(sqliteRelationalStore(sqlite), 1);
+  });
+});
+
+describe('the estimate shown before a switch starts', () => {
+  it('names the sources to read, the tokens, and the cost where the provider publishes a price', async () => {
+    const t = await built(hosted);
+    const answer = await json(await t.fetch(await asOwnerPost('/api/embedding/switch/estimate', t.otherSize)));
+    const estimate = answer.estimate as { sources: number; estimatedTokens: number; estimatedUsd: number };
+    expect({ applied: answer.applied, sources: estimate.sources }).toEqual({ applied: true, sources: 3 });
+    expect(estimate.estimatedTokens).toBeGreaterThan(0);
+    expect(estimate.estimatedUsd).toBeCloseTo(estimate.estimatedTokens / 1_000_000 * 0.067, 12);
+    expect(await status(t)).toBeNull();
+    const local = await built(selfHosted);
+    expect(await json(await local.fetch(await asOwnerPost('/api/embedding/switch/estimate', local.otherSize)))).toMatchObject({ estimate: { sources: 3, estimatedUsd: null } });
+  });
+});
 
 describe('a model larger than search stores', () => {
   it('is refused before a hosted switch starts', async () => {
@@ -287,7 +458,7 @@ describe('a model larger than search stores', () => {
     const t = await built(selfHosted);
     await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.start, model: 'too-big', confirm: true }));
     await t.step(2_000);
-    expect(await status(t)).toMatchObject({ state: 'paused', reason: expect.stringMatching(/larger than search stores \(at most 1536 dimensions\)/) });
+    expect(await status(t)).toMatchObject({ state: 'paused', reason: expect.stringMatching(/too large for search, which holds up to 1536 numbers for each/) });
     expect(await meaning(t.env())).toEqual({ unavailable: false, ids: ['one', 'two'] });
   });
 });
@@ -296,7 +467,7 @@ describe('embedding work while a switch stands', () => {
   it('dispatches the new model\'s writes, waits while paused, and keeps a retained model\'s vectors out of the backlog', async () => {
     const t = await built(selfHosted);
     const pending = async () => {
-      const plan = (await embeddingWorkPlan(t.env()))!;
+      const plan = (await embeddingWorkPlan(t.env(), 2_000))!;
       return hasEmbeddingWork(t.env().db, PROJECT, plan.model, 2_000, plan);
     };
     expect(await pending()).toBe(false);

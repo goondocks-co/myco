@@ -6,6 +6,7 @@ import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
+import { holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
@@ -127,6 +128,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       const data = new Database(prepared);
       try {
         const store = sqliteRelationalStore(data);
+        await holdRecoveredSwitch(store, Date.now());
         for (const project of data.query<{ project_id: string }, []>('SELECT project_id FROM projects').all()) {
           await resetEmbeddingIndex(store, project.project_id);
         }

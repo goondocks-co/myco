@@ -704,12 +704,12 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
 
 /**
  * Write the embedding leaves to the choice a completed switch names, attributed to the member who started it, in one
- * batch that ends with `end`. Every statement carries `condition`, so the leaves move only together with `end`: the
- * answer is whether `end` changed its row.
+ * batch that ends with `end`. Every leaf statement and the first statement of `end`, the one that ends the switch,
+ * carry `condition`, so the leaves move only together with it: the answer is whether it changed its row.
  */
 export async function writeSwitchedEmbedding(
   db: RelationalStore, choice: StoredEmbedding, actor: string, nowMs: number,
-  condition: { sql: string; params: readonly string[] }, end: PreparedStatement,
+  condition: { sql: string; params: readonly string[] }, end: readonly PreparedStatement[],
 ): Promise<boolean> {
   const { stamps } = await embeddingRows(db);
   const statements = EMBEDDING_SELECTION_LEAVES.flatMap((part) => {
@@ -725,8 +725,8 @@ export async function writeSwitchedEmbedding(
         ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(part, nowMs, actor, ...condition.params),
     ] : [];
   });
-  const results = await db.batch([...statements, end]);
-  return results.at(-1)!.meta.changes === 1;
+  const results = await db.batch([...statements, ...end]);
+  return results[statements.length]!.meta.changes === 1;
 }
 
 /**

@@ -23,7 +23,7 @@ import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-b
 import { handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleMemberSettings, handleResetSetting, handleSetEmbedding, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
+  handleMemberSettings, handleResetSetting, handleSetEmbedding, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
@@ -272,6 +272,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/embedding', auth: 'session', authority: 'admin', handler: handleSetEmbedding },
   { method: 'GET', path: '/api/embedding/switch', auth: 'session', authority: 'member', handler: handleEmbeddingSwitch },
   { method: 'POST', path: '/api/embedding/switch', auth: 'session', authority: 'admin', handler: handleStartEmbeddingSwitch },
+  { method: 'POST', path: '/api/embedding/switch/estimate', auth: 'session', authority: 'admin', handler: handleEstimateEmbeddingSwitch },
   { method: 'DELETE', path: '/api/embedding/switch/{switchId}', pattern: /^\/api\/embedding\/switch\/(?<switchId>[A-Za-z0-9_-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleCancelEmbeddingSwitch },
   { method: 'POST', path: '/api/embedding/switch/{switchId}/resume', pattern: /^\/api\/embedding\/switch\/(?<switchId>[A-Za-z0-9_-]{1,64})\/resume$/, auth: 'session', authority: 'admin', handler: handleResumeEmbeddingSwitch },
   { method: 'DELETE', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._-]{1,96})$/, auth: 'session', authority: 'admin', handler: handleResetSetting },

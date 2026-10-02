@@ -803,6 +803,7 @@ describe('gates', () => {
       project_capabilities: join('core', 'settings.ts'),
       deployment_secrets: join('core', 'secrets.ts'),
       embedding_switches: join('core', 'embedding', 'switch-store.ts'),
+      embedding_switch_skips: join('core', 'embedding', 'switch-store.ts'),
     };
     const offenders: string[] = [];
     for (const file of files(SRC)) {
@@ -1293,6 +1294,7 @@ describe('gates', () => {
       'session:admin POST /api/backups/{backupId}/restore',
       'session:admin POST /api/backups/{backupId}/restore-preview',
       'session:admin POST /api/embedding/switch',
+      'session:admin POST /api/embedding/switch/estimate',
       'session:admin POST /api/embedding/switch/{switchId}/resume',
       'session:admin POST /api/enrollment',
       'session:admin POST /api/enrollment/{id}/revoke',

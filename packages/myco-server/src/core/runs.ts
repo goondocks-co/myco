@@ -1515,6 +1515,14 @@ export async function deploymentLastTaskEntryAt(db: RelationalStore, task: strin
   return row?.at ?? null;
 }
 
+/** The newest run of `task` anywhere in the Deployment entered from `sinceMs` on: how it stands and why it failed, if it did. */
+export async function deploymentLatestTaskRun(db: RelationalStore, task: string, sinceMs: number): Promise<{ status: string; error: string | null; at: number } | null> {
+  return db.prepare(
+    `SELECT status, error, COALESCE(queued_at, started_at) AS at FROM agent_runs
+      WHERE task = ? AND status != 'skipped' AND COALESCE(queued_at, started_at) >= ? ORDER BY at DESC LIMIT 1`,
+  ).bind(task, sinceMs).first<{ status: string; error: string | null; at: number }>();
+}
+
 /** How `actor`'s runs of `task` from `sinceMs` on stand across every Project: still in flight, completed, or failed. */
 export async function deploymentTaskRunTally(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<{ inFlight: number; completed: number; failed: number }> {
   const row = await db.prepare(

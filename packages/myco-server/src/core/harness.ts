@@ -549,7 +549,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
   if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'not_landed' };
   if (gate.kind === 'embedding') {
-    const embedding = await embeddingWorkPlan(env);
+    const embedding = await embeddingWorkPlan(env, Date.now());
     if (embedding === null) return { ok: false, refusal: 'no_provider' };
     return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.model, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
   }
