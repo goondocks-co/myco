@@ -23,6 +23,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_recovery_holds_open_holder', "at most one recovery hold of each holder is open in a Deployment: its own export producer's, and an operator backup's"],
   ['idx_sessions_untitled_ended', 'the titling convergence takes ended, untitled sessions across the Deployment, newest end first'],
   ['idx_worker_contacts_seen', 'the worker-contact sweep forgets Deployment-wide observations by age, and a worker names no Project'],
+  ['idx_worker_model_catalogs_received', 'Settings reads the model lists machines sent lately, and the lease sweep forgets the rest by age; a machine names no Project'],
   ['idx_sessions_occurred_deployment', 'the sessions list spans every Project, newest first'],
   ['idx_spores_created_deployment', 'the spores list spans every Project, newest first'],
   ['idx_plans_updated_deployment', 'the plans list spans every Project, most recently updated first'],

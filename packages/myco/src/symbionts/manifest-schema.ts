@@ -688,6 +688,52 @@ const ReasoningTiersOf = <T extends z.ZodTypeAny>(value: T) => z.object({ low: v
 const Strings = z.array(z.string().min(1));
 
 /**
+ * A dotted path into a JSON value: `a.b` reads key `b` of key `a`, and `a[].b` reads `b` of every entry of the list
+ * at `a`.
+ */
+const JsonPath = z.string().regex(/^[A-Za-z_$][\w$-]*(?:\[\])?(?:\.[A-Za-z_$][\w$-]*(?:\[\])?)*$/);
+
+/** Which field of a listed entry holds each fact a catalog keeps of a model; only `id` is required. */
+const CatalogFieldsSchema = z.object({
+  id: JsonPath,
+  label: JsonPath.optional(),
+  isDefault: JsonPath.optional(),
+  resolvesTo: JsonPath.optional(),
+  upgrade: JsonPath.optional(),
+  efforts: JsonPath.optional(),
+}).strict();
+
+/**
+ * How a worker lists the models the harness can run, read by one path for every harness (`runner/models.ts`).
+ *
+ * - `command`: the binary run with `args`, each line of its output one model id (`format: lines`); `provider:
+ *   id-prefix` names each model's provider as the text before the first `/` of its id.
+ * - `exchange`: the binary run with `args`, sent each message of `send` as one JSON line on its standard input; the
+ *   first JSON line it writes that holds every value `answer.where` names is the answer, and `answer.list` is where in
+ *   it the models are, each read through `fields`. Where `page` is declared, an answer whose `page.cursor` holds a
+ *   value is followed by the last message of `send` again with that value at `page.param`, page by page.
+ *
+ * A listing is started under the environment its driver starts a run under, on the machine's own login.
+ */
+const ModelListingSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('command'),
+    args: Strings,
+    format: z.literal('lines'),
+    provider: z.literal('id-prefix').optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('exchange'),
+    args: Strings,
+    send: z.array(z.record(z.string(), z.unknown())).min(1),
+    answer: z.object({ where: z.record(JsonPath, z.union([z.string(), z.number()])), list: JsonPath }).strict(),
+    page: z.object({ cursor: JsonPath, param: JsonPath }).strict().optional(),
+    fields: CatalogFieldsSchema,
+    provider: z.literal('id-prefix').optional(),
+  }).strict(),
+]);
+
+/**
  * How a worker runs the harness: what it launches, where its login is, how a run is kept apart from the machine's own
  * use, whether its shell reaches the run's git through the worker's shim, how the tier's model reaches it, and how a
  * run's usage is read back. How it is held to a run's grant is the shared `asking` beside it. `runner/harnesses.ts` holds the
@@ -715,6 +761,8 @@ const RunnerWorkerSchema = z.object({
   sourceGit: z.enum(['shim', 'none']),
   /** How the tier's model reaches the harness: a flag, its run configuration, or not at all. */
   modelSetting: z.enum(['flag', 'config', 'none']),
+  /** How a worker lists the models the harness can run, for Settings; absent where it lists none. */
+  models: ModelListingSchema.optional(),
   accounting: z.object({
     reported: z.enum(['claude-stream', 'codex-session', 'acp-session']),
     modelSources: Strings,
@@ -783,11 +831,36 @@ const RunnerManifestSchema = z.object({
     modelFamilies: z.array(z.string().min(1)).optional(),
     /** How a dated id of a family begins: the alias follows it (`claude-` + `sonnet` + `-…`). */
     modelFamilyPrefix: z.string().min(1).optional(),
+    /**
+     * What a model id its provider resolves to a model of its own choosing at each request matches, as a regular
+     * expression: a run asking for one that reports another model, with no resolution listed, is unconfirmed rather
+     * than mismatched.
+     */
+    providerAliasPattern: z.string().min(1).optional(),
+    /**
+     * A model for each tier, offered in Settings as one choice where a worker lists every one of them for the harness.
+     * Each model is `<provider>/…`, under the provider whose login it needs. `description` says in plain words what the
+     * preset sets.
+     */
+    presets: z.array(z.object({
+      id: z.string().regex(/^[a-z0-9-]{1,64}$/),
+      provider: z.string().min(1),
+      label: z.string().min(1),
+      description: z.string().min(1),
+      models: ReasoningTiersOf(z.string().min(1)),
+    }).strict()).optional(),
   }).strict(),
   worker: RunnerWorkerSchema,
 }).strict().refine((r) => (r.credential.slot === 'own') === (r.credential.ownSlotLabel !== undefined), {
   message: 'credential.ownSlotLabel is required for, and only for, credential.slot: own',
   path: ['credential', 'ownSlotLabel'],
+}).refine((r) => r.worker.models === undefined || r.worker.modelSetting !== 'none', {
+  message: 'worker.models is listed only for a harness whose model a run can set',
+  path: ['worker', 'models'],
+}).refine((r) => (r.profile.presets ?? []).every((preset) => Object.values(preset.models).every((model) =>
+  new RegExp(r.profile.modelPattern).test(model) && model.startsWith(`${preset.provider}/`))), {
+  message: 'every preset model is a model id the harness accepts, under the preset\'s provider',
+  path: ['profile', 'presets'],
 });
 
 export type RunnerManifest = z.infer<typeof RunnerManifestSchema>;

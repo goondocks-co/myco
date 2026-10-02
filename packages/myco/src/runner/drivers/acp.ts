@@ -18,11 +18,11 @@ import { accountingEvents } from '../accounting.js';
  * it: a run agent of the run's own, or a configuration directory of the run's
  * own. The run's grant then answers every call the harness makes.
  */
-import { spawn } from 'node:child_process';
+import { spawnGroup, stopGroup } from '../process-group.js';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { harnessById, type Harness } from '../harnesses.js';
-import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
+import type { Driver, Launch, LaunchSpec, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { AcpEvents } from './acp-events.js';
 import { EFFORT_UNAPPLIED, PROFILE_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
@@ -31,7 +31,7 @@ import { answerPermission, ToolCalls } from './acp-permission.js';
 import { runGrant, type RunGrant } from './grant.js';
 import { listRunTools, type RunServer, type RunTools } from './run-tools.js';
 import { freshRunHome } from './run-home.js';
-import { recordOf, stringOf } from './stream.js';
+import { launchEnvironment, recordOf, stringOf } from './stream.js';
 
 const STOP: readonly StopReason[] = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'];
 
@@ -348,7 +348,7 @@ export type RunHomeWriter = (home: string) => void;
  * whose driver was given no writer fails here, before the harness is started,
  * rather than being started over the machine's own configuration.
  */
-function runHomeOf(harness: Harness, spec: RunSpec, writeHome: RunHomeWriter | undefined): Record<string, string> {
+function runHomeOf(harness: Harness, spec: LaunchSpec, writeHome: RunHomeWriter | undefined): Record<string, string> {
   if (harness.asking.kind !== 'run-home') return {};
   if (writeHome === undefined) throw new Error(`no run configuration is written for ${harness.id}, so its own would decide the run's calls`);
   const home = freshRunHome(spec.scratchDir, `${harness.id}-home`);
@@ -356,28 +356,38 @@ function runHomeOf(harness: Harness, spec: RunSpec, writeHome: RunHomeWriter | u
   return { [harness.asking.env]: home };
 }
 
+/**
+ * How the harness is started for a run or a listing: asking under a run agent of its own where it asks only where its
+ * configuration says, a configuration directory of its own where it reads one, and the Deployment's credential.
+ */
+function acpLaunch(harness: Harness, spec: LaunchSpec, writeHome: RunHomeWriter | undefined): { launch: Launch; asking: RunAsking } {
+  const asking = runAsking(harness, runAgentName(), spec.profile);
+  return { asking, launch: { env: { ...spec.credentialEnv, ...asking.env, ...runHomeOf(harness, spec, writeHome) }, omitInherited: [] } };
+}
+
 export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
   return {
     id,
+    launch: (spec) => acpLaunch(harnessById(id)!, spec, writeHome).launch,
     async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
       const harness = harnessById(id)!;
       const { command, args } = commandOf(harness);
       const grant = runGrant(spec, harness);
-      const asking = runAsking(harness, runAgentName(), spec.profile);
-      let home: Record<string, string>;
-      try { home = runHomeOf(harness, spec, writeHome); } catch (error) {
+      let launched: { launch: Launch; asking: RunAsking };
+      try { launched = acpLaunch(harness, spec, writeHome); } catch (error) {
         yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error) };
         return;
       }
-      const child = spawn(command, [...args], {
+      const { launch, asking } = launched;
+      const child = spawnGroup(command, args, {
         cwd: spec.scratchDir,
-        env: { ...process.env, ...spec.credentialEnv, ...grant.env, ...asking.env, ...home },
+        env: launchEnvironment({ ...launch.env, ...grant.env }, launch.omitInherited),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let errors = '';
       child.stderr?.setEncoding('utf8');
       child.stderr?.on('data', (chunk: string) => { errors += chunk; });
-      const stop = (): void => { child.kill('SIGTERM'); };
+      const stop = (): void => { void stopGroup(child); };
       signal.addEventListener('abort', stop, { once: true });
       // A write to a harness that has exited fails on its stdin; the exit itself
       // closes the connection, and the failed write is kept with its diagnostics.
@@ -392,7 +402,7 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
         yield* turnOver(channel, id, spec, () => errors.slice(0, 2000), listRunTools, { grant, signal, asking });
       } finally {
         signal.removeEventListener('abort', stop);
-        child.kill('SIGTERM');
+        void stopGroup(child);
       }
     },
   };

@@ -1806,7 +1806,17 @@ describe('the budget a run is held to', () => {
         }));
         expect(outcome).toEqual({ driven: 1, refused: null });
         expect(lines.some((line) => line.includes('lease lost'))).toBe(!leaseHeld);
-        expect(lines.some((line) => line.includes('outlived its budget'))).toBe(true);
+        // A worker that lost the lease stops the harness's whole process group, past a SIGTERM it ignores, before the
+        // budget runs out; one that holds it stops the harness on the budget.
+        expect(lines.some((line) => line.includes('outlived its budget'))).toBe(leaseHeld);
+        if (!leaseHeld) {
+          const pid = Number(readFileSync(pidFile, 'utf8'));
+          let gone = false;
+          for (let i = 0; i < 100 && !gone; i += 1) {
+            try { process.kill(pid, 0); await Bun.sleep(20); } catch { gone = true; }
+          }
+          expect(gone).toBe(true);
+        }
         expect(outcomes).toEqual(leaseHeld
           ? [{ projectId: 'proj_1', runId: 'run_overrun', status: 'failed', error: 'the run outlived its budget of 0s' }]
           : []);

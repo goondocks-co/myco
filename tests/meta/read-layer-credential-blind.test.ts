@@ -182,6 +182,9 @@ describe('read layer', () => {
     //   core/worker-contacts.ts what a worker last said about itself — it OWNS
     //                     worker_contacts, the one write the claim and the lease
     //                     renewal share and the one fleet read Status answers from
+    //   core/model-catalogs.ts the models each worker last listed — it OWNS
+    //                     worker_model_catalogs, the one write a worker's report
+    //                     makes and the reads Settings and a claim answer from
     //   core/release-provenance.ts release provenance — it OWNS
     //                     project_release_provenance and the reconciler's writes of
     //                     knowledge_release_state, and holds the claim whose one-check-
@@ -195,7 +198,7 @@ describe('read layer', () => {
     //                     first_member_setup receipt of schema_meta, and holds the
     //                     guarded statements a setup run one at a time relies on
     //   pipeline.ts   one quota re-read on the ingest admission path
-    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/machine-settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs|switch-store)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^core\/first-owner\.ts$/, /^pipeline\.ts$/];
+    const ALLOWED = [/^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/machine-settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/digests\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/skills\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs|switch-store)\.ts$/, /^core\/spores\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/model-catalogs\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^core\/first-owner\.ts$/, /^pipeline\.ts$/];
     const offenders: string[] = [];
     for (const file of tsFiles(SRC)) {
       const rel = file.slice(SRC.length);

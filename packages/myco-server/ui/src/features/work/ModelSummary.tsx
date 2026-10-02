@@ -1,4 +1,4 @@
-import { EFFORT_UNAPPLIED, profileModelMatches } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, profileModelVerdict } from '@goondocks/myco-shared/execution-profile';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { CostProvenance, RecordedIdentity } from '@goondocks/myco-shared/worker-usage';
 
@@ -13,9 +13,11 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
   const identity = run.identity;
   const known = identity.status === 'reported' || identity.status === 'launched';
   const models = known ? [...new Set(identity.models.map((model) => model.model))] : [];
-  const mismatch = known && run.requested !== null && run.harness !== null && !profileModelMatches(run.harness, run.requested.model, identity.primary);
+  const verdict = known && run.requested !== null && run.harness !== null ? profileModelVerdict(run.harness, run.requested, identity.primary) : 'match';
+  const mismatch = verdict === 'mismatch';
   if (variant !== 'details' && run.requested === null && !known) return null;
-  const different = mismatch && <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>;
+  const different = mismatch ? <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>
+    : verdict === 'unconfirmed' && <span className="text-muted" data-model-unconfirmed="">Can’t confirm the model: the provider chooses which model this name runs</span>;
   const effortSkipped = known && identity.warnings?.includes(EFFORT_UNAPPLIED) === true
     && <span className="text-warn" data-effort-unapplied="">Effort not applied: the agent offered no effort setting for this model</span>;
   if (variant === 'list') {

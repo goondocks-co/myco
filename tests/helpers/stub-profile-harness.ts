@@ -12,6 +12,24 @@ export const PROFILE_STUB_DETECTED = {
   resolvedIsStub: true,
 };
 
+/** The models the stub lists when asked the way a worker lists Claude Code's: an alias with its resolution, and a dated id. */
+export const STUB_LISTED_MODELS = [
+  { value: 'default', resolvedModel: 'claude-sonnet-5-5', displayName: 'Default (recommended)' },
+  { value: 'sonnet', resolvedModel: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', supportedEffortLevels: ['low', 'medium', 'high'] },
+  { value: 'claude-opus-5-5', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5' },
+] as const;
+
+/** Answers a listing the way Claude Code does: the initialize request it was sent, under the id it carried, noting it in `listedFile` where one is named. */
+const listingAnswer = (listedFile: string | undefined): string => [
+  'case " $* " in *" --input-format "*)',
+  listedFile === undefined ? '' : `  printf 'listed\\n' >> ${quote(listedFile)}`,
+  '  IFS= read -r line',
+  `  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\\([^"]*\\)".*/\\1/p')`,
+  `  printf '%s%s%s\\n' '{"type":"control_response","response":{"subtype":"success","request_id":"' "$id" '","response":{"models":${JSON.stringify(STUB_LISTED_MODELS)}}}}'`,
+  '  exit 0 ;;',
+  'esac',
+].join('\n');
+
 export const STUB_PROFILE = {
   tier: 'default', model: 'sonnet', effort: 'medium', sources: { tier: 'task', model: 'default' },
 } as const;
@@ -21,6 +39,8 @@ interface StubOptions {
   ignoreTermination?: boolean;
   pidFile?: string;
   spawnedFile?: string;
+  /** Where each listing of the stub's models is noted. */
+  listedFile?: string;
   argumentsFile?: string;
   mcpReceipt?: string;
 }
@@ -49,6 +69,7 @@ export function stubProfileHarness(options: StubOptions = {}): { detected: Detec
   const script = [
     '#!/bin/sh',
     'if [ "$1" = "auth" ]; then exit 0; fi',
+    listingAnswer(options.listedFile),
     options.ignoreTermination === true ? "trap '' TERM" : '',
     options.argumentsFile === undefined ? '' : `printf '%s\\n' "$@" > ${quote(options.argumentsFile)}`,
     options.spawnedFile === undefined ? '' : `printf '%s\\n' "$$" >> ${quote(options.spawnedFile)}`,
