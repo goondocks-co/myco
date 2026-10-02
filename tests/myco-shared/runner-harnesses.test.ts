@@ -12,6 +12,8 @@ import { SECRET_SLOTS, SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/my
 import { CONFIGURABLE_PROFILE_HARNESSES, HARNESS_ASKING, OFFERABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, profileModelMatches } from '@goondocks/myco-shared/execution-profile';
 import { RUNNER_HARNESSES } from '../../packages/myco-shared/src/runner-harnesses.generated.ts';
 import { HARNESSES } from '@myco/runner/harnesses.js';
+import YAML from 'yaml';
+import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
 
 const BEFORE = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../fixtures/runner-harnesses-before-manifests.json'), 'utf-8')) as Record<string, unknown>;
 /** The same value through JSON, as the fixture holds it: key order and readonly arrays are not facts. */
@@ -48,10 +50,17 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
   });
 
   it('match a dated model id to the alias of its family, as the prefix the manifest declares says', () => {
-    expect(profileModelMatches('claude-code', 'sonnet', 'claude-sonnet-4-5-20250929')).toBe(true);
-    expect(profileModelMatches('claude-code', 'sonnet', 'claude-opus-4-1')).toBe(false);
-    expect(profileModelMatches('claude-code', 'sonnet', 'sonnet-4')).toBe(false);
-    expect(profileModelMatches('codex', 'gpt-5', 'gpt-5')).toBe(true);
+    expect(profileModelMatches('claude-code', 'sonnet', { model: 'claude-sonnet-4-5-20250929', provider: 'anthropic' })).toBe(true);
+    expect(profileModelMatches('claude-code', 'sonnet', { model: 'claude-opus-4-1' })).toBe(false);
+    expect(profileModelMatches('claude-code', 'sonnet', { model: 'sonnet-4' })).toBe(false);
+    expect(profileModelMatches('codex', 'gpt-5', { model: 'gpt-5', provider: 'openai' })).toBe(true);
+  });
+
+  it('match a provider-qualified id to the same model from that provider, as an OpenCode run reports it (#1608)', () => {
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'gpt-5.5', provider: 'openai' })).toBe(true);
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'big-pickle', provider: 'opencode' })).toBe(false);
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'gpt-5.5', provider: 'openrouter' })).toBe(false);
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'gpt-5.5' })).toBe(false);
   });
 
   it('are how a worker runs each harness: binary, launch, login, isolation, permissions, source git, model setting and accounting, in rank order', () => {
@@ -67,5 +76,13 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
     expect(credentialEnvFor('codex', 'sk-1')).toEqual({ OPENAI_API_KEY: 'sk-1' });
     expect(credentialEnvFor('antigravity', 'k')).toEqual({});
     expect(harnessesReading('anthropic')).toEqual(['claude-code', 'opencode', 'cursor']);
+  });
+
+  it('name only a slot the Deployment stores, so a misspelt slot fails the generator rather than a run', () => {
+    const manifest = YAML.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../../packages/myco/src/symbionts/manifests/claude-code.yaml'), 'utf-8')) as { runner: { credential: { slot: string } } };
+    expect(SymbiontManifestSchema.safeParse(manifest).success).toBe(true);
+    manifest.runner.credential.slot = 'antropic';
+    const parsed = SymbiontManifestSchema.safeParse(manifest);
+    expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join('.'))).toEqual(['runner.credential.slot']);
   });
 });

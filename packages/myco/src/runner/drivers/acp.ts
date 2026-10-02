@@ -25,6 +25,7 @@ import { harnessById, type Harness } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { AcpEvents } from './acp-events.js';
+import { applyProfile, PROFILE_UNAPPLIED } from './acp-profile.js';
 import { answerPermission, ToolCalls } from './acp-permission.js';
 import { runGrant, type RunGrant } from './grant.js';
 import { listRunTools, type RunServer, type RunTools } from './run-tools.js';
@@ -163,14 +164,18 @@ const RUN_SHELL = '/bin/sh';
  * reads no user startup file. Its permission comes after every rule the
  * harness's other configuration holds, and the last rule that matches a call
  * decides it. A refused call is that call's failure and not the end of the
- * agent's turn, so the agent goes on with the rest of its work.
+ * agent's turn, so the agent goes on with the rest of its work. A claimed model
+ * is the configuration's own model, which a session opens on where the harness
+ * offers it, and its small model, so no part of the run falls to another; the
+ * turn confirms it from the session before the prompt is sent.
  */
 export function runAgentConfig(agent: string, platform: NodeJS.Platform = process.platform, profile?: RunSpec['profile']): Record<string, unknown> {
   return {
     default_agent: agent,
+    ...(profile === undefined ? {} : { model: profile.model, small_model: profile.model }),
     ...(platform === 'win32' ? {} : { shell: RUN_SHELL }),
     experimental: { continue_loop_on_deny: true },
-    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' }, ...(profile === undefined ? {} : { model: profile.model, ...(profile.effort === null ? {} : { reasoningEffort: profile.effort }) }) } },
+    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' } } },
   };
 }
 
@@ -215,7 +220,9 @@ const SESSION_UPDATE = 'session/update';
  * permission request naming one of them can be recognised; a run whose tools
  * cannot be listed ends there, since every call of them would be refused. A
  * session on a harness that asks only under the run's own agent must report
- * that agent as its mode, or the run ends before its prompt. A permission
+ * that agent as its mode, or the run ends before its prompt. A claimed profile
+ * is applied to the session and confirmed from what it reports, or the run ends
+ * before its prompt with the profile unapplied (`acp-profile.ts`). A permission
  * request is answered from the run's grant as it arrives. A call refused
  * outside the grant is that call's failure, never the run's: the turn ends on
  * the agent's own stop reason. Every other request is answered as a method this
@@ -275,7 +282,17 @@ export async function* turnOver(
       return;
     }
     sessionId = stringOf(info.sessionId);
-    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), info);
+    let reported = info;
+    if (spec.profile !== undefined) {
+      const applied = await applyProfile((method, params) => connection.call(method, params), sessionId ?? '', info.configOptions, spec.profile);
+      if (!applied.ok) {
+        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}` };
+        await connection.call('session/close', { sessionId }).catch(() => undefined);
+        return;
+      }
+      reported = { ...info, configOptions: applied.configOptions };
+    }
+    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), reported);
     yield { kind: 'started', harness: id, sessionId };
     yield* events.identity();
 

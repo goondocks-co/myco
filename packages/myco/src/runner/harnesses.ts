@@ -98,12 +98,12 @@ export interface Harness {
   profile: ProfileCapability;
 }
 
-/** What a harness's manifest declares of how a worker runs it (\`runner.worker\`): all but what the shared tables hold. */
+/** What a harness's manifest declares of how a worker runs it (`runner.worker`): all but what the shared tables hold. */
 export type HarnessFacts = Omit<Harness, 'profile' | 'asking'> & { modelSetting: ProfileCapability['model'] };
 
 /**
  * Every harness a worker can drive, in the order it ranks them, from the manifests: how a worker runs it
- * (\`harnesses.generated.ts\`), how it is held to a run's grant (\`HARNESS_ASKING\`), and its efforts from its tier profile.
+ * (`harnesses.generated.ts`), how it is held to a run's grant (`HARNESS_ASKING`), and its efforts from its tier profile.
  */
 export const HARNESSES: readonly Harness[] = HARNESS_FACTS.map(({ modelSetting, ...facts }) => ({
   ...facts,
