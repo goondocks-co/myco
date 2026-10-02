@@ -645,6 +645,7 @@ export async function applyRunUpdate(
   update: RunUpdate,
   lease?: RunLease & { dispatchedBy: string },
   errorCode: RunErrorCode = 'run_failed',
+  context?: Readonly<Record<string, string>>,
 ): Promise<number> {
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return 0;
@@ -657,9 +658,11 @@ export async function applyRunUpdate(
   const release = isTerminalRunStatus(update.status) ? ', lease_expires_at = NULL' : '';
   const coded = 'error' in update;
   const codeSet = coded ? ', error_code = ?' : '';
+  // Keys merged into the run's context; a context the store did not write as JSON is left as it is.
+  const contextSet = context === undefined ? '' : `, run_context = CASE WHEN run_context IS NULL OR json_valid(run_context) THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`;
   const result = await db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
-    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [update.error == null ? null : errorCode] : []), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
+    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [update.error == null ? null : errorCode] : []), ...(context === undefined ? [] : [JSON.stringify(context)]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
       ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]))
     .run();
   return result.meta.changes;

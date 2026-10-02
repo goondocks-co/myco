@@ -60,7 +60,8 @@ export interface WorkRun {
   at: number | null;
   outcome: { spores: number; sessions: number; maps: number };
   sessionId: string | null;
-  failure: { cause: string; code?: string | null; error?: string | null; source: 'report' | 'error' } | null;
+  /** `reason` is why the run failed in the reader's words, where the worker that ran it gave one. */
+  failure: { cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }

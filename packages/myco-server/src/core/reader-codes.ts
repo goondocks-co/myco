@@ -2,7 +2,7 @@ export const STALE_RUN_ERROR = 'the machine running it stopped responding';
 export const STALE_PENDING_REASON = 'no machine started the task within a day';
 export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
 
-export type RunErrorCode = 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'run_failed';
+export type RunErrorCode = 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'run_failed';
 
 /** Stored codes take precedence; text matching admits rows with no recorded code. */
 export function runErrorCode(error: string | null, storedCode: string | null = null): string | null {

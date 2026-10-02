@@ -1,5 +1,5 @@
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { EXECUTION_PROFILE_FEATURE, profileSupported, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -118,7 +118,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -185,11 +185,23 @@ async function afterRefusal(options: Requester, refused: string): Promise<
   }
 }
 
+/**
+ * An identity as a Deployment that does not advertise the profile outcome reads it: without the warning it would take
+ * as accounting in doubt, which would leave the run's cost unpriced.
+ */
+function withoutProfileOutcome(identity: ExecutionIdentity): ExecutionIdentity {
+  if (identity.status === 'unknown' || identity.warnings === undefined) return identity;
+  const { warnings, ...rest } = identity;
+  const kept = warnings.filter((warning) => warning !== EFFORT_UNAPPLIED);
+  return kept.length === 0 ? rest : { ...rest, warnings: kept };
+}
+
 async function postAs(options: Requester, token: string, path: string, body: unknown): Promise<WorkerAnswer> {
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
   let accounting = false;
   let executionProfile = false;
+  let profileOutcome = false;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
@@ -199,6 +211,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
     });
     accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
     executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
+    profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
     raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
@@ -206,7 +219,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome };
     case 'protocol':
       return {
         kind: 'refused',
@@ -294,7 +307,7 @@ const asRun = (value: unknown): ClaimedRun | null => {
  */
 async function drive(
   options: WorkerOptions, run: ClaimedRun, lease: { heartbeatMs: number; deadline: number }, wake: WakeWatch,
-): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity } | { status: 'lost'; error: null }> {
+): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal } | { status: 'lost'; error: null }> {
   const { heartbeatMs } = lease;
   const clock = options.clock ?? Date.now;
   /** When the lease this worker holds lapses unless renewed, on this machine's clock. */
@@ -317,7 +330,7 @@ async function drive(
   const driver = driverFor(run.harness);
   if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
   if (named === null || run.profile === undefined || !profileSupported(run.profile, named.profile)) {
-    return failedBeforeStart('profile_unapplied');
+    return { ...failedBeforeStart(PROFILE_UNAPPLIED), refusal: { code: PROFILE_UNAPPLIED, reason: null } };
   }
   // A harness given nothing to do ends its turn at once, and a worker that
   // launched it would then report a run that did nothing as one that finished.
@@ -482,7 +495,7 @@ async function drive(
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending', identity, usage };
   return last.stop === 'end_turn'
     ? { status: 'completed', error: failedCallsNote(events), identity, usage }
-    : { status: 'failed', identity, usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}` };
+    : { status: 'failed', identity, usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}`, ...(last.refusal === undefined ? {} : { refusal: last.refusal }) };
 }
 
 /** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
@@ -669,10 +682,11 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     if (outcome.status !== 'lost') {
       const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
       const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
-        attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: outcome.identity,
+        attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: answer.profileOutcome ? outcome.identity : withoutProfileOutcome(outcome.identity),
       } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
       const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
         ...accounting,
+        ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
       }));
       if (ended.kind === 'refused') {
         options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);

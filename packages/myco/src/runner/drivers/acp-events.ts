@@ -34,7 +34,11 @@ export class AcpEvents {
   private selected: string | null = null;
   private estimatedCostUsd: number | null = null;
 
-  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>, private readonly policy: HarnessAccounting = harnessById(harness)!.accounting) {
+  /**
+   * `warnings` are what the identity says about how the run's profile was applied, carried on every identity this
+   * session reports.
+   */
+  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>, private readonly policy: HarnessAccounting = harnessById(harness)!.accounting, private readonly warnings: readonly string[] = []) {
     const selected = modelOf(session);
     this.model = selected?.model ?? null;
     this.modelSource = selected?.source ?? 'session.models';
@@ -106,7 +110,7 @@ export class AcpEvents {
       if (this.selected !== null && !this.used.has(this.selected)) this.models.delete(this.selected);
       this.models.set(key, model);
       this.selected = key;
-      return [{ kind: 'identity', snapshot: true, identity: { ...modelSelection(model), models: [...this.models.values()] } }];
+      return [{ kind: 'identity', snapshot: true, identity: { ...modelSelection(model), models: [...this.models.values()], ...(this.warnings.length === 0 ? {} : { warnings: [...this.warnings] }) } }];
     });
   }
 

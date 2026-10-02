@@ -6,6 +6,9 @@
  * expression. A key is a value a WHERE clause can compare, and null where the context holds no such key; a context
  * the store did not write is not read as JSON at all, so a caller's own string cannot fail the query.
  */
+/** The key under which a failed run's context holds its worker's words on why it failed, for the run's page (`ProfileRefusal.reason`). */
+export const FAILURE_REASON_KEY = 'failureReason';
+
 export const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
 
 /**

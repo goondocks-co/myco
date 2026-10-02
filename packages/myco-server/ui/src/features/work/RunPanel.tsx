@@ -156,7 +156,7 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 }
 
 function causeOf({ run }: RunDetailAnswer): string {
-  return runErrorWords(run.errorCode);
+  return runErrorWords(run.errorCode, run.errorReason ?? null);
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -242,7 +242,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
           {run.status === 'failed' && run.error !== null && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>
-              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode)}</p>
+              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode, run.errorReason ?? null)}</p>
               <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>
             </div>
           )}

@@ -1,4 +1,4 @@
-import { profileModelMatches } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, profileModelMatches } from '@goondocks/myco-shared/execution-profile';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { CostProvenance, RecordedIdentity } from '@goondocks/myco-shared/worker-usage';
 
@@ -16,17 +16,20 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
   const mismatch = known && run.requested !== null && run.harness !== null && !profileModelMatches(run.harness, run.requested.model, identity.primary);
   if (variant !== 'details' && run.requested === null && !known) return null;
   const different = mismatch && <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>;
+  const effortSkipped = known && identity.warnings?.includes(EFFORT_UNAPPLIED) === true
+    && <span className="text-warn" data-effort-unapplied="">Effort not applied: the agent offered no effort setting for this model</span>;
   if (variant === 'list') {
     const model = run.requested?.model;
     const asked = model === undefined ? null : `Asked for ${displayModel(model)}${run.requested?.effort == null ? '' : `, ${run.requested.effort} effort`}`;
     const actual = known ? `${identity.status === 'reported' ? 'ran' : 'launched'} ${models.join(', ')}` : null;
-    return <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary=""><span>{[asked, actual].filter(Boolean).join(' · ')}</span>{different}</div>;
+    return <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary=""><span>{[asked, actual].filter(Boolean).join(' · ')}</span>{different}{effortSkipped}</div>;
   }
   return (
     <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary="">
       {(run.requested !== null || variant === 'details') && <span>Requested: {run.requested === null ? 'Not recorded' : `${run.requested.tier} · ${run.requested.model}${run.requested.effort === null ? '' : ` · ${run.requested.effort} effort`}`}</span>}
       {(known || variant === 'details') && <span>{known ? `${identity.status === 'reported' ? 'Actual' : 'Launched'}: ${models.join(', ')}` : 'Model not recorded'}</span>}
       {different}
+      {effortSkipped}
     </div>
   );
 }

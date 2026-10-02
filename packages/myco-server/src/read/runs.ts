@@ -9,7 +9,7 @@ import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
-import { contextValue } from '../db/run-context.js';
+import { contextValue, FAILURE_REASON_KEY } from '../db/run-context.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { requestedProfileValue } from '../db/run-profile.js';
 import { runResultSql, type RunResult } from './run-outcome.js';
@@ -100,6 +100,8 @@ export interface RunDetailRow extends RunListRow {
   resumeMode: string | null;
   resumeAttempts: number;
   errorCode: string | null;
+  /** Why a failed run failed, in the reader's words, where the worker that ran it gave a reason; null where it gave none. */
+  errorReason: string | null;
   error: string | null;
   dispatchedBy: string | null;
   usageData: string | null;
@@ -179,7 +181,8 @@ const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data,
 const DETAIL_COLUMNS = `${LIST_COLUMNS},
   ${contextValue('repository.branch')} AS source_branch, ${contextValue('repository.commit')} AS source_commit,
   instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
-  resume_mode, resume_attempts, error, error_code, dispatched_by, actions_taken, checkpoints`;
+  resume_mode, resume_attempts, error, error_code, CASE WHEN status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
+  dispatched_by, actions_taken, checkpoints`;
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
 const num = (value: unknown): number | null => (value as number | null) ?? null;
@@ -248,6 +251,7 @@ function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string,
     resumeMode: text(row.resume_mode),
     resumeAttempts: (row.resume_attempts as number | null) ?? 0,
     errorCode: runErrorCode(text(row.error), text(row.error_code)),
+    errorReason: text(row.error_reason),
     error: text(row.error),
     dispatchedBy: text(row.dispatched_by),
     usageData: text(row.usage_data),

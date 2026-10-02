@@ -38,7 +38,7 @@ import { openHarnessCredential, openProviderCredential } from './provider-creden
 import { runtimeProbePreferences } from './runtime-probe.js';
 import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
-import type { ExecutionProfile, ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import type { ExecutionProfile, ProfileCapability, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
 import { admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
@@ -1144,16 +1144,16 @@ export async function renewLease(env: ServerEnv, worker: { tokenId: string; now:
 export async function endLeasedRun(
   env: ServerEnv,
   worker: { tokenId: string; now: number; clock?: () => number },
-  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; identity?: ExecutionIdentity; accountingVersion?: number; attemptId?: string },
+  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; identity?: ExecutionIdentity; accountingVersion?: number; attemptId?: string; refusal?: ProfileRefusal | null },
 ): Promise<{ ended: boolean; reason?: string; status?: 'completed' | 'failed' }> {
   const clock = worker.clock ?? (() => worker.now);
   const prepared = await prepareWorkerEnd(env, { tokenId: worker.tokenId, clock }, run);
   if ('held' in prepared) return { ended: false, reason: prepared.reason };
-  const { row, unmet, status, update } = prepared;
+  const { row, unmet, status, update, errorCode, context } = prepared;
   const now = clock();
   const changed = await applyRunUpdate(env.db, { projectId: run.projectId }, run.runId, {
     ...update, completed_at: now,
-  }, { tokenId: worker.tokenId, dispatchedBy: row.dispatchedBy, now });
+  }, { tokenId: worker.tokenId, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
   if (changed === 0) return { ended: false, reason: 'the lease is no longer held' };
   await retireDispatchCredential(env, row.dispatchedBy, now);
   if (unmet !== null) {

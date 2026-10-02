@@ -23,7 +23,7 @@ import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
 import { recordWorkerContact } from '../core/worker-contacts.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
-import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 const RUN_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -143,6 +143,7 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
   try {
     const outcome = await endLeasedRun(env, { tokenId: ctx.tokenId, now: ctx.now, clock: ctx.clock }, {
       ...run, status, ...parseWorkerAccounting(asked), error: typeof asked.error === 'string' ? asked.error : null,
+      refusal: parseProfileRefusal(asked.refusal),
     });
     return ok({ persisted: true, ...outcome });
   } catch (error) {

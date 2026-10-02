@@ -1,5 +1,6 @@
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { requestedProfileValue } from '../db/run-profile.js';
+import { contextValue, FAILURE_REASON_KEY } from '../db/run-context.js';
 import { producedSql, runResultSql, type RunResult } from './run-outcome.js';
 export { producedSql, type RunResult } from './run-outcome.js';
 import { costProvenanceValue } from '../db/run-accounting.js';
@@ -101,7 +102,7 @@ export interface WorkRun {
   /** The session a title run titled; null for every other run. */
   sessionId: string | null;
   /** The terminal failure classifier and stored reason, separate from the agent's report. */
-  failure: { cause: string; code?: string | null; error?: string | null; source: 'report' | 'error' } | null;
+  failure: { cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }
@@ -235,7 +236,8 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(DISTINCT sp.session_id) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spore_sessions,
               CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
               CASE WHEN r.status = 'failed' THEN r.error END AS error,
-              CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code
+              CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code,
+              CASE WHEN r.status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason
          FROM ${RUNS_BY_TASK}
         WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
         ORDER BY at DESC, r.id DESC LIMIT ?`,
@@ -320,7 +322,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
         maps: kind === 'map' && produced ? 1 : 0,
       },
       sessionId: kind === 'title' ? titled : null,
-      failure: !failed ? null : { code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', error, source: 'error' },
+      failure: !failed ? null : { code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
       tokens: orNull(row.tokens_used),
       costUsd: orNull(row.cost_usd),
     };

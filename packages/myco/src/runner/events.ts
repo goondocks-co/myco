@@ -1,5 +1,5 @@
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
-import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 
 /**
  * One run-event model, behind every driver.
@@ -24,7 +24,8 @@ export type RunEvent =
   | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string }
   | { kind: 'identity'; identity: ExecutionIdentity; snapshot?: true }
   | ({ kind: 'usage' } & WorkerUsage)
-  | { kind: 'ended'; stop: StopReason; detail: string | null };
+  /** `refusal` is set where the driver ended the run on the harness's refusal of the claimed profile. */
+  | { kind: 'ended'; stop: StopReason; detail: string | null; refusal?: ProfileRefusal };
 
 /** What every driver is given, and the only thing it needs to start a harness. */
 export interface RunSpec {

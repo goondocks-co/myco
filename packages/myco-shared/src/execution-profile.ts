@@ -6,6 +6,37 @@ export const EXECUTION_PROFILE_FEATURE = 'execution-profile';
 export const REASONING_TIERS = ['low', 'default', 'high'] as const;
 export type ReasoningTier = typeof REASONING_TIERS[number];
 export const MODEL_MISMATCH = 'model_mismatch';
+/** A run whose agent offered no effort setting for its model, so the claimed effort was not applied. */
+export const EFFORT_UNAPPLIED = 'effort_unapplied';
+/** Warnings about how a run's claimed profile was applied, which say nothing about its accounting. */
+export const PROFILE_WARNINGS: readonly string[] = [MODEL_MISMATCH, EFFORT_UNAPPLIED];
+
+/** The code a worker ends a run with when its agent cannot run the claimed model or effort. */
+export const PROFILE_UNAPPLIED = 'profile_unapplied';
+
+/**
+ * The Deployment reads a worker's profile refusal (`refusal` on its end report) and the warnings `PROFILE_WARNINGS`
+ * names as saying nothing about a run's accounting. A worker sends either only where the Deployment advertises this.
+ */
+export const PROFILE_OUTCOME_FEATURE = 'profile-outcome-v1';
+
+/** The longest refusal reason a Deployment keeps. */
+export const MAX_REFUSAL_REASON_CHARS = 500;
+
+/**
+ * A run a worker ended on its agent's refusal of the claimed profile, with the words the run's page shows
+ * after "The agent couldn't use the chosen model:", or null where the worker had none to give.
+ */
+export interface ProfileRefusal { code: typeof PROFILE_UNAPPLIED; reason: string | null }
+
+/** A worker's profile refusal as its end report carries it, or null for anything else. */
+export function parseProfileRefusal(value: unknown): ProfileRefusal | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as { code?: unknown; reason?: unknown };
+  if (raw.code !== PROFILE_UNAPPLIED) return null;
+  const reason = typeof raw.reason === 'string' && raw.reason.trim() !== '' ? raw.reason.trim().slice(0, MAX_REFUSAL_REASON_CHARS) : null;
+  return { code: PROFILE_UNAPPLIED, reason };
+}
 
 export interface ExecutionProfile {
   tier: ReasoningTier;

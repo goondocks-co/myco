@@ -1,5 +1,5 @@
 import type { ExecutionIdentity, WorkerUsage } from '@goondocks/myco-shared/worker-usage';
-import { MODEL_MISMATCH } from '@goondocks/myco-shared/execution-profile';
+import { PROFILE_WARNINGS } from '@goondocks/myco-shared/execution-profile';
 import { buildTokenBreakdown } from './breakdown.js';
 import { resolveCost } from './resolver.js';
 import { resolveUnavailableCost } from './helpers.js';
@@ -28,7 +28,7 @@ export async function resolveWorkerCost(harness: string, usage: WorkerUsage | nu
     return { model: model.model, provider: model.provider ?? null, identitySource: model.source, ...cost, provenance: cost.provenance ?? 'unavailable' as const };
   }));
   if (usage?.costUsd != null || usage?.estimatedCostUsd != null) return { ...await resolveCost(input), models };
-  if (models.length === 0 || models.some((m) => m.costUsd === null) || (identity?.status !== 'unknown' && identity?.warnings?.some((warning) => warning !== MODEL_MISMATCH))) return {
+  if (models.length === 0 || models.some((m) => m.costUsd === null) || (identity?.status !== 'unknown' && identity?.warnings?.some((warning) => !PROFILE_WARNINGS.includes(warning)))) return {
     ...resolveUnavailableCost(input, 'Model identity, complete counts or exact pricing is unavailable'), provenance: 'unavailable', models,
   };
   const sum = models.reduce((total, model) => total + model.costUsd!, 0);

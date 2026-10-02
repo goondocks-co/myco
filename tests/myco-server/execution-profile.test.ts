@@ -10,6 +10,9 @@ import { recordTaskHolder } from '@myco-server-worker/core/runs.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { PROFILE_HOLD_PREFIXES, credentialUnavailable, heldByWords, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
+import { PROFILE_HARNESSES, REASONING_TIERS, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { HARNESSES } from '@myco/runner/harnesses.js';
 
 const NOW = 1_800_000_000_000;
 const OFFER = { id: 'claude-code', authenticated: true, profile: { model: 'flag' as const, efforts: ['low', 'medium', 'high', 'xhigh'] } };
@@ -135,6 +138,25 @@ describe('task execution profiles', () => {
       const detail = await getRunDetail(r.db, { projectId: 'proj_1' }, claim.run.id, NOW + 2, 'mem_worker');
       expect({ requested: detail?.run.requested?.model, warned: (detail?.run.identity as { warnings?: string[] } | undefined)?.warnings?.includes('model_mismatch') === true })
         .toEqual({ requested: 'openai/gpt-5.5', warned });
+    }
+  });
+
+  it('never claims an effort for an agent whose manifest allows none, so its runs never read as an effort skipped (#1608)', () => {
+    const effortless = Object.entries(PROFILE_HARNESSES).filter(([, spec]) => spec.allowedEfforts.length === 0).map(([id]) => id);
+    expect(effortless.length).toBeGreaterThan(0);
+    const settingsFor = (harness: string, tier: string) => new Map([[`agent.reasoning_map.${harness}.${tier}`, JSON.stringify('provider/model')], ['agent.tasks', JSON.stringify({ 'extract-curate': { reasoningLevel: tier } })]]);
+    const effortOf = (harness: string, capability: ProfileCapability, tier: string) => {
+      const resolved = resolveExecutionProfile('extract-curate', harness, capability, settingsFor(harness, tier));
+      return 'profile' in resolved ? resolved.profile.effort : 'not claimed';
+    };
+    for (const tier of REASONING_TIERS) {
+      // The same settings claim an effort for an agent that allows one, so a refusal of the settings is not what passes here.
+      expect(effortOf('opencode', HARNESSES.find((h) => h.id === 'opencode')!.profile, tier)).toBe(PROFILE_HARNESSES.opencode!.efforts[tier]);
+      for (const harness of effortless) {
+        for (const capability of [HARNESSES.find((h) => h.id === harness)!.profile, { model: 'config' as const, efforts: [] }]) {
+          expect({ harness, tier, effort: effortOf(harness, capability, tier) }).toEqual({ harness, tier, effort: 'not claimed' });
+        }
+      }
     }
   });
 
