@@ -16,9 +16,9 @@ export const shortModel = (id: string): string => id.split('/').at(-1) ?? id;
 const dimensionWords = (dimensions: number | null): string => dimensions === null ? 'size not published' : `${dimensions} dimensions`;
 
 /** One model as the picker lists it: its name, its vector size, and whether it needs a re-index first. */
-const modelOption = (model: EmbeddingModelChoice) => ({
+const modelOption = (model: EmbeddingModelChoice, capacity: number) => ({
   value: model.id,
-  label: `${model.id} · ${dimensionWords(model.dimensions)}${model.refusal === null ? '' : ' · needs a re-index'}`,
+  label: `${model.id} · ${dimensionWords(model.dimensions)}${model.refusal === null ? '' : model.dimensions !== null && model.dimensions > capacity ? ' · too large for search' : ' · needs a re-index'}`,
   short: model.id,
 });
 
@@ -50,6 +50,8 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   const [draft, setDraft] = useState<string | null>(null);
   const choices = settings.data?.embedding;
   if (choices === undefined) return null;
+  // A leaf this server does not offer, with nothing stored, has nothing to show or change.
+  if (row !== undefined && !row.appliesTo.includes(choices.target) && !row.configured) return null;
 
   const leafOf = (leaf: string) => settings.data?.leaves.find((l) => l.leaf === leaf);
   const providerId = typeof leafOf('embedding.provider')?.effective === 'string' ? leafOf('embedding.provider')!.effective as string : null;
@@ -95,7 +97,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
         disabled={pending || locked}
         options={[
           ...(none ? [{ value: NONE, label: 'None — search matches words only' }] : []),
-          ...choices.providers.map((p) => ({ value: p.id, label: p.label })),
+          ...choices.providers.map((p) => ({ value: p.id, label: p.label, short: p.label.replace(/^Cloudflare /, '') })),
         ]}
         onValueChange={(next) => {
           if (next === NONE) { if (row?.configured) reset(); return; }
@@ -108,7 +110,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   } else if (field.kind === 'embedding-model') {
     stacked = provider?.customModels === true;
     const listed = provider?.models ?? [];
-    const options = [...listed.map(modelOption), ...(model !== null && !listed.some((m) => m.id === model) ? [{ value: model, label: `${model} · ${dimensionWords(null)}`, short: model }] : [])];
+    const options = [...listed.map((m) => modelOption(m, choices.capacity)), ...(model !== null && !listed.some((m) => m.id === model) ? [{ value: model, label: `${model} · ${dimensionWords(null)}`, short: model }] : [])];
     labelled = provider !== null;
     control = provider === null ? <p aria-label={field.label} className="t-small text-muted">Choose a provider first.</p> : (
       <div className="flex w-full flex-col gap-s2">
@@ -128,7 +130,9 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
       </div>
     );
     const held = choices.held[0];
-    if (status === null && held !== undefined) status = `Search holds ${dimensionWords(held.dimensions)} vectors from ${shortModel(held.model)}; a model of another size needs a re-index.`;
+    if (status === null && held !== undefined) {
+      status = `Search holds ${held.dimensions === null ? '' : `${held.dimensions}-dimension `}vectors from ${shortModel(held.model)}; a model of another size needs a re-index.`;
+    }
     if (status === null && model !== null) status = `${dimensionWords(listed.find((m) => m.id === model)?.dimensions ?? null)}${row?.source === 'default' ? ' · the provider’s default' : ''}`;
   } else {
     const editable = provider?.endpoint.editable === true;
@@ -165,9 +169,9 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
       note={field.note}
       status={status}
       refused={refused}
-      stacked={stacked}
+      stacked={stacked || row?.configured === true}
       control={(
-        <div className="flex w-full items-center gap-s2">
+        <div className={`flex w-full items-center gap-s2${stacked || row?.configured === true ? ' max-w-measure' : ''}`}>
           {control}
           {row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}
         </div>

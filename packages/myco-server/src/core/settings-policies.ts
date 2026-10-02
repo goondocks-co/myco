@@ -325,9 +325,8 @@ export async function embeddingChoices(env: ServerEnv): Promise<EmbeddingChoices
       endpoint: { editable: spec.endpoint.editable, url: spec.endpoint.url },
       models: spec.models.map((model) => {
         const candidate = resolveEmbedding({ 'embedding.provider': id, 'embedding.model': model.id, ...(spec.endpoint.editable && endpoint !== null ? { 'embedding.base_url': endpoint } : {}) }, target).selection;
-        const refusal = candidate === null || candidate.modelKey === current?.modelKey ? null
-          : model.dimensions > VECTOR_DIMENSIONS ? `Produces ${model.dimensions}-dimension vectors; the search index holds at most ${VECTOR_DIMENSIONS}.`
-            : dimensionRefusal(candidate, held);
+        const refusal = model.dimensions > VECTOR_DIMENSIONS ? `${model.id} produces ${model.dimensions}-dimension vectors; the search index holds at most ${VECTOR_DIMENSIONS}`
+          : candidate === null || candidate.modelKey === current?.modelKey ? null : dimensionRefusal(candidate, held);
         return { id: model.id, dimensions: model.dimensions, refusal };
       }),
     };

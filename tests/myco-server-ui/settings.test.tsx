@@ -314,7 +314,9 @@ describe('Settings, in five sections', () => {
         if (live.length === 0) continue;
         const card = await group(g.label);
         for (const f of live) {
-          expect({ leaf: f.leaf, present: within(card).queryByLabelText(f.label) !== null }).toEqual({ leaf: f.leaf, present: true });
+          // The fixture is a hosted server: a leaf it does not offer, with nothing stored, is not shown.
+          const offered = rowFor(f.leaf).appliesTo.includes('cloudflare');
+          expect({ leaf: f.leaf, present: within(card).queryByLabelText(f.label) !== null }).toEqual({ leaf: f.leaf, present: offered });
           controls += 1;
         }
       }
@@ -361,7 +363,7 @@ describe('Settings, in five sections', () => {
     mount('/settings/models');
     await screen.findByLabelText('Embedding provider');
     await waitFor(() => expect(statusOf('embedding.provider')).toBe('In use: Cloudflare Workers AI · bge-m3 (1024 dimensions)'));
-    expect(screen.queryByRole('textbox', { name: 'Embedding endpoint' })).toBeNull();
+    expect(screen.queryByLabelText('Embedding endpoint')).toBeNull();
     await pick('Embedding provider', 'OpenRouter');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/embedding', body: { provider: 'openrouter', model: 'baai/bge-m3' } });

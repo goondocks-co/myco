@@ -104,6 +104,12 @@ describe('embedding in effect', () => {
     const t = hosted();
     t.sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES ('proj_1', ?, 'v1', 'spore', 's1', 'r1', 1, 1)`,
       [JSON.stringify(['cloudflare', '@cf/baai/bge-m3'])]);
+    const choices = (await json(await t.fetch(await asOwner('/api/settings')))).embedding as { providers: Array<{ id: string; models: Array<{ id: string; dimensions: number; refusal: string | null }> }> };
+    const workersAi = Object.fromEntries(choices.providers.find((p) => p.id === 'workers-ai')!.models.map((m) => [m.id, m.refusal]));
+    expect(workersAi['@cf/baai/bge-m3']).toBeNull();
+    expect(workersAi['@cf/baai/bge-large-en-v1.5']).toBeNull();
+    expect(workersAi['@cf/baai/bge-base-en-v1.5']).toMatch(/re-index/);
+    expect(workersAi['@cf/pfnet/plamo-embedding-1b']).toMatch(/at most 1536/);
     const leaf = await put(t, 'embedding.model', '@cf/baai/bge-base-en-v1.5');
     expect(leaf.status).toBe(400);
     expect(String((await json(leaf)).detail)).toMatch(/768-dimension.*1024-dimension.*re-index/);

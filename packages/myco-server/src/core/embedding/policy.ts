@@ -106,7 +106,7 @@ export function partitionModel(modelKey: string): { provider: EmbeddingProviderI
 }
 
 const answer = (effective: unknown, source: SettingSource, state: SettingState, reason: string | null = null): EmbeddingLeafAnswer =>
-  ({ effective, source, state, reason });
+  ({ effective, source, state, reason: reason === null ? null : reason.charAt(0).toUpperCase() + reason.slice(1) });
 
 /** Resolve the embedding leaves for a target. */
 export function resolveEmbedding(stored: StoredEmbedding, target: DeploymentTarget, readiness?: EmbeddingReadiness): EmbeddingResolution {
