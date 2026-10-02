@@ -24,6 +24,7 @@ import { selfExec } from '../runtime/self-exec.js';
 import { spawnDetached, startedContained, type DetachedSpawn, type DetachedStart } from '../runtime/spawn-detached.js';
 import { ensureMemberDir } from './store.js';
 import { spoolDirFor } from './spool.js';
+import { autoJoinDir, JOIN_BUCKET } from './auto-join.js';
 
 export const HELPER_LOCK_FILE = 'helper.lock';
 export const HELPER_DIRTY_FILE = 'helper.dirty';
@@ -52,8 +53,12 @@ export interface HelperPaths {
   starting: string;
 }
 
+/**
+ * The files a bucket's helper coordinates through: a project's in its spool, and the join bucket's (`JOIN_BUCKET`, the
+ * repositories joining a project) in the auto-join folder.
+ */
 export function helperPaths(projectId: string, mycoHome: string): HelperPaths {
-  const dir = spoolDirFor(projectId, mycoHome);
+  const dir = projectId === JOIN_BUCKET ? autoJoinDir(mycoHome) : spoolDirFor(projectId, mycoHome);
   return {
     lock: path.join(dir, HELPER_LOCK_FILE),
     dirty: path.join(dir, HELPER_DIRTY_FILE),
@@ -100,7 +105,9 @@ export function shipsInline(outcome: KickOutcome): boolean {
  */
 export function kickHelper(opts: { projectId: string; mycoHome: string; reason?: KickReason; spawn?: DetachedSpawn; now?: () => number }): KickOutcome {
   markWork(opts);
-  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback: 'the caller ships inline' });
+  // A join's caller ships nothing itself: its request stays, and the next hook in the repository kicks again.
+  const fallback = opts.projectId === JOIN_BUCKET ? 'the join waits for the next hook' : 'the caller ships inline';
+  return startHelper({ ...opts, why: `kick (${opts.reason ?? 'capture'})`, fallback });
 }
 
 /**
@@ -130,7 +137,8 @@ function startHelper(opts: {
   probe.lock.release();
   if (!claimStart(paths.starting, now())) return { kind: 'starting', contained: readStartClaim(paths.starting)?.contained === true };
   const self = selfExec();
-  const args = [...self.args, 'member', 'helper', '--project', opts.projectId, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
+  const bucket = opts.projectId === JOIN_BUCKET ? ['--join'] : ['--project', opts.projectId];
+  const args = [...self.args, 'member', 'helper', ...bucket, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
   let start: DetachedStart;
   try {
     start = (opts.spawn ?? spawnDetached)(self.path, args, { cwd: opts.mycoHome });
