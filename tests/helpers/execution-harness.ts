@@ -68,7 +68,7 @@ export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: s
 while IFS= read -r line; do
   id=$(printf '%s\\n' "$line" | sed -n 's/.*"id":[ ]*\\([0-9][0-9]*\\).*/\\1/p')
   case "$line" in
-    *'"session/new"'*) agent=$(printf '%s' "$OPENCODE_CONFIG_CONTENT" | sed -n 's/.*"default_agent":"\\([^" ]*\\)".*/\\1/p'); result='{"sessionId":"fixture","models":{"currentModelId":"${outcome === 'unknown' ? '' : 'openai/gpt-5.4-mini'}"},"modes":{"currentModeId":"'"$agent"'"}}'  ;;
+    *'"session/new"'*) agent=$(printf '%s' "$OPENCODE_CONFIG_CONTENT" | sed -n 's/.*"default_agent":"\\([^" ]*\\)".*/\\1/p'); result='{"sessionId":"fixture",${outcome === 'unknown' ? '' : outcome === 'unoffered' ? '"configOptions":[{"id":"model","category":"model","currentValue":"opencode/big-pickle","options":[{"value":"opencode/big-pickle"}]}],' : '"configOptions":[{"id":"model","category":"model","currentValue":"openai/gpt-5.4-mini","options":[{"value":"openai/gpt-5.4-mini"}]}],'}"modes":{"currentModeId":"'"$agent"'"}}'  ;;
     *'"session/prompt"'*) ${notifications} ${outcome === 'no_result' ? 'exit 1;' : ''} ${outcome === 'failed_call' ? `printf '%s\\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call","toolCallId":"call","title":"Read","status":"failed"}}}';` : ''} result='${JSON.stringify({ stopReason: 'end_turn', ...(outcome === 'no_usage' || outcome === 'unknown' ? {} : { usage: { inputTokens: 10, outputTokens: 2, cachedReadTokens: 0, cachedWriteTokens: 0 } }) })}' ;;
     *'"session/close"'*) exit 0 ;;
     *) result='{}' ;;

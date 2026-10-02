@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
+import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
 export type { CaptureRule } from '@goondocks/myco-shared/capture-rule-schema';
 
 /** Schema describing where user prompts live in an agent's transcript. */
@@ -684,17 +685,12 @@ export type HooksManifest = z.infer<typeof HooksManifestSchema>;
 
 const ReasoningTiersOf = <T extends z.ZodTypeAny>(value: T) => z.object({ low: value, default: value, high: value }).strict();
 
-/**
- * What a worker needs to know to run this harness for the Deployment: where it ranks among the harnesses a worker
- * can run, the credential its runs read, and the models and efforts each reasoning tier asks of it. Generated into
- * myco-shared (`runner-harnesses.generated.ts`), which the Deployment and the worker both read.
- */
 const Strings = z.array(z.string().min(1));
 
 /**
  * How a worker runs the harness: what it launches, where its login is, how a run is kept apart from the machine's own
  * use, whether its shell reaches the run's git through the worker's shim, how the tier's model reaches it, and how a
- * run's usage is read back. How it is held to a run's grant is the shared \`asking\` beside it. `runner/harnesses.ts` holds the
+ * run's usage is read back. How it is held to a run's grant is the shared `asking` beside it. `runner/harnesses.ts` holds the
  * types each mirrors, and reads the generated table typed by them.
  */
 const RunnerWorkerSchema = z.object({
@@ -742,12 +738,17 @@ const RunnerWorkerSchema = z.object({
   }).strict(),
 }).strict();
 
+/**
+ * What a worker needs to know to run this harness for the Deployment: where it ranks among the harnesses a worker
+ * can run, the credential its runs read, and the models and efforts each reasoning tier asks of it. Generated into
+ * myco-shared (`runner-harnesses.generated.ts`), which the Deployment and the worker both read.
+ */
 const RunnerManifestSchema = z.object({
   /** Where a worker ranks this harness among those it can run: lower first. */
   order: z.number().int().min(1),
   /**
-   * How the harness comes to ask before a call, or what bounds a run on one that never asks (\`Asking\` in
-   * myco-shared's \`execution-profile.ts\`): the Deployment offers only a harness whose runs can be bounded.
+   * How the harness comes to ask before a call, or what bounds a run on one that never asks (`Asking` in
+   * myco-shared's `execution-profile.ts`): the Deployment offers only a harness whose runs can be bounded.
    */
   asking: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('native') }).strict(),
@@ -760,10 +761,10 @@ const RunnerManifestSchema = z.object({
     /** The provider the harness authenticates against: a harness is not a provider. */
     provider: z.enum(['anthropic', 'openai', 'google']),
     /**
-     * The Deployment secret slot its runs read: a shared provider slot (`secret-slots.ts`), `own` for a slot of its
+     * The Deployment secret slot its runs read: a shared provider slot (`provider-slots.ts`), `own` for a slot of its
      * own named after the harness (labelled `ownSlotLabel`), or null where the Deployment holds none for it.
      */
-    slot: z.string().min(1).nullable(),
+    slot: z.enum([...PROVIDER_SLOT_NAMES, 'own']).nullable(),
     ownSlotLabel: z.string().min(1).optional(),
     /** The variables the harness reads its credential from, in the order a value is matched to one. */
     variables: z.array(z.string().min(1)).min(1),

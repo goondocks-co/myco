@@ -37,6 +37,7 @@ import { runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
 import { failedCallsNote, type RunEvent } from '@myco/runner/events.js';
+import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
@@ -976,11 +977,13 @@ const RUN_AGENT = 'myco-run-test';
 const ASKING = { asking: runAsking(harnessById('opencode'), RUN_AGENT) };
 
 describe('the OpenCode run profile', () => {
-  it('puts model and effort in the run agent configuration sent to the harness', () => {
+  it('makes the claimed model the run configuration\'s own model and small model, which a session opens on', () => {
     const profile = { tier: 'default', model: 'openai/gpt-6.1', effort: 'medium', sources: { tier: 'task', model: 'configured' } } as const;
     const asking = runAsking(harnessById('opencode'), RUN_AGENT, profile);
-    const config = JSON.parse(asking.env.OPENCODE_CONFIG_CONTENT!) as { agent: Record<string, { model?: string; reasoningEffort?: string }> };
-    expect(config.agent[RUN_AGENT]).toMatchObject({ model: 'openai/gpt-6.1', reasoningEffort: 'medium' });
+    const config = JSON.parse(asking.env.OPENCODE_CONFIG_CONTENT!) as Record<string, unknown> & { agent: Record<string, Record<string, unknown>> };
+    expect({ model: config.model, small_model: config.small_model }).toEqual({ model: 'openai/gpt-6.1', small_model: 'openai/gpt-6.1' });
+    // OpenCode sends the session's model and effort with every prompt, so an agent's own would never be read.
+    expect(Object.keys(config.agent[RUN_AGENT]!).sort()).toEqual(['description', 'mode', 'permission']);
   });
 });
 
@@ -1011,6 +1014,128 @@ function peer(answer: (method: string, id: number) => string | null): { channel:
   };
   return { channel, close: () => closed?.(), asked };
 }
+
+/** OpenCode 1.18.29's answers on choosing a session's model, recorded per case (`opencode-1.18.29-acp-model-provenance.md`). */
+const MODEL_RECORDING = JSON.parse(readFileSync(new URL('../fixtures/opencode-1.18.29-acp-model.json', import.meta.url), 'utf8')) as Record<string, Array<Record<string, unknown>>>;
+/** The model every recorded case that offers one was configured or set to. */
+const RECORDED_MODEL = 'openai/gpt-5.5';
+const recorded = (name: string, id: number): Record<string, unknown> => MODEL_RECORDING[name]!.find((row) => row.id === id)!;
+const offeredModels = (((recorded('configured', 2).result as { configOptions: Array<{ id: string; options: Array<{ value: string }> }> }).configOptions.find((o) => o.id === 'model'))!.options).map((o) => o.value);
+
+/**
+ * OpenCode as the recording shows it: a session opens on the run configuration's own model where a provider offers
+ * it, and on OpenCode's default otherwise, whatever the run's agent names; `session/set_config_option` moves it; and
+ * a prompt runs on whatever the session is on. Anything the recording does not hold is answered as an error.
+ */
+function recordedOpenCode(config: Record<string, unknown>): { channel: Channel; asked: string[]; promptedOn: () => Record<string, unknown> | null } {
+  let current: Record<string, unknown> = {};
+  let promptedOn: Record<string, unknown> | null = null;
+  const on = (answer: Record<string, unknown>): Record<string, unknown> => {
+    const options = (answer.result as { configOptions?: Array<{ id: string; currentValue: unknown }> } | undefined)?.configOptions;
+    if (options !== undefined) current = Object.fromEntries(options.filter((o) => o.id !== 'mode').map((o) => [o.id, o.currentValue]));
+    return answer;
+  };
+  const line = (answer: Record<string, unknown>, id: number): string => `${JSON.stringify({ ...answer, id })}\n`;
+  const unrecorded = (id: number, what: string): string => `${JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: `unrecorded: ${what}` } })}\n`;
+  const p = peer((method, id) => {
+    if (method === 'initialize') return line(recorded('configured', 1), id);
+    if (method === 'session/new') {
+      const model = config.model;
+      const name = model === undefined || model === 'opencode/big-pickle' ? 'default' : model === RECORDED_MODEL ? 'configured' : offeredModels.includes(String(model)) ? null : 'unknown';
+      return name === null ? unrecorded(id, `a session opened on ${String(model)}`) : line(on(inRunAgent(recorded(name, 2))), id);
+    }
+    if (method === 'session/set_config_option') return null;
+    if (method === 'session/prompt') {
+      promptedOn = current;
+      const notifications = MODEL_RECORDING.prompt!.filter((row) => typeof row.method === 'string').map((row) => JSON.stringify(row)).join('\n');
+      return `${notifications}\n${line(recorded('prompt', 4), id)}`;
+    }
+    return line({ jsonrpc: '2.0', result: {} }, id);
+  });
+  // A set is answered from what it asks for, which the peer's method-only answer cannot see.
+  const write = p.channel.write;
+  p.channel.write = (text) => {
+    const message = JSON.parse(text) as { id: number; method: string; params: { configId?: string; value?: string } };
+    if (message.method !== 'session/set_config_option') { write(text); return; }
+    p.asked.push(message.method);
+    const { configId, value } = message.params;
+    const answer = configId === 'model' && value === RECORDED_MODEL ? line(on(inRunAgent(recorded('set-model', 3))), message.id)
+      : configId === 'effort' && value === 'medium' && current.model === RECORDED_MODEL ? line(on(inRunAgent(recorded('prompt', 3))), message.id)
+        : unrecorded(message.id, `${String(configId)} set to ${String(value)}`);
+    queueMicrotask(() => { readers.forEach((read) => { read(answer); }); });
+  };
+  const readers: Array<(line: string) => void> = [];
+  const onLine = p.channel.onLine;
+  p.channel.onLine = (read) => { readers.push(read); onLine(read); };
+  return { channel: p.channel, asked: p.asked, promptedOn: () => promptedOn };
+}
+
+/** A turn on the recorded OpenCode, handed the configuration the driver writes for `configured` (none for null) and the claimed profile. */
+async function onRecordedOpenCode(profile: ExecutionProfile, configured: ExecutionProfile | null = profile): Promise<{ events: RunEvent[]; asked: string[]; promptedOn: Record<string, unknown> | null }> {
+  const asking = runAsking(harnessById('opencode'), RUN_AGENT, configured ?? undefined);
+  const harness = recordedOpenCode(JSON.parse(asking.env.OPENCODE_CONFIG_CONTENT!) as Record<string, unknown>);
+  const events = await collect(turnOver(harness.channel, 'opencode', { ...runDir(), prompt: 'Reply with the single word ok', credentialEnv: {}, profile }, () => '', listed, { asking }));
+  return { events, asked: harness.asked, promptedOn: harness.promptedOn() };
+}
+
+const claimed = (model: string, effort: string | null): ExecutionProfile => ({ tier: 'default', model, effort, sources: { tier: 'task', model: 'configured' } });
+
+describe('the claimed model on OpenCode, as recorded (#1608)', () => {
+  it('runs the prompt on the claimed model at the claimed effort, and reports that model', async () => {
+    const { events, asked, promptedOn } = await onRecordedOpenCode(claimed(RECORDED_MODEL, 'medium'));
+    expect(promptedOn).toEqual({ model: RECORDED_MODEL, effort: 'medium' });
+    expect(asked).toEqual(['initialize', 'session/new', 'session/set_config_option', 'session/prompt', 'session/close']);
+    const identity = events.find((event) => event.kind === 'identity');
+    expect(identity?.kind === 'identity' && identity.identity.status !== 'unknown' ? identity.identity.primary.model : null).toBe('gpt-5.5');
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('moves a session OpenCode opened on its own default to the claimed model before the prompt', async () => {
+    const { events, asked, promptedOn } = await onRecordedOpenCode(claimed(RECORDED_MODEL, 'medium'), null);
+    expect(promptedOn).toEqual({ model: RECORDED_MODEL, effort: 'medium' });
+    const identity = events.find((event) => event.kind === 'identity');
+    expect(identity?.kind === 'identity' && identity.identity.status !== 'unknown' ? identity.identity.primary.model : null).toBe('gpt-5.5');
+    expect(asked).toEqual(['initialize', 'session/new', 'session/set_config_option', 'session/set_config_option', 'session/prompt', 'session/close']);
+  });
+
+  it('never prompts a model OpenCode does not offer, ending the run with the profile unapplied', async () => {
+    const { events, asked, promptedOn } = await onRecordedOpenCode(claimed('openai/gpt-0-unknown', 'medium'));
+    expect(promptedOn).toBeNull();
+    expect(asked).not.toContain('session/prompt');
+    expect(events.some((event) => event.kind === 'started')).toBe(false);
+    const last = events.at(-1);
+    expect(last?.kind === 'ended' ? [last.stop, last.detail] : null).toEqual(['error', `profile_unapplied: the harness offers no model openai/gpt-0-unknown (it offers ${offeredModels.slice(0, 8).join(', ')} and ${offeredModels.length - 8} more)`]);
+  });
+
+  it('never prompts at an effort the claimed model does not offer', async () => {
+    const { events, asked } = await onRecordedOpenCode(claimed(RECORDED_MODEL, 'max'));
+    expect(asked).not.toContain('session/prompt');
+    const last = events.at(-1);
+    expect(last?.kind === 'ended' ? last.detail : null).toBe('profile_unapplied: the harness offers no effort max (it offers none, low, medium, high, xhigh)');
+  });
+
+  it('runs a model that offers no effort, which takes none', async () => {
+    const { promptedOn } = await onRecordedOpenCode(claimed('opencode/big-pickle', 'medium'));
+    expect(promptedOn).toEqual({ model: 'opencode/big-pickle' });
+  });
+
+  it('never prompts where the harness answers a set but keeps its model', async () => {
+    const opened = inRunAgent(recorded('default', 2));
+    const p = peer((method, id) => `${JSON.stringify({ ...(method === 'session/prompt' ? { jsonrpc: '2.0', result: { stopReason: 'end_turn' } } : opened), id })}\n`);
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
+    expect(p.asked).toEqual(['initialize', 'session/new', 'session/set_config_option', 'session/close']);
+    const last = events.at(-1);
+    expect(last?.kind === 'ended' ? last.detail : null).toBe(`profile_unapplied: the harness kept the model opencode/big-pickle after being set to ${RECORDED_MODEL}`);
+  });
+
+  it('never prompts where the harness reports no model for its session', async () => {
+    const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', id, result: method === 'session/prompt' ? { stopReason: 'end_turn' } : { sessionId: 's', ...RUN_AGENT_MODE } })}\n`);
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
+    expect(p.asked).not.toContain('session/prompt');
+    const last = events.at(-1);
+    expect(last?.kind === 'ended' ? last.detail?.startsWith('profile_unapplied: the harness reports no model') : null).toBe(true);
+  });
+});
 
 describe('the agent-protocol driver', () => {
   it('preserves recorded OpenCode tool outcomes and last-response usage without inventing an attempt total', async () => {

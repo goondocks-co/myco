@@ -200,11 +200,7 @@ function anyAgentRulesHarness(manifests: readonly SymbiontManifest[]): string {
   return named[0]!;
 }
 
-/**
- * Each harness's \`runner:\` block, in the order a worker ranks them, as myco-shared reads it: how it is held to a
- * run's grant, the credential (a slot of the harness's own named after it) and the tier profile. Two harnesses sharing a rank is a generator error.
- */
-/** The manifests that declare a \`runner:\` block, in the order a worker ranks them. */
+/** The manifests that declare a `runner:` block, in the order a worker ranks them; two sharing a rank is a generator error. */
 function runnerManifests(manifests: readonly SymbiontManifest[]): SymbiontManifest[] {
   const runners = manifests.filter((m) => m.runner !== undefined).sort((a, b) => a.runner!.order - b.runner!.order);
   const orders = runners.map((m) => m.runner!.order);
@@ -212,7 +208,7 @@ function runnerManifests(manifests: readonly SymbiontManifest[]): SymbiontManife
   return runners;
 }
 
-/** How a worker runs each harness (\`runner.worker\`), in rank order, typed by the worker's own harness types. */
+/** How a worker runs each harness (`runner.worker`), in rank order, typed by the worker's own harness types. */
 function renderWorkerHarnesses(manifests: readonly SymbiontManifest[]): string {
   const facts = runnerManifests(manifests).map((m) => {
     const { login, ...worker } = m.runner!.worker;
@@ -226,6 +222,10 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = ${JSON.stringify(facts, nu
 `;
 }
 
+/**
+ * Each harness's `runner:` block, in the order a worker ranks them, as myco-shared reads it: how it is held to a
+ * run's grant, the credential (a slot of the harness's own named after it) and the tier profile.
+ */
 function renderRunnerHarnesses(manifests: readonly SymbiontManifest[]): string {
   const runners = runnerManifests(manifests);
   const harnesses = runners.map((m) => {
@@ -253,11 +253,11 @@ export interface HookConfigSources {
   resumeCommands: string;
   /** Contents of src/cli/launch-preamble.generated.ts: what the launch preamble reads before anything else. */
   preamble: string;
-  /** Contents of myco-shared's any-agent-rules.generated.ts: the harness \`any_agent\` rules also apply to. */
+  /** Contents of myco-shared's any-agent-rules.generated.ts: the harness `any_agent` rules also apply to. */
   anyAgentRules: string;
-  /** Contents of myco-shared's runner-harnesses.generated.ts: each harness's \`runner:\` block, for the Deployment and the worker. */
+  /** Contents of myco-shared's runner-harnesses.generated.ts: each harness's `runner:` block, for the Deployment and the worker. */
   runnerHarnesses: string;
-  /** Contents of src/runner/harnesses.generated.ts: how a worker runs each harness (\`runner.worker\`). */
+  /** Contents of src/runner/harnesses.generated.ts: how a worker runs each harness (`runner.worker`). */
   workerHarnesses: string;
   symbiontCount: number;
 }

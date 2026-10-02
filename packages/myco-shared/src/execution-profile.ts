@@ -79,11 +79,17 @@ export function requestedProfile(raw: unknown): ExecutionProfile | null {
   return { tier: candidate.tier, model: candidate.model, effort: candidate.effort, sources: { tier: candidate.sources.tier, model: candidate.sources.model } };
 }
 
-/** Alias family resolution is accepted; an explicit SKU requires the same id. */
-export function profileModelMatches(harness: string, requested: string, actual: string): boolean {
+/**
+ * Whether the model a run reported is the one it was asked for. An explicit id matches the same id, or the same id
+ * under the provider the run reported where the requested one names it (`openai/gpt-5.5` is `gpt-5.5` from `openai`);
+ * an alias matches a dated id of its family.
+ */
+export function profileModelMatches(harness: string, requested: string, actual: { model: string; provider?: string }): boolean {
   const spec = PROFILE_HARNESSES[harness];
   const families = spec?.modelFamilies ?? [];
-  return requested === actual || (families.includes(requested) && actual.startsWith(`${spec?.modelFamilyPrefix ?? ''}${requested}-`));
+  return requested === actual.model
+    || (actual.provider !== undefined && requested === `${actual.provider}/${actual.model}`)
+    || (families.includes(requested) && actual.model.startsWith(`${spec?.modelFamilyPrefix ?? ''}${requested}-`));
 }
 
 /**
