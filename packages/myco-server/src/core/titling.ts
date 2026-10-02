@@ -4,16 +4,10 @@
  *
  * The request that ends a session asks for this, and the wake cycle dispatches
  * it once the session has settled; a person asks for it from the dashboard.
- * Either way the gate is here and the model call is
- * not: this module decides whether a run should start — a bound runtime, a
- * provider and credential, material to read, the session's claim — and then
- * dispatches through the one dispatcher (`core/harness.ts`). The run reads its
- * material and writes its answer over the run routes; nothing here calls a
- * provider, so a title costs the Deployment exactly what any other task does and
- * uses whatever credential the harness holds.
- *
- * Every step before the launch writes nothing but the claim, and a launch the
- * runtime refuses gives the claim back. Every outcome is emitted; none is thrown.
+ * Dispatch queues work for a worker, which selects its harness, execution profile
+ * and login at claim. This module checks material readiness, session ownership
+ * and run limits; it does not ask for provider configuration. The run reads its
+ * material and writes its answer over the run routes.
  */
 import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, SESSION_END_SETTLE_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
@@ -40,8 +34,8 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
 
 /**
  * How an ask ended. `dispatched` is the one that started a run; `already` is
- * a claim another attempt holds; the rest are settled refusals an operator
- * clears — in Settings, or by binding a runtime to the Deployment.
+ * a claim another attempt holds. Other outcomes describe pending capture, missing
+ * material, run limits, unavailable workers or a surfaced dispatch failure.
  */
 export type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable'
@@ -119,6 +113,7 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   no_instruction: 'error',
   not_landed: 'error',
   no_provider: 'error',
+  probe_preferences_invalid: 'error',
   // No capability gates titling, so a titling dispatch is never refused for one.
   capability_off: 'error',
   // A titling dispatch names a catalogued task and a session the scope already resolved; neither refusal has a path here.
@@ -130,9 +125,9 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
 /**
  * Titles one session: at its end (`claim`, the default; a first attempt unless
  * `retry` admits one that ended untitled) or on an owner's ask (`owner`).
- * Decides in this order, and writes nothing before the claim:
- * a bound runtime, a provider and its credential, material to read, the claim,
- * the launch. Resolves with the outcome it emitted; never rejects.
+ * Validates parsed material and capture admission, reads bounded material,
+ * claims the session, then queues its worker run. Resolves with the outcome
+ * it emitted; never rejects.
  */
 export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling; retry?: boolean } = {}): Promise<TitlingResult> {
   const { projectId, sessionId, now } = target;

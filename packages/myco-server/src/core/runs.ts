@@ -80,7 +80,7 @@ export interface RunningRunRef {
 export type RunAdmissionGate =
   | { kind: 'capability'; capability: ProjectCapability }
   | { kind: 'embedding' }
-  | { kind: 'provider' };
+  | { kind: 'capture' };
 
 /**
  * Why a claim did not take.

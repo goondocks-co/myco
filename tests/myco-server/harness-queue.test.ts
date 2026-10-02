@@ -15,6 +15,9 @@ import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { indexFixture } from './helpers/vector-index.js';
+import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
+import { cloudflareEmbeddingProvider } from '@myco-server-worker/platform/cloudflare/embedding.js';
 import { prepared } from './helpers/prepared.js';
 
 const NOW = 1_800_000_000_000;
@@ -157,7 +160,7 @@ describe('the drain', () => {
     expect(await runTick(f.env, later)).toMatchObject({ state: 'active', heldBy: 'queue:pending' });
   });
 
-  it('holds queued probes while archived preferences are unavailable, and launches once preferences and limits allow', async () => {
+  it('ends queued probes with invalid archived preferences, and admits new valid probes', async () => {
     const f = fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     const first = (await f.dispatch()) as { runId: string };
@@ -166,8 +169,8 @@ describe('the drain', () => {
     f.complete(first.runId);
     f.clear('agent.provider.type');
     expect(await drainQueue(f.env, NOW + 3)).toBe(0);
-    expect(f.run(second.runId)).toMatchObject({ status: 'queued', error: null });
-    expect(f.run(third.runId)).toMatchObject({ status: 'queued' });
+    expect(f.run(second.runId)).toMatchObject({ status: 'failed', error: expect.any(String) });
+    expect(f.run(third.runId)).toMatchObject({ status: 'failed', error: expect.any(String) });
     f.setting('agent.provider.type', 'openai-compatible');
     f.clear('agent.limits.concurrent_runs');
     const a = (await f.dispatch('container-smoke', NOW + 10)) as { runId: string };
@@ -784,5 +787,36 @@ describe('a runtime that is not taking runs', () => {
     await agentRunRetention(f.env, NOW);
     expect((f.sqlite.query(`SELECT id FROM member_credentials ORDER BY id`).all() as Array<{ id: string }>).map((r) => r.id))
       .toEqual(['cred_live', 'cred_named', 'cred_recent']);
+  });
+});
+
+
+describe('archived probe preferences', () => {
+  it.each([
+    { provider: null, embeddingOnly: false },
+    { provider: 'anthropic', embeddingOnly: false },
+    { provider: 'openai-compatible', embeddingOnly: false },
+    { provider: 'unsupported', embeddingOnly: false },
+    { provider: 'openai-compatible', embeddingOnly: true },
+  ])('ends an unusable probe %j without blocking embedding work behind it', async ({ provider, embeddingOnly }) => {
+    const f = fixture();
+    try {
+      await f.dispatch();
+      f.sqlite.run(`UPDATE agent_runs SET status='completed', completed_at=?`, [NOW]);
+      f.clear('agent.provider.type');
+      f.clear('agent.provider.base_url');
+      if (provider !== null) f.setting('agent.provider.type', provider);
+      if (embeddingOnly) f.setting('agent.provider.base_url', 'http://models.internal/v1');
+      const env: ServerEnv = { ...f.env, ...(embeddingOnly ? { harnessTasks: ['embedding-reconcile'] } : {}), vectors: cloudflareVectorStore(indexFixture()),
+        embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }) };
+      for (const [id, task, at] of [['bad-probe', 'container-smoke', NOW], ['vectors-behind', 'embedding-reconcile', NOW + 1]] as const) {
+        f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec)
+          VALUES ('proj_1',?,'myco-agent',?,'queued',?,'runtime',?)`, [id, task, at, JSON.stringify({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 })]);
+      }
+      expect(await drainQueue(env, NOW + 2)).toBe(1);
+      expect(f.run('bad-probe')).toMatchObject({ status: 'failed', error: expect.any(String) });
+      expect(f.run('vectors-behind')?.status).toBe('pending');
+      expect(f.launches.at(-1)?.envVars.MYCO_TASK).toBe('embedding-reconcile');
+    } finally { f.sqlite.close(); }
   });
 });

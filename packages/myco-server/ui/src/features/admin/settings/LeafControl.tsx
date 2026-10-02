@@ -92,7 +92,7 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
   const entry = LEAF_DEFAULTS[field.leaf];
   const fallback = row?.source === 'default' || row?.source === 'derived' ? row.effectiveValue : entry !== undefined && 'value' in entry ? entry.value : null;
   // A setting kept by Myco shows Myco's own value; any other shows what is stored, else what the server applies.
-  const value = field.readOnly === true && fallback !== null ? fallback : row?.configured ? row.value : fallback;
+  const value = field.readOnly === true && fallback !== null ? fallback : row?.configured ? (row.editableValue ?? row.value) : fallback;
   // A field typed into shows only what is stored; with nothing stored it stays empty and shows the default as its hint.
   const shown = draft ?? textOf(field, row?.configured === true || field.readOnly === true ? value : null);
   const id = `leaf-${field.leaf}`;
@@ -185,6 +185,12 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
           placeholder={placeholder}
           onChange={(e) => setDraft(e.target.value)}
         />
+        {row?.retiredValue !== undefined && Object.keys(row.retiredValue).length > 0 && (
+          <div data-testid="retired-task-overrides" className="t-small text-muted">
+            <p>Retired task preferences (read-only)</p>
+            <pre className="t-mono whitespace-pre-wrap break-all">{JSON.stringify(row.retiredValue, null, 2)}</pre>
+          </div>
+        )}
         {!locked && (
           <Button size="sm" className="self-end" disabled={draft === null} pending={pending && draft !== null} onClick={commitText}>Save</Button>
         )}

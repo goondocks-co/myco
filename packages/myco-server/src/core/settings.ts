@@ -153,7 +153,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
 
 /**
  * Retired editable contracts retained for inspection and recovery. Ordinary worker outcomes do not read them.
- * The retained runtime probe reads archived provider preferences through this owner.
+ * The retained runtime probe is the sole consumer of archived provider preferences.
  * The writer refuses mutations and the API reports stored rows as retired metadata.
  */
 export const RETIRED_LEAVES: ReadonlySet<string> = new Set([
@@ -194,20 +194,6 @@ export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
 
-/** Archived runtime preferences for the retained container probe; editable worker profiles are independent. */
-export async function runtimeProbePreferences(db: RelationalStore, task: string): Promise<{ type: string | null; model: string | null; baseUrl: string | null }> {
-  if (task !== 'container-smoke') throw new Error('Archived provider preferences are only for the retained container probe');
-  const stored = await settingsWriter(db).leaves();
-  const overrides = stored['agent.tasks']?.value;
-  const entry = isRecord(overrides) && isRecord(overrides[task]) ? overrides[task] : {};
-  const text = (value: unknown): string | null => typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
-  return {
-    type: text(entry.provider) ?? text(stored['agent.provider.type']?.value),
-    model: text(entry.model) ?? text(stored['agent.provider.model']?.value),
-    baseUrl: text(stored['agent.provider.base_url']?.value),
-  };
-}
-
 /** Derived settings metadata, independent of any stored retired override. */
 export function derivedLeafMetadata(leaf: string): { effectiveValue: unknown; source: 'derived' } | null {
   return leaf === 'cortex.canopy.exclude.default_patterns'
@@ -238,6 +224,33 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/** Live task controls and their preserved read-only preferences. */
+export function taskOverridesMetadata(value: unknown): { editableValue: unknown; retiredValue: Record<string, unknown> } {
+  if (!isRecord(value)) return { editableValue: value, retiredValue: {} };
+  const editableValue: Record<string, unknown> = {};
+  const retiredValue: Record<string, unknown> = {};
+  for (const [task, entry] of Object.entries(value)) {
+    if (task === 'container-smoke') { retiredValue[task] = entry; continue; }
+    if (!isRecord(entry)) { editableValue[task] = entry; continue; }
+    const { provider, ...live } = entry;
+    editableValue[task] = live;
+    if (Object.hasOwn(entry, 'provider')) retiredValue[task] = { provider };
+  }
+  return { editableValue, retiredValue };
+}
+
+/** Retired preferences survive replacement of the live overrides document. */
+function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const { retiredValue } = taskOverridesMetadata(previous);
+  const merged = { ...value };
+  for (const [task, archived] of Object.entries(retiredValue)) {
+    merged[task] = task === 'container-smoke' ? archived
+      : { ...(isRecord(merged[task]) ? merged[task] : {}), ...(isRecord(archived) ? archived : {}) };
+  }
+  return merged;
+}
+
 /**
  * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
  * ceiling, and how many runs of the task a member who is not an admin may start by hand in a day.
@@ -250,12 +263,11 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
   const prior = isRecord(previous) ? previous : {};
   for (const [task, override] of Object.entries(value)) {
     const before = prior[task];
+    if (previous !== undefined && task === 'container-smoke') return `${task}: retired task overrides are read-only`;
+    if (previous !== undefined && isRecord(override) && Object.hasOwn(override, 'provider')) return `${task}.provider: provider preferences are retired; choose an execution profile`;
     if (override === before) continue;
     if (!isRecord(override)) return `${task}: expected an object of task overrides`;
     const old = isRecord(before) ? before : {};
-    if (previous !== undefined && override.provider !== undefined && JSON.stringify(override.provider) !== JSON.stringify(old.provider)) {
-      return `${task}.provider: provider preferences are retired; choose an execution profile`;
-    }
     const tier = override.reasoningLevel;
     if (tier !== undefined && tier !== old.reasoningLevel && !(REASONING_TIERS as readonly unknown[]).includes(tier)) return `${task}.reasoningLevel: expected low, default, or high`;
     if (override.model !== undefined && (override.model !== old.model || override.harness !== old.harness)) {
@@ -476,7 +488,7 @@ export function settingsWriter(
         await db
           .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
                     ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-          .bind(leaf, JSON.stringify(value), nowMs, actor)
+          .bind(leaf, JSON.stringify(leaf === 'agent.tasks' ? preserveRetiredTaskOverrides(value, previous) : value), nowMs, actor)
           .run();
         await rearm({ leaf });
         return { applied: true };
@@ -485,8 +497,19 @@ export function settingsWriter(
 
     async resetLeaf(leaf, actor, nowMs = Date.now()) {
       return withLeafWrite({ leaf, actor }, async () => {
+        const held = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
+        let previous: unknown;
+        if (held !== undefined) {
+          try { previous = JSON.parse(held); }
+          catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+        }
+        const archived = taskOverridesMetadata(previous).retiredValue;
+        const reset = Object.keys(archived).length === 0
+          ? db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf)
+          : db.prepare(`UPDATE deployment_settings SET value = ?, updated_at = ?, updated_by = ? WHERE leaf = ?`)
+            .bind(JSON.stringify(archived), nowMs, actor, leaf);
         await db.batch([
-          db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf),
+          reset,
           db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) VALUES (?, ?, ?)
             ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`)
             .bind(leaf, nowMs, actor),

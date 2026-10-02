@@ -206,7 +206,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'backup.auto_interval_hours', label: 'Back up every', kind: 'number', min: 1, max: 720, unit: 'hours', note: 'A self-hosted server writes a verified recovery copy on this interval; a Cloudflare one stages a copy an operator then turns into one.' },
       { leaf: 'backup.recovery.keep_stagings', label: 'Full recovery copies to keep', kind: 'number', min: 1, max: 30, note: 'Complete copies kept, newest first; older ones are released, and so are failed ones past the newest. Unset keeps 2.' },
       { leaf: 'backup.retention.keep_daily', label: 'Newest manual relational exports to keep (daily)', kind: 'number', min: 1, max: 365, note: 'Keeps the newest export copies, rather than one per day. Pruned when a manual export is created.' },
-      { leaf: 'backup.retention.keep_weekly', label: 'Weekly manual relational export copies to keep', kind: 'number', min: 0, max: 52, note: 'Keeps one additional manual relational export per UTC week. Pruned when a manual export is created.' },
+      { leaf: 'backup.retention.keep_weekly', label: 'Recent export weeks to keep', kind: 'number', min: 0, max: 52, note: 'Keeps the newest export from each of the N most recent weeks that contain exports. Empty weeks consume no slot. Pruned when a manual export is created.' },
     ],
   },
   {

@@ -420,3 +420,26 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
     expect(await claim('run_off_again')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
   });
 });
+
+
+it('projects retired task overrides as metadata and preserves them across live writes and resets', async () => {
+  const e = env();
+  const archived = { 'container-smoke': { model: 'haiku', harness: 'claude-code' }, 'title-summary': { provider: 'anthropic' } };
+  const stored = { ...archived, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
+  e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+  const row = async () => {
+    const reply = await worker.fetch(await asOwner('/api/settings'), e.all);
+    expect(reply.status).toBe(200);
+    return ((await json(reply)).leaves as Array<Record<string, unknown>>).find((entry) => entry.leaf === 'agent.tasks');
+  };
+  expect(await row()).toMatchObject({ value: stored, editableValue: { 'title-summary': { reasoningLevel: 'low' } }, retiredValue: archived });
+  for (const value of [stored, { 'container-smoke': { model: 'sonnet' } }]) {
+    expect((await worker.fetch(await put('/api/settings/agent.tasks', { value }), e.all)).status).toBe(400);
+    expect((await row())?.value).toEqual(stored);
+  }
+  const live = { 'title-summary': { reasoningLevel: 'high' } };
+  expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: live }), e.all)).status).toBe(200);
+  expect(await row()).toMatchObject({ editableValue: live, retiredValue: archived });
+  expect((await worker.fetch(await remove('/api/settings/agent.tasks'), e.all)).status).toBe(200);
+  expect(await row()).toMatchObject({ value: archived, editableValue: { 'title-summary': {} }, retiredValue: archived });
+});

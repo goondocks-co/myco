@@ -44,12 +44,12 @@ const rowFor = (leaf: string) => ({ leaf, configured: false, value: null as unkn
 /** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
 const RETIRED_FIELDS = [...RETIRED_LEAVES].map((leaf) => ({ leaf }));
-const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean }>> = {}) => ({
+const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
   taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })),
   leaves: DEPLOYMENT_LEAVES.map((leaf) => {
     const f = { leaf };
     const o = over[f.leaf];
-    return { ...rowFor(f.leaf), configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
+    return { ...rowFor(f.leaf), editableValue: o?.editableValue, retiredValue: o?.retiredValue, configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
@@ -811,4 +811,22 @@ describe('Sign-in and access', () => {
     expect(within(projects).getByRole('link').getAttribute('href')).toBe(`/p/${P_X}/settings#access-keys`);
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
+});
+
+
+it('shows retired task preferences as metadata outside the task-overrides editor', async () => {
+  const historic = { 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' }, 'container-smoke': { model: 'haiku' } };
+  server(base({ '/api/settings': () => Response.json(leaves({ 'agent.tasks': { value: historic,
+    editableValue: { 'title-summary': { reasoningLevel: 'low' } },
+    retiredValue: { 'title-summary': { provider: 'anthropic' }, 'container-smoke': { model: 'haiku' } } } })) }));
+  mount('/settings/models');
+  const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
+  expect((editor as HTMLTextAreaElement).value).not.toContain('provider');
+  expect((editor as HTMLTextAreaElement).value).not.toContain('container-smoke');
+  expect(screen.getByTestId('retired-task-overrides').textContent).toContain('container-smoke');
+  expect(screen.getByTestId('retired-task-overrides').querySelectorAll('input,textarea,button')).toHaveLength(0);
+});
+it('describes weekly retention by the most recent weeks containing exports', () => {
+  const field = LEAF_FIELDS.find(({ leaf }) => leaf === 'backup.retention.keep_weekly')!;
+  expect(field.note).toContain('most recent weeks that contain exports');
 });

@@ -211,7 +211,7 @@ describe('titleSession', () => {
 
   it('queues session titles independently of obsolete provider settings', async () => {
     const h = harness();
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'harness_unavailable' });
+    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'probe_preferences_invalid' });
 
     // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
     const sessions = ['unserved', 'none', 'uncredentialed', 'endpointless'];

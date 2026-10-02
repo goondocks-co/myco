@@ -7,7 +7,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, DEPLOYMENT_LEAF_SPECS, PROJECT_CAPABILITIES, settingsWriter, derivedLeafMetadata, executionProfileLeafDefault, leafRuleViolation, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, DEPLOYMENT_LEAF_SPECS, PROJECT_CAPABILITIES, settingsWriter, taskOverridesMetadata, derivedLeafMetadata, executionProfileLeafDefault, leafRuleViolation, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
 
@@ -98,6 +98,7 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
       updatedBy: held?.updatedBy ?? null,
       retired,
       ...derivedLeafMetadata(leaf),
+      ...(leaf === 'agent.tasks' && held !== undefined ? taskOverridesMetadata(held.value) : {}),
       ...(invalid ? { source: 'invalid' as const, error: 'invalid_value' as const,
         remedy: `${violation}. Correct this setting${leaf === 'agent.tasks' && !held?.malformed ? '.' : ' or reset it.'}`,
         ...(held?.malformed ? { repair: 'reset-leaf' as const } : {}) } : {}),

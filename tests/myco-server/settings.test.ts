@@ -283,7 +283,20 @@ describe('retired per-task provider preferences', () => {
     expect((await r.w.leaves())['agent.tasks'].value).toEqual(historical);
     const fresh = rig();
     expect(await fresh.w.setLeaf('agent.tasks', { 'title-summary': { provider: 'anthropic' } }, 'mem_1', 1)).toMatchObject({ applied: false, refusal: { reason: 'invalid_value' } });
-    expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { ...historical['title-summary'], reasoningLevel: 'high' } }, 'mem_1', 2)).toEqual({ applied: true });
+    expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { reasoningLevel: 'high', schedule: historical['title-summary'].schedule } }, 'mem_1', 2)).toEqual({ applied: true });
     expect((await r.w.leaves())['agent.tasks'].value).toEqual({ 'title-summary': { ...historical['title-summary'], reasoningLevel: 'high' } });
   });
+});
+
+
+it('keeps every container probe override read-only and refuses echoed retired provider keys', async () => {
+  const r = rig();
+  const historic = { 'container-smoke': { harness: 'claude-code', model: 'haiku' }, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
+  r.sqlite.run(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(historic)]);
+  expect(await r.w.setLeaf('agent.tasks', { ...historic, 'container-smoke': { harness: 'claude-code', model: 'sonnet' } }, 'mem_1', 2)).toMatchObject({ applied: false });
+  expect(await r.w.setLeaf('agent.tasks', { 'title-summary': historic['title-summary'] }, 'mem_1', 2)).toMatchObject({ applied: false });
+  expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { reasoningLevel: 'high' } }, 'mem_1', 2)).toEqual({ applied: true });
+  expect((await r.w.leaves())['agent.tasks'].value).toEqual({ ...historic, 'title-summary': { provider: 'anthropic', reasoningLevel: 'high' } });
+  await r.w.resetLeaf('agent.tasks', 'mem_1', 3);
+  expect((await r.w.leaves())['agent.tasks'].value).toEqual({ 'container-smoke': historic['container-smoke'], 'title-summary': { provider: 'anthropic' } });
 });

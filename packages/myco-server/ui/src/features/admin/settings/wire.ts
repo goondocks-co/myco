@@ -18,6 +18,8 @@ export interface LeafRow {
   retired: boolean;
   /** Present for execution profiles and derived metadata: the live value. */
   effectiveValue?: unknown;
+  editableValue?: unknown;
+  retiredValue?: Record<string, unknown>;
   source?: 'configured' | 'default' | 'unset' | 'invalid' | 'derived';
   error?: 'invalid_value';
   remedy?: string;

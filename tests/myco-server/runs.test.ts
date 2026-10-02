@@ -216,7 +216,7 @@ describe('capability admission', () => {
 });
 
 describe('request-driven title admission', () => {
-  const captureGuard = { taskName: 'title-summary', admission: { kind: 'provider' } as const };
+  const captureGuard = { taskName: 'title-summary', admission: { kind: 'capture' } as const };
 
   it('admits title work independently of obsolete provider preferences and project capabilities', async () => {
     for (const preference of [undefined, null, 'anthropic', 'openai-compatible']) {
