@@ -344,8 +344,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "locations.0.path",
           "rawInput.path",
           "rawInput.filePath",
-          "rawInput.file_path",
-          "title"
+          "rawInput.file_path"
         ]
       },
       {
@@ -355,8 +354,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "rawInput.pattern",
           "rawInput.query",
           "rawInput.glob",
-          "locations.0.path",
-          "title"
+          "locations.0.path"
         ]
       },
       {
@@ -366,8 +364,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "locations.0.path",
           "rawInput.path",
           "rawInput.filePath",
-          "rawInput.file_path",
-          "title"
+          "rawInput.file_path"
         ]
       },
       {
@@ -375,8 +372,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "edit",
         "target": [
           "locations.0.path",
-          "rawInput.path",
-          "title"
+          "rawInput.path"
         ]
       },
       {
@@ -384,8 +380,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "edit",
         "target": [
           "locations.0.path",
-          "rawInput.path",
-          "title"
+          "rawInput.path"
         ]
       },
       {
@@ -393,8 +388,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "command",
         "target": [
           "rawInput.command",
-          "rawInput.cmd",
-          "title"
+          "rawInput.cmd"
         ]
       },
       {
@@ -402,8 +396,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "fetch",
         "target": [
           "rawInput.url",
-          "rawInput.query",
-          "title"
+          "rawInput.query"
         ]
       }
     ],
@@ -454,8 +447,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "locations.0.path",
           "rawInput.path",
           "rawInput.filePath",
-          "rawInput.file_path",
-          "title"
+          "rawInput.file_path"
         ]
       },
       {
@@ -465,8 +457,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "rawInput.pattern",
           "rawInput.query",
           "rawInput.glob",
-          "locations.0.path",
-          "title"
+          "locations.0.path"
         ]
       },
       {
@@ -476,8 +467,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "locations.0.path",
           "rawInput.path",
           "rawInput.filePath",
-          "rawInput.file_path",
-          "title"
+          "rawInput.file_path"
         ]
       },
       {
@@ -485,8 +475,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "edit",
         "target": [
           "locations.0.path",
-          "rawInput.path",
-          "title"
+          "rawInput.path"
         ]
       },
       {
@@ -494,8 +483,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "edit",
         "target": [
           "locations.0.path",
-          "rawInput.path",
-          "title"
+          "rawInput.path"
         ]
       },
       {
@@ -503,8 +491,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "command",
         "target": [
           "rawInput.command",
-          "rawInput.cmd",
-          "title"
+          "rawInput.cmd"
         ]
       },
       {
@@ -512,8 +499,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "fetch",
         "target": [
           "rawInput.url",
-          "rawInput.query",
-          "title"
+          "rawInput.query"
         ]
       }
     ],
@@ -559,8 +545,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "locations.0.path",
           "rawInput.path",
           "rawInput.filePath",
-          "rawInput.file_path",
-          "title"
+          "rawInput.file_path"
         ]
       },
       {
@@ -570,8 +555,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "rawInput.pattern",
           "rawInput.query",
           "rawInput.glob",
-          "locations.0.path",
-          "title"
+          "locations.0.path"
         ]
       },
       {
@@ -581,8 +565,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
           "locations.0.path",
           "rawInput.path",
           "rawInput.filePath",
-          "rawInput.file_path",
-          "title"
+          "rawInput.file_path"
         ]
       },
       {
@@ -590,8 +573,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "edit",
         "target": [
           "locations.0.path",
-          "rawInput.path",
-          "title"
+          "rawInput.path"
         ]
       },
       {
@@ -599,8 +581,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "edit",
         "target": [
           "locations.0.path",
-          "rawInput.path",
-          "title"
+          "rawInput.path"
         ]
       },
       {
@@ -608,8 +589,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "command",
         "target": [
           "rawInput.command",
-          "rawInput.cmd",
-          "title"
+          "rawInput.cmd"
         ]
       },
       {
@@ -617,8 +597,7 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "kind": "fetch",
         "target": [
           "rawInput.url",
-          "rawInput.query",
-          "title"
+          "rawInput.query"
         ]
       }
     ],

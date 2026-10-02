@@ -92,7 +92,7 @@ describe('a step log from a harness\'s stream', () => {
     expect(steps.map(({ seq, callId, kind, tool, target, outcome, exitCode }) => ({ seq, callId, kind, tool, target, outcome, exitCode }))).toEqual([
       { seq: 0, callId: 'tu_1', kind: 'read', tool: 'Read', target: 'src/runner/loop.ts', outcome: 'ok', exitCode: null },
       { seq: 1, callId: 'tu_2', kind: 'edit', tool: 'Write', target: 'notes.md', outcome: 'ok', exitCode: null },
-      { seq: 2, callId: 'tu_3', kind: 'search', tool: 'Grep', target: 'leaseDeadline', outcome: 'ok', exitCode: null },
+      { seq: 2, callId: 'tu_3', kind: 'search', tool: 'Grep', target: null, outcome: 'ok', exitCode: null },
       { seq: 3, callId: 'tu_4', kind: 'command', tool: 'Bash', target: 'curl -H … https://example.test', outcome: 'error', exitCode: 7 },
       { seq: 4, callId: 'tu_5', kind: 'fetch', tool: 'WebFetch', target: 'https://example.test', outcome: 'refused', exitCode: null },
       { seq: 5, callId: 'tu_6', kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report', outcome: 'ok', exitCode: null },
@@ -145,7 +145,7 @@ describe('a step log from a harness\'s stream', () => {
     expect(steps.map(({ callId, kind, tool, target, outcome }) => ({ callId, kind, tool, target, outcome }))).toEqual([
       { callId: 'c1', kind: 'read', tool: 'read', target: '/repo/src/runner/loop.ts', outcome: 'ok' },
       { callId: 'c2', kind: 'command', tool: 'execute', target: 'npm test', outcome: 'error' },
-      { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -r… build', outcome: 'refused' },
+      { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -r… …', outcome: 'refused' },
     ]);
     expect(unrecognized).toEqual({ total: 1, shapes: { 'session/update:plan': 1 } });
     expect(JSON.stringify(steps)).not.toContain(FILE_BODY);
@@ -168,7 +168,7 @@ describe('a step log from a harness\'s stream', () => {
 
   it('keeps a command\'s first line as its target, never the body the lines after it carry', () => {
     const rules = harnessById('claude-code')!.steps;
-    expect(stepOf(rules, { name: 'Bash', input: { command: `\ncat > notes.md <<'EOF'\n${FILE_BODY}\nEOF` } })).toEqual({ kind: 'command', target: 'cat > notes.md …' });
+    expect(stepOf(rules, { name: 'Bash', input: { command: `\ncat > notes.md <<'EOF'\n${FILE_BODY}\nEOF` } })).toEqual({ kind: 'command', target: 'cat > … << …' });
     expect(stepOf(rules, { name: 'Read', input: { file_path: 'x'.repeat(400) } }).target).toBe('…');
     expect(stepOf(rules, { name: 'Unmapped', input: { file_path: 'a.ts' } })).toEqual({ kind: 'tool', target: null });
   });
@@ -176,7 +176,7 @@ describe('a step log from a harness\'s stream', () => {
   it('reads a call still open when the run ends as unfinished', () => {
     const log = new StepLog(harnessById('claude-code')!, () => NOW);
     log.observe({ kind: 'tool_call', name: 'Bash', status: 'started', callId: 'c1', input: { command: 'sleep 600' } });
-    expect(log.result().steps).toEqual([{ seq: 0, callId: 'c1', kind: 'command', tool: 'Bash', target: 'sleep 600', outcome: 'unfinished', exitCode: null, startedAt: NOW, endedAt: null }]);
+    expect(log.result().steps).toEqual([{ seq: 0, callId: 'c1', kind: 'command', tool: 'Bash', target: 'sleep …', outcome: 'unfinished', exitCode: null, startedAt: NOW, endedAt: null }]);
   });
 });
 

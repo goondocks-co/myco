@@ -1265,8 +1265,8 @@ describe('the agent-protocol driver', () => {
     });
     const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => '', listed, ASKING));
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'started' },
-      { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'ok' },
+      { kind: 'tool_call', name: 'other', status: 'started' },
+      { kind: 'tool_call', name: 'other', status: 'ok' },
     ]);
     expect(events.find((event) => event.kind === 'usage')).toEqual({
       kind: 'usage', provider: 'openai', model: 'gpt-5.6-sol', tokenScope: 'last_response',
@@ -1398,8 +1398,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'myco_myco_run', status: 'started' },
-      { kind: 'tool_call', name: 'myco_myco_run', status: 'ok' },
+      { kind: 'tool_call', name: 'other', status: 'started' },
+      { kind: 'tool_call', name: 'other', status: 'ok' },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1418,9 +1418,9 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     const rejected = { outcome: { outcome: 'selected', optionId: 'reject' } };
     expect(answers).toEqual([rejected, rejected]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'ls', status: 'started' },
-      { kind: 'tool_call', name: 'ls', status: 'error', detail: OUTSIDE_GRANT, refused: true },
-      { kind: 'tool_call', name: 'https://example.com', status: 'error', detail: OUTSIDE_GRANT, refused: true },
+      { kind: 'tool_call', name: 'execute', status: 'started' },
+      { kind: 'tool_call', name: 'execute', status: 'error', detail: OUTSIDE_GRANT, refused: true },
+      { kind: 'tool_call', name: 'fetch', status: 'error', detail: OUTSIDE_GRANT, refused: true },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1548,8 +1548,8 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'MCP: tool', status: 'started' },
-      { kind: 'tool_call', name: 'myco: noop_ping', status: 'ok' },
+      { kind: 'tool_call', name: 'other', status: 'started' },
+      { kind: 'tool_call', name: 'other', status: 'ok' },
     ]);
   });
 
@@ -1577,8 +1577,8 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: '`git status`', status: 'started' },
-      { kind: 'tool_call', name: '`git status`', status: 'error', detail: OUTSIDE_GRANT, refused: true },
+      { kind: 'tool_call', name: 'execute', status: 'started' },
+      { kind: 'tool_call', name: 'execute', status: 'error', detail: OUTSIDE_GRANT, refused: true },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });

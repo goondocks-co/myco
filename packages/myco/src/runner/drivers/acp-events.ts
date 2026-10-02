@@ -22,20 +22,23 @@ function modelOf(value: Record<string, unknown>): { model: string; source: strin
   return selected === null ? null : { model: selected, source: 'session.models' };
 }
 
-/** What a call's events carry for its step: the agent's own kind of the call, and the input, locations and title it named. */
+/** What a call's events carry for its step: the agent's own kind of the call, and the input and locations it named. */
 interface CallFacts {
   category?: string;
   input?: Record<string, unknown>;
 }
 
-/** A call update's step facts: its kind, and its raw input, locations and title where it carries them. */
+/** The kinds of call the agent protocol defines; a call of any other kind reads as `other`. */
+const ACP_TOOL_KINDS: ReadonlySet<string> = new Set(['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode', 'other']);
+
+/** A call update's step facts: its protocol kind, and its raw input and locations where it carries them; never its free-text title. */
 function factsOf(update: Record<string, unknown>): CallFacts {
-  const category = stringOf(update.kind);
+  const kind = stringOf(update.kind);
+  const category = kind === null ? null : ACP_TOOL_KINDS.has(kind) ? kind : 'other';
   const rawInput = recordOf(update.rawInput);
   const locations = Array.isArray(update.locations) ? update.locations : undefined;
-  const title = stringOf(update.title);
-  const input = rawInput === null && locations === undefined && title === null ? undefined
-    : { ...(rawInput === null ? {} : { rawInput }), ...(locations === undefined ? {} : { locations }), ...(title === null ? {} : { title }) };
+  const input = rawInput === null && locations === undefined ? undefined
+    : { ...(rawInput === null ? {} : { rawInput }), ...(locations === undefined ? {} : { locations }) };
   return { ...(category === null ? {} : { category }), ...(input === undefined ? {} : { input }) };
 }
 
@@ -84,7 +87,7 @@ export class AcpEvents {
       const id = stringOf(update.toolCallId);
       if (id === null) return;
       const raw = stringOf(update.status);
-      yield* this.call(id, stringOf(update.title), raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null, factsOf(update));
+      yield* this.call(id, raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null, factsOf(update));
     } else if (type === 'config_option_update') {
       const selected = modelOf(update);
       if (selected !== null) { this.model = selected.model; this.modelSource = selected.source; }
@@ -109,7 +112,7 @@ export class AcpEvents {
    */
   *refused(toolCall: Record<string, unknown>, detail: string): Iterable<RunEvent> {
     const id = stringOf(toolCall.toolCallId);
-    const name = stringOf(toolCall.title) ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
+    const name = factsOf(toolCall).category ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
     const facts = { ...(id === null ? {} : this.calls.get(id)), ...factsOf(toolCall) };
     if (id !== null) {
       if (this.refusals.has(id)) return;
@@ -119,11 +122,14 @@ export class AcpEvents {
     yield { kind: 'tool_call', name, status: 'error', detail, refused: true, ...(id === null ? {} : { callId: id }), ...stepFacts(facts) };
   }
 
-  /** A call's status, reported when it changes, and never after the call was refused. */
-  private *call(id: string, title: string | null, status: RunToolStatus | null, facts: CallFacts): Iterable<RunEvent> {
+  /**
+   * A call's status, reported when it changes, and never after the call was refused. A call is named by the agent's own
+   * kind of it, never by its free-text title.
+   */
+  private *call(id: string, status: RunToolStatus | null, facts: CallFacts): Iterable<RunEvent> {
     if (this.refusals.has(id)) return;
     const previous = this.calls.get(id);
-    const name = title ?? previous?.name ?? 'tool';
+    const name = facts.category ?? previous?.name ?? 'tool';
     const known = { category: facts.category ?? previous?.category, input: facts.input ?? previous?.input };
     this.calls.set(id, { name, status: status ?? previous?.status ?? null, ...stepFacts(known) });
     if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status, callId: id, ...stepFacts(known) };

@@ -1,5 +1,5 @@
 import { redactSecrets } from './redact-secrets.js';
-import { commandShape, identifierShape } from './command-shape.js';
+import { commandShape, identifierShape, pathShape, urlShape } from './command-shape.js';
 
 /**
  * A worker's step log: what a run's harness did, as metadata only.
@@ -7,9 +7,10 @@ import { commandShape, identifierShape } from './command-shape.js';
  * A step names the action (`kind`), the harness's own tool name, the one target the action aims at (a path, a
  * command line or a search pattern), its outcome and exit status, when it started and ended, and the harness's call
  * id. It never carries file contents, command output or anything a call returned: the worker reads the target from a
- * field its harness's manifest names, `stepTarget` keeps it to the allowed shape of a command (`commandShape`: the
- * first line, flag names without their values, URLs as scheme and host, plain and path-like words, `…` for anything
- * else) with known access-key shapes masked after, and a tool's name is kept only where it is an identifier. The
+ * field its harness's manifest names, `stepTarget` keeps it to the allowed shape for its kind (a command or a file as
+ * `commandShape` keeps it: the first line, the program, flag names without their values, paths, URLs as scheme and
+ * host, `…` for every other word; a search's pattern and a fetch's query never) with known access-key shapes masked
+ * after, and a tool's name is kept only where it is an identifier. The
  * Deployment applies the same rules again to every page it stores (`parseStepPage`), and refuses a page whose tool or
  * shape names are not identifiers.
  *
@@ -77,9 +78,25 @@ function line(value: string, max: number): string {
   return folded.length > max ? `${folded.slice(0, max - 1)}…` : folded;
 }
 
-/** A step's target as stored: its allowed command shape, access keys masked, at most `MAX_STEP_TARGET_CHARS`; null for none. */
-export function stepTarget(raw: string): string | null {
-  const shaped = commandShape(raw);
+/**
+ * A step's raw target in its allowed shape for the step's kind: a command as `commandShape` keeps it, a file read or
+ * edited as a command-shaped path, a search only where its target is a path, a fetch as its URL's scheme and host, a
+ * Myco call as its operation's identifier, and nothing for any other call. A search's pattern or query and a fetch's
+ * query are never kept.
+ */
+function shapeFor(raw: string, kind: StepKind): string | null {
+  switch (kind) {
+    case 'command': case 'read': case 'edit': return commandShape(raw);
+    case 'search': return pathShape(raw);
+    case 'fetch': return urlShape(raw.trim());
+    case 'myco': return identifierShape(raw, MAX_SHAPE_CHARS);
+    case 'tool': return null;
+  }
+}
+
+/** A step's target as stored: its allowed shape for the step's kind, access keys masked, at most `MAX_STEP_TARGET_CHARS`; null for none. */
+export function stepTarget(raw: string, kind: StepKind): string | null {
+  const shaped = shapeFor(raw, kind);
   if (shaped === null) return null;
   const bounded = line(redactSecrets(shaped), MAX_STEP_TARGET_CHARS);
   return bounded === '' ? null : bounded;
@@ -159,7 +176,7 @@ function parseStep(value: unknown, index: number): WorkerStep {
     callId: callIdOf(boundedText(value.callId, MAX_STEP_CALL_ID_CHARS, `${what}.callId`, true), what),
     kind: value.kind as StepKind,
     tool: identifierTool(boundedText(value.tool, MAX_STEP_TOOL_CHARS, `${what}.tool`, false), what),
-    target: target === null ? null : stepTarget(target),
+    target: target === null ? null : stepTarget(target, value.kind as StepKind),
     outcome: value.outcome as StepOutcome,
     exitCode: value.exitCode as number | null,
     startedAt: value.startedAt,
