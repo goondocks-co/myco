@@ -160,7 +160,7 @@ describe('Myco’s work', () => {
     const lines = [...runs.querySelectorAll('li')];
     expect(lines.map((li) => li.getAttribute('data-run-line'))).toEqual(['held', 'plain', 'plain']);
     expect(lines[0]!.textContent).toContain('Held off: it was switched off for this project');
-    expect(lines[1]!.textContent).toContain('2 spores from 3 sessions, then stopped');
+    expect(lines[1]!.textContent).toContain('Failed with output kept');
     expect(lines[2]!.textContent).toContain('4 spores from 1 session');
     expect(lines[2]!.textContent).toContain('Ada’s studio Mac · by Lin');
     expect(within(lines[2]!).getByRole('link').getAttribute('href')).toBe(`/p/${P}/work/runs/run_a2c4e6f801`);
@@ -188,14 +188,14 @@ describe('Myco’s work', () => {
     expect(within(failure).getByRole('link', { name: 'Open the latest attempt →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_5e0b1c2d3f`);
     expect(within(map).getByRole('list', { name: 'Latest code map updates' }).textContent).toContain('by you');
 
-    // Upkeep is one quiet line, and the cost is labelled as the agents' own estimate.
+    // Upkeep is one line; the cost rail discloses estimates and missing costs.
     const rail = screen.getByRole('complementary', { name: 'Upkeep and cost' });
     expect(rail.querySelector('[data-upkeep]')!.textContent).toContain('Search kept up to date · 1 h ago · 1 retry along the way');
     expect(within(rail).getByRole('link', { name: 'Health →' })).toBeTruthy();
     const cost = rail.querySelector('[data-cost]') as HTMLElement;
     expect(cost.querySelector('[data-cost-total]')!.textContent).toBe('$3.60');
     expect(cost.textContent).toContain('1.7 million tokens over 7 runs.');
-    expect(cost.textContent).toContain('These are the agents’ own estimates, not a bill. 2 runs reported no cost, so the real total is higher.');
+    expect(cost.textContent).toContain('Recorded costs may include agent estimates and estimates using model prices; they are not a bill. 2 runs reported no cost, so the total is incomplete.');
     expect(document.querySelectorAll('[data-filter-bar]')).toHaveLength(1);
     expect(rawIdsInPage()).toEqual([]);
   });
@@ -272,7 +272,7 @@ describe('Myco’s work', () => {
     mount(`/p/${P}/work`);
     const runs = await within(await findCard('learn')).findByRole('list', { name: 'Latest learning runs' });
     await waitFor(() => expect(runs.querySelectorAll('li')).toHaveLength(5));
-    fireEvent.click(within(card('learn')).getByRole('button', { name: 'Show all' }));
+    fireEvent.click(within(card('learn')).getByRole('button', { name: 'Show all · all time' }));
     await waitFor(() => expect(within(card('learn')).getByRole('list', { name: 'Latest learning runs' }).querySelectorAll('li')).toHaveLength(6));
     fireEvent.click(within(card('learn')).getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(within(card('learn')).getByRole('list', { name: 'Latest learning runs' }).querySelectorAll('li')).toHaveLength(7));
@@ -283,7 +283,7 @@ describe('Myco’s work', () => {
     server(week());
     mount('/work');
     const links = await waitFor(() => { const found = card('learn')?.querySelector('[data-all-runs]'); if (found == null) throw new Error('not yet'); return found as HTMLElement; });
-    expect(within(links).getByRole('link', { name: 'All runs in Myco →' }).getAttribute('href')).toBe(`/p/${P}/work?outcome=learn&runs=all`);
+    expect(within(links).getByRole('link', { name: 'All runs in Myco · all time →' }).getAttribute('href')).toBe(`/p/${P}/work?outcome=learn&runs=all`);
   });
 
   it('links a learning card and a titles card to the window’s sessions', async () => {
@@ -405,4 +405,53 @@ describe('Myco’s work', () => {
     mount(`/p/${P}/runs/run_a2c4e6f801`);
     await waitFor(() => expect(location()).toBe(`/p/${P}/work/runs/run_a2c4e6f801`));
   });
+});
+
+it('keeps yesterday out of Today’s runs and requests the selected bounds', async () => {
+  const asked = server({ ...week(), [`/api/projects/${P}/runs`]: (url) => {
+    const since = Number(url.searchParams.get('since'));
+    const until = Number(url.searchParams.get('until'));
+    const rows = [runRow({ id: 'today-map', task: 'canopy-map', completedAt: NOW }), runRow({ id: 'yesterday-map', task: 'canopy-map', completedAt: NOW - 30 * HOUR })];
+    return Response.json({ rows: rows.filter((row) => row.completedAt! >= since && row.completedAt! < until), cursor: null });
+  } });
+  mount(`/p/${P}/work?window=today&outcome=map`);
+  const runs = await screen.findByRole('list', { name: 'Latest code map updates' });
+  expect(within(runs).getAllByRole('link')).toHaveLength(1);
+  expect(within(runs).getByRole('link').getAttribute('href')).toContain('today-map');
+  expect(asked.filter((url) => url.pathname.endsWith('/runs')).every((url) => Number(url.searchParams.get('since')) === TODAY.since && Number(url.searchParams.get('until')) === TODAY.until)).toBe(true);
+  expect(await screen.findByRole('button', { name: 'Show all · all time' })).toBeTruthy();
+});
+
+for (const across of [false, true]) {
+  it(`renders requested and actual models with a mismatch in the ${across ? 'all projects' : 'project'} run list`, async () => {
+    const evidence = {
+      requested: { tier: 'high' as const, model: 'opus', effort: 'high', sources: { tier: 'task' as const, model: 'default' as const } },
+      harness: 'claude-code',
+      identity: { status: 'reported' as const, source: 'result', primary: { model: 'claude-sonnet-4-6' }, models: [{ model: 'claude-sonnet-4-6', source: 'result', usage: null }] },
+    };
+    const answer = { ...WEEK_WORK, runs: WEEK_WORK.runs.map((run) => run.kind === 'map' ? { ...run, ...evidence } : run) };
+    server(week({ work: answer, taskRuns: { ...TASK_RUNS, 'canopy-map': TASK_RUNS['canopy-map']!.map((run) => ({ ...run, ...evidence })) } }));
+    mount(across ? '/work?outcome=map' : `/p/${P}/work?outcome=map`);
+    const runs = await screen.findByRole('list', { name: 'Latest code map updates' });
+    expect(runs.textContent).toContain('Asked for Opus, high effort · ran claude-sonnet-4-6');
+    expect(runs.textContent).toContain('Ran a different model than requested');
+  });
+}
+
+it('opens all-time history on a quiet day and requests no window bounds', async () => {
+  const asked = server(week({ work: { ...WEEK_WORK, outcomes: [], runs: [] } }));
+  mount(`/p/${P}/work?window=today&outcome=map&runs=all`);
+  const history = await screen.findByRole('list', { name: 'All-time code map updates' });
+  expect(within(history).getAllByRole('link')).toHaveLength(2);
+  const query = asked.find((url) => url.pathname.endsWith('/runs'))!;
+  expect(query.searchParams.get('task')).toBe('canopy-map');
+  expect(query.searchParams.has('since') || query.searchParams.has('until')).toBe(false);
+});
+
+it('offers clearly labelled all-time history from an empty selected window', async () => {
+  server(week({ work: { ...WEEK_WORK, outcomes: [], runs: [] } }));
+  mount(`/p/${P}/work?window=today&outcome=map`);
+  fireEvent.click(await screen.findByRole('button', { name: 'Show all · all time' }));
+  const history = await screen.findByRole('list', { name: 'All-time code map updates' });
+  expect(within(history).getAllByRole('link')).toHaveLength(2);
 });

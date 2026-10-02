@@ -90,6 +90,10 @@
       "import": "./dist/secret-slots.js",
       "types": "./dist/secret-slots.d.ts"
     },
+    "./redact-secrets": {
+      "import": "./dist/redact-secrets.js",
+      "types": "./dist/redact-secrets.d.ts"
+    },
     "./execution-profile": {
       "import": "./dist/execution-profile.js",
       "types": "./dist/execution-profile.d.ts"

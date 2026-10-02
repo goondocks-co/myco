@@ -137,10 +137,13 @@ export function shortTime(at: number, now: number): string {
 }
 
 /** What one run came to, in a few words, for a line in a list. */
-export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode' | 'targetSessionId'>, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
+export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode' | 'targetSessionId'> & { result?: RunFields['result'] }, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
   if (run.status === 'skipped') return `Held off: ${skipWords(run.skipReasonCode ?? run.skipReason)}`;
   if (run.status === 'queued') return 'Waiting to start';
   if (run.status === 'running' || run.status === 'claimed') return 'Running now';
+  if (run.result === 'failed_with_output') return 'Failed with output kept';
+  if (run.result === 'failed') return 'Failed';
+  if (run.result === 'unchanged') return 'Checked and changed nothing';
   const failed = run.status === 'failed';
   switch (kind) {
     case 'learn':
@@ -148,9 +151,11 @@ export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'sta
       if (outcome.spores > 0) return `${count(outcome.spores, 'spore')}${outcome.sessions > 0 ? ` from ${count(outcome.sessions, 'session')}` : ''}${failed ? ', then stopped' : ''}`;
       return failed ? 'Stopped before saving anything' : 'Nothing new to keep';
     case 'title':
+      if (run.result === 'produced') return 'Titled a session';
       if (failed) return 'Couldn’t title a session';
       return outcome.sessions > 0 ? 'Titled a session' : 'Titled nothing';
     case 'map':
+      if (run.result === 'produced') return 'Updated the map';
       if (failed) return 'Couldn’t update the map';
       return outcome.maps === 0 ? 'Nothing to change' : 'Updated the map';
     default:

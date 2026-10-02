@@ -9,9 +9,9 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { listReports } from '../core/runs.js';
-import { getRunDetail, listRuns } from '../read/runs.js';
+import { getRunCalls, getRunDetail, listRuns } from '../read/runs.js';
 import { runReads } from '../read/run-reads.js';
-import { badRequest, notFound, ok, resolveProjectScope } from './scope.js';
+import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { paging } from './sessions.js';
 
 /** The longest run id or filter value admitted, matching the identifier bound the run routes apply. */
@@ -50,7 +50,12 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   if (status instanceof Response) return status;
   const task = filterParam(ctx.url, 'task');
   if (task instanceof Response) return task;
-  return ok(await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task }));
+  const since = instantParam(ctx.url, 'since');
+  if (since instanceof Response) return since;
+  const until = instantParam(ctx.url, 'until');
+  if (until instanceof Response) return until;
+  if (since !== undefined && until !== undefined && since >= until) return badRequest('since must be before until');
+  return ok(await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until }));
 }
 
 /** One run with its phases and reports, the sessions it read and the spores it wrote. A run under another project answers 404, the same as one that never existed. */
@@ -59,7 +64,27 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (scope === null) return notFound();
   const runId = runIdParam(ctx.params.runId ?? '');
   if (runId === null) return notFound();
-  const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id);
+  const callsUrl = new URL(ctx.url);
+  callsUrl.search = '';
+  const callsLimit = ctx.url.searchParams.get('callsLimit');
+  const callsCursor = ctx.url.searchParams.get('callsCursor');
+  if (callsLimit !== null) callsUrl.searchParams.set('limit', callsLimit);
+  if (callsCursor !== null) callsUrl.searchParams.set('cursor', callsCursor);
+  const calls = paging(callsUrl);
+  if (calls instanceof Response) return calls;
+  const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id, calls);
   if (detail === null) return notFound();
   return ok({ ...detail, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
+}
+
+/** One page of admitted calls, without the run's instructions, reports or current artifacts. */
+export async function handleProjectRunCalls(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const runId = runIdParam(ctx.params.runId ?? '');
+  if (runId === null) return notFound();
+  const calls = paging(ctx.url);
+  if (calls instanceof Response) return calls;
+  const answer = await getRunCalls(env.db, scope, runId, calls);
+  return answer === null ? notFound() : ok(answer);
 }

@@ -15,8 +15,8 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { dayParam, dayWindow } from '../../packages/myco-server/ui/src/hooks/use-today';
-import { buildTimeline, ledeCounts } from '../../packages/myco-server/ui/src/features/today/timeline';
-import { attentionWords, machineNames, repositoryWords, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
+import { buildTimeline, ledeCounts, sporesWritten } from '../../packages/myco-server/ui/src/features/today/timeline';
+import { attentionWords, machineNames, repositoryWords, workHeadline, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
 import { ranOn } from '../../packages/myco-server/ui/src/features/work/words';
 import { cleanSessionText, sessionHeading } from '../../packages/myco-server/ui/src/lib/session-text';
 import { memberDisplayName, memberLabel } from '../../packages/myco-server/ui/src/lib/member-name';
@@ -62,6 +62,7 @@ const SESSIONS = [
 ];
 
 const run = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
+  requested: null, queuedAt: null, startedAt: null, completedAt: null,
   identity: { status: 'not_recorded' }, costProvenance: null, harness: null, model: null, provider: null,
   projectId: P_MYCO, status: 'completed', result: 'produced', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 0 },
   sessionId: null, failure: null, tokens: 1000, costUsd: 0.1, ...over,
@@ -546,6 +547,48 @@ describe('Today', () => {
     mount('/');
     const list = await timeline();
     expect(within(list).getByRole('link', { name: 'Myco updated the code map' }).getAttribute('href')).toBe(`/p/${P_MYCO}/knowledge/map`);
+  });
+
+  it('keeps unchanged map and title checks out of Today’s output timeline and counts', async () => {
+    const unchanged = [
+      run({ id: 'unchanged-map', kind: 'map', task: 'canopy-map', result: 'unchanged' }),
+      run({ id: 'unchanged-title', kind: 'title', task: 'title-summary', result: 'unchanged', sessionId: SESSIONS[1]!.sessionId, projectId: P_ATLAS }),
+    ];
+    const entries = buildTimeline({ sessions: SESSIONS, runs: unchanged, spores: [], window: { start: DAY_START, end: DAY_START + 24 * HOUR }, now: NOW });
+    expect(ledeCounts(entries)).toMatchObject({ work: 0, spores: 0, sessions: 4 });
+    server(day({ work: { ...WORK, runs: unchanged }, spores: { spores: [], total: 0 } }));
+    mount('/');
+    const list = await timeline();
+    expect(items(list)).toHaveLength(4);
+    expect(list.textContent).not.toMatch(/Myco updated|Myco titled|Sessions it titled/);
+    expect(list.querySelector(`a[href="/p/${P_MYCO}/knowledge/map"]`)).toBeNull();
+  });
+
+  it('describes unchanged checks honestly when a caller asks for their headline', () => {
+    for (const [kind, task] of [['map', 'canopy-map'], ['title', 'title-summary']] as const) {
+      expect(workHeadline(kind, [run({ id: `unchanged-${kind}`, kind, task, result: 'unchanged' })])).toBe('Myco checked and changed nothing');
+    }
+  });
+
+  it('does not fold unchanged title checks into a produced group or its nested total', async () => {
+    const titled = Array.from({ length: 4 }, (_, i) => run({ id: `titled-${i}`, kind: 'title', task: 'title-summary', at: NOW - HOUR - i * MINUTE, outcome: { spores: 0, sessions: 1, maps: 0 } }));
+    const unchanged = Array.from({ length: 4 }, (_, i) => run({ id: `unchanged-${i}`, kind: 'title', task: 'title-summary', result: 'unchanged', at: NOW - HOUR - (i + 4) * MINUTE }));
+    expect(workHeadline('title', [...titled, ...unchanged])).toBe('Myco titled 4 sessions');
+    server(day({ work: { ...WORK, runs: [...titled, ...unchanged] }, spores: { spores: [], total: 0 } }));
+    mount('/');
+    const list = await timeline();
+    const group = within(list).getByText('Myco titled 4 sessions').closest('li')!;
+    expect(group.textContent).toContain('and 4 more');
+    expect(group.textContent).not.toContain('and 8 more');
+  });
+
+  it('counts only published spores in mixed work entries', () => {
+    const produced = run({ id: 'published-spores', kind: 'learn', task: 'extract-curate', outcome: { spores: 2, sessions: 1, maps: 0 } });
+    const unchanged = run({ id: 'unchanged-spores', kind: 'learn', task: 'extract-curate', result: 'unchanged', outcome: { spores: 9, sessions: 3, maps: 0 } });
+    const entry = { type: 'work' as const, key: 'mixed', at: NOW, projectId: P_MYCO, kind: 'learn' as const, runs: [produced, unchanged], spores: [], titled: [] };
+    expect(sporesWritten(entry)).toBe(2);
+    expect(ledeCounts([entry]).spores).toBe(2);
+    expect(workHeadline('learn', entry.runs)).toBe('Myco learned 2 spores from 1 session');
   });
 
   it('asks again every 30 s while it shows today, never from a hidden tab, and not at all for a past day', async () => {

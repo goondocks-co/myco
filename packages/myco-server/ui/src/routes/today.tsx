@@ -6,7 +6,7 @@ import { ArchivedNotice } from '../features/today/ArchivedNotice';
 import { CapturePanel } from '../features/today/CapturePanel';
 import { NeedsYouPanel, NeedsYouSummary, type NeedsYouProps } from '../features/today/NeedsYou';
 import { Lede, ledeParts, UpkeepLine } from '../features/today/Summary';
-import { sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } from '../features/today/timeline';
+import { hasRunOutput, sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } from '../features/today/timeline';
 import { FailureNote, KickerProject, KickerSep, NestedLines, TimelineItem, TitleLink, type TimelineTone } from '../features/today/TimelineItem';
 import type { WorkAnswer } from '../features/today/wire';
 import {
@@ -233,6 +233,7 @@ function UntitledHeading({ firstPrompt }: { firstPrompt: string | null }) {
 }
 
 function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scoped: boolean; projectName: (projectId: string) => string | null; work: WorkAnswer | undefined }) {
+  const produced = entry.runs.filter(hasRunOutput);
   const failed = entry.runs.filter((run) => run.result === 'failed');
   const kept = entry.runs.filter((run) => run.result === 'failed_with_output');
   const noted = failed[0] ?? kept[0];
@@ -240,7 +241,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
   const single = entry.runs.length === 1 ? entry.runs[0]! : null;
   const runAt = (runId: string) => runPath(entry.projectId, runId);
   const headline = workHeadline(entry.kind, entry.runs);
-  const mapLinked = entry.kind === 'map' && failed.length === 0;
+  const mapLinked = entry.kind === 'map' && produced.length > 0 && failed.length === 0;
   const map = entry.kind === 'map' && single !== null
     ? work?.outcomes.find((o) => o.projectId === entry.projectId && o.kind === 'map' && o.map?.sourceRunId === single.id)?.map ?? null
     : null;
@@ -274,10 +275,10 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
           }))}
         />
       )}
-      {entry.kind === 'title' && failed.length === 0 && (
+      {entry.kind === 'title' && produced.length > 0 && failed.length === 0 && (
         <NestedLines
           label="Sessions it titled"
-          total={entry.runs.length}
+          total={produced.length}
           lines={entry.titled.slice(0, NESTED_SHOWN).map((session) => ({
             key: session.sessionId,
             text: sessionHeadingText(session),

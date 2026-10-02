@@ -9,6 +9,7 @@ import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
 import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath } from '../../routes/nav';
+import { hasRunOutput } from './timeline';
 import type { AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 
 const MINUTE = 60_000;
@@ -125,8 +126,11 @@ export function sporeLine(spore: Pick<TodaySpore, 'agentLine' | 'content'>): str
 
 /** What a group of Myco's runs produced, as the timeline item's headline. */
 export function workHeadline(kind: OutcomeKind, runs: readonly WorkRun[]): string {
-  const produced = runs.filter((run) => run.result !== 'failed');
-  if (produced.length === 0) return FAILED_HEADLINE[kind](runs.length);
+  const produced = runs.filter(hasRunOutput);
+  if (produced.length === 0) {
+    const failed = runs.filter((run) => run.result === 'failed');
+    return failed.length > 0 ? FAILED_HEADLINE[kind](failed.length) : 'Myco checked and changed nothing';
+  }
   const spores = produced.reduce((sum, run) => sum + run.outcome.spores, 0);
   const sessions = produced.reduce((sum, run) => sum + run.outcome.sessions, 0);
   switch (kind) {

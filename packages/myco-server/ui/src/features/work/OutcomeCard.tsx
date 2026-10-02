@@ -99,6 +99,7 @@ export interface RunLineItem {
   /** The instant `time` names. */
   at: number;
   words: string;
+  model?: ReactNode;
   /** The machine it ran on, or the project across projects. */
   where: string | null;
   /** "by Ada" for a run a member started. */
@@ -128,7 +129,7 @@ export function RunLines({ label, items, state }: { label: string; items: readon
             <time dateTime={new Date(item.at).toISOString()} className="flex w-s12 shrink-0 flex-col t-small tabular-nums text-faint sm:w-time-col sm:flex-row sm:gap-s1">
               {item.time.split(' ').map((part) => <span key={part} className="whitespace-nowrap">{part}</span>)}
             </time>
-            <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-s3">
+            <span className="flex min-w-0 flex-1 flex-col gap-s1">
               <RouterLink
                 to={item.to}
                 state={state}
@@ -136,6 +137,7 @@ export function RunLines({ label, items, state }: { label: string; items: readon
               >
                 {item.words}
               </RouterLink>
+              {item.model}
               {(item.where !== null || item.by !== null) && (
                 <span className="truncate t-meta text-muted sm:ml-auto">{[item.where, item.by].filter((part) => part !== null).join(' · ')}</span>
               )}
