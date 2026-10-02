@@ -11,7 +11,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/work/wire.ts';
-import type { RunDetail, RunPageRow, listRuns } from '../../packages/myco-server/src/read/runs.ts';
+import type { RunAttemptRow, RunDetail, RunPageRow, RunStepPage, RunStepRow, listRuns } from '../../packages/myco-server/src/read/runs.ts';
+import type { RunAudit } from '../../packages/myco-server/src/core/run-audit.ts';
 import type { RunOutcomeCounts, RunReadSession, RunReads } from '../../packages/myco-server/src/read/run-reads.ts';
 import type { ReportRow } from '../../packages/myco-server/src/core/runs.ts';
 import type { CAPABILITY_OFF } from '../../packages/myco-server/src/core/harness.ts';
@@ -29,7 +30,11 @@ const SAME: [
   Same<Ui.RunReadSession, RunReadSession>,
   Same<Ui.RunWorker, NonNullable<RunPageRow['worker']>>,
   Same<Ui.CapabilityOffRefusal['error'], typeof CAPABILITY_OFF>,
-] = [true, true, true, true];
+  Same<Ui.RunAttempt, RunAttemptRow>,
+  Same<Ui.RunStep, RunStepRow>,
+  Same<Ui.RunStepPage, RunStepPage>,
+  Same<Ui.RunAudit, RunAudit>,
+] = [true, true, true, true, true, true, true, true];
 
 const READS: [
   Reads<RunPageRow, Ui.RunPageRow>,

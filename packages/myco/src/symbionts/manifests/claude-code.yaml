@@ -445,7 +445,8 @@ runner:
     stepTool: name
     steps:
       - { tool: Read, kind: read, target: [file_path] }
-      - { tool: LS, kind: read, target: [path] }
+      # A directory listing names the files in a directory and reads none of them, so it reads as a search there.
+      - { tool: LS, kind: search, target: [path] }
       - { tool: NotebookRead, kind: read, target: [notebook_path] }
       - { tool: Glob, kind: search, target: [path] }
       - { tool: Grep, kind: search, target: [path] }
@@ -457,6 +458,12 @@ runner:
       - { tool: WebFetch, kind: fetch, target: [url] }
       - { tool: WebSearch, kind: fetch, target: [query] }
       - { toolPrefix: mcp__myco__, kind: myco, target: [op] }
+      - { tool: ToolSearch, kind: tool, target: [], words: Looked up a tool }
+      - { tool: TodoWrite, kind: tool, target: [], words: Updated its to-do list }
+    # Stream records its driver does not read that never carry a call: thinking and rate-limit notices, a change in
+    # its slash commands, hook progress, status and compaction marks. Any other record it cannot read is counted as
+    # unrecognized.
+    notSteps: [system/thinking_tokens, rate_limit_event, system/commands_changed, system/status, system/compact_boundary, system/hook_started, system/hook_progress, system/hook_response]
     accounting:
       reported: claude-stream
       modelSources: [system.init.model, assistant.message.model, result.modelUsage]

@@ -17,15 +17,17 @@
  * - a search is `Grep` when it searches for a pattern, and is outside the grant
  *   when it has a query, a URL or a web call id instead;
  * - a call of no narrower kind is a tool of the run's server when it names one
- *   of the tools the server lists for the run: as Cursor does, by the server
- *   and tool it gives in its input; by the grant's own `mcp__<server>__<tool>`;
- *   or by the `<server>_<tool>` OpenCode gives an MCP tool, each part with
- *   every character outside `[A-Za-z0-9_-]` replaced by `_`.
+ *   of the tools the server lists for the run, as the harness's manifest
+ *   declares its calls name them (`runner.worker.mycoCalls`, read through
+ *   `acp-myco.ts`): by the server and tool its input gives, as Cursor does, or
+ *   by a name such as the grant's own `mcp__<server>__<tool>` or the
+ *   `<server>_<tool>` OpenCode gives an MCP tool.
  * Nothing else is in the grant.
  */
 import { existsSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { MCP_SERVER_NAME } from '../mcp-config.js';
+import type { MycoCallNames } from '../harnesses.js';
+import { mycoToolNamed } from './acp-myco.js';
 import { grantsCall, SERVER_GRANT, SHELL_TOOL, type RunGrant } from './grant.js';
 import { recordOf, stringOf } from './stream.js';
 
@@ -49,9 +51,6 @@ const WORKING_DIRECTORY_FIELDS = ['cwd', 'workdir'] as const;
 
 /** The protocol's answer to a permission request. */
 export type PermissionOutcome = { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' };
-
-/** How OpenCode spells a server or tool name inside an MCP tool's name. */
-const openCodeName = (value: string): string => value.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 /** What the agent has said about each of its calls in this session. */
 export class ToolCalls {
@@ -98,16 +97,6 @@ function runsInside(toolCall: Record<string, unknown>, runDir: string): boolean 
   });
 }
 
-/** The name of one of the run's listed tools that this call names, or null. */
-function runToolOf(toolCall: Record<string, unknown>, names: ReadonlySet<string>): string | null {
-  const input = recordOf(toolCall.rawInput);
-  const provided = stringOf(input?.toolName);
-  if (input?.providerIdentifier === MCP_SERVER_NAME && provided !== null && names.has(provided)) return provided;
-  const name = stringOf(toolCall.name) ?? stringOf(toolCall.title);
-  if (name === null) return null;
-  return [...names].find((tool) => name === `${SERVER_GRANT}__${tool}` || name === `${openCodeName(MCP_SERVER_NAME)}_${openCodeName(tool)}`) ?? null;
-}
-
 /** Whether a search call searches files for a pattern, rather than the web or a service for a query. */
 function searchesFiles(toolCall: Record<string, unknown>): boolean {
   const input = recordOf(toolCall.rawInput);
@@ -116,7 +105,7 @@ function searchesFiles(toolCall: Record<string, unknown>): boolean {
 }
 
 /** A call as the grant names it, or why it names nothing the grant can hold. */
-function grantCallOf(toolCall: Record<string, unknown>, tools: ReadonlySet<string>, runDir: string): { tool: string; command: string | null } | { unnamed: string } {
+function grantCallOf(toolCall: Record<string, unknown>, tools: ReadonlySet<string>, runDir: string, mycoCalls: MycoCallNames | undefined): { tool: string; command: string | null } | { unnamed: string } {
   switch (stringOf(toolCall.kind) ?? UNKINDED) {
     case 'read': return { tool: 'Read', command: null };
     case 'execute':
@@ -124,7 +113,7 @@ function grantCallOf(toolCall: Record<string, unknown>, tools: ReadonlySet<strin
       return { tool: SHELL_TOOL, command: stringOf(stringOf(recordOf(toolCall.rawInput)?.command)?.trim()) };
     case 'search': return searchesFiles(toolCall) ? { tool: 'Grep', command: null } : { unnamed: OUTSIDE_GRANT };
     case UNKINDED: {
-      const tool = runToolOf(toolCall, tools);
+      const tool = mycoToolNamed(toolCall, tools, mycoCalls);
       return tool === null ? { unnamed: OUTSIDE_GRANT } : { tool: `${SERVER_GRANT}__${tool}`, command: null };
     }
     default: return { unnamed: OUTSIDE_GRANT };
@@ -151,10 +140,11 @@ export function answerPermission(
   sessionId: string | null,
   params: Record<string, unknown>,
   toolCall: Record<string, unknown>,
+  mycoCalls?: MycoCallNames,
 ): { outcome: PermissionOutcome; refusal: string | null } {
   const refusal = ((): string | null => {
     if (sessionId === null || params.sessionId !== sessionId) return OUTSIDE_GRANT;
-    const call = grantCallOf(toolCall, tools, grant.runDir);
+    const call = grantCallOf(toolCall, tools, grant.runDir, mycoCalls);
     if ('unnamed' in call) return call.unnamed;
     if (!grantsCall(grant.rules, call.tool, call.command)) return OUTSIDE_GRANT;
     return optionOf(params.options, ALLOW_ONCE) === null ? NO_ALLOW_ONCE : null;

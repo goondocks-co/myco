@@ -28,6 +28,7 @@ const PREAMBLE_PATH = path.join(REPO_ROOT, 'packages/myco/src/cli/launch-preambl
 const ANY_AGENT_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/any-agent-rules.generated.ts');
 const RUNNER_HARNESSES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/runner-harnesses.generated.ts');
 const WORKER_HARNESSES_PATH = path.join(REPO_ROOT, 'packages/myco/src/runner/harnesses.generated.ts');
+const STEP_WORDS_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/runner-step-words.generated.ts');
 
 /** 1-based line of the first difference, for a failure message that names the drift. */
 function firstDifferingLine(a: string, b: string): number {
@@ -61,6 +62,10 @@ describe('generated hook config freshness', () => {
 
   it('gives the Deployment and the worker each harness\'s runner block without generated drift', () => {
     expect(fs.readFileSync(RUNNER_HARNESSES_PATH, 'utf-8')).toBe(fresh.runnerHarnesses);
+  });
+
+  it('gives the dashboard each harness\'s step words without generated drift', () => {
+    expect(fs.readFileSync(STEP_WORDS_PATH, 'utf-8')).toBe(fresh.stepWords);
   });
 
   it('gives the worker how it runs each harness without generated drift', () => {

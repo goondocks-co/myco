@@ -16,6 +16,13 @@
  * legitimately; only the strings a reader can see are held to it (JSX text and
  * every literal that reads as prose, `tests/helpers/visible-strings.ts`).
  *
+ * A shared module named `*-tables.ts` is skipped by rule: it holds only data
+ * the dashboard matches what a run ran against (the programs, subcommands and
+ * file extensions `command-shape.ts` reads from `command-tables.ts`), and a
+ * word in it reaches a page only inside a command the run itself ran, as
+ * written, never as copy of the page's own. `DATA_TABLES` names the rule, and a
+ * check below keeps such a module free of anything but its tables' data.
+ *
  * Static source scan, no build.
  */
 import { describe, expect, it } from 'bun:test';
@@ -48,13 +55,30 @@ const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
     'the refusal of a URL that carries a user name and password, where "credentials" names exactly the part to take out',
 };
 
-/** The shared modules the dashboard imports: their strings reach its pages too, beside strings only a terminal prints. */
+/** A shared module of data a run's own words are matched against, never page copy: skipped by the scan. */
+const DATA_TABLES = /-tables\.ts$/;
+
+/**
+ * The shared modules the dashboard imports, and the shared modules they import in turn: their strings reach its pages
+ * too, beside strings only a terminal prints. A data-table module (`DATA_TABLES`) is left out by rule.
+ */
 function sharedModules(): string[] {
-  const names = new Set<string>();
+  const files = new Set<string>();
+  const queue: string[] = [];
+  const add = (file: string) => { if (fs.existsSync(file) && !files.has(file)) { files.add(file); queue.push(file); } };
   for (const file of sources(UI_SRC)) {
-    for (const m of fs.readFileSync(file, 'utf8').matchAll(/from '@goondocks\/myco-shared\/([\w-]+)'/g)) names.add(m[1]!);
+    for (const m of fs.readFileSync(file, 'utf8').matchAll(/from '@goondocks\/myco-shared\/([\w.-]+)'/g)) add(path.join(SHARED_SRC, `${m[1]!}.ts`));
   }
-  return [...names].map((name) => path.join(SHARED_SRC, `${name}.ts`)).filter((file) => fs.existsSync(file));
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    for (const m of fs.readFileSync(file, 'utf8').matchAll(/from '\.\/([\w.-]+?)(?:\.js)?'/g)) add(path.join(SHARED_SRC, `${m[1]!}.ts`));
+  }
+  return [...files].filter((file) => !DATA_TABLES.test(file));
+}
+
+/** Every shared data-table module the dashboard reaches, so the rule that skips them is held to what they hold. */
+function dataTables(): string[] {
+  return fs.readdirSync(SHARED_SRC).filter((name) => DATA_TABLES.test(name)).map((name) => path.join(SHARED_SRC, name));
 }
 
 /** Every visible string of the dashboard and of the shared modules it imports, keyed as the allow-list names them. */
@@ -136,6 +160,16 @@ describe('server dashboard vocabulary', () => {
       .filter(({ key, text }) => MECHANISM_WORDS.test(text) && MECHANISM_ALLOWED[key] === undefined)
       .map(({ where, text }) => `${where} "${text}"`);
     expect(hits, 'say it in the reader\'s words (tests/meta/server-ui-vocabulary.test.ts lists the glossary)').toEqual([]);
+  });
+
+  it('skips a data-table module only where it holds data alone: no import, no function and no sentence built from it', () => {
+    const tables = dataTables();
+    expect(tables.map((file) => path.basename(file))).toContain('command-tables.ts');
+    for (const file of tables) {
+      const source = fs.readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      expect({ file: path.basename(file), imports: /^import /m.test(source), code: /\bfunction\b|=>|`/.test(source) })
+        .toEqual({ file: path.basename(file), imports: false, code: false });
+    }
   });
 
   it('allows no entry that no longer matches a visible string', () => {

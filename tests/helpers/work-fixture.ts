@@ -151,12 +151,17 @@ export const sessionAnswer = (sessionId: string, title: string) => ({
 });
 
 /** One run's detail, as `GET /api/projects/{p}/runs/{r}` answers. */
-export const runDetail = (run: RunPageRow, over: Partial<Omit<RunDetailAnswer, 'run'>> & { run?: Record<string, unknown> } = {}): RunDetailAnswer & Record<string, unknown> => ({
+export const runDetail = (
+  run: RunPageRow,
+  over: Partial<Omit<RunDetailAnswer, 'run' | 'reports'>> & { run?: Record<string, unknown>; reports?: ReadonlyArray<Omit<RunDetailAnswer['reports'][number], 'audit'> & { audit?: RunDetailAnswer['reports'][number]['audit'] }> } = {},
+): RunDetailAnswer & Record<string, unknown> => ({
   source: null, map: null, toolCallCoverage: { total: over.toolCalls?.length ?? 0, failed: over.toolCalls?.filter((call) => call.failure !== undefined).length ?? 0, cursor: null },
-  reports: [], toolCalls: [], phases: [], outcomeEvidence: null, projectId: P,
+  toolCalls: [], phases: [], outcomeEvidence: null, projectId: P,
   read: { sessions: [], total: 0, recorded: false },
   produced: { spores: { total: 0, items: [] } },
+  attempts: [], attemptCount: over.attempts?.length ?? 0, steps: null,
   ...over,
+  reports: (over.reports ?? []).map((report) => ({ ...report, audit: report.audit ?? null })),
   run: {
     ...run, instruction: null, instructions: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: run.costUsd, reasoningLevel: null, resumeMode: null,
     resumeAttempts: 0, error: null, dispatchedBy: null, usageData: null, actionsTaken: null, ...over.run,

@@ -177,6 +177,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "modelSetting": "none",
         "steps": [
           {
+            "toolPrefix": "mcp__myco__",
+            "kind": "myco",
+            "target": [
+              "rawInput.op",
+              "rawInput.args.op",
+              "rawInput.arguments.op"
+            ]
+          },
+          {
             "category": "read",
             "kind": "read",
             "target": [
@@ -235,9 +244,37 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "rawInput.url",
               "rawInput.query"
             ]
+          },
+          {
+            "category": "think",
+            "kind": "tool",
+            "target": [],
+            "words": "Thought it through"
+          },
+          {
+            "category": "switch_mode",
+            "kind": "tool",
+            "target": [],
+            "words": "Switched its mode"
           }
         ],
         "stepTool": "category",
+        "notSteps": [
+          "session/update:plan",
+          "session/update:available_commands_update",
+          "session/update:current_mode_update",
+          "session/update:user_message_chunk"
+        ],
+        "mycoCalls": {
+          "names": [
+            "mcp__myco__{tool}",
+            "myco_{tool}"
+          ],
+          "input": {
+            "server": "rawInput.providerIdentifier",
+            "tool": "rawInput.toolName"
+          }
+        },
         "accounting": {
           "reported": "acp-session",
           "modelSources": [
@@ -719,7 +756,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           },
           {
             "tool": "LS",
-            "kind": "read",
+            "kind": "search",
             "target": [
               "path"
             ]
@@ -800,9 +837,31 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "target": [
               "op"
             ]
+          },
+          {
+            "tool": "ToolSearch",
+            "kind": "tool",
+            "target": [],
+            "words": "Looked up a tool"
+          },
+          {
+            "tool": "TodoWrite",
+            "kind": "tool",
+            "target": [],
+            "words": "Updated its to-do list"
           }
         ],
         "stepTool": "name",
+        "notSteps": [
+          "system/thinking_tokens",
+          "rate_limit_event",
+          "system/commands_changed",
+          "system/status",
+          "system/compact_boundary",
+          "system/hook_started",
+          "system/hook_progress",
+          "system/hook_response"
+        ],
         "accounting": {
           "reported": "claude-stream",
           "modelSources": [
@@ -1443,6 +1502,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         ],
         "stepTool": "name",
+        "notSteps": [],
         "accounting": {
           "reported": "codex-session",
           "modelSources": [
@@ -1961,6 +2021,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "modelSetting": "none",
         "steps": [
           {
+            "toolPrefix": "mcp__myco__",
+            "kind": "myco",
+            "target": [
+              "rawInput.op",
+              "rawInput.args.op",
+              "rawInput.arguments.op"
+            ]
+          },
+          {
             "category": "read",
             "kind": "read",
             "target": [
@@ -2019,9 +2088,37 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "rawInput.url",
               "rawInput.query"
             ]
+          },
+          {
+            "category": "think",
+            "kind": "tool",
+            "target": [],
+            "words": "Thought it through"
+          },
+          {
+            "category": "switch_mode",
+            "kind": "tool",
+            "target": [],
+            "words": "Switched its mode"
           }
         ],
         "stepTool": "category",
+        "notSteps": [
+          "session/update:plan",
+          "session/update:available_commands_update",
+          "session/update:current_mode_update",
+          "session/update:user_message_chunk"
+        ],
+        "mycoCalls": {
+          "names": [
+            "mcp__myco__{tool}",
+            "myco_{tool}"
+          ],
+          "input": {
+            "server": "rawInput.providerIdentifier",
+            "tool": "rawInput.toolName"
+          }
+        },
         "accounting": {
           "reported": "acp-session",
           "modelSources": [
@@ -2244,6 +2341,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         "steps": [
           {
+            "toolPrefix": "mcp__myco__",
+            "kind": "myco",
+            "target": [
+              "rawInput.op",
+              "rawInput.args.op",
+              "rawInput.arguments.op"
+            ]
+          },
+          {
             "category": "read",
             "kind": "read",
             "target": [
@@ -2302,9 +2408,37 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "rawInput.url",
               "rawInput.query"
             ]
+          },
+          {
+            "category": "think",
+            "kind": "tool",
+            "target": [],
+            "words": "Thought it through"
+          },
+          {
+            "category": "switch_mode",
+            "kind": "tool",
+            "target": [],
+            "words": "Switched its mode"
           }
         ],
         "stepTool": "category",
+        "notSteps": [
+          "session/update:plan",
+          "session/update:available_commands_update",
+          "session/update:current_mode_update",
+          "session/update:user_message_chunk"
+        ],
+        "mycoCalls": {
+          "names": [
+            "mcp__myco__{tool}",
+            "myco_{tool}"
+          ],
+          "input": {
+            "server": "rawInput.providerIdentifier",
+            "tool": "rawInput.toolName"
+          }
+        },
         "accounting": {
           "reported": "acp-session",
           "modelSources": [

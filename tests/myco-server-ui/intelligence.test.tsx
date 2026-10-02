@@ -563,7 +563,7 @@ describe('stored run audit evidence', () => {
   }
 });
 
-it('shows the true 201-call total and loads the remaining call', async () => {
+it('reads every page of a run’s 201 calls, then lists them a page at a time with the true total', async () => {
   const first = runDetail(mapRuns[1]!, {
     toolCalls: Array.from({ length: 200 }, (_, i) => ({ id: i, status: 'success' as const, tool: 'myco_run_map', op: 'get', recordedAt: NOW + i, durationMs: 10 })),
     toolCallCoverage: { total: 201, failed: 0, cursor: 'next-page' },
@@ -573,14 +573,15 @@ it('shows the true 201-call total and loads the remaining call', async () => {
   mount(`/p/${P}/work/runs/run_c19f7a0e55`);
   const open = await panel();
   const calls = await within(open).findByRole('region', { name: 'What it did' });
-  expect(calls.textContent).toContain('Showing 200 of 201 calls.');
+  await waitFor(() => expect(calls.textContent).toContain('Showing 200 of 201 calls'));
+  expect(within(calls).getAllByRole('listitem')).toHaveLength(200);
   fireEvent.click(within(calls).getByRole('button', { name: 'Show more' }));
   await waitFor(() => expect(within(calls).getAllByRole('listitem')).toHaveLength(201));
-  expect(calls.textContent).toContain('Showing 201 of 201 calls.');
+  expect(within(calls).queryByRole('button', { name: 'Show more' })).toBeNull();
+  expect(calls.textContent).toContain('201 calls');
   expect(within(calls).getAllByRole('listitem').at(-1)!.textContent).toContain('Status not recorded');
   expect(asked.some((url) => url.pathname.endsWith('/calls') && url.searchParams.get('cursor') === 'next-page' && url.searchParams.get('limit') === '200')).toBe(true);
   expect(asked.filter((url) => url.pathname.endsWith('/runs/run_c19f7a0e55'))).toHaveLength(1);
-  expect(calls.textContent).toContain('Up to 200 calls per page.');
 });
 
 describe('reviewed run evidence', () => {
@@ -615,7 +616,8 @@ describe('reviewed run evidence', () => {
     it(`names the pinned repository source for ${task} rather than session reads`, async () => {
       const open = await openReviewed({ run: { task }, source: { branch: 'audit-source', commit: 'a'.repeat(40) } });
       const read = within(open).getByRole('region', { name: 'What it read' });
-      expect(read.textContent).toContain("Which files it read isn't recorded. It worked from audit-source @ aaaaaaa.");
+      expect(read.textContent).toContain('Which files it read isn’t recorded: Myco kept no step log for this run. This doesn’t mean it read none.');
+      expect(read.textContent).toContain('It worked from audit-source @ aaaaaaa.');
       expect(within(open).queryByRole('region', { name: 'Sessions it read' })).toBeNull();
     });
   }

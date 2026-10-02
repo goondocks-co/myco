@@ -3,6 +3,8 @@ import { harnessById, type HarnessAccounting } from '../harnesses.js';
 import { accountingEvents, modelSelection, reportedDollars, reportedModel } from '../accounting.js';
 import type { RunEvent } from '../events.js';
 import { numberOf, recordOf, stringOf } from './stream.js';
+import { mycoToolNamed } from './acp-myco.js';
+import { SERVER_GRANT } from './grant.js';
 
 const TOOL_STATUS = { pending: 'started', in_progress: 'started', completed: 'ok', failed: 'error' } as const;
 type RunToolStatus = (typeof TOOL_STATUS)[keyof typeof TOOL_STATUS];
@@ -51,7 +53,7 @@ const READ_UPDATES: readonly string[] = ['agent_message_chunk', 'agent_thought_c
 
 /** One newly created ACP session and its reported accounting. */
 export class AcpEvents {
-  private readonly calls = new Map<string, { name: string; status: RunToolStatus | null } & CallFacts>();
+  private readonly calls = new Map<string, { name: string; status: RunToolStatus | null; myco?: string } & CallFacts>();
   /** Calls this client refused, whose failure is final. */
   private readonly refusals = new Set<string>();
   private model: string | null;
@@ -65,7 +67,12 @@ export class AcpEvents {
    * `warnings` are what the identity says about how the run's profile was applied, carried on every identity this
    * session reports.
    */
-  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>, private readonly policy: HarnessAccounting = harnessById(harness)!.accounting, private readonly warnings: readonly string[] = []) {
+  constructor(
+    private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>,
+    private readonly policy: HarnessAccounting = harnessById(harness)!.accounting, private readonly warnings: readonly string[] = [],
+    /** The tools Myco's server listed for the run, so a call naming one is named as a call to Myco. */
+    private readonly tools: ReadonlySet<string> = new Set(),
+  ) {
     const selected = modelOf(session);
     this.model = selected?.model ?? null;
     this.modelSource = selected?.source ?? 'session.models';
@@ -87,7 +94,7 @@ export class AcpEvents {
       const id = stringOf(update.toolCallId);
       if (id === null) return;
       const raw = stringOf(update.status);
-      yield* this.call(id, raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null, factsOf(update));
+      yield* this.call(id, raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null, factsOf(update), this.mycoTool(update));
     } else if (type === 'config_option_update') {
       const selected = modelOf(update);
       if (selected !== null) { this.model = selected.model; this.modelSource = selected.source; }
@@ -112,27 +119,35 @@ export class AcpEvents {
    */
   *refused(toolCall: Record<string, unknown>): Iterable<RunEvent> {
     const id = stringOf(toolCall.toolCallId);
-    const name = factsOf(toolCall).category ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
+    const myco = this.mycoTool(toolCall) ?? (id === null ? undefined : this.calls.get(id)?.myco) ?? null;
+    const name = myco !== null ? `${SERVER_GRANT}__${myco}` : factsOf(toolCall).category ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
     const facts = { ...(id === null ? {} : this.calls.get(id)), ...factsOf(toolCall) };
     if (id !== null) {
       if (this.refusals.has(id)) return;
       this.refusals.add(id);
-      this.calls.set(id, { name, status: 'error', ...facts });
+      this.calls.set(id, { ...facts, name, status: 'error', ...(myco === null ? {} : { myco }) });
     }
     yield { kind: 'tool_call', name, status: 'error', refused: true, ...(id === null ? {} : { callId: id }), ...stepFacts(facts) };
   }
 
   /**
    * A call's status, reported when it changes, and never after the call was refused. A call is named by the agent's own
-   * kind of it, never by its free-text title.
+   * kind of it, or as `mcp__myco__<tool>` where it names one of the tools Myco's server listed for the run
+   * (`acp-myco.ts`); never by its free-text title.
    */
-  private *call(id: string, status: RunToolStatus | null, facts: CallFacts): Iterable<RunEvent> {
+  private *call(id: string, status: RunToolStatus | null, facts: CallFacts, named: string | null): Iterable<RunEvent> {
     if (this.refusals.has(id)) return;
     const previous = this.calls.get(id);
-    const name = facts.category ?? previous?.name ?? 'tool';
+    const myco = named ?? previous?.myco ?? null;
+    const name = myco !== null ? `${SERVER_GRANT}__${myco}` : facts.category ?? previous?.name ?? 'tool';
     const known = { category: facts.category ?? previous?.category, input: facts.input ?? previous?.input };
-    this.calls.set(id, { name, status: status ?? previous?.status ?? null, ...stepFacts(known) });
+    this.calls.set(id, { name, status: status ?? previous?.status ?? null, ...stepFacts(known), ...(myco === null ? {} : { myco }) });
     if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status, callId: id, ...stepFacts(known) };
+  }
+
+  /** The one of Myco's tools a call names, as the harness's manifest declares its calls name them, or null. */
+  private mycoTool(toolCall: Record<string, unknown>): string | null {
+    return mycoToolNamed(toolCall, this.tools, harnessById(this.harness)?.mycoCalls);
   }
 
   *identity(source = this.modelSource): Iterable<RunEvent> {
