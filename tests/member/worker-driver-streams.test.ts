@@ -1104,7 +1104,7 @@ describe('the claimed model on OpenCode, as recorded (#1608)', () => {
     expect(asked).not.toContain('session/prompt');
     expect(events.some((event) => event.kind === 'started')).toBe(false);
     const last = events.at(-1);
-    expect(last?.kind === 'ended' ? [last.stop, last.detail?.startsWith('profile_unapplied: the harness offers no model openai/gpt-0-unknown')] : null).toEqual(['error', true]);
+    expect(last?.kind === 'ended' ? [last.stop, last.detail] : null).toEqual(['error', `profile_unapplied: the harness offers no model openai/gpt-0-unknown (it offers ${offeredModels.slice(0, 8).join(', ')} and ${offeredModels.length - 8} more)`]);
   });
 
   it('never prompts at an effort the claimed model does not offer', async () => {

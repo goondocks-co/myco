@@ -39,6 +39,12 @@ function offered(option: ConfigOption): string[] {
   ).filter((value): value is string => value !== null);
 }
 
+/** How many offered values a refusal names before counting the rest. */
+const NAMED_OFFERS = 8;
+
+const listed = (values: readonly string[]): string => values.length === 0 ? 'none'
+  : values.length <= NAMED_OFFERS ? values.join(', ') : `${values.slice(0, NAMED_OFFERS).join(', ')} and ${values.length - NAMED_OFFERS} more`;
+
 /** What applying the profile came to: the session's options once applied, or why it could not be. */
 export type Applied = { ok: true; configOptions: ConfigOption[] } | { ok: false; detail: string };
 
@@ -57,7 +63,7 @@ async function setOption(
   }
   if (option.currentValue === value) return { ok: true, configOptions: options };
   const values = offered(option);
-  if (!values.includes(value)) return { ok: false, detail: `the harness offers no ${what} ${value} (it offers ${values.length === 0 ? 'none' : values.join(', ')})` };
+  if (!values.includes(value)) return { ok: false, detail: `the harness offers no ${what} ${value} (it offers ${listed(values)})` };
   const answer = await call('session/set_config_option', { sessionId, configId: option.id, value });
   const error = recordOf(answer.error);
   if (error !== null) return { ok: false, detail: `the harness refused the ${what} ${value}: ${stringOf(error.message) ?? 'no reason given'}` };
