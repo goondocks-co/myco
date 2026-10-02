@@ -659,19 +659,20 @@ describe('reviewed run evidence', () => {
       applied.unmount();
     }
   });
-  it('flags an OpenRouter alias run only where it ran neither the alias nor what the worker listed it resolving to', () => {
+  it('never flags an OpenRouter alias run that reported another model as mismatched with nothing to judge it by: it says the model is unconfirmed', () => {
     const alias = 'openrouter/~openai/gpt-sol-latest';
     const ran = (model: string) => ({ status: 'reported', source: 'session.configOptions', primary: { model, provider: 'openrouter' }, models: [{ model, provider: 'openrouter', source: 'session.configOptions', usage: null }] });
-    const flagged = (resolvesTo: string | undefined, model: string): boolean => {
+    const shown = (resolvesTo: string | undefined, model: string): { mismatch: boolean; unconfirmed: string | null } => {
       const requested = { tier: 'default', model: alias, effort: null, sources: { tier: 'task', model: 'configured' }, ...(resolvesTo === undefined ? {} : { resolvesTo }) };
       const view = render(<ModelSummary run={runDetail(mapRuns[1]!, { run: { harness: 'opencode', requested, identity: ran(model) } }).run} />);
-      const shown = view.container.querySelector('[data-model-mismatch]') !== null;
+      const seen = { mismatch: view.container.querySelector('[data-model-mismatch]') !== null, unconfirmed: view.container.querySelector('[data-model-unconfirmed]')?.textContent ?? null };
       view.unmount();
-      return shown;
+      return seen;
     };
-    expect(flagged(undefined, '~openai/gpt-sol-latest')).toBe(false);
-    expect(flagged('openrouter/openai/gpt-6.1-sol', 'openai/gpt-6.1-sol')).toBe(false);
-    expect(flagged(undefined, 'openai/gpt-6.1-sol')).toBe(true);
+    expect(shown(undefined, '~openai/gpt-sol-latest')).toEqual({ mismatch: false, unconfirmed: null });
+    expect(shown(undefined, 'openai/gpt-6.1-sol')).toEqual({ mismatch: false, unconfirmed: 'Can’t confirm the model: the provider chooses which model this name runs' });
+    expect(shown('openrouter/openai/gpt-6.1-sol', 'openai/gpt-6.1-sol')).toEqual({ mismatch: false, unconfirmed: null });
+    expect(shown('openrouter/openai/gpt-6.1-sol', 'openai/gpt-6-luna')).toEqual({ mismatch: true, unconfirmed: null });
   });
   it('omits empty model evidence from run lists', () => {
     const { container } = render(<ModelSummary run={runDetail(mapRuns[1]!).run} variant="list" />);

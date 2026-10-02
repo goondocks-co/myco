@@ -177,7 +177,7 @@ export async function handleWorkerModels(env: ServerEnv, ctx: DeploymentContext)
   const asked = body(ctx);
   if (asked === null) return unreadable();
   const catalog = parseModelCatalog(asked.catalog);
-  if (catalog === null) return ok({ persisted: true, recorded: false, reason: 'the list names no agent whose models Settings sets, or no source, listing time or models' });
-  await recordModelCatalog(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, catalog, now: ctx.now });
+  if (catalog === null) return ok({ persisted: true, recorded: false, reason: 'the list names no agent whose models Settings sets, or no source, sign-in, listing time or models' });
+  await recordModelCatalog(env.db, { machineId: ctx.machineId, catalog, now: ctx.now });
   return ok({ persisted: true, recorded: true, models: catalog.models.length });
 }

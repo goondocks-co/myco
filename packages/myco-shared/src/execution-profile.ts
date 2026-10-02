@@ -6,10 +6,12 @@ export const EXECUTION_PROFILE_FEATURE = 'execution-profile';
 export const REASONING_TIERS = ['low', 'default', 'high'] as const;
 export type ReasoningTier = typeof REASONING_TIERS[number];
 export const MODEL_MISMATCH = 'model_mismatch';
+/** A run asked for a model its provider resolves at each request, that reported another, with no resolution to judge it by. */
+export const MODEL_UNCONFIRMED = 'model_unconfirmed';
 /** A run whose agent offered no effort setting for its model, so the claimed effort was not applied. */
 export const EFFORT_UNAPPLIED = 'effort_unapplied';
 /** Warnings about how a run's claimed profile was applied, which say nothing about its accounting. */
-export const PROFILE_WARNINGS: readonly string[] = [MODEL_MISMATCH, EFFORT_UNAPPLIED];
+export const PROFILE_WARNINGS: readonly string[] = [MODEL_MISMATCH, MODEL_UNCONFIRMED, EFFORT_UNAPPLIED];
 
 /** The code a worker ends a run with when its agent cannot run the claimed model or effort. */
 export const PROFILE_UNAPPLIED = 'profile_unapplied';
@@ -58,6 +60,8 @@ export interface ModelPreset {
   /** The provider whose login the models need, as the harness names it. */
   provider: string;
   label: string;
+  /** What the preset sets, in plain words. */
+  description: string;
   models: Readonly<Record<ReasoningTier, string>>;
 }
 
@@ -70,6 +74,8 @@ interface HarnessProfileDefaults {
   modelFamilies?: readonly string[];
   /** How a dated id of a family begins: an alias `sonnet` resolves to `<prefix>sonnet-…`. */
   modelFamilyPrefix?: string;
+  /** What a model id its provider resolves to a model of its own choosing at each request matches, as a regular expression. */
+  providerAliasPattern?: string;
   presets?: readonly ModelPreset[];
 }
 
@@ -146,6 +152,23 @@ export function profileModelMatches(
     || ((spec?.modelFamilies ?? []).includes(requested.model) && actual.model.startsWith(`${spec?.modelFamilyPrefix ?? ''}${requested.model}-`));
 }
 
+/** How a run's model compares with the request: the same, another, or another that nothing reported can judge. */
+export type ModelVerdict = 'match' | 'mismatch' | 'unconfirmed';
+
+/**
+ * Whether a run ran the model it asked for (`profileModelMatches`), and where it did not, whether that is known. A
+ * model the manifest says its provider resolves at each request (`providerAliasPattern`), with no resolution the
+ * harness listed, reported as another model is unconfirmed: the provider may have served exactly what the alias
+ * names, and nothing the run or the harness reported says either way.
+ */
+export function profileModelVerdict(
+  harness: string, requested: Pick<ExecutionProfile, 'model' | 'resolvesTo'>, actual: { model: string; provider?: string },
+): ModelVerdict {
+  if (profileModelMatches(harness, requested, actual)) return 'match';
+  const aliases = PROFILE_HARNESSES[harness]?.providerAliasPattern;
+  return requested.resolvesTo === undefined && aliases !== undefined && new RegExp(aliases).test(requested.model) ? 'unconfirmed' : 'mismatch';
+}
+
 /**
  * The Deployment stores the models each worker lists for the harnesses it offers (`POST /worker/models`) and answers
  * them to Settings. A worker lists and sends them only where the Deployment advertises this.
@@ -154,6 +177,11 @@ export const MODEL_CATALOG_FEATURE = 'model-catalog-v1';
 
 /** How long a worker's list of a harness's models stands before the worker lists them again. */
 export const MODEL_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
+/**
+ * How long a stored list counts as what a machine can run: two listings' worth, so one missed listing keeps a
+ * machine's models offered and a machine that stopped listing drops out by the second.
+ */
+export const MODEL_CATALOG_FRESH_MS = 2 * MODEL_CATALOG_REFRESH_MS;
 
 /** The most models a catalog keeps; a harness listing more is cut to this and marked `truncated`. */
 export const MAX_CATALOG_MODELS = 1000;
@@ -186,10 +214,18 @@ export interface CatalogModel {
 /** How a worker came by a catalog: the manifest's source kind, and the command it ran. */
 export interface CatalogSource { kind: 'command' | 'exchange'; command: string }
 
+/**
+ * Whose login a list was made with: the machine's own (`worker-login`), as a run on the machine's own login is
+ * started. A run the Deployment hands its own credential may be offered other models.
+ */
+export const CATALOG_SIGN_INS = ['worker-login'] as const;
+export type CatalogSignIn = typeof CATALOG_SIGN_INS[number];
+
 /** The models one worker listed for one harness, and when. */
 export interface ModelCatalog {
   harness: string;
   source: CatalogSource;
+  signIn: CatalogSignIn;
   fetchedAt: number;
   models: CatalogModel[];
   /** Set where the harness listed more than `MAX_CATALOG_MODELS`. */
@@ -226,7 +262,7 @@ export function catalogModel(harness: string, raw: unknown): CatalogModel | null
 
 /**
  * A catalog as the Deployment keeps one, or null where it names no harness whose models Settings configures, no
- * source, or no time it was listed. Models the harness's settings would refuse, and repeats, are left out; past
+ * source, no login it was made with, or no time it was listed. Models the harness's settings would refuse, and repeats, are left out; past
  * `MAX_CATALOG_MODELS` the rest are cut and the catalog is marked `truncated`.
  */
 export function parseModelCatalog(value: unknown): ModelCatalog | null {
@@ -237,7 +273,8 @@ export function parseModelCatalog(value: unknown): ModelCatalog | null {
   const kind = source?.kind === 'command' || source?.kind === 'exchange' ? source.kind : null;
   const command = catalogText(source?.command, MAX_CATALOG_SOURCE_CHARS);
   const fetchedAt = typeof raw.fetchedAt === 'number' && Number.isSafeInteger(raw.fetchedAt) && raw.fetchedAt > 0 ? raw.fetchedAt : null;
-  if (harness === null || kind === null || command === null || fetchedAt === null || !Array.isArray(raw.models)) return null;
+  const signIn = CATALOG_SIGN_INS.find((value) => value === raw.signIn) ?? null;
+  if (harness === null || kind === null || command === null || signIn === null || fetchedAt === null || !Array.isArray(raw.models)) return null;
   const seen = new Set<string>();
   const models: CatalogModel[] = [];
   let bytes = 0;
@@ -250,10 +287,10 @@ export function parseModelCatalog(value: unknown): ModelCatalog | null {
     seen.add(model.id);
     models.push(model);
   }
-  return { harness, source: { kind, command }, fetchedAt, models, ...(truncated ? { truncated: true as const } : {}) };
+  return { harness, source: { kind, command }, signIn, fetchedAt, models, ...(truncated ? { truncated: true as const } : {}) };
 }
 
-/** The presets a harness declares whose every model some catalog of the harness lists, so the provider each names is logged in. */
+/** The presets a harness declares whose every model some catalog of the harness lists. */
 export function offeredPresets(harness: string, catalogs: readonly Pick<ModelCatalog, 'harness' | 'models'>[]): ModelPreset[] {
   const listed = new Set(catalogs.filter((catalog) => catalog.harness === harness).flatMap((catalog) => catalog.models.map((model) => model.id)));
   return (PROFILE_HARNESSES[harness]?.presets ?? []).filter((preset) => REASONING_TIERS.every((tier) => listed.has(preset.models[tier])));

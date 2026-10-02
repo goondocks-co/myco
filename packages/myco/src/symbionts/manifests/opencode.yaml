@@ -117,12 +117,15 @@ runner:
     # OpenRouter names a model that follows its family's newest with a leading `~`.
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$'
     modelHint: Use provider/model. An unset model holds runs at this tier.
+    # OpenRouter serves a `~` model as whichever model it names at each request.
+    providerAliasPattern: '^openrouter/~'
     # OpenRouter's `~anthropic/…-latest` models follow Anthropic's newest model of each family. Other providers
     # OpenCode reaches publish no model that follows a family, so they have no preset.
     presets:
       - id: openrouter-claude-latest
         provider: openrouter
-        label: Latest Claude models through OpenRouter
+        label: Newest Claude through OpenRouter
+        description: Haiku, Sonnet and Opus through OpenRouter, always the newest version.
         models:
           low: openrouter/~anthropic/claude-haiku-latest
           default: openrouter/~anthropic/claude-sonnet-latest
@@ -140,7 +143,6 @@ runner:
     models:
       kind: command
       args: [models]
-      env: { OPENCODE_PURE: '1' }
       format: lines
       provider: id-prefix
     accounting:

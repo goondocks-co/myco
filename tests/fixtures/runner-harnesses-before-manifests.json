@@ -148,14 +148,16 @@
         {
           "id": "openrouter-claude-latest",
           "provider": "openrouter",
-          "label": "Latest Claude models through OpenRouter",
+          "label": "Newest Claude through OpenRouter",
+          "description": "Haiku, Sonnet and Opus through OpenRouter, always the newest version.",
           "models": {
             "low": "openrouter/~anthropic/claude-haiku-latest",
             "default": "openrouter/~anthropic/claude-sonnet-latest",
             "high": "openrouter/~anthropic/claude-opus-latest"
           }
         }
-      ]
+      ],
+      "providerAliasPattern": "^openrouter/~"
     },
     "cursor": {
       "models": {
@@ -312,7 +314,8 @@
           "--verbose",
           "--strict-mcp-config",
           "--setting-sources",
-          "project,local"
+          "project,local",
+          "--no-session-persistence"
         ],
         "send": [
           {
@@ -417,6 +420,10 @@
           },
           "list": "result.data"
         },
+        "page": {
+          "cursor": "result.nextCursor",
+          "param": "params.cursor"
+        },
         "fields": {
           "id": "id",
           "label": "displayName",
@@ -485,9 +492,6 @@
         "args": [
           "models"
         ],
-        "env": {
-          "OPENCODE_PURE": "1"
-        },
         "format": "lines",
         "provider": "id-prefix"
       }

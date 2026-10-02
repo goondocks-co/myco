@@ -388,6 +388,7 @@ runner:
         - { jsonrpc: '2.0', method: initialized }
         - { jsonrpc: '2.0', id: 2, method: model/list, params: {} }
       answer: { where: { id: 2 }, list: result.data }
+      page: { cursor: result.nextCursor, param: params.cursor }
       fields: { id: id, label: displayName, isDefault: isDefault, upgrade: upgrade, efforts: 'supportedReasoningEfforts[].reasoningEffort' }
     accounting:
       reported: codex-session

@@ -5,9 +5,11 @@
  * a harness that reads standard input waits on it forever when a worker leaves
  * it open, whatever else it was given. Stderr is captured rather than inherited
  * so a harness's diagnostics reach the run's failure record instead of the
- * worker's own log, where nothing would attribute them to a run.
+ * worker's own log, where nothing would attribute them to a run. The harness
+ * leads a process group of its own (`process-group.ts`): stopping it, and its
+ * exit, end every helper it started.
  */
-import { spawn } from 'node:child_process';
+import { spawnGroup, stopGroup } from '../process-group.js';
 
 export interface Started {
   /** Every complete line the harness wrote to stdout, in order. */
@@ -18,22 +20,27 @@ export interface Started {
   kill: () => void;
 }
 
-export function startHarness(command: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; signal: AbortSignal; omitInherited?: readonly string[] }): Started {
+/** The environment a harness process gets: the worker's own without `omitInherited`, with `env` over it. */
+export function launchEnvironment(env: Record<string, string>, omitInherited: readonly string[] = []): NodeJS.ProcessEnv {
   const inherited = { ...process.env };
-  for (const key of options.omitInherited ?? []) delete inherited[key];
-  const child = spawn(command, [...args], {
+  for (const key of omitInherited) delete inherited[key];
+  return { ...inherited, ...env };
+}
+
+export function startHarness(command: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; signal: AbortSignal; omitInherited?: readonly string[] }): Started {
+  const child = spawnGroup(command, args, {
     cwd: options.cwd,
-    env: { ...inherited, ...options.env },
+    env: launchEnvironment(options.env, options.omitInherited),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let errors = '';
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => { errors += chunk; });
-  const kill = (): void => { child.kill('SIGTERM'); };
+  const kill = (): void => { void stopGroup(child); };
   options.signal.addEventListener('abort', kill, { once: true });
 
   const exit = new Promise<number>((resolve) => {
-    child.once('close', (code) => { options.signal.removeEventListener('abort', kill); resolve(code ?? -1); });
+    child.once('close', (code) => { options.signal.removeEventListener('abort', kill); void stopGroup(child); resolve(code ?? -1); });
     child.once('error', () => { options.signal.removeEventListener('abort', kill); resolve(-1); });
   });
 

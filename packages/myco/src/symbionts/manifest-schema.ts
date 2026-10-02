@@ -710,24 +710,24 @@ const CatalogFieldsSchema = z.object({
  *   id-prefix` names each model's provider as the text before the first `/` of its id.
  * - `exchange`: the binary run with `args`, sent each message of `send` as one JSON line on its standard input; the
  *   first JSON line it writes that holds every value `answer.where` names is the answer, and `answer.list` is where in
- *   it the models are, each read through `fields`.
+ *   it the models are, each read through `fields`. Where `page` is declared, an answer whose `page.cursor` holds a
+ *   value is followed by the last message of `send` again with that value at `page.param`, page by page.
  *
- * `env` is added to the worker's own environment for the listing alone.
+ * A listing is started under the environment its driver starts a run under, on the machine's own login.
  */
 const ModelListingSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('command'),
     args: Strings,
-    env: z.record(z.string(), z.string()).optional(),
     format: z.literal('lines'),
     provider: z.literal('id-prefix').optional(),
   }).strict(),
   z.object({
     kind: z.literal('exchange'),
     args: Strings,
-    env: z.record(z.string(), z.string()).optional(),
     send: z.array(z.record(z.string(), z.unknown())).min(1),
     answer: z.object({ where: z.record(JsonPath, z.union([z.string(), z.number()])), list: JsonPath }).strict(),
+    page: z.object({ cursor: JsonPath, param: JsonPath }).strict().optional(),
     fields: CatalogFieldsSchema,
     provider: z.literal('id-prefix').optional(),
   }).strict(),
@@ -832,13 +832,21 @@ const RunnerManifestSchema = z.object({
     /** How a dated id of a family begins: the alias follows it (`claude-` + `sonnet` + `-…`). */
     modelFamilyPrefix: z.string().min(1).optional(),
     /**
+     * What a model id its provider resolves to a model of its own choosing at each request matches, as a regular
+     * expression: a run asking for one that reports another model, with no resolution listed, is unconfirmed rather
+     * than mismatched.
+     */
+    providerAliasPattern: z.string().min(1).optional(),
+    /**
      * A model for each tier, offered in Settings as one choice where a worker lists every one of them for the harness.
-     * Each model is `<provider>/…`, under the provider whose login it needs.
+     * Each model is `<provider>/…`, under the provider whose login it needs. `description` says in plain words what the
+     * preset sets.
      */
     presets: z.array(z.object({
       id: z.string().regex(/^[a-z0-9-]{1,64}$/),
       provider: z.string().min(1),
       label: z.string().min(1),
+      description: z.string().min(1),
       models: ReasoningTiersOf(z.string().min(1)),
     }).strict()).optional(),
   }).strict(),

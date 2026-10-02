@@ -4,7 +4,7 @@ import { resolveWorkerCost } from './cost/worker.js';
 import { runCloseRefusal } from './run-postconditions.js';
 import { getRequestedWorkerProfile, type RunUpdate } from './runs.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
-import { profileModelMatches, MODEL_MISMATCH, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import { profileModelVerdict, MODEL_MISMATCH, MODEL_UNCONFIRMED, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { FAILURE_REASON_KEY } from '../db/run-context.js';
 import type { RunErrorCode } from './reader-codes.js';
 
@@ -38,10 +38,11 @@ function runError(status: 'completed' | 'failed', unmet: string | null, reported
 export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEnd, row) => {
   const { usage = null, attemptId, accountingVersion, identity: reportedIdentity } = parseWorkerAccounting(run);
   const requested = await getRequestedWorkerProfile(env.db, { projectId: run.projectId }, run.runId, row.dispatchedBy);
-  const mismatch = requested !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
-    && !profileModelMatches(row.harness ?? '', requested, reportedIdentity.primary);
-  const identity = mismatch && reportedIdentity !== undefined
-    ? { ...reportedIdentity, warnings: [...new Set([...(reportedIdentity.warnings ?? []), MODEL_MISMATCH])] } : reportedIdentity;
+  const verdict = requested !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
+    ? profileModelVerdict(row.harness ?? '', requested, reportedIdentity.primary) : 'match';
+  const warning = verdict === 'mismatch' ? MODEL_MISMATCH : verdict === 'unconfirmed' ? MODEL_UNCONFIRMED : null;
+  const identity = warning !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
+    ? { ...reportedIdentity, warnings: [...new Set([...(reportedIdentity.warnings ?? []), warning])] } : reportedIdentity;
   const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, { projectId: run.projectId }, row) : null;
   const status = unmet === null ? run.status : 'failed';
   const error = runError(status, unmet, run.error ?? null);

@@ -1042,8 +1042,8 @@ export async function claimNextRun(
   }
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : 'no_work' };
   const { harness, credentialEnv } = chosen;
-  // What the claiming worker's harness listed the requested model as resolving to, so the run's model is judged against it.
-  const resolvesTo = await catalogResolution(env.db, worker.tokenId, harness, chosen.profile.model);
+  // What the claiming machine's harness listed the requested model as resolving to, so the run's model is judged against it.
+  const resolvesTo = await catalogResolution(env.db, worker.machineId, harness, chosen.profile.model, worker.now);
   const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
 
   // A task whose prompt the server builds has it built again here: the run
@@ -1188,8 +1188,8 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
   // bounded like the lease batch above. A worker holding a live lease keeps its
   // row whatever its age.
   await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
-  // And the models each forgotten worker listed, bounded the same way.
-  await pruneModelCatalogs(env.db, DRAIN_BATCH);
+  // And the model lists no machine has renewed within their freshness window, bounded the same way.
+  await pruneModelCatalogs(env.db, now, DRAIN_BATCH);
   // And forgets a repository no machine has reported for a month, bounded the same way.
   await pruneUncaptured(env.db, now, DRAIN_BATCH);
   return requeued;

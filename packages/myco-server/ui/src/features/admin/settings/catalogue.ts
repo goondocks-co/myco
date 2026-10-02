@@ -40,6 +40,8 @@ export interface LeafField {
   resettable?: boolean;
   /** The agent whose model a `model` field chooses. */
   harness?: string;
+  /** What a row says while nothing is stored, where unset means more than the server's default. */
+  unsetStatus?: string;
 }
 
 export interface LeafGroup {
@@ -56,11 +58,17 @@ export interface LeafGroup {
 
 const SIGN_IN_OPTIONS = { deployment: 'Server login', 'worker-login': 'Worker login' } as const;
 
+/** What a tier with no model of its own says, where its agent has no default for it. */
+export const UNSET_TIER_MODEL = 'Not set. Runs at this tier wait until you choose a model.';
+
+const tierWords = (tier: string): string => `${tier.charAt(0).toUpperCase()}${tier.slice(1)} tier`;
+
 const profileFields = (harness: string): LeafField[] => [
   ...REASONING_TIERS.flatMap((tier) => [
-    { leaf: `agent.reasoning_map.${harness}.${tier}`, label: `${tier} tier model`, kind: 'model' as const, resettable: true, harness,
-      note: PROFILE_HARNESSES[harness]!.modelHint },
-    { leaf: `agent.effort_map.${harness}.${tier}`, label: `${tier} tier effort`, kind: 'select' as const,
+    { leaf: `agent.reasoning_map.${harness}.${tier}`, label: `${tierWords(tier)} model`, kind: 'model' as const, resettable: true, harness,
+      note: PROFILE_HARNESSES[harness]!.modelHint,
+      ...(PROFILE_HARNESSES[harness]!.models[tier] === null ? { unsetStatus: UNSET_TIER_MODEL } : {}) },
+    { leaf: `agent.effort_map.${harness}.${tier}`, label: `${tierWords(tier)} effort`, kind: 'select' as const,
       options: PROFILE_HARNESSES[harness]!.allowedEfforts, resettable: true },
   ]),
   { leaf: `agent.harnesses.${harness}.credential`, label: 'Sign in with', kind: 'select',

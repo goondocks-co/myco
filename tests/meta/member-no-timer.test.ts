@@ -66,6 +66,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   'packages/myco/src/runner/loop.ts': {
     calls: 3, form: 'cleared', bound: "one claimed run's budget, its lease heartbeat, and the sleep between empty claims",
   },
+  'packages/myco/src/runner/process-group.ts': {
+    calls: 1, form: 'awaited', bound: "the waits while a stopped harness's process group ends, bounded by the stop's grace",
+  },
 };
 
 /**

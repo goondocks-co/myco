@@ -245,6 +245,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       note={field.note}
       status={error ?? (retired ? 'Nothing on this server reads it any more.'
         : row?.state === 'invalid' || row?.state === 'not-applicable' ? row.remedy ?? row.reason
+        : row?.configured !== true && field.unsetStatus !== undefined ? field.unsetStatus
         // A setting Myco keeps shows its value in full; a status would only repeat it.
         : field.readOnly === true ? undefined
         // An empty field or select already shows the default in words, so the status names it only for a switch.

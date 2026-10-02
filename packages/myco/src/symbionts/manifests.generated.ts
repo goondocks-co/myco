@@ -620,7 +620,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "--verbose",
             "--strict-mcp-config",
             "--setting-sources",
-            "project,local"
+            "project,local",
+            "--no-session-persistence"
           ],
           "send": [
             {
@@ -1241,6 +1242,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "id": 2
             },
             "list": "result.data"
+          },
+          "page": {
+            "cursor": "result.nextCursor",
+            "param": "params.cursor"
           },
           "fields": {
             "id": "id",
@@ -1945,11 +1950,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
         "modelHint": "Use provider/model. An unset model holds runs at this tier.",
+        "providerAliasPattern": "^openrouter/~",
         "presets": [
           {
             "id": "openrouter-claude-latest",
             "provider": "openrouter",
-            "label": "Latest Claude models through OpenRouter",
+            "label": "Newest Claude through OpenRouter",
+            "description": "Haiku, Sonnet and Opus through OpenRouter, always the newest version.",
             "models": {
               "low": "openrouter/~anthropic/claude-haiku-latest",
               "default": "openrouter/~anthropic/claude-sonnet-latest",
@@ -1981,9 +1988,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "args": [
             "models"
           ],
-          "env": {
-            "OPENCODE_PURE": "1"
-          },
           "format": "lines",
           "provider": "id-prefix"
         },

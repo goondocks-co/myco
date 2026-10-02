@@ -16,9 +16,9 @@ import { ClaudeAccounting } from './claude-accounting.js';
  * well-formed `result`; both are read.
  */
 import { harnessById } from '../harnesses.js';
-import { callFailureDetail, type Driver, type RunEvent, type RunSpec, type StopReason } from '../events.js';
+import { callFailureDetail, type Driver, type Launch, type LaunchSpec, type RunEvent, type RunSpec, type StopReason } from '../events.js';
 import { runGrant, grantsWhole } from './grant.js';
-import { jsonLines, recordOf, startHarness, stringOf } from './stream.js';
+import { jsonLines, launchEnvironment, recordOf, startHarness, stringOf } from './stream.js';
 
 const STOP: Readonly<Record<string, StopReason>> = {
   end_turn: 'end_turn',
@@ -89,13 +89,26 @@ function refusalsOf(result: Record<string, unknown>): { tool: string; id: string
   });
 }
 
+/**
+ * The Deployment's credential where it handed one, and none of the machine's variables that would pick another
+ * model, provider or credential than the run's.
+ */
+function claudeLaunch(spec: LaunchSpec): Launch {
+  return {
+    env: { ...spec.credentialEnv },
+    omitInherited: [...INHERITED_PROFILE_OVERRIDES, ...(Object.keys(spec.credentialEnv).length > 0 ? INHERITED_CREDENTIAL_OVERRIDES : [])],
+  };
+}
+
 export const claudeCodeDriver: Driver = {
   id: 'claude-code',
+  launch: claudeLaunch,
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
     const { rules: grant, env, shellSetup } = runGrant(spec, harness);
-    const omitInherited = [...INHERITED_PROFILE_OVERRIDES, ...(Object.keys(spec.credentialEnv).length > 0 ? INHERITED_CREDENTIAL_OVERRIDES : [])];
+    const launch = claudeLaunch(spec);
+    const omitInherited = launch.omitInherited;
     const started = startHarness(harness.binary, [
       '-p', spec.prompt,
       ...(spec.profile === undefined ? [] : ['--model', spec.profile.model, ...(spec.profile.effort === null ? [] : ['--effort', spec.profile.effort])]),
@@ -106,10 +119,9 @@ export const claudeCodeDriver: Driver = {
       ...isolation,
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
-    ], { cwd: spec.scratchDir, env: { ...spec.credentialEnv, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal, omitInherited });
+    ], { cwd: spec.scratchDir, env: { ...launch.env, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal, omitInherited });
 
-    const accountingEnv = { ...process.env, ...spec.credentialEnv, ...env };
-    for (const key of omitInherited) if (!(key in spec.credentialEnv)) delete accountingEnv[key];
+    const accountingEnv = launchEnvironment({ ...launch.env, ...env }, omitInherited);
     const accounting = new ClaudeAccounting(harness, accountingEnv);
     let ended = false;
     let failure: string | null = null;

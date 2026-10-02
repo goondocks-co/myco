@@ -146,16 +146,18 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   return { leaves: redact(leaves), taskTiers, embedding: redact(embedding) };
 }
 
-/** One harness's models as a worker last listed them, as Settings offers them: the models, how they were listed and when. */
-export type SettingsModelCatalog = Omit<StoredModelCatalog, 'machineId'>;
+/** One harness's models as a machine's worker last listed them, as Settings offers them: the models, how and when. */
+export type SettingsModelCatalog = StoredModelCatalog;
 
 /**
- * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member,
- * with the models each worker last listed for each harness it offers.
+ * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member.
+ * An admin is also answered the models each machine's worker listed lately for each harness it offers, which say
+ * which providers each machine is signed in to; no other member is.
  */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const models: SettingsModelCatalog[] = (await readModelCatalogs(env.db)).map(({ machineId: _machine, ...catalog }) => catalog);
-  return ok({ persisted: true, ...await deploymentSettings(env, !isAdmin(ctx.member.role)), models });
+  const admin = isAdmin(ctx.member.role);
+  const models: SettingsModelCatalog[] | undefined = admin ? await readModelCatalogs(env.db, ctx.now) : undefined;
+  return ok({ persisted: true, ...await deploymentSettings(env, !admin), ...(models === undefined ? {} : { models }) });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */

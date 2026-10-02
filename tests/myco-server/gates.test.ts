@@ -711,7 +711,7 @@ describe('gates', () => {
       'POST /worker/models': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ catalog: { harness: 'codex', source: { kind: 'exchange', command: 'codex app-server' }, fetchedAt: 1, models: [] } }) }),
+        wellFormed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ catalog: { harness: 'codex', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: 1, models: [] } }) }),
       },
       'POST /mcp': {
         shape: 'answered',

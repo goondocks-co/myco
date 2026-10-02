@@ -91,14 +91,16 @@ export interface CatalogFields { id: string; label?: string; isDefault?: string;
 
 /**
  * How a worker lists the models a harness can run (`models.ts`): one id per line of a command's output, or the answer
- * to messages sent on its standard input. `provider: id-prefix` names each model's provider as its id's first segment.
+ * to messages sent on its standard input, followed page by page where `page` names the answer's cursor and where the
+ * last message sent takes it. `provider: id-prefix` names each model's provider as its id's first segment.
  */
 export type ModelListing =
-  | { kind: 'command'; args: readonly string[]; env?: Readonly<Record<string, string>>; format: 'lines'; provider?: 'id-prefix' }
+  | { kind: 'command'; args: readonly string[]; format: 'lines'; provider?: 'id-prefix' }
   | {
-    kind: 'exchange'; args: readonly string[]; env?: Readonly<Record<string, string>>;
+    kind: 'exchange'; args: readonly string[];
     send: readonly Readonly<Record<string, unknown>>[];
     answer: { where: Readonly<Record<string, string | number>>; list: string };
+    page?: { cursor: string; param: string };
     fields: CatalogFields; provider?: 'id-prefix';
   };
 

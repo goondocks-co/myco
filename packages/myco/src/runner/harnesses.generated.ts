@@ -28,7 +28,8 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "--verbose",
         "--strict-mcp-config",
         "--setting-sources",
-        "project,local"
+        "project,local",
+        "--no-session-persistence"
       ],
       "send": [
         {
@@ -154,6 +155,10 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         },
         "list": "result.data"
       },
+      "page": {
+        "cursor": "result.nextCursor",
+        "param": "params.cursor"
+      },
       "fields": {
         "id": "id",
         "label": "displayName",
@@ -203,9 +208,6 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
       "args": [
         "models"
       ],
-      "env": {
-        "OPENCODE_PURE": "1"
-      },
       "format": "lines",
       "provider": "id-prefix"
     },

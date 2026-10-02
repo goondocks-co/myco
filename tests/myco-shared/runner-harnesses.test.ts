@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import { SECRET_SLOTS, SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/myco-shared/secret-slots';
-import { CONFIGURABLE_PROFILE_HARNESSES, HARNESS_ASKING, OFFERABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, profileModelMatches } from '@goondocks/myco-shared/execution-profile';
+import { CONFIGURABLE_PROFILE_HARNESSES, HARNESS_ASKING, OFFERABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, profileModelMatches, profileModelVerdict } from '@goondocks/myco-shared/execution-profile';
 import { RUNNER_HARNESSES } from '../../packages/myco-shared/src/runner-harnesses.generated.ts';
 import { HARNESSES } from '@myco/runner/harnesses.js';
 import YAML from 'yaml';
@@ -61,6 +61,16 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
     expect(profileModelMatches('opencode', { model: 'openai/gpt-5.5' }, { model: 'big-pickle', provider: 'opencode' })).toBe(false);
     expect(profileModelMatches('opencode', { model: 'openai/gpt-5.5' }, { model: 'gpt-5.5', provider: 'openrouter' })).toBe(false);
     expect(profileModelMatches('opencode', { model: 'openai/gpt-5.5' }, { model: 'gpt-5.5' })).toBe(false);
+  });
+
+  it('judge an OpenRouter alias run unconfirmed, never mismatched, where it reported another model and no resolution was listed', () => {
+    const opus = 'openrouter/~anthropic/claude-opus-latest';
+    expect(profileModelVerdict('opencode', { model: opus }, { model: '~anthropic/claude-opus-latest', provider: 'openrouter' })).toBe('match');
+    expect(profileModelVerdict('opencode', { model: opus }, { model: 'anthropic/claude-opus-5.5', provider: 'openrouter' })).toBe('unconfirmed');
+    expect(profileModelVerdict('opencode', { model: opus, resolvesTo: 'openrouter/anthropic/claude-opus-5.5' }, { model: 'anthropic/claude-sonnet-5.5', provider: 'openrouter' })).toBe('mismatch');
+    // A model its provider does not resolve is judged on what was asked for alone.
+    expect(profileModelVerdict('opencode', { model: 'openai/gpt-5.5' }, { model: 'big-pickle', provider: 'opencode' })).toBe('mismatch');
+    expect(profileModelVerdict('claude-code', { model: 'sonnet' }, { model: 'claude-opus-4-1' })).toBe('mismatch');
   });
 
   it('match an OpenRouter alias on what the run and the harness reported, never on a resemblance of names', () => {

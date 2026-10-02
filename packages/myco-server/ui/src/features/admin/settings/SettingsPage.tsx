@@ -8,7 +8,7 @@ import { AccessPointers, PROJECTS_ANCHOR } from './AccessPointers';
 import { groupsOf, LEAF_GROUPS, type LeafGroup } from './catalogue';
 import { Credentials, CREDENTIALS_ANCHOR } from './Credentials';
 import { LeafControl } from './LeafControl';
-import { ModelPresets } from './ModelPicker';
+import { ModelListingNote, ModelPresets } from './ModelPicker';
 import { isRetired } from './retired';
 import { TitlingSwitch } from './TitlingSwitch';
 import { TaskTiers } from './TaskTiers';
@@ -83,6 +83,7 @@ function SectionGroups({ groups, rows, tiers }: { groups: readonly LeafGroup[]; 
             {live.length > 0 && (
               <AdminSection id={group.id} title={group.label} description={group.note}>
                 <RowCard label={group.label}>
+                  {group.harness !== undefined && <ModelListingNote harness={group.harness} />}
                   {group.harness !== undefined && <ModelPresets harness={group.harness} />}
                   {live.map((field) => <LeafControl key={field.leaf} field={field} row={rows.get(field.leaf)} />)}
                 </RowCard>

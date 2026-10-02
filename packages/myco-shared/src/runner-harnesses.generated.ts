@@ -118,11 +118,13 @@ export const RUNNER_HARNESSES = [
       ],
       "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
       "modelHint": "Use provider/model. An unset model holds runs at this tier.",
+      "providerAliasPattern": "^openrouter/~",
       "presets": [
         {
           "id": "openrouter-claude-latest",
           "provider": "openrouter",
-          "label": "Latest Claude models through OpenRouter",
+          "label": "Newest Claude through OpenRouter",
+          "description": "Haiku, Sonnet and Opus through OpenRouter, always the newest version.",
           "models": {
             "low": "openrouter/~anthropic/claude-haiku-latest",
             "default": "openrouter/~anthropic/claude-sonnet-latest",

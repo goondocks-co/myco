@@ -222,7 +222,7 @@ describe('Settings, in five sections', () => {
     mount('/settings/models');
     await group('Codex tiers');
     expect(statusOf(leaf)).toContain('Correct it or reset this setting.');
-    fireEvent.click(screen.getByRole('button', { name: 'Reset high tier effort' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset High tier effort' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: `/api/settings/${leaf}` });
   });
@@ -299,13 +299,13 @@ describe('Settings, in five sections', () => {
     }));
     mount('/settings/models');
     const tiers = within(await group('Claude Code tiers'));
-    const input = tiers.getByLabelText('low tier model');
+    const input = tiers.getByLabelText('Low tier model');
     expect((input as HTMLInputElement).value).toBe('sonnet');
     fireEvent.change(input, { target: { value: 'haiku' } });
     fireEvent.blur(input);
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${model}`, body: { value: 'haiku' } });
-    fireEvent.click(tiers.getByRole('button', { name: 'Reset low tier model' }));
+    fireEvent.click(tiers.getByRole('button', { name: 'Reset Low tier model' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'DELETE', path: `/api/settings/${model}` });
   });
@@ -1013,11 +1013,11 @@ it('describes weekly retention by the most recent weeks containing exports', () 
 });
 
 describe('choosing a tier\'s model from the models the machines listed', () => {
-  const listed = (harness: string, models: Array<Record<string, unknown>>) => ({ harness, source: { kind: 'command', command: harness }, fetchedAt: NOW - 3_600_000, receivedAt: NOW - 3_600_000, models });
+  const listed = (harness: string, models: Array<Record<string, unknown>>) => ({ harness, source: { kind: 'command', command: harness }, signIn: 'worker-login', fetchedAt: NOW - 3_600_000, receivedAt: NOW - 3_600_000, models });
   const CLAUDE = listed('claude-code', [
     { id: 'haiku', label: 'Haiku 4.5', resolvesTo: 'claude-haiku-4-5-20251001' },
     { id: 'sonnet', label: 'Sonnet 5.5', resolvesTo: 'claude-sonnet-5-5' },
-    { id: 'opus', label: 'Opus 5.5', resolvesTo: 'claude-opus-5-5' },
+    { id: 'claude-opus-4-8', label: 'Opus 4.8' },
   ]);
   const CODEX = listed('codex', [
     { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', isDefault: true },
@@ -1026,20 +1026,35 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
   ]);
   const OPENROUTER_LATEST = ['haiku', 'sonnet', 'opus'].map((family) => `openrouter/~anthropic/claude-${family}-latest`);
   const openCode = (ids: string[]) => listed('opencode', ids.map((id) => ({ id, label: id, provider: id.slice(0, id.indexOf('/')) })));
-  const withModels = (models: unknown[], over: Parameters<typeof leaves>[0] = {}) => () => Response.json({ ...leaves(over), models });
+  type Over = Parameters<typeof leaves>[0];
+  const withModels = (models: unknown[], over: Over = {}, rows: (row: ReturnType<typeof leaves>['leaves'][number]) => object = (row) => row) => () => {
+    const answer = leaves(over);
+    return Response.json({ ...answer, leaves: answer.leaves.map(rows), models });
+  };
+  const optionWords = async () => (await screen.findAllByRole('option')).map((option) => option.textContent);
 
-  it('picks a listed model by its name and writes its id to the tier', async () => {
+  it('picks a listed model and writes its id; an alias the agent resolves reads as the newest of its family, and what it is now', async () => {
     const leaf = 'agent.reasoning_map.claude-code.low';
     const { sent } = server(base({ '/api/settings': withModels([CLAUDE]), [`/api/settings/${leaf}`]: () => Response.json({ applied: true }) }));
     mount('/settings/models');
     const claude = within(await group('Claude Code tiers'));
-    expect(claude.getAllByText('Listed by your machines 1 h ago.').length).toBeGreaterThan(0);
-    expect(statusOf(leaf)).toBe('Server default: Haiku 4.5');
-    fireEvent.click(claude.getByLabelText('low tier model'));
-    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['Haiku 4.5 (haiku)', 'Sonnet 5.5 (sonnet)', 'Opus 5.5 (opus)']);
-    fireEvent.click(await screen.findByRole('option', { name: 'Sonnet 5.5 (sonnet)' }));
+    expect(claude.getAllByText(/^Models listed by your machines/)).toHaveLength(1);
+    expect(document.querySelector('[data-model-listing="claude-code"]')?.textContent).toBe('Models listed by your machines 1 h ago, each with its own sign-in to Claude Code.');
+    expect(statusOf(leaf)).toBe('Server default: haiku: newest Haiku (now Haiku 4.5)');
+    fireEvent.click(claude.getByLabelText('Low tier model'));
+    expect(await optionWords()).toEqual(['haiku: newest Haiku (now Haiku 4.5)', 'sonnet: newest Sonnet (now Sonnet 5.5)', 'Opus 4.8 (claude-opus-4-8)']);
+    fireEvent.click(await screen.findByRole('option', { name: 'sonnet: newest Sonnet (now Sonnet 5.5)' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'sonnet' } });
+  });
+
+  it('says whose login the list came from where runs sign in with the server login instead', async () => {
+    const credential = 'agent.harnesses.codex.credential';
+    server(base({ '/api/settings': withModels([CODEX], {}, (row) => (row.leaf === credential ? { ...row, effective: 'deployment', effectiveValue: 'deployment', source: 'default' } : row)) }));
+    mount('/settings/models');
+    await group('Codex tiers');
+    expect(document.querySelector('[data-model-listing="codex"]')?.textContent)
+      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Runs sign in with the server login, which may offer different models.');
   });
 
   it('keeps a stored model no machine listed, and says so in plain words', async () => {
@@ -1048,8 +1063,8 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     mount('/settings/models');
     await group('Claude Code tiers');
     expect(statusOf(leaf)).toBe('claude-opus-4-1 is not among the models your machines listed for Claude Code. Check the name, or choose a listed model.');
-    fireEvent.click(within(await group('Claude Code tiers')).getByLabelText('high tier model'));
-    expect((await screen.findAllByRole('option'))[0]!.textContent).toBe('claude-opus-4-1 (not listed)');
+    fireEvent.click(within(await group('Claude Code tiers')).getByLabelText('High tier model'));
+    expect((await optionWords())[0]).toBe('claude-opus-4-1 (not listed)');
   });
 
   it('names a stored model\'s successor where the agent names one, and switches to it', async () => {
@@ -1066,27 +1081,37 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'gpt-6-sol' } });
   });
 
-  it('narrows a list spanning providers to one provider', async () => {
-    server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'opencode/big-pickle', ...OPENROUTER_LATEST])]) }));
+  it('narrows a list to one provider by its name, and keeps the stored model shown whichever provider is chosen', async () => {
+    const leaf = 'agent.reasoning_map.opencode.default';
+    server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'opencode/big-pickle', ...OPENROUTER_LATEST])], { [leaf]: { value: 'openai/gpt-6', updatedBy: ADA, updatedAt: NOW } }) }));
     mount('/settings/models');
     const opencode = within(await group('OpenCode tiers'));
-    fireEvent.click(opencode.getByLabelText('default tier model provider'));
-    fireEvent.click(await screen.findByRole('option', { name: 'openrouter' }));
+    fireEvent.click(opencode.getByLabelText('Default tier model provider'));
+    expect(await optionWords()).toEqual(['All providers', 'OpenAI', 'OpenCode Zen', 'OpenRouter']);
+    fireEvent.click(await screen.findByRole('option', { name: 'OpenRouter' }));
     await waitFor(() => expect(screen.queryByRole('option')).toBeNull());
-    fireEvent.click(opencode.getByLabelText('default tier model'));
-    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(OPENROUTER_LATEST);
+    expect(opencode.getByLabelText('Default tier model').textContent).toContain('openai/gpt-6');
+    fireEvent.click(opencode.getByLabelText('Default tier model'));
+    expect(await optionWords()).toEqual(['openai/gpt-6', ...OPENROUTER_LATEST]);
   });
 
-  it('marks the model the agent runs when none is named', async () => {
+  it('marks the model the agent runs when none is named, and says what an unset tier means', async () => {
     server(base({ '/api/settings': withModels([CODEX]) }));
     mount('/settings/models');
     await group('Codex tiers');
-    expect(statusOf('agent.reasoning_map.codex.low')).toBe('Server default: required before this tier runs');
-    fireEvent.click(within(await group('Codex tiers')).getByLabelText('low tier model'));
-    expect((await screen.findAllByRole('option'))[0]!.textContent).toBe('GPT-6.1-Sol (gpt-6.1-sol), the agent\'s default');
+    expect(statusOf('agent.reasoning_map.codex.low')).toBe('Not set. Runs at this tier wait until you choose a model.');
+    fireEvent.click(within(await group('Codex tiers')).getByLabelText('Low tier model'));
+    expect((await optionWords())[0]).toBe('GPT-6.1-Sol (gpt-6.1-sol), Codex’s default');
   });
 
-  it('offers a preset where a machine lists all its models, and applies it tier by tier through the same write', async () => {
+  it('says what an unset tier means where the model is typed, too', async () => {
+    server(base({ '/api/settings': withModels([]) }));
+    mount('/settings/models');
+    await group('Codex tiers');
+    expect(statusOf('agent.reasoning_map.codex.low')).toBe('Not set. Runs at this tier wait until you choose a model.');
+  });
+
+  it('offers a preset in plain words where a machine lists all its models, and applies it tier by tier through the same write', async () => {
     const tiers = ['low', 'default', 'high'].map((tier) => `agent.reasoning_map.opencode.${tier}`);
     const { sent } = server(base({
       '/api/settings': withModels([openCode(['openai/gpt-6', ...OPENROUTER_LATEST])]),
@@ -1094,14 +1119,17 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     }));
     mount('/settings/models');
     const opencode = within(await group('OpenCode tiers'));
-    expect(opencode.getByText('Latest Claude models through OpenRouter')).toBeTruthy();
+    expect(opencode.getByText('Newest Claude through OpenRouter')).toBeTruthy();
+    expect(opencode.getByText('Haiku, Sonnet and Opus through OpenRouter, always the newest version. Offered because your machines’ OpenCode lists these models from OpenRouter.')).toBeTruthy();
+    fireEvent.click(opencode.getByRole('button', { name: 'Model IDs' }));
+    expect(opencode.getByText(`High: ${OPENROUTER_LATEST[2]}`)).toBeTruthy();
     fireEvent.click(opencode.getByRole('button', { name: 'Use these models' }));
     await waitFor(() => expect(sent).toHaveLength(3));
     expect(sent.map((s) => ({ method: s.method, path: s.path, body: s.body }))).toEqual(tiers.map((leaf, i) => ({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: OPENROUTER_LATEST[i] } })));
     expect(await opencode.findByText('Every tier now uses these models.')).toBeTruthy();
   });
 
-  it('offers no preset where no machine is signed in to its provider', async () => {
+  it('offers no preset where no machine lists its models', async () => {
     server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'github-copilot/claude-opus-5.5'])]) }));
     mount('/settings/models');
     expect(within(await group('OpenCode tiers')).queryByRole('button', { name: 'Use these models' })).toBeNull();
@@ -1111,10 +1139,11 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([CLAUDE]) }));
     mount('/settings/models');
     const codex = within(await group('Codex tiers'));
-    expect(codex.getByLabelText('low tier model').tagName).toBe('INPUT');
+    expect(codex.getByLabelText('Low tier model').tagName).toBe('INPUT');
+    expect(document.querySelector('[data-model-listing="codex"]')).toBeNull();
     const claude = within(await group('Claude Code tiers'));
-    expect(claude.getByLabelText('low tier model').tagName).toBe('BUTTON');
+    expect(claude.getByLabelText('Low tier model').tagName).toBe('BUTTON');
     fireEvent.click(claude.getAllByRole('button', { name: 'Type a model name' })[0]!);
-    expect(claude.getByLabelText('low tier model').tagName).toBe('INPUT');
+    expect(claude.getByLabelText('Low tier model').tagName).toBe('INPUT');
   });
 });
