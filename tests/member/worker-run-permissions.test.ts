@@ -527,10 +527,12 @@ describe('the environment a harness is started in', () => {
     const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as Record<string, unknown> & { default_agent: string };
     expect(config).toEqual({
       default_agent: expect.stringMatching(new RegExp(`^${RUN_AGENT_PREFIX}-[0-9a-f]{16}$`)),
+      model: 'openai/gpt-6.1',
+      small_model: 'openai/gpt-6.1',
       shell: '/bin/sh',
       // A refused call ends that call, not the turn: the agent goes on with its work.
       experimental: { continue_loop_on_deny: true },
-      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' }, model: 'openai/gpt-6.1', reasoningEffort: 'medium' } },
+      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' } } },
     });
     // A plugin runs inside the harness and can answer a permission request
     // before the driver does, so a run loads none of the machine's.
