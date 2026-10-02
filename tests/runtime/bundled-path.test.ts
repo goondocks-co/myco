@@ -8,7 +8,7 @@ import { loadAgentTasks } from '@myco/agent/loader.js';
 import { BUNDLED_AGENT_PROMPTS, BUNDLED_AGENT_TASKS } from '@myco/agent/definitions.generated.js';
 import { resolveOrchestratorPromptTemplate } from '@myco/agent/orchestrator.js';
 import { resolveCliEntryPath } from '@myco/daemon/client.js';
-import { selfCommand } from '@myco/member/auto-join.js';
+import { selfExec } from '@myco/runtime/self-exec.js';
 
 const BUNDLED_ROOTS = ['/$bunfs/root', 'B:\\~BUN\\root', 'B:/~BUN/root'];
 const savedArgv1 = process.argv[1];
@@ -24,10 +24,10 @@ describe('a path inside a compiled binary', () => {
     expect(resolveCliEntryPath().cliEntry).toBe('/repo/packages/myco/src/entries/cli.ts');
   });
 
-  it('is no entry script for the auto-join start, in every form a build reports', () => {
+  it('is no entry script for a helper\'s start (a project\'s, or the join bucket\'s), in every form a build reports', () => {
     for (const root of BUNDLED_ROOTS) {
       process.argv[1] = `${root}/myco.exe`;
-      expect(selfCommand()).toEqual({ command: process.execPath, args: [] });
+      expect(selfExec()).toEqual({ path: process.execPath, args: [] });
     }
   });
 

@@ -106,7 +106,15 @@ export interface ImportOptions {
   mappings?: readonly DirectoryMapping[];
   /** Session ids never offered: sessions deleted in a record this import does not read. */
   exclude?: ReadonlySet<string>;
+  /**
+   * When to stop: no session starts shipping at or past it, and the report ends `deadline`. What was not shipped is
+   * offered again by the next import, which the Deployment's plan resumes from the byte it holds.
+   */
+  until?: number;
 }
+
+/** How an import stopped at its `until`. */
+export const IMPORT_DEADLINE = 'deadline';
 
 export interface ImportDeps {
   /** How a paced import waits for its next request slot; the default really waits. */
@@ -356,6 +364,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     unboundDirectories: collected.unboundDirectories, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
   };
   for (const [projectId, forProject] of byProject) {
+    if (opts.until !== undefined && now() >= opts.until) {
+      report.projects.push({ projectId, root: '', agents: [], endedBy: IMPORT_DEADLINE });
+      break;
+    }
     const entry = [...bound.values()].find((e) => e.projectId === projectId);
     if (entry === undefined) continue;
     const tallies = new Map<string, AgentTally>();
@@ -405,6 +417,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
         continue;
       }
       if (opts.dryRun === true) { held.imported += 1; continue; }
+      if (opts.until !== undefined && now() >= opts.until) { endedBy = IMPORT_DEADLINE; break; }
 
       const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now);
       if (shipped === 'done') { held.imported += 1; continue; }

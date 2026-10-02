@@ -23,7 +23,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runImport, importUntilSettled, isMemberStatePath, type ImportOptions } from '@myco/member/import.js';
+import { IMPORT_DEADLINE, runImport, importUntilSettled, isMemberStatePath, type ImportOptions } from '@myco/member/import.js';
 import { attributeByPathSlug, attributeTranscript, rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { expandRoot, manifestTranscriptDiscovery } from '@myco/symbionts/transcript-discovery.js';
@@ -122,6 +122,39 @@ async function rig(cwds: readonly string[], perCwd = 2) {
   const resetUploads = () => { uploads = 0; };
   return { env, mycoHome, home, files, run, snapshot, blobKeys, restore, projectOf, planRequests, uploadCount, resetUploads };
 }
+
+describe('an import with a deadline', () => {
+  it('ships no session past it, says so, and the next import brings the rest without sending any twice', async () => {
+    const cwd = path.join(os.tmpdir(), 'myco-import-deadline');
+    const r = await rig([cwd], 3);
+    try {
+      const until = Date.now() + 60_000;
+      // The clock passes the deadline once the first session has sent anything.
+      let late = false;
+      let plans = 0;
+      const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/import/plan')) plans += 1;
+        if (!url.includes('/import/plan')) late = true;
+        return r.env.fetch(input, init);
+      };
+      const bounded = (at: number) => runImport({ serverUrl: 'https://member-test.invalid', until: at }, { fetch, mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, now: () => (late ? until + 1 : Date.now()) });
+      const imported = (report: Awaited<ReturnType<typeof runImport>>) => report.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0);
+
+      const none = await bounded(Date.now() - 1);
+      // Past it before it starts: not even a plan is asked for.
+      expect({ imported: imported(none), endedBy: none.projects.map((p) => p.endedBy), plans }).toEqual({ imported: 0, endedBy: [IMPORT_DEADLINE], plans: 0 });
+      const one = await bounded(until);
+      expect({ imported: imported(one), endedBy: one.projects.map((p) => p.endedBy) }).toEqual({ imported: 1, endedBy: [IMPORT_DEADLINE] });
+      const rest = await r.run();
+      expect(imported(rest)).toBe(2);
+      const facts = r.env.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind IN ('session.start', 'session.end')`).get() as { n: number };
+      expect(facts.n).toBe(3 * 2);
+    } finally {
+      r.restore();
+    }
+  });
+});
 
 describe('importing a machine of one project', () => {
   it('is a no-op when run again, ships only a delta, and never re-derives a moved file', async () => {
