@@ -577,7 +577,8 @@ it('reads every page of a run’s 201 calls, then lists them a page at a time wi
   expect(within(calls).getAllByRole('listitem')).toHaveLength(200);
   fireEvent.click(within(calls).getByRole('button', { name: 'Show more' }));
   await waitFor(() => expect(within(calls).getAllByRole('listitem')).toHaveLength(201));
-  expect(calls.textContent).toContain('Showing 201 of 201 calls');
+  expect(within(calls).queryByRole('button', { name: 'Show more' })).toBeNull();
+  expect(calls.textContent).toContain('201 calls');
   expect(within(calls).getAllByRole('listitem').at(-1)!.textContent).toContain('Status not recorded');
   expect(asked.some((url) => url.pathname.endsWith('/calls') && url.searchParams.get('cursor') === 'next-page' && url.searchParams.get('limit') === '200')).toBe(true);
   expect(asked.filter((url) => url.pathname.endsWith('/runs/run_c19f7a0e55'))).toHaveLength(1);

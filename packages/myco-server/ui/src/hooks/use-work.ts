@@ -154,18 +154,21 @@ const MAX_STEP_PAGES = Math.ceil(MAX_RUN_STEPS / EVIDENCE_PAGE) + 1;
 
 /** Rows read so far, and whether they are every row the server holds. */
 export interface Loaded<T> {
-  rows: T[];
+  rows: readonly T[];
   complete: boolean;
   pending: boolean;
   error: unknown;
 }
+
+const NO_ROWS: readonly never[] = [];
+const NOTHING = (): void => undefined;
 
 /** Follow a cursor from a page in hand, one page at a time, up to `maxPages`. */
 async function follow<T>(
   first: { rows: readonly T[]; cursor: string | null },
   maxPages: number,
   next: (cursor: string) => Promise<{ rows: readonly T[]; cursor: string | null }>,
-): Promise<{ rows: T[]; complete: boolean }> {
+): Promise<{ rows: readonly T[]; complete: boolean }> {
   const rows = [...first.rows];
   let cursor = first.cursor;
   for (let pages = 1; cursor !== null && pages < maxPages; pages += 1) {
@@ -180,15 +183,15 @@ async function follow<T>(
  * Every call a run made back to Myco, a page at a time from the page its detail carried: the run's panel lists them
  * all beside its steps, and checks the agent's account against them all.
  */
-export function useAllRunCalls(projectId: string, runId: string, first: RunCallPage): Loaded<RunCall> {
+export function useAllRunCalls(projectId: string, runId: string, first: { rows: readonly RunCall[]; cursor: string | null; total: number }): Loaded<RunCall> {
   const query = useQuery({
     queryKey: ['run-calls', projectId, runId, first.total, first.rows.length],
     enabled: first.cursor !== null,
     queryFn: ({ signal }) => follow(first, MAX_CALL_PAGES, (cursor) => fetchJson<RunCallPage>(
       `/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(EVIDENCE_PAGE) })}`, signal)),
   });
-  if (first.cursor === null) return { rows: [...first.rows], complete: true, pending: false, error: null };
-  return { rows: query.data?.rows ?? [...first.rows], complete: query.data?.complete ?? false, pending: query.isPending, error: query.error };
+  if (first.cursor === null) return { rows: first.rows, complete: true, pending: false, error: null };
+  return { rows: query.data?.rows ?? first.rows, complete: query.data?.complete ?? false, pending: query.isPending, error: query.error };
 }
 
 /**
@@ -211,6 +214,6 @@ export function useAttemptSteps(
       return follow(start ?? await page(null), MAX_STEP_PAGES, page);
     },
   });
-  if (!has) return { rows: [], complete: true, pending: false, error: null, refetch: () => undefined };
-  return { rows: query.data?.rows ?? [], complete: query.data?.complete ?? false, pending: query.isPending, error: query.error, refetch: () => void query.refetch() };
+  if (!has) return { rows: NO_ROWS, complete: true, pending: false, error: null, refetch: NOTHING };
+  return { rows: query.data?.rows ?? NO_ROWS, complete: query.data?.complete ?? false, pending: query.isPending, error: query.error, refetch: () => void query.refetch() };
 }

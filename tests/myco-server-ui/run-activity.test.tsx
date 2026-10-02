@@ -14,8 +14,9 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import {
-  attemptActivity, auditChecks, compareCommand, comparePath, coverageOf, filesRead, summaryWords, type Coverage,
+  attemptActivity, attemptAt, auditChecks, compareCommand, comparePath, coverageOf, coverageWords, filesRead, mycoUnnamed, summaryWords, type Coverage,
 } from '../../packages/myco-server/ui/src/features/work/activity';
+import { commandShape } from '@goondocks/myco-shared/command-shape';
 import type { RunAttempt, RunAudit, RunCall, RunStep } from '../../packages/myco-server/ui/src/features/work/wire';
 import { ADMIN, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, TASK_RUNS, WEEK_WORK } from '../helpers/work-fixture';
 import { TASK_DESCRIPTIONS } from './task-fixture';
@@ -136,16 +137,20 @@ describe('the code map run from the owner’s example', () => {
     expect(did.textContent).toContain('Ran git log --oneline');
     expect(rows[5]!.textContent).toContain('Map text must be a bounded nonempty line.');
     expect(rows[5]!.textContent).toContain('Failed');
-    expect(rows[5]!.textContent).toContain('tried again, and it worked');
+    expect(rows[5]!.textContent).toContain('a later call to the same operation succeeded');
+    expect(rows[5]!.textContent).not.toContain('tried again');
     expect(rows[6]!.textContent).toContain('Succeeded');
     expect(rows.filter((row) => row.getAttribute('data-activity-seen') === 'both')).toHaveLength(4);
-    expect(did.querySelector('[data-coverage="complete"]')!.textContent).toContain('Every step the worker kept is listed.');
+    expect(did.querySelector('[data-coverage="complete"]')!.textContent).toContain('Every step the worker saw is listed.');
     const files = within(panel).getByRole('region', { name: 'Files it read' });
     expect(files.textContent).toContain('/work/checkout/packages/myco/src/runner/loop.ts');
     expect(files.textContent).toContain('/work/checkout/packages/myco-shared/src/command-shape.ts');
     expect(files.textContent).not.toContain('/work/checkout/packages\n');
     expect(within(panel).queryByRole('region', { name: 'Sessions it read' })).toBeNull();
-    expect(panel.querySelector('[data-run-summary]')!.textContent).toBe('Read 2 files, searched once, ran 1 command and saved the code map; 1 step failed and was retried.');
+    expect(panel.querySelector('[data-run-summary]')!.textContent).toBe('Read 2 files, searched once, ran 1 command and saved the code map; 1 step failed.');
+    // Every row is shown, so the list carries no "Showing 8 of 8".
+    expect(did.textContent).not.toContain('Showing');
+    expect(did.textContent).toContain('8 steps');
     for (const row of rows) expect(row.textContent).not.toMatch(MECHANISM_WORDS);
     expect(rawIdsIn(panel)).toEqual([]);
     // The tool and the call id sit in the row's folded details.
@@ -170,8 +175,8 @@ describe('the code map run from the owner’s example', () => {
 
   it('flags in the panel an account that leaves out the commands and failures the steps show', async () => {
     const { panel } = await open(codeMapRun(audit({ examined: ['packages/myco/src/runner/loop.ts', '…'] })));
-    expect(panel.querySelector('[data-account-elided]')!.textContent).toBe('An entry Myco doesn’t keep: it isn’t a path it can show.');
-    expect(panel.querySelector('[data-audit-check="unsettled"]')!.textContent).toBe('Can’t compare one entry the agent lists as examined: it isn’t a path Myco keeps.');
+    expect(panel.querySelector('[data-account-elided]')!.textContent).toBe('1 entry isn’t a file path, so it isn’t shown.');
+    expect(panel.querySelector('[data-audit-check="unsettled"]')!.textContent).toBe('Can’t compare one entry the agent lists as examined: it isn’t a file path.');
     const checks = within(panel).getByRole('region', { name: 'Its account against what was seen' });
     const flags = [...checks.querySelectorAll('[data-audit-check="flag"]')].map((li) => li.textContent);
     expect(flags).toEqual([
@@ -199,7 +204,8 @@ describe('a step log longer than a page', () => {
     await waitFor(() => expect(did.textContent).toContain('Showing 200 of 250 steps'));
     fireEvent.click(within(did).getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(within(did).getAllByRole('listitem')).toHaveLength(250));
-    expect(did.textContent).toContain('Showing 250 of 250 steps');
+    expect(within(did).queryByRole('button', { name: 'Show more' })).toBeNull();
+    expect(did.textContent).toContain('250 steps');
     const shown = within(did).getAllByRole('listitem').map((li) => /src\/file-(\d+)\.ts/.exec(li.textContent ?? '')?.[1]);
     expect(shown).toEqual(steps.map((_, i) => String(i)));
     expect(asked.some((url) => url.pathname.endsWith('/steps') && url.searchParams.get('attempt') === 'att-long' && url.searchParams.get('cursor') === 'steps-page-2' && url.searchParams.get('limit') === '200')).toBe(true);
@@ -242,6 +248,7 @@ describe('checks of the agent’s account', () => {
     const checks = auditChecks({ ...matching, commands: ['npm …'], examined: [...matching.examined, '…'] }, rows, steps, complete(steps));
     expect(checks.map((check) => check.verdict)).toEqual(['unsettled', 'unsettled']);
     expect(checks[0]!.words).toBe('Can’t compare the command “npm …” with what the worker saw: part of it isn’t kept.');
+    expect(checks[1]!.words).toBe('Can’t compare one entry the agent lists as examined: it isn’t a file path.');
     expect(compareCommand('npm test', 'npm …')).toBe('unsettled');
     expect(compareCommand('git …', 'npm test')).toBe('different');
     expect(compareCommand('npm test', 'cd x && npm test')).toBe('same');
@@ -286,19 +293,33 @@ describe('evidence that is missing, pending or partial', () => {
     const { panel } = await open(runDetail(mapRun, { run: { task: 'canopy-map' }, attempts: [latest], attemptCount: 1, steps: { attemptId: latest.attemptId, rows: steps, cursor: null } }));
     const files = within(panel).getByRole('region', { name: 'Files it read' });
     expect(files.getAttribute('data-run-files')).toBe('partial');
-    expect(files.textContent).toContain('may have read more');
+    expect(files.textContent).toContain('it may have read files');
     expect(panel.textContent).not.toMatch(noRead);
     const did = within(panel).getByRole('region', { name: 'What it did' });
     expect(did.textContent).toContain('1 of the 4 steps the worker saw have arrived.');
     expect(did.textContent).toContain('The worker saw 3 more steps than a step log keeps; they aren’t listed.');
   });
 
-  it('counts the records the worker couldn’t read', async () => {
+  it('reads unread records as partial evidence: no "every step" claim, no definite "no file reads", and claims it can’t compare', async () => {
     seq = 0;
-    const steps = [step({ kind: 'read', tool: 'Read', target: 'a.ts' })];
-    const latest = attempt('att-odd', T0, steps, { unrecognized: { total: 2, shapes: { rate_limit_event: 2 } } });
-    const { panel } = await open(runDetail(mapRun, { run: { task: 'canopy-map' }, attempts: [latest], attemptCount: 1, steps: { attemptId: latest.attemptId, rows: steps, cursor: null } }));
-    expect(within(panel).getByRole('region', { name: 'What it did' }).textContent).toContain('The worker couldn’t read 2 other records of the agent’s output');
+    const steps = [step({ kind: 'command', tool: 'Bash', target: 'ls' })];
+    const latest = attempt('att-odd', T0, steps, { unrecognized: { total: 2, shapes: { mystery: 2 } } });
+    const { panel } = await open(runDetail(mapRun, {
+      run: { task: 'canopy-map' }, attempts: [latest], attemptCount: 1, steps: { attemptId: latest.attemptId, rows: steps, cursor: null },
+      reports: [{ action: 'report', summary: 'Mapped.', details: null, audit: audit({ commands: ['ls', 'npm run build'], examined: ['docs/a.md'] }), createdAt: T0 + 9_000 }],
+    }));
+    const did = within(panel).getByRole('region', { name: 'What it did' });
+    expect(did.querySelector('[data-coverage="partial"]')!.textContent).toContain('The worker couldn’t read 2 records of the agent’s output that might have held a step');
+    expect(did.textContent).not.toContain('Every step the worker saw is listed.');
+    const files = within(panel).getByRole('region', { name: 'Files it read' });
+    expect(files.getAttribute('data-run-files')).toBe('partial');
+    expect(files.textContent).not.toContain('The worker saw no file reads.');
+    expect(files.textContent).toContain('it may have read files');
+    const checks = [...panel.querySelectorAll('[data-audit-check]')].map((li) => [li.getAttribute('data-audit-check'), li.textContent]);
+    expect(checks).toEqual([
+      ['unsettled', 'Can’t compare the command “npm run build”: the step log is incomplete.'],
+      ['unsettled', 'Can’t compare docs/a.md: the step log is incomplete.'],
+    ]);
   });
 
   it('renders a run from before step logs honestly, from Myco’s own record alone', async () => {
@@ -309,7 +330,7 @@ describe('evidence that is missing, pending or partial', () => {
     expect(within(did).getAllByRole('listitem')).toHaveLength(4);
     expect(within(panel).getByRole('region', { name: 'Files it read' }).textContent).toContain('isn’t recorded');
     expect(panel.textContent).not.toMatch(noRead);
-    expect(panel.querySelector('[data-run-summary]')!.textContent).toBe('Called Myco 4 times and saved the code map; 1 call failed and was retried.');
+    expect(panel.querySelector('[data-run-summary]')!.textContent).toBe('Called Myco 4 times and saved the code map; 1 call failed.');
     expect(panel.querySelector('[data-account-missing]')).toBeNull();
   });
 });
@@ -371,17 +392,125 @@ it('never counts a command the agent wasn’t allowed to run as run, and names t
   ]);
 });
 
-it('renders a row of each kind in reader words', () => {
+it('renders a row of each kind in reader words, a tool by what its manifest says it did or by its name in plain words', () => {
   seq = 0;
   const kinds: RunStep[] = [
     step({ kind: 'fetch', tool: 'WebFetch', target: 'https://example.com' }),
-    step({ kind: 'tool', tool: 'TodoWrite', target: null }),
+    step({ kind: 'tool', tool: 'ToolSearch', target: null }),
     step({ kind: 'command', tool: 'Bash', target: '…', outcome: 'refused' }),
     step({ kind: 'read', tool: 'Read', target: 'x.ts', outcome: 'unfinished' }),
+    step({ kind: 'tool', tool: 'NotebookFrobnicate', target: null }),
+    step({ kind: 'tool', tool: 'other', target: null }),
   ];
-  const rows = attemptActivity([], kinds);
+  const rows = attemptActivity([], kinds, 'claude-code');
   expect(rows.map((row) => [row.lead, row.target, row.state])).toEqual([
-    ['Looked up', 'https://example.com', 'ok'], ['Used a tool', null, 'ok'], ['Ran a command', null, 'refused'], ['Read', 'x.ts', 'unfinished'],
+    ['Looked up', 'https://example.com', 'ok'], ['Looked up a tool', null, 'ok'], ['Ran a command', null, 'refused'], ['Read', 'x.ts', 'unfinished'],
+    ['Used notebook frobnicate', null, 'ok'], ['Used a tool', null, 'ok'],
   ]);
+  expect(attemptActivity([], [{ ...kinds[1]!, tool: 'think' }], 'opencode')[0]!.lead).toBe('Thought it through');
   expect(rows[2]!.reason).toBe('The agent wasn’t allowed to use this tool.');
+});
+
+describe('commands compared only where provably different', () => {
+  it('matches a claim found among a command’s words in order: a claim may leave out flags and paths', () => {
+    expect(compareCommand('npm test', 'npm test -- tests/a.test.ts')).toBe('same');
+    expect(compareCommand('git log', 'git log --oneline -- src/')).toBe('same');
+    expect(compareCommand('npm run build', 'npm test -- tests/a.test.ts')).toBe('different');
+  });
+
+  it('can’t compare a command whose later lines were dropped, and never flags a claim they could hold', () => {
+    const seen = commandShape('npm test\nnpm run lint')!;
+    expect(seen).toBe('npm test …');
+    expect(compareCommand('npm run lint', 'npm test\nnpm run lint')).toBe('unsettled');
+    expect(compareCommand('npm test\nnpm run lint', 'npm test')).toBe('unsettled');
+    seq = 0;
+    const steps = [step({ kind: 'command', tool: 'Bash', target: seen })];
+    expect(auditChecks(audit({ commands: ['npm run lint'] }), attemptActivity([], steps), steps, complete(steps))).toEqual([
+      { verdict: 'unsettled', words: 'Can’t compare the command “npm run lint” with what the worker saw: part of it isn’t kept.' },
+    ]);
+  });
+});
+
+describe('a failed step tried again', () => {
+  it('is a retry only on the same shaped target; a later call to the same Myco operation is not counted as one', () => {
+    seq = 0;
+    const steps = [
+      step({ kind: 'command', tool: 'Bash', target: 'npm test', outcome: 'error', exitCode: 1 }),
+      step({ kind: 'command', tool: 'Bash', target: 'npm test' }),
+      step({ kind: 'command', tool: 'Bash', target: 'npm …', outcome: 'error', exitCode: 1 }),
+      step({ kind: 'command', tool: 'Bash', target: 'npm …' }),
+    ];
+    const calls = [call(1, 'myco_spores', 'save', T0 + 100_000, 'too long'), call(2, 'myco_spores', 'save', T0 + 200_000)];
+    const rows = attemptActivity(calls, steps);
+    expect(rows.map((row) => [row.state, row.retried, row.laterSuccess])).toEqual([
+      ['failed', true, false], ['ok', false, false], ['failed', false, false], ['ok', false, false],
+      ['failed', false, true], ['ok', false, false],
+    ]);
+    expect(summaryWords(rows, true, filesRead(steps))).toBe('Ran 4 commands and saved 1 spore; 3 steps failed, 1 of them retried.');
+  });
+});
+
+describe('pairing a step with its Myco call', () => {
+  it('pairs by the nearest recorded time, so a call Myco did not record leaves the others paired', () => {
+    seq = 0;
+    const first = step({ kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' });
+    const second = { ...step({ kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' }), startedAt: T0 + 60_000, endedAt: T0 + 60_400 };
+    const rows = attemptActivity([call(7, 'myco_run_map', 'get', T0 + 60_300)], [first, second]);
+    expect(rows.map((row) => [row.step?.seq ?? null, row.call?.id ?? null])).toEqual([[0, null], [1, 7]]);
+  });
+
+  it('never pairs a call recorded far from every step of its operation', () => {
+    seq = 0;
+    const only = step({ kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' });
+    const rows = attemptActivity([call(9, 'myco_run_map', 'get', only.startedAt + 10 * MINUTE)], [only]);
+    expect(rows.map((row) => [row.step?.seq ?? null, row.call?.id ?? null])).toEqual([[0, null], [null, 9]]);
+  });
+
+  it('pairs calls that finished out of order with the steps that made them', () => {
+    seq = 0;
+    const slow = { ...step({ kind: 'myco', tool: 'mcp__myco__myco_spores', target: 'save' }), startedAt: T0, endedAt: T0 + 4_000 };
+    const quick = { ...step({ kind: 'myco', tool: 'mcp__myco__myco_spores', target: 'save' }), startedAt: T0 + 100, endedAt: T0 + 300 };
+    const rows = attemptActivity([call(1, 'myco_spores', 'save', T0 + 250), call(2, 'myco_spores', 'save', T0 + 3_950, 'slow one refused')], [slow, quick]);
+    expect(rows.map((row) => [row.step?.seq ?? null, row.call?.id ?? null, row.state])).toEqual([[0, 2, 'failed'], [1, 1, 'ok']]);
+  });
+
+  it('pairs an agent-protocol harness’s Myco steps as it does any other, and says so where a worker named none', () => {
+    seq = 0;
+    const acpStep = step({ kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write' });
+    const rows = attemptActivity([call(3, 'myco_run_map', 'write', acpStep.startedAt + 100)], [acpStep], 'opencode');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.call?.id).toBe(3);
+    const unnamed = [step({ kind: 'tool', tool: 'other', target: null })];
+    const coverage = complete(unnamed);
+    const calls = [call(4, 'myco_run_map', 'write', T0)];
+    expect(mycoUnnamed(coverage, unnamed, calls)).toBe(true);
+    expect(coverageWords(coverage, false, true)).toContain('The worker couldn’t tell which of its steps were calls to Myco, so Myco’s own record of those calls is listed apart.');
+    expect(mycoUnnamed(coverage, [acpStep], calls)).toBe(false);
+  });
+});
+
+describe('evidence Myco can’t place or load', () => {
+  it('can’t compare an account it can’t place in an attempt, never checking it against the first', async () => {
+    expect(attemptAt([{ claimedAt: T0 }], T0 - 1)).toBe(-1);
+    const detail = codeMapRun();
+    detail.reports = [{ ...detail.reports[0]!, createdAt: T0 - 60_000 }];
+    const { panel } = await open(detail);
+    const checks = within(panel).getByRole('region', { name: 'Its account against what was seen' });
+    expect(checks.getAttribute('data-audit-checks')).toBe('unplaced');
+    expect(checks.textContent).toContain('Can’t compare: Myco can’t tell which attempt this account closed.');
+  });
+
+  it('reads a step log it could not load as unavailable, never as the steps that arrived', async () => {
+    seq = 0;
+    const steps = Array.from({ length: 3 }, (_, i) => step({ kind: 'command', tool: 'Bash', target: `ls dir${i}/` }));
+    const latest = attempt('att-broken', T0, steps, { total: 300, received: 300 });
+    const { panel } = await open(runDetail(mapRun, { run: { task: 'canopy-map' }, attempts: [latest], attemptCount: 1, steps: { attemptId: latest.attemptId, rows: steps, cursor: 'more' } }), {
+      [`/api/projects/${P}/runs/${RUN}/steps`]: () => new Response(JSON.stringify({ error: 'unavailable' }), { status: 500 }),
+    });
+    const files = await within(panel).findByRole('region', { name: 'Files it read' });
+    await waitFor(() => expect(files.getAttribute('data-run-files')).toBe('unavailable'));
+    expect(files.textContent).toContain('its step log couldn’t be loaded');
+    expect(panel.textContent).not.toContain('among the steps');
+    expect(within(panel).getByRole('region', { name: 'What it did' }).querySelector('[data-coverage="unavailable"]')!.textContent).toContain('couldn’t be loaded');
+  });
 });

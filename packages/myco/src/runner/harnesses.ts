@@ -115,6 +115,14 @@ export interface StepRule {
   kind: StepKind;
   /** Dotted paths into the call's input, in order; the first holding text is the step's target. */
   target: readonly string[];
+  /** What the call did, in a reader's words, where its kind and target do not say. */
+  words?: string;
+}
+
+/** How a call of the harness's own protocol names one of Myco's tools: by a name with `{tool}` in it, or by its input. */
+export interface MycoCallNames {
+  names: readonly string[];
+  input?: { server: string; tool: string };
 }
 
 export interface Harness {
@@ -129,6 +137,10 @@ export interface Harness {
   steps: readonly StepRule[];
   /** What a step names its call by: the harness's tool name, or its own category of the call where names are free text. */
   stepTool: 'name' | 'category';
+  /** Shapes of stream records its driver does not read that never carry a call, so they are not counted as unrecognized. */
+  notSteps: readonly string[];
+  /** How its calls name Myco's tools, where no rule matches them by name. */
+  mycoCalls?: MycoCallNames;
   profile: ProfileCapability;
   /** How a worker lists the models it can run; absent where it lists none. */
   models?: ModelListing;

@@ -4,8 +4,8 @@ import { useAllRunCalls, useAttemptSteps, type Loaded } from '../../hooks/use-wo
 import { cn } from '../../lib/cn';
 import { count } from '../today/words';
 import {
-  attemptActivity, attemptAt, auditChecks, callsByAttempt, coverageOf, coverageWords, ELIDED, filesRead, stepsKnown, summaryWords,
-  type ActivityRow, type AuditCheck, type Coverage, type FilesRead, type RowState,
+  attemptActivity, attemptAt, auditChecks, callsByAttempt, coverageOf, coverageWords, ELIDED, filesRead, mycoUnnamed, stepsKnown, summaryWords,
+  type ActivityRow, type Coverage, type FilesRead, type RowState,
 } from './activity';
 import { PartLabel } from './OutcomeCard';
 import type { RunAttempt, RunAudit, RunCall, RunDetailAnswer, RunReport, RunStep } from './wire';
@@ -15,35 +15,49 @@ export const ROWS_PER_PAGE = 200;
 /** How many files "Files it read" shows at first, and how many more each "Show more" adds. */
 const FILES_PER_PAGE = 50;
 
+const NO_STEPS: readonly RunStep[] = [];
+const NO_CALLS: readonly RunCall[] = [];
+
 /** One attempt's evidence: its steps, its calls, the list built from both, and how much of it is known. */
 export interface AttemptEvidence {
   attempt: RunAttempt | null;
-  index: number;
   steps: Loaded<RunStep> & { refetch: () => void };
+  calls: readonly RunCall[];
   rows: ActivityRow[];
   coverage: Coverage;
   files: FilesRead;
+  /** Whether the worker kept steps and Myco recorded calls, but no step names a call to Myco. */
+  unnamedMyco: boolean;
   /** Whether a page of its evidence is still being read. */
   loading: boolean;
 }
 
 /** Every call the run made back to Myco, with the page its detail carried as the first. */
 export function useRunCallsOf(projectId: string, answer: RunDetailAnswer): Loaded<RunCall> {
-  return useAllRunCalls(projectId, answer.run.id, { ...answer.toolCallCoverage, rows: [...answer.toolCalls] });
+  const first = useMemo(() => ({ ...answer.toolCallCoverage, rows: answer.toolCalls }), [answer.toolCallCoverage, answer.toolCalls]);
+  return useAllRunCalls(projectId, answer.run.id, first);
 }
 
-/** The evidence of the run's attempt at `index` (the latest where it is past the end), read only while `enabled`. */
+/**
+ * The evidence of the run's attempt at `index`, read only while `enabled`. A run that lists no attempt has one list,
+ * of Myco's calls alone.
+ */
 export function useAttemptEvidence(projectId: string, answer: RunDetailAnswer, calls: Loaded<RunCall>, index: number, enabled = true): AttemptEvidence {
   const attempts = answer.attempts;
-  const at = attempts.length === 0 ? 0 : Math.min(index, attempts.length - 1);
-  const attempt = attempts[at] ?? null;
+  const attempt = attempts[index] ?? null;
   const steps = useAttemptSteps(projectId, answer.run.id, attempt, answer.steps, enabled);
-  const coverage = coverageOf(attempt, steps.rows.length, steps.complete);
+  const failed = steps.error != null;
+  const coverage = useMemo(() => coverageOf(attempt, steps.rows.length, steps.complete, failed), [attempt, steps.rows.length, steps.complete, failed]);
   const known = stepsKnown(coverage);
-  const mine = useMemo(() => callsByAttempt(calls.rows, attempts)[at] ?? [], [calls.rows, attempts, at]);
-  const rows = useMemo(() => attemptActivity(mine, known ? steps.rows : []), [mine, known, steps.rows]);
-  const files = useMemo(() => filesRead(known ? steps.rows : []), [known, steps.rows]);
-  return { attempt, index: at, steps, rows, coverage, files, loading: steps.pending || calls.pending };
+  const lists = useMemo(() => callsByAttempt(calls.rows, attempts).lists, [calls.rows, attempts]);
+  const mine = (attempts.length === 0 ? lists[0] : lists[index]) ?? NO_CALLS;
+  const knownSteps = known ? steps.rows : NO_STEPS;
+  const rows = useMemo(() => attemptActivity(mine, knownSteps, answer.run.harness), [mine, knownSteps, answer.run.harness]);
+  const files = useMemo(() => filesRead(knownSteps), [knownSteps]);
+  return {
+    attempt, steps, calls: mine, rows, coverage, files, unnamedMyco: mycoUnnamed(coverage, knownSteps, mine),
+    loading: steps.pending || calls.pending,
+  };
 }
 
 /** The panel's summary line for the run's latest attempt, or null until its evidence is read. */
@@ -81,6 +95,7 @@ function Row({ row }: { row: ActivityRow }) {
         {' · '}{row.durationMs === null ? 'Duration not recorded' : `${row.durationMs.toLocaleString()} ms`}
         {' · '}<span className={failed ? 'text-bad' : 'text-muted'}>{STATE_WORDS[row.state]}</span>
         {row.retried && ' · tried again, and it worked'}
+        {!row.retried && row.laterSuccess && ' · a later call to the same operation succeeded'}
       </span>
       {row.reason !== null && <p className={cn('whitespace-pre-wrap break-words', failed ? 'text-bad' : 'text-muted')}>{row.reason}</p>}
       <Disclosure summary="Technical details">
@@ -100,26 +115,31 @@ function Row({ row }: { row: ActivityRow }) {
   );
 }
 
+/** A list of rows a page at a time; the count and "Show more" appear only while rows remain unshown. */
+function Rows({ rows, noun }: { rows: readonly ActivityRow[]; noun: string }) {
+  const [shown, setShown] = useState(ROWS_PER_PAGE);
+  return (
+    <>
+      <ol className="flex flex-col divide-y divide-line rounded-control border border-line" aria-label="Steps">
+        {rows.slice(0, shown).map((row) => <Row key={row.key} row={row} />)}
+      </ol>
+      {rows.length > shown && <ShowMore shown={shown} total={rows.length} noun={noun} onMore={() => setShown((n) => n + ROWS_PER_PAGE)} />}
+    </>
+  );
+}
+
 /** One attempt's list: what its coverage is, then its rows a page at a time with the true total. */
 function AttemptList({ evidence, live }: { evidence: AttemptEvidence; live: boolean }) {
-  const [shown, setShown] = useState(ROWS_PER_PAGE);
   const { rows, coverage, steps } = evidence;
   return (
     <div className="flex flex-col gap-s3" data-attempt-list="">
       <div className="flex flex-col gap-s1 t-small text-muted" data-coverage={coverage.state}>
-        {coverageWords(coverage, live).map((words) => <p key={words}>{words}</p>)}
+        {coverageWords(coverage, live, evidence.unnamedMyco).map((words) => <p key={words}>{words}</p>)}
       </div>
       {steps.error != null && <ErrorState error={steps.error} onRetry={steps.refetch} />}
       {evidence.loading ? <LoadingState shape="reading" label="Loading what it did" /> : rows.length === 0 ? (
         <p className="t-small text-muted" data-activity-none="">{stepsKnown(coverage) ? 'Neither Myco nor the worker recorded a step.' : 'Myco recorded no calls.'}</p>
-      ) : (
-        <>
-          <ol className="flex flex-col divide-y divide-line rounded-control border border-line" aria-label="Steps">
-            {rows.slice(0, shown).map((row) => <Row key={row.key} row={row} />)}
-          </ol>
-          <ShowMore shown={Math.min(shown, rows.length)} total={rows.length} noun={stepsKnown(coverage) ? 'steps' : 'calls'} onMore={() => setShown((n) => n + ROWS_PER_PAGE)} />
-        </>
-      )}
+      ) : <Rows rows={rows} noun={stepsKnown(coverage) ? 'steps' : 'calls'} />}
     </div>
   );
 }
@@ -135,6 +155,16 @@ function replacedWords(next: RunAttempt): string {
   return `It stopped checking in, so Myco gave the run to a new attempt at ${timeWords(next.claimedAt)}.`;
 }
 
+/** The calls Myco recorded before every attempt the run lists, from attempts past the latest it serves. */
+function UnplacedCalls({ rows }: { rows: readonly ActivityRow[] }) {
+  return (
+    <div className="flex flex-col gap-s2" data-attempt="unplaced">
+      <p className="t-small text-muted">{count(rows.length, 'call')} Myco recorded before the attempts listed here; which attempt made {rows.length === 1 ? 'it' : 'them'} isn’t listed.</p>
+      <Rows rows={rows} noun="calls" />
+    </div>
+  );
+}
+
 /**
  * "What it did": one list per attempt, Myco's calls and the worker's steps merged, the latest attempt open and each
  * earlier one folded until it is opened.
@@ -142,11 +172,13 @@ function replacedWords(next: RunAttempt): string {
 export function ActivitySection({ projectId, answer, calls, latest, live }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; latest: AttemptEvidence; live: boolean }) {
   const attempts = answer.attempts;
   const end = latest.loading ? undefined : count(latest.rows.length, stepsKnown(latest.coverage) ? 'step' : 'call');
+  const unplaced = useMemo(() => attemptActivity(callsByAttempt(calls.rows, attempts).unplaced, [], answer.run.harness), [calls.rows, attempts, answer.run.harness]);
   return (
     <section aria-label="What it did" className="flex flex-col gap-s3" data-run-calls="">
       <PartLabel end={attempts.length > 1 ? count(answer.attemptCount, 'attempt') : end}>What it did</PartLabel>
       {!calls.complete && !calls.pending && <p className="t-small text-muted">Only the first {calls.rows.length.toLocaleString()} of the {count(answer.toolCallCoverage.total, 'call')} Myco recorded are loaded.</p>}
       {calls.error != null && <ErrorState error={calls.error} />}
+      {unplaced.length > 0 && <UnplacedCalls rows={unplaced} />}
       {attempts.length <= 1 ? <AttemptList evidence={latest} live={live} /> : (
         <ol className="flex flex-col gap-s4" aria-label="Attempts">
           {answer.attemptCount > attempts.length && <li className="t-small text-muted">Showing the latest {attempts.length.toLocaleString()} of {count(answer.attemptCount, 'attempt')}.</li>}
@@ -183,14 +215,18 @@ export function FilesReadPart({ evidence }: { evidence: AttemptEvidence }) {
     <section aria-label="Files it read" className="flex flex-col gap-s2" data-run-files={coverage.state}>
       <PartLabel end={known && read > 0 ? count(read, 'file') : undefined}>Files it read</PartLabel>
       {evidence.loading ? <p className="t-small text-muted">Loading its steps…</p>
-        : coverage.state === 'unavailable' ? <p className="t-small text-muted" data-files-unknown="">Which files it read isn’t recorded: Myco kept no step log for this run. This doesn’t mean it read none.</p>
+        : coverage.state === 'unavailable' ? <p className="t-small text-muted" data-files-unknown="">
+          {coverage.reason === 'unloaded'
+            ? 'Which files it read isn’t known: its step log couldn’t be loaded.'
+            : 'Which files it read isn’t recorded: Myco kept no step log for this run. This doesn’t mean it read none.'}
+        </p>
         : coverage.state === 'pending' ? <p className="t-small text-muted" data-files-unknown="">Which files it read isn’t known yet: the worker’s step log hasn’t arrived.</p>
-        : read === 0 ? <p className="t-small text-muted" data-files-none="">{coverage.state === 'complete' ? 'The worker saw no file reads. Searches and commands are listed under what it did.' : 'The worker saw no file reads among the steps that arrived; its step log is incomplete, so it may have read more.'}</p>
+        : read === 0 ? <p className="t-small text-muted" data-files-none="">{coverage.state === 'complete' ? 'The worker saw no file reads. Searches and commands are listed under what it did.' : 'The worker saw no file reads in the steps it could list, but its step log is incomplete, so it may have read files.'}</p>
         : <>
           <ul className="flex flex-col gap-s1">
             {files.paths.slice(0, shown).map((path) => <li key={path} className="min-w-0 break-all t-mono text-ink-2">{path}</li>)}
           </ul>
-          {files.paths.length > FILES_PER_PAGE && <ShowMore shown={Math.min(shown, files.paths.length)} total={files.paths.length} noun="files" onMore={() => setShown((n) => n + FILES_PER_PAGE)} />}
+          {files.paths.length > shown && <ShowMore shown={shown} total={files.paths.length} noun="files" onMore={() => setShown((n) => n + FILES_PER_PAGE)} />}
           {files.unnamed > 0 && <p className="t-small text-muted">{count(files.unnamed, 'more read')} named a file whose name Myco doesn’t keep.</p>}
           {coverage.state === 'partial' && <p className="t-small text-muted">Its step log is incomplete, so it may have read more.</p>}
         </>}
@@ -198,18 +234,28 @@ export function FilesReadPart({ evidence }: { evidence: AttemptEvidence }) {
   );
 }
 
-/** A list of paths or commands from the agent's account; an entry kept only as `…` is said in words. */
+/** "1 entry isn't a file path, so it isn't shown." */
+function elidedWords(n: number, noun: 'path' | 'command'): string {
+  const one = n === 1;
+  const what = noun === 'path' ? (one ? 'isn’t a file path' : 'aren’t file paths') : (one ? 'keeps no word of a command' : 'keep no word of a command');
+  return `${count(n, 'entry', 'entries')} ${what}, so ${one ? 'it isn’t' : 'they aren’t'} shown.`;
+}
+
+/** A list of paths or commands from the agent's account; the entries kept only as `…` are counted in words. */
 function ListPart({ label, items, noun }: { label: string; items: readonly string[]; noun: 'path' | 'command' }) {
+  const kept = items.filter((item) => item.replaceAll(ELIDED, '').trim() !== '');
+  const elided = items.length - kept.length;
   return (
     <div className="flex flex-col gap-s1">
       <PartLabel end={items.length > 0 ? items.length.toLocaleString() : undefined}>{label}</PartLabel>
-      {items.length === 0 ? <p className="t-small text-muted">None listed.</p> : (
-        <ul className="flex flex-col gap-s1">
-          {items.map((item, i) => item.replaceAll(ELIDED, '').trim() === ''
-            ? <li key={i} className="t-small text-muted" data-account-elided="">An entry Myco doesn’t keep: it isn’t a {noun} it can show.</li>
-            : <li key={i} className="min-w-0 break-all t-mono text-ink-2">{item}</li>)}
-        </ul>
-      )}
+      {items.length === 0 ? <p className="t-small text-muted">None listed.</p> : <>
+        {kept.length > 0 && (
+          <ul className="flex flex-col gap-s1">
+            {kept.map((item, i) => <li key={i} className="min-w-0 break-all t-mono text-ink-2">{item}</li>)}
+          </ul>
+        )}
+        {elided > 0 && <p className="t-small text-muted" data-account-elided="">{elidedWords(elided, noun)}</p>}
+      </>}
     </div>
   );
 }
@@ -248,15 +294,32 @@ function Account({ audit }: { audit: RunAudit }) {
   );
 }
 
-/** The account checked against the attempt it closed. */
+const CHECKS_LABEL = 'Its account against what was seen';
+
+/** The account checked against the attempt it closed; one Myco can't place against an attempt is not checked. */
 function Checks({ projectId, answer, calls, report, audit }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; report: RunReport; audit: RunAudit }) {
-  const evidence = useAttemptEvidence(projectId, answer, calls, attemptAt(answer.attempts, report.createdAt));
-  const checks: AuditCheck[] = evidence.loading ? [] : auditChecks(audit, evidence.rows, evidence.steps.rows, evidence.coverage);
+  const index = answer.attempts.length === 0 ? 0 : attemptAt(answer.attempts, report.createdAt);
+  if (index < 0) {
+    return (
+      <section aria-label={CHECKS_LABEL} className="flex flex-col gap-s2" data-audit-checks="unplaced">
+        <PartLabel>{CHECKS_LABEL}</PartLabel>
+        <p className="t-small text-muted" data-audit-check="unsettled">Can’t compare: Myco can’t tell which attempt this account closed.</p>
+      </section>
+    );
+  }
+  return <PlacedChecks projectId={projectId} answer={answer} calls={calls} index={index} audit={audit} />;
+}
+
+function PlacedChecks({ projectId, answer, calls, index, audit }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; index: number; audit: RunAudit }) {
+  const evidence = useAttemptEvidence(projectId, answer, calls, index);
+  const { loading, rows, coverage } = evidence;
+  const steps = evidence.steps.rows;
+  const checks = useMemo(() => (loading ? [] : auditChecks(audit, rows, steps, coverage)), [loading, audit, rows, steps, coverage]);
   const flags = checks.filter((check) => check.verdict === 'flag').length;
   return (
-    <section aria-label="Its account against what was seen" className="flex flex-col gap-s2" data-audit-checks={evidence.loading ? 'loading' : flags > 0 ? 'flagged' : 'clear'}>
-      <PartLabel end={flags > 0 ? count(flags, 'mismatch', 'mismatches') : undefined}>Its account against what was seen</PartLabel>
-      {evidence.loading ? <p className="t-small text-muted">Checking…</p> : checks.length === 0 ? (
+    <section aria-label={CHECKS_LABEL} className="flex flex-col gap-s2" data-audit-checks={loading ? 'loading' : flags > 0 ? 'flagged' : 'clear'}>
+      <PartLabel end={flags > 0 ? count(flags, 'mismatch', 'mismatches') : undefined}>{CHECKS_LABEL}</PartLabel>
+      {loading ? <p className="t-small text-muted">Checking…</p> : checks.length === 0 ? (
         <p className="t-small text-muted">Nothing in its account disagrees with what Myco and the worker saw.</p>
       ) : (
         <ul className="flex flex-col gap-s1">

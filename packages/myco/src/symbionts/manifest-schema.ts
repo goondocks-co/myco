@@ -746,6 +746,8 @@ const StepRuleSchema = z.object({
   category: z.string().min(1).optional(),
   kind: z.enum(STEP_KINDS),
   target: Strings,
+  /** What the call did, in a reader's words, for a call its kind and target do not say: "Looked up a tool". */
+  words: z.string().min(1).optional(),
 }).strict().refine((rule) => [rule.tool, rule.toolPrefix, rule.category].filter((match) => match !== undefined).length === 1, {
   message: 'a step rule matches by exactly one of tool, toolPrefix and category',
 });
@@ -788,6 +790,21 @@ const RunnerWorkerSchema = z.object({
    * identifier is never kept either way.
    */
   stepTool: z.enum(['name', 'category']),
+  /**
+   * The shapes of the stream records its driver does not read that never carry a call: a record of one is not counted
+   * as unrecognized, so that count is only of records that might have held a step and could not be read.
+   */
+  notSteps: z.array(z.string().min(1)),
+  /**
+   * How a call of its own protocol names one of the tools Myco's server lists for the run, for a harness whose calls
+   * a rule cannot match by name: each of `names`, with `{tool}` standing for the tool, compared whole with the call's
+   * name; or the call's input naming Myco's server in `input.server` and the tool in `input.tool`. A call so named is a
+   * call to Myco (`mcp__myco__<tool>`), for its step and for its grant alike.
+   */
+  mycoCalls: z.object({
+    names: Strings,
+    input: z.object({ server: z.string().min(1), tool: z.string().min(1) }).strict().optional(),
+  }).strict().optional(),
   accounting: z.object({
     reported: z.enum(['claude-stream', 'codex-session', 'acp-session']),
     modelSources: Strings,

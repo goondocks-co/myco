@@ -254,7 +254,7 @@ export async function* turnOver(
     request(method, params) {
       if (method !== REQUEST_PERMISSION) return methodNotFound(method);
       const toolCall = calls.merged(recordOf(params.toolCall) ?? {});
-      const { outcome, refusal } = answerPermission(grant, tools, sessionId, params, toolCall);
+      const { outcome, refusal } = answerPermission(grant, tools, sessionId, params, toolCall, harness?.mycoCalls);
       if (refusal !== null && params.sessionId === sessionId) said.push({ kind: 'refused', toolCall });
       return { result: { outcome } };
     },
@@ -301,7 +301,7 @@ export async function* turnOver(
       reported = { ...info, configOptions: applied.configOptions };
       if (applied.effortUnapplied) warnings.push(EFFORT_UNAPPLIED);
     }
-    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), reported, undefined, warnings);
+    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), reported, undefined, warnings, tools);
     yield { kind: 'started', harness: id, sessionId };
     yield* events.identity();
 

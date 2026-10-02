@@ -59,6 +59,8 @@ const CLAUDE_STREAM = [
   '{"type":"system","subtype":"init","session_id":"sess_9"}',
   '{"type":"system","subtype":"hook_started","hook_name":"SessionStart"}',
   '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}',
+  '{"type":"system","subtype":"thinking_tokens","tokens":12}',
+  '{"type":"mystery_record","payload":{}}',
   '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Read","input":{"file_path":"src/runner/loop.ts"}}]}}',
   `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"export function drive() {}"}]}}`,
   `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_2","name":"Write","input":{"file_path":"notes.md","content":${JSON.stringify(FILE_BODY)}}}]}}`,
@@ -69,6 +71,8 @@ const CLAUDE_STREAM = [
   `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_4","is_error":true,"content":${JSON.stringify(`Exit code 7\n${COMMAND_OUTPUT}`)}}]}}`,
   '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_5","name":"WebFetch","input":{"url":"https://example.test/doc"}}]}}',
   '{"type":"system","subtype":"permission_denied","tool_name":"WebFetch","tool_use_id":"tu_5"}',
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_7","name":"LS","input":{"path":"src/runner"}}]}}',
+  '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_7","content":"loop.ts"}]}}',
   '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_6","name":"mcp__myco__myco_run","input":{"op":"report","action":"extract"}}]}}',
   '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_6","content":"{\\"recorded\\":true}"}]}}',
   '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}',
@@ -95,11 +99,15 @@ describe('a step log from a harness\'s stream', () => {
       { seq: 2, callId: 'tu_3', kind: 'search', tool: 'Grep', target: null, outcome: 'ok', exitCode: null },
       { seq: 3, callId: 'tu_4', kind: 'command', tool: 'Bash', target: 'curl -H … https://example.test', outcome: 'error', exitCode: 7 },
       { seq: 4, callId: 'tu_5', kind: 'fetch', tool: 'WebFetch', target: 'https://example.test', outcome: 'refused', exitCode: null },
-      { seq: 5, callId: 'tu_6', kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report', outcome: 'ok', exitCode: null },
+      // A directory listing reads no file: it is a search of that directory.
+      { seq: 5, callId: 'tu_7', kind: 'search', tool: 'LS', target: 'src/runner', outcome: 'ok', exitCode: null },
+      { seq: 6, callId: 'tu_6', kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report', outcome: 'ok', exitCode: null },
     ]);
     expect(steps.every((step) => step.endedAt !== null && step.endedAt >= step.startedAt)).toBe(true);
     expect(overflow).toBe(0);
-    expect(unrecognized).toEqual({ total: 2, shapes: { 'system/hook_started': 1, rate_limit_event: 1 } });
+    // Hook, rate-limit and thinking records are named by the manifest as never carrying a call; only the record that
+    // might have held one is counted.
+    expect(unrecognized).toEqual({ total: 1, shapes: { mystery_record: 1 } });
     const kept = JSON.stringify(steps);
     for (const never of [FILE_BODY, COMMAND_OUTPUT, ACCESS_KEY, 'export function drive', 'src/runner/loop.ts:270']) expect({ never, kept: kept.includes(never) }).toEqual({ never, kept: false });
   });
@@ -141,6 +149,7 @@ describe('a step log from a harness\'s stream', () => {
       ...update({ sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'npm test', kind: 'execute', status: 'in_progress', rawInput: { command: 'npm test' } }),
       ...update({ sessionUpdate: 'tool_call_update', toolCallId: 'c2', status: 'failed', rawOutput: { output: COMMAND_OUTPUT } }),
       ...update({ sessionUpdate: 'plan', entries: [] }),
+      ...update({ sessionUpdate: 'mystery_update' }),
       ...[...acp.refused({ toolCallId: 'c3', title: 'rm -rf build', kind: 'execute', rawInput: { command: 'rm -rf build' } })],
     ]) log.observe(event);
     const { steps, unrecognized } = log.result();
@@ -149,8 +158,78 @@ describe('a step log from a harness\'s stream', () => {
       { callId: 'c2', kind: 'command', tool: 'execute', target: 'npm test', outcome: 'error' },
       { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -r… …', outcome: 'refused' },
     ]);
-    expect(unrecognized).toEqual({ total: 1, shapes: { 'session/update:plan': 1 } });
+    expect(unrecognized).toEqual({ total: 1, shapes: { 'session/update:mystery_update': 1 } });
     expect(JSON.stringify(steps)).not.toContain(FILE_BODY);
+  });
+
+  it('names an agent-protocol call to one of Myco\'s listed tools as the Myco call it is, by each form its manifest declares, and nothing else', () => {
+    for (const harness of ['opencode', 'cursor', 'antigravity']) {
+      const acp = new AcpEvents(harness, null, {}, undefined, [], new Set(['myco_run_map', 'myco_run']));
+      const update = (body: Record<string, unknown>) => [...acp.update({ method: 'session/update', params: { sessionId: 's', update: body } }, 's')];
+      const log = new StepLog(harnessById(harness)!, () => NOW);
+      for (const event of [
+        ...update({ sessionUpdate: 'tool_call', toolCallId: 'm1', title: 'myco_myco_run_map', kind: 'other', status: 'pending', rawInput: { op: 'write', text: FILE_BODY } }),
+        ...update({ sessionUpdate: 'tool_call_update', toolCallId: 'm1', status: 'completed' }),
+        ...update({ sessionUpdate: 'tool_call', toolCallId: 'm2', title: 'mcp__myco__myco_run', kind: 'other', status: 'completed', rawInput: { op: 'report' } }),
+        ...update({ sessionUpdate: 'tool_call', toolCallId: 'm3', title: 'myco: myco_run_map', kind: 'other', status: 'completed', rawInput: { providerIdentifier: 'myco', toolName: 'myco_run_map', args: { op: 'get' } } }),
+        // A title naming a tool Myco did not list, and another server's tool, are not calls to Myco.
+        ...update({ sessionUpdate: 'tool_call', toolCallId: 'm4', title: 'myco_myco_unlisted', kind: 'other', status: 'completed' }),
+        ...update({ sessionUpdate: 'tool_call', toolCallId: 'm5', title: 'other: myco_run', kind: 'other', status: 'completed', rawInput: { providerIdentifier: 'other', toolName: 'myco_run' } }),
+      ]) log.observe(event);
+      expect({ harness, steps: log.result().steps.map(({ callId, kind, tool, target }) => ({ callId, kind, tool, target })) }).toEqual({ harness, steps: [
+        { callId: 'm1', kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write' },
+        { callId: 'm2', kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report' },
+        { callId: 'm3', kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' },
+        { callId: 'm4', kind: 'tool', tool: 'other', target: null },
+        { callId: 'm5', kind: 'tool', tool: 'other', target: null },
+      ] });
+      expect(JSON.stringify(log.result().steps)).not.toContain(FILE_BODY);
+    }
+  });
+
+  it('writes a path inside the run\'s checkout relative to it, as given or resolved, and leaves every other path as shaped before', () => {
+    const root = '/private/var/folders/x1/myco-run-Xk29fQ7aLm/repo';
+    const given = '/var/folders/x1/myco-run-Xk29fQ7aLm/repo';
+    const log = new StepLog(harnessById('claude-code')!, () => NOW);
+    log.within(given, root);
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['Read', { file_path: `${given}/packages/x/y.ts` }],
+      ['Read', { file_path: `${root}/packages/z.ts` }],
+      ['Bash', { command: `git -C ${given} ls-tree -r HEAD` }],
+      ['Bash', { command: `cd ${root} && npm test` }],
+      ['Read', { file_path: '/etc/hosts' }],
+      ['Read', { file_path: `${given}-sibling/a.ts` }],
+    ];
+    calls.forEach(([name, input], i) => {
+      log.observe({ kind: 'tool_call', name, status: 'started', callId: `p${i}`, input });
+      log.observe({ kind: 'tool_call', name, status: 'ok', callId: `p${i}` });
+    });
+    expect(log.result().steps.map((step) => step.target)).toEqual([
+      'packages/x/y.ts', 'packages/z.ts', 'git -C . ls-tree -r …', 'cd . && npm test', '/etc/hosts', '…',
+    ]);
+    // Without the checkout, its random directory name is kept only as `…`.
+    expect(stepOf(harnessById('claude-code')!.steps, { name: 'Read', input: { file_path: `${given}/packages/x/y.ts` } }).target).toBe('…');
+    // The secret corpus still holds: no key a target carries survives being written relative to the checkout.
+    for (const secret of [ACCESS_KEY, `postgres://admin:S3cret@db/${ACCESS_KEY}`]) {
+      const shaped = stepOf(harnessById('claude-code')!.steps, { name: 'Bash', input: { command: `curl -H "Authorization: Bearer ${secret}" ${given}/a.ts` } }, [given]).target ?? '';
+      expect({ secret, kept: shaped.includes(ACCESS_KEY) }).toEqual({ secret, kept: false });
+    }
+  });
+
+  it('counts none of the records Claude Code was seen to send that never carry a call', () => {
+    const log = new StepLog(harnessById('claude-code')!, () => NOW);
+    for (const shape of ['rate_limit_event', 'system/commands_changed', 'system/thinking_tokens']) log.observe({ kind: 'unrecognized', shape });
+    expect(log.result().unrecognized).toEqual({ total: 0, shapes: {} });
+  });
+
+  it('counts only the records a manifest does not name as never carrying a call', () => {
+    for (const harness of HARNESSES) {
+      const log = new StepLog(harness, () => NOW);
+      for (const shape of harness.notSteps) log.observe({ kind: 'unrecognized', shape });
+      log.observe({ kind: 'unrecognized', shape: 'mystery_record' });
+      expect({ harness: harness.id, unrecognized: log.result().unrecognized }).toEqual({ harness: harness.id, unrecognized: { total: 1, shapes: { mystery_record: 1 } } });
+    }
+    expect(harnessById('claude-code')!.notSteps).toEqual(expect.arrayContaining(['system/thinking_tokens', 'rate_limit_event']));
   });
 
   it('keeps at most its bound of steps and counts the rest, and counts every unrecognized record past the shapes it names', () => {
@@ -170,9 +249,11 @@ describe('a step log from a harness\'s stream', () => {
 
   it('keeps a command\'s first line as its target, never the body the lines after it carry', () => {
     const rules = harnessById('claude-code')!.steps;
-    expect(stepOf(rules, { name: 'Bash', input: { command: `\ncat > notes.md <<'EOF'\n${FILE_BODY}\nEOF` } })).toEqual({ kind: 'command', target: 'cat > … << …' });
+    expect(stepOf(rules, { name: 'Bash', input: { command: `\ncat > notes.md <<'EOF'\n${FILE_BODY}\nEOF` } })).toEqual({ kind: 'command', target: 'cat > … << …', byName: true });
+    // A command whose later lines are dropped ends in `…`, so its first line never reads as the whole command.
+    expect(stepOf(rules, { name: 'Bash', input: { command: 'npm test\nnpm run lint' } })).toEqual({ kind: 'command', target: 'npm test …', byName: true });
     expect(stepOf(rules, { name: 'Read', input: { file_path: 'x'.repeat(400) } }).target).toBe('…');
-    expect(stepOf(rules, { name: 'Unmapped', input: { file_path: 'a.ts' } })).toEqual({ kind: 'tool', target: null });
+    expect(stepOf(rules, { name: 'Unmapped', input: { file_path: 'a.ts' } })).toEqual({ kind: 'tool', target: null, byName: false });
   });
 
   it('reads a call still open when the run ends as unfinished', () => {

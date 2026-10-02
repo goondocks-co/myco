@@ -54,6 +54,10 @@
       "import": "./dist/command-shape.js",
       "types": "./dist/command-shape.d.ts"
     },
+    "./runner-step-words.generated": {
+      "import": "./dist/runner-step-words.generated.js",
+      "types": "./dist/runner-step-words.generated.d.ts"
+    },
     "./worker-steps": {
       "import": "./dist/worker-steps.js",
       "types": "./dist/worker-steps.d.ts"

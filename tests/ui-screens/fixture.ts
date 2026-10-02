@@ -618,17 +618,17 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
     sqlite.query(`INSERT INTO agent_run_attempts (project_id, run_id, attempt_id, leased_by, machine_id, claimed_at, steps_total, steps_overflow, unrecognized) VALUES (?, ?, ?, ?, ?, ?, 8, 0, ?)`)
       .run(idOf('myco'), mapRun, attempt, credentialOf('studio'), machineOf('studio').id, callStart, JSON.stringify({ total: 0, shapes: {} }));
     for (const [seq, step] of [
-      { at: MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' },
-      { at: MINUTE + 5_000, kind: 'read', tool: 'Read', target: 'packages/myco/src/runner/loop.ts' },
-      { at: MINUTE + 9_000, kind: 'read', tool: 'Read', target: 'packages/myco-shared/src/command-shape.ts' },
-      { at: MINUTE + 14_000, kind: 'search', tool: 'Grep', target: 'packages/myco-server/src' },
-      { at: MINUTE + 20_000, kind: 'command', tool: 'Bash', target: 'git log --oneline' },
-      { at: 2 * MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write', outcome: 'error' },
-      { at: 3 * MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write' },
-      { at: 4 * MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report' },
+      { at: MINUTE - 2_000, ms: 2_400, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' },
+      { at: MINUTE + 5_000, ms: 64, kind: 'read', tool: 'Read', target: 'packages/myco/src/runner/loop.ts' },
+      { at: MINUTE + 9_000, ms: 41, kind: 'read', tool: 'Read', target: 'packages/myco-shared/src/command-shape.ts' },
+      { at: MINUTE + 14_000, ms: 312, kind: 'search', tool: 'Grep', target: 'packages/myco-server/src' },
+      { at: MINUTE + 20_000, ms: 1_870, kind: 'command', tool: 'Bash', target: 'git log --oneline' },
+      { at: 2 * MINUTE - 2_000, ms: 2_300, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write', outcome: 'error' },
+      { at: 3 * MINUTE - 2_000, ms: 2_400, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write' },
+      { at: 4 * MINUTE - 2_000, ms: 2_250, kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report' },
     ].entries()) {
       sqlite.query(`INSERT INTO agent_run_steps (project_id, run_id, attempt_id, seq, call_id, kind, tool, target, outcome, exit_code, started_at, ended_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
-        .run(idOf('myco'), mapRun, attempt, seq, `call-${seq + 1}`, step.kind, step.tool, step.target, step.outcome ?? 'ok', callStart + step.at, callStart + step.at + 1_500, callStart + 5 * MINUTE);
+        .run(idOf('myco'), mapRun, attempt, seq, `call-${seq + 1}`, step.kind, step.tool, step.target, step.outcome ?? 'ok', callStart + step.at, callStart + step.at + step.ms, callStart + 5 * MINUTE);
     }
     sqlite.query('UPDATE agent_reports SET audit = ? WHERE project_id = ? AND run_id = ?').run(JSON.stringify({
       steps: ['Read the current code map', 'Read the files changed since the map was made', 'Wrote the updated map', 'Corrected one entry the map refused and saved it again'],

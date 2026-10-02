@@ -2,16 +2,19 @@
  * What a run did, as one account built from three records: the calls Myco answered (its own record), the steps the
  * run's worker saw the agent's tools take (metadata only, each target in its shaped form), and the account the agent
  * filed with its report. Every list row, the files it read, the summary line, the evidence coverage and every check
- * of the agent's account against what was seen is built here, from the records alone: no harness is named, and a step
- * reads by its kind.
+ * of the agent's account against what was seen is built here, from the records alone: no harness is named, a step
+ * reads by its kind, and what a harness's own tools did reads from its manifest's words (`STEP_WORDS`).
  *
  * A Myco call the worker also saw is one row. Calls and steps carry no shared id, so a step of kind `myco` is paired
- * with the call of the same tool and operation in the same order, inside the attempt whose claim the call followed.
+ * with a call of the same tool and operation, inside the attempt whose claim the call followed, by the nearest
+ * recorded time: a step with no call, or a call with no step, leaves the others paired as they were.
  *
  * Checks are deterministic. Both sides of a comparison pass through the same shaping (`commandShape`), and where a
- * shaped form holds `…`, a word not kept, a comparison it cannot settle reads "can't compare" rather than a flag.
+ * shaped form holds `…`, words not kept, a comparison it cannot settle reads "can't compare" rather than a flag; only
+ * what is provably different is flagged.
  */
 import { commandShape, pathShape } from '@goondocks/myco-shared/command-shape';
+import { STEP_WORDS } from '@goondocks/myco-shared/runner-step-words.generated';
 import type { StepKind } from '@goondocks/myco-shared/worker-steps';
 import { callWords } from './call-words';
 import { count, listed } from '../today/words';
@@ -20,6 +23,9 @@ import type { RunAttempt, RunAudit, RunCall, RunStep } from './wire';
 
 /** The mark a shaped form carries where it kept no word. */
 export const ELIDED = '…';
+
+/** How far apart, on the two clocks, a step and a Myco call may be recorded and still be read as the same call. */
+export const PAIR_SLACK_MS = 30_000;
 
 export type RowState = 'ok' | 'failed' | 'refused' | 'unfinished' | 'unknown';
 
@@ -35,22 +41,26 @@ export interface ActivityRow {
   state: RowState;
   /** Why it failed, where a record says. */
   reason: string | null;
-  /** A failed row a later row of the same action and target succeeded at. */
+  /** A failed step a later step of the same kind and the same shaped target succeeded at. */
   retried: boolean;
+  /** A failed call to Myco a later call to the same operation succeeded at; what each carried is not recorded. */
+  laterSuccess: boolean;
   durationMs: number | null;
   call: RunCall | null;
   step: RunStep | null;
 }
 
 /** Leads for a step by its kind: with a target, and without one. */
-const STEP_LEADS: Readonly<Record<Exclude<StepKind, 'myco'>, readonly [string, string]>> = {
+const STEP_LEADS: Readonly<Record<Exclude<StepKind, 'myco' | 'tool'>, readonly [string, string]>> = {
   read: ['Read', 'Read a file'],
   search: ['Searched', 'Searched the files'],
   edit: ['Edited', 'Edited a file'],
   command: ['Ran', 'Ran a command'],
   fetch: ['Looked up', 'Looked something up online'],
-  tool: ['Used a tool', 'Used a tool'],
 };
+
+/** The names a step falls back to where its harness names a call nothing narrower. */
+const UNNAMED_TOOLS: ReadonlySet<string> = new Set(['tool', 'call', 'other']);
 
 /** The Myco tool a step names: its tool's last segment where that is a `myco_…` name, as Myco records the call. */
 export function mycoToolOf(stepTool: string): string {
@@ -58,12 +68,21 @@ export function mycoToolOf(stepTool: string): string {
   return /^myco_[a-z_]+$/.test(tail) ? tail : stepTool;
 }
 
+/** A tool's name in plain words: `ToolSearch` reads "tool search", `web_fetch` reads "web fetch". */
+function plainName(tool: string): string {
+  return tool.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:/]+/g, ' ').trim().toLowerCase();
+}
+
 /** A target worth showing: one that keeps at least one word. */
 const shown = (target: string | null): string | null => (target === null || target.replaceAll(ELIDED, '').trim() === '' ? null : target);
 
-function stepLead(step: RunStep): { lead: string; target: string | null } {
+function stepLead(step: RunStep, harness: string | null): { lead: string; target: string | null } {
   if (step.kind === 'myco') return { lead: callWords(mycoToolOf(step.tool), step.target), target: null };
-  const target = step.kind === 'tool' ? null : shown(step.target);
+  if (step.kind === 'tool') {
+    const words = harness === null ? undefined : STEP_WORDS[harness]?.[step.tool];
+    return { lead: words ?? (UNNAMED_TOOLS.has(step.tool) ? 'Used a tool' : `Used ${plainName(step.tool)}`), target: null };
+  }
+  const target = shown(step.target);
   const [withTarget, without] = STEP_LEADS[step.kind];
   return target === null ? { lead: without, target: null } : { lead: withTarget, target };
 }
@@ -90,54 +109,90 @@ const callKey = (tool: string, op: string | null): string => `${tool}/${op ?? ''
 
 const stepDuration = (step: RunStep): number | null => (step.endedAt === null ? null : Math.max(0, step.endedAt - step.startedAt));
 
-function fromStep(step: RunStep, call: RunCall | null): ActivityRow {
+function fromStep(step: RunStep, call: RunCall | null, harness: string | null): ActivityRow {
   if (call !== null) {
     const known = callState(call);
     return {
       key: `step-${step.seq}`, at: step.startedAt, lead: callWords(call.tool, call.op), target: null,
-      state: known === 'unknown' ? STEP_STATE[step.outcome] : known, reason: callReason(call) ?? stepReason(step), retried: false,
-      durationMs: call.durationMs ?? stepDuration(step), call, step,
+      state: known === 'unknown' ? STEP_STATE[step.outcome] : known, reason: callReason(call) ?? stepReason(step),
+      retried: false, laterSuccess: false, durationMs: call.durationMs ?? stepDuration(step), call, step,
     };
   }
   return {
-    key: `step-${step.seq}`, at: step.startedAt, ...stepLead(step), state: STEP_STATE[step.outcome], reason: stepReason(step), retried: false,
-    durationMs: stepDuration(step), call: null, step,
+    key: `step-${step.seq}`, at: step.startedAt, ...stepLead(step, harness), state: STEP_STATE[step.outcome], reason: stepReason(step),
+    retried: false, laterSuccess: false, durationMs: stepDuration(step), call: null, step,
   };
 }
 
 function fromCall(call: RunCall): ActivityRow {
   return {
     key: `call-${call.id}`, at: call.recordedAt, lead: callWords(call.tool, call.op), target: null, state: callState(call),
-    reason: callReason(call), retried: false, durationMs: call.durationMs, call, step: null,
+    reason: callReason(call), retried: false, laterSuccess: false, durationMs: call.durationMs, call, step: null,
   };
 }
 
-/** What makes two rows the same action on the same target, for telling a failure that was retried; null for none. */
+/** How far a call recorded at `at` is from a step's span, on the two clocks. */
+function distance(step: RunStep, at: number): number {
+  const end = step.endedAt ?? step.startedAt;
+  return at < step.startedAt ? step.startedAt - at : at > end ? at - end : 0;
+}
+
+/** How far a call recorded at `at` is from when the step ended: Myco records a call as it answers it. */
+const fromEnd = (step: RunStep, at: number): number => Math.abs((step.endedAt ?? step.startedAt) - at);
+
+/**
+ * Each Myco step paired with the call it was, by its step number: a step and a call of the same tool and operation,
+ * nearest first (inside the step's span, then nearest its end, since Myco records a call as it answers it), within
+ * `PAIR_SLACK_MS` of the step's span, each used once. Order never decides it, so a step whose call
+ * Myco did not record, or a call no step names, leaves every other pair as it is.
+ */
+function pairCalls(calls: readonly RunCall[], steps: readonly RunStep[]): Map<number, RunCall> {
+  const byKey = new Map<string, { calls: RunCall[]; steps: RunStep[] }>();
+  const group = (key: string) => {
+    let entry = byKey.get(key);
+    if (entry === undefined) { entry = { calls: [], steps: [] }; byKey.set(key, entry); }
+    return entry;
+  };
+  for (const call of calls) group(callKey(call.tool, call.op)).calls.push(call);
+  for (const step of steps) if (step.kind === 'myco') group(callKey(mycoToolOf(step.tool), step.target)).steps.push(step);
+  const pairs = new Map<number, RunCall>();
+  for (const entry of byKey.values()) {
+    if (entry.calls.length === 0 || entry.steps.length === 0) continue;
+    const candidates: { step: RunStep; call: RunCall; gap: number; end: number }[] = [];
+    for (const step of entry.steps) for (const call of entry.calls) {
+      const gap = distance(step, call.recordedAt);
+      if (gap <= PAIR_SLACK_MS) candidates.push({ step, call, gap, end: fromEnd(step, call.recordedAt) });
+    }
+    candidates.sort((a, b) => a.gap - b.gap || a.end - b.end || a.step.seq - b.step.seq || a.call.id - b.call.id);
+    const used = new Set<number>();
+    for (const { step, call } of candidates) {
+      if (pairs.has(step.seq) || used.has(call.id)) continue;
+      pairs.set(step.seq, call);
+      used.add(call.id);
+    }
+  }
+  return pairs;
+}
+
+/** What makes a later step the same step tried again: its kind and its shaped target, where that keeps every word. */
 function retryKey(row: ActivityRow): string | null {
-  if (row.call !== null) return `call:${callKey(row.call.tool, row.call.op)}`;
-  if (row.step === null || row.target === null) return null;
-  return `${row.step.kind}:${row.step.kind === 'myco' ? mycoToolOf(row.step.tool) : row.step.tool}:${row.target}`;
+  if (row.call !== null || row.step === null || row.step.kind === 'myco' || row.step.kind === 'tool') return null;
+  const target = row.step.target;
+  return target === null || target.includes(ELIDED) ? null : `${row.step.kind}:${target}`;
 }
 
 const failedState = (state: RowState): boolean => state === 'failed' || state === 'refused';
 
 /**
  * One attempt's activity in order: the worker's steps in step order, each Myco call the worker also saw folded into
- * its step, and every call the worker did not see placed by when Myco recorded it.
+ * its step, and every call the worker did not see placed by when Myco recorded it. `harness` names whose step words
+ * describe its own tools.
  */
-export function attemptActivity(calls: readonly RunCall[], steps: readonly RunStep[]): ActivityRow[] {
-  const waiting = new Map<string, RunCall[]>();
-  for (const call of calls) {
-    const key = callKey(call.tool, call.op);
-    waiting.set(key, [...(waiting.get(key) ?? []), call]);
-  }
+export function attemptActivity(calls: readonly RunCall[], steps: readonly RunStep[], harness: string | null = null): ActivityRow[] {
+  const pairs = pairCalls(calls, steps);
   const paired = new Set<number>();
-  const stepRows = steps.map((step) => {
-    if (step.kind !== 'myco') return fromStep(step, null);
-    const call = waiting.get(callKey(mycoToolOf(step.tool), step.target))?.shift() ?? null;
-    if (call !== null) paired.add(call.id);
-    return fromStep(step, call);
-  });
+  for (const call of pairs.values()) paired.add(call.id);
+  const stepRows = steps.map((step) => fromStep(step, pairs.get(step.seq) ?? null, harness));
   const callRows = calls.filter((call) => !paired.has(call.id)).map(fromCall);
   const rows: ActivityRow[] = [];
   let c = 0;
@@ -145,30 +200,48 @@ export function attemptActivity(calls: readonly RunCall[], steps: readonly RunSt
     while (c < callRows.length && callRows[c]!.at < row.at) rows.push(callRows[c++]!);
     rows.push(row);
   }
-  rows.push(...callRows.slice(c));
-  const succeeded = new Map<string, number>();
+  while (c < callRows.length) rows.push(callRows[c++]!);
+  const lastSuccess = new Map<string, number>();
+  const lastCallSuccess = new Map<string, number>();
   rows.forEach((row, index) => {
+    if (row.state !== 'ok') return;
     const key = retryKey(row);
-    if (key !== null && row.state === 'ok') succeeded.set(key, index);
+    if (key !== null) lastSuccess.set(key, index);
+    if (row.call !== null) lastCallSuccess.set(callKey(row.call.tool, row.call.op), index);
   });
-  return rows.map((row, index) => {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    if (!failedState(row.state)) continue;
     const key = retryKey(row);
-    return failedState(row.state) && key !== null && (succeeded.get(key) ?? -1) > index ? { ...row, retried: true } : row;
-  });
+    if (key !== null && (lastSuccess.get(key) ?? -1) > index) row.retried = true;
+    if (row.call !== null && (lastCallSuccess.get(callKey(row.call.tool, row.call.op)) ?? -1) > index) row.laterSuccess = true;
+  }
+  return rows;
 }
 
-/** The index of the attempt a moment on Myco's clock falls in: the latest attempt claimed at or before it, else the first. */
+/**
+ * The index of the attempt a moment on Myco's clock falls in: the latest attempt claimed at or before it; -1 where it
+ * falls before every attempt listed, or the run lists none, so it cannot be placed.
+ */
 export function attemptAt(attempts: readonly Pick<RunAttempt, 'claimedAt'>[], at: number): number {
-  let found = 0;
+  let found = -1;
   attempts.forEach((attempt, index) => { if (attempt.claimedAt <= at) found = index; });
   return found;
 }
 
-/** Each attempt's calls, by the attempt whose claim each call followed. */
-export function callsByAttempt(calls: readonly RunCall[], attempts: readonly Pick<RunAttempt, 'claimedAt'>[]): RunCall[][] {
-  const out: RunCall[][] = attempts.length === 0 ? [[]] : attempts.map(() => []);
-  for (const call of calls) out[attempts.length === 0 ? 0 : attemptAt(attempts, call.recordedAt)]!.push(call);
-  return out;
+/**
+ * Each attempt's calls, by the attempt whose claim each call followed, and the calls no listed attempt holds. A run
+ * that lists no attempt keeps every call in its one list.
+ */
+export function callsByAttempt(calls: readonly RunCall[], attempts: readonly Pick<RunAttempt, 'claimedAt'>[]): { lists: RunCall[][]; unplaced: RunCall[] } {
+  if (attempts.length === 0) return { lists: [[...calls]], unplaced: [] };
+  const lists: RunCall[][] = attempts.map(() => []);
+  const unplaced: RunCall[] = [];
+  for (const call of calls) {
+    const at = attemptAt(attempts, call.recordedAt);
+    if (at < 0) unplaced.push(call); else lists[at]!.push(call);
+  }
+  return { lists, unplaced };
 }
 
 /** How much of what the worker saw an attempt's list holds. */
@@ -176,6 +249,8 @@ export type CoverageState = 'complete' | 'partial' | 'pending' | 'unavailable';
 
 export interface Coverage {
   state: CoverageState;
+  /** Why it is unavailable: no attempt was recorded, or its step log could not be loaded. */
+  reason: 'none' | 'unloaded' | null;
   /** Steps the worker saw and kept. */
   total: number;
   /** Of them, those Myco holds. */
@@ -184,21 +259,25 @@ export interface Coverage {
   loaded: number;
   /** Steps past the log's bound, seen but not kept. */
   overflow: number;
-  /** Records of the agent's output the worker could not read. */
+  /** Records of the agent's output that might have held a step and that the worker could not read. */
   unrecognized: number;
 }
 
+const EMPTY = { total: 0, received: 0, loaded: 0, overflow: 0, unrecognized: 0 };
+
 /**
  * The coverage of one attempt's list: unavailable where no claim recorded an attempt (a run from before step logs, or
- * one no worker ran), pending where the attempt's log has not arrived, partial where steps are seen but not listed,
- * and complete where every step the worker kept is listed.
+ * one no worker ran) or its log could not be loaded, pending where the attempt's log has not arrived, partial where
+ * steps are seen but not listed or records that might hold one could not be read, and complete otherwise.
  */
-export function coverageOf(attempt: RunAttempt | null, loaded: number, loadComplete: boolean): Coverage {
-  if (attempt === null) return { state: 'unavailable', total: 0, received: 0, loaded: 0, overflow: 0, unrecognized: 0 };
+export function coverageOf(attempt: RunAttempt | null, loaded: number, loadComplete: boolean, loadFailed = false): Coverage {
+  if (attempt === null) return { state: 'unavailable', reason: 'none', ...EMPTY };
+  if (loadFailed) return { state: 'unavailable', reason: 'unloaded', ...EMPTY };
   const steps = attempt.steps;
-  if (steps === null) return { state: 'pending', total: 0, received: 0, loaded: 0, overflow: 0, unrecognized: 0 };
-  const whole = steps.received >= steps.total && steps.overflow === 0 && loadComplete && loaded >= steps.received;
-  return { state: whole ? 'complete' : 'partial', total: steps.total, received: steps.received, loaded, overflow: steps.overflow, unrecognized: steps.unrecognized?.total ?? 0 };
+  if (steps === null) return { state: 'pending', reason: null, ...EMPTY };
+  const unrecognized = steps.unrecognized?.total ?? 0;
+  const whole = steps.received >= steps.total && steps.overflow === 0 && unrecognized === 0 && loadComplete && loaded >= steps.received;
+  return { state: whole ? 'complete' : 'partial', reason: null, total: steps.total, received: steps.received, loaded, overflow: steps.overflow, unrecognized };
 }
 
 /** Whether a list's steps cover all the worker saw, so a claim with no step can be flagged. */
@@ -206,11 +285,18 @@ const stepsWhole = (coverage: Coverage): boolean => coverage.state === 'complete
 /** Whether a list holds the worker's steps at all. */
 export const stepsKnown = (coverage: Coverage): boolean => coverage.state === 'complete' || coverage.state === 'partial';
 
+/** Whether a list holds the worker's steps and Myco's calls but no step the worker could name as a call to Myco. */
+export function mycoUnnamed(coverage: Coverage, steps: readonly RunStep[], calls: readonly RunCall[]): boolean {
+  return stepsKnown(coverage) && calls.length > 0 && !steps.some((step) => step.kind === 'myco');
+}
+
 /** What a list's coverage says, in sentences; `live` while the run is still going. */
-export function coverageWords(coverage: Coverage, live: boolean): string[] {
+export function coverageWords(coverage: Coverage, live: boolean, unnamedMyco = false): string[] {
   switch (coverage.state) {
     case 'unavailable':
-      return ['Myco kept no step log for this run: it ran before step logs were kept, or where no worker keeps one. This list holds only Myco’s own record of the calls it made.'];
+      return [coverage.reason === 'unloaded'
+        ? 'The worker’s step log couldn’t be loaded. This list holds only Myco’s own record of the calls it made.'
+        : 'Myco kept no step log for this run: it ran before step logs were kept, or where no worker keeps one. This list holds only Myco’s own record of the calls it made.'];
     case 'pending':
       return [live
         ? 'The worker sends its step log when the run ends. Until then, this list holds only Myco’s own record of the calls it made.'
@@ -221,8 +307,9 @@ export function coverageWords(coverage: Coverage, live: boolean): string[] {
       if (coverage.received < coverage.total) words.push(`${coverage.received.toLocaleString()} of the ${count(coverage.total, 'step')} the worker saw have arrived.`);
       if (coverage.loaded < coverage.received) words.push(`${coverage.loaded.toLocaleString()} of the ${count(coverage.received, 'step')} that arrived are loaded.`);
       if (coverage.overflow > 0) words.push(`The worker saw ${count(coverage.overflow, 'more step', 'more steps')} than a step log keeps; ${coverage.overflow === 1 ? 'it isn’t' : 'they aren’t'} listed.`);
-      if (coverage.state === 'complete') words.push('Every step the worker kept is listed.');
-      if (coverage.unrecognized > 0) words.push(`The worker couldn’t read ${count(coverage.unrecognized, 'other record')} of the agent’s output; any step in ${coverage.unrecognized === 1 ? 'it' : 'them'} isn’t listed.`);
+      if (coverage.unrecognized > 0) words.push(`The worker couldn’t read ${count(coverage.unrecognized, 'record')} of the agent’s output that might have held a step; any step in ${coverage.unrecognized === 1 ? 'it' : 'them'} isn’t listed.`);
+      if (coverage.state === 'complete') words.push('Every step the worker saw is listed.');
+      if (unnamedMyco) words.push('The worker couldn’t tell which of its steps were calls to Myco, so Myco’s own record of those calls is listed apart.');
       return words;
     }
   }
@@ -259,24 +346,32 @@ const KEPT_WORDS: Readonly<Record<string, (n: number) => string>> = {
 
 /**
  * The summary line: what the run did, in reader words, from a list's rows: files read, searches, commands, edits and
- * what its Myco calls kept, then how many steps failed and were retried. Without the worker's steps it counts the
- * calls Myco recorded instead, and says nothing of files. Null where the list holds nothing.
+ * what its Myco calls kept, then how many steps failed, how many of those were retried, and how many weren't allowed.
+ * A retry is the same step on the same target; a later call to the same Myco operation is not counted as one. Without
+ * the worker's steps it counts the calls Myco recorded instead, and says nothing of files. Null where the list holds
+ * nothing.
  */
 export function summaryWords(rows: readonly ActivityRow[], known: boolean, files: FilesRead): string | null {
   if (rows.length === 0) return null;
   const parts: string[] = [];
-  const steps = rows.flatMap((row) => (row.step === null ? [] : [row.step]));
-  const kinds = (kind: StepKind) => steps.filter((step) => step.kind === kind);
   if (known) {
+    let searches = 0;
+    let commands = 0;
+    let fetches = 0;
+    const edited = new Set<string>();
+    for (const row of rows) {
+      const step = row.step;
+      if (step === null) continue;
+      if (step.kind === 'search') searches += 1;
+      else if (step.kind === 'command' && step.outcome !== 'refused') commands += 1;
+      else if (step.kind === 'fetch') fetches += 1;
+      else if (step.kind === 'edit') edited.add(step.target ?? `#${step.seq}`);
+    }
     const read = files.paths.length + files.unnamed;
     if (read > 0) parts.push(`read ${count(read, 'file')}`);
-    const searches = kinds('search').length;
     if (searches > 0) parts.push(`searched ${times(searches)}`);
-    const commands = kinds('command').filter((step) => step.outcome !== 'refused').length;
     if (commands > 0) parts.push(`ran ${count(commands, 'command')}`);
-    const edited = new Set(kinds('edit').map((step) => step.target ?? `#${step.seq}`)).size;
-    if (edited > 0) parts.push(`edited ${count(edited, 'file')}`);
-    const fetches = kinds('fetch').length;
+    if (edited.size > 0) parts.push(`edited ${count(edited.size, 'file')}`);
     if (fetches > 0) parts.push(`looked things up online ${times(fetches)}`);
   } else {
     const calls = rows.filter((row) => row.call !== null).length;
@@ -326,60 +421,89 @@ function compareWord(a: string, b: string): Compared {
   return ai >= 0 ? (b.startsWith(ap) ? 'unsettled' : 'different') : (a.startsWith(bp) ? 'unsettled' : 'different');
 }
 
-/** Whether two shaped word lists could be the same command, a lone `…` on either side standing for one or more words. */
+/** Whether the claim's words all appear among the seen command's words, in order, each equal. */
+function inOrder(claim: readonly string[], seen: readonly string[]): boolean {
+  let j = 0;
+  for (const word of claim) {
+    while (j < seen.length && word !== seen[j]) j += 1;
+    if (j === seen.length) return false;
+    j += 1;
+  }
+  return true;
+}
+
+/**
+ * Whether the claim's words could appear among the seen command's words, in order, once `…` is read as the words it
+ * stands for: a claimed word matches a seen word it could be, and a seen `…` takes in any number of claimed words.
+ */
+function couldBeInOrder(claim: readonly string[], seen: readonly string[]): boolean {
+  let j = 0;
+  for (const word of claim) {
+    while (j < seen.length && seen[j] !== ELIDED && compareWord(word, seen[j]!) === 'different') j += 1;
+    if (j === seen.length) return false;
+    if (seen[j] !== ELIDED) j += 1;
+  }
+  return true;
+}
+
+/** Whether two shaped word lists could be the same command, a lone `…` on either side standing for any number of words. */
 function couldMatch(a: readonly string[], b: readonly string[]): boolean {
   const memo = new Map<number, boolean>();
   const go = (i: number, j: number): boolean => {
     if (i === a.length && j === b.length) return true;
-    if (i === a.length || j === b.length) return false;
     const key = i * (b.length + 1) + j;
     const cached = memo.get(key);
     if (cached !== undefined) return cached;
     let result = false;
-    if (a[i] === ELIDED) result = go(i + 1, j + 1) || go(i, j + 1);
-    if (!result && b[j] === ELIDED) result = go(i + 1, j + 1) || go(i + 1, j);
-    if (!result && a[i] !== ELIDED && b[j] !== ELIDED) result = compareWord(a[i]!, b[j]!) !== 'different' && go(i + 1, j + 1);
+    if (i < a.length && a[i] === ELIDED) result = go(i + 1, j) || (j < b.length && go(i, j + 1));
+    if (!result && j < b.length && b[j] === ELIDED) result = go(i, j + 1) || (i < a.length && go(i + 1, j));
+    if (!result && i < a.length && j < b.length && a[i] !== ELIDED && b[j] !== ELIDED) result = compareWord(a[i]!, b[j]!) !== 'different' && go(i + 1, j + 1);
     memo.set(key, result);
     return result;
   };
   return go(0, 0);
 }
 
-function compareWords(a: readonly string[], b: readonly string[]): Compared {
-  if (a.length === b.length && a.every((word, i) => word === b[i])) return 'same';
-  return couldMatch(a, b) ? 'unsettled' : 'different';
+/**
+ * A claimed command against one run of a seen command: the same where the claim's words all appear in it in order (a
+ * claim may leave out the flags, paths and other commands a command line carried), unsettled where they could appear once a `…` on either
+ * side is read as the words it stands for, and different otherwise.
+ */
+function compareWords(claim: readonly string[], seen: readonly string[]): Compared {
+  if (claim.length === 0) return 'unsettled';
+  if (inOrder(claim, seen)) return 'same';
+  if (couldMatch(claim, seen) || couldBeInOrder(claim, seen)) return 'unsettled';
+  return 'different';
 }
 
-const best = (results: Iterable<Compared>): Compared => {
+/** A command a step ran, shaped as a claim is, as its words; null where nothing of it is kept. */
+export function seenCommand(target: string): string[] | null {
+  const shaped = commandShape(target);
+  return shaped === null ? null : wordsOf(shaped);
+}
+
+/**
+ * A claimed command against the commands the worker saw: the best any of them settles, stopping at the first that
+ * matches. A claim's words found in order inside a list or pipeline match it, so "npm test" is found in
+ * "cd app && npm test".
+ */
+export function compareClaimedCommand(claim: string, seen: readonly (readonly string[])[]): Compared {
+  const shaped = commandShape(claim);
+  if (shaped === null) return 'unsettled';
+  const words = wordsOf(shaped);
   let found: Compared = 'different';
-  for (const result of results) {
+  for (const command of seen) {
+    const result = compareWords(words, command);
     if (result === 'same') return 'same';
     if (result === 'unsettled') found = 'unsettled';
   }
   return found;
-};
-
-/** Operators that end one command of a list or pipeline. */
-const BREAKS: ReadonlySet<string> = new Set(['|', '||', '&&', ';', '&', '|&']);
-
-/** A command's words and every run of whole commands inside it, so "npm test" is found in "cd app && npm test". */
-function commandRuns(words: readonly string[]): string[][] {
-  const starts = [0];
-  const ends: number[] = [];
-  words.forEach((word, i) => { if (BREAKS.has(word)) { ends.push(i); starts.push(i + 1); } });
-  ends.push(words.length);
-  const runs: string[][] = [];
-  for (let s = 0; s < starts.length; s += 1) for (let e = s; e < ends.length; e += 1) runs.push(words.slice(starts[s], ends[e]));
-  return runs;
 }
 
 /** A claimed command against one the worker saw, both shaped the same way. */
 export function compareCommand(claim: string, seen: string): Compared {
-  const a = commandShape(claim);
-  const b = commandShape(seen);
-  if (a === null || b === null) return 'different';
-  const claimed = wordsOf(a);
-  return best(commandRuns(wordsOf(b)).map((run) => compareWords(claimed, run)));
+  const words = seenCommand(seen);
+  return words === null ? 'different' : compareClaimedCommand(claim, [words]);
 }
 
 const trimPath = (path: string): string => path.replace(/^\.\//, '').replace(/\/+$/, '');
@@ -405,6 +529,18 @@ function seenPaths(steps: readonly RunStep[]): string[] {
   return paths;
 }
 
+/** A claimed path against the paths the worker saw, stopping at the first that matches. */
+function compareClaimedPath(claim: string, seen: readonly string[]): Compared {
+  if (claim.includes(ELIDED)) return 'unsettled';
+  let found: Compared = 'different';
+  for (const path of seen) {
+    const result = comparePath(claim, path);
+    if (result === 'same') return 'same';
+    if (result === 'unsettled') found = 'unsettled';
+  }
+  return found;
+}
+
 /** One check of the agent's account against what was seen: a flag, or a comparison the records can't settle. */
 export interface AuditCheck {
   verdict: 'flag' | 'unsettled';
@@ -419,14 +555,16 @@ const quoted = (text: string): string => `“${text}”`;
  *   listed as examined, and failures (steps or Myco calls) with none listed;
  * - a claim with no step: a command or a file the account lists that no step the worker saw names.
  *
- * A claim is compared only against a complete step log; where the log is incomplete, or a shaped form holds `…` that
- * could stand for the step, the check says it can't compare.
+ * A claim is flagged only against a complete step log, and only where it is provably different from every step: a
+ * command found among a step's words in order matches, and where a shaped form holds `…` that could stand for the step,
+ * or the log is incomplete, the check says it can't compare.
  */
 export function auditChecks(audit: RunAudit, rows: readonly ActivityRow[], steps: readonly RunStep[], coverage: Coverage): AuditCheck[] {
   const checks: AuditCheck[] = [];
   const known = stepsKnown(coverage);
   if (known) {
-    const commands = steps.filter((step) => step.kind === 'command' && step.outcome !== 'refused').length;
+    let commands = 0;
+    for (const step of steps) if (step.kind === 'command' && step.outcome !== 'refused') commands += 1;
     if (commands > 0 && audit.commands.length === 0) {
       checks.push({ verdict: 'flag', words: `The worker saw ${count(commands, 'command')} run; the agent’s account lists no commands.` });
     }
@@ -436,8 +574,12 @@ export function auditChecks(audit: RunAudit, rows: readonly ActivityRow[], steps
       checks.push({ verdict: 'flag', words: `The worker saw ${count(read, 'file')} read; the agent’s account lists none as examined.` });
     }
   }
-  const failed = rows.filter((row) => row.state === 'failed').length;
-  const refused = rows.filter((row) => row.state === 'refused').length;
+  let failed = 0;
+  let refused = 0;
+  for (const row of rows) {
+    if (row.state === 'failed') failed += 1;
+    else if (row.state === 'refused') refused += 1;
+  }
   if (failed + refused > 0 && audit.failures.length === 0) {
     const noun = known ? 'step' : 'call';
     const what = refused === 0 ? `${count(failed, noun)} failed`
@@ -452,21 +594,35 @@ export function auditChecks(audit: RunAudit, rows: readonly ActivityRow[], steps
     return checks;
   }
   const whole = stepsWhole(coverage);
-  const commandTargets = steps.flatMap((step) => (step.kind === 'command' && step.target !== null ? [step.target] : []));
-  for (const claim of audit.commands) {
-    const result = best(commandTargets.map((seen) => compareCommand(claim, seen)));
-    if (result === 'same') continue;
-    if (result === 'unsettled') checks.push({ verdict: 'unsettled', words: `Can’t compare the command ${quoted(claim)} with what the worker saw: part of it isn’t kept.` });
-    else if (!whole) checks.push({ verdict: 'unsettled', words: `Can’t compare the command ${quoted(claim)}: the step log is incomplete.` });
-    else checks.push({ verdict: 'flag', words: `The agent’s account lists the command ${quoted(claim)}; the worker saw no such command.` });
+  if (audit.commands.length > 0) {
+    const seen: string[][] = [];
+    for (const step of steps) {
+      if (step.kind !== 'command' || step.target === null) continue;
+      const words = seenCommand(step.target);
+      if (words !== null) seen.push(words);
+    }
+    for (const claim of audit.commands) {
+      const result = compareClaimedCommand(claim, seen);
+      if (result === 'same') continue;
+      if (result === 'unsettled') checks.push({ verdict: 'unsettled', words: `Can’t compare the command ${quoted(claim)} with what the worker saw: part of it isn’t kept.` });
+      else if (!whole) checks.push({ verdict: 'unsettled', words: `Can’t compare the command ${quoted(claim)}: the step log is incomplete.` });
+      else checks.push({ verdict: 'flag', words: `The agent’s account lists the command ${quoted(claim)}; the worker saw no such command.` });
+    }
   }
-  const paths = seenPaths(steps);
-  for (const claim of audit.examined) {
-    const result = claim.includes(ELIDED) ? 'unsettled' : best(paths.map((seen) => comparePath(claim, seen)));
-    if (result === 'same') continue;
-    if (result === 'unsettled') checks.push({ verdict: 'unsettled', words: claim.includes(ELIDED) ? 'Can’t compare one entry the agent lists as examined: it isn’t a path Myco keeps.' : `Can’t compare ${claim} with what the worker saw: part of a path it saw isn’t kept.` });
-    else if (!whole) checks.push({ verdict: 'unsettled', words: `Can’t compare ${claim}: the step log is incomplete.` });
-    else checks.push({ verdict: 'flag', words: `The agent’s account lists ${claim} as examined; the worker saw no step on it.` });
+  if (audit.examined.length > 0) {
+    const paths = seenPaths(steps);
+    let elided = 0;
+    for (const claim of audit.examined) {
+      if (claim.replaceAll(ELIDED, '').trim() === '') { elided += 1; continue; }
+      const result = compareClaimedPath(claim, paths);
+      if (result === 'same') continue;
+      if (result === 'unsettled') checks.push({ verdict: 'unsettled', words: `Can’t compare ${claim} with what the worker saw: part of a path isn’t kept.` });
+      else if (!whole) checks.push({ verdict: 'unsettled', words: `Can’t compare ${claim}: the step log is incomplete.` });
+      else checks.push({ verdict: 'flag', words: `The agent’s account lists ${claim} as examined; the worker saw no step on it.` });
+    }
+    if (elided > 0) {
+      checks.push({ verdict: 'unsettled', words: `Can’t compare ${elided === 1 ? 'one entry' : `${elided.toLocaleString()} entries`} the agent lists as examined: ${elided === 1 ? 'it isn’t a file path' : 'they aren’t file paths'}.` });
+    }
   }
   return checks;
 }

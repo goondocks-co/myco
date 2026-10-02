@@ -394,6 +394,9 @@ runner:
     # call to Myco's own MCP server by its tool under the `mcp` category; a call to any other server is `mcp_other`, which
     # no rule reads. Contents and output are never read.
     stepTool: name
+    # Its driver reads its thinking (reasoning items), usage (turn.completed), errors and messages itself, so no line it
+    # leaves unread is known never to carry a call: every one is counted as unrecognized.
+    notSteps: []
     steps:
       - { tool: command_execution, kind: command, target: [command] }
       - { tool: file_change, kind: edit, target: [changes.0.path] }

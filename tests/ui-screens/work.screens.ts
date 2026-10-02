@@ -284,7 +284,7 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
       await expect(panel.locator('header [data-model-summary]')).toContainText('Requested: high · opus · high effort');
       await expect(panel.locator('header [data-model-summary]')).toContainText('Actual: claude-sonnet-4-6');
       await expect(panel.locator('header [data-model-mismatch]')).toBeVisible();
-      await expect(panel.locator('[data-run-summary]')).toHaveText('Read 2 files, searched once, ran 1 command and saved the code map; 1 step failed and was retried.');
+      await expect(panel.locator('[data-run-summary]')).toHaveText('Read 2 files, searched once, ran 1 command and saved the code map; 1 step failed.');
       const files = panel.getByRole('region', { name: 'Files it read' });
       await expect(files).toContainText('packages/myco/src/runner/loop.ts');
       await expect(files).toContainText('packages/myco-shared/src/command-shape.ts');
@@ -294,9 +294,10 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
       await expect(calls).toContainText('Searched packages/myco-server/src');
       await expect(calls).toContainText('Ran git log --oneline');
       await expect(calls).toContainText('Map text must be a bounded nonempty line.');
-      await expect(calls.getByRole('listitem').nth(5)).toContainText('tried again, and it worked');
+      await expect(calls.getByRole('listitem').nth(5)).toContainText('a later call to the same operation succeeded');
+      await expect(calls.getByRole('button', { name: 'Show more' })).toHaveCount(0);
       await expect(calls.getByRole('listitem').nth(6)).toContainText('117 ms · Succeeded');
-      await expect(calls.locator('[data-coverage="complete"]')).toContainText('Every step the worker kept is listed.');
+      await expect(calls.locator('[data-coverage="complete"]')).toContainText('Every step the worker saw is listed.');
       const account = panel.locator('[data-run-account]');
       await expect(account).toContainText('Recovered: Shortened the entry and saved the map again');
       await expect(panel.locator('[data-audit-checks]')).toHaveAttribute('data-audit-checks', 'clear');
