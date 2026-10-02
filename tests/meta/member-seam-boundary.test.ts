@@ -54,8 +54,8 @@ const ALLOWLIST: readonly string[] = [
   'member/**',
   'packages/myco-shared/src/recall.ts',
   'packages/myco-shared/src/capture-rules.ts',
-  // The manifests' capture rules and the harness `any_agent` rules apply to, generated: data only.
-  'packages/myco-shared/src/capture-rules.generated.ts',
+  // The harness `any_agent` capture rules also apply to, generated from the manifests: data only.
+  'packages/myco-shared/src/any-agent-rules.generated.ts',
   'packages/myco-shared/src/dot-path.ts',
   'packages/myco-shared/src/member-protocol.ts',
   'packages/myco-shared/src/run-control.ts',

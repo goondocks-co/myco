@@ -1,9 +1,6 @@
 import type { CaptureRule } from './capture-rule-schema.js';
 import { getAtPath } from './dot-path.js';
-import { DEFAULT_CAPTURE_AGENT } from './capture-rules.generated.js';
-
-/** The harness rules scoped `any_agent` apply to as well as their own: the manifest that declares `capture.anyAgentRules`. */
-export { DEFAULT_CAPTURE_AGENT };
+import { ANY_AGENT_RULES_HARNESS } from './any-agent-rules.generated.js';
 
 export interface CaptureRuleBundle {
   name: string;
@@ -71,7 +68,8 @@ export function evaluateStartRules(bundles: readonly CaptureRuleBundle[], detect
 function scopePermits(rule: CaptureRule, owningAgent: string, detectedAgent: string): boolean {
   if (owningAgent === detectedAgent) return true;
   if (rule.scope !== 'any_agent') return false;
-  return detectedAgent === DEFAULT_CAPTURE_AGENT;
+  // A rule scoped `any_agent` also applies to the hooks of the harness whose manifest declares `capture.anyAgentRules`.
+  return detectedAgent === ANY_AGENT_RULES_HARNESS;
 }
 
 function whenMatches(rule: CaptureRule, ctx: UserPromptRuleContext): boolean {

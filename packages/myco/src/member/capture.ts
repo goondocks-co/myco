@@ -12,6 +12,7 @@ import { machinePlanDirs } from './machine-settings.js';
 import fs from 'node:fs';
 import { readHookInput } from '../hooks/input.js';
 import { NO_AGENT } from '../hooks/normalize.js';
+import { recordRefusedHook } from './refused-hooks.js';
 import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { resolveHookBudget, type HookBudget } from './budget.js';
@@ -164,6 +165,7 @@ export async function runMemberHook(
     // A hook command names its harness (`--symbiont`); one that names none, or one no manifest knows, is not guessed at.
     if (input.agent === NO_AGENT) {
       process.stderr.write('[myco] member: hook command must declare --symbiont <harness> — no capture\n');
+      recordRefusedHook('no-harness', { mycoHome: resolveMycoHome({ cwd: hookCwd(input) }), now: (opts.now ?? Date.now)(), hook: hookName });
       return;
     }
     symbiont = input.agent;
@@ -180,6 +182,8 @@ export async function runMemberHook(
     // held under, so a pinned project's hooks read the registry that holds it.
     const cwd = hookCwd(input);
     const mycoHome = resolveMycoHome({ cwd });
+    // A command that declares no credential source is refused by the resolve below; it is counted here, where its home is known.
+    if (source === null) recordRefusedHook('no-credential', { mycoHome, now: now(), hook: hookName });
 
     // A sandbox arrives holding a join code and nothing else; this turns it into a
     // registry entry on disk so the resolve below finds a credential like any other

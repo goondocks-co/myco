@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { MEMBER_SPOOL_QUARANTINE_MS } from '@myco/member/constants.js';
 import { mintId, promptEvent, toolUseEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { normalizeHookInput } from '@myco/hooks/normalize.js';
+import { normalizeHookInput, _resetManifestCache } from '@myco/hooks/normalize.js';
 import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient, type FetchLike } from '@myco/member/transport.js';
@@ -37,7 +37,10 @@ describe('outage convergence', () => {
     const sessions = Array.from({ length: SESSIONS }, (_, i) => `sess-outage-${i}`);
     const ctxs = new Map(sessions.map((s) => [s, { agent: 'claude-code', sessionId: s, stage: spool.stagerFor(s), version: '2.0.0-test' } as EnvelopeContext]));
 
-    // Write-ahead: every event is appended before any drain.
+    // Write-ahead: every event is appended before any drain. The tool calls are a Claude Code hook's: its command names it.
+    const argv = process.argv;
+    process.argv = ['node', 'myco', 'hook', 'post-tool-use', '--symbiont', 'claude-code'];
+    _resetManifestCache();
     const ids = new Set<string>();
     for (let i = 0; i < TOTAL; i++) {
       const sessionId = sessions[i % SESSIONS];
@@ -48,6 +51,8 @@ describe('outage convergence', () => {
       ids.add(ev.envelope.eventId);
       spool.append(sessionId, ev);
     }
+    process.argv = argv;
+    _resetManifestCache();
 
     // A server that misbehaves on a schedule: every 9th call throws, every 17th
     // answers 503 with retry-after, every 23rd answers 429, every 29th hangs

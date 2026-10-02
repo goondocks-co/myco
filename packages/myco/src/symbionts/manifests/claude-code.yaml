@@ -17,8 +17,8 @@ capture:
   compactionStart:
     field: source
     equals: compact
-  # Rules scoped `any_agent` apply here too: before every hook command named its harness, a hook that named none was
-  # taken for Claude Code's.
+  # A capture rule another manifest scopes `any_agent` applies to Claude Code's hooks too: Codex's drop of a session
+  # with no transcript path drops a Claude Code session with none.
   anyAgentRules: true
   # Claude Code continues one conversation under a new session id on both an
   # auto-compact rollover and a fork. Either way it carries the transcript

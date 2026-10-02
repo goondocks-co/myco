@@ -280,8 +280,9 @@ const CaptureManifestSchema = z.object({
    */
   compactionStart: z.object({ field: z.string().min(1), equals: z.string() }).strict().optional(),
   /**
-   * Rules scoped `any_agent` apply to this harness as well as to their own: it is the harness a hook was taken for when
-   * nothing named one, before every hook command named its harness. Exactly one manifest declares it.
+   * A capture rule any manifest scopes `any_agent` also applies to this harness's hooks, as well as to its own
+   * harness's: Codex's drop of a session with no transcript, say, applies to this harness's sessions too. Exactly one
+   * manifest declares it (codegen refuses none or two).
    */
   anyAgentRules: z.boolean().optional(),
 });

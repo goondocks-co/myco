@@ -43,10 +43,10 @@ import {
   CAPTURE_BUFFER_DRAIN_SESSION_CAP,
   CAPTURE_BUFFER_DRAIN_BACKOFF_CAP_PASSES,
   TOMBSTONE_RETENTION_MS,
-  DEFAULT_SYMBIONT_NAME,
   MS_PER_SECOND,
   epochSeconds,
 } from '@myco/constants.js';
+import { DEFAULT_SYMBIONT_NAME } from './default-symbiont.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { DaemonLogger } from './logger.js';
 import type { EventDedupCache } from './event-dedup-cache.js';

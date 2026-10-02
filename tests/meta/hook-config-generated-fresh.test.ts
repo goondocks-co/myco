@@ -25,6 +25,7 @@ const BUNDLED_MANIFESTS_PATH = path.join(REPO_ROOT, 'packages/myco/src/symbionts
 const CAPTURE_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/capture-rules.generated.ts');
 const RESUME_COMMANDS_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/resume-commands.generated.ts');
 const PREAMBLE_PATH = path.join(REPO_ROOT, 'packages/myco/src/cli/launch-preamble.generated.ts');
+const ANY_AGENT_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/any-agent-rules.generated.ts');
 
 /** 1-based line of the first difference, for a failure message that names the drift. */
 function firstDifferingLine(a: string, b: string): number {
@@ -50,6 +51,10 @@ describe('generated hook config freshness', () => {
 
   it('gives the launch preamble the manifests\' project directories and stdin workspaces without generated drift', () => {
     expect(fs.readFileSync(PREAMBLE_PATH, 'utf-8')).toBe(fresh.preamble);
+  });
+
+  it('names the harness any_agent rules also apply to without generated drift', () => {
+    expect(fs.readFileSync(ANY_AGENT_RULES_PATH, 'utf-8')).toBe(fresh.anyAgentRules);
   });
 
   it('hooks/hook-config.generated.ts is byte-identical to a fresh generation (run `npm run codegen`)', () => {

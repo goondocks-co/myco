@@ -373,6 +373,3 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "rules": []
   }
 ] as const;
-
-/** The harness rules scoped `any_agent` apply to as well as their own (its manifest's `capture.anyAgentRules`). */
-export const DEFAULT_CAPTURE_AGENT = "claude-code";

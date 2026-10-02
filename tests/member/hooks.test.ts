@@ -32,6 +32,8 @@ import { FEATURES_HEADER, TURN_END_HEADER } from '@goondocks/myco-shared/member-
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
+import { readRefusedHook, REFUSED_HOOK_RETENTION_MS } from '@myco/member/refused-hooks.js';
+import { refusedHookChecks } from '@myco/cli/member-doctor.js';
 
 let mycoHome: string;
 let rig: MemberRig;
@@ -629,8 +631,15 @@ describe('member hooks through the worker: hook-source agents', () => {
   });
 });
 
-describe('a hook command that names no harness (#1561)', () => {
-  it('captures nothing and says why, rather than taking the hook for a harness it did not name', async () => {
+describe('a hook command that names no harness, or no credential source (#1561)', () => {
+  const status = async (): Promise<string[]> => {
+    const lines: string[] = [];
+    await runMemberCli(['status'], { mycoHome, fetch: rig.fetch, stdout: (l) => lines.push(l), stderr: () => {} });
+    return lines.filter((l) => l.startsWith('refused hook:'));
+  };
+
+  it('captures nothing, says why, and is counted where status and doctor show it', async () => {
+    expect({ status: await status(), doctor: refusedHookChecks(mycoHome, Date.now()) }).toEqual({ status: [], doctor: [] });
     const cases: Array<[string, string | null]> = [['no --symbiont', null], ['a harness no manifest knows', 'no-such-harness']];
     for (const [what, symbiont] of cases) {
       const out = await runHook('session-start', { session_id: `sess-unnamed-${String(symbiont)}`, hook_event_name: 'SessionStart', cwd: process.cwd() }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont });
@@ -638,5 +647,21 @@ describe('a hook command that names no harness (#1561)', () => {
         .toEqual({ what, refused: true, spooled: [] });
     }
     expect(dialled()).toEqual([]);
+    expect(await status()).toEqual(['refused hook: 2 hook invocation(s) on this machine named no harness Myco knows (`--symbiont <harness>`), so captured nothing']);
+    expect(refusedHookChecks(mycoHome, Date.now()).map((c) => [c.name, c.status, c.detail.includes('2 hook invocation(s) on this machine named no harness')])).toEqual([['Capture', 'warn', true]]);
+  });
+
+  it('counts a hook that declares no credential source the same way', async () => {
+    const out = await runHook('session-start', { session_id: 'sess-no-credential', hook_event_name: 'SessionStart', cwd: process.cwd() }, { helpers: 'run', fetch: fetchSpy.fetch, credential: null });
+    expect(out.stderr).toContain('hook command must declare --credential registry|env');
+    expect(await status()).toEqual(['refused hook: 1 hook invocation(s) on this machine declared no credential source (`--credential registry|env`), so captured nothing']);
+    expect(refusedHookChecks(mycoHome, Date.now())).toHaveLength(1);
+  });
+
+  it('stops being reported once a month passes with no new refusal', async () => {
+    await runHook('session-start', { session_id: 'sess-old', hook_event_name: 'SessionStart', cwd: process.cwd() }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: null });
+    expect(readRefusedHook('no-harness', mycoHome, Date.now())?.count).toBe(1);
+    expect(readRefusedHook('no-harness', mycoHome, Date.now() + REFUSED_HOOK_RETENTION_MS + 1)).toBeNull();
+    expect(await status()).toEqual([]);
   });
 });

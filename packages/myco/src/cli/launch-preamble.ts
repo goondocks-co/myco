@@ -5,6 +5,7 @@ import { resolveRuntimePinForCwd } from '../runtime/runtime-pin.js';
 import { setBufferedStdin } from '../hooks/read-stdin.js';
 import { startingJobEnv } from '../runtime/spawn-detached.js';
 import { PROJECT_DIR_ENV_VARS, STDIN_WORKSPACE_FIELDS } from './launch-preamble.generated.js';
+import { readSymbiontFlag } from '../hooks/symbiont-flag.js';
 
 export type LaunchCommand = 'hook' | 'mcp' | 'tool';
 
@@ -40,20 +41,11 @@ interface ExecOptions {
 
 /**
  * Where a hook starts: the project directory its harness names (its manifest's `projectDirEnvVar`), then any other
- * harness's, then `MYCO_PROJECT_ROOT`. The first that is set and can be entered wins.
+ * harness's in manifest-name order, then `MYCO_PROJECT_ROOT`. The first that is set and can be entered wins.
  */
 function projectDirEnvVars(harness: string | undefined): string[] {
   const own = harness === undefined ? undefined : PROJECT_DIR_ENV_VARS[harness];
   return [...new Set([...(own === undefined ? [] : [own]), ...Object.values(PROJECT_DIR_ENV_VARS), 'MYCO_PROJECT_ROOT'])];
-}
-
-/** The harness a hook command names (`--symbiont <name>` or `--symbiont=<name>`). */
-function harnessNamed(argv: readonly string[]): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--symbiont') return argv[i + 1];
-    if (argv[i]!.startsWith('--symbiont=')) return argv[i]!.slice('--symbiont='.length);
-  }
-  return undefined;
 }
 
 /**
@@ -118,7 +110,7 @@ export function runLaunchPreamble(
       return;
     }
 
-    const harness = harnessNamed(argv);
+    const harness = readSymbiontFlag(argv);
     for (const name of projectDirEnvVars(harness)) {
       const value = process.env[name];
       if (value && value !== '.') {
