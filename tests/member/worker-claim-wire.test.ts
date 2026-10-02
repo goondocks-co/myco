@@ -411,17 +411,24 @@ describe('a worker on the real claim wire', () => {
   }, 30_000);
 
   it('neither lists nor reports models to a Deployment that does not advertise storing them, and still claims', async () => {
-    expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
-    const r = await rig((path) => {
-      if (path === '/members/status') return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'turn,worker-accounting-v1,execution-profile,profile-outcome-v1' } });
+    const evidence = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-unlisted-')));
+    const listedFile = join(evidence, 'listed');
+    expect(stubProfileHarness({ listedFile })).toEqual(PROFILE_STUB_DETECTED);
+    const stopping = new AbortController();
+    const r = await rig((path, n) => {
+      if (path === '/members/status') {
+        if (n >= 6) stopping.abort();
+        return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'turn,worker-accounting-v1,execution-profile,profile-outcome-v1' } });
+      }
       return null;
     });
     const admin = await r.member('mem_admin', 'admin');
     r.queueRun('run_older_deployment');
-    const attached = await r.attach(admin);
+    const attached = await r.attach(admin, { once: false, stopping });
     expect(attached).toMatchObject({ driven: 1, refused: null });
+    expect(r.sent.filter((sent) => sent.path === '/members/status').length).toBeGreaterThanOrEqual(5);
     expect(r.sent.filter((sent) => sent.path === '/worker/models')).toEqual([]);
-    expect(attached.lines.filter((line) => line.includes('models'))).toEqual([]);
+    expect(existsSync(listedFile)).toBe(false);
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM worker_model_catalogs`).get()).toEqual({ n: 0 });
     r.e.sqlite.close();
   }, 30_000);
