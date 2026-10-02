@@ -192,7 +192,7 @@ export function heldPartition(modelKey: string): HeldPartition {
 }
 
 /** Why a model change is held while search holds results built with the current model. */
-export const SWITCH_REFUSAL = 'Switching the embedding model rebuilds search for every source. Use Switch embedding model to build the new index alongside the current one';
+export const SWITCH_REFUSAL = 'Switching the embedding model rebuilds search for every source. Choose Switch to this model to rebuild it in the background while search keeps using the current one';
 
 /** Why a model cannot serve search on any server: its results are larger than search stores. */
 export const tooLargeRefusal = (model: string, dimensions: number): string =>

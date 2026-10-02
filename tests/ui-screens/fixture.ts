@@ -399,6 +399,10 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   }
   await expectOk(await creation(true), 'let machines create projects again');
 
+  // Search reads with Ollama's bge-m3, chosen before anything was built, and a switch to nomic-embed-text is under way.
+  await expectOk(await fetch(`${url}/api/embedding`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ provider: 'ollama', model: 'bge-m3' }) }), 'choose the embedding model');
+  seedEmbeddingSwitch(ctx.databasePath, now);
+
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
   settleWaitingRepositories(ctx.databasePath, now);
   seedWorkerContact(ctx.databasePath, now);
@@ -415,6 +419,31 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     plans: PLANS.length,
     runs,
   };
+}
+
+/** The search the fixture's Ollama models are partitioned under. */
+const OLLAMA_KEY = (model: string) => JSON.stringify(['ollama', model, 'http://localhost:11434/api/embed']);
+
+/**
+ * Search built with bge-m3 for every source, and a switch to nomic-embed-text a third of the way through, started twelve
+ * minutes ago by the owner. Each receipt stands for a vector the embedding run wrote; the fixture serves no search by
+ * meaning, so no vector is stored.
+ */
+function seedEmbeddingSwitch(databasePath: string, now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    const total = (sqlite.query(`SELECT COUNT(*) AS n FROM embedding_sources`).get() as { n: number }).n;
+    const receipts = (modelKey: string, count: number) => sqlite.query(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at)
+      SELECT project_id, ?, lower(hex(randomblob(16))), type, record_id, revision, 1, ? FROM embedding_sources ORDER BY type, record_id LIMIT ?`).run(modelKey, now, count);
+    receipts(OLLAMA_KEY('bge-m3'), total);
+    receipts(OLLAMA_KEY('nomic-embed-text'), Math.floor(total / 3));
+    sqlite.query(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, started_at, started_by, updated_at)
+      VALUES ('deployment', ?, 'ollama', 'nomic-embed-text', NULL, ?, ?, 48000, 30, ?, 'building', NULL, ?, ?, ?)`)
+      .run(crypto.randomUUID(), OLLAMA_KEY('nomic-embed-text'), OLLAMA_KEY('bge-m3'), now - 2 * MINUTE, now - 12 * MINUTE, OWNER.id, now - 12 * MINUTE);
+  } finally {
+    sqlite.close();
+  }
 }
 
 /**

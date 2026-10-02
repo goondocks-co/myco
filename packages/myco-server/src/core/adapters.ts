@@ -15,7 +15,8 @@
 
 import type { DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import type { EmbeddingProvider } from './embedding/provider.js';
-import type { EmbeddingPlatform } from './embedding/configured-provider.js';
+import type { EmbeddingPlatform, EmbeddingProviderAnswer } from './embedding/configured-provider.js';
+import type { StoredEmbedding } from './embedding/policy.js';
 import type { VectorStore } from './embedding/vectors.js';
 
 // ---------------------------------------------------------------------------
@@ -246,6 +247,8 @@ export interface JobBudget {
 export interface ServerEnv {
   vectors?: VectorStore;
   embeddingProvider?: () => Promise<EmbeddingProvider | null>;
+  /** The provider a named embedding choice resolves to on this Deployment, or why it cannot compute vectors here now. */
+  embeddingProviderFor?: (choice: StoredEmbedding) => Promise<EmbeddingProviderAnswer>;
   /** What the embedding policy resolves against: absent, the platform's target with no embedding binding of its own. */
   embeddingPlatform?: EmbeddingPlatform;
   platform: PlatformDescriptor;

@@ -149,7 +149,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     id: 'embedding',
     section: 'models',
     label: 'Search embeddings',
-    note: 'What makes search find things by meaning: the provider and model search reads every source with. Changing the model rebuilds search for every source, so a model is chosen once, before search is built.',
+    note: 'What makes search find things by meaning: the provider and model search reads every source with. Changing the model once search is built rebuilds it for every source in the background, and search keeps working meanwhile.',
     leaves: [
       { leaf: 'embedding.provider', label: 'Embedding provider', kind: 'embedding-provider' },
       { leaf: 'embedding.model', label: 'Embedding model', kind: 'embedding-model' },

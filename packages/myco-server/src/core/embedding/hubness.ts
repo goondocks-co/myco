@@ -138,6 +138,12 @@ export async function hubnessPending(db: RelationalStore, projectId: string, mod
   return row?.pending === 1;
 }
 
+/** Calibration of a Project's spores under a model has work to do: it holds at least two current spore vectors and calibration is pending. */
+export async function calibrationPending(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
+  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
+  return count >= 2 && hubnessPending(db, projectId, model, now);
+}
+
 /**
  * Each current spore vector's moments cover its cosine distance to every other current spore vector. The membership
  * record changes by operations of at most `HUBNESS_SUBJECTS` spore vectors, all joining or all leaving: an operation adds or

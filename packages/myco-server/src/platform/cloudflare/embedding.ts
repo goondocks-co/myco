@@ -1,4 +1,4 @@
-import { embeddingText, embeddingValues, EmbeddingUnavailable, EMBEDDING_TIMEOUT_MS, type EmbeddingProvider } from '../../core/embedding/provider.js';
+import { embeddingText, embeddingValues, workersAiFailure, EmbeddingUnavailable, EMBEDDING_TIMEOUT_MS, type EmbeddingProvider } from '../../core/embedding/provider.js';
 import type { EmbeddingSelection } from '../../core/embedding/policy.js';
 import { EMBEDDING_CATALOGUE } from '@goondocks/myco-shared/settings-contract';
 
@@ -15,8 +15,9 @@ export function cloudflareEmbeddingProvider(ai: EmbeddingBinding, selection: Pic
     modelKey: selection.modelKey,
     async embed(text) {
       let result: unknown;
-      try { result = await ai.run(selection.model, { text: [embeddingText(text)] }, { signal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS) }); }
-      catch { throw new EmbeddingUnavailable('embedding provider could not be reached'); }
+      const signal = AbortSignal.timeout(EMBEDDING_TIMEOUT_MS);
+      try { result = await ai.run(selection.model, { text: [embeddingText(text)] }, { signal }); }
+      catch (error) { throw new EmbeddingUnavailable('embedding provider could not be reached', workersAiFailure(error, signal.aborted, Date.now())); }
       return embeddingValues((result as { data?: unknown[] })?.data?.[0]);
     },
   };

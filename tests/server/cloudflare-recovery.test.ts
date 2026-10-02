@@ -17,6 +17,7 @@ import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.
 import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
 import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
+import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
 
 /** Rewrites a current snapshot as a schema-41 Deployment captured it: no object lifecycle, no generation column. */
 function asSchema41(file: string): void {
@@ -43,6 +44,11 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
   const key = wrappingKeyFromText(async () => wrapKey, 'fixture');
   await deploymentSecretStore(sqliteRelationalStore(data), key).put('fixture', 'sealed-fixture-value', 'fixture', 1);
   data.exec("INSERT INTO schema_meta(key,value) VALUES('fixture_note','keep this finding')");
+  // A switch building to a paid model, and a source embedding passes over, as the source Deployment held them.
+  data.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, retry_at, failures, started_at, started_by, updated_at)
+    VALUES ('deployment', 'recovered-switch', 'workers-ai', '@cf/baai/bge-base-en-v1.5', NULL, 'k2', 'k1', 10, 1, 1, 'building', NULL, NULL, 0, 1, 'mem_machine_1', 1)`);
+  data.run(`INSERT INTO embedding_source_failures (project_id, type, record_id, model_key, revision, reason, recorded_at)
+    VALUES ('proj_1', 'plan', 'gone', '', 'r1', 'its stored text is missing', 1)`);
   // One blob registered before generations and one under its own generation, each held under its own name at the source.
   const bodies = new Map<string, string>();
   const sourceObjects = new Map<string, string>();
@@ -149,6 +155,9 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     expect(readDeploymentRecord(f.mycoHome)).toEqual(result.record);
     expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(original);
     assertRestoredObjects(f);
+    // The switch waits for an admin on the replacement, and what the rebuilt index passes over is found again.
+    expect(f.destination.query('SELECT state, reason, retry_at FROM embedding_switches').all()).toEqual([{ state: 'paused', reason: RECOVERED_SWITCH, retry_at: null }]);
+    expect(f.destination.query('SELECT COUNT(*) AS n FROM embedding_source_failures').get()).toEqual({ n: 0 });
     await expect(f.restore()).rejects.toThrow('fresh MYCO_HOME');
   } finally { f.cleanup(); }
 });

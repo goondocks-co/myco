@@ -88,9 +88,15 @@ async function expectModels(page: Page): Promise<void> {
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(tabs.getByRole('link', { name: 'Models and keys' })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Claude Code tiers' })).toBeVisible();
-  await expect(page.getByLabel('Embedding provider')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Embedding provider' })).toBeVisible();
   await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
   await expect(page.locator('#credentials')).toBeVisible();
+  if (!onFixture()) return;
+  // The switch to nomic-embed-text under way: its progress, what search uses meanwhile, and the admin's way out.
+  const rebuild = page.locator('[data-embedding-switch="building"]');
+  await expect(rebuild).toContainText('Rebuilding search with nomic-embed-text (768 dimensions)');
+  await expect(rebuild).toContainText('Search keeps using bge-m3 until every source is done');
+  await expect(rebuild.getByRole('button', { name: 'Cancel the switch' })).toBeVisible();
 }
 
 /** A section of Settings past the first: its tab is the current one, and its first group is on the page. */
@@ -125,6 +131,7 @@ async function expectHealth(page: Page): Promise<void> {
   // The worker is named by its machine, never by its credential or machine id.
   await expect(page.locator('section#workers')).toContainText('Ada’s studio Mac');
   await expect(page.locator('section#status')).toContainText('Myco');
+  await expect(page.locator('[data-health-search-rebuild]')).toContainText('Rebuilding search with nomic-embed-text');
 }
 
 async function expectMyMachines(page: Page): Promise<void> {

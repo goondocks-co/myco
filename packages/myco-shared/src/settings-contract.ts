@@ -44,7 +44,73 @@ export interface EffectiveSetting {
 }
 
 /** One embedding model as a target offers it, and why it cannot be chosen now, if it cannot. */
-export interface EmbeddingModelChoice { id: string; dimensions: number | null; refusal: string | null }
+export interface EmbeddingModelChoice {
+  id: string;
+  dimensions: number | null;
+  refusal: string | null;
+  /** Whether Switch embedding model can move search to this model: true where `refusal` holds it only because search holds results. */
+  rebuilds: boolean;
+}
+
+/**
+ * A switch of the embedding model under way: the model search moves to, the one it keeps answering with until every
+ * source holds a vector under the new one, how far the new vectors have come, and why it is paused, if it is.
+ */
+export interface EmbeddingSwitchStatus {
+  id: string;
+  provider: EmbeddingProviderId;
+  providerLabel: string;
+  model: string;
+  dimensions: number | null;
+  /** The model search answers with meanwhile, or null when none is in use. */
+  from: { model: string; dimensions: number | null } | null;
+  state: 'building' | 'paused';
+  /** Why the switch is paused, or why its model is held off until `retryAt`, in the reader's words. */
+  reason: string | null;
+  /** While building, the instant the new model is asked again after it failed, or null. */
+  retryAt: number | null;
+  /** Why a building switch has not moved for a while, or null while it moves. */
+  stalled: string | null;
+  /**
+   * Sources done under the new model (built, or skipped as unreadable), and every source search covers in Projects that
+   * are not archived, the ones added meanwhile included.
+   */
+  done: number;
+  total: number;
+  /** Sources the new model passes over, which count as done and lose search by meaning once search moves: each named, with why. */
+  passedOver: PassedOverList;
+  startedAt: number;
+  /** The tokens the new model is estimated to read, and what that costs where the provider publishes a price. */
+  estimatedTokens: number;
+  estimatedUsd: number | null;
+}
+
+/** What switching search to a model would read and cost, answered before an admin confirms it. */
+export interface EmbeddingSwitchEstimate {
+  provider: EmbeddingProviderId;
+  model: string;
+  sources: number;
+  estimatedTokens: number;
+  /** Null where the provider publishes no price. */
+  estimatedUsd: number | null;
+  /** Sources known now to be passed over under the model, which have no search by meaning after the switch. */
+  passedOver: PassedOverList;
+}
+
+/** One source search by meaning passes over: which Project, what it is, and why, in the reader's words. */
+export interface PassedOverSourceView {
+  projectId: string;
+  projectName: string | null;
+  /** `session`, `spore`, `plan` or `skill`. */
+  type: string;
+  title: string;
+  reason: string;
+  /** Whether no model can read it, or only the model it was passed over under refused it. */
+  anyModel: boolean;
+}
+
+/** The sources search by meaning passes over, the newest first, and how many there are in all. */
+export interface PassedOverList { count: number; sources: PassedOverSourceView[] }
 
 /** A provider a target offers, with its models and endpoint. */
 export interface EmbeddingProviderChoice {
@@ -70,6 +136,8 @@ export interface EmbeddingChoices {
   capacity: number;
   /** Whether the model may change now: true only while search holds no results, since a change rebuilds it. */
   switchable: boolean;
+  /** The switch of the embedding model under way, or null. */
+  switch: EmbeddingSwitchStatus | null;
 }
 
 /** The embedding providers Myco can compute vectors with. */
@@ -80,6 +148,8 @@ export interface EmbeddingModelOption {
   id: string;
   /** How many dimensions each vector has. */
   dimensions: number;
+  /** What the provider charges, in US dollars, per million input tokens, where it publishes a price. */
+  usdPerMillionTokens?: number;
 }
 
 export interface EmbeddingProviderSpec {
@@ -122,13 +192,13 @@ export const EMBEDDING_CATALOGUE: Readonly<Record<EmbeddingProviderId, Embedding
     label: 'Cloudflare Workers AI',
     targets: ['cloudflare'],
     models: [
-      { id: '@cf/baai/bge-m3', dimensions: 1024 },
-      { id: '@cf/qwen/qwen3-embedding-0.6b', dimensions: 1024 },
-      { id: '@cf/baai/bge-large-en-v1.5', dimensions: 1024 },
-      { id: '@cf/baai/bge-base-en-v1.5', dimensions: 768 },
-      { id: '@cf/baai/bge-small-en-v1.5', dimensions: 384 },
+      { id: '@cf/baai/bge-m3', usdPerMillionTokens: 0.012, dimensions: 1024 },
+      { id: '@cf/qwen/qwen3-embedding-0.6b', usdPerMillionTokens: 0.012, dimensions: 1024 },
+      { id: '@cf/baai/bge-large-en-v1.5', usdPerMillionTokens: 0.204, dimensions: 1024 },
+      { id: '@cf/baai/bge-base-en-v1.5', usdPerMillionTokens: 0.067, dimensions: 768 },
+      { id: '@cf/baai/bge-small-en-v1.5', usdPerMillionTokens: 0.02, dimensions: 384 },
       { id: '@cf/google/embeddinggemma-300m', dimensions: 768 },
-      { id: '@cf/pfnet/plamo-embedding-1b', dimensions: 2048 },
+      { id: '@cf/pfnet/plamo-embedding-1b', usdPerMillionTokens: 0.019, dimensions: 2048 },
     ],
     defaultModel: '@cf/baai/bge-m3',
     customModels: false,
@@ -141,27 +211,27 @@ export const EMBEDDING_CATALOGUE: Readonly<Record<EmbeddingProviderId, Embedding
     label: 'OpenRouter',
     targets: ['cloudflare', 'bun'],
     models: [
-      { id: 'openai/text-embedding-3-small', dimensions: 1536 },
-      { id: 'baai/bge-m3', dimensions: 1024 },
-      { id: 'baai/bge-large-en-v1.5', dimensions: 1024 },
-      { id: 'baai/bge-base-en-v1.5', dimensions: 768 },
-      { id: 'openai/text-embedding-3-large', dimensions: 3072 },
-      { id: 'openai/text-embedding-ada-002', dimensions: 1536 },
-      { id: 'mistralai/mistral-embed-2312', dimensions: 1024 },
-      { id: 'mistralai/codestral-embed-2505', dimensions: 1536 },
-      { id: 'google/gemini-embedding-001', dimensions: 3072 },
-      { id: 'qwen/qwen3-embedding-4b', dimensions: 2560 },
-      { id: 'qwen/qwen3-embedding-8b', dimensions: 4096 },
-      { id: 'intfloat/multilingual-e5-large', dimensions: 1024 },
-      { id: 'intfloat/e5-large-v2', dimensions: 1024 },
-      { id: 'intfloat/e5-base-v2', dimensions: 768 },
-      { id: 'thenlper/gte-large', dimensions: 1024 },
-      { id: 'thenlper/gte-base', dimensions: 768 },
-      { id: 'sentence-transformers/all-mpnet-base-v2', dimensions: 768 },
-      { id: 'sentence-transformers/multi-qa-mpnet-base-dot-v1', dimensions: 768 },
-      { id: 'sentence-transformers/all-minilm-l12-v2', dimensions: 384 },
-      { id: 'sentence-transformers/all-minilm-l6-v2', dimensions: 384 },
-      { id: 'sentence-transformers/paraphrase-minilm-l6-v2', dimensions: 384 },
+      { id: 'openai/text-embedding-3-small', usdPerMillionTokens: 0.02, dimensions: 1536 },
+      { id: 'baai/bge-m3', usdPerMillionTokens: 0.01, dimensions: 1024 },
+      { id: 'baai/bge-large-en-v1.5', usdPerMillionTokens: 0.01, dimensions: 1024 },
+      { id: 'baai/bge-base-en-v1.5', usdPerMillionTokens: 0.005, dimensions: 768 },
+      { id: 'openai/text-embedding-3-large', usdPerMillionTokens: 0.13, dimensions: 3072 },
+      { id: 'openai/text-embedding-ada-002', usdPerMillionTokens: 0.1, dimensions: 1536 },
+      { id: 'mistralai/mistral-embed-2312', usdPerMillionTokens: 0.1, dimensions: 1024 },
+      { id: 'mistralai/codestral-embed-2505', usdPerMillionTokens: 0.15, dimensions: 1536 },
+      { id: 'google/gemini-embedding-001', usdPerMillionTokens: 0.15, dimensions: 3072 },
+      { id: 'qwen/qwen3-embedding-4b', usdPerMillionTokens: 0.02, dimensions: 2560 },
+      { id: 'qwen/qwen3-embedding-8b', usdPerMillionTokens: 0.01, dimensions: 4096 },
+      { id: 'intfloat/multilingual-e5-large', usdPerMillionTokens: 0.01, dimensions: 1024 },
+      { id: 'intfloat/e5-large-v2', usdPerMillionTokens: 0.01, dimensions: 1024 },
+      { id: 'intfloat/e5-base-v2', usdPerMillionTokens: 0.005, dimensions: 768 },
+      { id: 'thenlper/gte-large', usdPerMillionTokens: 0.01, dimensions: 1024 },
+      { id: 'thenlper/gte-base', usdPerMillionTokens: 0.005, dimensions: 768 },
+      { id: 'sentence-transformers/all-mpnet-base-v2', usdPerMillionTokens: 0.005, dimensions: 768 },
+      { id: 'sentence-transformers/multi-qa-mpnet-base-dot-v1', usdPerMillionTokens: 0.005, dimensions: 768 },
+      { id: 'sentence-transformers/all-minilm-l12-v2', usdPerMillionTokens: 0.005, dimensions: 384 },
+      { id: 'sentence-transformers/all-minilm-l6-v2', usdPerMillionTokens: 0.005, dimensions: 384 },
+      { id: 'sentence-transformers/paraphrase-minilm-l6-v2', usdPerMillionTokens: 0.005, dimensions: 384 },
     ],
     defaultModel: 'openai/text-embedding-3-small',
     customModels: false,
@@ -211,9 +281,9 @@ export const EMBEDDING_CATALOGUE: Readonly<Record<EmbeddingProviderId, Embedding
     label: 'OpenAI',
     targets: ['bun'],
     models: [
-      { id: 'text-embedding-3-small', dimensions: 1536 },
-      { id: 'text-embedding-3-large', dimensions: 3072 },
-      { id: 'text-embedding-ada-002', dimensions: 1536 },
+      { id: 'text-embedding-3-small', usdPerMillionTokens: 0.02, dimensions: 1536 },
+      { id: 'text-embedding-3-large', usdPerMillionTokens: 0.13, dimensions: 3072 },
+      { id: 'text-embedding-ada-002', usdPerMillionTokens: 0.1, dimensions: 1536 },
     ],
     defaultModel: 'text-embedding-3-small',
     customModels: false,
@@ -223,17 +293,25 @@ export const EMBEDDING_CATALOGUE: Readonly<Record<EmbeddingProviderId, Embedding
   },
 };
 
-/** Where each provider's model list and dimensions were read from, and when. */
-export const EMBEDDING_CATALOGUE_SOURCES: Readonly<Partial<Record<EmbeddingProviderId, { url: string; read: string; dimensions: string }>>> = {
+/** Where each provider's model list, dimensions and prices were read from, and when. */
+export const EMBEDDING_CATALOGUE_SOURCES: Readonly<Partial<Record<EmbeddingProviderId, { url: string; read: string; dimensions: string; prices: string }>>> = {
   'workers-ai': {
     url: 'https://developers.cloudflare.com/workers-ai/models/?tasks=Text+Embeddings',
     read: '2026-10-02',
     dimensions: 'https://developers.cloudflare.com/ai-search/configuration/models/supported-models/ and each model card (plamo-embedding-1b: huggingface.co/pfnet/plamo-embedding-1b)',
+    prices: 'https://developers.cloudflare.com/workers-ai/platform/pricing/ (embeddinggemma-300m is not priced there)',
   },
   openrouter: {
     url: 'https://openrouter.ai/api/v1/embeddings/models',
     read: '2026-10-02',
     dimensions: 'each model’s published card; models whose dimensions are unpublished are not offered',
+    prices: 'the same listing, pricing.prompt per token',
+  },
+  openai: {
+    url: 'https://developers.openai.com/api/docs/pricing',
+    read: '2026-10-02',
+    dimensions: 'each model’s published card',
+    prices: 'https://developers.openai.com/api/docs/pricing (standard input)',
   },
 };
 
@@ -243,6 +321,11 @@ export const isEmbeddingProvider = (value: unknown): value is EmbeddingProviderI
 /** The dimensions of a provider's model, or null when the catalogue does not know them. */
 export function embeddingDimensions(provider: EmbeddingProviderId, model: string): number | null {
   return EMBEDDING_CATALOGUE[provider].models.find((m) => m.id === model)?.dimensions ?? null;
+}
+
+/** What a provider charges per million input tokens for a model, or null where it publishes no price. */
+export function embeddingPrice(provider: EmbeddingProviderId, model: string): number | null {
+  return EMBEDDING_CATALOGUE[provider].models.find((m) => m.id === model)?.usdPerMillionTokens ?? null;
 }
 
 /** The providers a target offers, in catalogue order. */

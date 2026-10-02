@@ -6,6 +6,8 @@ import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { ago } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords } from './words';
+import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
+import { EmbeddingSwitchPanel, PassedOverSources } from '../settings/EmbeddingSwitch';
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -18,6 +20,29 @@ function schemaLine(schema: StatusResponse['schema']): { tone: 'ok' | 'bad'; wor
   if (schema.matches) return { tone: 'ok', words: `The database is at the version this server expects (${schema.expected}).` };
   if (schema.found === null) return { tone: 'bad', words: 'The database could not be reached.' };
   return { tone: 'bad', words: `The database holds version ${schema.found}; this server expects ${schema.expected}. Some pages may fail until they match.` };
+}
+
+/**
+ * Search by meaning: a switch of the embedding model under way, with how far rebuilding search has come, and the
+ * sources search by meaning passes over, each named with why. Nothing while there is neither.
+ */
+function SearchByMeaning({ now }: { now: number }) {
+  const sw = useEmbeddingSwitch().data;
+  const passed = usePassedOver().data;
+  const switching = sw !== undefined && sw !== null;
+  const leftOut = passed !== undefined && passed.count > 0;
+  if (!switching && !leftOut) return null;
+  return (
+    <div className="flex flex-col gap-s2" data-health-search-rebuild="">
+      <h3 className="t-h3 text-ink">Search by meaning</h3>
+      {switching && <Card><EmbeddingSwitchPanel sw={sw} now={now} /></Card>}
+      {leftOut && (
+        <Card data-health-passed-over="">
+          <PassedOverSources list={passed} lede={`Search by meaning leaves out ${formatCount(passed.count, 'source')}. Search by words still finds ${passed.count === 1 ? 'it' : 'them'}.`} />
+        </Card>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -49,6 +74,8 @@ function StatusBody({ data, now, projectName }: { data: StatusResponse; now: num
         </p>
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
+
+      <SearchByMeaning now={now} />
 
       <div className="flex flex-col gap-s2">
         <h3 className="t-h3 text-ink">What this server runs itself</h3>

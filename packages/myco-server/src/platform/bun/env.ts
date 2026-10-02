@@ -12,7 +12,7 @@ import { inProcessRateLimiter } from './limiter.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { sqliteVectorStore } from './vectors.js';
 import type { NativeSqlite } from './native.js';
-import { configuredEmbeddingProvider, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
+import { configuredEmbeddingProvider, embeddingProviderFor, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
 import { sqliteStoreMaintenance } from './store-maintenance.js';
 
 /** The self-hosted embedding platform: no binding of its own, so every provider is reached over HTTP. */
@@ -111,6 +111,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
   return {
     vectors: sqliteVectorStore(config.sqlite, config.native?.vec0),
     embeddingProvider: () => configuredEmbeddingProvider(db, wrappingKey, fetch, BUN_EMBEDDING_PLATFORM),
+    embeddingProviderFor: (choice) => embeddingProviderFor(db, wrappingKey, fetch, BUN_EMBEDDING_PLATFORM, choice),
     embeddingPlatform: BUN_EMBEDDING_PLATFORM,
     afterResponse: (work) => {
       const tracked: Promise<void> = work().catch(() => undefined).finally(() => { pending.delete(tracked); });

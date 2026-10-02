@@ -802,6 +802,8 @@ describe('gates', () => {
       deployment_setting_resets: join('core', 'settings.ts'),
       project_capabilities: join('core', 'settings.ts'),
       deployment_secrets: join('core', 'secrets.ts'),
+      embedding_switches: join('core', 'embedding', 'switch-store.ts'),
+      embedding_source_failures: join('core', 'embedding', 'reconcile.ts'),
     };
     const offenders: string[] = [];
     for (const file of files(SRC)) {
@@ -1267,6 +1269,7 @@ describe('gates', () => {
       'session:account GET /auth/me',
       'session:account POST /auth/link',
       'session:account POST /auth/logout',
+      'session:admin DELETE /api/embedding/switch/{switchId}',
       'session:admin DELETE /api/projects/{projectId}/repository',
       'session:admin DELETE /api/secrets/{name}',
       'session:admin DELETE /api/settings/{leaf}',
@@ -1290,6 +1293,9 @@ describe('gates', () => {
       'session:admin POST /api/backups/{backupId}/pin',
       'session:admin POST /api/backups/{backupId}/restore',
       'session:admin POST /api/backups/{backupId}/restore-preview',
+      'session:admin POST /api/embedding/switch',
+      'session:admin POST /api/embedding/switch/estimate',
+      'session:admin POST /api/embedding/switch/{switchId}/resume',
       'session:admin POST /api/enrollment',
       'session:admin POST /api/enrollment/{id}/revoke',
       'session:admin POST /api/maintenance/{check}/run',
@@ -1321,6 +1327,8 @@ describe('gates', () => {
       'session:member GET /api/agents',
       'session:member GET /api/credentials',
       'session:member GET /api/credentials/{id}/activity',
+      'session:member GET /api/embedding/passed-over',
+      'session:member GET /api/embedding/switch',
       'session:member GET /api/kpis',
       'session:member GET /api/machines',
       'session:member GET /api/machines/{machineId}/settings',
