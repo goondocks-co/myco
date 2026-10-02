@@ -17,7 +17,8 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
-import { dailyLimitWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { dailyLimitWords, failureWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { rawIdsIn } from '../helpers/raw-ids';
 import {
   ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, WEEK_SPORES, WEEK_WORK,
@@ -407,6 +408,7 @@ for (const [code, sentence] of [
   ['machine_did_not_start', 'No machine started the task within a day.'],
   ['machine_unresponsive', 'The machine running it stopped responding.'],
   ['task_start_failed', 'The machine could not start the task.'],
+  ['model_not_applied', 'The agent couldn’t use the chosen model.'],
   ['run_failed', 'The task stopped before it could finish.'],
   [undefined, 'The task stopped before it could finish.'],
   ['unknown_code', 'The task stopped before it could finish.'],
@@ -425,6 +427,23 @@ for (const [code, sentence] of [
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain(prose);
   });
 }
+
+it('words a run whose agent could not use the chosen model with its reason, and keeps the worker\'s record in details', async () => {
+  const raw = 'the harness stopped: error (profile_unapplied: it offers no model openai/gpt-0-unknown (it offers openai/gpt-5.5, opencode/big-pickle))';
+  const sentence = 'The agent couldn’t use the chosen model: it offers no model openai/gpt-0-unknown.';
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [], run: { errorCode: 'model_not_applied', error: raw },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  await waitFor(() => expect(open.querySelector('[data-run-failure]')?.textContent).toContain(sentence));
+  expect(open.textContent).not.toContain('profile_unapplied');
+  expect(MECHANISM_WORDS.test(open.querySelector('[data-run-failure]')!.textContent ?? '')).toBe(false);
+  fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(raw);
+  expect(failureWords({ source: 'error', code: 'model_not_applied', cause: raw, error: raw })).toBe(sentence);
+  expect(failureWords({ source: 'error', code: 'model_not_applied', cause: 'profile_unapplied', error: 'profile_unapplied' })).toBe('The agent couldn’t use the chosen model.');
+});
 
 it('words a free-text skip from its fallback code', async () => {
   server(routes({ detail: { [`/api/projects/${P}/runs/run_d4e5f6a7b8`]: () => Response.json(runDetail(learning[0]!, {
@@ -624,6 +643,19 @@ describe('reviewed run evidence', () => {
     expect(open.textContent).toContain('Keep map entries bounded.');
     expect(open.textContent).toContain(budgets);
     expect(open.textContent).toContain('Access keys and passwords are hidden.');
+  });
+  it('says when the agent offered no effort setting for the model a run used, and nothing when it applied one (#1608)', () => {
+    const base = { harness: 'opencode', requested: { tier: 'low', model: 'opencode/big-pickle', effort: 'medium', sources: { tier: 'task', model: 'configured' } } } as const;
+    const identity = (warnings?: string[]) => ({ status: 'reported', source: 'session.configOptions', primary: { model: 'big-pickle', provider: 'opencode' }, models: [{ model: 'big-pickle', provider: 'opencode', source: 'session.configOptions', usage: null }], ...(warnings === undefined ? {} : { warnings }) });
+    for (const variant of ['summary', 'list', 'details'] as const) {
+      const skipped = render(<ModelSummary run={runDetail(mapRuns[1]!, { run: { ...base, identity: identity([EFFORT_UNAPPLIED]) } }).run} variant={variant} />);
+      expect(skipped.container.querySelector('[data-effort-unapplied]')?.textContent).toBe('Effort not applied: the agent offered no effort setting for this model');
+      expect(skipped.container.querySelector('[data-model-mismatch]')).toBeNull();
+      skipped.unmount();
+      const applied = render(<ModelSummary run={runDetail(mapRuns[1]!, { run: { ...base, identity: identity() } }).run} variant={variant} />);
+      expect(applied.container.querySelector('[data-effort-unapplied]')).toBeNull();
+      applied.unmount();
+    }
   });
   it('omits empty model evidence from run lists', () => {
     const { container } = render(<ModelSummary run={runDetail(mapRuns[1]!).run} variant="list" />);

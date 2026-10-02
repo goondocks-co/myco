@@ -37,7 +37,8 @@ import { runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
 import { failedCallsNote, type RunEvent } from '@myco/runner/events.js';
-import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, profileUnappliedReason, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { MECHANISM_WORDS, RETIRED_VOCABULARY } from '../helpers/reader-vocabulary.ts';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
@@ -1104,19 +1105,27 @@ describe('the claimed model on OpenCode, as recorded (#1608)', () => {
     expect(asked).not.toContain('session/prompt');
     expect(events.some((event) => event.kind === 'started')).toBe(false);
     const last = events.at(-1);
-    expect(last?.kind === 'ended' ? [last.stop, last.detail] : null).toEqual(['error', `profile_unapplied: the harness offers no model openai/gpt-0-unknown (it offers ${offeredModels.slice(0, 8).join(', ')} and ${offeredModels.length - 8} more)`]);
+    expect(last?.kind === 'ended' ? [last.stop, last.detail] : null).toEqual(['error', `profile_unapplied: it offers no model openai/gpt-0-unknown (it offers ${offeredModels.slice(0, 8).join(', ')} and ${offeredModels.length - 8} more)`]);
   });
 
   it('never prompts at an effort the claimed model does not offer', async () => {
     const { events, asked } = await onRecordedOpenCode(claimed(RECORDED_MODEL, 'max'));
     expect(asked).not.toContain('session/prompt');
     const last = events.at(-1);
-    expect(last?.kind === 'ended' ? last.detail : null).toBe('profile_unapplied: the harness offers no effort max (it offers none, low, medium, high, xhigh)');
+    expect(last?.kind === 'ended' ? last.detail : null).toBe('profile_unapplied: it offers no effort max for this model (it offers none, low, medium, high, xhigh)');
   });
 
-  it('runs a model that offers no effort, which takes none', async () => {
-    const { promptedOn } = await onRecordedOpenCode(claimed('opencode/big-pickle', 'medium'));
+  it('runs a model that offers no effort, and records on its identity that the claimed effort was not applied', async () => {
+    const { events, promptedOn } = await onRecordedOpenCode(claimed('opencode/big-pickle', 'medium'));
     expect(promptedOn).toEqual({ model: 'opencode/big-pickle' });
+    const identities = events.filter((event) => event.kind === 'identity');
+    expect(identities.length).toBeGreaterThan(0);
+    expect(identities.every((event) => event.kind === 'identity' && event.identity.status !== 'unknown' && event.identity.warnings?.includes(EFFORT_UNAPPLIED) === true)).toBe(true);
+  });
+
+  it('records no effort warning on a run whose effort was applied', async () => {
+    const { events } = await onRecordedOpenCode(claimed(RECORDED_MODEL, 'medium'));
+    expect(events.some((event) => event.kind === 'identity' && event.identity.status !== 'unknown' && event.identity.warnings !== undefined)).toBe(false);
   });
 
   it('never prompts where the harness answers a set but keeps its model', async () => {
@@ -1125,7 +1134,74 @@ describe('the claimed model on OpenCode, as recorded (#1608)', () => {
     const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
     expect(p.asked).toEqual(['initialize', 'session/new', 'session/set_config_option', 'session/close']);
     const last = events.at(-1);
-    expect(last?.kind === 'ended' ? last.detail : null).toBe(`profile_unapplied: the harness kept the model opencode/big-pickle after being set to ${RECORDED_MODEL}`);
+    expect(last?.kind === 'ended' ? last.detail : null).toBe(`profile_unapplied: it kept the model opencode/big-pickle after being set to ${RECORDED_MODEL}`);
+  });
+
+  it('reads the options the agent announces when a set\'s reply carries none, and the efforts of the model it moved to', async () => {
+    const opened = inRunAgent(recorded('default', 2));
+    const announce = (answer: Record<string, unknown>): string => `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session_fixture', update: { sessionUpdate: 'config_option_update', configOptions: (inRunAgent(answer).result as { configOptions: unknown }).configOptions } } })}\n`;
+    let current: Record<string, unknown> = {};
+    let promptedOn: Record<string, unknown> | null = null;
+    const p = peer((method, id) => {
+      if (method === 'session/new') return `${JSON.stringify({ ...opened, id })}\n`;
+      if (method === 'session/prompt') { promptedOn = current; return `${JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } })}\n`; }
+      return `${JSON.stringify({ jsonrpc: '2.0', id, result: {} })}\n`;
+    });
+    // Each set is answered with an empty reply, after the agent announces the options it moved to.
+    const write = p.channel.write;
+    const readers: Array<(line: string) => void> = [];
+    const onLine = p.channel.onLine;
+    p.channel.onLine = (read) => { readers.push(read); onLine(read); };
+    p.channel.write = (text) => {
+      const message = JSON.parse(text) as { id: number; method: string; params: { configId?: string } };
+      if (message.method !== 'session/set_config_option') { write(text); return; }
+      p.asked.push(message.method);
+      const moved = message.params.configId === 'model' ? recorded('set-model', 3) : recorded('prompt', 3);
+      current = Object.fromEntries((moved.result as { configOptions: Array<{ id: string; currentValue: unknown }> }).configOptions.filter((o) => o.id !== 'mode').map((o) => [o.id, o.currentValue]));
+      const lines = `${announce(moved)}${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} })}\n`;
+      queueMicrotask(() => { readers.forEach((read) => { read(lines); }); });
+    };
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
+    expect(p.asked).toEqual(['initialize', 'session/new', 'session/set_config_option', 'session/set_config_option', 'session/prompt', 'session/close']);
+    expect(promptedOn as Record<string, unknown> | null).toEqual({ model: RECORDED_MODEL, effort: 'medium' });
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  it('never prompts where a set\'s reply carries no options and the agent announces none', async () => {
+    const opened = inRunAgent(recorded('default', 2));
+    const p = peer((method, id) => `${JSON.stringify({ ...(method === 'session/new' ? opened : { jsonrpc: '2.0', result: method === 'session/prompt' ? { stopReason: 'end_turn' } : {} }), id })}\n`);
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
+    expect(p.asked).not.toContain('session/prompt');
+    const last = events.at(-1);
+    expect(last?.kind === 'ended' ? last.detail : null).toBe(`profile_unapplied: it reported no model after being set to ${RECORDED_MODEL}`);
+  });
+
+  it('gives every reason a run is refused in words a reader meets on its page', async () => {
+    const opened = inRunAgent(recorded('default', 2));
+    /** The detail a turn ends on against a peer that opens the default session and answers every other call with `other`. */
+    const refusal = async (other: (method: string) => Record<string, unknown>, session: Record<string, unknown> = opened): Promise<string | null> => {
+      const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', ...(method === 'session/new' ? session : other(method)), id })}\n`);
+      const last = (await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING))).at(-1);
+      return last?.kind === 'ended' ? last.detail : null;
+    };
+    const recordedRefusal = async (profile: ExecutionProfile): Promise<string | null> => {
+      const last = (await onRecordedOpenCode(profile)).events.at(-1);
+      return last?.kind === 'ended' ? last.detail : null;
+    };
+    const details = [
+      await recordedRefusal(claimed('openai/gpt-0-unknown', 'medium')),
+      await recordedRefusal(claimed(RECORDED_MODEL, 'max')),
+      await refusal((method) => (method === 'session/set_config_option' ? { error: { code: -32603, message: 'Internal error: the harness runtime said no' } } : { result: {} })),
+      await refusal(() => ({ result: {} })),
+      await refusal(() => ({ result: opened.result as Record<string, unknown> })),
+      await refusal(() => ({ result: {} }), { result: { sessionId: 's', ...RUN_AGENT_MODE } }),
+    ];
+    const reasons = details.map((detail) => profileUnappliedReason(detail));
+    expect(reasons).toEqual([
+      'it offers no model openai/gpt-0-unknown', 'it offers no effort max for this model', `it refused the model ${RECORDED_MODEL}`,
+      `it reported no model after being set to ${RECORDED_MODEL}`, `it kept the model opencode/big-pickle after being set to ${RECORDED_MODEL}`, 'it reported no model for the session',
+    ]);
+    for (const reason of reasons) expect({ reason, mechanism: MECHANISM_WORDS.test(reason!) || RETIRED_VOCABULARY.test(reason!) }).toEqual({ reason, mechanism: false });
   });
 
   it('never prompts where the harness reports no model for its session', async () => {
@@ -1133,7 +1209,7 @@ describe('the claimed model on OpenCode, as recorded (#1608)', () => {
     const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
     expect(p.asked).not.toContain('session/prompt');
     const last = events.at(-1);
-    expect(last?.kind === 'ended' ? last.detail?.startsWith('profile_unapplied: the harness reports no model') : null).toBe(true);
+    expect(last?.kind === 'ended' ? last.detail === 'profile_unapplied: it reported no model for the session' : null).toBe(true);
   });
 });
 

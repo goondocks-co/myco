@@ -29,7 +29,7 @@ describe('execution identity on every profile-capable runner end', () => {
   }
   it('ends an OpenCode run whose claimed model the harness does not offer as unapplied, never on the harness\'s default (#1608)', async () => {
     const report = await fixtureRun(HARNESSES.find((h) => h.id === 'opencode')!, 'unoffered');
-    expect({ status: report?.status, unapplied: String(report?.error).includes('profile_unapplied: the harness offers no model openai/gpt-5.4-mini (it offers opencode/big-pickle)') })
+    expect({ status: report?.status, unapplied: String(report?.error).includes('profile_unapplied: it offers no model openai/gpt-5.4-mini (it offers opencode/big-pickle)') })
       .toEqual({ status: 'failed', unapplied: true });
     expect(report).toHaveProperty('identity.status', 'unknown');
   });

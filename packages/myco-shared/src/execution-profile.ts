@@ -6,6 +6,28 @@ export const EXECUTION_PROFILE_FEATURE = 'execution-profile';
 export const REASONING_TIERS = ['low', 'default', 'high'] as const;
 export type ReasoningTier = typeof REASONING_TIERS[number];
 export const MODEL_MISMATCH = 'model_mismatch';
+/** A run whose agent offered no effort setting for its model, so the claimed effort was not applied. */
+export const EFFORT_UNAPPLIED = 'effort_unapplied';
+/** Warnings about how a run's claimed profile was applied, which say nothing about its accounting. */
+export const PROFILE_WARNINGS: readonly string[] = [MODEL_MISMATCH, EFFORT_UNAPPLIED];
+
+/** What a worker ends a run with when its agent cannot run the claimed model or effort, before or after a colon and why. */
+export const PROFILE_UNAPPLIED = 'profile_unapplied';
+const UNAPPLIED_AT = new RegExp(`\\b${PROFILE_UNAPPLIED}\\b(?::\\s*(.*))?`, 's');
+
+/** Whether a run's recorded error is a worker's refusal of the claimed profile. */
+export const isProfileUnapplied = (error: string | null): boolean => error !== null && UNAPPLIED_AT.test(error);
+
+/**
+ * Why the agent could not use the claimed model, from a run's recorded error: the worker's reason without the
+ * values it lists in parentheses or the wrapping its report adds, or null where it gave none.
+ */
+export function profileUnappliedReason(error: string | null): string | null {
+  const reason = error === null ? undefined : UNAPPLIED_AT.exec(error)?.[1];
+  if (reason === undefined) return null;
+  const bare = reason.replace(/\)\s*$/, '').split(' (')[0]!.trim();
+  return bare === '' ? null : bare;
+}
 
 export interface ExecutionProfile {
   tier: ReasoningTier;

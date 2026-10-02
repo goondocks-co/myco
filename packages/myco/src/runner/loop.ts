@@ -1,5 +1,5 @@
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { EXECUTION_PROFILE_FEATURE, profileSupported, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { EXECUTION_PROFILE_FEATURE, PROFILE_UNAPPLIED, profileSupported, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -317,7 +317,7 @@ async function drive(
   const driver = driverFor(run.harness);
   if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
   if (named === null || run.profile === undefined || !profileSupported(run.profile, named.profile)) {
-    return failedBeforeStart('profile_unapplied');
+    return failedBeforeStart(PROFILE_UNAPPLIED);
   }
   // A harness given nothing to do ends its turn at once, and a worker that
   // launched it would then report a run that did nothing as one that finished.

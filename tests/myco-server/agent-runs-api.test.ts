@@ -180,6 +180,8 @@ it('keeps stored failure text and adds a classifier on the dashboard read', asyn
       ['run_legacy', 'the runtime went away', 'machine_unresponsive'],
       ['run_stale', 'the machine running it stopped responding', 'machine_unresponsive'],
       ['run_start', 'the machine could not start the task: refused', 'task_start_failed'],
+      ['run_unapplied', 'the harness stopped: error (profile_unapplied: it offers no model openai/gpt-0 (it offers a, b))', 'model_not_applied'],
+      ['run_unapplied_bare', 'profile_unapplied', 'model_not_applied'],
       ['run_other', 'arbitrary machine output', 'run_failed'],
     ]) {
       fixture.seed({ id: id!, error, status: 'failed' });
