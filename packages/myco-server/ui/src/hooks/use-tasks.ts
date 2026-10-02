@@ -1,8 +1,21 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 import { useMe } from './use-me';
 import { useProjects } from './use-projects';
-import type { TasksAnswer } from '../features/tasks/wire';
+import type { TaskNamesAnswer, TasksAnswer } from '../features/tasks/wire';
+
+/** Task names for run links, reusing a registry already loaded for this project. */
+export function useTaskNames(projectId: string) {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: ['task-names', projectId],
+    initialData: () => {
+      const registry = queryClient.getQueryData<TasksAnswer>(['tasks', projectId, projectId]);
+      return registry === undefined ? undefined : { tasks: registry.tasks.map(({ task, name }) => ({ task, name })) };
+    },
+    queryFn: ({ signal }) => fetchJson<TaskNamesAnswer>(`/api/tasks/names?${new URLSearchParams({ project: projectId })}`, signal),
+  });
+}
 
 /** Each task's current description, resolved by the server under its effective settings. */
 export function useTaskDescriptions(projectId: string | null) {

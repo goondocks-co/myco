@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, ShowMore, TypeChip } from '../../design';
-import { useTaskDescriptions } from '../../hooks/use-tasks';
+import { useTaskNames } from '../../hooks/use-tasks';
 import { useStarterNames } from './names';
 import { CALLS_PER_PAGE, useRunCalls, useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
@@ -323,7 +323,7 @@ function Instruction({ answer }: { answer: RunDetailAnswer }) {
 }
 
 function TaskName({ projectId, task }: { projectId: string; task: string }) {
-  const descriptions = useTaskDescriptions(projectId);
+  const descriptions = useTaskNames(projectId);
   const description = descriptions.data?.tasks.find((entry) => entry.task === task);
   return <div className="flex flex-col gap-s2" data-run-task="">
     <OnwardLink to={`${projectPath(projectId, TASKS_SUFFIX)}#${encodeURIComponent(task)}`}>{description?.name ?? 'About this task'}</OnwardLink>

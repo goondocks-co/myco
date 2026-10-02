@@ -20,13 +20,32 @@ for (const { viewport, mode } of SHOT_MATRIX) {
       }, `/api/tasks?${new URLSearchParams({ project: project.projectId })}`);
       expect(answer.status).toBe(200);
       const registry = answer.body as TasksAnswer;
+      const learning = registry.tasks.find((task) => task.task === 'extract-curate')!;
+      expect(learning.profiles.map(({ harness }) => harness).sort()).toEqual(['claude-code', 'codex', 'cursor', 'opencode']);
+      expect(learning.profileNote).toBe('Which agent runs it depends on what is signed in on your machines.');
       await expect(page.locator('article[data-task]')).toHaveCount(registry.tasks.length);
       for (const task of registry.tasks) {
         const card = page.locator('article[data-task]').filter({ has: page.getByRole('heading', { level: 2, name: task.name, exact: true }) });
         await expect(card.getByRole('heading', { level: 2 })).toHaveText(task.name);
         await expect(card).toContainText(task.description);
-        for (const words of [...task.triggers, ...task.tools, ...task.done]) await expect(card).toContainText(words);
-        if (task.model !== null) await expect(card.locator('[data-task-model]')).toContainText(task.model);
+        for (const words of [...task.triggers, ...task.done]) await expect(card).toContainText(words);
+        if (task.tools.length === 0) await expect(card.getByRole('button', { name: 'What it may use' })).toHaveCount(0);
+        else if (viewport === 'phone' && task.tools.length > 4) {
+          const tools = card.getByRole('button', { name: 'What it may use' });
+          await tools.click();
+          for (const words of task.tools) await expect(card).toContainText(words);
+          await tools.click();
+        } else for (const words of task.tools) await expect(card).toContainText(words);
+        if (task.tier !== null) await expect(card.locator('[data-task-model]')).toContainText(`${task.tier} tier`);
+        for (const profile of task.profiles) {
+          if (profile.model !== null) expect((await card.locator('[data-task-model]').textContent())?.toLowerCase()).toContain(profile.model.toLowerCase());
+          if (profile.note !== null) await expect(card).toContainText(profile.note);
+        }
+        if (task.budget === null) {
+          await expect(card.getByRole('button', { name: 'Reading limits' })).toHaveCount(0);
+          await expect(card).not.toContainText('seconds per run');
+        }
+        if (task.availabilityNote !== null) await expect(card.locator('[data-task-availability]')).toHaveText(task.availabilityNote);
       }
       await expectFits(page, viewport);
       await expectNoRawIds(page);
@@ -99,11 +118,11 @@ test('Settings tier changes the model shown by the real Tasks registry', async (
     };
     await pickTier('Default');
     await page.goto(new URL(tasksPath(), page.url()).toString());
-    await expect(page.locator('article[data-task="extract-curate"] [data-task-model]')).toContainText('default tier · sonnet');
+    await expect(page.locator('article[data-task="extract-curate"] [data-task-model]')).toContainText('default tier · Claude Code: Sonnet');
     await page.goto(new URL('/settings/models', page.url()).toString());
     await pickTier('High');
     await page.goto(new URL(tasksPath(), page.url()).toString());
-    await expect(page.locator('article[data-task="extract-curate"] [data-task-model]')).toContainText('high tier · opus');
+    await expect(page.locator('article[data-task="extract-curate"] [data-task-model]')).toContainText('high tier · Claude Code: Opus');
   } finally {
     try {
       for (const leaf of changedLeaves) {

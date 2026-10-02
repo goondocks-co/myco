@@ -6,10 +6,12 @@ import { useTaskRuns } from '../../hooks/use-work';
 import { useNow } from '../../hooks/use-today';
 import { harnessLabel } from '../../lib/harness';
 import { projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX } from '../../routes/nav';
-import { ModelSummary } from '../work/ModelSummary';
+import { ModelSummary, displayModel } from '../work/ModelSummary';
 import { OnwardLink } from '../work/OutcomeCard';
 import { kindOf, runLineWords, shortTime } from '../work/words';
 import type { TaskDescription } from './wire';
+
+const LONG_TOOLS_THRESHOLD = 4;
 
 /** The server's descriptions of every task, with its exact instructions folded away. */
 export function TasksPage({ projectId }: { projectId: string | null }) {
@@ -49,15 +51,23 @@ function TaskCard({ task, projectId }: { task: TaskDescription; projectId: strin
         <p className="max-w-measure t-body text-ink-2">{task.description}</p>
       </header>
       <Facts label="When it runs" lines={task.triggers} />
-      <Facts label="What it may use" lines={task.tools} />
+      {task.tools.length > LONG_TOOLS_THRESHOLD ? <>
+        <div className="sm:hidden"><Disclosure summary="What it may use"><Facts label="What it may use" lines={task.tools} /></Disclosure></div>
+        <div className="hidden sm:block"><Facts label="What it may use" lines={task.tools} /></div>
+      </> : task.tools.length > 0 && <Facts label="What it may use" lines={task.tools} />}
       <Facts label="What done means" lines={task.done} />
-      <section aria-label="Model and budget" className="flex flex-col gap-s2">
-        <h3 className="t-label text-muted">Model and budget</h3>
-        {task.tier !== null && <p className="break-words t-small text-ink-2" data-task-model="">
-          {task.tier} tier{task.model === null ? '' : ` · ${task.model}`}{task.effort === null ? '' : ` · ${task.effort} effort`}{task.harness === null ? '' : ` · ${harnessLabel(task.harness)}`}
-        </p>}
+      {task.availabilityNote !== null && <p className="t-small text-warn" data-task-availability="">{task.availabilityNote}</p>}
+      {(task.tier !== null || task.profiles.length > 0 || task.profileNote !== null || task.budget !== null) && <section aria-label={task.budget === null ? 'How it runs' : 'Model and budget'} className="flex flex-col gap-s2">
+        <h3 className="t-label text-muted">{task.budget === null ? 'How it runs' : 'Model and budget'}</h3>
+        {(task.tier !== null || task.profiles.length > 0) && <div className="flex flex-col gap-s1 break-words t-small text-ink-2" data-task-model="">
+          {task.profiles.length === 0 && task.tier !== null && <p>{task.tier} tier</p>}
+          {task.profiles.map((profile) => <p key={profile.harness} data-task-profile="">
+            {task.tier === null ? '' : `${task.tier} tier · `}{harnessLabel(profile.harness)}{profile.model === null ? '' : `: ${displayModel(profile.model)}${profile.effort === null ? '' : `, ${profile.effort} effort`}`}
+          </p>)}
+        </div>}
+        {task.profiles.filter((profile) => profile.note !== null).map((profile) => <p key={profile.harness} className="t-small text-muted">{profile.note}</p>)}
         {task.profileNote !== null && <p className="t-small text-muted">{task.profileNote}</p>}
-        <p className="t-small text-ink-2">Up to {task.budget.timeoutSeconds.toLocaleString()} seconds per run.</p>
+        {task.budget !== null && <><p className="t-small text-ink-2">Up to {task.budget.timeoutSeconds.toLocaleString()} seconds per run.</p>
         <Disclosure summary="Reading limits">
           <dl className="grid grid-cols-2 gap-x-s3 gap-y-s2 t-small text-ink-2">
             <dt>Spores per page</dt><dd>{task.budget.readWindow.sporePage}</dd>
@@ -70,8 +80,8 @@ function TaskCard({ task, projectId }: { task: TaskDescription; projectId: strin
             <dt>Session label characters</dt><dd>{task.budget.readWindow.sessionLabelChars}</dd>
             <dt>New prompts per page</dt><dd>{task.budget.readWindow.promptPage}</dd>
           </dl>
-        </Disclosure>
-      </section>
+        </Disclosure></>}
+      </section>}
       {(task.promptTemplate !== null || task.standingRules !== null || task.templateVariants.length > 0) && <Disclosure summary="Exact rules and prompt template">
         <div className="flex min-w-0 flex-col gap-s4" data-task-instruction="">
           {task.promptTemplate !== null && <ExactText label="Prompt template" text={task.promptTemplate} />}

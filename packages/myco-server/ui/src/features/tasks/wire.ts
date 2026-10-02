@@ -21,15 +21,15 @@ export interface TaskDescription {
       sessionLabelChars: number;
       promptPage: number;
     };
-  };
+  } | null;
   tier: ReasoningTier | null;
-  harness: string | null;
-  model: string | null;
-  effort: string | null;
+  profiles: readonly { harness: string; model: string | null; effort: string | null; note: string | null }[];
   profileNote: string | null;
+  availabilityNote: string | null;
   promptTemplate: string | null;
   standingRules: string | null;
   templateVariants: readonly { name: string; prompt: string }[];
 }
 
 export interface TasksAnswer { tasks: TaskDescription[] }
+export interface TaskNamesAnswer { tasks: { task: string; name: string }[] }

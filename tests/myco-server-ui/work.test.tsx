@@ -61,6 +61,7 @@ const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_R
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
+  '/api/tasks/names': () => Response.json({ tasks: TASK_DESCRIPTIONS.map(({ task, name }) => ({ task, name })) }),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
   '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),
   [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: (over.taskRuns ?? taskRunsFor(((over.who ?? ADMIN) as typeof ADMIN).member.id))[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),

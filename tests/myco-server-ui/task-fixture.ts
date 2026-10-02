@@ -8,6 +8,6 @@ export const TASK_DESCRIPTIONS: TaskDescription[] = RETAINED_TASKS.map((task) =>
   task, name: TASK_WORDS[task]!.name, description: TASK_WORDS[task]!.description,
   triggers: [], tools: [], done: RUN_CLOSE_RULES[task]!.description,
   budget: { timeoutSeconds: 300, readWindow: readWindowFor(task) }, tier: TASK_TIERS[task] ?? null,
-  harness: null, model: null, effort: null, profileNote: null,
+  profiles: [], profileNote: null, availabilityNote: null,
   promptTemplate: null, standingRules: null, templateVariants: [],
 }));

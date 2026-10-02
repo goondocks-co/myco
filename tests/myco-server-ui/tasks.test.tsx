@@ -17,7 +17,7 @@ const description = (index: number): TaskDescription => ({
   task: `task-${index}`, name: `Task from registry ${index}`, description: `Description from registry ${index}`,
   triggers: [`Trigger from registry ${index}`], tools: [`Tool from registry ${index}`], done: [`Done from registry ${index}`],
   budget: { timeoutSeconds: 420 + index, readWindow: { sporePage: 10, sporePreviewChars: 20, sporeBodyChars: 30, sporeFullReads: 40, sessionPage: 50, sessionTitleChars: 60, sessionSummaryChars: 70, sessionLabelChars: 80, promptPage: 90 } },
-  tier: 'high', harness: 'codex', model: `model-from-registry-${index}`, effort: 'high', profileNote: null,
+  tier: 'high', profiles: [{ harness: 'codex', model: `model-from-registry-${index}`, effort: 'high', note: null }], profileNote: null, availabilityNote: null,
   promptTemplate: `Exact ask ${index}\n\n  Preserve indentation.\n`, standingRules: `Exact rules ${index}\n\nDo the declared work.\n`,
   templateVariants: [{ name: `Variant ${index}`, prompt: `Exact variant ${index}\n` }],
 });
@@ -30,7 +30,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
     asked.push(url);
     if (url.pathname === '/auth/me') return Response.json(options.member ? MEMBER : ADMIN);
     if (url.pathname === '/api/projects') return options.failProjects ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(options.projects ?? PROJECTS);
-    if (url.pathname === '/api/settings/agent.tasks') { tasks[0] = { ...tasks[0]!, tier: 'low', model: 'changed-model', effort: 'low' }; return Response.json({ applied: true }); }
+    if (url.pathname === '/api/settings/agent.tasks') { tasks[0] = { ...tasks[0]!, tier: 'low', profiles: [{ harness: 'codex', model: 'changed-model', effort: 'low', note: null }] }; return Response.json({ applied: true }); }
     if (url.pathname === '/api/tasks') return Response.json({ tasks });
     if (url.pathname === `/api/projects/${P}/runs`) return Response.json({ rows: [], cursor: null });
     return new Response(null, { status: 404 });
@@ -75,8 +75,8 @@ describe('the Tasks view reads the registry', () => {
     expect(document.querySelectorAll('article[data-task]')).toHaveLength(TASKS.length);
     for (const task of TASKS) {
       const card = document.getElementById(task.task)!;
-      for (const text of [task.name, task.description, ...task.triggers, ...task.tools, ...task.done, task.model!]) expect(card.textContent).toContain(text);
-      expect(card.textContent).toContain(String(task.budget.timeoutSeconds));
+      for (const text of [task.name, task.description, ...task.triggers, ...task.tools, ...task.done, task.profiles[0]!.model!]) expect(card.textContent).toContain(text);
+      expect(card.textContent).toContain(String(task.budget!.timeoutSeconds));
     }
     expect(asked.find((url) => url.pathname === '/api/tasks')?.searchParams.get('project')).toBe(P);
   });
@@ -112,5 +112,61 @@ describe('the Tasks view reads the registry', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Low' }));
     await waitFor(() => expect(screen.getByText(/changed-model/).textContent).toContain('low tier'));
     expect(screen.queryByText(/model-from-registry-0/)).toBeNull();
+  });
+
+  it('shows each possible agent profile with its own model and effort', async () => {
+    const task = {
+      ...description(0), tier: 'default',
+      profiles: [
+        { harness: 'claude-code', model: 'Sonnet', effort: 'medium', note: null },
+        { harness: 'codex', model: 'gpt-6', effort: 'high', note: null },
+        { harness: 'cursor', model: null, effort: null, note: 'A model choice is unavailable for Cursor.' },
+      ],
+      profileNote: 'Which agent runs it depends on what is signed in on your machines.',
+    };
+    server([task]);
+    mount(`/p/${P}/work/tasks`);
+    const card = await screen.findByRole('heading', { name: task.name }).then((node) => node.closest('article')!);
+    expect(card.textContent).toContain('Sonnet');
+    expect(card.textContent).toContain('default tier');
+    expect(card.textContent).toContain('Claude Code: Sonnet, medium effort');
+    expect(card.textContent).toContain('Codex: gpt-6, high effort');
+    expect(card.textContent).toContain('A model choice is unavailable for Cursor.');
+    expect(card.textContent).toContain(task.profileNote);
+    expect(Array.from(card.querySelectorAll('[data-task-profile]')).map((line) => line.textContent)).toEqual([
+      'default tier · Claude Code: Sonnet, medium effort',
+      'default tier · Codex: gpt-6, high effort',
+      'default tier · Cursor',
+    ]);
+  });
+
+  it('folds only long tool lists on phones', async () => {
+    const short = description(0);
+    const long = { ...description(1), tools: ['One', 'Two', 'Three', 'Four', 'Five'] };
+    server([short, long]);
+    mount(`/p/${P}/work/tasks`);
+    const shortCard = await screen.findByRole('heading', { name: short.name }).then((node) => node.closest('article')!);
+    const longCard = await screen.findByRole('heading', { name: long.name }).then((node) => node.closest('article')!);
+    expect(within(shortCard).queryByRole('button', { name: 'What it may use' })).toBeNull();
+    const disclosure = within(longCard).getByRole('button', { name: 'What it may use' });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    expect(longCard.textContent).toContain('Five');
+  });
+
+  it('shows a runtime task without invented tools or budget and surfaces project availability', async () => {
+    const task = {
+      ...description(0), tools: [], budget: null, tier: null,
+      profiles: [], profileNote: 'Runs without a model.', availabilityNote: 'Switched off for this project',
+    };
+    server([task]);
+    mount(`/p/${P}/work/tasks`);
+    const card = await screen.findByRole('heading', { name: task.name }).then((node) => node.closest('article')!);
+    expect(within(card).queryByRole('region', { name: 'What it may use' })).toBeNull();
+    expect(card.textContent).toContain('Runs without a model.');
+    expect(card.textContent).toContain('Switched off for this project');
+    expect(card.textContent).not.toContain('Up to');
+    expect(within(card).queryByRole('button', { name: 'Reading limits' })).toBeNull();
   });
 });
