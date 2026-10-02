@@ -236,9 +236,9 @@ describe('settings API', () => {
 
   it('sets an ordinary leaf and reads it back', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await put('/api/settings/cortex.digest.tier', { value: 5000 }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put('/api/settings/cortex.spores.max_per_prompt', { value: 5000 }), e.all))).toEqual({ applied: true });
     const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
-    expect(leaves.find((l) => l.leaf === 'cortex.digest.tier')).toMatchObject({ configured: true, value: 5000 });
+    expect(leaves.find((l) => l.leaf === 'cortex.spores.max_per_prompt')).toMatchObject({ configured: true, value: 5000 });
   });
 
   it('refuses a member-tier leaf through the surface, not only in the core', async () => {
@@ -254,10 +254,10 @@ describe('settings API', () => {
     // caller's own fault and can never succeed on retry.
     const e = env();
     for (const [path, body] of [
-      ['/api/settings/cortex.digest.tier', null],
+      ['/api/settings/cortex.spores.max_per_prompt', null],
       ['/api/projects/proj_1/capabilities/cortex', null],
       ['/api/secrets/anthropic', null],
-      ['/api/settings/cortex.digest.tier', []],
+      ['/api/settings/cortex.spores.max_per_prompt', []],
     ] as const) {
       const res = await worker.fetch(await put(path, body), e.all);
       expect({ path, status: res.status, applied: (await res.json() as Record<string, unknown>).applied })
@@ -282,10 +282,10 @@ describe('settings API', () => {
 
   it('applies an endpoint change on the member session alone, and records the actor', async () => {
     const e = env();
-    const allowed = await worker.fetch(await put('/api/settings/agent.provider.base_url', { value: 'https://ok.example' }), e.all);
+    const allowed = await worker.fetch(await put('/api/settings/embedding.base_url', { value: 'https://ok.example' }), e.all);
     expect({ status: allowed.status, body: await allowed.json() }).toEqual({ status: 200, body: { applied: true } });
     const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
-    expect(leaves.find((l) => l.leaf === 'agent.provider.base_url')).toMatchObject({ configured: true, value: 'https://ok.example', updatedBy: 'mem_machine_1' });
+    expect(leaves.find((l) => l.leaf === 'embedding.base_url')).toMatchObject({ configured: true, value: 'https://ok.example', updatedBy: 'mem_machine_1' });
   });
 });
 
@@ -340,14 +340,14 @@ describe('project capability admission through the surface', () => {
   it('reports every capability off for a Project nothing has admitted', async () => {
     const e = env();
     expect(await json(await worker.fetch(await asOwner('/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: false, canopy: false, skills: false, vault_evolution: false } });
+      .toEqual({ capabilities: { cortex: false, canopy: false, vault_evolution: false }, retiredCapabilities: {} });
   });
 
   it('admits one capability, and leaves other Projects untouched', async () => {
     const e = env();
     expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
     expect(await json(await worker.fetch(await asOwner('/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: false } });
+      .toEqual({ capabilities: { cortex: true, canopy: false, vault_evolution: false }, retiredCapabilities: {} });
     expect(await json(await worker.fetch(await asOwner('/api/projects/proj_2/capabilities'), e.all)))
       .toMatchObject({ capabilities: { cortex: false } });
   });
@@ -419,4 +419,27 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
     expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
     expect(await claim('run_off_again')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
   });
+});
+
+
+it('projects retired task overrides as metadata and preserves them across live writes and resets', async () => {
+  const e = env();
+  const archived = { 'container-smoke': { model: 'haiku', harness: 'claude-code' }, 'title-summary': { provider: 'anthropic' } };
+  const stored = { ...archived, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
+  e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+  const row = async () => {
+    const reply = await worker.fetch(await asOwner('/api/settings'), e.all);
+    expect(reply.status).toBe(200);
+    return ((await json(reply)).leaves as Array<Record<string, unknown>>).find((entry) => entry.leaf === 'agent.tasks');
+  };
+  expect(await row()).toMatchObject({ value: stored, editableValue: { 'title-summary': { reasoningLevel: 'low' } }, retiredValue: archived });
+  for (const value of [stored, { 'container-smoke': { model: 'sonnet' } }]) {
+    expect((await worker.fetch(await put('/api/settings/agent.tasks', { value }), e.all)).status).toBe(400);
+    expect((await row())?.value).toEqual(stored);
+  }
+  const live = { 'title-summary': { reasoningLevel: 'high' } };
+  expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: live }), e.all)).status).toBe(200);
+  expect(await row()).toMatchObject({ editableValue: live, retiredValue: archived });
+  expect((await worker.fetch(await remove('/api/settings/agent.tasks'), e.all)).status).toBe(200);
+  expect(await row()).toMatchObject({ value: archived, editableValue: { 'title-summary': {} }, retiredValue: archived });
 });

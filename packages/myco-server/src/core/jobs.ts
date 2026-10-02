@@ -131,7 +131,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     name: STAGING_RETENTION_JOB,
     runsThrough: 'sleep',
     wake: 'clock',
-    converges: 'a Deployment keeps the newest complete stagings its "Recovery stagings to keep" setting names and the newest failed one, and holds the staged payload of no other settled attempt: every file of each released staging is gone from the staging store, and each attempt keeps a tombstone carrying its hold token, its start and its refusal so a settled token still admits nothing and the cadence still reads its own history. Nothing advancing, nothing resting unconfirmed, nothing downloaded-only and nothing carrying a hold this Deployment holds open is ever released, and a store that refuses a delete leaves the staging and its cursors for the next pass',
+    converges: 'a Deployment keeps the newest complete stagings its "Full recovery copies to keep" setting names and the newest failed one, and holds the staged payload of no other settled attempt: every file of each released staging is gone from the staging store, and each attempt keeps a tombstone carrying its hold token, its start and its refusal so a settled token still admits nothing and the cadence still reads its own history. Nothing advancing, nothing resting unconfirmed, nothing downloaded-only and nothing carrying a hold this Deployment holds open is ever released, and a store that refuses a delete leaves the staging and its cursors for the next pass',
   },
   // Stored object release and recovery holds
   {
@@ -230,13 +230,12 @@ export interface TaskSchedule {
  * What the Deployment schedules, by task. A task is scheduled here only once
  * the Deployment serves its tool surface; every other retained task is null
  * until its child turns it on, and copies the task file's block when it does.
- * `container-smoke` is the harness health probe the 1.4 daemon ran daily as
- * `harness-health`: one call, one report, proof the runtime still works.
+ * The retained container probe has no schedule on a 2.0 Deployment.
  */
 export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4, preCondition: 'has-capture-since-map' },
   'embedding-reconcile': null,
-  'container-smoke': { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 },
+  'container-smoke': null,
   [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' },
   [SEEDING_TASK]: null,
   [TITLING_TASK]: null,

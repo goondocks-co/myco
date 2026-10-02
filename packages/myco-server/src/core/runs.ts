@@ -32,7 +32,7 @@ import type { RunErrorCode } from './reader-codes.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
-import { CAPABILITY_ON_SQL, providerConfiguredFor, settingsWriter, type ProjectCapability } from './settings.js';
+import { CAPABILITY_ON_SQL, settingsWriter, type ProjectCapability } from './settings.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
@@ -73,23 +73,21 @@ export interface RunningRunRef {
 /**
  * What must hold before a task may run.
  *
- * Two kinds, so a claim names one or the other and neither can be omitted.
- * Most intelligence is governed per Project by a capability. The
- * capture-driven tasks are not — a title and summary rides capture itself and
- * asks only whether this Deployment has a model to call, resolved task-first
- * then default.
+ * Capability-gated work requires Project admission; embedding work requires a
+ * bound provider. Capture-driven title work carries no provider-setting gate:
+ * worker selection and execution profiles resolve at the worker claim.
  */
 export type RunAdmissionGate =
   | { kind: 'capability'; capability: ProjectCapability }
   | { kind: 'embedding' }
-  | { kind: 'provider' };
+  | { kind: 'capture' };
 
 /**
  * Why a claim did not take.
  *
  * `running` names the run already recorded under this id. `notAdmitted` names a
  * Project that does not hold the capability the task needs, and `noProvider` a
- * Deployment with no model to call — settled answers a caller must not retry into.
+ * Deployment with no embedding provider — settled answers a caller must not retry into.
  */
 export type ClaimOutcome =
   | { claimed: true }
@@ -343,7 +341,7 @@ export async function claimRun(
     if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.admission.capability))) {
       return { claimed: false, notAdmitted: guard.admission.capability };
     }
-  } else if (guard.admission.kind === 'embedding' ? guard.embeddingConfigured !== true : !(await providerConfiguredFor(db, guard.taskName))) {
+  } else if (guard.admission.kind === 'embedding' && guard.embeddingConfigured !== true) {
     return { claimed: false, noProvider: true };
   }
   if (row.dispatchedBy !== null) {

@@ -43,6 +43,14 @@ it('runtime-served tasks describe their own surface rather than an agent run', a
   } finally { f.sqlite.close(); }
 });
 
+it('describes the manual request for an unscheduled runtime task', async () => {
+  const f = sqliteEnv();
+  try {
+    expect(TASK_SCHEDULE['container-smoke']).toBeNull();
+    expect((await tasks(f)).tasks.find((task) => task.task === 'container-smoke')!.triggers).toEqual(['When a person requests this task.']);
+  } finally { f.sqlite.close(); }
+});
+
 it('resolves every offerable agent without a preference and preserves run hold reasons', () => {
   const profile = descriptionProfile('extract-curate', new Map());
   expect(profile.tier).toBe('default');

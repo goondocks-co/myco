@@ -20,6 +20,8 @@ const sectionPath = (id: SettingsSectionId): string => SETTINGS_SECTIONS.find((s
  * group now, at the group. Keys and the per-project list had tabs of their own.
  */
 export function oldTabTarget(tab: string): string {
+  if (tab === 'agent') return sectionPath('models');
+  if (tab === 'skills' || tab === 'learning') return SETTINGS_PATH;
   if (tab === 'secrets') return `${sectionPath('models')}#${CREDENTIALS_ANCHOR}`;
   if (tab === 'capabilities') return `${sectionPath('access')}#${PROJECTS_ANCHOR}`;
   const group = LEAF_GROUPS.find((g) => g.id === tab);
@@ -29,7 +31,7 @@ export function oldTabTarget(tab: string): string {
 /** Parts of a section that are not settings groups, placed after the group they follow. */
 const AFTER_GROUP: Readonly<Record<string, (tiers: readonly TaskTierRow[], rows: ReadonlyMap<string, LeafRow>) => ReactElement>> = {
   scheduling: () => <TitlingSwitch />,
-  agent: () => <Credentials />,
+  embedding: () => <Credentials />,
   'opencode-profile': (tiers) => <TaskTiers tiers={tiers} />,
 };
 
@@ -69,7 +71,8 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
  * foot, so what an older Deployment stored stays visible.
  */
 function SectionGroups({ groups, rows, tiers }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow>; tiers: readonly TaskTierRow[] }) {
-  const older = groups.flatMap((group) => group.leaves.filter((field) => isRetired(field, rows.get(field.leaf)) && rows.get(field.leaf)?.configured === true));
+  const older = groups.some((group) => group.id === 'scheduling')
+    ? [...rows.values()].filter((row) => row.retired && row.configured) : [];
   return (
     <>
       {groups.map((group) => {
@@ -90,9 +93,9 @@ function SectionGroups({ groups, rows, tiers }: { groups: readonly LeafGroup[]; 
       {older.length > 0 && (
         <section aria-label="Older settings" data-older-settings="">
           <Disclosure summary={`Older settings (${older.length})`}>
-            <p className="max-w-measure t-small text-muted">Values an earlier version of Myco stored. Nothing on this server reads them any more.</p>
+            <p className="max-w-measure t-small text-muted">Values an earlier version of Myco stored. These editable contracts are retired.</p>
             <RowCard label="Older settings">
-              {older.map((field) => <LeafControl key={field.leaf} field={field} row={rows.get(field.leaf)} />)}
+              {older.map((row) => <div key={row.leaf} data-retired-setting={row.leaf} className="p-s4"><p className="t-small">{row.leaf}</p><pre className="t-mono whitespace-pre-wrap break-all">{JSON.stringify(row.value, null, 2)}</pre></div>)}
             </RowCard>
           </Disclosure>
         </section>

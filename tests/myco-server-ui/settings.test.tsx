@@ -14,7 +14,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
 import { agentListRefusal, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
-import { RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server/src/core/settings';
+import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server/src/core/settings';
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
@@ -43,12 +43,13 @@ const SECRET = 'sk-full-secret-value-1234567890';
 const rowFor = (leaf: string) => ({ leaf, configured: false, value: null as unknown, updatedAt: null as number | null, updatedBy: null as string | null, retired: RETIRED_LEAVES.has(leaf) });
 /** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
-const RETIRED_FIELDS = LEAF_FIELDS.filter((f) => isRetired(f, rowFor(f.leaf)));
-const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean }>> = {}) => ({
+const RETIRED_FIELDS = [...RETIRED_LEAVES].map((leaf) => ({ leaf }));
+const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
   taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })),
-  leaves: LEAF_FIELDS.map((f) => {
+  leaves: DEPLOYMENT_LEAVES.map((leaf) => {
+    const f = { leaf };
     const o = over[f.leaf];
-    return { ...rowFor(f.leaf), configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
+    return { ...rowFor(f.leaf), editableValue: o?.editableValue, retiredValue: o?.retiredValue, configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
@@ -298,13 +299,13 @@ describe('Settings, in five sections', () => {
     await section('Myco’s work');
     await group('What sessions receive');
     // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
-    expect(statusOf('cortex.digest.tier')).toBe('Server default');
+    expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('Server default: on');
     expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Server default');
     expect(statusOf('agent.limits.concurrent_runs')).toBe('Server default');
     expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('No limit');
     // A retired setting with a value stored sits under Older settings, and says nothing reads it.
     fireEvent.click(within(await screen.findByRole('region', { name: 'Older settings' })).getByRole('button', { name: /^Older settings/ }));
-    await waitFor(() => expect(statusOf('cortex.digest.inject_on_session_start')).toBe('Nothing on this server reads it any more.'));
+    expect(document.querySelector('[data-retired-setting="cortex.digest.inject_on_session_start"]')).toBeTruthy();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
@@ -316,7 +317,7 @@ describe('Settings, in five sections', () => {
   });
 
   it('saves a toggle on change and a text leaf on blur, each to its own leaf', async () => {
-    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.provider.model': () => Response.json({ applied: true }) }));
+    const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/embedding.model': () => Response.json({ applied: true }) }));
     mount('/settings');
     // The server serves spores unless told not to, so with nothing stored the switch reads on, and a flip turns it off.
     const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
@@ -325,33 +326,33 @@ describe('Settings, in five sections', () => {
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.spores.inject_on_prompt_submit', body: { value: false } });
     await section('Models and keys');
-    const model = await screen.findByLabelText('Model');
+    const model = await screen.findByLabelText('Embedding model');
     fireEvent.change(model, { target: { value: 'claude-opus' } });
     fireEvent.blur(model);
     await waitFor(() => expect(sent).toHaveLength(2));
-    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.provider.model', body: { value: 'claude-opus' } });
+    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/embedding.model', body: { value: 'claude-opus' } });
   });
 
   it('applies an endpoint change directly on the member session, with no dialog and no extra header', async () => {
-    const { sent } = server(base({ '/api/settings/agent.provider.base_url': () => Response.json({ applied: true }) }));
+    const { sent } = server(base({ '/api/settings/embedding.base_url': () => Response.json({ applied: true }) }));
     mount('/settings/models');
-    const url = await screen.findByLabelText('Provider endpoint');
+    const url = await screen.findByLabelText('Embedding endpoint');
     fireEvent.change(url, { target: { value: 'https://llm.example' } });
     fireEvent.blur(url);
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.provider.base_url', body: { value: 'https://llm.example' } });
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/embedding.base_url', body: { value: 'https://llm.example' } });
     expect(Object.keys(sent[0]!.headers).some((h) => h.startsWith('x-myco-'))).toBe(false);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('says the refusal in the person\'s words: a foreign leaf is named as not held, any other refusal carries its status, and a bad number never leaves', async () => {
     const { sent } = server(base({
-      '/api/settings/cortex.digest.tier': () => Response.json({ applied: false, reason: 'not_deployment_tier', leaf: 'cortex.digest.tier' }, { status: 400 }),
+      '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: false, reason: 'not_deployment_tier', leaf: 'cortex.spores.inject_on_prompt_submit' }, { status: 400 }),
       '/api/settings/embedding.model': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
     mount('/settings');
-    await pick('Digest size', '10000 tokens');
-    await waitFor(() => expect(statusOf('cortex.digest.tier')).toBe('That setting is not held by the server.'));
+    fireEvent.click(await screen.findByRole('switch', { name: 'Spores on every prompt' }));
+    await waitFor(() => expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('That setting is not held by the server.'));
     const limit = await screen.findByLabelText('Items per prompt');
     fireEvent.change(limit, { target: { value: '11' } });
     fireEvent.blur(limit);
@@ -361,18 +362,9 @@ describe('Settings, in five sections', () => {
     fireEvent.change(model, { target: { value: 'nomic' } });
     fireEvent.blur(model);
     await waitFor(() => expect(statusOf('embedding.model')).toBe('The server refused (503).'));
-    expect(sent.map((s) => s.path)).toEqual(['/api/settings/cortex.digest.tier', '/api/settings/embedding.model']);
+    expect(sent.map((s) => s.path)).toEqual(['/api/settings/cortex.spores.inject_on_prompt_submit', '/api/settings/embedding.model']);
   });
 
-  it('saves a numeric select as a number', async () => {
-    const { sent } = server(base({ '/api/settings/cortex.digest.tier': () => Response.json({ applied: true }) }));
-    mount('/settings');
-    // The server's default, 5000, reads as picked while nothing is stored; another size is saved as a number.
-    expect((await screen.findByLabelText('Digest size')).textContent).toContain('5000 tokens');
-    await pick('Digest size', '10000 tokens');
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/cortex.digest.tier', body: { value: 10000 } });
-  });
 
   it('saves the task overrides document on Save, and refuses one that is not JSON before it leaves', async () => {
     const { sent } = server(base({ '/api/settings/agent.tasks': () => Response.json({ applied: true }) }));
@@ -536,7 +528,7 @@ describe('Settings, in five sections', () => {
    * "Older settings" at its section's foot, read-only, and never writes.
    */
   it('leaves out a retired setting with no value stored, and shows one with a value stored under Older settings, read-only', async () => {
-    const retired = RETIRED_FIELDS;
+    const retired = RETIRED_FIELDS.filter((field) => !LEAF_FIELDS.some((f) => f.leaf === field.leaf && f.readOnly));
     expect(retired.length).toBeGreaterThan(0);
     server(base({ '/api/settings': () => Response.json(leaves()) }));
     mount('/settings');
@@ -557,24 +549,18 @@ describe('Settings, in five sections', () => {
     mount('/settings');
     const older = await screen.findByRole('region', { name: 'Older settings' });
     fireEvent.click(within(older).getByRole('button', { name: 'Older settings (2)' }));
-    const stale = await within(older).findByLabelText('Skills stale after') as HTMLInputElement;
-    expect(stale.value).toBe('45');
-    expect(stale.readOnly).toBe(true);
-    const arrive = within(older).getByRole('switch', { name: 'Work as sessions arrive' });
-    expect(arrive.getAttribute('aria-checked')).toBe('true');
-    expect((arrive as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(stale, { target: { value: '99' } });
-    fireEvent.blur(stale);
-    fireEvent.click(arrive);
+    expect(within(older).getByText('skills.usage_stale_days')).toBeTruthy();
+    expect(within(older).getByText('45')).toBeTruthy();
+    expect(within(older).getByText('agent.event_tasks_enabled')).toBeTruthy();
+    expect(within(older).queryByRole('switch')).toBeNull();
+    expect(within(older).queryByRole('textbox')).toBeNull();
     expect(sent).toEqual([]);
   });
 
   it('takes which settings and keys are retired from the server\'s answer, not from a list of its own', async () => {
-    // The server says the digest's size is read no more, and that the skills' stale-after is read again.
     server(base({
       '/api/settings': () => Response.json(leaves({
         'cortex.digest.tier': { value: 8000, updatedBy: ADA, updatedAt: NOW, retired: true },
-        'skills.usage_stale_days': { retired: false },
       })),
       '/api/secrets': () => {
         const answer = secrets(false);
@@ -586,10 +572,8 @@ describe('Settings, in five sections', () => {
     const older = await screen.findByRole('region', { name: 'Older settings' });
     expect(within(await group('What sessions receive')).queryByLabelText('Digest size')).toBeNull();
     fireEvent.click(within(older).getByRole('button', { name: 'Older settings (1)' }));
-    const digest = await within(older).findByLabelText('Digest size') as HTMLButtonElement;
-    expect({ locked: digest.disabled || digest.getAttribute('aria-disabled') === 'true' || digest.getAttribute('data-disabled') !== null }).toEqual({ locked: true });
-    await section('Myco’s work');
-    expect(document.querySelector('[data-setting="skills.usage_stale_days"]') !== null).toBe(true);
+    expect(within(older).getByText('cortex.digest.tier')).toBeTruthy();
+    expect(within(older).queryByRole('combobox')).toBeNull();
 
     await section('Models and keys');
     const keys = await group('Keys');
@@ -634,12 +618,13 @@ describe('older links to a Settings tab', () => {
     expect(oldTabTarget('secrets')).toBe('/settings/models#credentials');
     expect(oldTabTarget('capabilities')).toBe('/settings/access#projects');
     expect(oldTabTarget('records')).toBe('/settings/capture#records');
-    expect(oldTabTarget('agent')).toBe('/settings/models#agent');
+    expect(oldTabTarget('agent')).toBe('/settings/models');
+    expect(oldTabTarget('skills')).toBe('/settings');
     expect(oldTabTarget('backup')).toBe('/settings/backups#backup');
     expect(oldTabTarget('maintenance')).toBe('/settings/backups#maintenance');
     expect(oldTabTarget('cortex')).toBe('/settings#cortex');
     expect(oldTabTarget('nope')).toBe('/settings');
-    for (const old of ['agent', 'scheduling', 'limits', 'cortex', 'code-map', 'embedding', 'skills', 'workers', 'backup', 'maintenance', 'records', 'import', 'advanced']) {
+    for (const old of ['scheduling', 'limits', 'cortex', 'code-map', 'embedding', 'workers', 'backup', 'maintenance', 'records', 'import', 'advanced']) {
       expect({ old, group: LEAF_GROUPS.some((g) => g.id === old) }).toEqual({ old, group: true });
     }
   });
@@ -826,4 +811,22 @@ describe('Sign-in and access', () => {
     expect(within(projects).getByRole('link').getAttribute('href')).toBe(`/p/${P_X}/settings#access-keys`);
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
+});
+
+
+it('shows retired task preferences as metadata outside the task-overrides editor', async () => {
+  const historic = { 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' }, 'container-smoke': { model: 'haiku' } };
+  server(base({ '/api/settings': () => Response.json(leaves({ 'agent.tasks': { value: historic,
+    editableValue: { 'title-summary': { reasoningLevel: 'low' } },
+    retiredValue: { 'title-summary': { provider: 'anthropic' }, 'container-smoke': { model: 'haiku' } } } })) }));
+  mount('/settings/models');
+  const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
+  expect((editor as HTMLTextAreaElement).value).not.toContain('provider');
+  expect((editor as HTMLTextAreaElement).value).not.toContain('container-smoke');
+  expect(screen.getByTestId('retired-task-overrides').textContent).toContain('container-smoke');
+  expect(screen.getByTestId('retired-task-overrides').querySelectorAll('input,textarea,button')).toHaveLength(0);
+});
+it('describes weekly retention by the most recent weeks containing exports', () => {
+  const field = LEAF_FIELDS.find(({ leaf }) => leaf === 'backup.retention.keep_weekly')!;
+  expect(field.note).toContain('most recent weeks that contain exports');
 });

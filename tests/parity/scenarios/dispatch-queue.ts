@@ -1,4 +1,5 @@
 import { expect } from 'bun:test';
+import { DISPATCH_REFUSAL_MESSAGE } from '@myco-server-worker/core/harness.js';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
@@ -86,17 +87,22 @@ export const dispatchQueue: ParityScenario = {
       VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'container-smoke', 'queued', ${now}, 'runtime',
               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))}, ${lit(credential)})`);
 
-    // With no provider named, the drain can prepare nothing and gives up on it.
+    // Invalid archived probe preferences end the run and revoke its credential.
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
     try {
       await wake();
       expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-        .toEqual([{ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' }]);
+        .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.probe_preferences_invalid }]);
+      expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
+        .toEqual([{ revoked: 1 }]);
+      await target.sql(`UPDATE agent_runs SET task = 'unknown-parity-task', status = 'queued' WHERE id = ${lit(stranded)}`);
+      await wake();
+      expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
+        .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.unknown_task }]);
       expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
         .toEqual([{ revoked: 1 }]);
     } finally {
-      // The scenarios after this one dispatch, and a Deployment with no provider
-      // dispatches nothing.
+      // Runtime probe dispatch requires its archived provider preferences.
       await leaf('agent.provider.type', 'openai-compatible');
     }
 

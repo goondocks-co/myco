@@ -14,7 +14,7 @@ import { SERVER_JOBS, TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE, type TaskSchedul
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/scheduled-tasks.js';
-import { enabledCapabilities, leafValues, providerConfiguredFor } from '../core/settings.js';
+import { enabledCapabilities, leafValues } from '../core/settings.js';
 import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK } from '../core/task-catalogue.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
 import { runAllowlist } from '../mcp/run-surface.js';
@@ -99,7 +99,6 @@ async function availabilityNotes(env: ServerEnv, set: ProjectSet): Promise<Map<s
     const capability = capabilityOf(task);
     if (capability === null) {
       if (task === 'embedding-reconcile') return [task, embeddingAvailable ? null : 'Search for similar knowledge is unavailable on this server.'] as const;
-      if (RUNTIME_SERVED_TASKS.includes(task) && !(await providerConfiguredFor(env.db, task))) return [task, 'Choose a provider in Settings before this task can run.'] as const;
       return [task, null] as const;
     }
     const off = ids.filter((projectId) => !projectsByCapability.get(capability)?.has(projectId)).length;
@@ -138,7 +137,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
       if (job === undefined) throw new Error(`No upkeep job for ${task}`);
       const states = Object.keys(POWER_STATE_DEPTH).filter((state) => POWER_STATE_DEPTH[state as PowerState] <= POWER_STATE_DEPTH[job.runsThrough]).reverse().map((state) => STATE_WORDS[state as PowerState]);
       triggers.push(`When the search index has pending work and Myco is ${states.join(' or ')}. At least ${unitWords(EMBEDDING_RETRY_MS / 1000, 'second')} between runs.`);
-    }
+    } else triggers.push('When a person requests this task.');
     const allowlist = runAllowlist(TASK_TOOLS[task], { dryRun: false });
     const tools = runtimeServed ? [] : [...new Set([...allowlist].flatMap(([tool, ops]) => [...ops].map((op) => callWords(tool, op))))];
     return {

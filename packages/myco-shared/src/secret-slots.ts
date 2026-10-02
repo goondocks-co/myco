@@ -22,7 +22,7 @@ export interface SecretSlot {
 
 /** Every slot, in the order the settings page lists them. */
 export const SECRET_SLOTS: readonly SecretSlot[] = [
-  { name: 'anthropic', label: 'Anthropic', alsoUsedFor: 'the work this server runs itself, when its model provider is Anthropic' },
+  { name: 'anthropic', label: 'Anthropic', alsoUsedFor: 'the retained container probe when its archived provider is Anthropic' },
   { name: 'codex', label: 'Codex (OpenAI)', alsoUsedFor: null },
   { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
   { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
