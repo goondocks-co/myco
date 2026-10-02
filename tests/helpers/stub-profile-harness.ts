@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { detectHarnesses, locate, type DetectedHarness } from '@myco/runner/detect.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
@@ -21,6 +22,7 @@ interface StubOptions {
   pidFile?: string;
   spawnedFile?: string;
   argumentsFile?: string;
+  mcpReceipt?: string;
 }
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -36,6 +38,14 @@ export function stubProfileHarness(options: StubOptions = {}): { detected: Detec
     '  waited=$((waited + 1))',
     'done',
   ].join('\n');
+  const mcpRead = options.mcpReceipt === undefined ? '' : [
+    'mcp_config=',
+    'while [ "$#" -gt 0 ]; do',
+    '  if [ "$1" = "--mcp-config" ]; then shift; mcp_config="$1"; break; fi',
+    '  shift',
+    'done',
+    `${quote(process.execPath)} ${quote(fileURLToPath(new URL('./stub-profile-mcp.mjs', import.meta.url)))} "$mcp_config" ${quote(options.mcpReceipt)} || exit 1`,
+  ].join('\n');
   const script = [
     '#!/bin/sh',
     'if [ "$1" = "auth" ]; then exit 0; fi',
@@ -43,6 +53,7 @@ export function stubProfileHarness(options: StubOptions = {}): { detected: Detec
     options.argumentsFile === undefined ? '' : `printf '%s\\n' "$@" > ${quote(options.argumentsFile)}`,
     options.spawnedFile === undefined ? '' : `printf '%s\\n' "$$" >> ${quote(options.spawnedFile)}`,
     options.pidFile === undefined ? '' : `printf '%s\\n' "$$" > ${quote(options.pidFile)}`,
+    mcpRead,
     hold,
     `printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess_stub","model":"claude-sonnet-5-5"}'`,
     `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'`,

@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
 
 /** How far other workers' last contact is moved back while this scenario asks, and forward again afterwards. */
 const PARK_MS = 86_400_000;
@@ -32,7 +33,7 @@ export const capabilityHold: ParityScenario = {
     const claim = async (capabilities: string[]) => {
       const res = await fetch(`${target.url}/worker/claim`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ harnesses: [{ id: 'claude-code', authenticated: true }], capabilities }),
+        body: JSON.stringify({ harnesses: [offeredHarness('claude-code')], capabilities }),
       });
       const answer = await res.json() as { claimed: boolean; reason?: string };
       return { status: res.status, claimed: answer.claimed, reason: answer.reason ?? null };

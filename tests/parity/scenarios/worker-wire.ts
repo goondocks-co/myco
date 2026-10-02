@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
-import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../../helpers/stub-acp-harness.ts';
+import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS } from '../../helpers/stub-profile-harness.ts';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { lit, MACHINE_ID, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
 
@@ -31,9 +31,8 @@ const RENEWALS = 3;
  * protocol passed all of them while every booted Deployment answered it 409 and
  * drove nothing.
  *
- * The harness is a stub on PATH and the model is never reached; what is under
- * test is the wire from a claim to an outcome, which runs the same on a machine
- * with three real harnesses.
+ * The harness is a stub on PATH; what is under test is the wire from a claim
+ * to an outcome, which runs the same on a machine with real harnesses.
  *
  * The stub reads its session material with the supplied run credential, then
  * answers `end_turn` without writing a title or report. Both targets must reject
@@ -54,7 +53,18 @@ export const workerWire: ParityScenario = {
     const releaseTurn = (): void => { if (!existsSync(release)) writeFileSync(release, ''); };
     // The offer a claim carries is built from this, so an undetected stub would
     // read as a Deployment with no work rather than as a machine with no harness.
-    expect(stubAcpHarness({ holdUntil: release, mcpReceipt: receipt })).toEqual(STUB_DETECTED);
+    expect(stubProfileHarness({ holdUntil: release, mcpReceipt: receipt })).toEqual(PROFILE_STUB_DETECTED);
+
+    const credentialLeaf = `agent.harnesses.${PROFILE_STUB_HARNESS}.credential`;
+    const settings = await fetch(`${target.url}/api/settings`, { headers: { ...target.ownerHeaders(), origin: target.url } });
+    expect(settings.status).toBe(200);
+    const previous = ((await settings.json()) as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> }).leaves
+      .find((entry) => entry.leaf === credentialLeaf);
+    if (previous === undefined) throw new Error(`${target.name}: missing ${credentialLeaf} setting`);
+    const credentialSetting = (method: 'PUT' | 'DELETE', value?: unknown) => fetch(`${target.url}/api/settings/${credentialLeaf}`, {
+      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+      ...(method === 'PUT' ? { body: JSON.stringify({ value }) } : {}),
+    });
 
     // A claim takes the OLDEST queued run the Deployment holds, so this row has
     // to be the one at the front — without ending runs this scenario does not
@@ -133,7 +143,7 @@ export const workerWire: ParityScenario = {
       }
       const running = reached.row;
       expect(`${target.name} while driven: ${running?.status} harness=${running?.harness} leased=${running?.leased}`)
-        .toBe(`${target.name} while driven: running harness=${STUB_HARNESS} leased=1`);
+        .toBe(`${target.name} while driven: running harness=${PROFILE_STUB_HARNESS} leased=1`);
       // The run credential the claim answered the worker with, named on the row
       // while the run is live. Its retirement is what the end is checked by.
       const minted = running.dispatchedBy ?? '';
@@ -165,10 +175,13 @@ export const workerWire: ParityScenario = {
       // whose answer the worker's deadline cut short is still the Deployment's
       // to finish, so the row is waited for rather than read once.
       await waitFor(row, (r) => r?.status !== 'running', 20_000);
-      expect(await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
-        FROM agent_runs WHERE id = ${lit(runId)}`)).toEqual([{
-        tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: JSON.stringify({ accountingVersion: 1, identity: { status: 'unknown', reason: 'harness_did_not_report_model_and_launch_choice_unresolved' } }),
-      }]);
+      const [accounted] = await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
+        FROM agent_runs WHERE id = ${lit(runId)}`) as Array<{ tokens_used: number | null; cost_usd: number | null; actual_cost_usd: number | null; estimated_cost_usd: number | null; cost_source: string; usage_data: string }>;
+      expect(accounted).toMatchObject({ tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable' });
+      expect(JSON.parse(accounted!.usage_data)).toMatchObject({
+        accountingVersion: 1, model: 'claude-sonnet-5-5', provider: 'anthropic',
+        identity: { status: 'reported', source: 'system.init.model', primary: { model: 'claude-sonnet-5-5', provider: 'anthropic' } },
+      });
       const finalRow = await row();
       expect(`${target.name} ended: ${finalRow.status} — ${finalRow.error ?? 'no error'}`)
         .toBe(`${target.name} ended: failed — ${RUN_CLOSE_ERROR}`);
@@ -191,19 +204,21 @@ export const workerWire: ParityScenario = {
     const bound = setTimeout(() => { stopping.abort(); }, ATTACH_BOUND_MS);
     let finished: WorkerOutcome | null = null;
     const runRoot = mkdtempSync(join(tmpdir(), 'myco-parity-worker-'));
-    const attached = runWorker({
-      serverUrl: target.url,
-      token: target.memberToken, lockDir: null,
-      runRoot,
-      only: [STUB_HARNESS],
-      once: true,
-      pollIdleMs: 500,
-      log: (line) => { lines.push(line); },
-      fetchImpl,
-      signal: stopping.signal,
-    }).then((outcome) => { finished = outcome; return outcome; });
-
+    let attached: Promise<WorkerOutcome> | null = null;
     try {
+      const configured = await credentialSetting('PUT', 'worker-login');
+      expect({ status: configured.status, body: await configured.json() }).toEqual({ status: 200, body: { applied: true } });
+      attached = runWorker({
+        serverUrl: target.url,
+        token: target.memberToken, lockDir: null,
+        runRoot,
+        only: [PROFILE_STUB_HARNESS],
+        once: true,
+        pollIdleMs: 500,
+        log: (line) => { lines.push(line); },
+        fetchImpl,
+        signal: stopping.signal,
+      }).then((outcome) => { finished = outcome; return outcome; });
       await drove(attached, lines, () => finished);
     } finally {
       // A thrown assertion must still end the attachment: a scenario that threw
@@ -214,10 +229,13 @@ export const workerWire: ParityScenario = {
       releaseTurn();
       clearTimeout(bound);
       stopping.abort();
-      await attached.catch(() => undefined);
+      await attached?.catch(() => undefined);
       rmSync(runRoot, { recursive: true, force: true });
       rmSync(scratch, { recursive: true, force: true });
-      await shiftParked(-PARK_MS);
+      try {
+        const restored = await credentialSetting(previous.configured ? 'PUT' : 'DELETE', previous.value);
+        expect({ status: restored.status, body: await restored.json() }).toEqual({ status: 200, body: { applied: true } });
+      } finally { await shiftParked(-PARK_MS); }
     }
   },
 };
