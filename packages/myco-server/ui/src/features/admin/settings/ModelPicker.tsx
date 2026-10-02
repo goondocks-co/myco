@@ -8,7 +8,7 @@ import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
-import { savedWords } from './LeafControl';
+import { defaultWords, savedWords } from './LeafControl';
 import type { LeafRow, SettingsModelCatalog } from './wire';
 
 /** The provider filter's value for every provider. */
@@ -88,7 +88,8 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
     if ((row?.state === 'invalid' || row?.state === 'not-applicable') && (row.remedy ?? row.reason) != null) return (row.remedy ?? row.reason)!;
     if (current !== null && known === undefined) return `${current} is not among the models your machines listed for ${agent}. Check the name, or choose a listed model.`;
     if (known?.upgrade !== undefined) return `${agent} names ${successor?.label ?? known.upgrade} as the successor to ${known.label}.`;
-    return savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now());
+    const applied = row?.source === 'default' && typeof row.effectiveValue === 'string' ? (known?.label ?? row.effectiveValue) : defaultWords(field);
+    return savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), applied);
   };
   const status = statusWords();
 

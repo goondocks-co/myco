@@ -1034,6 +1034,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     mount('/settings/models');
     const claude = within(await group('Claude Code tiers'));
     expect(claude.getAllByText('Listed by your machines 1 h ago.').length).toBeGreaterThan(0);
+    expect(statusOf(leaf)).toBe('Server default: Haiku 4.5');
     fireEvent.click(claude.getByLabelText('low tier model'));
     expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['Haiku 4.5 (haiku)', 'Sonnet 5.5 (sonnet)', 'Opus 5.5 (opus)']);
     fireEvent.click(await screen.findByRole('option', { name: 'Sonnet 5.5 (sonnet)' }));
@@ -1079,6 +1080,8 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
   it('marks the model the agent runs when none is named', async () => {
     server(base({ '/api/settings': withModels([CODEX]) }));
     mount('/settings/models');
+    await group('Codex tiers');
+    expect(statusOf('agent.reasoning_map.codex.low')).toBe('Server default: required before this tier runs');
     fireEvent.click(within(await group('Codex tiers')).getByLabelText('low tier model'));
     expect((await screen.findAllByRole('option'))[0]!.textContent).toBe('GPT-6.1-Sol (gpt-6.1-sol), the agent\'s default');
   });
