@@ -94,3 +94,45 @@ export function profileModelMatches(harness: string, requested: string, actual: 
   const families = PROFILE_HARNESSES[harness]?.modelFamilies ?? [];
   return requested === actual || (families.includes(requested) && actual.startsWith(`claude-${requested}-`));
 }
+
+/**
+ * How a harness comes to ask before a call, or what bounds a run on a harness
+ * that never asks.
+ *
+ * - `native`: a native driver pins the run's grant as the harness's own
+ *   permissions, and the harness refuses whatever it does not allow.
+ * - `sandbox`: the harness asks nothing and the run's grant does not apply. Its
+ *   driver pins an operating-system sandbox that is the run's whole bound: what
+ *   its commands may read, write and reach.
+ * - `run-agent`: the harness asks only where its configuration says to, so a
+ *   run starts in an agent of its own, supplied as configuration content in the
+ *   variable `env`, under which every call asks; the session must report that
+ *   agent as its mode. `extensionsOff` is the environment that keeps the
+ *   extensions the machine installed out of the run's harness process, since an
+ *   extension can answer a permission request itself.
+ * - `run-home`: the harness asks for any call its configuration has not
+ *   approved in advance, so a run reads a configuration directory of its own,
+ *   named in the variable `env`, in which nothing is approved in advance.
+ * - `unheld`: the harness approves in advance whatever its user's configuration
+ *   approves, and a run cannot be given a configuration of its own, so no call
+ *   it approved that way would reach the run's grant. No worker offers it.
+ */
+export type Asking =
+  | { kind: 'native' }
+  | { kind: 'sandbox' }
+  | { kind: 'run-agent'; env: string; extensionsOff: Readonly<Record<string, string>> }
+  | { kind: 'run-home'; env: string }
+  | { kind: 'unheld' };
+
+/** The boundary each worker applies when it offers this agent. */
+export const HARNESS_ASKING: Readonly<Record<string, Asking>> = {
+  'claude-code': { kind: 'native' },
+  codex: { kind: 'sandbox' },
+  opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT', extensionsOff: { OPENCODE_PURE: '1' } },
+  cursor: { kind: 'run-home', env: 'CURSOR_CONFIG_DIR' },
+  antigravity: { kind: 'unheld' },
+};
+
+/** A worker offers only agents whose runs can be bounded. */
+export const canOfferHarness = (asking: Asking): boolean => asking.kind !== 'unheld';
+export const OFFERABLE_PROFILE_HARNESSES = Object.keys(HARNESS_ASKING).filter((id) => canOfferHarness(HARNESS_ASKING[id]!));

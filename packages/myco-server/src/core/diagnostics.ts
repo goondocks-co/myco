@@ -79,7 +79,7 @@ export interface WorkerFacts {
 }
 
 /** A task the catalogue retains, or null for one it does not name. */
-const knownTask = (task: string | null): string | null => (task !== null && RETAINED_TASKS.includes(task) ? task : null);
+const knownTask = (task: string | null): string | null => (task !== null && RETAINED_TASKS.some((known) => known === task) ? task : null);
 
 
 /** A holder the shared vocabulary declares, or null. An inherited key is not a declaration. */

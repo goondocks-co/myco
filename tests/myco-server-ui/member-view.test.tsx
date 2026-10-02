@@ -40,6 +40,7 @@ const ROUTES_ANSWERED: Record<string, () => Response> = {
   '/api/members': () => Response.json({ members: [{ id: 'mem_2', label: 'teammate', role: 'member', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 }] }),
   '/api/credentials': () => Response.json({ rows: [CREDENTIAL], cursor: null }),
   '/api/settings': () => Response.json({ leaves: [] }),
+  '/api/tasks': () => Response.json({ tasks: [] }),
 };
 
 function mount(path: string) {
@@ -57,7 +58,7 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
 describe('the dashboard for a member who is not an admin', () => {
   const PAGES = [
     '/projects', '/p/live', '/sessions', '/p/live/sessions', '/p/live/sessions/s1', '/p/live/sessions/s1?raw=transcript', '/knowledge', '/knowledge/plans',
-    '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs', '/work', '/p/live/work', '/p/live/work/runs/r1',
+    '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs', '/work', '/work/tasks', '/p/live/work/tasks', '/p/live/work', '/p/live/work/runs/r1',
     '/me/machines', '/people', '/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access', '/p/live/settings', '/status/health',
     '/p/live/access', '/access', '/status', '/measures', '/settings?tab=secrets', '/operations', '/notifications',
   ];

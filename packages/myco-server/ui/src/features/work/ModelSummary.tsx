@@ -18,7 +18,7 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
   const different = mismatch && <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>;
   if (variant === 'list') {
     const model = run.requested?.model;
-    const asked = model === undefined ? null : `Asked for ${['opus', 'sonnet', 'haiku'].includes(model) ? model.charAt(0).toUpperCase() + model.slice(1) : model}${run.requested?.effort == null ? '' : `, ${run.requested.effort} effort`}`;
+    const asked = model === undefined ? null : `Asked for ${displayModel(model)}${run.requested?.effort == null ? '' : `, ${run.requested.effort} effort`}`;
     const actual = known ? `${identity.status === 'reported' ? 'ran' : 'launched'} ${models.join(', ')}` : null;
     return <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary=""><span>{[asked, actual].filter(Boolean).join(' · ')}</span>{different}</div>;
   }
@@ -29,6 +29,11 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
       {different}
     </div>
   );
+}
+
+/** Reader-facing names for the Claude model choices in settings. */
+export function displayModel(model: string): string {
+  return ['opus', 'sonnet', 'haiku'].includes(model) ? model.charAt(0).toUpperCase() + model.slice(1) : model;
 }
 
 export function costProvenanceWords(provenance: CostProvenance | null): string {

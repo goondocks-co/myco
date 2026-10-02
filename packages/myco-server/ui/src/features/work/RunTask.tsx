@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { Play } from 'lucide-react';
-import { ActionLink, ActionMenu, Button, Dialog, DialogContent, DialogFooter, Switch } from '../../design';
+import { ActionLink, ActionMenu, Button, Dialog, DialogContent, DialogFooter, ErrorState, LoadingState, Switch } from '../../design';
+import { useTaskDescriptions } from '../../hooks/use-tasks';
 import { useCapabilities } from '../../hooks/use-settings';
 import { useDispatchTask } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
@@ -13,8 +14,6 @@ import { atWords, capabilityOffWords, dailyLimitWords, isCapabilityOff, isDailyL
 export interface StartableTask {
   task: string;
   label: string;
-  /** What it will do, in the project's name. */
-  does: (project: string) => string;
   /** Its confirming button. */
   confirm: string;
   /** Its runs, plural, as the spend line names them: "learning runs". */
@@ -25,21 +24,18 @@ export const STARTABLE_TASKS: readonly StartableTask[] = [
   {
     task: 'extract-curate',
     label: 'Learn from new sessions now',
-    does: (project) => `Myco will read the prompts in ${project} it hasn’t read yet and save what’s worth keeping as spores.`,
     confirm: 'Learn now',
     noun: 'learning runs',
   },
   {
     task: 'canopy-map',
     label: 'Update the code map now',
-    does: (project) => `Myco will read ${project}’s repository and update the code map to its latest commit.`,
     confirm: 'Update the code map',
     noun: 'updates',
   },
   {
     task: 'vault-seed',
     label: 'Learn from the project’s code',
-    does: (project) => `Myco will read ${project}’s repository and save what it learns about the code as spores.`,
     confirm: 'Learn from the code',
     noun: 'runs over the code',
   },
@@ -56,6 +52,7 @@ export interface RunTaskMenuProps {
 /** "Run a task": what can be started now in this project, each saying what it does or why it waits. */
 export function RunTaskMenu({ projectId, week, now, onPick }: RunTaskMenuProps) {
   const capabilities = useCapabilities(projectId);
+  const descriptions = useTaskDescriptions(projectId);
   const on = capabilities.data?.capabilities;
   return (
     <ActionMenu
@@ -67,18 +64,12 @@ export function RunTaskMenu({ projectId, week, now, onPick }: RunTaskMenuProps) 
         const latest = week?.find((outcome) => outcome.task === entry.task)?.latestAt ?? null;
         return {
           label: entry.label,
-          detail: off ? capabilityOffWords(capability!) : latest === null ? detailOf(entry.task) : `Last ran ${atWords(latest, now)}`,
+          detail: off ? capabilityOffWords(capability!) : latest === null ? descriptions.data?.tasks.find((task) => task.task === entry.task)?.description : `Last ran ${atWords(latest, now)}`,
           onSelect: () => onPick(entry.task),
         };
       })}
     />
   );
-}
-
-function detailOf(task: string): string {
-  if (task === 'extract-curate') return 'Reads prompts Myco hasn’t read yet';
-  if (task === 'canopy-map') return 'Brings the map up to the latest commit';
-  return 'Reads the repository for what it holds';
 }
 
 export interface RunTaskConfirmProps {
@@ -102,6 +93,7 @@ export interface RunTaskConfirmProps {
 export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, week, admin, now, onStarted }: RunTaskConfirmProps) {
   const entry = STARTABLE_TASKS.find((candidate) => candidate.task === task) ?? null;
   const dispatch = useDispatchTask(projectId);
+  const descriptions = useTaskDescriptions(projectId);
   const capabilities = useCapabilities(projectId);
   const [fresh, setFresh] = useState(false);
   // One ask at a time: set before the dispatch goes out, so a second click in the same tick sends nothing.
@@ -112,6 +104,7 @@ export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, wee
     onOpenChange(open);
   };
   if (entry === null) return null;
+  const description = descriptions.data?.tasks.find((row) => row.task === entry.task);
   const capability = TASK_CAPABILITY[entry.task];
   const switchedOff = capability !== undefined && capabilities.data?.capabilities[capability] === false;
   const outcome = week?.find((candidate) => candidate.task === entry.task);
@@ -120,7 +113,10 @@ export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, wee
   const offCapability = refusal?.capability ?? (switchedOff ? capability! : null);
   return (
     <Dialog open={task !== null} onOpenChange={close}>
-      <DialogContent title={`${entry.label}?`} description={entry.does(projectName)} hideClose data-run-task-confirm={entry.task}>
+      <DialogContent title={`${entry.label}?`} description={description === undefined ? `In ${projectName}.` : `${description.description} In ${projectName}.`} hideClose data-run-task-confirm={entry.task}>
+        {descriptions.isError && <ErrorState error={descriptions.error} onRetry={() => void descriptions.refetch()} />}
+        {descriptions.isPending && <LoadingState label="Loading task description" count={1} />}
+        {descriptions.data !== undefined && description === undefined && <p role="alert" className="t-small text-bad">This task’s description is unavailable.</p>}
         {offCapability !== null ? (
           <p role="alert" className="flex flex-col gap-s1 t-small text-ink-2" data-capability-off="">
             <span className="font-medium text-bad">{capabilityOffWords(offCapability)}</span>
@@ -153,7 +149,7 @@ export function RunTaskConfirm({ projectId, projectName, task, onOpenChange, wee
             <Button
               variant="primary"
               pending={dispatch.isPending}
-              disabled={refusal?.final === true}
+              disabled={refusal?.final === true || description === undefined}
               onClick={() => {
                 if (asking.current) return;
                 asking.current = true;

@@ -19,7 +19,7 @@ const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0,
 /** Every page under the project list, with the master/detail pages both bare and with a row named. */
 export const PAGES = [
   '/p/x', '/p/x/sessions', '/p/x/sessions/s1', '/knowledge', '/knowledge/plans', '/p/x/knowledge', '/p/x/knowledge/plans', '/p/x/knowledge/map',
-  '/p/x/spores/sp1', '/p/x/plans/11111111-2222-4333-8444-555555555555', '/work', '/p/x/work', '/p/x/work/runs/r1', '/p/x/runs',
+  '/p/x/spores/sp1', '/p/x/plans/11111111-2222-4333-8444-555555555555', '/work', '/work/tasks', '/p/x/work/tasks', '/p/x/work', '/p/x/work/runs/r1', '/p/x/runs',
   '/p/x/settings', '/people', '/me/machines', '/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access', '/status/health',
 ];
 

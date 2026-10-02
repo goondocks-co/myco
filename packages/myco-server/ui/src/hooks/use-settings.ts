@@ -55,17 +55,17 @@ export function useSettingsActions() {
       gcTime: 0,
       mutationFn: (v: { leaf: string; value: unknown }) => putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { value: v.value }),
       // Where titling stands reads the scheduling switch and the task overrides, so it is read again with the settings.
-      onSuccess: () => refresh('settings', 'titling-backfill'),
+      onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     resetLeaf: useMutation({
       gcTime: 0,
       mutationFn: (v: { leaf: string }) => deleteJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`),
-      onSuccess: () => refresh('settings', 'titling-backfill'),
+      onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     setTaskTier: useMutation({
       gcTime: 0,
       mutationFn: (v: { task: string; tier: ReasoningTier | null }) => patchJson<{ applied: true }>('/api/settings/agent.tasks', v),
-      onSuccess: () => refresh('settings', 'titling-backfill'),
+      onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
     setSecret: useMutation({
       gcTime: 0,
