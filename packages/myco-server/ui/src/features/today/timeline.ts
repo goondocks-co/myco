@@ -70,6 +70,11 @@ export interface TimelineInput {
   now: number;
 }
 
+/** Whether the run's canonical result records published output. */
+export function hasRunOutput(run: Pick<WorkRun, 'result'>): boolean {
+  return run.result === 'produced' || run.result === 'failed_with_output';
+}
+
 /** The day's entries, live sessions first, then newest first. */
 export function buildTimeline({ sessions, runs, spores, window, now }: TimelineInput): TimelineEntry[] {
   const inWindow = (at: number) => at >= window.start && at < window.end;
@@ -94,7 +99,7 @@ export function buildTimeline({ sessions, runs, spores, window, now }: TimelineI
   const sessionsById = new Map(sessions.map((session) => [`${session.projectId}:${session.sessionId}`, session]));
 
   const workEntries: WorkEntry[] = runs
-    .filter((run): run is WorkRun & { at: number } => run.at !== null && inWindow(run.at))
+    .filter((run): run is WorkRun & { at: number } => run.result !== 'unchanged' && run.at !== null && inWindow(run.at))
     .map((run) => ({
       type: 'work',
       key: `run:${run.projectId}:${run.id}`,
@@ -130,6 +135,7 @@ export function buildTimeline({ sessions, runs, spores, window, now }: TimelineI
   for (const entry of merged) {
     if (entry.type !== 'work' || entry.kind !== 'title') continue;
     entry.titled = entry.runs
+      .filter(hasRunOutput)
       .map((run) => (run.sessionId === null ? undefined : sessionsById.get(`${run.projectId}:${run.sessionId}`)))
       .filter((session): session is TodaySession => session !== undefined);
   }
@@ -177,5 +183,5 @@ export function ledeCounts(entries: readonly TimelineEntry[]): LedeCounts {
 
 /** How many spores a work entry's runs wrote. */
 export function sporesWritten(entry: WorkEntry): number {
-  return entry.runs.reduce((sum, run) => sum + (run.result === 'failed' ? 0 : run.outcome.spores), 0);
+  return entry.runs.reduce((sum, run) => sum + (hasRunOutput(run) ? run.outcome.spores : 0), 0);
 }
