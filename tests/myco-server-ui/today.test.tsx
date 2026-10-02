@@ -845,6 +845,7 @@ describe('Today\'s words', () => {
       { kind: 'no_worker', tone: 'bad', runs: 4, since: NOW - 2 * HOUR, lastContactAt: NOW - 3 * HOUR },
       { kind: 'schema_mismatch', tone: 'bad', expected: 57, found: 56 },
       { kind: 'backup_overdue', tone: 'warn', lastBackupAt: null, intervalHours: 12 },
+      { kind: 'runs_without_audit', tone: 'warn', projectId: P_ATLAS, runs: 2, closed: 9, since: NOW - 2 * HOUR, latestAt: NOW - HOUR, runId: 'run_q3Vb8xRk2LmT7wYz' },
     ];
     const names = new Map(PROJECTS.map((p) => [p.projectId, p.name]));
     for (const item of items) {
@@ -864,6 +865,7 @@ describe('Today\'s words', () => {
       }
     }
     expect(attentionWords(items[5]!, NOW, () => null).detail).toContain('read the repository');
+    expect(attentionWords(items.at(-1)!, NOW, () => null).title).toBe('2 task runs of 9 ended without the agent’s account of its steps');
   });
 });
 

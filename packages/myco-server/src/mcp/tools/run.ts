@@ -3,7 +3,11 @@
  *
  * The report is the run's claim about its own pass, and the close gate reads it
  * (`core/run-postconditions.ts`). Its agent comes off the principal, never off
- * the arguments, so a run cannot file a report under another agent's name.
+ * the arguments, so a run cannot file a report under another agent's name. A
+ * report carries its audit (`core/run-audit.ts`); one whose audit is refused is
+ * still recorded, and is answered as a failure that says what the audit lacks:
+ * the run it belongs to cannot close as completed on it. An audit the server
+ * repaired is recorded and answered with the repairs made.
  *
  * State is a compare-and-set. `state_get` answers a version token — a digest of
  * the value it read — and `state_set` presents it back. The token is what
@@ -17,6 +21,7 @@
 import { sha256Hex } from '../../hash.js';
 import { getState, mutateState } from '../../core/runs.js';
 import { recordReport } from '../../core/run-postconditions.js';
+import { RUN_AUDIT_SHAPE } from '../../core/run-audit.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -53,9 +58,12 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     if (action === undefined || summary === undefined) return failure('action and summary are required for op: report');
     const details = input.details === undefined || input.details === null ? null : str(input.details, MAX_DETAILS_CHARS);
     if (details === undefined) return failure(`details is at most ${MAX_DETAILS_CHARS} characters`);
-    const recorded = await recordReport(db, scope, { runId: run.runId, agentId: run.agentId, action, summary, details, createdAt: ctx.now });
+    const recorded = await recordReport(db, scope, { runId: run.runId, agentId: run.agentId, action, summary, details, audit: input.audit, createdAt: ctx.now });
     if (!recorded.recorded) return failure(recorded.reason === 'unaccepted' ? recorded.error : 'this run is not one this Project holds');
-    return { recorded: true, action };
+    if (recorded.auditError !== null) {
+      return failure(`the report was recorded without its audit (${recorded.auditError}), so this run cannot close as completed; report again with the audit: ${RUN_AUDIT_SHAPE}`);
+    }
+    return { recorded: true, action, ...(recorded.auditRepairs.length === 0 ? {} : { audit_repaired: recorded.auditRepairs }) };
   }
 
   const key = str(input.key, MAX_KEY_CHARS);

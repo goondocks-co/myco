@@ -43,6 +43,8 @@ interface StubOptions {
   listedFile?: string;
   argumentsFile?: string;
   mcpReceipt?: string;
+  /** Stream lines written between the session's start and the turn's result. */
+  lines?: readonly string[];
 }
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
@@ -77,6 +79,7 @@ export function stubProfileHarness(options: StubOptions = {}): { detected: Detec
     mcpRead,
     hold,
     `printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess_stub","model":"claude-sonnet-5-5"}'`,
+    ...(options.lines ?? []).map((line) => `printf '%s\\n' ${quote(line)}`),
     `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'`,
   ].join('\n');
   writeFileSync(binary, script, { mode: 0o755 });

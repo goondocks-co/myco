@@ -1089,7 +1089,7 @@ export async function claimNextRun(
   // workers deciding at once cannot both pass a limit of one.
   const limits = await readDispatchLimits(env);
   const row = await claimQueuedRun(env.db, candidate, {
-    dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
+    dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, machineId: worker.machineId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
   }, { limits, now: worker.now, ...(capability === null ? {} : { capability }) });
   if (row === null) {
     await retireDispatchCredential(env, minted.tokenId, worker.now);

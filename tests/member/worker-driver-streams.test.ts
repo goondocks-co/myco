@@ -55,6 +55,10 @@ function stubHarness(name: string, lines: readonly string[], exitCode = 0): stri
   return dir;
 }
 
+/** A run's calls as their outcomes, without the facts a step log reads from them (`worker-steps.test.ts` holds those). */
+const toolCalls = (events: readonly RunEvent[]): RunEvent[] => events.filter((e) => e.kind === 'tool_call')
+  .map(({ callId: _id, category: _category, input: _input, ...call }) => call);
+
 async function collect(events: AsyncIterable<RunEvent>): Promise<RunEvent[]> {
   const out: RunEvent[] = [];
   for await (const event of events) out.push(event);
@@ -230,10 +234,10 @@ describe('the Claude Code driver', () => {
     expect(events.filter((e) => e.kind === 'message')).toEqual([{ kind: 'message', role: 'assistant', text: 'reading the material' }]);
     // The harness says a refusal twice, on a system line and on the result; it is one refused call.
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
-      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'started' },
-      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'ok' },
-      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'started' },
-      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'error' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'started', callId: 'tu_1', input: { op: 'material' } },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'ok', callId: 'tu_1' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'started', callId: 'tu_2', input: { op: 'report' } },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run', status: 'error', refused: true, callId: 'tu_2' },
     ]);
   });
 
@@ -252,9 +256,9 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call' && e.status === 'error')).toEqual([
-      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', detail: said },
-      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', detail: said },
-      { kind: 'tool_call', name: 'Bash', status: 'error', detail: 'git: cannot change to repo (exit code 1)' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', callId: 'tu_1', detail: said },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', callId: 'tu_2', detail: said },
+      { kind: 'tool_call', name: 'Bash', status: 'error', callId: 'tu_3', detail: 'git: cannot change to repo (exit code 1)', exitCode: 1 },
     ]);
     expect(failedCallsNote(events)).toBe(`3 calls failed or were refused: mcp__myco__myco_run_sessions (${said}) ×2; Bash (git: cannot change to repo (exit code 1)); the turn ended right after the last of them`);
   });
@@ -286,9 +290,9 @@ describe('the Claude Code driver', () => {
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
     // Each refused call is one failed call, whichever line said so first.
-    expect(events.filter((e) => e.kind === 'tool_call' && e.status === 'error')).toEqual([
-      { kind: 'tool_call', name: 'Bash', status: 'error' },
-      { kind: 'tool_call', name: 'Read', status: 'error' },
+    expect(toolCalls(events).filter((e) => e.kind === 'tool_call' && e.status === 'error')).toEqual([
+      { kind: 'tool_call', name: 'Bash', status: 'error', refused: true },
+      { kind: 'tool_call', name: 'Read', status: 'error', refused: true },
     ]);
   });
 
@@ -313,7 +317,7 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
-    expect(events.filter((e) => e.kind === 'tool_call')).toEqual([{ kind: 'tool_call', name: 'mcp__mycox__foo', status: 'error' }]);
+    expect(toolCalls(events)).toEqual([{ kind: 'tool_call', name: 'mcp__mycox__foo', status: 'error', refused: true }]);
   });
 
   it('reports a refused call once when the harness says so on its result and on the turn\'s result, with no system line', async () => {
@@ -325,8 +329,8 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
-      { kind: 'tool_call', name: 'Bash', status: 'started' },
-      { kind: 'tool_call', name: 'Bash', status: 'error', detail: 'Claude requested permissions to use Bash, but you haven\'t granted it yet.' },
+      { kind: 'tool_call', name: 'Bash', status: 'started', callId: 'tu_1', input: { command: 'ls' } },
+      { kind: 'tool_call', name: 'Bash', status: 'error', callId: 'tu_1', detail: 'Claude requested permissions to use Bash, but you haven\'t granted it yet.' },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -521,8 +525,8 @@ describe('the Codex driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(codexDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
-      { kind: 'tool_call', name: 'myco_run_sessions', status: 'ok' },
-      { kind: 'tool_call', name: 'myco_run', status: 'error' },
+      { kind: 'tool_call', name: 'myco_run_sessions', status: 'ok', callId: 'i1', category: 'mcp', input: {} },
+      { kind: 'tool_call', name: 'myco_run', status: 'error', callId: 'i2', category: 'mcp', input: {} },
     ]);
   });
 
@@ -1260,7 +1264,7 @@ describe('the agent-protocol driver', () => {
       return [...notifications, response].map((row) => JSON.stringify(row)).join('\n') + '\n';
     });
     const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => '', listed, ASKING));
-    expect(events.filter((event) => event.kind === 'tool_call')).toEqual([
+    expect(toolCalls(events)).toEqual([
       { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'started' },
       { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'ok' },
     ]);
@@ -1381,8 +1385,6 @@ function chosenOption(answer: Record<string, unknown> | null): string | null {
 const permissionFor = (toolCall: Record<string, unknown>, options = PERMISSION_OPTIONS): Record<string, unknown> => ({ sessionId: 'sess_acp', toolCall, options });
 
 /** A turn's tool call events. */
-const toolCalls = (events: readonly RunEvent[]): RunEvent[] => events.filter((e) => e.kind === 'tool_call');
-
 describe('the agent-protocol driver answering what the agent asks of it', () => {
   it('allows a call inside the run\'s grant once, and the turn goes on to use it', async () => {
     const answers: unknown[] = [];
@@ -1417,8 +1419,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     expect(answers).toEqual([rejected, rejected]);
     expect(toolCalls(events)).toEqual([
       { kind: 'tool_call', name: 'ls', status: 'started' },
-      { kind: 'tool_call', name: 'ls', status: 'error', detail: OUTSIDE_GRANT },
-      { kind: 'tool_call', name: 'https://example.com', status: 'error', detail: OUTSIDE_GRANT },
+      { kind: 'tool_call', name: 'ls', status: 'error', detail: OUTSIDE_GRANT, refused: true },
+      { kind: 'tool_call', name: 'https://example.com', status: 'error', detail: OUTSIDE_GRANT, refused: true },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1576,7 +1578,7 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
     expect(toolCalls(events)).toEqual([
       { kind: 'tool_call', name: '`git status`', status: 'started' },
-      { kind: 'tool_call', name: '`git status`', status: 'error', detail: OUTSIDE_GRANT },
+      { kind: 'tool_call', name: '`git status`', status: 'error', detail: OUTSIDE_GRANT, refused: true },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });

@@ -22,9 +22,33 @@ function modelOf(value: Record<string, unknown>): { model: string; source: strin
   return selected === null ? null : { model: selected, source: 'session.models' };
 }
 
+/** What a call's events carry for its step: the agent's own kind of the call, and the input, locations and title it named. */
+interface CallFacts {
+  category?: string;
+  input?: Record<string, unknown>;
+}
+
+/** A call update's step facts: its kind, and its raw input, locations and title where it carries them. */
+function factsOf(update: Record<string, unknown>): CallFacts {
+  const category = stringOf(update.kind);
+  const rawInput = recordOf(update.rawInput);
+  const locations = Array.isArray(update.locations) ? update.locations : undefined;
+  const title = stringOf(update.title);
+  const input = rawInput === null && locations === undefined && title === null ? undefined
+    : { ...(rawInput === null ? {} : { rawInput }), ...(locations === undefined ? {} : { locations }), ...(title === null ? {} : { title }) };
+  return { ...(category === null ? {} : { category }), ...(input === undefined ? {} : { input }) };
+}
+
+/** Only the facts that are present, so an event carries no key holding undefined. */
+const stepFacts = (facts: { category?: string; input?: Record<string, unknown> }): CallFacts =>
+  ({ ...(facts.category === undefined ? {} : { category: facts.category }), ...(facts.input === undefined ? {} : { input: facts.input }) });
+
+/** The session updates this driver reads; any other is counted as unrecognized. */
+const READ_UPDATES: readonly string[] = ['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update', 'config_option_update', 'current_model_update', 'usage_update'];
+
 /** One newly created ACP session and its reported accounting. */
 export class AcpEvents {
-  private readonly calls = new Map<string, { name: string; status: RunToolStatus | null }>();
+  private readonly calls = new Map<string, { name: string; status: RunToolStatus | null } & CallFacts>();
   /** Calls this client refused, whose failure is final. */
   private readonly refusals = new Set<string>();
   private model: string | null;
@@ -60,7 +84,7 @@ export class AcpEvents {
       const id = stringOf(update.toolCallId);
       if (id === null) return;
       const raw = stringOf(update.status);
-      yield* this.call(id, stringOf(update.title), raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null);
+      yield* this.call(id, stringOf(update.title), raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null, factsOf(update));
     } else if (type === 'config_option_update') {
       const selected = modelOf(update);
       if (selected !== null) { this.model = selected.model; this.modelSource = selected.source; }
@@ -75,6 +99,7 @@ export class AcpEvents {
       if (cost?.currency === 'USD' && amount !== null && amount >= 0) this.estimatedCostUsd = reportedDollars(this.policy, amount);
       if (this.selected !== null && ((cost?.currency === 'USD' && amount !== null && amount > 0) || (numberOf(update.used) ?? 0) > 0)) this.used.add(this.selected);
     }
+    if (typeof type !== 'string' || !READ_UPDATES.includes(type)) yield { kind: 'unrecognized', shape: `session/update:${typeof type === 'string' ? type : 'untyped'}` };
   }
 
   /**
@@ -85,21 +110,23 @@ export class AcpEvents {
   *refused(toolCall: Record<string, unknown>, detail: string): Iterable<RunEvent> {
     const id = stringOf(toolCall.toolCallId);
     const name = stringOf(toolCall.title) ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
+    const facts = { ...(id === null ? {} : this.calls.get(id)), ...factsOf(toolCall) };
     if (id !== null) {
       if (this.refusals.has(id)) return;
       this.refusals.add(id);
-      this.calls.set(id, { name, status: 'error' });
+      this.calls.set(id, { name, status: 'error', ...facts });
     }
-    yield { kind: 'tool_call', name, status: 'error', detail };
+    yield { kind: 'tool_call', name, status: 'error', detail, refused: true, ...(id === null ? {} : { callId: id }), ...stepFacts(facts) };
   }
 
   /** A call's status, reported when it changes, and never after the call was refused. */
-  private *call(id: string, title: string | null, status: RunToolStatus | null): Iterable<RunEvent> {
+  private *call(id: string, title: string | null, status: RunToolStatus | null, facts: CallFacts): Iterable<RunEvent> {
     if (this.refusals.has(id)) return;
     const previous = this.calls.get(id);
     const name = title ?? previous?.name ?? 'tool';
-    this.calls.set(id, { name, status: status ?? previous?.status ?? null });
-    if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status };
+    const known = { category: facts.category ?? previous?.category, input: facts.input ?? previous?.input };
+    this.calls.set(id, { name, status: status ?? previous?.status ?? null, ...stepFacts(known) });
+    if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status, callId: id, ...stepFacts(known) };
   }
 
   *identity(source = this.modelSource): Iterable<RunEvent> {

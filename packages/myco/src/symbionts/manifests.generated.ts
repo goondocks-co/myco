@@ -175,6 +175,78 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         "sourceGit": "none",
         "modelSetting": "none",
+        "steps": [
+          {
+            "category": "read",
+            "kind": "read",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "rawInput.filePath",
+              "rawInput.file_path",
+              "title"
+            ]
+          },
+          {
+            "category": "search",
+            "kind": "search",
+            "target": [
+              "rawInput.pattern",
+              "rawInput.query",
+              "rawInput.glob",
+              "locations.0.path",
+              "title"
+            ]
+          },
+          {
+            "category": "edit",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "rawInput.filePath",
+              "rawInput.file_path",
+              "title"
+            ]
+          },
+          {
+            "category": "delete",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "title"
+            ]
+          },
+          {
+            "category": "move",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "title"
+            ]
+          },
+          {
+            "category": "execute",
+            "kind": "command",
+            "target": [
+              "rawInput.command",
+              "rawInput.cmd",
+              "title"
+            ]
+          },
+          {
+            "category": "fetch",
+            "kind": "fetch",
+            "target": [
+              "rawInput.url",
+              "rawInput.query",
+              "title"
+            ]
+          }
+        ],
+        "stepTool": "category",
         "accounting": {
           "reported": "acp-session",
           "modelSources": [
@@ -646,6 +718,100 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "efforts": "supportedEffortLevels"
           }
         },
+        "steps": [
+          {
+            "tool": "Read",
+            "kind": "read",
+            "target": [
+              "file_path"
+            ]
+          },
+          {
+            "tool": "LS",
+            "kind": "read",
+            "target": [
+              "path"
+            ]
+          },
+          {
+            "tool": "NotebookRead",
+            "kind": "read",
+            "target": [
+              "notebook_path"
+            ]
+          },
+          {
+            "tool": "Glob",
+            "kind": "search",
+            "target": [
+              "pattern"
+            ]
+          },
+          {
+            "tool": "Grep",
+            "kind": "search",
+            "target": [
+              "pattern"
+            ]
+          },
+          {
+            "tool": "Write",
+            "kind": "edit",
+            "target": [
+              "file_path"
+            ]
+          },
+          {
+            "tool": "Edit",
+            "kind": "edit",
+            "target": [
+              "file_path"
+            ]
+          },
+          {
+            "tool": "MultiEdit",
+            "kind": "edit",
+            "target": [
+              "file_path"
+            ]
+          },
+          {
+            "tool": "NotebookEdit",
+            "kind": "edit",
+            "target": [
+              "notebook_path"
+            ]
+          },
+          {
+            "tool": "Bash",
+            "kind": "command",
+            "target": [
+              "command"
+            ]
+          },
+          {
+            "tool": "WebFetch",
+            "kind": "fetch",
+            "target": [
+              "url"
+            ]
+          },
+          {
+            "tool": "WebSearch",
+            "kind": "fetch",
+            "target": [
+              "query"
+            ]
+          },
+          {
+            "toolPrefix": "mcp__myco__",
+            "kind": "myco",
+            "target": [
+              "op"
+            ]
+          }
+        ],
+        "stepTool": "name",
         "accounting": {
           "reported": "claude-stream",
           "modelSources": [
@@ -1255,6 +1421,37 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "efforts": "supportedReasoningEfforts[].reasoningEffort"
           }
         },
+        "steps": [
+          {
+            "tool": "command_execution",
+            "kind": "command",
+            "target": [
+              "command"
+            ]
+          },
+          {
+            "tool": "file_change",
+            "kind": "edit",
+            "target": [
+              "changes.0.path"
+            ]
+          },
+          {
+            "tool": "web_search",
+            "kind": "fetch",
+            "target": [
+              "query"
+            ]
+          },
+          {
+            "category": "mcp",
+            "kind": "myco",
+            "target": [
+              "op"
+            ]
+          }
+        ],
+        "stepTool": "name",
         "accounting": {
           "reported": "codex-session",
           "modelSources": [
@@ -1771,6 +1968,78 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         "sourceGit": "none",
         "modelSetting": "none",
+        "steps": [
+          {
+            "category": "read",
+            "kind": "read",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "rawInput.filePath",
+              "rawInput.file_path",
+              "title"
+            ]
+          },
+          {
+            "category": "search",
+            "kind": "search",
+            "target": [
+              "rawInput.pattern",
+              "rawInput.query",
+              "rawInput.glob",
+              "locations.0.path",
+              "title"
+            ]
+          },
+          {
+            "category": "edit",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "rawInput.filePath",
+              "rawInput.file_path",
+              "title"
+            ]
+          },
+          {
+            "category": "delete",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "title"
+            ]
+          },
+          {
+            "category": "move",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "title"
+            ]
+          },
+          {
+            "category": "execute",
+            "kind": "command",
+            "target": [
+              "rawInput.command",
+              "rawInput.cmd",
+              "title"
+            ]
+          },
+          {
+            "category": "fetch",
+            "kind": "fetch",
+            "target": [
+              "rawInput.url",
+              "rawInput.query",
+              "title"
+            ]
+          }
+        ],
+        "stepTool": "category",
         "accounting": {
           "reported": "acp-session",
           "modelSources": [
@@ -1991,6 +2260,78 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "format": "lines",
           "provider": "id-prefix"
         },
+        "steps": [
+          {
+            "category": "read",
+            "kind": "read",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "rawInput.filePath",
+              "rawInput.file_path",
+              "title"
+            ]
+          },
+          {
+            "category": "search",
+            "kind": "search",
+            "target": [
+              "rawInput.pattern",
+              "rawInput.query",
+              "rawInput.glob",
+              "locations.0.path",
+              "title"
+            ]
+          },
+          {
+            "category": "edit",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "rawInput.filePath",
+              "rawInput.file_path",
+              "title"
+            ]
+          },
+          {
+            "category": "delete",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "title"
+            ]
+          },
+          {
+            "category": "move",
+            "kind": "edit",
+            "target": [
+              "locations.0.path",
+              "rawInput.path",
+              "title"
+            ]
+          },
+          {
+            "category": "execute",
+            "kind": "command",
+            "target": [
+              "rawInput.command",
+              "rawInput.cmd",
+              "title"
+            ]
+          },
+          {
+            "category": "fetch",
+            "kind": "fetch",
+            "target": [
+              "rawInput.url",
+              "rawInput.query",
+              "title"
+            ]
+          }
+        ],
+        "stepTool": "category",
         "accounting": {
           "reported": "acp-session",
           "modelSources": [

@@ -247,6 +247,12 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
       };
+    case 'runs_without_audit':
+      return {
+        title: `${count(item.runs, 'task run')} of ${item.closed} ended without the agent’s account of its steps`,
+        detail: `${inProject(item.projectId)} Their work couldn’t be checked, so they count as failed. The first was ${when(item.since, now)}.`,
+        action: { label: 'See the latest one', to: runPath(item.projectId, item.runId) },
+      };
     case 'search_index_behind': {
       const since = item.pendingSince ?? item.failingSince;
       return {
@@ -341,6 +347,7 @@ export function repositoryWords(item: UncapturedRootItem, now: number, viewerId:
 export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   backup_overdue: 'backups',
   outcome_failed: 'Myco’s work',
+  runs_without_audit: 'agents’ accounts of their work',
   search_index_behind: 'search',
   transcripts_stopped: 'transcripts',
   runs_held_for_capability: 'waiting tasks',

@@ -35,6 +35,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
         action: { type: 'string', description: 'For report: the action this pass performed, one of the actions this run\'s task closes with, e.g. extract, seed, summary, skip.' },
         summary: { type: 'string', description: 'For report: one line saying what was done.' },
         details: { type: 'string', description: 'For report: structured detail as a JSON object, serialized.' },
+        audit: { type: ['object', 'string'], description: 'For report, required: your account of this pass, as an object of steps (what you did, in order), examined (files and areas read), commands (commands run), failures (each failure as {what, recovery}) and reasoning (why the outcome is what it is). Empty lists where nothing applies.' },
         key: { type: 'string', description: 'For state_get and state_set: the state key.' },
         value: { type: 'string', description: 'For state_set: the value to store.' },
         version: { type: 'string', description: 'For state_set: the version state_get answered. Omit only when the key was unset. A stale version answers applied false and the caller reads again.' },

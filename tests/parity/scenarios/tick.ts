@@ -39,6 +39,13 @@ export const tick: ParityScenario = {
     await seed('tick-old', 'completed', now - 41 * day, now - 40 * day, null);
     await seed('tick-old-turned', 'completed', now - 41 * day, now - 40 * day, null);
     await target.sql(`INSERT INTO agent_turns (project_id, run_id, agent_id, turn_number, tool_name) VALUES (${lit(target.projectId)}, 'tick-old-turned', 'myco-agent', 0, 'read')`);
+    // A run with an attempt and its step log: retention deletes the log in its own bounded statement before the run.
+    await seed('tick-old-stepped', 'completed', now - 41 * day, now - 40 * day, null);
+    await target.sql(`INSERT INTO agent_run_attempts (project_id, run_id, attempt_id, leased_by, machine_id, claimed_at)
+      VALUES (${lit(target.projectId)}, 'tick-old-stepped', 'mt_tick', 'mt_worker', 'm_tick', ${now - 41 * day})`);
+    await target.sql(`INSERT INTO agent_run_steps (project_id, run_id, attempt_id, seq, call_id, kind, tool, target, outcome, exit_code, started_at, ended_at, received_at)
+      VALUES (${lit(target.projectId)}, 'tick-old-stepped', 'mt_tick', 0, 'c0', 'read', 'Read', 'a.ts', 'ok', NULL, 1, 2, 3),
+             (${lit(target.projectId)}, 'tick-old-stepped', 'mt_tick', 1, 'c1', 'command', 'Bash', 'ls', 'ok', 0, 4, 5, 6)`);
     await seed('tick-stale', 'running', now - 3_600_000, null, JSON.stringify({ timeoutSeconds: 300 }));
     await seed('tick-live', 'running', now - 60_000, null, JSON.stringify({ timeoutSeconds: 300 }));
     // A receipt half an hour ago: the Deployment is asleep, where housekeeping runs.
@@ -57,14 +64,16 @@ export const tick: ParityScenario = {
     const first = await wake();
     // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.
     expect(['active', 'idle']).toContain(first.state);
-    // Retention removes the two runs past the window; the sweep fails the stale one.
-    expect(seededView(first.jobs)).toEqual(jobReport({ 'agent-run-retention': 2, 'run-stale-sweep': 1 }));
+    // Retention removes the three runs past the window; the sweep fails the stale one.
+    expect(seededView(first.jobs)).toEqual(jobReport({ 'agent-run-retention': 3, 'run-stale-sweep': 1 }));
     expect(first.nextWakeMs).toBe(60_000);
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
       { id: 'tick-stale', status: 'failed', error: 'the machine running it stopped responding' },
     ]);
     expect(await target.sql(`SELECT COUNT(*) AS c FROM agent_turns WHERE run_id = 'tick-old-turned'`)).toEqual([{ c: 0 }]);
+    expect(await target.sql(`SELECT (SELECT COUNT(*) FROM agent_run_steps WHERE run_id = 'tick-old-stepped') AS steps, (SELECT COUNT(*) FROM agent_run_attempts WHERE run_id = 'tick-old-stepped') AS attempts`))
+      .toEqual([{ steps: 0, attempts: 0 }]);
 
     const second = await wake();
     // Idempotent: the same wake again converges on the state it already reached.
