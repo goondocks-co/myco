@@ -1,6 +1,6 @@
 import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/worker-usage';
 /**
- * The worker control plane: claim, lease, end.
+ * The worker control plane: claim, lease, end, and the step log a worker observed.
  *
  * A worker is not a member doing member work and not the run it drives. It
  * holds a Deployment-scoped credential, takes one run at a time from the claim
@@ -25,6 +25,8 @@ import { recordWorkerContact } from '../core/worker-contacts.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 import { parseModelCatalog, parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { recordModelCatalog } from '../core/model-catalogs.js';
+import { parseStepPage, WorkerStepsError } from '@goondocks/myco-shared/worker-steps';
+import { storeStepPage } from '../core/run-steps.js';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 const RUN_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -180,4 +182,25 @@ export async function handleWorkerModels(env: ServerEnv, ctx: DeploymentContext)
   if (catalog === null) return ok({ persisted: true, recorded: false, reason: 'the list names no agent whose models Settings sets, or no source, sign-in, listing time or models' });
   await recordModelCatalog(env.db, { machineId: ctx.machineId, catalog, now: ctx.now });
   return ok({ persisted: true, recorded: true, models: catalog.models.length });
+}
+
+/**
+ * Store one page of the step log a worker observed for an attempt it drove (`core/run-steps.ts`). The attempt, not a
+ * live lease, admits it: a log a worker delivers after its run ended or changed hands is filed under the attempt that
+ * observed it, and changes nothing about how the run ended. A page that does not parse is refused whole.
+ */
+export async function handleWorkerSteps(env: ServerEnv, ctx: DeploymentContext): Promise<Response> {
+  const asked = body(ctx);
+  if (asked === null) return unreadable();
+  const run = named(asked);
+  if (run === null) return ok({ persisted: false, code: 'parse', reason: 'a step page names a projectId and a runId' });
+  const { projectId: _project, runId: _run, ...rest } = asked;
+  try {
+    const page = parseStepPage(rest);
+    const outcome = await storeStepPage(env.db, { projectId: run.projectId }, run.runId, page, { tokenId: ctx.tokenId, machineId: ctx.machineId }, ctx.now);
+    return ok({ persisted: true, ...outcome });
+  } catch (error) {
+    if (error instanceof WorkerStepsError) return ok({ persisted: false, code: 'parse', reason: error.message });
+    throw error;
+  }
 }

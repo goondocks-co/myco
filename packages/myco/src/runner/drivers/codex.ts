@@ -353,9 +353,37 @@ function runHome(spec: LaunchSpec, harness: Harness, probe: DeveloperDirProbe, l
   return home;
 }
 
-/** A tool call's outcome in the driver's words: Codex says `completed` and `failed`, and anything else is a call still going. */
+/** A tool call's outcome in the driver's words: Codex says `completed`, `failed` and `declined`, and anything else is a call still going. */
 function toolStatus(status: string | null): 'started' | 'ok' | 'error' {
-  return status === 'completed' ? 'ok' : status === 'failed' ? 'error' : 'started';
+  return status === 'completed' ? 'ok' : status === 'failed' || status === 'declined' ? 'error' : 'started';
+}
+
+/** The stream lines this driver reads; any other is counted as unrecognized. */
+const READ_LINES: readonly string[] = ['thread.started', 'turn.started', 'item.started', 'item.updated', 'item.completed', 'turn.completed', 'turn.failed', 'error'];
+/** The items that are calls, each named in a run's events by its type; a Myco call is named by its tool instead. */
+const CALL_ITEMS: readonly string[] = ['command_execution', 'file_change', 'web_search', 'mcp_tool_call'];
+/** The items that are not calls; any item of a type outside both lists is counted as unrecognized. */
+const OTHER_ITEMS: readonly string[] = ['agent_message', 'reasoning', 'todo_list', 'error'];
+
+/** A call item as a run event: its id, its name, its input, its outcome and, for a command, its exit status. */
+function callEvent(item: Record<string, unknown>, itemType: string, status: 'started' | 'ok' | 'error'): RunEvent {
+  const id = stringOf(item.id);
+  const mcp = itemType === 'mcp_tool_call';
+  const exitCode = numberOf(item.exit_code);
+  return {
+    kind: 'tool_call', name: mcp ? stringOf(item.tool) ?? 'mcp' : itemType, status,
+    ...(id === null ? {} : { callId: id }),
+    ...(mcp ? { category: 'mcp' } : {}),
+    input: mcp ? argumentsOf(item.arguments) : item,
+    ...(stringOf(item.status) === 'declined' ? { refused: true as const } : {}),
+    ...(exitCode === null || !Number.isSafeInteger(exitCode) || status === 'started' ? {} : { exitCode }),
+  };
+}
+
+/** A Myco call's arguments, which Codex reports as an object or its serialized form. */
+function argumentsOf(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string') return recordOf(value) ?? {};
+  try { return recordOf(JSON.parse(value)) ?? {}; } catch { return {}; }
 }
 
 /**
@@ -403,13 +431,20 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
     if (type === 'thread.started') {
       threadId = stringOf(line.thread_id);
       yield { kind: 'started', harness: harness.id, sessionId: threadId };
-    } else if (type === 'item.completed') {
+    } else if (type === 'item.started' || type === 'item.updated' || type === 'item.completed') {
       const item = recordOf(line.item);
       const itemType = item === null ? null : stringOf(item.type);
       // An error item is one item among many, never the end of the turn and
-      // never a call: only a tool's own item is a call, named by its tool.
-      if (itemType === 'agent_message') yield { kind: 'message', role: 'assistant', text: stringOf(item?.text) ?? '' };
-      else if (itemType === 'mcp_tool_call') yield { kind: 'tool_call', name: stringOf(item?.tool) ?? 'mcp', status: toolStatus(stringOf(item?.status)) };
+      // never a call: only a tool's own item is a call.
+      if (item === null || itemType === null || (!CALL_ITEMS.includes(itemType) && !OTHER_ITEMS.includes(itemType))) {
+        yield { kind: 'unrecognized', shape: `${type}/${itemType ?? 'untyped'}` };
+      } else if (type === 'item.completed' && itemType === 'agent_message') {
+        yield { kind: 'message', role: 'assistant', text: stringOf(item.text) ?? '' };
+      } else if (CALL_ITEMS.includes(itemType) && type !== 'item.updated') {
+        yield callEvent(item, itemType, type === 'item.started' ? 'started' : toolStatus(stringOf(item.status)));
+      }
+    } else if (type === null || !READ_LINES.includes(type)) {
+      yield { kind: 'unrecognized', shape: type ?? 'untyped' };
     } else if (type === 'turn.completed') {
       const usage = recordOf(line.usage);
       accounting = {

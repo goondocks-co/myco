@@ -14,6 +14,7 @@ import { RUN_REPOSITORY_DIGESTS_FILE } from '@goondocks/myco-shared/repository';
 import { createHash } from 'node:crypto';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 /**
  * A native child reads the checkout and writes through the run's HTTP MCP
@@ -47,12 +48,12 @@ if (process.argv.includes('status')) process.exit(0);
     const groundedIn = [{ path: 'AGENTS.md', sha256: entry[0] }];
     await call('myco_run_map', { op: 'write', artifact: { directories: [{ path: 'AGENTS.md', annotation: 'The project rules.', groundedIn }],
       domains: [{ id: 'rules', title: 'Rules', files: [{ path: 'AGENTS.md', annotation: 'States the project rules.', groundedIn }] }] } });
-    await call('myco_run', { op: 'report', action: ${JSON.stringify(MAP_ACTION)}, summary: 'Mapped the one committed file.' });
+    await call('myco_run', { op: 'report', action: ${JSON.stringify(MAP_ACTION)}, summary: 'Mapped the one committed file.', audit: ${JSON.stringify(RUN_AUDIT)} });
   } else {
     const saved = await call('myco_spores', { op: 'save', type: 'decision', content: 'The second commit revises the project rules (AGENTS.md).',
       agent_line: 'Read the current project rules in AGENTS.md before changing code.', tags: ['rules', 'history'] });
     if (!saved.id) throw new Error('No spore was saved');
-    await call('myco_run', { op: 'report', action: ${JSON.stringify(SEEDING_REPORT_ACTION)}, summary: 'Read two commits and saved one observation.' });
+    await call('myco_run', { op: 'report', action: ${JSON.stringify(SEEDING_REPORT_ACTION)}, summary: 'Read two commits and saved one observation.', audit: ${JSON.stringify(RUN_AUDIT)} });
   }
   fs.writeFileSync(${JSON.stringify(evidence)}, JSON.stringify(observed));
   console.log(JSON.stringify({ type: 'result', stop_reason: 'end_turn', total_cost_usd: 0.05 }));

@@ -703,6 +703,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', status: 'failed' }) }),
       },
+      'POST /worker/steps': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/steps', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/steps', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', attemptId: 'mt_absent', page: 0, pages: 1, total: 0, overflow: 0, unrecognized: { total: 0, shapes: {} }, steps: [] }) }),
+      },
       'POST /worker/repository': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
@@ -1271,6 +1276,7 @@ describe('gates', () => {
       'member POST /worker/lease',
       'member POST /worker/models',
       'member POST /worker/repository',
+      'member POST /worker/steps',
       'public GET /health',
       'session:account GET /auth/me',
       'session:account POST /auth/link',
@@ -1354,6 +1360,7 @@ describe('gates', () => {
       'session:member GET /api/projects/{projectId}/runs',
       'session:member GET /api/projects/{projectId}/runs/{runId}',
       'session:member GET /api/projects/{projectId}/runs/{runId}/calls',
+      'session:member GET /api/projects/{projectId}/runs/{runId}/steps',
       'session:member GET /api/projects/{projectId}/search',
       'session:member GET /api/projects/{projectId}/sessions',
       'session:member GET /api/projects/{projectId}/sessions/{sessionId}',

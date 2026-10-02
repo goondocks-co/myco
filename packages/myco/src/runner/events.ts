@@ -20,8 +20,16 @@ export type StopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refu
 export type RunEvent =
   | { kind: 'started'; harness: string; sessionId: string | null }
   | { kind: 'message'; role: 'assistant' | 'thought'; text: string }
-  /** `detail` says why a call failed, where the driver refused it or the harness reported why. */
-  | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string }
+  /**
+   * `detail` says why a call failed, where the driver refused it or the harness reported why. `callId` is the
+   * harness's own id for the call, `category` the harness's own classification of it where it gives one, `input` the
+   * arguments the call carries as the harness reported them, `exitCode` a command's exit status where the
+   * harness reports one, and `refused` marks a call the harness or the driver refused rather than one that ran and
+   * failed. `input` is read for a step's target alone (`steps.ts`) and goes nowhere else.
+   */
+  | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string; callId?: string; category?: string; input?: Record<string, unknown>; exitCode?: number; refused?: true }
+  /** A record of the harness's stream the driver does not read, named by its shape (its type, and subtype where it has one). */
+  | { kind: 'unrecognized'; shape: string }
   | { kind: 'identity'; identity: ExecutionIdentity; snapshot?: true }
   | ({ kind: 'usage' } & WorkerUsage)
   /** `refusal` is set where the driver ended the run on the harness's refusal of the claimed profile. */

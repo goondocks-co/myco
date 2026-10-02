@@ -13,6 +13,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
 import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const AGENT = 'agent_1';
 
@@ -484,7 +485,7 @@ describe('POST /runs/update holds a run to what its task owes at close', () => {
 
   it('closes a pass that recorded its skip, whatever counts the report carries', async () => {
     const h = await sweep();
-    await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'skip', summary: 'nothing to read', details: JSON.stringify({ prompts: 0 }) });
+    await h.post('/runs/report', { runId: 'r_sweep', agentId: AGENT, action: 'skip', summary: 'nothing to read', details: JSON.stringify({ prompts: 0 }), audit: RUN_AUDIT });
     expect(await h.post('/runs/update', { runId: 'r_sweep', update: { status: 'completed', completed_at: 44 } }))
       .toEqual({ persisted: true, changed: 1, applied: true });
     expect(row(h)).toEqual({ status: 'completed', error: null });

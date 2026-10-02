@@ -6,7 +6,7 @@ import { getRequestedWorkerProfile, type RunUpdate } from './runs.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
 import { profileModelVerdict, MODEL_MISMATCH, MODEL_UNCONFIRMED, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { FAILURE_REASON_KEY } from '../db/run-context.js';
-import type { RunErrorCode } from './reader-codes.js';
+import { closeErrorCode, type RunErrorCode } from './reader-codes.js';
 
 interface WorkerEnd extends WorkerRunIdentity {
   status: 'completed' | 'failed';
@@ -60,7 +60,7 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const update: RunUpdate = { status, ...(error === null ? {} : { error }), ...accounting };
   // A worker's profile refusal is a failure the Deployment did not overrule: its code, and its reason for the run's page.
   const refused = run.refusal != null && run.status === 'failed' && unmet === null;
-  const errorCode: RunErrorCode = refused ? 'model_not_applied' : 'run_failed';
+  const errorCode: RunErrorCode = refused ? 'model_not_applied' : unmet === null ? 'run_failed' : closeErrorCode(unmet);
   const context = refused && run.refusal!.reason !== null ? { [FAILURE_REASON_KEY]: run.refusal!.reason } : undefined;
   return { row, unmet, status, update, errorCode, context };
 });

@@ -21,6 +21,7 @@ import type { ServerEnv } from './adapters.js';
 import { readMapSettings } from './canopy.js';
 import { repositoryIdentity } from './repositories.js';
 import type { TaskInput, TaskInputOptions } from './task-inputs.js';
+import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 
 /** The artifact's limits, as `parseMapArtifact` holds them. */
 const MAX_DIRECTORIES = 32;
@@ -84,11 +85,11 @@ export function mapPrompt(repository: { url: string; branch: string }, patterns:
     '',
     fresh
       ? '1. Call `myco_run_map` op "get" once, for the commit and the repository. This pass was asked to rebuild the map from the source alone: ignore any prior map it returns and do not close as unchanged.'
-      : `1. Call \`myco_run_map\` op "get" once. When it answers \`unchanged: true\`, the current map was already read from this commit: close at once by calling \`myco_run\` op "report" with action "${MAP_UNCHANGED_ACTION}" and a one-line summary, and stop.`,
+      : `1. Call \`myco_run_map\` op "get" once. When it answers \`unchanged: true\`, the current map was already read from this commit: close at once by calling \`myco_run\` op "report" with action "${MAP_UNCHANGED_ACTION}", a one-line summary and its \`audit\`, and stop.`,
     fresh
       ? '2. Orient: the README, the rules files, the primary manifest, the top-level layout. Then drill into the areas that carry the architecture, reading the files you mean to annotate.'
       : `2. With a prior map, maintain it: compare each grounding digest in it to the listing, and where its commit is within the checkout's history also read \`git -C ${RUN_REPOSITORY_DIR} diff --name-only <prior commit> HEAD\`. Keep every annotation whose grounding files are unchanged exactly as it is, revisit the ones whose files changed or vanished, and add what new source warrants. With no prior map, orient — the README, the rules files, the primary manifest, the top-level layout — then drill into the areas that carry the architecture, reading the files you mean to annotate.`,
     '3. Write the map by calling `myco_run_map` op "write" with `artifact` set to the JSON object. A refusal names what to fix; fix it and write again.',
-    `4. Close by calling \`myco_run\` op "report": action "${MAP_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"domains\\":6,\\"directories\\":14,\\"revisited\\":3}". Stop after the report.`,
+    `4. Close by calling \`myco_run\` op "report": action "${MAP_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"domains\\":6,\\"directories\\":14,\\"revisited\\":3}". ${RUN_AUDIT_INSTRUCTION}`,
   ].join('\n');
 }

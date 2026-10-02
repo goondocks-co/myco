@@ -2,6 +2,7 @@ import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/membe
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
+import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 /**
  * The worker: claim one run, hold it on a lease, drive a harness, end it.
  *
@@ -23,6 +24,7 @@ import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIde
  * the harness at once rather than spend a session on a run it no longer holds.
  */
 import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
 import { driverFor } from './drivers/registry.js';
 import { harnessById, offerable } from './harnesses.js';
@@ -39,6 +41,8 @@ import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
 import { modelCatalogs, type ListModels } from './catalogs.js';
 import { listModels } from './models.js';
 import type { KeepAwake } from './keep-awake.js';
+import { StepLog } from './steps.js';
+import { deliverStepOutbox, pendingStepOutboxes, removeEmptyOutbox, STEP_OUTBOX_DIRNAME, sweepStepOutbox, writeStepOutbox, type PageDelivery } from './step-outbox.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
 interface ClaimedRun {
@@ -83,6 +87,8 @@ export interface WorkerOptions {
   /** Every address this worker's Deployment answers at; the worker locks each. Defaults to `serverUrl`. */
   deploymentUrls?: readonly string[];
   runRoot: string;
+  /** Where each attempt's step log waits until the Deployment holds it (`step-outbox.ts`). Defaults to `.steps` inside `runRoot`. */
+  stepRoot?: string;
   /** Only these harnesses are offered, where the caller names any. */
   only?: readonly string[];
   /** Stop after one run rather than polling forever. */
@@ -122,7 +128,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 export type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -139,6 +145,11 @@ const credentialOf = (options: Requester): string | null =>
  * arrive here as themselves rather than as an unreadable body.
  */
 const NO_MEMBERSHIP: WorkerAnswer = { kind: 'refused', code: 'no_membership', detail: 'this machine no longer holds a membership of the Deployment' };
+
+/** A request body already serialized, sent byte for byte as it is held. */
+class SerializedBody {
+  constructor(readonly text: string) {}
+}
 
 async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
   await options.renew?.(false);
@@ -207,17 +218,19 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let executionProfile = false;
   let profileOutcome = false;
   let modelCatalog = false;
+  let steps = false;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
       headers: { ...deploymentScopedHeaders({ token }), 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: body instanceof SerializedBody ? body.text : JSON.stringify(body),
       signal: options.signal,
     });
     accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
     executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
+    steps = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_STEPS_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
     raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
@@ -225,7 +238,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps };
     case 'protocol':
       return {
         kind: 'refused',
@@ -312,7 +325,7 @@ const asRun = (value: unknown): ClaimedRun | null => {
  * success.
  */
 async function drive(
-  options: WorkerOptions, run: ClaimedRun, lease: { heartbeatMs: number; deadline: number }, wake: WakeWatch,
+  options: WorkerOptions, run: ClaimedRun, lease: { heartbeatMs: number; deadline: number }, wake: WakeWatch, keepsSteps: boolean,
 ): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal } | { status: 'lost'; error: null }> {
   const { heartbeatMs } = lease;
   const clock = options.clock ?? Date.now;
@@ -429,6 +442,8 @@ async function drive(
 
   const events: RunEvent[] = [];
   const accounting = new ExecutionAccounting(named?.accounting.primarySources);
+  // A Deployment that stores step logs is sent this attempt's; the log is kept from the harness's own events.
+  const stepLog = keepsSteps && run.attemptId !== undefined ? new StepLog(named, clock) : null;
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
   let failure: string | null = null;
@@ -453,6 +468,8 @@ async function drive(
     for (;;) {
       const step = await Promise.race([stream.next(), overrunReached]);
       if (step === 'overran' || step.done === true) break;
+      stepLog?.observe(step.value);
+      if (step.value.kind === 'unrecognized') continue;
       events.push(step.value);
       if (step.value.kind === 'identity') accounting.observe(step.value.identity, step.value.snapshot);
       if (step.value.kind === 'usage') {
@@ -475,6 +492,8 @@ async function drive(
     // Not awaited: the driver may be blocked on the very read the budget gave up
     // on, and a worker that waited here would be held by it all over again.
     void Promise.resolve(stream?.return?.()).catch(() => undefined);
+    // The step log is written before the scratch directory goes, so a worker stopped from here on still delivers it.
+    if (stepLog !== null) keepStepLog(options, run, stepLog, clock());
     try { await checkout?.dispose(); } finally { discardRunDir(scratchDir); }
   }
 
@@ -502,6 +521,61 @@ async function drive(
   return last.stop === 'end_turn'
     ? { status: 'completed', error: failedCallsNote(events), identity, usage }
     : { status: 'failed', identity, usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}`, ...(last.refusal === undefined ? {} : { refusal: last.refusal }) };
+}
+
+/** Where this worker's step logs wait for the Deployment. */
+const stepRootOf = (options: Pick<WorkerOptions, 'stepRoot' | 'runRoot'>): string => options.stepRoot ?? join(options.runRoot, STEP_OUTBOX_DIRNAME);
+
+/** Sweep the whole outbox by age and size, whatever Deployment each log waits for; a fault is said in the worker's log. */
+function sweepStepLogs(options: WorkerOptions): void {
+  try {
+    sweepStepOutbox(stepRootOf(options), (options.clock ?? Date.now)(), options.log);
+  } catch (error) {
+    options.log(`could not sweep the waiting step logs: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Write an attempt's step log to the outbox; a log that cannot be written is said in the worker's log. */
+function keepStepLog(options: WorkerOptions, run: ClaimedRun, stepLog: StepLog, now: number): void {
+  const { steps, overflow, unrecognized } = stepLog.result();
+  try {
+    writeStepOutbox(stepRootOf(options), {
+      serverUrl: options.serverUrl, projectId: run.projectId, runId: run.id, attemptId: run.attemptId!, createdAt: now, steps, overflow, unrecognized,
+    });
+  } catch (error) {
+    options.log(`could not keep the step log of ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** The refusals that say this worker may not be answered at all, rather than that a page is refused. */
+const WORKER_REFUSALS: ReadonlySet<string> = new Set(['unauthorized', 'no_membership', 'protocol_version_unsupported', 'route_missing', 'malformed_answer']);
+
+/**
+ * Deliver every step log waiting for this Deployment, oldest first, where it advertises that it stores them. A page
+ * the Deployment does not answer (a transport failure, a 5xx or a 429) or a refusal of the worker itself leaves its
+ * log waiting for the next pass; a page the Deployment answers with a refusal ends that log, and the next is sent.
+ */
+async function deliverStepLogs(options: WorkerOptions, advertised: boolean, requestMs: number): Promise<void> {
+  if (!advertised) return;
+  const send = async (body: string): Promise<PageDelivery> => {
+    const answer = await post({ ...options, signal: within(options.signal, requestMs) }, '/worker/steps', new SerializedBody(body));
+    // A page the Deployment did not answer waits; one it answered with a refusal of the page ends that log. A refusal
+    // of this worker itself ends the pass and keeps the log, which the sweep bounds.
+    if (answer.kind === 'unreachable') return 'retry';
+    if (answer.kind === 'refused') return WORKER_REFUSALS.has(answer.code) ? 'retry' : 'refused';
+    return answer.body.stored === true ? 'acked' : 'refused';
+  };
+  const root = stepRootOf(options);
+  try {
+    for (const file of pendingStepOutboxes(root, options.serverUrl, options.log)) {
+      if (options.signal.aborted) return;
+      if (await deliverStepOutbox(file, (options.clock ?? Date.now)(), send, options.log) === 'pending') return;
+    }
+    removeEmptyOutbox(root, options.serverUrl);
+  } catch (error) {
+    // The outbox is the worker's own disk; a fault reading or writing it is said, and the next pass reads it again.
+    options.log(`could not deliver the waiting step logs: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
@@ -624,6 +698,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
 
   async function claimLoop(): Promise<WorkerOutcome> {
     while (!options.signal.aborted) {
+      sweepStepLogs(options);
       if (options.stillCurrent !== undefined && !options.stillCurrent()) {
         options.log('the myco program on disk changed; stopping so the new one starts');
         return { driven, refused: null, replaced: true };
@@ -657,6 +732,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
           continue;
         }
         if (compatibility.modelCatalog) catalogs.due();
+        await deliverStepLogs(options, compatibility.steps, requestMs);
         if (!wake.settled()) continue;
       }
       const claimSentAt = (options.clock ?? Date.now)();
@@ -696,7 +772,9 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
       options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
       // The cadence and the lease are the Deployment's, carried on the claim it answered.
       requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);
-      const outcome = await drive(options, run, { heartbeatMs: requestMs, deadline: leaseDeadline(claimSentAt, claim.leaseMs) }, wake);
+      const outcome = await drive(options, run, { heartbeatMs: requestMs, deadline: leaseDeadline(claimSentAt, claim.leaseMs) }, wake, answer.steps);
+      // The attempt's step log goes ahead of its outcome, so a run is closed with the log its worker kept already held.
+      await deliverStepLogs(options, answer.steps, requestMs);
       // A worker that lost its lease writes nothing: the run belongs to whoever
       // holds it now, and a late outcome would be one worker reporting on
       // another's run. The Deployment refuses such a write anyway; not making it

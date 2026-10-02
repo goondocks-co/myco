@@ -29,6 +29,8 @@ import { isExecutionProfile, requestedProfile, type ExecutionProfile } from '@go
 import { PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
 import type { DispatchLimits } from './limits.js';
 import type { RunErrorCode } from './reader-codes.js';
+import { storedAudit, type RunAudit } from './run-audit.js';
+import { recordAttemptStatement } from './run-steps.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
@@ -698,16 +700,18 @@ export interface ReportRow {
   action: string;
   summary: string;
   details: string | null;
+  /** The agent's account of the pass the report closes (`core/run-audit.ts`); null where the report carries none. */
+  audit: RunAudit | null;
   createdAt: number;
 }
 
 export async function listReports(db: RelationalStore, scope: ReadScope, runId: string): Promise<ReportRow[]> {
   const { results } = await db
-    .prepare(`SELECT id, run_id AS runId, agent_id AS agentId, action, summary, details, created_at AS createdAt
+    .prepare(`SELECT id, run_id AS runId, agent_id AS agentId, action, summary, details, audit, created_at AS createdAt
        FROM agent_reports WHERE project_id = ? AND run_id = ? ORDER BY id ASC`)
     .bind(scope.projectId, runId)
-    .all<ReportRow>();
-  return results;
+    .all<Omit<ReportRow, 'audit'> & { audit: string | null }>();
+  return results.map((row) => ({ ...row, audit: storedAudit(row.audit) }));
 }
 
 export interface ReportInsert {
@@ -716,17 +720,19 @@ export interface ReportInsert {
   action: string;
   summary: string;
   details: string | null;
+  /** The validated audit, serialized; null for a report that carries none. */
+  audit: string | null;
   createdAt: number;
 }
 
 /** Record one report against a run this Project holds; an unknown run or an unregistered agent writes nothing and answers false — a foreign-key throw would read as retryable, and neither condition is. */
 export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert): Promise<boolean> {
   const result = await db
-    .prepare(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?
+    .prepare(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, audit, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
         WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
           AND EXISTS (SELECT 1 FROM agents WHERE id = ?)`)
-    .bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.createdAt,
+    .bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.audit, report.createdAt,
           scope.projectId, report.runId, report.agentId)
     .run();
   return result.meta.changes === 1;
@@ -972,30 +978,43 @@ const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM agent_
   WHERE status IN ('completed', 'failed', 'skipped') AND resumable = 0 AND COALESCE(completed_at, started_at) < ?
   ORDER BY COALESCE(completed_at, started_at) ASC, id ASC LIMIT ?`;
 
+/** The most step-log rows one retention pass deletes, so no statement of it outlives the hosted store's query bound. */
+export const RETENTION_STEP_ROWS = 10_000;
+
+/** Holds a run-keyed delete to the runs whose step logs are already gone. */
+const NO_STEPS_LEFT = (table: string, runColumn: string) =>
+  `NOT EXISTS (SELECT 1 FROM agent_run_steps s WHERE s.project_id = ${table}.project_id AND s.run_id = ${table}.${runColumn})`;
+
 /**
  * Remove terminal, non-resumable runs older than the cutoff, up to `limit`
  * of them, each with its turns and reports. Those two tables reference a run
- * without a cascade, so they are deleted in the same batch ahead of the run;
- * events, write intents and the record of the sessions it read cascade, and a
- * digest revision keeps its row with the run reference cleared. Answers how
- * many runs went.
+ * without a cascade, so they are deleted in the same batch ahead of the run, and
+ * so are its attempts; events, write intents and the record of the sessions it read cascade, and a
+ * digest revision keeps its row with the run reference cleared. A run's step
+ * log is deleted first, at most `stepRows` rows in a pass, and a run whose log
+ * is not yet gone keeps its row and its turns and reports for a later pass.
+ * Answers how many runs went.
  */
-export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
+export async function pruneTerminalRuns(db: RelationalStore, cutoffMs: number, limit: number, stepRows = RETENTION_STEP_ROWS): Promise<number> {
   const { results } = await db.prepare(RETENTION_CANDIDATES_SQL).bind(cutoffMs, limit).all<{ projectId: string; id: string }>();
   if (results.length === 0) return 0;
   const byProject = new Map<string, string[]>();
   for (const row of results) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.id]);
   let removed = 0;
+  let budget = stepRows;
   for (const [projectId, ids] of byProject) {
     for (const chunk of inListChunks(ids)) {
       const marks = chunk.map(() => '?').join(', ');
       const statements = [
-        db.prepare(`DELETE FROM agent_turns WHERE project_id = ? AND run_id IN (${marks})`).bind(projectId, ...chunk),
-        db.prepare(`DELETE FROM agent_reports WHERE project_id = ? AND run_id IN (${marks})`).bind(projectId, ...chunk),
-        db.prepare(`DELETE FROM agent_runs WHERE project_id = ? AND id IN (${marks})`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_run_steps WHERE rowid IN (SELECT rowid FROM agent_run_steps WHERE project_id = ? AND run_id IN (${marks}) LIMIT ?)`).bind(projectId, ...chunk, budget),
+        db.prepare(`DELETE FROM agent_turns WHERE project_id = ? AND run_id IN (${marks}) AND ${NO_STEPS_LEFT('agent_turns', 'run_id')}`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_reports WHERE project_id = ? AND run_id IN (${marks}) AND ${NO_STEPS_LEFT('agent_reports', 'run_id')}`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_run_attempts WHERE project_id = ? AND run_id IN (${marks}) AND ${NO_STEPS_LEFT('agent_run_attempts', 'run_id')}`).bind(projectId, ...chunk),
+        db.prepare(`DELETE FROM agent_runs WHERE project_id = ? AND id IN (${marks}) AND ${NO_STEPS_LEFT('agent_runs', 'id')}`).bind(projectId, ...chunk),
       ];
       const outcomes = await db.batch(statements);
-      removed += outcomes[2]?.meta.changes ?? 0;
+      budget = Math.max(0, budget - (outcomes[0]?.meta.changes ?? 0));
+      removed += outcomes[4]?.meta.changes ?? 0;
     }
   }
   return removed;
@@ -1266,15 +1285,17 @@ export async function nextClaimable(db: RelationalStore, excluded: readonly stri
  * claim that answered a credential the row did not yet name would leave a run
  * the MCP surface resolves nothing for while it looked healthy. `started_at` is
  * rewritten so the task budget bounds the run rather than its wait in the queue.
+ * The attempt the claim starts is recorded in the same batch, and only where the
+ * claim landed (`core/run-steps.ts`).
  */
 export async function claimQueuedRun(
   db: RelationalStore,
   candidate: ClaimCandidate,
-  claim: { dispatchedBy: string; leasedBy: string; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile },
+  claim: { dispatchedBy: string; leasedBy: string; machineId: string | null; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile },
   admission: WriteAdmission,
 ): Promise<ClaimedRunRow | null> {
   if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
-  const { results } = await db.prepare(
+  const [claimed] = await db.batch([db.prepare(
     `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL,
             reasoning_level = ?, model = ?, execution_overrides = ?
@@ -1286,8 +1307,8 @@ export async function claimQueuedRun(
     JSON.stringify({ requested: claim.profile, harness: claim.harness }),
     candidate.projectId, candidate.id,
     ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission),
-  ).all<ClaimedRunRow>();
-  return results[0] ?? null;
+  ), recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, { tokenId: claim.leasedBy, machineId: claim.machineId }, claim.now)]);
+  return (claimed?.results[0] as ClaimedRunRow | undefined) ?? null;
 }
 
 /**

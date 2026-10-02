@@ -30,6 +30,7 @@ import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const NOW = Date.now();
 const SWEEP = 'extract-curate';
@@ -246,7 +247,7 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call, sqlite } = await setup();
     expect(TASK_TOOLS[SMOKE]).toEqual([]);
     await dispatch('run_smoke', SMOKE);
-    const answered = await call(harness.token, 'myco_run', { op: 'report', action: 'container-smoke', summary: 'the harness answered' });
+    const answered = await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'container-smoke', summary: 'the harness answered' });
     expect(answered.result).toEqual({ recorded: true, action: 'container-smoke' });
     expect(sqlite.query(`SELECT agent_id AS a, action FROM agent_reports WHERE run_id = 'run_smoke'`).all())
       .toEqual([{ a: 'myco-agent', action: 'container-smoke' }]);
@@ -255,10 +256,10 @@ describe('a run reports whatever its task declares', () => {
   it('refuses an action the task\'s close rule cannot hear, naming every action it can, and records nothing', async () => {
     const { harness, dispatch, call, sqlite } = await setup();
     await dispatch('run_map', MAP_TASK);
-    const refused = await call(harness.token, 'myco_run', { op: 'report', action: 'skip', summary: 'nothing changed' });
+    const refused = await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'skip', summary: 'nothing changed' });
     expect(refused.result).toEqual({ ok: false, error: `a ${MAP_TASK} run closes with action "${MAP_ACTION}" or "${MAP_UNCHANGED_ACTION}"` });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = 'run_map'`).get()).toEqual({ n: 0 });
-    expect((await call(harness.token, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'nothing changed' })).result).toEqual({ recorded: true, action: MAP_UNCHANGED_ACTION });
+    expect((await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'nothing changed' })).result).toEqual({ recorded: true, action: MAP_UNCHANGED_ACTION });
   });
 
   it('ignores a report row the rule does not list, however it landed: a skip against the canopy map closes nothing', async () => {
@@ -285,7 +286,7 @@ describe('a run reports whatever its task declares', () => {
   it('takes the report\'s agent off the run, never off the arguments', async () => {
     const { harness, dispatch, call } = await setup();
     await dispatch('run_1', SWEEP);
-    const answered = await call(harness.token, 'myco_run', { op: 'report', action: 'x', summary: 's', agentId: 'someone-else' });
+    const answered = await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'x', summary: 's', agentId: 'someone-else' });
     expect(answered.error.data.code).toBe('invalid_input');
   });
 
@@ -293,7 +294,7 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call, list } = await setup();
     await dispatch('run_dry', SWEEP, { dryRun: true });
     expect(await list(harness.token)).toContain('myco_run');
-    expect((await call(harness.token, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to do' })).result)
+    expect((await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to do' })).result)
       .toEqual({ recorded: true, action: RUN_SKIP_ACTION });
     expect((await call(harness.token, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' })).error.data.code).toBe('unknown_tool');
   });

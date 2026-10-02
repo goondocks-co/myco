@@ -16,6 +16,7 @@ import { sha256Hex } from '../hash.js';
 import { RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from './run-postconditions.js';
 import type { TaskInput } from './task-inputs.js';
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsFrom, type TitlingMode } from './titling-params.js';
+import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 
 const MODE_NOTE: Readonly<Record<TitlingMode, string>> = {
   claim: 'The session has just ended. Its material is the opening prompts, in order. A title already standing is kept: your write is refused, and you close with the skip action instead.',
@@ -42,7 +43,7 @@ export function titlingPrompt(sessionId: string, mode: TitlingMode): string {
     '',
     '1. Call `myco_run_sessions` op "material": the session\'s current title and summary, if any, and its prompt batches in order, each a user prompt with an excerpt of the response. Read the whole arc before writing.',
     '2. Call `myco_run_sessions` op "title" with BOTH `title` and `summary`. The run may write only this session, so no session argument is needed.',
-    `3. Close by calling \`myco_run\` op "report": after a write that took, action "${TITLING_REPORT_ACTION}" with a one-line \`summary\` of what you wrote and \`details\` as a serialized JSON object string such as "{\\"updated\\":1}"; when the write was refused, action "${RUN_SKIP_ACTION}" with the refusal in \`summary\`.`,
+    `3. Close by calling \`myco_run\` op "report": after a write that took, action "${TITLING_REPORT_ACTION}" with a one-line \`summary\` of what you wrote and \`details\` as a serialized JSON object string such as "{\\"updated\\":1}"; when the write was refused, action "${RUN_SKIP_ACTION}" with the refusal in \`summary\`. ${RUN_AUDIT_INSTRUCTION}`,
     '',
     '## Title rules',
     '',

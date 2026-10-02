@@ -27,11 +27,14 @@
  * - **`sourceGit`** — whether a source run's shell commands reach the run's
  *   own `git`, so the grant offers Git reads only where they can be held to
  *   reads of the checkout.
+ * - **`steps`** — how each of its calls reads as a step of a run's step log
+ *   (`steps.ts`): the step's kind and the input fields its target is read from.
  */
 
 import { expandHome } from '../paths/home.js';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canOfferHarness, type Asking, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { HARNESS_FACTS } from './harnesses.generated.js';
+import type { StepKind } from '@goondocks/myco-shared/worker-steps';
 
 /** How a harness is started so it speaks the agent protocol, or that it does not speak it at all. */
 export type LaunchShape =
@@ -104,6 +107,16 @@ export type ModelListing =
     fields: CatalogFields; provider?: 'id-prefix';
   };
 
+/** How a call reads as a step: matched by its tool's exact name, a prefix of it, or the harness's own category for it. */
+export interface StepRule {
+  tool?: string;
+  toolPrefix?: string;
+  category?: string;
+  kind: StepKind;
+  /** Dotted paths into the call's input, in order; the first holding text is the step's target. */
+  target: readonly string[];
+}
+
 export interface Harness {
   id: string;
   binary: string;
@@ -113,6 +126,9 @@ export interface Harness {
   asking: Asking;
   sourceGit: SourceGit;
   accounting: HarnessAccounting;
+  steps: readonly StepRule[];
+  /** What a step names its call by: the harness's tool name, or its own category of the call where names are free text. */
+  stepTool: 'name' | 'category';
   profile: ProfileCapability;
   /** How a worker lists the models it can run; absent where it lists none. */
   models?: ModelListing;

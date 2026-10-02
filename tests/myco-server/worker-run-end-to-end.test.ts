@@ -29,6 +29,7 @@ import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fix
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
@@ -162,7 +163,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
 
-    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'nothing to do' }))
+    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'nothing to do' }))
       .toMatchObject({ recorded: true });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
@@ -174,7 +175,7 @@ describe('what a worker reporting `completed` actually closes', () => {
   it('records what cut a run short beside the artifact it owed, where the worker saw calls fail before the turn ended', async () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'could not read the session' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'could not read the session' });
     const note = '2 calls failed or were refused: myco_run_sessions ×2; the turn ended right after the last of them';
     expect(await r.workerEnds(run.id, 'completed', NOW + 3, note)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: `${RUN_CLOSE_ARTIFACT_ERROR}: ${note}` });
@@ -184,7 +185,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'titled one session' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'titled one session' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3, 'a call failed or was refused: Bash (outside the run\'s grant)')).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
   });
@@ -194,7 +195,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const run = await r.claimedTitling(NOW + 1);
 
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'titled one session' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'titled one session' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(run.id)).toEqual({ status: 'completed', error: null });
     expect(await r.verifyOutcome(run.id)).toMatchObject({ task: 'title-summary', outcome: 'write', title: 'Add a retry to the runner' });
@@ -203,12 +204,12 @@ describe('what a worker reporting `completed` actually closes', () => {
   it('refuses a report under an action the task\'s close rule cannot hear, naming the ones it can, and records nothing', async () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
-    const refused = await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'title', summary: 'wrote the title' });
+    const refused = await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'title', summary: 'wrote the title' });
     expect(refused).toEqual({ ok: false, error: `a title-summary run closes with action "${TITLING_REPORT_ACTION}" or "${RUN_SKIP_ACTION}"` });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = ?`).get(run.id)).toEqual({ n: 0 });
     // A retry under an accepted action lands. The skip is still the model's word:
     // the session carries no title, so the server does not agree and the run fails on its artifact.
-    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to do' })).toEqual({ recorded: true, action: RUN_SKIP_ACTION });
+    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to do' })).toEqual({ recorded: true, action: RUN_SKIP_ACTION });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });
@@ -216,7 +217,7 @@ describe('what a worker reporting `completed` actually closes', () => {
   it('lets a titling skip close only where a title stands, which is the one case the write was refused for', async () => {
     const r = await rig();
     const run = await r.claimedRetitle(NOW + 1);
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'a title stands' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'a title stands' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(await r.verifyOutcome(run.id)).toMatchObject({ outcome: 'skip', title: 'A title an earlier run wrote' });
   });
@@ -242,7 +243,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect((page.prompts as Array<Record<string, unknown>>)[0]).toMatchObject({ prompt_id: 'p3', text: 'why does the runner retry the claim twice', response: 'The lease renewal re-claims it; wrap only the claim call.' });
 
     // The report alone is the model's word; the run owed the mark.
-    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: EXTRACTION_REPORT_ACTION, summary: 'read one prompt', details: '{"prompts":1,"created":0}' })).toMatchObject({ recorded: true });
+    expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: EXTRACTION_REPORT_ACTION, summary: 'read one prompt', details: '{"prompts":1,"created":0}' })).toMatchObject({ recorded: true });
     expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
 
     // A spore written under the run's credential names the run as its author.
@@ -287,7 +288,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_state WHERE key = 'agents_block'`).get()).toEqual({ n: 0 });
 
     // The report alone closes nothing, and a spore another run authored is not this run's.
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: SEEDING_REPORT_ACTION, summary: 'seeded', details: '{"spores":0}' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: SEEDING_REPORT_ACTION, summary: 'seeded', details: '{"spores":0}' });
     r.e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, author, created_at, embedded) VALUES ('proj_1', 'sp_other', 'myco-agent', 'gotcha', 'active', 'x', 5, 'run_other', ?, 0)`, [NOW]);
     expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
     await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'architecture', content: 'One server product, two front doors.', agent_line: 'Both front doors share one core: change core/, never a platform adapter alone.' });
@@ -307,7 +308,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const a = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     if (!a.claimed) throw new Error('not claimed');
     await r.asRun(a.run.runToken, 'myco_spores', { op: 'save', type: 'architecture', content: 'One core.', agent_line: 'One core, two doors.' });
-    await r.asRun(a.run.runToken, 'myco_run', { op: 'report', action: SEEDING_REPORT_ACTION, summary: 'seeded' });
+    await r.asRun(a.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: SEEDING_REPORT_ACTION, summary: 'seeded' });
     expect(await r.workerEnds(a.run.id, 'completed', NOW + 2)).toEqual({ ended: true, status: 'completed' });
     expect(r.outcome(a.run.id)).toEqual({ status: 'completed', error: null });
     expect((await r.verifyOutcome(a.run.id)).spores).toHaveLength(1);
@@ -315,7 +316,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const b = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 4 });
     if (!b.claimed) throw new Error('not claimed');
     // A skip over a Project with one spore is the model's word; the server reads it unseeded.
-    await r.asRun(b.run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'already seeded' });
+    await r.asRun(b.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'already seeded' });
     expect(await r.workerEnds(b.run.id, 'completed', NOW + 5)).toEqual({ ended: true, status: 'failed' });
   });
 
@@ -338,7 +339,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     expect((await r.asRun(claimed.run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).prompts).toEqual([]);
-    await r.asRun(claimed.run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to read' });
+    await r.asRun(claimed.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to read' });
     expect(await r.workerEnds(claimed.run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(await r.verifyOutcome(claimed.run.id)).toMatchObject({ task: 'extract-curate', outcome: 'skip', spores: [] });
 
@@ -348,7 +349,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW + 4);
     const second = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 5 });
     if (!second.claimed) throw new Error('the second pass was not claimed');
-    await r.asRun(second.run.runToken, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'nothing to read' });
+    await r.asRun(second.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to read' });
     expect(await r.workerEnds(second.run.id, 'completed', NOW + 6)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(second.run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });
@@ -372,7 +373,7 @@ describe('the record of what a run called', () => {
     const run = await r.claimedTitling(NOW + 1);
 
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material' });
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'read it' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'read it' });
     // A tool this task never declared is off the run's surface, and a credential
     // may not turn a call it is not admitted to make into a row.
     await r.asRun(run.runToken, 'myco_spores', { op: 'save', title: 'x', content: 'y' });
@@ -411,7 +412,7 @@ describe('whose title a titling run is held to', () => {
     const r = await rig();
     const run = await r.claimedRetitle(NOW + 1);
 
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'looked at it' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'looked at it' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
     // The title the earlier run wrote is untouched, which is the whole point:
@@ -425,7 +426,7 @@ describe('whose title a titling run is held to', () => {
     const run = await r.claimedRetitle(NOW + 1);
 
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'What the session really did', summary: 'A truer summary of the same work.' });
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 're-titled it' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 're-titled it' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
     expect(r.e.sqlite.query(`SELECT title FROM sessions WHERE session_id = 's2'`).get())
       .toEqual({ title: 'What the session really did' });
@@ -440,7 +441,7 @@ describe('whose title a titling run is held to', () => {
 
     expect(await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'What this run would have written', summary: 'Its own summary of the work.' }))
       .toEqual({ session_id: 's1', written: false });
-    await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'tried' });
+    await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'tried' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });

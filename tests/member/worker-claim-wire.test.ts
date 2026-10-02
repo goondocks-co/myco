@@ -230,7 +230,7 @@ describe('a worker on the real claim wire', () => {
     expect(attached.lines).toContain('reported run_wire as completed; the Deployment recorded it failed');
     // Every request the worker made declared the protocol: the header is on the
     // claim and on the end, not only on the first call.
-    expect(paths).toEqual(['/members/status', '/worker/claim', '/worker/end']);
+    expect(paths).toEqual(['/members/status', '/worker/claim', '/worker/steps', '/worker/end']);
     expect([...new Set(r.sent.map((s) => s.protocol))]).toEqual(['1']);
   }, 30_000);
 
@@ -324,8 +324,8 @@ describe('a worker on the real claim wire', () => {
     const paths = r.sent.map((s) => s.path);
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('a 503 ended the attachment', attached, paths));
     expect(r.runRow('run_after_503')).toEqual({ status: 'failed', harness: PROFILE_STUB_HARNESS, error: RUN_CLOSE_ERROR });
-    // Two claims: the faulted one and the one that was answered. The model list it reports beside them is its own.
-    expect(paths.filter((path) => path !== '/worker/models')).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/end']);
+    // Two claims: the faulted one and the one that was answered, then the run's step log ahead of its end. The model list it reports beside them is its own.
+    expect(paths.filter((path) => path !== '/worker/models')).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/steps', '/worker/end']);
     expect(attached.lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);
     expect(attached.lines.filter((l) => l.includes('again'))).toHaveLength(1);
   }, 30_000);

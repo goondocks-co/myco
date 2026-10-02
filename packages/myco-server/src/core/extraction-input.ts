@@ -19,6 +19,7 @@
 import { sha256Hex } from '../hash.js';
 import { EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION } from './run-postconditions.js';
 import type { TaskInput } from './task-inputs.js';
+import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 
 /** How many prompts one pass reads; the page the run is told to ask for. */
 export const EXTRACTION_PAGE = 20;
@@ -70,11 +71,11 @@ export function extractionPrompt(): string {
     '',
     '## Steps',
     '',
-    `1. Call \`myco_run_prompts\` op "unprocessed" with \`include_text\` true and \`limit\` ${EXTRACTION_PAGE}. Each item carries the prompt id, its session, the person's prompt and an excerpt of the agent's first response. An empty page means there is nothing to read: close at once with action "${RUN_SKIP_ACTION}".`,
+    `1. Call \`myco_run_prompts\` op "unprocessed" with \`include_text\` true and \`limit\` ${EXTRACTION_PAGE}. Each item carries the prompt id, its session, the person's prompt and an excerpt of the agent's first response. An empty page means there is nothing to read: close at once with action "${RUN_SKIP_ACTION}" and its \`audit\`.`,
     '2. Read the whole page before writing anything, grouped by session, and list the candidate observations. Group candidates by topic: one search per topic, never one per prompt.',
     '3. For each topic, call `myco_search` with `type` "spore" and the topic as the query. Decide per the rules: write nothing, save, save then supersede, consolidate, or obsolete. Writes go through `myco_spores` op "save", "supersede", "consolidate" and "obsolete". Every save or consolidation names its supporting `prompt_id`; date historical observations as the rules describe.',
     '4. Call `myco_run_prompts` op "mark_processed" for EVERY prompt on the page you read, including the ones that taught nothing. A prompt left unmarked is read again by the next pass.',
-    `5. Close by calling \`myco_run\` op "report": action "${EXTRACTION_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"prompts\\":20,\\"created\\":3,\\"superseded\\":1,\\"consolidated\\":0,\\"obsoleted\\":0}". Stop after the report.`,
+    `5. Close by calling \`myco_run\` op "report": action "${EXTRACTION_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"prompts\\":20,\\"created\\":3,\\"superseded\\":1,\\"consolidated\\":0,\\"obsoleted\\":0}". ${RUN_AUDIT_INSTRUCTION}`,
     '',
     'Partial work stands: a spore saved and a prompt marked before you run out of budget are kept, and the next pass reads on from the prompts you did not mark.',
   ].join('\n');

@@ -50,6 +50,14 @@
       "import": "./dist/worker-usage.js",
       "types": "./dist/worker-usage.d.ts"
     },
+    "./command-shape": {
+      "import": "./dist/command-shape.js",
+      "types": "./dist/command-shape.d.ts"
+    },
+    "./worker-steps": {
+      "import": "./dist/worker-steps.js",
+      "types": "./dist/worker-steps.d.ts"
+    },
     "./capture-rule-schema": {
       "import": "./dist/capture-rule-schema.js",
       "types": "./dist/capture-rule-schema.d.ts"

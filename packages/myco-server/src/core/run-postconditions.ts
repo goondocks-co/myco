@@ -45,6 +45,11 @@ import { listUnprocessedPrompts } from '../read/prompts.js';
 import { PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
+import { parseRunAudit } from './run-audit.js';
+import { runHasAttempt } from './run-steps.js';
+import { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
+
+export { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
 
 /** The report a run records to say it found nothing to write. */
 export const RUN_SKIP_ACTION = 'skip';
@@ -59,6 +64,12 @@ export interface RunCloseRule {
   artifact?: (db: RelationalStore, scope: ReadScope, run: RunRow) => Promise<boolean>;
   /** Whether the server's own read agrees with a skip. Absent where a skip is not accepted. */
   skipHolds?: (db: RelationalStore, scope: ReadScope, run: RunRow) => Promise<boolean>;
+  /**
+   * Set where an agent does the task: a report closes the run only with its audit (`core/run-audit.ts`). A run owes it
+   * only where a worker's claim recorded its attempt (`owesAudit`), so a run claimed before attempts were recorded, or
+   * run by a container, closes as it did.
+   */
+  audited?: true;
 }
 
 /** The report a titling run files, whatever it found to do. */
@@ -134,17 +145,17 @@ export async function titleStands(db: RelationalStore, scope: ReadScope, run: Ru
 
 /** What each task's run must have left behind, by task. Every retained task appears. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
-  [MAP_TASK]: { description: ['A report and a code map written by this run, or a report that the map is unchanged.'], reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy },
+  [MAP_TASK]: { description: ['A report with its audit and a code map written by this run, or a report with its audit that the map is unchanged.'], reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy, audited: true },
   'embedding-reconcile': { description: ['A report of the search index update.'], reports: ['embedding'] },
   // The whole product of a titling run is the title on the session its dispatch
   // named, which is why it names an artifact and not the report alone.
   // A write refused for a title already standing is a pass with nothing to do, and closes as one.
-  [TITLING_TASK]: { description: ['A report and a title written by this run for its session, or a supported skip when a title already stands.'], reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands },
+  [TITLING_TASK]: { description: ['A report with its audit and a title written by this run for its session, or a supported skip when a title already stands.'], reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands, audited: true },
   // An extraction pass owes the cursor move: a prompt it read, marked read under
   // its own credential. The skip is a pass that found no unread prompt.
-  [EXTRACTION_TASK]: { description: ['A report and at least one prompt marked as read by this run, or a supported skip when no unread prompts remain.'], reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope) },
+  [EXTRACTION_TASK]: { description: ['A report with its audit and at least one prompt marked as read by this run, or a supported skip when no unread prompts remain.'], reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope), audited: true },
   // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
-  [SEEDING_TASK]: { description: ['A report and a spore written by this run, or a supported skip when the project already has enough active spores.'], reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
+  [SEEDING_TASK]: { description: ['A report with its audit and a spore written by this run, or a supported skip when the project already has enough active spores.'], reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope), audited: true },
   // The probe's product is the one report it files, which is what it proves.
   'container-smoke': { description: ['A report of the health check.'], reports: ['container-smoke'] },
 };
@@ -170,9 +181,16 @@ export function acceptedActions(task: string | null): readonly string[] | null {
 
 export interface RunCloseEvidence {
   hasReport: boolean;
+  /** Whether a closing report carries its audit; null for a task whose reports owe none. */
+  hasAudit: boolean | null;
   artifactPresent: boolean | null;
   skipSupported: boolean | null;
   targetSessionId: string | null;
+}
+
+/** Whether this run's closing report owes its audit: its task's rule is audited and a worker's claim recorded its attempt. */
+export async function owesAudit(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+  return closeRuleFor(run.task)?.audited === true && await runHasAttempt(db, scope, run.id);
 }
 
 /** Current persisted evidence under the task's close rule; null for an ungoverned task. */
@@ -180,7 +198,10 @@ export async function readRunCloseEvidence(db: RelationalStore, scope: ReadScope
   const rule = closeRuleFor(run.task);
   if (rule === undefined) return null;
   const evidence = (await listReports(db, scope, run.id)).filter((report) => rule.reports.includes(report.action));
-  const result: RunCloseEvidence = { hasReport: evidence.length > 0, artifactPresent: null, skipSupported: null, targetSessionId: sessionNamedByRun(run) };
+  const result: RunCloseEvidence = {
+    hasReport: evidence.length > 0, hasAudit: await owesAudit(db, scope, run) ? evidence.some((report) => report.audit !== null) : null,
+    artifactPresent: null, skipSupported: null, targetSessionId: sessionNamedByRun(run),
+  };
   if (!result.hasReport || rule.artifact === undefined || run.dryRun === 1) return result;
   if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) {
     result.skipSupported = rule.skipHolds === undefined || await rule.skipHolds(db, scope, run);
@@ -190,12 +211,16 @@ export async function readRunCloseEvidence(db: RelationalStore, scope: ReadScope
   return result;
 }
 
-/** Why this run may not close as completed, or null when it may. */
+/**
+ * Why this run may not close as completed, or null when it may: no closing report, then no artifact or an unsupported
+ * skip, then no audit on any closing report. Whatever the run wrote stays written; only the outcome is decided here.
+ */
 export async function runCloseRefusal(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<string | null> {
   const evidence = await readRunCloseEvidence(db, scope, run);
   if (evidence === null) return null;
   if (!evidence.hasReport) return RUN_CLOSE_ERROR;
-  return evidence.artifactPresent === false || evidence.skipSupported === false ? RUN_CLOSE_ARTIFACT_ERROR : null;
+  if (evidence.artifactPresent === false || evidence.skipSupported === false) return RUN_CLOSE_ARTIFACT_ERROR;
+  return evidence.hasAudit === false ? RUN_CLOSE_AUDIT_ERROR : null;
 }
 
 /** How a report under an action a task's rule cannot hear is refused, on either door a run reports through. */
@@ -203,22 +228,37 @@ export function unacceptedActionError(task: string | null, accepted: readonly st
   return `a ${task ?? 'run'} run closes with action ${accepted.map((a) => `"${a}"`).join(' or ')}`;
 }
 
-/** What recording a report answered: the row landed, the run is not one this Project holds, or the action is one its task cannot close under. */
+/**
+ * What recording a report answered: the row landed, the run is not one this Project holds, or the action is one its
+ * task cannot close under. A landed row whose audit is absent or malformed says why in `auditError`, where the run's
+ * task owes one or an audit is offered: the report stands without it, and cannot close the run as completed.
+ */
 export type ReportOutcome =
-  | { recorded: true }
+  | { recorded: true; auditError: string | null; auditRepairs: string[] }
   | { recorded: false; reason: 'unheld' }
   | { recorded: false; reason: 'unaccepted'; error: string };
+
+/** A report as either door offers it: the audit is the caller's raw argument, judged here. */
+export type ReportOffer = Omit<ReportInsert, 'audit'> & { audit: unknown };
 
 /**
  * Record a run's report: the one door every report lands through, on the MCP
  * surface and the container's route alike (`tests/meta/report-record-chokepoint.test.ts`).
  * An action the run's task cannot close under is refused here, naming what it
- * can, and leaves no row; a row the judgment would ignore is never written.
+ * can, and leaves no row; a row the judgment would ignore is never written. The
+ * audit is held to its shape here (`parseRunAudit`), so both doors store the same
+ * thing for the same offer.
  */
-export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportInsert): Promise<ReportOutcome> {
+export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportOffer): Promise<ReportOutcome> {
   const run = await getRun(db, scope, report.runId);
   if (run === null) return { recorded: false, reason: 'unheld' };
   const accepted = acceptedActions(run.task);
   if (accepted !== null && !accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
-  return (await insertReport(db, scope, report)) ? { recorded: true } : { recorded: false, reason: 'unheld' };
+  const offered = report.audit === undefined || report.audit === null ? null : parseRunAudit(report.audit);
+  const audit = offered?.ok === true ? JSON.stringify(offered.audit) : null;
+  const auditError = offered === null
+    ? (await owesAudit(db, scope, run) ? 'the report carries no audit' : null)
+    : (offered.ok ? null : offered.error);
+  const auditRepairs = offered?.ok === true ? offered.repairs : [];
+  return (await insertReport(db, scope, { ...report, audit })) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }

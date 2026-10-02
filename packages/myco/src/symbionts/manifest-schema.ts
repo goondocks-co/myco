@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
+import { STEP_KINDS } from '@goondocks/myco-shared/worker-steps';
 export type { CaptureRule } from '@goondocks/myco-shared/capture-rule-schema';
 
 /** Schema describing where user prompts live in an agent's transcript. */
@@ -734,9 +735,25 @@ const ModelListingSchema = z.discriminatedUnion('kind', [
 ]);
 
 /**
+ * How one of the harness's calls reads as a step of a run's step log (`runner/steps.ts`): the call it matches — by
+ * the tool's exact name, a prefix of it, or the harness's own classification of the call — the step's kind, and the
+ * fields of the call's input its target is read from, in order, the first holding text winning. A field is a dotted
+ * path into the input, `changes.0.path` reaching into a list.
+ */
+const StepRuleSchema = z.object({
+  tool: z.string().min(1).optional(),
+  toolPrefix: z.string().min(1).optional(),
+  category: z.string().min(1).optional(),
+  kind: z.enum(STEP_KINDS),
+  target: Strings,
+}).strict().refine((rule) => [rule.tool, rule.toolPrefix, rule.category].filter((match) => match !== undefined).length === 1, {
+  message: 'a step rule matches by exactly one of tool, toolPrefix and category',
+});
+
+/**
  * How a worker runs the harness: what it launches, where its login is, how a run is kept apart from the machine's own
- * use, whether its shell reaches the run's git through the worker's shim, how the tier's model reaches it, and how a
- * run's usage is read back. How it is held to a run's grant is the shared `asking` beside it. `runner/harnesses.ts` holds the
+ * use, whether its shell reaches the run's git through the worker's shim, how the tier's model reaches it, how its
+ * calls read as a run's steps, and how a run's usage is read back. How it is held to a run's grant is the shared `asking` beside it. `runner/harnesses.ts` holds the
  * types each mirrors, and reads the generated table typed by them.
  */
 const RunnerWorkerSchema = z.object({
@@ -763,6 +780,14 @@ const RunnerWorkerSchema = z.object({
   modelSetting: z.enum(['flag', 'config', 'none']),
   /** How a worker lists the models the harness can run, for Settings; absent where it lists none. */
   models: ModelListingSchema.optional(),
+  /** How each of its calls reads as a step; a call no rule matches is a step of kind `tool` with no target. */
+  steps: z.array(StepRuleSchema).min(1),
+  /**
+   * What a step names its call by: the harness's tool name (`name`), or the harness's own category of the call
+   * (`category`) for a harness whose call names are free text a person or a model wrote. A name that is not an
+   * identifier is never kept either way.
+   */
+  stepTool: z.enum(['name', 'category']),
   accounting: z.object({
     reported: z.enum(['claude-stream', 'codex-session', 'acp-session']),
     modelSources: Strings,

@@ -3,6 +3,7 @@ import { MAP_ACTION, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy'
 import { MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { lit, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 
 /** How long the seeded lease holds: well past the scenario, so no sweep takes the run mid-way. */
 const LEASE_MS = 600_000;
@@ -66,14 +67,14 @@ export const canopy: ParityScenario = {
         { id: 'main', title: 'Main', files: [{ path: evidence.path, annotation: 'Starts the application.', groundedIn: [evidence] }] },
       ] };
       expect(await tool(first.token, 'myco_run_map', { op: 'write', artifact })).toMatchObject({ written: true, commit });
-      await tool(first.token, 'myco_run', { op: 'report', action: MAP_ACTION, summary: 'mapped' });
+      await tool(first.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_ACTION, summary: 'mapped' });
       expect(await end(first.runId)).toMatchObject({ ended: true, status: 'completed' });
       const stored = (await owner(`${endpoint}/canopy-map`)).map;
       expect(stored).toMatchObject({ repository: { ...source, commit }, artifact, sourceRunId: first.runId });
 
       const second = await leasedRun('second');
       expect(await tool(second.token, 'myco_run_map', { op: 'get' })).toMatchObject({ commit, unchanged: true, map: { revision: stored.revision } });
-      await tool(second.token, 'myco_run', { op: 'report', action: MAP_UNCHANGED_ACTION, summary: 'unchanged' });
+      await tool(second.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_UNCHANGED_ACTION, summary: 'unchanged' });
       expect(await end(second.runId)).toMatchObject({ ended: true, status: 'completed' });
 
       const read = await tool(target.memberToken, 'myco_cortex', { op: 'canopy_map' });

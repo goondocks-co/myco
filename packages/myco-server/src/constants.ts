@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 65;
+export const SERVER_SCHEMA_VERSION = 66;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -23,14 +23,15 @@ export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
 /**
- * Supported member event features, execution profiles and worker accounting are advertised to authenticated callers
+ * Supported member event features, execution profiles, worker accounting, model catalogs and worker step logs are advertised to authenticated callers
  * on every answer in `FEATURES_HEADER`.
  */
 export { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { MEMBER_FEATURES } from '@goondocks/myco-shared/member-protocol';
 import { WORKER_ACCOUNTING_FEATURE } from '@goondocks/myco-shared/worker-usage';
 import { EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE } from '@goondocks/myco-shared/execution-profile';
-export const SERVER_FEATURES = [...MEMBER_FEATURES, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE] as const;
+import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
+export const SERVER_FEATURES = [...MEMBER_FEATURES, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE, WORKER_STEPS_FEATURE] as const;
 /** The Project a member request acts on. A credential is Deployment-wide, so the Project travels per request. It rides a header rather than the envelope: an envelope field is a protocol bump, and a member whose spool holds records of the older protocol stops draining them entirely. */
 export const PROJECT_HEADER = 'x-myco-project';
 /**

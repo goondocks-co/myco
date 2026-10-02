@@ -2,7 +2,7 @@ import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
-import { keyset, page, type Page, type ReadScope } from './scope.js';
+import { keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
 import { DISPATCH_ACTOR_SQL, getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../core/runs.js';
 import { ownMachineNames } from './capture.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
@@ -15,6 +15,7 @@ import { requestedProfileValue } from '../db/run-profile.js';
 import { runResultSql, type RunResult } from './run-outcome.js';
 import { MAP_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
+import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
 
 /** The most calls one page of a run's detail lists. */
 const MAX_TOOL_CALLS = 200;
@@ -136,6 +137,38 @@ export interface RunToolCallRow {
   failure?: RunCallFailure;
 }
 
+/** One claim of a run, and what its worker's step log holds. */
+export interface RunAttemptRow {
+  attemptId: string;
+  claimedAt: number;
+  /**
+   * The attempt's step log: the steps its worker observed (`total`), those the Deployment holds (`received`), those
+   * past the log's bound (`overflow`) and the stream records the worker could not read. Null where no page of the log
+   * has arrived: a worker that keeps none, or one that has not delivered it yet.
+   */
+  steps: { total: number; received: number; overflow: number; unrecognized: UnrecognizedCount | null } | null;
+}
+
+/** One step a worker observed, metadata only: never file contents or command output. */
+export interface RunStepRow {
+  seq: number;
+  callId: string | null;
+  kind: StepKind;
+  tool: string;
+  target: string | null;
+  outcome: StepOutcome;
+  exitCode: number | null;
+  startedAt: number;
+  endedAt: number | null;
+}
+
+/** One page of an attempt's step log, in step order. */
+export interface RunStepPage {
+  attemptId: string;
+  rows: RunStepRow[];
+  cursor: string | null;
+}
+
 export interface RunDetail {
   run: RunDetailRow;
   /** The phases the checkpoint records; empty when it records none, null when it cannot be read. */
@@ -147,6 +180,11 @@ export interface RunDetail {
   map: { revision: string; branch: string; commit: string; generatedAt: number; sourceRunId: string; replaced: boolean } | null;
   /** Current artifact and no-op checks, evaluated under the same rule used at completion. */
   outcomeEvidence: RunCloseEvidence | null;
+  /** The run's latest claims, oldest first, each with what its step log holds; `attemptCount` counts them all. */
+  attempts: RunAttemptRow[];
+  attemptCount: number;
+  /** The first page of the latest attempt's step log; null for a run no worker claimed. */
+  steps: RunStepPage | null;
 }
 
 export interface RunFilters {
@@ -397,6 +435,71 @@ export async function runToolCalls(db: RelationalStore, scope: ReadScope, runId:
   return (await runToolCallPage(db, scope, runId, { limit })).rows;
 }
 
+/** The most attempts a run's detail lists: the latest. */
+const MAX_ATTEMPTS = 50;
+
+function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as UnrecognizedCount;
+    return typeof parsed.total === 'number' && parsed.shapes !== null && typeof parsed.shapes === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
+  (SELECT COUNT(*) FROM agent_run_steps s WHERE s.project_id = a.project_id AND s.run_id = a.run_id AND s.attempt_id = a.attempt_id) AS received`;
+
+type AttemptRecord = { attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null; received: number };
+
+const attemptOf = (row: AttemptRecord): RunAttemptRow => ({
+  attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
+  steps: row.total === null ? null : { total: Number(row.total), received: Number(row.received), overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
+});
+
+/**
+ * A run's latest `MAX_ATTEMPTS` attempts, oldest first, each with its step log's totals and how many of its steps the
+ * Deployment holds, and how many attempts the run has in all.
+ */
+export async function runAttempts(db: RelationalStore, scope: ReadScope, runId: string): Promise<{ rows: RunAttemptRow[]; total: number }> {
+  const [latest, counted] = await db.batch([
+    db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ?
+      ORDER BY a.claimed_at DESC, a.attempt_id DESC LIMIT ?`).bind(scope.projectId, runId, MAX_ATTEMPTS),
+    db.prepare(`SELECT COUNT(*) AS total FROM agent_run_attempts WHERE project_id = ? AND run_id = ?`).bind(scope.projectId, runId),
+  ]);
+  return {
+    rows: (latest!.results as AttemptRecord[]).map(attemptOf).reverse(),
+    total: Number((counted!.results[0] as { total: number }).total),
+  };
+}
+
+/** One attempt of a run by its id, or null where the run has no such attempt. */
+async function runAttempt(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string): Promise<RunAttemptRow | null> {
+  const row = await db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ? AND a.attempt_id = ?`)
+    .bind(scope.projectId, runId, attemptId).first<AttemptRecord>();
+  return row === null ? null : attemptOf(row);
+}
+
+/** One page of an attempt's step log, in step order. */
+export async function runStepPage(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<RunStepPage> {
+  const k = keyset({ ...opts, limit: opts.limit ?? MAX_PAGE }, { order: 'seq', id: 'seq', direction: 'ASC' });
+  if (k === null) throw new Error('Malformed step cursor.');
+  const { results } = await db.prepare(
+    `SELECT seq, call_id AS callId, kind, tool, target, outcome, exit_code AS exitCode, started_at AS startedAt, ended_at AS endedAt
+      FROM agent_run_steps WHERE project_id = ? AND run_id = ? AND attempt_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
+      ORDER BY seq ASC LIMIT ?`,
+  ).bind(scope.projectId, runId, attemptId, ...k.params, k.limit + 1).all<RunStepRow>();
+  const paged = page(results, k.limit, (row) => ({ createdAt: Number(row.seq), id: String(row.seq) }));
+  return { attemptId, rows: [...paged.rows], cursor: paged.cursor };
+}
+
+/** A scoped run's step log for one attempt, or the latest when none is named; null when the Project holds no such run or attempt. */
+export async function getRunSteps(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string | undefined, opts: { limit?: number; cursor?: string } = {}): Promise<RunStepPage | null> {
+  const chosen = attemptId === undefined ? (await runAttempts(db, scope, runId)).rows.at(-1) ?? null : await runAttempt(db, scope, runId, attemptId);
+  return chosen === null ? null : runStepPage(db, scope, runId, chosen.attemptId, opts);
+}
+
 /** One run inside the scope with its phases and the calls it made, its machine named as of `nowMs`, or null — including when the run exists under another project. */
 export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number, viewerId: string, calls: { limit?: number; cursor?: string } = {}): Promise<RunDetail | null> {
   const [[found], ownNames] = await Promise.all([db.batch([
@@ -405,14 +508,16 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
   const row = (found!.results[0] ?? null) as Record<string, unknown> | null;
   if (row === null) return null;
   const run = await getRun(db, scope, runId);
-  const [callPage, currentMap] = await Promise.all([
+  const [callPage, currentMap, attempts] = await Promise.all([
     runToolCallPage(db, scope, runId, calls),
     db.prepare(`SELECT revision, repository_branch AS branch, repository_commit AS commitId, generated_at AS generatedAt,
       source_run_id AS sourceRunId,
       EXISTS (SELECT 1 FROM agent_run_events e WHERE e.project_id = ? AND e.run_id = ? AND e.event_type = ? AND e.tool_name = ?) AS wroteMap
       FROM canopy_maps WHERE project_id = ?`).bind(scope.projectId, runId, RUN_WRITE_EVENT, MAP_WRITE_TOOL, scope.projectId)
       .first<{ revision: string; branch: string; commitId: string; generatedAt: number; sourceRunId: string; wroteMap: number }>(),
+    runAttempts(db, scope, runId),
   ]);
+  const latest = attempts.rows.at(-1);
   return {
     run: toDetailRow(row, ownNames), phases: phasesOf(text(row.checkpoints)), toolCalls: callPage.rows,
     toolCallCoverage: { total: callPage.total, failed: callPage.failed, cursor: callPage.cursor },
@@ -423,5 +528,8 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
       replaced: Number(currentMap.wroteMap) === 1 && currentMap.sourceRunId !== runId,
     },
     outcomeEvidence: run === null ? null : await readRunCloseEvidence(db, scope, run),
+    attempts: attempts.rows,
+    attemptCount: attempts.total,
+    steps: latest === undefined ? null : await runStepPage(db, scope, runId, latest.attemptId),
   };
 }

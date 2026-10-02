@@ -22,6 +22,7 @@ import { RUN_SKIP_ACTION, SEEDING_REPORT_ACTION } from './run-postconditions.js'
 import type { TaskInput } from './task-inputs.js';
 
 import { SEEDED_SPORE_FLOOR, SEEDING_CHECKOUT_DIR, SEEDING_SPORE_CEILING } from './seeding-params.js';
+import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 
 export { SEEDED_SPORE_FLOOR, SEEDING_CHECKOUT_DIR, SEEDING_SPORE_CEILING };
 
@@ -67,11 +68,11 @@ export function seedingPrompt(repository: { url: string; branch: string }): stri
     '',
     '## Steps',
     '',
-    `1. Call \`myco_run_spores\` op "list" once. A \`total\` of ${SEEDED_SPORE_FLOOR} or more active spores means this project is already seeded: close at once with action "${RUN_SKIP_ACTION}" and say so in the summary.`,
+    `1. Call \`myco_run_spores\` op "list" once. A \`total\` of ${SEEDED_SPORE_FLOOR} or more active spores means this project is already seeded: close at once with action "${RUN_SKIP_ACTION}", say so in the summary, and file its \`audit\`.`,
     `2. Orient, in about ten tool calls: the README, the primary manifest, the top-level layout, the docs directory if there is one, and the git history as the rules describe. Name three to eight themes worth drilling into: architectural layers, cross-cutting concepts, integration points, conventions.`,
     '3. Drill into each theme with searches and targeted reads of the two to four most informative files. Collect concrete observations anchored to paths, symbols or commits. Prefer cross-cutting modules over leaf files.',
     `4. For each observation, call \`myco_search\` with \`type\` "spore" first; a Project being seeded is rarely empty of an earlier pass. Then \`myco_spores\` op "save" with \`content\`, \`type\` and \`tags\`. Write between ten and ${SEEDING_SPORE_CEILING} spores; past the ceiling, keep the most load-bearing and drop the rest.`,
-    `5. Close by calling \`myco_run\` op "report": action "${SEEDING_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"spores\\":24,\\"themes\\":6,\\"thin_coverage\\":[\\"deploy\\"]}", where thin_coverage names the themes that yielded fewer than three observations. Stop after the report.`,
+    `5. Close by calling \`myco_run\` op "report": action "${SEEDING_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"spores\\":24,\\"themes\\":6,\\"thin_coverage\\":[\\"deploy\\"]}", where thin_coverage names the themes that yielded fewer than three observations. ${RUN_AUDIT_INSTRUCTION}`,
     '',
     'Partial work stands: every spore saved before you run out of budget is kept.',
   ].join('\n');

@@ -246,7 +246,7 @@ function fail(message: string): never {
  * and the origin members reach it at, so no other worker on this machine claims
  * for the same Deployment under either address.
  */
-export function localWorkerTarget(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>, mycoHome: string, lockDir = workerLockDir()): Pick<WorkerOptions, 'serverUrl' | 'token' | 'lockDir' | 'deploymentUrls' | 'runRoot'> {
+export function localWorkerTarget(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>, mycoHome: string, lockDir = workerLockDir()): Pick<WorkerOptions, 'serverUrl' | 'token' | 'lockDir' | 'deploymentUrls' | 'runRoot' | 'stepRoot'> {
   const urls = localDeploymentUrls(record);
   const serverUrl = urls[0]!;
   return {
@@ -255,6 +255,7 @@ export function localWorkerTarget(record: Pick<LocalDeploymentRecord, 'port' | '
     lockDir,
     deploymentUrls: urls,
     runRoot: path.join(mycoHome, 'worker', 'runs'),
+    stepRoot: path.join(mycoHome, 'worker', 'steps'),
   };
 }
 

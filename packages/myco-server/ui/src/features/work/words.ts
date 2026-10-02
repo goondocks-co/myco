@@ -343,6 +343,7 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
     machine_unresponsive: 'The machine running it stopped responding.',
     task_start_failed: 'The machine could not start the task.',
     model_not_applied: 'The agent couldn’t use the chosen model.',
+    report_without_audit: 'The agent didn’t account for the steps it took, so its work couldn’t be checked.',
     run_failed: 'The task stopped before it could finish.',
   };
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;

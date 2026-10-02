@@ -21,6 +21,8 @@
       "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/repository": ["../myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/worker-usage": ["../myco-shared/src/worker-usage.ts"],
+      "@goondocks/myco-shared/worker-steps": ["../myco-shared/src/worker-steps.ts"],
+      "@goondocks/myco-shared/command-shape": ["../myco-shared/src/command-shape.ts"],
       "@goondocks/myco-shared/execution-profile": ["../myco-shared/src/execution-profile.ts"],
       "@goondocks/myco-shared/settings-contract": ["../myco-shared/src/settings-contract.ts"],
       "@goondocks/myco-shared/redact-secrets": ["../myco-shared/src/redact-secrets.ts"],

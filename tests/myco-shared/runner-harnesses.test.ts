@@ -98,7 +98,9 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
   it('are how a worker runs each harness: binary, launch, login, isolation, permissions, source git, model setting and accounting, in rank order', () => {
     expect(HARNESSES.map((h) => h.id)).toEqual((BEFORE.HARNESSES as Array<{ id: string }>).map((h) => h.id));
     for (const [i, harness] of HARNESSES.entries()) {
-      expect({ harness: harness.id, facts: asJson(harness) }).toEqual({ harness: harness.id, facts: (BEFORE.HARNESSES as unknown[])[i] });
+      // Step rules and step naming are new with the step log; `tests/member/worker-steps.test.ts` and `tests/myco-shared/command-shape.test.ts` hold them.
+      const { steps: _steps, stepTool: _stepTool, ...facts } = asJson(harness) as Record<string, unknown>;
+      expect({ harness: harness.id, facts }).toEqual({ harness: harness.id, facts: (BEFORE.HARNESSES as Array<Record<string, unknown>>)[i]! });
     }
   });
 
