@@ -332,20 +332,26 @@ export function ranOn(worker: RunWorker | null, name: (id: string) => string | n
   return { list: `from ${who}`, machine: `${who}’s machine` };
 }
 
-/** The dashboard's sentence for a stored run failure, including unknown and older codes. */
-export function runErrorWords(code: string | null | undefined): string {
+/**
+ * The dashboard's sentence for a stored run failure, including unknown and older codes. A run whose agent could not
+ * use the chosen model says why where the worker that ran it gave a reason (`reason`); the run's own record of the
+ * failure is left to its technical details.
+ */
+export function runErrorWords(code: string | null | undefined, reason: string | null = null): string {
   const words: Readonly<Record<string, string>> = {
     machine_did_not_start: 'No machine started the task within a day.',
     machine_unresponsive: 'The machine running it stopped responding.',
     task_start_failed: 'The machine could not start the task.',
+    model_not_applied: 'The agent couldn’t use the chosen model.',
     run_failed: 'The task stopped before it could finish.',
   };
+  if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
   return words[code ?? ''] ?? words.run_failed!;
 }
 
 /** A coded failure uses the dashboard's sentence; an uncoded report retains its own words. */
 export function failureWords(failure: WorkRun['failure'] | undefined): string {
-  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code);
+  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code, failure?.reason ?? null);
 }
 
 /** Machine-reported reasons are available inside the failure's details disclosure. */

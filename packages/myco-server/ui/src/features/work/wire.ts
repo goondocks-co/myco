@@ -93,6 +93,8 @@ export interface RunDetailFields extends RunFields {
   estimatedCostUsd: number | null;
   actualCostUsd: number | null;
   errorCode?: string | null;
+  /** Why the run failed in the reader's words, where the worker that ran it gave one. */
+  errorReason?: string | null;
   error: string | null;
 }
 

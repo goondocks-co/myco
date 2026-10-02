@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { resolveWorkerCost } from '@myco-server-worker/core/cost/worker.js';
 import { runAccounting } from '@myco-server-worker/read/accounting.js';
 import { parseWorkerAccounting, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { EFFORT_UNAPPLIED, PROFILE_WARNINGS } from '@goondocks/myco-shared/execution-profile';
 
 const usage: WorkerUsage = { inputTokens: 100, outputTokens: 20, cachedTokens: 20, cacheCreationTokens: 15, cacheCreation5mTokens: 10, cacheCreation1hTokens: 5, costUsd: null };
 const model = (id: string, context?: '1m') => ({ model: id, provider: 'anthropic', ...(context === undefined ? {} : { context }), source: 'fixture', usage });
@@ -16,6 +17,13 @@ describe('complete model pricing and compatibility', () => {
   it('uses the reported context variant for Sonnet pricing and keeps current 1m pricing standard', async () => {
     expect(await resolveWorkerCost('claude-code', usage, identity('claude-sonnet-5-5', '1m'))).toMatchObject({ costUsd: expect.closeTo(0.000379, 12), provenance: 'model_pricing' });
     expect(await resolveWorkerCost('claude-code', usage, identity('claude-sonnet-4-5', '1m'))).toMatchObject({ costUsd: null, provenance: 'unavailable' });
+  });
+  it('prices a run whose identity says only how its profile was applied, and no run whose accounting is in doubt (#1608)', async () => {
+    for (const warning of PROFILE_WARNINGS) {
+      expect(await resolveWorkerCost('claude-code', usage, { ...identity('claude-haiku-4-5'), warnings: [warning] })).toMatchObject({ costUsd: expect.closeTo(0.0001895, 12), provenance: 'model_pricing' });
+    }
+    expect(PROFILE_WARNINGS).toContain(EFFORT_UNAPPLIED);
+    expect(await resolveWorkerCost('claude-code', usage, { ...identity('claude-haiku-4-5'), warnings: ['model_list_truncated'] })).toMatchObject({ costUsd: null, provenance: 'unavailable' });
   });
   it('labels totals from harness dollars and table pricing as mixed', async () => {
     const reported = identity('claude-opus-5-5');

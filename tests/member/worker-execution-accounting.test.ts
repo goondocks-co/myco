@@ -2,7 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
 import { claudeUsage } from '@myco/runner/drivers/usage.js';
 import { AcpEvents } from '@myco/runner/drivers/acp-events.js';
-import { parseWorkerAccounting } from '@goondocks/myco-shared/worker-usage';
+import { parseWorkerAccounting, WORKER_ACCOUNTING_FEATURE } from '@goondocks/myco-shared/worker-usage';
+import { EFFORT_UNAPPLIED, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { fixtureRun } from '../helpers/execution-harness.ts';
 
 describe('execution identity on every profile-capable runner end', () => {
@@ -29,9 +30,33 @@ describe('execution identity on every profile-capable runner end', () => {
   }
   it('ends an OpenCode run whose claimed model the harness does not offer as unapplied, never on the harness\'s default (#1608)', async () => {
     const report = await fixtureRun(HARNESSES.find((h) => h.id === 'opencode')!, 'unoffered');
-    expect({ status: report?.status, unapplied: String(report?.error).includes('profile_unapplied: the harness offers no model openai/gpt-5.4-mini (it offers opencode/big-pickle)') })
+    expect({ status: report?.status, unapplied: String(report?.error).includes('profile_unapplied: it offers no model openai/gpt-5.4-mini (it offers opencode/big-pickle)') })
       .toEqual({ status: 'failed', unapplied: true });
     expect(report).toHaveProperty('identity.status', 'unknown');
+  });
+  describe('what a worker tells a Deployment about how a profile was applied, by what the Deployment advertises (#1608)', () => {
+    const opencode = HARNESSES.find((h) => h.id === 'opencode')!;
+    const NEW_SERVER = `turn,${WORKER_ACCOUNTING_FEATURE},${PROFILE_OUTCOME_FEATURE}`;
+    it('sends a Deployment that advertises the profile outcome the refusal\'s reason and the skipped effort', async () => {
+      const refused = await fixtureRun(opencode, 'unoffered', undefined, { features: NEW_SERVER });
+      expect(refused?.refusal).toEqual({ code: PROFILE_UNAPPLIED, reason: 'it offers no model openai/gpt-5.4-mini' });
+      const skipped = await fixtureRun(opencode, 'no_effort', undefined, { features: NEW_SERVER });
+      expect({ status: skipped?.status, warnings: skipped?.identity && (skipped.identity as { warnings?: string[] }).warnings }).toEqual({ status: 'completed', warnings: [EFFORT_UNAPPLIED] });
+    });
+    it('sends an older Deployment neither, so it prices the run and reads the failure as before', async () => {
+      const refused = await fixtureRun(opencode, 'unoffered');
+      expect(refused).not.toHaveProperty('refusal');
+      expect(String(refused?.error)).toContain('profile_unapplied: it offers no model openai/gpt-5.4-mini');
+      const skipped = await fixtureRun(opencode, 'no_effort');
+      expect({ status: skipped?.status, identity: skipped?.identity && (skipped.identity as { status: string }).status, warnings: skipped?.identity && (skipped.identity as { warnings?: string[] }).warnings })
+        .toEqual({ status: 'completed', identity: 'reported', warnings: undefined });
+    });
+    it('marks no effort skipped on a run whose agent applied it, nor on any other agent', async () => {
+      for (const harness of HARNESSES.filter((h) => offerable(h) && h.profile.model !== 'none')) {
+        const report = await fixtureRun(harness, 'success', undefined, { features: NEW_SERVER });
+        expect({ harness: harness.id, skipped: JSON.stringify(report?.identity ?? null).includes(EFFORT_UNAPPLIED) }).toEqual({ harness: harness.id, skipped: false });
+      }
+    });
   });
   it('records the real pinned Codex launch choice when the run session has no model', async () => {
     expect(await fixtureRun(HARNESSES.find((h) => h.id === 'codex')!, 'launched')).toHaveProperty('identity', {

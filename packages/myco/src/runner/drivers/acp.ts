@@ -25,7 +25,8 @@ import { harnessById, type Harness } from '../harnesses.js';
 import type { Driver, RunEvent, RunSpec, StopReason } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { AcpEvents } from './acp-events.js';
-import { applyProfile, PROFILE_UNAPPLIED } from './acp-profile.js';
+import { EFFORT_UNAPPLIED, PROFILE_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
+import { applyProfile, optionsOf, type AnnouncedOptions } from './acp-profile.js';
 import { answerPermission, ToolCalls } from './acp-permission.js';
 import { runGrant, type RunGrant } from './grant.js';
 import { listRunTools, type RunServer, type RunTools } from './run-tools.js';
@@ -244,6 +245,8 @@ export async function* turnOver(
   let tools: ReadonlySet<string> = new Set();
   let events: AcpEvents | undefined;
   let sessionId: string | null = null;
+  /** The session's options as the agent last announced them in its own updates. */
+  let announced: AnnouncedOptions = { count: 0, options: null };
   const calls = new ToolCalls();
   /** What the agent said, in the order it said it: its notifications, and the calls refused to it. */
   const said: Array<{ kind: 'update'; message: Record<string, unknown> } | { kind: 'refused'; toolCall: Record<string, unknown>; detail: string }> = [];
@@ -258,7 +261,10 @@ export async function* turnOver(
     notify(message) {
       const params = recordOf(message.params);
       const update = recordOf(params?.update);
-      if (message.method === SESSION_UPDATE && sessionId !== null && params?.sessionId === sessionId && update !== null) calls.saw(update);
+      if (message.method === SESSION_UPDATE && sessionId !== null && params?.sessionId === sessionId && update !== null) {
+        calls.saw(update);
+        if (update.sessionUpdate === 'config_option_update' && Array.isArray(update.configOptions)) announced = { count: announced.count + 1, options: optionsOf(update.configOptions) };
+      }
       said.push({ kind: 'update', message });
     },
   });
@@ -283,16 +289,19 @@ export async function* turnOver(
     }
     sessionId = stringOf(info.sessionId);
     let reported = info;
+    /** What the run's identity carries about how its profile was applied. */
+    const warnings: string[] = [];
     if (spec.profile !== undefined) {
-      const applied = await applyProfile((method, params) => connection.call(method, params), sessionId ?? '', info.configOptions, spec.profile);
+      const applied = await applyProfile((method, params) => connection.call(method, params), sessionId ?? '', info.configOptions, spec.profile, () => announced);
       if (!applied.ok) {
-        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}` };
+        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}`, refusal: { code: PROFILE_UNAPPLIED, reason: applied.reason } };
         await connection.call('session/close', { sessionId }).catch(() => undefined);
         return;
       }
       reported = { ...info, configOptions: applied.configOptions };
+      if (applied.effortUnapplied) warnings.push(EFFORT_UNAPPLIED);
     }
-    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), reported);
+    events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), reported, undefined, warnings);
     yield { kind: 'started', harness: id, sessionId };
     yield* events.identity();
 

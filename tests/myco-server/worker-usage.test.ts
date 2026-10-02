@@ -9,7 +9,8 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { applyRunUpdate, getRun } from '@myco-server-worker/core/runs.js';
 import { claimNextRun, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
-import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
+import { SERVER_FEATURES, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
+import { EFFORT_UNAPPLIED, MAX_REFUSAL_REASON_CHARS, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { readWork } from '@myco-server-worker/read/work.js';
 import { listRuns } from '@myco-server-worker/read/runs.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
@@ -30,6 +31,7 @@ async function rig(harness = 'claude-code') {
     VALUES ('proj_1','run_usage','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`,
     [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 })]);
   await settingsWriter(e.db).setLeaf('agent.reasoning_map.codex.default', 'gpt-5.4-mini', 'mem_worker', NOW);
+  await settingsWriter(e.db).setLeaf('agent.reasoning_map.opencode.default', 'openai/gpt-5.4-mini', 'mem_worker', NOW);
   const claim = () => claimNextRun(e.serverEnv, { tokenId: token.tokenId, machineId: 'm1', harnesses: [offeredHarness(harness)], now });
   const claimed = await claim();
   if (!claimed.claimed) throw new Error('run was not claimed');
@@ -159,6 +161,68 @@ describe('model-specific execution accounting', () => {
         expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]?.costProvenance).toBe('harness_estimate');
       }
     } finally { r.e.sqlite.close(); }
+  });
+  describe('a run whose agent could not use its model, or skipped its effort, end to end (#1608)', () => {
+    const opencode = harnessById('opencode')!;
+    const NEW_DEPLOYMENT = SERVER_FEATURES.join(',');
+    const OLD_DEPLOYMENT = SERVER_FEATURES.filter((feature) => feature !== PROFILE_OUTCOME_FEATURE).join(',');
+    const work = async (r: Awaited<ReturnType<typeof rig>>) => (await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0];
+    it('stores the refusal\'s code and reason on a Deployment that advertises them, and serves the reason as its own field', async () => {
+      expect(SERVER_FEATURES).toContain(PROFILE_OUTCOME_FEATURE);
+      const r = await rig('opencode');
+      try {
+        await fixtureRun(opencode, 'unoffered', async (body) => Response.json(await r.end({ ...body, attemptId: r.claimed.run.attemptId })), { features: NEW_DEPLOYMENT });
+        expect((await r.detail())?.run).toMatchObject({ status: 'failed', errorCode: 'model_not_applied', errorReason: 'it offers no model openai/gpt-5.4-mini' });
+        expect((await r.detail())?.run.error).toContain('(it offers opencode/big-pickle)');
+        expect((await work(r))?.failure).toMatchObject({ code: 'model_not_applied', reason: 'it offers no model openai/gpt-5.4-mini' });
+      } finally { r.e.sqlite.close(); }
+    });
+    it('keeps a reason whole, parentheses and all, and never reads one out of the error\'s text', async () => {
+      const r = await rig('opencode');
+      try {
+        const reason = 'it kept the effort (none) after being set to high';
+        expect(await r.end({ error: `the harness stopped: error (profile_unapplied: ${reason} (Invalid (params)))`, refusal: { code: PROFILE_UNAPPLIED, reason } })).toMatchObject({ ended: true });
+        expect((await r.detail())?.run).toMatchObject({ errorCode: 'model_not_applied', errorReason: reason });
+        expect((await work(r))?.failure).toMatchObject({ reason });
+      } finally { r.e.sqlite.close(); }
+    });
+    it('stores a refusal of any other code, or with no reason, as no more than it says', async () => {
+      for (const [refusal, code, reason] of [
+        [{ code: 'something_else', reason: 'it offers no model x' }, 'run_failed', null],
+        [{ code: PROFILE_UNAPPLIED, reason: '   ' }, 'model_not_applied', null],
+        [{ code: PROFILE_UNAPPLIED, reason: 'r'.repeat(MAX_REFUSAL_REASON_CHARS + 50) }, 'model_not_applied', 'r'.repeat(MAX_REFUSAL_REASON_CHARS)],
+      ] as const) {
+        const r = await rig('opencode');
+        try {
+          expect(await r.end({ error: 'the run could not start', refusal })).toMatchObject({ ended: true });
+          expect((await r.detail())?.run).toMatchObject({ errorCode: code, errorReason: reason });
+        } finally { r.e.sqlite.close(); }
+      }
+    });
+    it('reads a refusal an older worker reported only in its error\'s text as an ordinary failure', async () => {
+      const r = await rig('opencode');
+      try {
+        expect(await r.end({ error: 'the harness stopped: error (profile_unapplied: the harness offers no model x)' })).toMatchObject({ ended: true });
+        expect((await r.detail())?.run).toMatchObject({ errorCode: 'run_failed', errorReason: null });
+        expect((await work(r))?.failure).not.toHaveProperty('reason');
+      } finally { r.e.sqlite.close(); }
+    });
+    it('hears neither the refusal nor the skipped effort from a worker talking to a Deployment that does not advertise them', async () => {
+      for (const [features, code, reason, warned] of [[OLD_DEPLOYMENT, 'run_failed', null, false], [NEW_DEPLOYMENT, 'model_not_applied', 'it offers no model openai/gpt-5.4-mini', true]] as const) {
+        const refused = await rig('opencode');
+        try {
+          await fixtureRun(opencode, 'unoffered', async (body) => Response.json(await refused.end({ ...body, attemptId: refused.claimed.run.attemptId })), { features });
+          expect((await refused.detail())?.run).toMatchObject({ errorCode: code, errorReason: reason });
+        } finally { refused.e.sqlite.close(); }
+        const skipped = await rig('opencode');
+        try {
+          await fixtureRun(opencode, 'no_effort', async (body) => Response.json(await skipped.end({ ...body, attemptId: skipped.claimed.run.attemptId })), { features });
+          const run = (await skipped.detail())?.run;
+          // Whether a warned run is priced is the Deployment's rule (worker-accounting-pricing.test.ts); an older one would not price it.
+          expect({ recorded: run?.identity?.status, warned: JSON.stringify(run?.identity ?? null).includes(EFFORT_UNAPPLIED) }).toEqual({ recorded: 'reported', warned });
+        } finally { skipped.e.sqlite.close(); }
+      }
+    });
   });
   it('carries the Codex run-owned session model over end wire into DB and read APIs', async () => {
     const r = await rig('codex');
