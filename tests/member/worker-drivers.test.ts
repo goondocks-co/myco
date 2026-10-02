@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
 import { DRIVERS, driverFor, RUN_HOMES } from '@myco/runner/drivers/registry.js';
 import { offerOf } from '@myco/runner/detect.js';
-import { CALL_DETAIL_CHARS, callFailureDetail, failedCallsNote, reachedEnd, type RunEvent } from '@myco/runner/events.js';
+import { callOutcome, failedCallsNote, reachedEnd, type RunEvent } from '@myco/runner/events.js';
 import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, RUN_INSTRUCTIONS_FILES, writeRunDir } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
@@ -197,39 +197,35 @@ describe('the stop reasons every driver answers in', () => {
 });
 
 describe('what a run\'s record says of the calls that failed in it', () => {
-  const failed = (name: string, detail?: string): RunEvent => ({ kind: 'tool_call', name, status: 'error', ...(detail === undefined ? {} : { detail }) });
+  const failed = (name: string, outcome: { refused?: true; timedOut?: true; exitCode?: number } = {}): RunEvent => ({ kind: 'tool_call', name, status: 'error', ...outcome });
   const ended: RunEvent = { kind: 'ended', stop: 'end_turn', detail: null };
 
   it('says nothing where no call failed', () => {
     expect(failedCallsNote([{ kind: 'tool_call', name: 'Read', status: 'ok' }, ended])).toBeNull();
   });
 
-  it('names a refused call, why, and that the turn ended right after it', () => {
-    expect(failedCallsNote([{ kind: 'message', role: 'assistant', text: 'listing' }, failed('ls -la', 'outside the run\'s grant'), ended]))
-      .toBe('a call failed or was refused: ls -la (outside the run\'s grant); the turn ended right after the last of them');
+  it('names a refused call by its tool alone, codes its outcome, and says the turn ended right after it', () => {
+    expect(failedCallsNote([{ kind: 'message', role: 'assistant', text: 'listing' }, failed('ls -la', { refused: true }), ended]))
+      .toBe('a call failed or was refused: tool (refused); the turn ended right after the last of them');
   });
 
   it('counts a call that failed more than once, and does not say the turn ended on it where the agent went on', () => {
     expect(failedCallsNote([
       failed('myco_run_sessions'), failed('myco_run_sessions'),
       { kind: 'tool_call', name: 'myco_run', status: 'ok' }, ended,
-    ])).toBe('2 calls failed or were refused: myco_run_sessions ×2');
+    ])).toBe('2 calls failed or were refused: myco_run_sessions (failed) ×2');
     // A thought is not the agent going on; a message to the user is.
     expect(failedCallsNote([failed('x'), { kind: 'message', role: 'thought', text: 'hm' }, ended])).toContain('the turn ended right after');
-    expect(failedCallsNote([failed('x'), { kind: 'message', role: 'assistant', text: 'I could not.' }, ended])).toBe('a call failed or was refused: x');
+    expect(failedCallsNote([failed('x'), { kind: 'message', role: 'assistant', text: 'I could not.' }, ended])).toBe('a call failed or was refused: x (failed)');
   });
 
-  it('keeps one line of why a call failed, bounded, and nothing where the harness said nothing', () => {
-    expect(callFailureDetail('\n  git: cannot change to repo  \nmore')).toBe('git: cannot change to repo');
-    expect(callFailureDetail(null)).toBeUndefined();
-    expect(callFailureDetail(' \n ')).toBeUndefined();
-    const long = callFailureDetail('x'.repeat(CALL_DETAIL_CHARS * 2))!;
-    expect(long).toHaveLength(CALL_DETAIL_CHARS);
-    expect(long.endsWith('…')).toBe(true);
+  it('codes a failed call\'s outcome as refused, timed out, its exit code, or failed', () => {
+    expect([failed('a', { refused: true, exitCode: 1 }), failed('b', { timedOut: true, exitCode: 124 }), failed('c', { exitCode: 2 }), failed('d')]
+      .map((event) => (event.kind === 'tool_call' ? callOutcome(event) : null))).toEqual(['refused', 'timed out', 'exit code 2', 'failed']);
   });
 
   it('names five kinds of failed call and counts the rest', () => {
     const events = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((name) => failed(name));
-    expect(failedCallsNote(events)).toBe('7 calls failed or were refused: a; b; c; d; e, and 2 more; the turn ended right after the last of them');
+    expect(failedCallsNote(events)).toBe('7 calls failed or were refused: a (failed); b (failed); c (failed); d (failed); e (failed), and 2 more; the turn ended right after the last of them');
   });
 });

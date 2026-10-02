@@ -30,7 +30,7 @@ export function stepOf(rules: Harness['steps'], call: Pick<CallEvent, 'name' | '
   if (rule === undefined) return { kind: 'tool', target: null };
   for (const field of rule.target) {
     const value = call.input === undefined ? undefined : getAtPath(call.input, field);
-    if (typeof value === 'string' && value.trim() !== '') return { kind: rule.kind, target: stepTarget(value) };
+    if (typeof value === 'string' && value.trim() !== '') return { kind: rule.kind, target: stepTarget(value, rule.kind) };
   }
   return { kind: rule.kind, target: null };
 }

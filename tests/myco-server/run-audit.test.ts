@@ -159,10 +159,10 @@ describe('the audit\'s shape', () => {
     expect(repaired.repairs).toContain('examined: 5 entries past 100 cut');
   });
 
-  it('keeps commands and files examined in the shape of a command, with neither a body nor a credential', () => {
+  it('keeps commands in the shape of a command and files examined only as paths, with neither a body nor a credential', () => {
     const shaped = parseRunAudit({ ...RUN_AUDIT, commands: [`cat > .env <<'EOF'\nSTRIPE_KEY=${['rk', 'live', '51HxQwErTyUiOpAsDfGhJkL'].join('_')}\nEOF`,'curl -H "Authorization: Bearer abcdef0123456789abcdef" https://example.test/x'], examined: ['postgres://admin:S3cret@db/app'] });
-    expect(shaped.ok && shaped.audit.commands).toEqual(['cat > .env …', 'curl -H … https://example.test']);
-    expect(shaped.ok && shaped.audit.examined).toEqual(['postgres://db']);
+    expect(shaped.ok && shaped.audit.commands).toEqual(['cat > … << …', 'curl -H … https://example.test']);
+    expect(shaped.ok && shaped.audit.examined).toEqual(['…']);
   });
 
   it('closes a run completed on a repaired audit, whose report is answered with what was repaired', async () => {
@@ -185,7 +185,7 @@ describe('the audit\'s shape', () => {
     await r.asRun(run.runToken, { op: 'report', action: TITLING_REPORT_ACTION, summary: 'titled', audit: { ...RUN_AUDIT, commands: ['mysql -uroot -pPa55word app'] } });
     const stored = r.e.sqlite.query(`SELECT audit FROM agent_reports WHERE run_id = ? ORDER BY id`).all(run.id) as Array<{ audit: string | null }>;
     expect(stored[0]).toEqual({ audit: null });
-    expect(JSON.parse(stored[1]!.audit!).commands).toEqual(['mysql -u… -p… app']);
+    expect(JSON.parse(stored[1]!.audit!).commands).toEqual(['mysql -u… -p… …']);
   });
 
   it('is asked for by every outcome\'s prompt, which says to report again when the report answers with an error', async () => {

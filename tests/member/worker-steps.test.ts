@@ -92,7 +92,7 @@ describe('a step log from a harness\'s stream', () => {
     expect(steps.map(({ seq, callId, kind, tool, target, outcome, exitCode }) => ({ seq, callId, kind, tool, target, outcome, exitCode }))).toEqual([
       { seq: 0, callId: 'tu_1', kind: 'read', tool: 'Read', target: 'src/runner/loop.ts', outcome: 'ok', exitCode: null },
       { seq: 1, callId: 'tu_2', kind: 'edit', tool: 'Write', target: 'notes.md', outcome: 'ok', exitCode: null },
-      { seq: 2, callId: 'tu_3', kind: 'search', tool: 'Grep', target: 'leaseDeadline', outcome: 'ok', exitCode: null },
+      { seq: 2, callId: 'tu_3', kind: 'search', tool: 'Grep', target: null, outcome: 'ok', exitCode: null },
       { seq: 3, callId: 'tu_4', kind: 'command', tool: 'Bash', target: 'curl -H … https://example.test', outcome: 'error', exitCode: 7 },
       { seq: 4, callId: 'tu_5', kind: 'fetch', tool: 'WebFetch', target: 'https://example.test', outcome: 'refused', exitCode: null },
       { seq: 5, callId: 'tu_6', kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report', outcome: 'ok', exitCode: null },
@@ -104,7 +104,7 @@ describe('a step log from a harness\'s stream', () => {
     for (const never of [FILE_BODY, COMMAND_OUTPUT, ACCESS_KEY, 'export function drive', 'src/runner/loop.ts:270']) expect({ never, kept: kept.includes(never) }).toEqual({ never, kept: false });
   });
 
-  it('reads a Codex run\'s items as its steps, a Myco call by its arguments, and an item it does not know as unrecognized', async () => {
+  it('reads a Codex run\'s items as its steps, a call to Myco\'s own server by its arguments and any other server\'s by nothing, and an item it does not know as unrecognized', async () => {
     process.env.PATH = `${stubHarness('codex', [
       '{"type":"thread.started","thread_id":"t1"}',
       '{"type":"turn.started"}',
@@ -113,6 +113,7 @@ describe('a step log from a harness\'s stream', () => {
       '{"type":"item.completed","item":{"id":"i2","type":"file_change","changes":[{"path":"docs/notes.md","kind":"add"}],"status":"completed"}}',
       '{"type":"item.started","item":{"id":"i3","type":"mcp_tool_call","server":"myco","tool":"myco_run","arguments":{"op":"report"},"status":"in_progress"}}',
       '{"type":"item.completed","item":{"id":"i3","type":"mcp_tool_call","server":"myco","tool":"myco_run","arguments":{"op":"report"},"status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"i6","type":"mcp_tool_call","server":"context7","tool":"resolve","arguments":{"op":"hunter22"},"status":"completed"}}',
       '{"type":"item.completed","item":{"id":"i4","type":"collab_tool_call","status":"completed"}}',
       '{"type":"session.compacted"}',
       '{"type":"item.completed","item":{"id":"i5","type":"agent_message","text":"done"}}',
@@ -123,6 +124,7 @@ describe('a step log from a harness\'s stream', () => {
       { callId: 'i1', kind: 'command', tool: 'command_execution', target: 'bash -l… ls', outcome: 'error', exitCode: 2 },
       { callId: 'i2', kind: 'edit', tool: 'file_change', target: 'docs/notes.md', outcome: 'ok', exitCode: null },
       { callId: 'i3', kind: 'myco', tool: 'myco_run', target: 'report', outcome: 'ok', exitCode: null },
+      { callId: 'i6', kind: 'tool', tool: 'resolve', target: null, outcome: 'ok', exitCode: null },
     ]);
     expect(unrecognized).toEqual({ total: 2, shapes: { 'item.completed/collab_tool_call': 1, 'session.compacted': 1 } });
     expect(JSON.stringify(steps)).not.toContain(COMMAND_OUTPUT);
@@ -139,13 +141,13 @@ describe('a step log from a harness\'s stream', () => {
       ...update({ sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'npm test', kind: 'execute', status: 'in_progress', rawInput: { command: 'npm test' } }),
       ...update({ sessionUpdate: 'tool_call_update', toolCallId: 'c2', status: 'failed', rawOutput: { output: COMMAND_OUTPUT } }),
       ...update({ sessionUpdate: 'plan', entries: [] }),
-      ...[...acp.refused({ toolCallId: 'c3', title: 'rm -rf build', kind: 'execute', rawInput: { command: 'rm -rf build' } }, 'outside the run\'s grant')],
+      ...[...acp.refused({ toolCallId: 'c3', title: 'rm -rf build', kind: 'execute', rawInput: { command: 'rm -rf build' } })],
     ]) log.observe(event);
     const { steps, unrecognized } = log.result();
     expect(steps.map(({ callId, kind, tool, target, outcome }) => ({ callId, kind, tool, target, outcome }))).toEqual([
       { callId: 'c1', kind: 'read', tool: 'read', target: '/repo/src/runner/loop.ts', outcome: 'ok' },
       { callId: 'c2', kind: 'command', tool: 'execute', target: 'npm test', outcome: 'error' },
-      { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -r… build', outcome: 'refused' },
+      { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -r… …', outcome: 'refused' },
     ]);
     expect(unrecognized).toEqual({ total: 1, shapes: { 'session/update:plan': 1 } });
     expect(JSON.stringify(steps)).not.toContain(FILE_BODY);
@@ -168,7 +170,7 @@ describe('a step log from a harness\'s stream', () => {
 
   it('keeps a command\'s first line as its target, never the body the lines after it carry', () => {
     const rules = harnessById('claude-code')!.steps;
-    expect(stepOf(rules, { name: 'Bash', input: { command: `\ncat > notes.md <<'EOF'\n${FILE_BODY}\nEOF` } })).toEqual({ kind: 'command', target: 'cat > notes.md …' });
+    expect(stepOf(rules, { name: 'Bash', input: { command: `\ncat > notes.md <<'EOF'\n${FILE_BODY}\nEOF` } })).toEqual({ kind: 'command', target: 'cat > … << …' });
     expect(stepOf(rules, { name: 'Read', input: { file_path: 'x'.repeat(400) } }).target).toBe('…');
     expect(stepOf(rules, { name: 'Unmapped', input: { file_path: 'a.ts' } })).toEqual({ kind: 'tool', target: null });
   });
@@ -176,7 +178,7 @@ describe('a step log from a harness\'s stream', () => {
   it('reads a call still open when the run ends as unfinished', () => {
     const log = new StepLog(harnessById('claude-code')!, () => NOW);
     log.observe({ kind: 'tool_call', name: 'Bash', status: 'started', callId: 'c1', input: { command: 'sleep 600' } });
-    expect(log.result().steps).toEqual([{ seq: 0, callId: 'c1', kind: 'command', tool: 'Bash', target: 'sleep 600', outcome: 'unfinished', exitCode: null, startedAt: NOW, endedAt: null }]);
+    expect(log.result().steps).toEqual([{ seq: 0, callId: 'c1', kind: 'command', tool: 'Bash', target: 'sleep …', outcome: 'unfinished', exitCode: null, startedAt: NOW, endedAt: null }]);
   });
 });
 

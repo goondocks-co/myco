@@ -42,6 +42,7 @@ import { MECHANISM_WORDS, RETIRED_VOCABULARY } from '../helpers/reader-vocabular
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+import { CORPUS, FREE_TEXT } from '../helpers/secret-corpus.ts';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret' };
 
@@ -52,6 +53,15 @@ function stubHarness(name: string, lines: readonly string[], exitCode = 0): stri
   const body = lines.map((l) => `printf '%s\\n' ${JSON.stringify(l)}`).join('\n');
   writeFileSync(path, `#!/bin/sh\n${body}\nexit ${exitCode}\n`, { mode: 0o755 });
   chmodSync(path, 0o755);
+  return dir;
+}
+
+/** A stub on PATH that writes this stream verbatim, read from a file so no line passes through the shell. */
+function stubStream(name: string, lines: readonly string[]): string {
+  const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-stub-')));
+  writeFileSync(join(dir, 'stream.jsonl'), `${lines.join('\n')}\n`);
+  writeFileSync(join(dir, name), `#!/bin/sh\ncat "${join(dir, 'stream.jsonl')}"\nexit 0\n`, { mode: 0o755 });
+  chmodSync(join(dir, name), 0o755);
   return dir;
 }
 
@@ -241,7 +251,7 @@ describe('the Claude Code driver', () => {
     ]);
   });
 
-  it('names a call that failed with what its result said, so a turn that ended right after reads as cut short by that call', async () => {
+  it('names a call that failed by its tool and coded outcome alone, so a turn that ended right after reads as cut short by that call', async () => {
     const said = 'MCP error -32001: Session capture is incomplete or has errors; retry after its transcripts are fully processed.';
     const dir = stubHarness('claude', [
       '{"type":"system","subtype":"init","session_id":"sess_9"}',
@@ -256,11 +266,31 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call' && e.status === 'error')).toEqual([
-      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', callId: 'tu_1', detail: said },
-      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', callId: 'tu_2', detail: said },
-      { kind: 'tool_call', name: 'Bash', status: 'error', callId: 'tu_3', detail: 'git: cannot change to repo (exit code 1)', exitCode: 1 },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', callId: 'tu_1' },
+      { kind: 'tool_call', name: 'mcp__myco__myco_run_sessions', status: 'error', callId: 'tu_2' },
+      { kind: 'tool_call', name: 'Bash', status: 'error', callId: 'tu_3', exitCode: 1 },
     ]);
-    expect(failedCallsNote(events)).toBe(`3 calls failed or were refused: mcp__myco__myco_run_sessions (${said}) ×2; Bash (git: cannot change to repo (exit code 1)); the turn ended right after the last of them`);
+    expect(failedCallsNote(events)).toBe('3 calls failed or were refused: mcp__myco__myco_run_sessions (failed) ×2; Bash (exit code 1); the turn ended right after the last of them');
+  });
+
+  it('keeps nothing a failed call said or returned: every corpus input as a failed call\'s output leaves no secret in the run\'s note', async () => {
+    const inputs = [...CORPUS, ...FREE_TEXT];
+    const lines: string[] = ['{"type":"system","subtype":"init","session_id":"sess_9"}'];
+    inputs.forEach((leak, i) => {
+      const result = i % 3 === 0 ? `Exit code 1\n${leak.command}` : i % 3 === 1 ? leak.command : `Command timed out after 2m\n${leak.command}`;
+      const content = i % 2 === 0 ? JSON.stringify(result) : JSON.stringify([{ type: 'text', text: result }]);
+      lines.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `tu_${i}`, name: 'Bash', input: { command: 'ls' } }] } }));
+      lines.push(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_${i}","is_error":true,"content":${content}}]}}`);
+    });
+    lines.push(RESULT_SUCCESS);
+    process.env.PATH = `${stubStream('claude', lines)}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.filter((e) => e.kind === 'tool_call' && e.status === 'error')).toHaveLength(inputs.length);
+    const note = failedCallsNote(events.map((e) => e)) ?? '';
+    const everyNote = inputs.map((_, i) => failedCallsNote(events.filter((e) => e.kind === 'tool_call' && e.callId === `tu_${i}`)) ?? '').join('\n');
+    const leaked = inputs.flatMap((leak) => leak.secrets.filter((secret) => note.includes(secret) || everyNote.includes(secret)).map((secret) => `${leak.name}: ${secret}`));
+    expect(leaked).toEqual([]);
+    expect(everyNote.split('\n').every((line) => /^a call failed or was refused: [A-Za-z0-9_.:/-]+ \((exit code 1|failed|timed out|refused)\)/.test(line))).toBe(true);
   });
 
   it('reads a turn the harness calls a success while it refused the run\'s tools as a failure naming them', async () => {
@@ -330,7 +360,7 @@ describe('the Claude Code driver', () => {
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
       { kind: 'tool_call', name: 'Bash', status: 'started', callId: 'tu_1', input: { command: 'ls' } },
-      { kind: 'tool_call', name: 'Bash', status: 'error', callId: 'tu_1', detail: 'Claude requested permissions to use Bash, but you haven\'t granted it yet.' },
+      { kind: 'tool_call', name: 'Bash', status: 'error', callId: 'tu_1' },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -344,8 +374,8 @@ describe('the Claude Code driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.filter((e) => e.kind === 'tool_call')).toEqual([
-      { kind: 'tool_call', name: 'tool', status: 'error', detail: 'first' },
-      { kind: 'tool_call', name: 'tool', status: 'error', detail: 'second' },
+      { kind: 'tool_call', name: 'tool', status: 'error' },
+      { kind: 'tool_call', name: 'tool', status: 'error' },
     ]);
   });
 
@@ -1265,8 +1295,8 @@ describe('the agent-protocol driver', () => {
     });
     const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'fixture', credentialEnv: {} }, () => '', listed, ASKING));
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'started' },
-      { kind: 'tool_call', name: 'fixture_fixture_receipt', status: 'ok' },
+      { kind: 'tool_call', name: 'other', status: 'started' },
+      { kind: 'tool_call', name: 'other', status: 'ok' },
     ]);
     expect(events.find((event) => event.kind === 'usage')).toEqual({
       kind: 'usage', provider: 'openai', model: 'gpt-5.6-sol', tokenScope: 'last_response',
@@ -1329,8 +1359,6 @@ const CURSOR_OPTIONS = [
   { optionId: 'allow-always', name: 'Allow always', kind: 'allow_always' },
   { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
 ];
-
-const OUTSIDE_GRANT = 'outside the run\'s grant';
 
 interface Turn {
   /** The id the client gave its prompt call. */
@@ -1398,8 +1426,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     const events = await collect(turnOver(channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed, ASKING));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'myco_myco_run', status: 'started' },
-      { kind: 'tool_call', name: 'myco_myco_run', status: 'ok' },
+      { kind: 'tool_call', name: 'other', status: 'started' },
+      { kind: 'tool_call', name: 'other', status: 'ok' },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1418,9 +1446,9 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
     const rejected = { outcome: { outcome: 'selected', optionId: 'reject' } };
     expect(answers).toEqual([rejected, rejected]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'ls', status: 'started' },
-      { kind: 'tool_call', name: 'ls', status: 'error', detail: OUTSIDE_GRANT, refused: true },
-      { kind: 'tool_call', name: 'https://example.com', status: 'error', detail: OUTSIDE_GRANT, refused: true },
+      { kind: 'tool_call', name: 'execute', status: 'started' },
+      { kind: 'tool_call', name: 'execute', status: 'error', refused: true },
+      { kind: 'tool_call', name: 'fetch', status: 'error', refused: true },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1548,8 +1576,8 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: 'MCP: tool', status: 'started' },
-      { kind: 'tool_call', name: 'myco: noop_ping', status: 'ok' },
+      { kind: 'tool_call', name: 'other', status: 'started' },
+      { kind: 'tool_call', name: 'other', status: 'ok' },
     ]);
   });
 
@@ -1577,8 +1605,8 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     const events = await collect(turnOver(channel, 'cursor', { ...runDir(), prompt: 'do it', credentialEnv: {} }, () => '', listed));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
     expect(toolCalls(events)).toEqual([
-      { kind: 'tool_call', name: '`git status`', status: 'started' },
-      { kind: 'tool_call', name: '`git status`', status: 'error', detail: OUTSIDE_GRANT, refused: true },
+      { kind: 'tool_call', name: 'execute', status: 'started' },
+      { kind: 'tool_call', name: 'execute', status: 'error', refused: true },
     ]);
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
   });
@@ -1869,7 +1897,7 @@ describe('what a worker reports of a turn a failed call cut short', () => {
     });
     expect({ status: end.body?.status, error: end.body?.error }).toEqual({
       status: 'completed',
-      error: 'a call failed or was refused: Bash; the turn ended right after the last of them',
+      error: 'a call failed or was refused: Bash (refused); the turn ended right after the last of them',
     });
   }, 15_000);
 });

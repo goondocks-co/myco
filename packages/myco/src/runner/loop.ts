@@ -32,7 +32,7 @@ import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
-import { failedCallsNote, type RunEvent } from './events.js';
+import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
 import { parseRepositoryCheckoutSpec, REPOSITORY_DIGEST_TASKS, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
@@ -476,7 +476,7 @@ async function drive(
         const { kind: _kind, ...reported } = step.value;
         accounting.usage(reported);
       }
-      if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}${step.value.detail === undefined ? '' : ` (${step.value.detail})`}`);
+      if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status === 'error' ? callOutcome(step.value) : step.value.status}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
   } catch (error) {

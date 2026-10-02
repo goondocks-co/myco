@@ -1,17 +1,19 @@
 import { redactSecrets } from './redact-secrets.js';
-import { commandShape, identifierShape } from './command-shape.js';
+import { commandShape, identifierShape, pathShape, urlShape } from './command-shape.js';
 
 /**
  * A worker's step log: what a run's harness did, as metadata only.
  *
  * A step names the action (`kind`), the harness's own tool name, the one target the action aims at (a path, a
- * command line or a search pattern), its outcome and exit status, when it started and ended, and the harness's call
- * id. It never carries file contents, command output or anything a call returned: the worker reads the target from a
- * field its harness's manifest names, `stepTarget` keeps it to the allowed shape of a command (`commandShape`: the
- * first line, flag names without their values, URLs as scheme and host, plain and path-like words, `…` for anything
- * else) with known access-key shapes masked after, and a tool's name is kept only where it is an identifier. The
- * Deployment applies the same rules again to every page it stores (`parseStepPage`), and refuses a page whose tool or
- * shape names are not identifiers.
+ * command line, a URL's host or a Myco operation), its outcome and exit status, when it started and ended, and the
+ * harness's call id. It never carries file contents, command output or anything a call returned: the worker reads the
+ * target from a field its harness's manifest names, `stepTarget` keeps it to the allowed shape for its kind (a command
+ * or a file as `commandShape` keeps it: the first line, the program, flag names without their values, paths, URLs as
+ * scheme and host, `…` for every other word; a search's path alone, never its pattern or query; a fetch's URL host,
+ * never its query) with known access-key shapes masked after, and a tool's name is kept only where it is an
+ * identifier. The Deployment applies the same rules again to every page it stores (`parseStepPage`), keeps a Myco
+ * call's operation only where it is one of its own tools' operations, and refuses a page whose tool or shape names are
+ * not identifiers.
  *
  * The log travels in pages of at most `STEPS_PER_PAGE` steps. Every page repeats the totals, so a Deployment knows
  * from any page it holds how many steps the attempt observed, how many it could not keep (`overflow`, past
@@ -77,9 +79,32 @@ function line(value: string, max: number): string {
   return folded.length > max ? `${folded.slice(0, max - 1)}…` : folded;
 }
 
-/** A step's target as stored: its allowed command shape, access keys masked, at most `MAX_STEP_TARGET_CHARS`; null for none. */
-export function stepTarget(raw: string): string | null {
-  const shaped = commandShape(raw);
+/** A pattern's own characters, which no path a search names carries. */
+const PATTERN = /[*?[\]{}]/;
+
+/**
+ * A step's raw target in its allowed shape for the step's kind: a command as `commandShape` keeps it, a file read or
+ * edited as a command-shaped path, a search only where its target is a path with no pattern character in it, a fetch
+ * as its URL's scheme and host, a Myco call as its operation's identifier, and nothing for any other call. Where
+ * `mycoOps` is given, a Myco call keeps its operation only where `mycoOps` lists it. A search's pattern or query and a
+ * fetch's query are never kept.
+ */
+function shapeFor(raw: string, kind: StepKind, mycoOps?: ReadonlySet<string>): string | null {
+  switch (kind) {
+    case 'command': case 'read': case 'edit': return commandShape(raw);
+    case 'search': { const path = pathShape(raw); return path === null || PATTERN.test(path) ? null : path; }
+    case 'fetch': return urlShape(raw.trim());
+    case 'myco': { const op = identifierShape(raw, MAX_SHAPE_CHARS); return op === null || (mycoOps !== undefined && !mycoOps.has(op)) ? null : op; }
+    case 'tool': return null;
+  }
+}
+
+/**
+ * A step's target as stored: its allowed shape for the step's kind, access keys masked, at most
+ * `MAX_STEP_TARGET_CHARS`; null for none. A Deployment passes its own tools' operations as `mycoOps`.
+ */
+export function stepTarget(raw: string, kind: StepKind, mycoOps?: ReadonlySet<string>): string | null {
+  const shaped = shapeFor(raw, kind, mycoOps);
   if (shaped === null) return null;
   const bounded = line(redactSecrets(shaped), MAX_STEP_TARGET_CHARS);
   return bounded === '' ? null : bounded;
@@ -143,7 +168,7 @@ function identifierTool(tool: string, what: string): string {
   return tool;
 }
 
-function parseStep(value: unknown, index: number): WorkerStep {
+function parseStep(value: unknown, index: number, mycoOps: ReadonlySet<string>): WorkerStep {
   const what = `steps[${index}]`;
   if (!isRecord(value)) throw new WorkerStepsError(`${what} must be an object`);
   exactKeys(value, ['seq', 'callId', 'kind', 'tool', 'target', 'outcome', 'exitCode', 'startedAt', 'endedAt'], what);
@@ -159,7 +184,7 @@ function parseStep(value: unknown, index: number): WorkerStep {
     callId: callIdOf(boundedText(value.callId, MAX_STEP_CALL_ID_CHARS, `${what}.callId`, true), what),
     kind: value.kind as StepKind,
     tool: identifierTool(boundedText(value.tool, MAX_STEP_TOOL_CHARS, `${what}.tool`, false), what),
-    target: target === null ? null : stepTarget(target),
+    target: target === null ? null : stepTarget(target, value.kind as StepKind, mycoOps),
     outcome: value.outcome as StepOutcome,
     exitCode: value.exitCode as number | null,
     startedAt: value.startedAt,
@@ -171,7 +196,7 @@ function parseStep(value: unknown, index: number): WorkerStep {
  * A step page as a Deployment accepts it: every field present and bounded, the page inside its own count, each step's
  * `seq` inside the page it travels on, and every target bounded and masked again. Anything else is refused whole.
  */
-export function parseStepPage(value: unknown): StepPage {
+export function parseStepPage(value: unknown, mycoOps: ReadonlySet<string>): StepPage {
   if (!isRecord(value)) throw new WorkerStepsError('a step page must be an object');
   const attemptId = boundedText(value.attemptId, MAX_ATTEMPT_ID_CHARS, 'attemptId', false);
   if (!count(value.pages, MAX_STEP_PAGES) || value.pages === 0) throw new WorkerStepsError(`pages must be 1 to ${MAX_STEP_PAGES}`);
@@ -183,7 +208,7 @@ export function parseStepPage(value: unknown): StepPage {
   const first = value.page * STEPS_PER_PAGE;
   const expected = Math.min(STEPS_PER_PAGE, value.total - first);
   if (value.steps.length !== Math.max(0, expected)) throw new WorkerStepsError('steps does not hold this page of the total');
-  const steps = value.steps.map(parseStep);
+  const steps = value.steps.map((step, index) => parseStep(step, index, mycoOps));
   if (steps.some((step, i) => step.seq !== first + i)) throw new WorkerStepsError('each step must carry its own sequence number on its page');
   return { attemptId, page: value.page, pages: value.pages, total: value.total, overflow: value.overflow, unrecognized: parseUnrecognized(value.unrecognized), steps };
 }
