@@ -64,7 +64,7 @@ describe('worker repository checkout over the Deployment wire', () => {
   for (const access of ['public', 'private', 'invalid'] as const) {
     it(access === 'invalid' ? 'refuses invalid repository credentials before launching a harness and removes scratch files' : `prepares ${access} source, saves spores under the run and removes its credentials and files`, async () => {
       const source = await gitRepositoryFixture(access === 'public' ? 'public' : 'private');
-      const e = sqliteEnv();
+      const e = sqliteEnv({ workerLogin: true });
       e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
       const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => pipeline.handleRequest(request, e.serverEnv) });
@@ -99,7 +99,7 @@ describe('worker repository checkout over the Deployment wire', () => {
           expect(JSON.parse(String(accounting.usage_data))).toEqual({
             inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.125,
             model: 'model', provider: 'anthropic', accountingVersion: 1, identity: {
-              status: 'reported', source: 'result.modelUsage', primary: { model: 'model', provider: 'anthropic' },
+              status: 'reported', source: 'result.modelUsage', warnings: ['model_mismatch'], primary: { model: 'model', provider: 'anthropic' },
               models: [{ model: 'model', provider: 'anthropic', source: 'result.modelUsage', usage: {
                 inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: null,
               } }],
@@ -125,6 +125,9 @@ describe('worker repository checkout over the Deployment wire', () => {
         // A seeding run grounds nothing in digests, so its checkout hashes nothing.
         expect(observed.listing).toBeNull();
         expect(observed.args).toContain('Bash(git -C repo log:*)');
+        const args = observed.args as string[];
+        expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'sonnet']);
+        expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual(['--effort', 'medium']);
         expect(JSON.stringify(observed)).not.toContain(GIT_READ_CREDENTIAL.token);
         expect(JSON.stringify(lines)).not.toContain(owner.token);
         expect(await readdir(runRoot)).toEqual([]);
@@ -139,7 +142,7 @@ describe('worker repository checkout over the Deployment wire', () => {
 
   it('writes the digest listing for a map run it drives, and the run maps the checkout from it (#1475)', async () => {
     const source = await gitRepositoryFixture('public');
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
     const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => pipeline.handleRequest(request, e.serverEnv) });

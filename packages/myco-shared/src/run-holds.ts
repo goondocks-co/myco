@@ -35,7 +35,46 @@ export const HELD_BY_WORDS: Readonly<Record<HeldBy, string>> = {
   [REPOSITORY_DIGESTS_CAPABILITY]: 'waiting for an up-to-date worker; the workers heard from lately are too old to run it',
 };
 
+const profileUnsupportedHold = {
+  key: 'profile_unsupported',
+  words: (harness: string) => `waiting for a worker that can apply the execution profile for ${harness}; update this machine's Myco worker if it is older`,
+};
+const invalidTaskTierHold = {
+  key: 'invalid_task_tier',
+  words: (task: string) => `this task's tier setting is invalid for ${task}; correct it in Settings or reset the task tier`,
+};
+const noModelForTierHold = {
+  key: 'no_model_for_tier',
+  words: (value: string) => {
+    const [harness, tier] = value.split(':');
+    return `waiting for a model for ${harness}'s ${tier} tier in Settings`;
+  },
+};
+const credentialUnavailableHold = {
+  key: 'credential_unavailable',
+  words: (harness: string) => `waiting for a usable server login for ${harness}`,
+};
+
+const PROFILE_HOLDS = [profileUnsupportedHold, invalidTaskTierHold, noModelForTierHold, credentialUnavailableHold] as const;
+const prefixOf = (hold: typeof PROFILE_HOLDS[number]) => `${hold.key}:`;
+
+/** Prefixes of profile and credential holds that can be released when a worker's offer changes. */
+export const PROFILE_HOLD_PREFIXES: readonly string[] = PROFILE_HOLDS.map(prefixOf);
+
+const profileHold = (hold: typeof PROFILE_HOLDS[number], ...parts: string[]) => `${prefixOf(hold)}${parts.join(':')}`;
+
+export const profileUnsupported = (harness: string): string => profileHold(profileUnsupportedHold, harness);
+export const invalidTaskTier = (task: string): string => profileHold(invalidTaskTierHold, task);
+export const noModelForTier = (harness: string, tier: string): string => profileHold(noModelForTierHold, harness, tier);
+export const credentialUnavailable = (harness: string): string => profileHold(credentialUnavailableHold, harness);
+
 /** The words for a holder a run names, or null when it names none this Deployment knows. */
 export function heldByWords(holder: string | null): string | null {
+  if (holder !== null) {
+    for (const hold of PROFILE_HOLDS) {
+      const prefix = prefixOf(hold);
+      if (holder.startsWith(prefix)) return hold.words(holder.slice(prefix.length));
+    }
+  }
   return holder !== null && holder in HELD_BY_WORDS ? HELD_BY_WORDS[holder as HeldBy] : null;
 }

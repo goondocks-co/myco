@@ -8,7 +8,8 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
+import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
+import { OUTCOME_TASKS, TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
 
 const ANTHROPIC = 'sk-ant-api03-ZmFrZS1rZXktZm9yLXRlc3Rpbmc';
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
@@ -28,9 +29,202 @@ const put = async (path: string, body: unknown, extra: Record<string, string> = 
     body: JSON.stringify(body),
   });
 
+const remove = async (path: string) => new Request(`https://s${path}`, {
+  method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(path)).headers),
+});
+
+const patch = asOwnerPatch;
+
 const json = async (r: Response) => (await r.json()) as Record<string, unknown>;
 
 describe('settings API', () => {
+  it('shows a bad stored task tier and its repair on owner and member Settings reads', async () => {
+    const e = env();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'mem_machine_1')`, [
+      JSON.stringify({ 'title-summary': { reasoningLevel: 'maximum' } }),
+    ]);
+    const owner = await worker.fetch(await asOwner('/api/settings'), e.all);
+    expect(owner.status).toBe(200);
+    const ownerTiers = (await json(owner)).taskTiers as Array<Record<string, unknown>>;
+    expect(ownerTiers.find((tier) => tier.task === 'title-summary')).toEqual({
+      task: 'title-summary', tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task',
+      remedy: 'Correct the tier in Settings or reset the task tier.',
+    });
+    expect(ownerTiers.find((tier) => tier.task === 'extract-curate')).toEqual({ task: 'extract-curate', tier: 'default', source: 'task' });
+    const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
+    const member = await worker.fetch(memberPost(token, {}, '/members/settings'), e.all);
+    expect(member.status).toBe(200);
+    expect((await json(member)).taskTiers).toEqual(ownerTiers);
+  });
+
+  it('resets a malformed task entry while preserving valid siblings', async () => {
+    const e = env();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
+      JSON.stringify({ 'title-summary': 'broken', 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
+    ]);
+    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers as Array<Record<string, unknown>>;
+    expect(rows.find((row) => row.task === 'title-summary')).toMatchObject({ source: 'invalid', repair: 'reset-task' });
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: null }), e.all))).toEqual({ applied: true });
+    const stored = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value);
+    expect(stored).toEqual({ 'canopy-map': { schedule: { intervalSeconds: 600 } } });
+    e.sqlite.run(`UPDATE deployment_settings SET value = ? WHERE leaf='agent.tasks'`, [JSON.stringify({
+      'title-summary': 'broken-again', 'canopy-map': { schedule: { intervalSeconds: 600 } },
+    })]);
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }), e.all))).toEqual({ applied: true });
+    expect(JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value))
+      .toEqual({ 'title-summary': { reasoningLevel: 'high' }, 'canopy-map': { schedule: { intervalSeconds: 600 } } });
+  });
+
+  it('offers a whole-leaf reset when the stored task document is malformed', async () => {
+    const e = env();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks','[]',1,'historic')`);
+    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers as Array<Record<string, unknown>>;
+    expect(rows.every((row) => row.source === 'invalid' && row.repair === 'reset-leaf' && String(row.remedy).includes('Reset task overrides'))).toBe(true);
+    expect(await json(await worker.fetch(await remove('/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
+    expect((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers)
+      .toEqual(OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })));
+  });
+
+  it('reports a raw stored JSON error without hiding other Settings leaves', async () => {
+    const e = env();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks','{bad',1,'historic')`);
+    const owner = await worker.fetch(await asOwner('/api/settings'), e.all);
+    expect(owner.status).toBe(200);
+    const answer = await json(owner);
+    expect((answer.leaves as Array<Record<string, unknown>>).find((row) => row.leaf === 'agent.tasks'))
+      .toMatchObject({ configured: true, source: 'invalid', error: 'invalid_value', remedy: expect.stringContaining('reset') });
+    expect((answer.taskTiers as Array<Record<string, unknown>>).every((row) => row.source === 'invalid' && row.repair === 'reset-leaf')).toBe(true);
+    const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
+    const member = await worker.fetch(memberPost(token, {}, '/members/settings'), e.all);
+    expect(member.status).toBe(200);
+    expect((await json(member)).taskTiers).toEqual(answer.taskTiers);
+    const repaired = await worker.fetch(await put('/api/settings/agent.tasks', { value: { 'title-summary': { reasoningLevel: 'high' } } }), e.all);
+    expect(repaired.status).toBe(200);
+    expect((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers)
+      .toContainEqual({ task: 'title-summary', tier: 'high', source: 'task-override' });
+    expect(await json(await worker.fetch(await remove('/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
+  });
+
+  it('edits a changed task tier and titling switch beside a legacy model pin without a harness', async () => {
+    const e = env();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
+      JSON.stringify({ 'title-summary': { model: 'sonnet' }, 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
+    ]);
+    const before = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(before.find((row) => row.leaf === 'agent.tasks')).toMatchObject({ source: 'invalid', error: 'invalid_value', remedy: expect.stringContaining('title-summary.model') });
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'canopy-map', tier: 'high' }), e.all))).toEqual({ applied: true });
+    const switched = await worker.fetch(await put('/api/titling-backfill', { enabled: true }), e.all);
+    expect(switched.status).toBe(200);
+    const stored = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value);
+    expect(stored).toMatchObject({ 'title-summary': { model: 'sonnet', schedule: { enabled: true } }, 'canopy-map': { reasoningLevel: 'high', schedule: { intervalSeconds: 600 } } });
+  });
+
+  it('reports stored invalid profile model, effort, and login values with a reset remedy', async () => {
+    const e = env();
+    const values = {
+      'agent.reasoning_map.claude-code.low': 'not-a-claude-model',
+      'agent.effort_map.codex.high': 'impossible',
+      'agent.harnesses.claude-code.credential': 'broken',
+    };
+    for (const [leaf, value] of Object.entries(values)) {
+      e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?,?,1,'historic')`, [leaf, JSON.stringify(value)]);
+    }
+    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    for (const leaf of Object.keys(values)) {
+      expect(rows.find((row) => row.leaf === leaf)).toMatchObject({ configured: true, source: 'invalid', error: 'invalid_value', remedy: expect.stringContaining('reset') });
+    }
+  });
+
+  it('refuses retired execution settings writes and preserves their readable historical values', async () => {
+    const e = env();
+    const leaves = ['agent.model', 'agent.reasoningLevel', 'agent.provider.reasoning_map.low', 'agent.provider.effort_map.default.effort', 'agent.provider.thinking_budget_map.high'];
+    for (const leaf of leaves) {
+      e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?, '"kept"', 1, 'historic')`, [leaf]);
+      const response = await worker.fetch(await put(`/api/settings/${leaf}`, { value: 'replacement' }), e.all);
+      expect({ status: response.status, body: await response.json() }).toEqual({ status: 400, body: { applied: false, reason: 'retired', leaf } });
+      const reset = await worker.fetch(new Request(await asOwnerPost(`/api/settings/${leaf}`), { method: 'DELETE' }), e.all);
+      expect({ status: reset.status, body: await reset.json() }).toEqual({ status: 400, body: { applied: false, reason: 'retired', leaf } });
+    }
+    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    for (const leaf of leaves) expect(rows.find((row) => row.leaf === leaf)).toMatchObject({ configured: true, retired: true, value: 'kept', updatedBy: 'historic' });
+  });
+
+  it('patches one task tier against the live document and retains concurrent sibling changes', async () => {
+    const e = env();
+    const initial = { 'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 4 }, harness: 'claude-code', model: 'haiku' } };
+    await worker.fetch(await put('/api/settings/agent.tasks', { value: initial }), e.all);
+    const stale = await json(await worker.fetch(await asOwner('/api/settings'), e.all));
+    expect(stale.taskTiers).toBeDefined();
+    const latest = {
+      'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+      'canopy-map': { schedule: { intervalSeconds: 600 }, harness: 'codex' },
+    };
+    await worker.fetch(await put('/api/settings/agent.tasks', { value: latest }), e.all);
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }), e.all))).toEqual({ applied: true });
+    expect((e.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { updated_by: string }).updated_by).toBe('mem_machine_1');
+    const stored = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value);
+    expect(stored).toEqual({ ...latest, 'title-summary': { ...latest['title-summary'], reasoningLevel: 'high' } });
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: null }), e.all))).toEqual({ applied: true });
+    const reset = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value);
+    expect(reset).toEqual({ ...latest, 'title-summary': { schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' } });
+    const absentTask = OUTCOME_TASKS.find((task) => task !== 'title-summary' && task !== 'canopy-map')!;
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: absentTask, tier: 'high' }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: absentTask, tier: null }), e.all))).toEqual({ applied: true });
+    expect(JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value)).toEqual(reset);
+    expect((await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'unknown-task', tier: 'low' }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: 'maximum' }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: { 'title-summary': null } }), e.all)).status).toBe(400);
+  });
+  it('reports exactly the declared outcome tiers and where each effective tier came from', async () => {
+    const e = env();
+    const tiers = async () => (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers;
+    expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })));
+    const overrides = {
+      'title-summary': { reasoningLevel: 'high', schedule: { maxRunsPerDay: 4 }, harness: 'claude-code', model: 'opus' },
+    };
+    expect(await json(await worker.fetch(await put('/api/settings/agent.tasks', { value: overrides }), e.all))).toEqual({ applied: true });
+    expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({
+      task, tier: task === 'title-summary' ? 'high' : TASK_TIERS[task], source: task === 'title-summary' ? 'task-override' : 'task',
+    })));
+  });
+
+  it('reports effective profile defaults, configured sources, and reset through the single writer', async () => {
+    const e = env();
+    const initial = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const models = { low: 'haiku', default: 'sonnet', high: 'opus' };
+    const efforts = { low: 'low', default: 'medium', high: 'high' };
+    for (const harness of ['claude-code', 'codex', 'opencode']) {
+      for (const tier of ['low', 'default', 'high'] as const) {
+        expect(initial.find((entry) => entry.leaf === `agent.reasoning_map.${harness}.${tier}`)).toMatchObject({
+          configured: false, effectiveValue: harness === 'claude-code' ? models[tier] : null, source: harness === 'claude-code' ? 'default' : 'unset',
+        });
+        expect(initial.find((entry) => entry.leaf === `agent.effort_map.${harness}.${tier}`)).toMatchObject({ configured: false, effectiveValue: efforts[tier], source: 'default' });
+      }
+      expect(initial.find((entry) => entry.leaf === `agent.harnesses.${harness}.credential`)).toMatchObject({ configured: false, effectiveValue: 'deployment', source: 'default' });
+    }
+    const leaf = 'agent.reasoning_map.claude-code.low';
+    const row = async () => ((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
+      .find((entry) => entry.leaf === leaf);
+    expect(await row()).toMatchObject({ configured: false, value: null, effectiveValue: 'haiku', source: 'default' });
+    expect(await json(await worker.fetch(await put(`/api/settings/${leaf}`, { value: 'sonnet' }), e.all))).toEqual({ applied: true });
+    expect(await row()).toMatchObject({ configured: true, value: 'sonnet', effectiveValue: 'sonnet', source: 'configured' });
+    expect(await json(await worker.fetch(await remove(`/api/settings/${leaf}`), e.all))).toEqual({ applied: true });
+    expect(await row()).toMatchObject({ configured: false, value: null, effectiveValue: 'haiku', source: 'default' });
+    const missing = ((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
+      .find((entry) => entry.leaf === 'agent.reasoning_map.opencode.low');
+    expect(missing).toMatchObject({ configured: false, effectiveValue: null, source: 'unset' });
+  });
+
+  it('refuses reset of a foreign leaf and preserves the configured profile sibling', async () => {
+    const e = env();
+    const sibling = 'agent.effort_map.claude-code.low';
+    await worker.fetch(await put(`/api/settings/${sibling}`, { value: 'xhigh' }), e.all);
+    const response = await worker.fetch(await remove('/api/settings/not.a.leaf'), e.all);
+    expect({ status: response.status, body: await response.json() })
+      .toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf: 'not.a.leaf' } });
+    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(rows.find((entry) => entry.leaf === sibling)).toMatchObject({ configured: true, effectiveValue: 'xhigh' });
+  });
   it('lists every Deployment leaf, none demanding proof beyond the session', async () => {
     const e = env();
     const body = await json(await worker.fetch(await asOwner('/api/settings'), e.all));
@@ -171,7 +365,7 @@ describe('project capability admission through the surface', () => {
   });
 });
 
-import { DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberPost } from './helpers/fixtures.js';
 
@@ -183,7 +377,10 @@ function sampleFor(leaf: string): unknown {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec !== undefined && 'type' in spec) {
     if (spec.type === 'integer') return spec.min;
-    if (spec.type === 'task-overrides') return { digest: { model: 'claude', schedule: { maxRunsPerDay: 0 } } };
+    if (spec.type === 'task-overrides') return { digest: { harness: 'claude-code', model: 'sonnet', schedule: { maxRunsPerDay: 0 } } };
+    if (spec.type === 'profile-model') return spec.harness === 'opencode' ? 'openai/gpt-5' : spec.harness === 'claude-code' ? 'sonnet' : 'gpt-5';
+    if (spec.type === 'profile-effort') return 'high';
+    if (spec.type === 'credential-source') return 'deployment';
     return `# sample ${leaf}`;
   }
   if (/thinking_budget_map/.test(leaf)) return { adaptive: true };
@@ -201,11 +398,12 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
     for (const leaf of DEPLOYMENT_LEAVES) {
       const value = sampleFor(leaf);
       const answer = await json(await worker.fetch(await put(`/api/settings/${leaf}`, { value }), e.all));
-      expect({ leaf, answer }).toEqual({ leaf, answer: { applied: true } });
+      expect({ leaf, answer }).toEqual({ leaf, answer: RETIRED_LEAVES.has(leaf) ? { applied: false, reason: 'retired', leaf } : { applied: true } });
     }
     const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     for (const leaf of DEPLOYMENT_LEAVES) {
       const row = leaves.find((l) => l.leaf === leaf)!;
+      if (RETIRED_LEAVES.has(leaf)) { expect(row).toMatchObject({ configured: false, retired: true }); continue; }
       expect({ leaf, value: row.value, updatedBy: row.updatedBy, updatedAt: typeof row.updatedAt }).toEqual({ leaf, value: sampleFor(leaf), updatedBy: 'mem_machine_1', updatedAt: 'number' });
     }
   });

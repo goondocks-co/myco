@@ -10,12 +10,15 @@ import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { contextValue } from '../db/run-context.js';
+import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { requestedProfileValue } from '../db/run-profile.js';
 
 /** The most calls one run's detail lists; a run that called more is read in the record rather than the page. */
 const MAX_TOOL_CALLS = 200;
 
 /** A run as the list shows it: what ran, how it ended, and what it cost. The error text stays in the detail; the list carries only that there is one. */
 export interface RunListRow {
+  requested: ExecutionProfile | null;
   identity: RecordedIdentity;
   costProvenance: CostProvenance | null;
   id: string;
@@ -77,8 +80,8 @@ export interface RunPageRow extends RunListRow {
 /**
  * A run in full, minus the columns nothing outside the harness reads.
  *
- * The three columns holding execution overrides, run context and cost detail
- * are never selected, and `checkpoints` leaves this module only as the parsed
+ * The requested profile is selected from execution overrides; private context and cost detail
+ * stay in storage, and `checkpoints` leaves this module only as the parsed
  * phase list: the stored checkpoint state carries the resolved provider
  * configuration, which may hold a provider key.
  */
@@ -146,7 +149,9 @@ const POSITION_SQL = `(SELECT COUNT(*) FROM agent_runs q WHERE q.status = 'queue
   AND (q.queued_at < agent_runs.queued_at OR (q.queued_at = agent_runs.queued_at AND q.id < agent_runs.id)))`;
 
 
-const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data, ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
+const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data,
+  ${requestedProfileValue()} AS requested_profile,
+  ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
   ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
@@ -180,6 +185,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
   // Terminal runs have no current worker lease.
   const ended = isTerminalRunStatus(row.status);
   return {
+    requested: requestedProfile(row.requested_profile),
     id: row.id as string,
     agentId: row.agent_id as string,
     task: text(row.task),

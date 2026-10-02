@@ -17,6 +17,7 @@ import type { ProjectCapability } from '../../packages/myco-server/src/core/sett
 import type { TitlingBackfillProgress } from '../../packages/myco-server/src/core/titling.ts';
 import type { RepositoryConnection } from '../../packages/myco-server/src/core/repositories.ts';
 import type { ReleaseCheck, ReleaseProvenanceView } from '../../packages/myco-server/src/core/release-provenance.ts';
+import type { TaskTierRow } from '../../packages/myco-server/src/api/settings.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -30,13 +31,14 @@ type ServerSecret = { name: string; retired: boolean } & SecretDescription;
 
 const SAME: [
   Same<Settings.LeafRow, ServerLeaf>,
+  Same<Settings.TaskTierRow, TaskTierRow>,
   Same<Omit<Settings.SecretRow, 'name' | 'retired'>, SecretDescription>,
   Same<Project.KeyDescription, SecretDescription>,
   Same<Project.ReleaseCheck, ReleaseCheck>,
-] = [true, true, true, true];
+] = [true, true, true, true, true];
 
 const READS: [
-  Reads<{ persisted: true; leaves: ServerLeaf[] }, Settings.SettingsAnswer>,
+  Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[] }, Settings.SettingsAnswer>,
   Reads<{ secrets: ServerSecret[] }, Settings.SecretsAnswer>,
   Reads<TitlingBackfillProgress, Settings.TitlingBackfillProgress>,
   Reads<{ capabilities: Record<ProjectCapability, boolean> }, Project.CapabilitiesAnswer>,

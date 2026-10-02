@@ -14,7 +14,7 @@ const json = async (res: Response) => res.json() as Promise<Record<string, unkno
 
 /** A migrated environment with a member of machine_1, a second member of machine_2 in the same project, a member without a machine identity, and a run credential of the harness member. */
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   const now = Date.now();
   const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
   const t2 = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);

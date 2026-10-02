@@ -21,6 +21,19 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('adds a bounded reset audit without changing previously configured leaves', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter((step) => step.version < 63)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.model', '"kept"', 1, 'mem_writer')`);
+      for (const sql of SCHEMA_STEPS.find((step) => step.version === 63)!.statements) sqlite.exec(sql);
+      expect(sqlite.query(`SELECT value, updated_by FROM deployment_settings WHERE leaf='embedding.model'`).get())
+        .toEqual({ value: '"kept"', updated_by: 'mem_writer' });
+      expect(columns(sqlite, 'deployment_setting_resets').map((column) => column.name))
+        .toEqual(['leaf', 'reset_at', 'reset_by']);
+    } finally { sqlite.close(); }
+  });
+
   it('adds failure codes without changing existing reasons or context', () => {
     const sqlite = new Database(':memory:');
     try {

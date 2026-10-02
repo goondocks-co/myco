@@ -20,6 +20,8 @@
 import type { SecretSlotName } from './secret-slots.js';
 
 export type HarnessProvider = 'anthropic' | 'openai' | 'google';
+export type HarnessCredentialKind = 'api-key' | 'subscription';
+const SUBSCRIPTION_TOKEN_PREFIX = 'sk-ant-oat';
 
 export interface HarnessCredential {
   provider: HarnessProvider;
@@ -27,12 +29,33 @@ export interface HarnessCredential {
   slot: SecretSlotName | null;
   /** The variables the harness reads, in the order a value is matched to one. */
   variables: readonly string[];
+  /** Credential kinds this harness can use from its Deployment slot. Omitted means API keys only. */
+  accepts?: readonly HarnessCredentialKind[];
 }
 
 export const HARNESS_CREDENTIALS: Readonly<Record<string, HarnessCredential>> = {
-  'claude-code': { provider: 'anthropic', slot: 'anthropic', variables: ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'] },
+  'claude-code': { provider: 'anthropic', slot: 'anthropic', variables: ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'], accepts: ['subscription', 'api-key'] },
   codex: { provider: 'openai', slot: 'codex', variables: ['OPENAI_API_KEY'] },
   opencode: { provider: 'anthropic', slot: 'anthropic', variables: ['ANTHROPIC_API_KEY'] },
   cursor: { provider: 'anthropic', slot: 'anthropic', variables: ['ANTHROPIC_API_KEY'] },
   antigravity: { provider: 'google', slot: null, variables: ['GEMINI_API_KEY'] },
 };
+
+/** The environment a harness can use for this credential; unsupported kinds inject nothing. */
+export function credentialEnvFor(harness: string, key: string): Record<string, string> {
+  const declared = HARNESS_CREDENTIALS[harness];
+  if (declared === undefined || declared.slot === null || key.length === 0) return {};
+  const kind = credentialKind(key);
+  if (!(declared.accepts ?? ['api-key']).includes(kind)) return {};
+  const variable = kind === 'subscription' ? declared.variables[0] : declared.variables.at(-1);
+  return variable === undefined ? {} : { [variable]: key };
+}
+
+const credentialKind = (key: string): HarnessCredentialKind => key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? 'subscription' : 'api-key';
+
+/** A retained provider runtime uses the same credential-kind declaration as its driver. */
+export function providerCredentialEnv(provider: HarnessProvider, key: string): Record<string, string> {
+  const kind = credentialKind(key);
+  const harness = Object.entries(HARNESS_CREDENTIALS).find(([, declared]) => declared.provider === provider && (declared.accepts ?? ['api-key']).includes(kind));
+  return harness === undefined ? {} : credentialEnvFor(harness[0], key);
+}

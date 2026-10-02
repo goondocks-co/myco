@@ -7,6 +7,7 @@
  * added on one side without the other fails by name.
  */
 import type { SettingsSectionId } from '../../../routes/nav';
+import { PROFILE_HARNESSES, REASONING_TIERS } from '@goondocks/myco-shared/execution-profile';
 
 /**
  * How a setting is edited. `agent` is one of the agents a machine can run
@@ -19,6 +20,7 @@ export interface LeafField {
   label: string;
   kind: LeafKind;
   options?: readonly (string | number)[];
+  optionLabels?: Readonly<Record<string, string>>;
   min?: number;
   max?: number;
   /**
@@ -33,6 +35,8 @@ export interface LeafField {
   note?: string;
   /** Shown, never edited. */
   readOnly?: boolean;
+  /** A configured value can be cleared to restore the server's built-in value. */
+  resettable?: boolean;
 }
 
 export interface LeafGroup {
@@ -48,6 +52,7 @@ export interface LeafGroup {
 const PROVIDERS = ['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible'] as const;
 const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 const VERBOSITY = ['low', 'medium', 'high'] as const;
+const SIGN_IN_OPTIONS = { deployment: 'Server login', 'worker-login': 'Worker login' } as const;
 
 const tierMaps = (): LeafField[] =>
   ['default', 'high', 'low'].flatMap((tier) => [
@@ -56,6 +61,18 @@ const tierMaps = (): LeafField[] =>
     { leaf: `agent.provider.effort_map.${tier}.verbosity`, label: `Verbosity at the ${tier} tier`, kind: 'select' as const, options: VERBOSITY },
     { leaf: `agent.provider.thinking_budget_map.${tier}`, label: `Thinking budget at the ${tier} tier`, kind: 'json' as const },
   ]);
+
+const profileFields = (harness: string): LeafField[] => [
+  ...REASONING_TIERS.flatMap((tier) => [
+    { leaf: `agent.reasoning_map.${harness}.${tier}`, label: `${tier} tier model`, kind: 'text' as const, resettable: true,
+      note: PROFILE_HARNESSES[harness]!.modelHint },
+    { leaf: `agent.effort_map.${harness}.${tier}`, label: `${tier} tier effort`, kind: 'select' as const,
+      options: PROFILE_HARNESSES[harness]!.allowedEfforts, resettable: true },
+  ]),
+  { leaf: `agent.harnesses.${harness}.credential`, label: 'Sign in with', kind: 'select',
+    options: Object.keys(SIGN_IN_OPTIONS), optionLabels: SIGN_IN_OPTIONS, resettable: true,
+    note: 'Choose whose login the worker uses for Myco’s tasks.' },
+];
 
 export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
@@ -141,10 +158,17 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
+    id: 'claude-profile',
+    section: 'models',
+    label: 'Claude Code tiers',
+    note: 'The model and effort requested for each tier when Claude Code runs Myco’s work. A task may override its tier under Per-task overrides.',
+    leaves: profileFields('claude-code'),
+  },
+  {
     id: 'agent',
     section: 'models',
     label: 'Model for Myco’s own work',
-    note: 'The provider and model this server uses for the work it runs itself. Work a machine runs uses that machine’s agent, which picks its own model; what each task used is recorded with it.',
+    note: 'Provider settings for work this server launches directly. Worker-run tasks use the tier profiles below.',
     leaves: [
       { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Which service does this server’s own thinking; its key is under Keys below.' },
       { leaf: 'agent.provider.model', label: 'Model', kind: 'text', note: 'The provider’s name for the model.' },
@@ -155,6 +179,20 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
       { leaf: 'agent.harness', label: 'Agent for Myco’s work', kind: 'text' },
     ],
+  },
+  {
+    id: 'codex-profile',
+    section: 'models',
+    label: 'Codex tiers',
+    note: 'Set a model for each tier a Codex worker may run. An unset model waits for configuration.',
+    leaves: profileFields('codex'),
+  },
+  {
+    id: 'opencode-profile',
+    section: 'models',
+    label: 'OpenCode tiers',
+    note: 'Set a provider/model for every tier OpenCode may run. A tier without a model waits for configuration.',
+    leaves: profileFields('opencode'),
   },
   {
     id: 'embedding',
@@ -175,7 +213,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'Overrides for each task, as one document.',
     leaves: [
       ...tierMaps(),
-      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name. “Title imported sessions” under Myco’s work writes its switch here.' },
+      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name. A model pin requires an agent in the same task override. “Title imported sessions” under Myco’s work writes its switch here.' },
     ],
   },
   {

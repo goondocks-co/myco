@@ -7,7 +7,9 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, DEPLOYMENT_LEAF_SPECS, PROJECT_CAPABILITIES, settingsWriter, executionProfileLeafDefault, leafRuleViolation, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
+import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
 
 /**
  * The Deployment Settings surface.
@@ -55,30 +57,62 @@ function writerFor(env: ServerEnv) {
 const MAX_SECRET_CHARS = 4096;
 
 
-/**
- * Every Deployment leaf this server accepts, with whatever is stored for it. A leaf with no row is reported absent
- * rather than defaulted: the reader layers its own defaults. `redacted` answers every URL a string value holds, at any
- * depth, without its userinfo, query and fragment (`withoutUrlSecrets`), which is how every reader but an admin gets
- * them; an admin reads them raw to edit them. `retired` marks a leaf nothing reads (`RETIRED_LEAVES`). Provider
- * credentials live in the secret store and never reach this.
- */
-async function deploymentLeaves(env: ServerEnv, redacted: boolean): Promise<unknown[]> {
+/** An outcome's effective tier and whether a task override supplies it. */
+export type TaskTierRow =
+  | { task: string; tier: ReasoningTier; source: 'task' | 'task-override' }
+  | { task: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
+
+const record = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+
+/** Every worker outcome's tier, including the task override that changes it. */
+function effectiveTaskTiers(value: unknown): TaskTierRow[] {
+  const overrides = value === undefined ? {} : record(value);
+  return OUTCOME_TASKS.map((task) => {
+    const entry = overrides === null ? null : overrides[task];
+    const tier = record(entry)?.reasoningLevel;
+    if (overrides === null) {
+      return { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-leaf', remedy: 'Reset task overrides to restore defaults.' };
+    }
+    if ((entry !== undefined && record(entry) === null) || (tier !== undefined && !isReasoningTier(tier))) {
+      return { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task', remedy: 'Correct the tier in Settings or reset the task tier.' };
+    }
+    return { task, tier: tier ?? TASK_TIERS[task]!, source: tier === undefined ? 'task' : 'task-override' };
+  });
+}
+
+/** Stored leaves and effective execution profiles, with URL secrets redacted for non-admin readers. */
+async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ leaves: unknown[]; taskTiers: TaskTierRow[] }> {
   const stored = await settingsWriter(env.db).leaves();
-  const leaves = DEPLOYMENT_LEAVES.map((leaf) => ({
-    leaf,
-    configured: leaf in stored,
-    value: stored[leaf]?.value ?? null,
-    updatedAt: stored[leaf]?.updatedAt ?? null,
-    updatedBy: stored[leaf]?.updatedBy ?? null,
-    retired: RETIRED_LEAVES.has(leaf),
-  }));
-  if (!redacted) return leaves;
-  return JSON.parse(JSON.stringify(leaves), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as unknown[];
+  const leaves = DEPLOYMENT_LEAVES.map((leaf) => {
+    const profileDefault = executionProfileLeafDefault(leaf, env.harnessCredentialSource);
+    const held = stored[leaf];
+    const violation = held === undefined ? null : held.malformed ? 'Stored value is not valid JSON' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, held.value);
+    const invalid = violation !== null;
+    return {
+      leaf,
+      configured: held !== undefined,
+      value: held?.value ?? null,
+      updatedAt: held?.updatedAt ?? null,
+      updatedBy: held?.updatedBy ?? null,
+      retired: RETIRED_LEAVES.has(leaf),
+      ...(invalid ? { source: 'invalid' as const, error: 'invalid_value' as const,
+        remedy: `${violation}. Correct this setting${leaf === 'agent.tasks' && !held?.malformed ? '.' : ' or reset it.'}`,
+        ...(held?.malformed ? { repair: 'reset-leaf' as const } : {}) } : {}),
+      ...(profileDefault === null ? {} : {
+        effectiveValue: invalid ? null : held?.value ?? profileDefault.value,
+        ...(!invalid ? { source: held !== undefined ? 'configured' as const : profileDefault.present ? 'default' as const : 'unset' as const } : {}),
+      }),
+    };
+  });
+  const taskTiers = effectiveTaskTiers(stored['agent.tasks']?.value);
+  if (!redacted) return { leaves, taskTiers };
+  return { leaves: JSON.parse(JSON.stringify(leaves), (_key, value: unknown) => (typeof value === 'string' ? withoutUrlSecrets(value) : value)) as unknown[], taskTiers };
 }
 
 /** `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member. */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ persisted: true, leaves: await deploymentLeaves(env, !isAdmin(ctx.member.role)) });
+  return ok({ persisted: true, ...await deploymentSettings(env, !isAdmin(ctx.member.role)) });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
@@ -101,7 +135,7 @@ const withoutUrlSecrets = (value: string): string =>
  * fragment.
  */
 export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
-  const deployment = { persisted: true, leaves: await deploymentLeaves(env, true) };
+  const deployment = { persisted: true, ...await deploymentSettings(env, true) };
   // The asking machine's own settings, where its member claims it: what `myco login`, `member join` and `cutover` cache.
   const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId);
   return ok({ ...deployment, ...(machine === null ? {} : { machine }) });
@@ -113,6 +147,22 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
   if (body === null || !('value' in body)) return malformed(ctx.params.leaf, 'body must be a JSON object carrying a value');
 
   const result = await writerFor(env).setLeaf(ctx.params.leaf, body.value, ctx.member.id, ctx.now);
+  return result.applied ? ok({ applied: true }) : refused(result.refusal);
+}
+
+/** Clear one configured leaf so its built-in value applies. */
+export async function handleResetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id, ctx.now);
+  return result.applied ? ok({ applied: true }) : refused(result.refusal);
+}
+
+/** Change one task tier while preserving the live task overrides document. */
+export async function handleSetTaskTier(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const body = await readJsonObject(ctx.request);
+  if (body === null || typeof body.task !== 'string' || !('tier' in body) || !(body.tier === null || typeof body.tier === 'string')) {
+    return malformed('agent.tasks', 'body must carry a task and a tier or null');
+  }
+  const result = await writerFor(env).setTaskTier(body.task, body.tier as ReasoningTier | null, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 

@@ -10,7 +10,8 @@ import { Credentials, CREDENTIALS_ANCHOR } from './Credentials';
 import { LeafControl } from './LeafControl';
 import { isRetired } from './retired';
 import { TitlingSwitch } from './TitlingSwitch';
-import type { LeafRow } from './wire';
+import { TaskTiers } from './TaskTiers';
+import type { LeafRow, TaskTierRow } from './wire';
 
 const sectionPath = (id: SettingsSectionId): string => SETTINGS_SECTIONS.find((s) => s.id === id)?.to ?? SETTINGS_PATH;
 
@@ -26,9 +27,10 @@ export function oldTabTarget(tab: string): string {
 }
 
 /** Parts of a section that are not settings groups, placed after the group they follow. */
-const AFTER_GROUP: Readonly<Record<string, () => ReactElement>> = {
+const AFTER_GROUP: Readonly<Record<string, (tiers: readonly TaskTierRow[], rows: ReadonlyMap<string, LeafRow>) => ReactElement>> = {
   scheduling: () => <TitlingSwitch />,
   agent: () => <Credentials />,
+  'opencode-profile': (tiers) => <TaskTiers tiers={tiers} />,
 };
 
 /**
@@ -53,7 +55,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
       {section === 'access' ? <AccessPointers /> : (
         settings.isPending ? <LoadingState label="Loading settings" />
           : settings.isError ? <ErrorState error={settings.error} onRetry={() => void settings.refetch()} />
-          : <SectionGroups groups={groupsOf(section)} rows={new Map(settings.data.leaves.map((l) => [l.leaf, l]))} />
+          : <SectionGroups groups={groupsOf(section)} rows={new Map(settings.data.leaves.map((l) => [l.leaf, l]))} tiers={settings.data.taskTiers} />
       )}
     </AdminPage>
   );
@@ -66,7 +68,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
  * value stored is listed, read-only, under "Older settings" at the section's
  * foot, so what an older Deployment stored stays visible.
  */
-function SectionGroups({ groups, rows }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow> }) {
+function SectionGroups({ groups, rows, tiers }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow>; tiers: readonly TaskTierRow[] }) {
   const older = groups.flatMap((group) => group.leaves.filter((field) => isRetired(field, rows.get(field.leaf)) && rows.get(field.leaf)?.configured === true));
   return (
     <>
@@ -81,7 +83,7 @@ function SectionGroups({ groups, rows }: { groups: readonly LeafGroup[]; rows: R
                 </RowCard>
               </AdminSection>
             )}
-            {AFTER_GROUP[group.id]?.()}
+            {AFTER_GROUP[group.id]?.(tiers, rows)}
           </Fragment>
         );
       })}

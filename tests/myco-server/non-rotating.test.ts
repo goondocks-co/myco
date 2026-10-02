@@ -1,3 +1,5 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * A credential its issuer minted not to rotate (#1420).
  *
@@ -51,7 +53,7 @@ const liveRows = (e: Env) => e.sqlite.query(`SELECT id FROM member_credentials W
 
 /** A non-rotating credential issued `ageMs` ago. */
 async function envCredential(ageMs: number) {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   const issued = await issueMemberToken(e.db, MEMBER, Date.now() - ageMs, null, NO_RUNTIME_CLAIMS, { rotates: false });
   return { e, issued };
@@ -59,7 +61,7 @@ async function envCredential(ageMs: number) {
 
 describe('a credential minted not to rotate', () => {
   it('is recorded non-rotating by its issuer; a default mint, a join and a successor rotate', async () => {
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     turnOnGatedCapabilities(e.sqlite);
     const fixed = await issueMemberToken(e.db, MEMBER, Date.now(), null, NO_RUNTIME_CLAIMS, { rotates: false });
     const rotating = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
@@ -134,7 +136,7 @@ describe('a credential minted not to rotate', () => {
 
 describe('a credential that rotates, beside it', () => {
   it('still rotates on the refresh route, and its successor rotates too', async () => {
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     turnOnGatedCapabilities(e.sqlite);
     const root = await issueMemberToken(e.db, MEMBER, Date.now() - 6 * DAY_MS);
     const res = await worker.fetch(refreshRequest(root.token), e.env);
@@ -144,7 +146,7 @@ describe('a credential that rotates, beside it', () => {
   });
 
   it('is still replay-revoked when a superseded token of it asks to rotate', async () => {
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     turnOnGatedCapabilities(e.sqlite);
     const now = Date.now();
     const root = await issueMemberToken(e.db, MEMBER, now - 6 * DAY_MS);
@@ -232,7 +234,7 @@ describe('every route that mints an authority able to outlive the credential (#1
   });
 
   it('still answers a GitHub link key to a credential that rotates, on a Deployment with no linked admin', async () => {
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     turnOnGatedCapabilities(e.sqlite);
     e.sqlite.query(`UPDATE members SET github_id = NULL`).run();
     const rotating = await issueMemberToken(e.db, MEMBER, Date.now());
@@ -247,12 +249,12 @@ describe('a worker claim from a credential minted not to rotate (#1420)', () => 
   const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
   const API_KEY = 'sk-ant-TEST-PROVIDER-KEY-0420';
   const claimRequest = (token: string) => new Request('https://s/worker/claim', {
-    method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'claude-code', authenticated: true }] }),
+    method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [offeredHarness('claude-code')] }),
   });
 
   /** An administrator's credential, rotating or not, a queued run a worker can take, and the provider key its harness would read. */
   async function queued(rotates: boolean) {
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     turnOnGatedCapabilities(e.sqlite);
     const bindings = { ...e.env, SECRET_WRAP_KEY: { get: async () => WRAP_KEY } };
     const env = serverEnvFromBindings(bindings as never);
@@ -280,6 +282,7 @@ describe('a worker claim from a credential minted not to rotate (#1420)', () => 
 
   it('from a credential that rotates, still claims the run and answers the harness its provider key', async () => {
     const { e, bindings, token } = await queued(true);
+    await settingsWriter(e.db).setLeaf('agent.harnesses.claude-code.credential', 'deployment', 'mem_admin', Date.now());
     const body = await jsonBody(await worker.fetch(claimRequest(token.token), bindings as never)) as { claimed: boolean; run: { credentialEnv: Record<string, string> } };
     expect(body.claimed).toBe(true);
     expect(body.run.credentialEnv).toEqual({ ANTHROPIC_API_KEY: API_KEY });

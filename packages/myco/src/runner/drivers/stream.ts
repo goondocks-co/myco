@@ -18,10 +18,12 @@ export interface Started {
   kill: () => void;
 }
 
-export function startHarness(command: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; signal: AbortSignal }): Started {
+export function startHarness(command: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; signal: AbortSignal; omitInherited?: readonly string[] }): Started {
+  const inherited = { ...process.env };
+  for (const key of options.omitInherited ?? []) delete inherited[key];
   const child = spawn(command, [...args], {
     cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    env: { ...inherited, ...options.env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let errors = '';

@@ -1,4 +1,5 @@
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
+import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 
 /**
  * One run-event model, behind every driver.
@@ -35,6 +36,8 @@ export interface RunSpec {
   mcpConfigPath: string;
   /** The Deployment's harness credential, where it holds one; empty where the harness uses its own login. */
   credentialEnv: Record<string, string>;
+  /** The model and effort this run is required to apply. */
+  profile?: ExecutionProfile;
   /** The run has prepared source for file and Git inspection, without repository writes. */
   sourceReadOnly?: boolean;
 }
