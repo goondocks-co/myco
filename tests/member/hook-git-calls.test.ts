@@ -112,6 +112,16 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
   }, 60_000);
 });
 
+/**
+ * This process's environment with `dir` first on the search path. Windows names that variable `Path`, and a child
+ * given both `Path` and `PATH` may read either: the one here replaces it whatever its case.
+ */
+function withPathFirst(dir: string): NodeJS.ProcessEnv {
+  const entries = Object.entries(process.env);
+  const current = entries.find(([name]) => name.toUpperCase() === 'PATH')?.[1] ?? '';
+  return { ...Object.fromEntries(entries.filter(([name]) => name.toUpperCase() !== 'PATH')), PATH: `${dir}${path.delimiter}${current}` };
+}
+
 const VERDICT_QUERY = 'rev-parse --show-toplevel --git-dir --git-common-dir';
 const HEAD_QUERIES = ['rev-parse --abbrev-ref HEAD', 'rev-parse HEAD'];
 
@@ -138,7 +148,7 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
       fs.writeFileSync(log, '');
       const result = spawnSync(process.execPath, [HOOK_PROCESS, hook, '--symbiont', 'claude-code', '--credential', 'registry'], {
         cwd: repo,
-        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, MYCO_HOME: mycoHome, MYCO_TEST_REFUSE_FETCH: '1', MYCO_TEST_KICK_LOG: path.join(dir, 'kick.log') },
+        env: { ...withPathFirst(bin), MYCO_HOME: mycoHome, MYCO_TEST_REFUSE_FETCH: '1', MYCO_TEST_KICK_LOG: path.join(dir, 'kick.log') },
         input: JSON.stringify({ session_id: `sess-${name}`, transcript_path: tx, cwd: repo, prompt: 'p', last_assistant_message: 'x', hook_event_name: event }),
         encoding: 'utf-8', timeout: 20_000,
       });
