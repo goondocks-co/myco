@@ -80,6 +80,9 @@ beforeEach(() => {
   mycoHome = tempMycoHome();
   checkout = tempDir('myco-lost-git-checkout-');
   realGit(['init', '-q', checkout], checkout);
+  // A repository whose config includes another is one the member reads by asking git, not from git's own files
+  // (`utils/git-files.ts`): what is tested here is that git path. The included file need not exist.
+  realGit(['config', 'include.path', 'absent.gitconfig'], checkout);
   stderrLines.length = 0;
   (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { stderrLines.push(String(c)); return true; }) as never;
 });
@@ -163,27 +166,27 @@ describe('a git stdout lost in transit', () => {
     expect(git.armsLeft()).toBe(0);
   });
 
-  it('keeps every git fact a session carries when one answer is lost', () => {
+  it('keeps every git fact a session carries when one answer is lost', async () => {
     commitOnce();
     realGit(['remote', 'add', 'origin', 'https://example.com/team/repo.git'], checkout);
-    const facts = gitFacts(checkout);
+    const facts = await gitFacts(checkout);
     expect(facts).toEqual({ branch: expect.any(String), remote: 'https://example.com/team/repo.git', headSha: expect.stringMatching(/^[0-9a-f]{40}$/), dirty: false });
     for (const query of ['rev-parse --abbrev-ref HEAD', 'rev-parse HEAD', 'remote get-url origin']) {
       git.loseNext(1, query);
-      expect({ query, facts: gitFacts(checkout) }).toEqual({ query, facts });
+      expect({ query, facts: await gitFacts(checkout) }).toEqual({ query, facts });
       expect(git.armsLeft()).toBe(0);
     }
   });
 
-  it('never reads a dirty tree as clean when git\'s output is lost', () => {
+  it('never reads a dirty tree as clean when git\'s output is lost', async () => {
     commitOnce();
     fs.writeFileSync(path.join(checkout, 'README.md'), 'two\n');
     for (const query of ['status', 'diff']) {
       git.loseNext(1_000, query);
-      expect({ query, dirty: gitFacts(checkout).dirty }).toEqual({ query, dirty: true });
+      expect({ query, dirty: (await gitFacts(checkout)).dirty }).toEqual({ query, dirty: true });
     }
     git.loseNext(1_000);
-    expect(gitFacts(checkout)).toEqual({});
+    expect(await gitFacts(checkout)).toEqual({});
   });
 
   it('puts the installer\'s git exclude entry in the repository\'s git dir, never the project root', () => {
@@ -207,34 +210,34 @@ describe('a git stdout lost in transit', () => {
 describe('a session\'s dirty fact', () => {
   /** What the check it replaces said: any tracked change against HEAD, staged or not; untracked files not counted. */
   const porcelainDirty = (): boolean => realGit(['status', '--porcelain', '--untracked-files=no'], checkout).length > 0;
-  const expectAgrees = (label: string, dirty: boolean): void => {
-    expect({ label, dirty: gitFacts(checkout).dirty, porcelain: porcelainDirty() }).toEqual({ label, dirty, porcelain: dirty });
+  const expectAgrees = async (label: string, dirty: boolean): Promise<void> => {
+    expect({ label, dirty: (await gitFacts(checkout)).dirty, porcelain: porcelainDirty() }).toEqual({ label, dirty, porcelain: dirty });
   };
 
-  it('says what `status --porcelain --untracked-files=no` said, for every kind of change', () => {
+  it('says what `status --porcelain --untracked-files=no` said, for every kind of change', async () => {
     commitOnce();
     const file = path.join(checkout, 'README.md');
-    expectAgrees('clean', false);
+    await expectAgrees('clean', false);
     fs.writeFileSync(path.join(checkout, 'new.txt'), 'untracked\n');
-    expectAgrees('untracked only', false);
+    await expectAgrees('untracked only', false);
     const later = new Date(Date.now() + 60_000);
     fs.utimesSync(file, later, later);
-    expectAgrees('touched, same content', false);
+    await expectAgrees('touched, same content', false);
     fs.writeFileSync(file, 'two\n');
-    expectAgrees('unstaged change', true);
+    await expectAgrees('unstaged change', true);
     realGit(['add', 'README.md'], checkout);
-    expectAgrees('staged change', true);
+    await expectAgrees('staged change', true);
     fs.writeFileSync(file, 'one\n');
-    expectAgrees('staged change the working tree undoes', true);
+    await expectAgrees('staged change the working tree undoes', true);
     realGit(['add', 'README.md'], checkout);
-    expectAgrees('back to HEAD', false);
+    await expectAgrees('back to HEAD', false);
     fs.rmSync(file);
-    expectAgrees('tracked file deleted', true);
+    await expectAgrees('tracked file deleted', true);
   });
 
-  it('is unknown where git cannot say', () => {
+  it('is unknown where git cannot say', async () => {
     commitOnce();
     fs.writeFileSync(path.join(checkout, '.git', 'index'), 'not an index');
-    expect(gitFacts(checkout).dirty).toBeUndefined();
+    expect((await gitFacts(checkout)).dirty).toBeUndefined();
   });
 });

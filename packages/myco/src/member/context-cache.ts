@@ -50,8 +50,8 @@ export interface SessionContextCache {
 
 /** What a hook asks the helper to fetch for its session: kept in session state until the helper has asked. */
 export type ContextAsk =
-  | { kind: 'start'; remote?: string; at: number }
-  | { kind: 'compact'; compaction: number; remote?: string; at: number }
+  | { kind: 'start'; remote?: string; remoteFrom?: string; at: number }
+  | { kind: 'compact'; compaction: number; remote?: string; remoteFrom?: string; at: number }
   | { kind: 'subagent'; agentId?: string; agentType?: string; at: number }
   | { kind: 'prompt'; promptId: string; text: string; at: number };
 

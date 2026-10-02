@@ -99,6 +99,8 @@ const ALLOWLIST: readonly string[] = [
   'utils/lifecycle-lock.ts',
   'utils/dot-path.ts',
   'utils/git.ts',
+  // A repository's identity read from git's own files, so no hook starts git for it (#1561). Node built-ins only.
+  'utils/git-files.ts',
   'version.ts',
   // version.ts resolves the package root through this leaf.
   'utils/find-package-root.ts',
