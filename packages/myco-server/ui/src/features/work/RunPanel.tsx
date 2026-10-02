@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, ShowMore, TypeChip } from '../../design';
 import { useStarterNames } from './names';
-import { useRunCalls, useRunDetail } from '../../hooks/use-work';
+import { CALLS_PER_PAGE, useRunCalls, useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { CODE_MAP_SUFFIX, projectPath } from '../../routes/nav';
 import { agentName, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
-import type { RunDetailAnswer } from './wire';
+import type { RunCallPage, RunDetailAnswer } from './wire';
 import { ModelSummary, costProvenanceWords } from './ModelSummary';
+import { callWords } from './call-words';
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
   atWords, runErrorWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
@@ -64,8 +66,9 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const cause = failed ? causeOf(answer) : null;
   const deploy = deployWords(run);
   const sporesFrom = (sessionId: string) => spores.items.filter((spore) => spore.sessionId === sessionId).length;
-  const report = latestReport(reports);
   const kept = run.result === 'failed_with_output';
+  const repositoryTask = kind === 'map' || kind === 'seed';
+  const readHeading = repositoryTask ? 'What it read' : 'Sessions it read';
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
       <header className="flex flex-col gap-s2">
@@ -79,7 +82,6 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
-        {report !== null && <p className="max-w-measure t-body text-ink-2" data-run-report="">{report}</p>}
       </header>
 
       {cause !== null && (
@@ -90,19 +92,19 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
       )}
 
       {(finished || read.total > 0) && (
-        <section aria-label="Sessions it read" className="flex flex-col gap-s3" data-run-read="">
-          <PartLabel end={read.total > 0 ? count(read.total, 'session') : undefined}>Sessions it read</PartLabel>
-          {read.recorded && <p className="t-small text-muted">Recorded session reads may be incomplete. Sessions beyond Myco’s recording limit are not listed.</p>}
-          {read.recorded && read.total === 0 && <p className="t-small text-muted" data-read-none="">It didn’t need any sessions.</p>}
-          {(kind === 'map' || kind === 'seed') && <p className="t-small text-muted">Repository activity isn’t recorded yet.</p>}
-          {!read.recorded && kind !== 'map' && kind !== 'seed' && (
+        <section aria-label={readHeading} className="flex flex-col gap-s3" data-run-read="">
+          <PartLabel end={!repositoryTask && read.total > 0 ? count(read.total, 'session') : undefined}>{readHeading}</PartLabel>
+          {repositoryTask && <p className="t-small text-muted">{answer.source === null ? "The source it read wasn't recorded." : `Which files it read isn't recorded. It worked from ${answer.source.branch} @ ${answer.source.commit.slice(0, 7)}.`}</p>}
+          {!repositoryTask && read.recorded && <p className="t-small text-muted">Recorded session reads may be incomplete. Sessions beyond Myco’s recording limit are not listed.</p>}
+          {!repositoryTask && read.recorded && read.total === 0 && <p className="t-small text-muted" data-read-none="">It didn’t need any sessions.</p>}
+          {!read.recorded && !repositoryTask && (
             <p className="t-small text-muted" data-no-record="">
               {read.total === 0
                 ? 'No session reads were recorded. This does not mean it read no sessions.'
                 : 'No session reads were recorded; these are the sessions it worked from.'}
             </p>
           )}
-          {read.sessions.length > 0 && (
+          {!repositoryTask && read.sessions.length > 0 && (
             <ul className="flex flex-col gap-s2">
               {read.sessions.map((session) => {
                 const from = sporesFrom(session.sessionId);
@@ -129,7 +131,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
       )}
 
       <Calls key={answer.toolCallCoverage.total} answer={answer} projectId={projectId} />
-      <Reports reports={reports} />
+      <Reports reports={reports} failed={failed} />
       <Instruction answer={answer} />
       <TechnicalDetails answer={answer} startedBy={startedBy} took={took} />
     </article>
@@ -153,12 +155,6 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 
 function causeOf({ run }: RunDetailAnswer): string {
   return runErrorWords(run.errorCode);
-}
-
-/** The run's latest report in its own words, or null when it filed none. */
-function latestReport(reports: RunDetailAnswer['reports']): string | null {
-  const report = [...reports].sort((a, b) => b.createdAt - a.createdAt).find((r) => r.summary.trim() !== '');
-  return report === undefined ? null : report.summary.trim();
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -230,7 +226,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
           <FactsPanel actions={<CopyButton value={run.id} label="Copy run id" variant="secondary" />}>
             {machine !== null && <FactRow term="Ran on">{machine}</FactRow>}
             <FactRow term="Agent">{agent ?? 'Not recorded'}</FactRow>
-            <FactRow term="Model"><ModelSummary run={run} /></FactRow>
+            <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
             <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}
             {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Queue wait">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
@@ -260,22 +256,24 @@ function dateWords(at: number): string {
 
 function Calls({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
   const next = useRunCalls(projectId, answer.run.id);
-  const [pages, setPages] = useState<RunDetailAnswer[]>([]);
-  const latest = pages.at(-1) ?? answer;
-  const calls = [...new Map([answer, ...pages].flatMap((page) => page.toolCalls).map((call) => [call.id, call])).values()];
-  const coverage = latest.toolCallCoverage;
+  const [pages, setPages] = useState<RunCallPage[]>([]);
+  const initial = { ...answer.toolCallCoverage, rows: answer.toolCalls };
+  const coverage = pages.at(-1) ?? initial;
+  const calls = [...new Map([initial, ...pages].flatMap((page) => page.rows).map((call) => [call.id, call])).values()];
   return (
-    <section aria-label="Calls to Myco" className="flex flex-col gap-s3" data-run-calls="">
-      <PartLabel end={count(coverage.total, 'call')}>Calls to Myco</PartLabel>
+    <section aria-label="What it did" className="flex flex-col gap-s3" data-run-calls="">
+      <PartLabel end={count(coverage.total, 'call')}>What it did</PartLabel>
       <p className="t-small text-muted">{coverage.failed > 0 ? `${count(coverage.failed, 'call')} failed. ` : ''}Showing {calls.length.toLocaleString()} of {coverage.total.toLocaleString()} calls.</p>
+      <p className="t-meta text-muted">Up to {CALLS_PER_PAGE} calls per page.</p>
       {calls.length === 0 ? <p className="t-small text-muted">No calls recorded.</p> : (
         <ol className="flex flex-col divide-y divide-line rounded-control border border-line">
           {calls.map((call) => (
             <li key={call.id} className="flex flex-col gap-s1 px-s3 py-s2 t-small text-ink-2">
-              <span className="break-words t-mono">{call.tool}{call.op === null ? '' : ` / ${call.op}`}</span>
+              <span>{callWords(call.tool, call.op)}</span>
               <span className="t-meta text-muted"><time dateTime={new Date(call.recordedAt).toISOString()}>{dateWords(call.recordedAt)}</time> · {call.durationMs === null ? 'Duration not recorded' : `${call.durationMs.toLocaleString()} ms`} · <span className={call.status === 'failed' ? 'text-bad' : 'text-muted'}>{call.status === 'success' ? 'Succeeded' : call.status === 'failed' ? 'Failed' : 'Status not recorded'}</span></span>
               {call.status === 'failed' && call.failure === undefined && <p className="text-muted">Failure reason not recorded.</p>}
               {call.failure !== undefined && <p className="whitespace-pre-wrap break-words text-bad">{call.failure.message}</p>}
+              <Disclosure summary="Technical details"><p className="break-words t-mono">{call.tool}{call.op === null ? '' : ` / ${call.op}`}</p></Disclosure>
             </li>
           ))}
         </ol>
@@ -286,14 +284,15 @@ function Calls({ answer, projectId }: { answer: RunDetailAnswer; projectId: stri
   );
 }
 
-function Reports({ reports }: { reports: RunDetailAnswer['reports'] }) {
+function Reports({ reports, failed }: { reports: RunDetailAnswer['reports']; failed: boolean }) {
   if (reports.length === 0) return null;
   return (
     <section aria-label="The agent’s report" className="flex flex-col gap-s3">
       <PartLabel>The agent’s report</PartLabel>
       {reports.map((report, index) => (
         <div key={index} className="flex flex-col gap-s2 t-small text-ink-2">
-          <p>{report.summary}</p>
+          {failed && <span className="font-medium">The agent said:</span>}
+          <p data-run-report="">{report.summary}</p>
           <time className="t-meta text-muted" dateTime={new Date(report.createdAt).toISOString()}>{dateWords(report.createdAt)}</time>
           {report.details !== null && <Disclosure summary="Report details"><pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono">{report.details}</pre></Disclosure>}
         </div>
@@ -303,14 +302,18 @@ function Reports({ reports }: { reports: RunDetailAnswer['reports'] }) {
 }
 
 function Instruction({ answer }: { answer: RunDetailAnswer }) {
+  const prompt = answer.run.instruction === null ? null : redactSecrets(answer.run.instruction);
+  const rules = answer.run.instructions === null ? null : redactSecrets(answer.run.instructions);
+  const redacted = prompt?.includes('[REDACTED]') || rules?.includes('[REDACTED]');
   return (
     <section aria-label="Instruction at launch">
       <Disclosure summary="Instruction at launch">
         <div className="flex flex-col gap-s3 pt-s2">
           <PartLabel>Prompt</PartLabel>
-          {answer.run.instruction === null ? <p className="t-small text-muted">The prompt was not recorded for this run.</p> : <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono text-ink-2">{answer.run.instruction}</pre>}
+          {redacted && <p className="t-small text-muted">Access keys and passwords are hidden.</p>}
+          {prompt === null ? <p className="t-small text-muted">The prompt was not recorded for this run.</p> : <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono text-ink-2">{prompt}</pre>}
           <PartLabel>Standing rules</PartLabel>
-          {answer.run.instructions === null ? <p className="t-small text-muted">Standing rules were not recorded for this run.</p> : <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono text-ink-2">{answer.run.instructions}</pre>}
+          {rules === null ? <p className="t-small text-muted">Standing rules were not recorded for this run.</p> : <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono text-ink-2">{rules}</pre>}
         </div>
       </Disclosure>
     </section>

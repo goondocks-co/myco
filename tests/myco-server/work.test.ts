@@ -2,7 +2,7 @@
  * Myco's work over a window (`/api/work`): what the runs produced, counted by outcome rather than by status.
  *
  * A learning run marked failed that saved spores reports them, with its failure as a note; a run that completed having
- * written nothing is listed as unchanged; a failed search-index update a later one recovered from is a retry, not
+ * written nothing remains in the counts and is omitted from the timeline; a failed search-index update a later one recovered from is a retry, not
  * a failure. A member who is not an admin reads all of it, cost included.
  */
 import { describe, expect, it } from 'bun:test';
@@ -70,7 +70,7 @@ describe('Myco\'s work', () => {
     } finally { sqlite.close(); }
   });
 
-  it('counts learning by the spores it wrote, keeps a failed run\'s spores with its failure as a note, and lists completed passes that changed nothing', async () => {
+  it('counts learning by the spores it wrote, keeps a failed run\'s spores with its failure as a note, and counts completed passes that changed nothing', async () => {
     const { run, spore, report, get } = await harness();
     run('proj_1', 'run_l1', { task: 'extract-curate', status: 'completed', at: NOW - 5 * HOUR, tokens: 1000, cost: 0.5, durationMs: 60_000 });
     spore('proj_1', 'sp1', 'run_l1', 's1');
@@ -98,7 +98,6 @@ describe('Myco\'s work', () => {
       map: null,
     }]);
     expect(body.runs.map((r: any) => [r.id, r.result, r.outcome.spores, r.failure])).toEqual([
-      ['run_l4', 'unchanged', 0, null],
       ['run_l3', 'failed', 0, { cause: 'the runtime went away', code: 'machine_unresponsive', error: 'the runtime went away', source: 'error' }],
       ['run_l2', 'failed_with_output', 1, { cause: 'the run ended without its artifact', code: 'run_failed', error: 'the run ended without its artifact', source: 'error' }],
       ['run_l1', 'produced', 2, null],
@@ -231,4 +230,20 @@ describe('Myco\'s work', () => {
     expect(body.outcomes[0].costUsd).toBe(0.75);
     expect(body.runs[0].costUsd).toBe(0.75);
   });
+});
+
+it('keeps a failure visible when a week contains more than the cap of newer unchanged passes', async () => {
+  const { sqlite, run, get } = await harness();
+  try {
+    const week = NOW - 7 * 24 * HOUR;
+    run('proj_1', 'needs_attention', { task: 'canopy-map', status: 'failed', at: week + HOUR, error: 'the runtime went away' });
+    for (let i = 0; i < MAX_WORK_RUNS + 1; i++) {
+      run('proj_1', `unchanged_${i}`, { task: 'canopy-map', status: 'completed', at: NOW - HOUR - i * 1_000 });
+    }
+    const { status, body } = await get(`/api/work?since=${week}&until=${NOW}`);
+    expect(status).toBe(200);
+    expect(body.runs.map((row: { id: string }) => row.id)).toEqual(['needs_attention']);
+    expect(body.truncated).toBe(false);
+    expect(body.outcomes[0]).toMatchObject({ runs: { completed: MAX_WORK_RUNS + 1, failed: 1 }, failed: 1, failedWithOutput: 0, outcome: { maps: 0 } });
+  } finally { sqlite.close(); }
 });

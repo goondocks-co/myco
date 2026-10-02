@@ -80,7 +80,7 @@ export interface WorkPageProps {
  */
 export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const now = useNow();
-  const [historyParams] = useSearchParams();
+  const [historyParams, setHistoryParams] = useSearchParams();
   const admin = useIsAdmin();
   const navigate = useNavigate();
   const location = useLocation();
@@ -126,7 +126,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
         onFilterChange={filters.setFilter}
         onClear={() => { draft.reset(); filters.clear(); }}
       />
-      {projectId !== null && <Disclosure summary="All-time run history" defaultOpen={historyParams.get('runs') === 'all'}>
+      {projectId !== null && <Disclosure key={historyParams.get('runs') === 'all' ? 'all' : 'window'} summary="All-time run history" defaultOpen={historyParams.get('runs') === 'all'}>
         <div className="flex flex-col gap-s3">
           {KIND_ORDER.map((kind) => <TaskHistory key={kind} kind={kind} projectId={projectId} now={now} defaultOpen={historyParams.get('runs') === 'all' && picked === kind} />)}
         </div>
@@ -140,7 +140,10 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           ) : shown.length === 0 ? (
             <EmptyState
               title={picked === null ? `Nothing ran ${WINDOW_WORDS[window].noun}` : `No ${KIND_WORDS[picked].toLowerCase()} ${WINDOW_WORDS[window].noun}`}
-              action={window === 'today' ? <Button variant="ghost" size="sm" onClick={() => filters.setFilter('window', 'week')}>Show this week</Button> : undefined}
+              action={<>
+                {window === 'today' && <Button variant="ghost" size="sm" onClick={() => filters.setFilter('window', 'week')}>Show this week</Button>}
+                {projectId !== null && <Button variant="secondary" size="sm" onClick={() => setHistoryParams((previous) => { const next = new URLSearchParams(previous); next.set('runs', 'all'); return next; })}>Show all · all time</Button>}
+              </>}
             />
           ) : (
             shown.map((kind) => (
@@ -353,7 +356,7 @@ function workRunLine(run: WorkRun, now: number, projectName: (projectId: string)
     time: shortTime(at, now),
     at,
     words: runLineWords(run.kind, { status: run.status, result: run.result, skipReason: null, targetSessionId: run.sessionId }, { ...run.outcome, readsRecorded: true }),
-    model: <ModelSummary run={run} />,
+    model: <ModelSummary run={run} variant="list" />,
     where: projectName(run.projectId) ?? 'A project',
     by: null,
     tone: run.result === 'failed' ? 'bad' : 'plain',
@@ -370,7 +373,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     time: shortTime(at, now),
     at,
     words: runLineWords(kind, row, row.outcome),
-    model: <ModelSummary run={row} />,
+    model: <ModelSummary run={row} variant="list" />,
     where: ranOn(row.worker, name)?.list ?? null,
     by: startedByChip(row.startedBy, name),
     tone: row.result === 'failed' ? 'bad' : row.status === 'skipped' ? 'held' : live ? 'live' : 'plain',

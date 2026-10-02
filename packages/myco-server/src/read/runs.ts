@@ -14,6 +14,7 @@ import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/
 import { requestedProfileValue } from '../db/run-profile.js';
 import { runResultSql, type RunResult } from './run-outcome.js';
 import { MAP_WRITE_TOOL } from '../core/tool-catalogue.js';
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 
 /** The most calls one page of a run's detail lists. */
 const MAX_TOOL_CALLS = 200;
@@ -238,7 +239,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
 function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): RunDetailRow {
   return {
     ...toListRow(row, ownNames),
-    instruction: text(row.instruction),
+    instruction: typeof row.instruction === 'string' ? redactSecrets(row.instruction) : null,
     instructions: null,
     sessionRef: text(row.session_ref),
     actualCostUsd: num(row.actual_cost_usd),
@@ -379,6 +380,12 @@ export async function runToolCallPage(db: RelationalStore, scope: ReadScope, run
   const paged = page(calls.results as Record<string, unknown>[], k.limit, (r) => ({ createdAt: Number(r.recordedAt), id: String(r.id) }));
   const counts = totals.results[0] as { total: number; failed: number };
   return { rows: paged.rows.map(toToolCall), cursor: paged.cursor, total: Number(counts.total), failed: Number(counts.failed) };
+}
+
+/** A scoped run's admitted calls, or null when the Project holds no such run. */
+export async function getRunCalls(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Awaited<ReturnType<typeof runToolCallPage>> | null> {
+  const found = await db.prepare('SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?').bind(scope.projectId, runId).first();
+  return found === null ? null : runToolCallPage(db, scope, runId, opts);
 }
 
 /** One page of a run's calls for callers that only need the rows. */

@@ -14,7 +14,7 @@ import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/wo
  * **The outcome, not the status.** A run is counted by what it left in the store: the spores it wrote (`spores.author`
  * names the run), the session title it landed and the map it wrote (each a write the run recorded). A learning run
  * marked failed that saved spores reports its spores, with the failure beside them as a note, and a run that completed
- * having written nothing is listed as unchanged.
+ * having written nothing remains in the counts and is omitted from the timeline.
  *
  * **Upkeep is summarised, never listed.** The search index's own runs are frequent enough that a list of them would
  * drown every other run, so the read answers when the index last succeeded, how many of its runs failed in the window,
@@ -78,7 +78,7 @@ export interface WorkOutcome {
   map: { branch: string; commit: string; generatedAt: number; sourceRunId: string } | null;
 }
 
-/** One terminal run the timeline lists, including a completed pass that changed nothing. */
+/** A run that published output or failed, listed in the timeline. */
 export interface WorkRun {
   requested: ExecutionProfile | null;
   queuedAt: number | null;
@@ -237,7 +237,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
               CASE WHEN r.status = 'failed' THEN r.error END AS error,
               CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code
          FROM ${RUNS_BY_TASK}
-        WHERE ${all.sql} AND r.status IN ('completed', 'failed')
+        WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
         ORDER BY at DESC, r.id DESC LIMIT ?`,
     ).bind(...SPORE_TASKS, ...SPORE_TASKS, TITLING_TASK, ...all.params, MAX_WORK_RUNS + 1),
     upkeepStatement(db, set, since, until),

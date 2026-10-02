@@ -433,9 +433,8 @@ for (const across of [false, true]) {
     server(week({ work: answer, taskRuns: { ...TASK_RUNS, 'canopy-map': TASK_RUNS['canopy-map']!.map((run) => ({ ...run, ...evidence })) } }));
     mount(across ? '/work?outcome=map' : `/p/${P}/work?outcome=map`);
     const runs = await screen.findByRole('list', { name: 'Latest code map updates' });
-    expect(runs.textContent).toContain('Requested: high · opus · high effort');
-    expect(runs.textContent).toContain('Actual: claude-sonnet-4-6');
-    expect(runs.textContent).toContain('Model differs from requested');
+    expect(runs.textContent).toContain('Asked for Opus, high effort · ran claude-sonnet-4-6');
+    expect(runs.textContent).toContain('Ran a different model than requested');
   });
 }
 
@@ -447,4 +446,12 @@ it('opens all-time history on a quiet day and requests no window bounds', async 
   const query = asked.find((url) => url.pathname.endsWith('/runs'))!;
   expect(query.searchParams.get('task')).toBe('canopy-map');
   expect(query.searchParams.has('since') || query.searchParams.has('until')).toBe(false);
+});
+
+it('offers clearly labelled all-time history from an empty selected window', async () => {
+  server(week({ work: { ...WEEK_WORK, outcomes: [], runs: [] } }));
+  mount(`/p/${P}/work?window=today&outcome=map`);
+  fireEvent.click(await screen.findByRole('button', { name: 'Show all · all time' }));
+  const history = await screen.findByRole('list', { name: 'All-time code map updates' });
+  expect(within(history).getAllByRole('link')).toHaveLength(2);
 });

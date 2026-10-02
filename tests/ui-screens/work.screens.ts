@@ -103,7 +103,7 @@ test.describe('Myco’s work', () => {
       await expect(panel.locator('[data-run-failure]')).toContainText('The task stopped before it could finish.');
       await expect(panel).not.toContainText('the run ended without its artifact');
       await expect(panel.locator('[data-run-report]')).toContainText('repo.sha256');
-      await panel.getByRole('button', { name: /Technical details/ }).click();
+      await panel.locator('[data-run-technical]').getByRole('button', { name: /Technical details/ }).click();
       await expect(panel.locator('[data-run-technical]')).toContainText('the run ended without its artifact');
       await expect(panel.getByRole('region', { name: 'The agent’s report' })).toContainText('repo.sha256 is absent from this checkout');
       await expectNoRawIds(page);
@@ -256,6 +256,26 @@ test.describe('Myco’s work', () => {
 });
 
 for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light', 'dark'] as const) {
+  test(`empty work window all-time history ${viewport} ${mode}`, async ({ browser }) => {
+    test.skip(!onFixture(), 'Requires a project with no recorded work.');
+    const quietProject = (JSON.parse(screensEnv('projects')) as Array<{ projectId: string }>)[1]!;
+    const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(quietProject.projectId)}/work?window=today&outcome=map`, viewport, mode, cookie: screensEnv('ownerCookie') });
+    try {
+      await expect(page.getByRole('status')).toContainText('No code map today');
+      await expect(page.locator('[data-lede]')).toHaveCount(0);
+      const all = page.getByRole('button', { name: 'Show all · all time' });
+      await expect(all).toBeVisible();
+      await expectFits(page, viewport);
+      await expectAxeClean(page);
+      const shot = await shoot(page, 'run-panel-empty-window', viewport, mode, process.env.MYCO_RUN_PANEL_SHOTS);
+      await page.screenshot({ path: shot, fullPage: false });
+      await all.click();
+      await expect(page.getByRole('button', { name: 'All-time run history' })).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.getByRole('button', { name: 'Code map updates · all time' })).toHaveAttribute('aria-expanded', 'true');
+      expectQuiet(watch);
+    } finally { await context.close(); }
+  });
+
   test(`stored run audit panel ${viewport} ${mode}`, async ({ browser }) => {
     test.skip(!onFixture(), 'Requires the recorded audit fixture.');
     const { context, page, watch } = await openPage(browser, { path: `${workPath()}/runs/run_c19f7a0e55`, viewport, mode, cookie: screensEnv('ownerCookie') });
@@ -264,16 +284,18 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
       await expect(panel.locator('header [data-model-summary]')).toContainText('Requested: high · opus · high effort');
       await expect(panel.locator('header [data-model-summary]')).toContainText('Actual: claude-sonnet-4-6');
       await expect(panel.locator('header [data-model-mismatch]')).toBeVisible();
-      const calls = panel.getByRole('region', { name: 'Calls to Myco' });
+      const calls = panel.getByRole('region', { name: 'What it did' });
       await expect(calls.getByRole('listitem')).toHaveCount(4);
       await expect(calls).toContainText('Map text must be a bounded nonempty line.');
       await expect(calls.getByRole('listitem').nth(2)).toContainText('117 ms · Succeeded');
       await expect(panel.getByRole('link', { name: 'Open the current code map →' })).toBeVisible();
       const shots = process.env.MYCO_RUN_PANEL_SHOTS;
       await panel.locator('[data-run-headline]').scrollIntoViewIfNeeded();
+      await shoot(page, 'run-panel-summary', viewport, mode, shots);
       const summaryShot = await shoot(page, 'run-panel-summary-viewport', viewport, mode, shots);
       await page.screenshot({ path: summaryShot, fullPage: false });
       await calls.scrollIntoViewIfNeeded();
+      await shoot(page, 'run-panel-calls', viewport, mode, shots);
       const callsShot = await shoot(page, 'run-panel-calls-viewport', viewport, mode, shots);
       await page.screenshot({ path: callsShot, fullPage: false });
       await panel.getByRole('button', { name: 'Report details' }).click();
@@ -281,6 +303,7 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
       await panel.getByRole('button', { name: 'Instruction at launch' }).click();
       await expect(panel).toContainText('Keep every map entry to one bounded line.');
       await expect(panel).toContainText('Standing rules were not recorded for this run.');
+      await shoot(page, 'run-panel-instruction', viewport, mode, shots);
       const instructionShot = await shoot(page, 'run-panel-instruction-viewport', viewport, mode, shots);
       await page.screenshot({ path: instructionShot, fullPage: false });
       await expectFits(page, viewport);

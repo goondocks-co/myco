@@ -2,7 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { fetchJson, postJson } from '../lib/api';
 import type { TodaySporePage, WorkAnswer } from '../features/today/wire';
 import type { SessionResponse } from './use-sessions';
-import type { DispatchAnswer, RunDetailAnswer, RunPage, RunPageRow } from '../features/work/wire';
+import type { DispatchAnswer, RunCallPage, RunDetailAnswer, RunPage, RunPageRow } from '../features/work/wire';
 import { usePaged } from './use-paged';
 
 export type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../features/today/wire';
@@ -142,9 +142,11 @@ export function useAllTaskRuns(projectId: string, task: string, enabled: boolean
   return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
 }
 
-/** The next page of admitted calls, using the detail reader’s run-scoped cursor. */
+export const CALLS_PER_PAGE = 200;
+
+/** The next page of admitted calls, without reading the prompt or other run details again. */
 export function useRunCalls(projectId: string, runId: string) {
   return useMutation({
-    mutationFn: (cursor: string) => fetchJson<RunDetailAnswer>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}?${new URLSearchParams({ callsCursor: cursor })}`),
+    mutationFn: (cursor: string) => fetchJson<RunCallPage>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(CALLS_PER_PAGE) })}`),
   });
 }

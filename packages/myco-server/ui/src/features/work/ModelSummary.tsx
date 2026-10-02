@@ -9,16 +9,24 @@ interface ModelEvidence {
 }
 
 /** Launch intent beside the model identities reported for this attempt. */
-export function ModelSummary({ run }: { run: ModelEvidence }) {
+export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence; variant?: 'summary' | 'list' | 'details' }) {
   const identity = run.identity;
   const known = identity.status === 'reported' || identity.status === 'launched';
   const models = known ? [...new Set(identity.models.map((model) => model.model))] : [];
-  const mismatch = known && run.requested !== null && !profileModelMatches(run.harness ?? '', run.requested.model, identity.primary.model);
+  const mismatch = known && run.requested !== null && run.harness !== null && !profileModelMatches(run.harness, run.requested.model, identity.primary.model);
+  if (variant !== 'details' && run.requested === null && !known) return null;
+  const different = mismatch && <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>;
+  if (variant === 'list') {
+    const model = run.requested?.model;
+    const asked = model === undefined ? null : `Asked for ${['opus', 'sonnet', 'haiku'].includes(model) ? model.charAt(0).toUpperCase() + model.slice(1) : model}${run.requested?.effort == null ? '' : `, ${run.requested.effort} effort`}`;
+    const actual = known ? `${identity.status === 'reported' ? 'ran' : 'launched'} ${models.join(', ')}` : null;
+    return <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary=""><span>{[asked, actual].filter(Boolean).join(' · ')}</span>{different}</div>;
+  }
   return (
     <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary="">
-      <span>Requested: {run.requested === null ? 'Not recorded' : `${run.requested.tier} · ${run.requested.model}${run.requested.effort === null ? '' : ` · ${run.requested.effort} effort`}`}</span>
-      <span>{known ? `${identity.status === 'reported' ? 'Actual' : 'Launched'}: ${models.join(', ')}` : 'Model not recorded'}</span>
-      {mismatch && <span className="text-warn" data-model-mismatch="">Model differs from requested</span>}
+      {(run.requested !== null || variant === 'details') && <span>Requested: {run.requested === null ? 'Not recorded' : `${run.requested.tier} · ${run.requested.model}${run.requested.effort === null ? '' : ` · ${run.requested.effort} effort`}`}</span>}
+      {(known || variant === 'details') && <span>{known ? `${identity.status === 'reported' ? 'Actual' : 'Launched'}: ${models.join(', ')}` : 'Model not recorded'}</span>}
+      {different}
     </div>
   );
 }

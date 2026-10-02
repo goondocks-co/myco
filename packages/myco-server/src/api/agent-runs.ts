@@ -9,7 +9,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { listReports } from '../core/runs.js';
-import { getRunDetail, listRuns } from '../read/runs.js';
+import { getRunCalls, getRunDetail, listRuns } from '../read/runs.js';
 import { runReads } from '../read/run-reads.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { paging } from './sessions.js';
@@ -75,4 +75,16 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id, calls);
   if (detail === null) return notFound();
   return ok({ ...detail, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
+}
+
+/** One page of admitted calls, without the run's instructions, reports or current artifacts. */
+export async function handleProjectRunCalls(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const runId = runIdParam(ctx.params.runId ?? '');
+  if (runId === null) return notFound();
+  const calls = paging(ctx.url);
+  if (calls instanceof Response) return calls;
+  const answer = await getRunCalls(env.db, scope, runId, calls);
+  return answer === null ? notFound() : ok(answer);
 }

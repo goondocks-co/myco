@@ -6,32 +6,8 @@ import { type MycoTools } from '../tools/index.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import type { Logger } from '../daemon/logger.js';
 
-/**
- * Redact secret-shaped substrings out of an error message before it
- * reaches the log file. The log persists indefinitely, so a tool that
- * embeds a bearer token in its error message (the daemon's HTTP fetch
- * helpers wrap upstream responses without scrubbing auth headers; the
- * `setup-llm` paths and a few team-sync paths handle bearer tokens
- * directly) would leak the secret to anyone with log-read access.
- *
- * Patterns are common-prefix forms so we redact tokens regardless of
- * which provider produced them. Replacement keeps the prefix so a
- * grep for `Bearer [REDACTED]` still surfaces the shape.
- */
-const SECRET_PATTERNS: { re: RegExp; replacement: string }[] = [
-  { re: /Bearer\s+[A-Za-z0-9._-]+/g, replacement: 'Bearer [REDACTED]' },
-  { re: /sk-[A-Za-z0-9]{20,}/g, replacement: 'sk-[REDACTED]' },
-  { re: /ghp_[A-Za-z0-9]{36,}/g, replacement: 'ghp_[REDACTED]' },
-  { re: /auth[_-]?token=[A-Za-z0-9._-]+/gi, replacement: 'auth_token=[REDACTED]' },
-];
-
-export function redactSecrets(input: string): string {
-  let out = input;
-  for (const { re, replacement } of SECRET_PATTERNS) {
-    out = out.replace(re, replacement);
-  }
-  return out;
-}
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
+export { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 
 export interface McpProtocolServerOptions {
   /**

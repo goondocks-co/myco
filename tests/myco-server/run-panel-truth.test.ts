@@ -64,7 +64,7 @@ describe('run panel recorded evidence', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('projects unchanged and kept-output outcomes identically in the detail, project list and work', async () => {
+  it('projects recorded output consistently and keeps unchanged passes in work counts', async () => {
     const f = await fixture();
     try {
       f.run('unchanged');
@@ -79,8 +79,12 @@ describe('run panel recorded evidence', () => {
       for (const [id, result] of [['unchanged', 'unchanged'], ['titling_skip', 'unchanged'], ['kept', 'failed_with_output'], ['dry', 'unchanged']]) {
         expect((await f.get(`/api/projects/proj_1/runs/${id}`)).run.result).toBe(result);
         expect(listed.rows.find((row: Answer) => row.id === id).result).toBe(result);
-        expect(work.runs.find((row: Answer) => row.id === id).result).toBe(result);
+        const timeline = work.runs.find((row: Answer) => row.id === id);
+        if (result === 'unchanged') expect(timeline).toBeUndefined();
+        else expect(timeline.result).toBe(result);
       }
+      expect(work.outcomes.find((outcome: Answer) => outcome.task === 'canopy-map').runs).toEqual({ completed: 2, failed: 1 });
+      expect(work.outcomes.find((outcome: Answer) => outcome.task === 'title-summary').runs).toEqual({ completed: 1 });
     } finally { f.sqlite.close(); }
   });
 
@@ -151,5 +155,22 @@ it('projects the stored harness estimate message without inventing provenance fo
     f.sqlite.run('UPDATE agent_runs SET cost_data = ?, cost_usd = 1 WHERE id = ?', [JSON.stringify({ message: 'An estimate with no source' }), 'unknown_estimate']);
     expect((await f.get('/api/projects/proj_1/runs/known_estimate')).run.costProvenance).toBe('harness_estimate');
     expect((await f.get('/api/projects/proj_1/runs/unknown_estimate')).run.costProvenance).toBeNull();
+  } finally { f.sqlite.close(); }
+});
+
+it('redacts an access-key canary in the prompt projection and preserves the stored instruction', async () => {
+  const f = await fixture();
+  try {
+    f.run('secret_canary');
+    const canary = `sk-proj-${'Q'.repeat(40)}`;
+    const budgets = 'Keep max_tokens=4096 and token_budget: 12000; token_limit=8000.';
+    const instruction = `Use this key: ${canary}\nKeep map entries bounded.\n${budgets}`;
+    f.sqlite.run('UPDATE agent_runs SET instruction = ? WHERE id = ?', [instruction, 'secret_canary']);
+    const detail = await f.get('/api/projects/proj_1/runs/secret_canary');
+    expect(JSON.stringify(detail)).not.toContain(canary);
+    expect(detail.run.instruction).toContain('Keep map entries bounded.');
+    expect(detail.run.instruction).toContain('[REDACTED]');
+    expect(detail.run.instruction).toContain(budgets);
+    expect(f.sqlite.query('SELECT instruction FROM agent_runs WHERE id = ?').get('secret_canary')).toEqual({ instruction });
   } finally { f.sqlite.close(); }
 });

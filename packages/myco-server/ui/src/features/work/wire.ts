@@ -1,6 +1,8 @@
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 
+export type RunCallPage = RunDetailAnswer['toolCallCoverage'] & { rows: RunDetailAnswer['toolCalls'] };
+
 /**
  * The shapes Myco's work reads off the wire beyond `/api/work` (whose shapes
  * live in `features/today/wire.ts`): a page of a project's runs, one run with

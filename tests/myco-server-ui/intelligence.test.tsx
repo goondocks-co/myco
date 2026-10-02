@@ -22,6 +22,9 @@ import {
   ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, WEEK_SPORES, WEEK_WORK,
 } from '../helpers/work-fixture';
 import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/today/wire';
+import { ModelSummary } from '../../packages/myco-server/ui/src/features/work/ModelSummary';
+import { RUN_TOOL_MAP } from '../../packages/myco-server/src/mcp/run-surface';
+import { MECHANISM_WORDS, RETIRED_VOCABULARY } from '../helpers/reader-vocabulary';
 
 const originalFetch = globalThis.fetch;
 let client: QueryClient;
@@ -100,10 +103,11 @@ describe('a run’s panel', () => {
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Learned 4 spores from 1 session');
     expect((await within(open).findByText('started by Lin')).getAttribute('data-started-by')).toBe('');
     expect(open.textContent).toContain('Learning run · Myco');
-    // What the run said it did leads, in its own words, right under the headline.
+    // The report is attributed once in its own section.
     const report = open.querySelector('[data-run-report]') as HTMLElement;
     expect(report.textContent).toBe('Saved 4 spores from 1 session.');
-    expect(report.closest('header')).not.toBeNull();
+    expect(report.closest('header')).toBeNull();
+    expect(within(open).getByRole('region', { name: 'The agent’s report' }).textContent).toContain(report.textContent);
     expect(open.textContent).toContain('took 5 min');
     const read = within(open).getByRole('region', { name: 'Sessions it read' });
     expect(within(read).getByRole('link', { name: 'Flaky test port collision fixed' }).getAttribute('href')).toBe(`/p/${P}/sessions/${S2}`);
@@ -156,7 +160,7 @@ describe('a run’s panel', () => {
   });
 
   it('says a run that recorded its reads and read none didn’t need any sessions', async () => {
-    server(routes({ detail: { [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail(mapRuns[1]!, { read: { sessions: [], total: 0, recorded: true } })) } }));
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail(mapRuns[1]!, { run: { task: 'title-summary' }, read: { sessions: [], total: 0, recorded: true } })) } }));
     mount(`/p/${P}/work/runs/run_c19f7a0e55`);
     const open = await panel();
     await within(open).findByRole('heading', { level: 2 });
@@ -412,7 +416,7 @@ for (const [code, sentence] of [
     const open = await panel();
     await waitFor(() => expect(open.querySelector('[data-run-failure]')?.textContent).toContain(sentence));
     expect(open.textContent).not.toContain(prose);
-    fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+    fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain(sentence);
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain(prose);
   });
@@ -452,7 +456,7 @@ it('keeps a coded failure as the headline when the run also filed a report', asy
   await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The machine running it stopped responding.'));
   expect(open.textContent).not.toContain(reason);
   expect(open.querySelector('[data-run-report]')!.textContent).toContain(report);
-  fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+  fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
   expect(open.querySelector('[data-run-technical]')!.textContent).toContain(reason);
   expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(report);
 });
@@ -482,7 +486,7 @@ describe('stored run audit evidence', () => {
   }
   it('shows four calls in order, the exact validation failure and its later successful correction', async () => {
     const open = await openAudit();
-    const calls = within(open).getByRole('region', { name: 'Calls to Myco' });
+    const calls = within(open).getByRole('region', { name: 'What it did' });
     const rows = within(calls).getAllByRole('listitem');
     expect(rows).toHaveLength(4);
     expect(rows[1]!.textContent).toContain('Map text must be a bounded nonempty line.');
@@ -496,7 +500,7 @@ describe('stored run audit evidence', () => {
     const summary = open.querySelector('header')!;
     expect(summary.textContent).toContain('Requested: high · opus · high effort');
     expect(summary.textContent).toContain('Actual: claude-sonnet-4-6');
-    expect(summary.textContent).toContain('Model differs from requested');
+    expect(summary.textContent).toContain('Ran a different model than requested');
   });
   it('shows the exact stored instruction and standing rules behind a disclosure', async () => {
     const open = await openAudit();
@@ -517,7 +521,7 @@ describe('stored run audit evidence', () => {
     const open = await openAudit(answer);
     expect(open.querySelector('[data-run-headline]')!.textContent).toBe('Failed with output kept');
     expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The task stopped before it could finish.');
-    fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+    fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain('Worker exceeded the execution budget.');
     expect(open.querySelector('[data-run-report]')!.textContent).toContain('Updated the map.');
   });
@@ -539,14 +543,93 @@ it('shows the true 201-call total and loads the remaining call', async () => {
     toolCallCoverage: { total: 201, failed: 0, cursor: 'next-page' },
   });
   const last = runDetail(mapRuns[1]!, { toolCalls: [{ id: 200, status: 'unknown', tool: 'myco_run', op: 'report', recordedAt: NOW, durationMs: null }], toolCallCoverage: { total: 201, failed: 0, cursor: null } });
-  const { asked } = server({ ...routes(), [`/api/projects/${P}/runs/run_c19f7a0e55`]: (url) => Response.json(url.searchParams.has('callsCursor') ? last : first) });
+  const { asked } = server({ ...routes(), [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(first), [`/api/projects/${P}/runs/run_c19f7a0e55/calls`]: () => Response.json({ ...last.toolCallCoverage, rows: last.toolCalls }) });
   mount(`/p/${P}/work/runs/run_c19f7a0e55`);
   const open = await panel();
-  const calls = await within(open).findByRole('region', { name: 'Calls to Myco' });
+  const calls = await within(open).findByRole('region', { name: 'What it did' });
   expect(calls.textContent).toContain('Showing 200 of 201 calls.');
   fireEvent.click(within(calls).getByRole('button', { name: 'Show more' }));
   await waitFor(() => expect(within(calls).getAllByRole('listitem')).toHaveLength(201));
   expect(calls.textContent).toContain('Showing 201 of 201 calls.');
   expect(within(calls).getAllByRole('listitem').at(-1)!.textContent).toContain('Status not recorded');
-  expect(asked.some((url) => url.searchParams.get('callsCursor') === 'next-page')).toBe(true);
+  expect(asked.some((url) => url.pathname.endsWith('/calls') && url.searchParams.get('cursor') === 'next-page' && url.searchParams.get('limit') === '200')).toBe(true);
+  expect(asked.filter((url) => url.pathname.endsWith('/runs/run_c19f7a0e55'))).toHaveLength(1);
+  expect(calls.textContent).toContain('Up to 200 calls per page.');
+});
+
+describe('reviewed run evidence', () => {
+  async function openReviewed(over: Parameters<typeof runDetail>[1] = {}) {
+    const answer = runDetail(mapRuns[1]!, over);
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(answer) } }));
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    const open = await panel();
+    await within(open).findByRole('heading', { level: 2 });
+    return open;
+  }
+  it('uses reader words for every known run operation and keeps identifiers folded away', async () => {
+    const pairs = [...new Map(Object.values(RUN_TOOL_MAP).flat().map((pair) => [`${pair.tool}/${pair.op}`, pair])).values()];
+    const open = await openReviewed({ toolCalls: [...pairs.map((pair, i) => ({ id: i, status: 'success' as const, tool: pair.tool, op: pair.op, recordedAt: NOW, durationMs: 10 })), { id: pairs.length, status: 'success', tool: 'myco_future_runtime', op: 'credential', recordedAt: NOW, durationMs: 10 }] });
+    const activity = within(open).getByRole('region', { name: 'What it did' });
+    const rows = within(activity).getAllByRole('listitem');
+    expect(rows).toHaveLength(pairs.length + 1);
+    for (const row of rows) {
+      expect(row.textContent).not.toMatch(MECHANISM_WORDS);
+      expect(row.textContent).not.toMatch(RETIRED_VOCABULARY);
+      expect(row.textContent).not.toContain('myco_');
+    }
+    expect(activity.textContent).toContain('Read the code map');
+    expect(activity.textContent).toContain('Wrote the code map');
+    expect(activity.textContent).toContain('Read session material');
+    expect(activity.textContent).toContain('Reported');
+    expect(rows.at(-1)!.textContent).toContain('Called Myco');
+    fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Technical details' }));
+    expect(rows[0]!.textContent).toContain(pairs[0]!.tool);
+  });
+  for (const task of ['canopy-map', 'vault-seed']) {
+    it(`names the pinned repository source for ${task} rather than session reads`, async () => {
+      const open = await openReviewed({ run: { task }, source: { branch: 'audit-source', commit: 'a'.repeat(40) } });
+      const read = within(open).getByRole('region', { name: 'What it read' });
+      expect(read.textContent).toContain("Which files it read isn't recorded. It worked from audit-source @ aaaaaaa.");
+      expect(within(open).queryByRole('region', { name: 'Sessions it read' })).toBeNull();
+    });
+  }
+  it('names an unrecorded repository source plainly', async () => {
+    const open = await openReviewed({ source: null });
+    expect(within(open).getByRole('region', { name: 'What it read' }).textContent).toContain("The source it read wasn't recorded.");
+  });
+  for (const harness of [null, 'claude-code']) {
+    it(`does not flag the sonnet alias as a mismatch when harness is ${harness}`, () => {
+      const run = runDetail(mapRuns[1]!, { run: { harness, requested: { tier: 'high', model: 'sonnet', effort: 'high', sources: { tier: 'task', model: 'default' } }, identity: { status: 'reported', source: 'result', primary: { model: 'claude-sonnet-5-5' }, models: [{ model: 'claude-sonnet-5-5', source: 'result', usage: null }] } } }).run;
+      const { container } = render(<ModelSummary run={run} />);
+      expect(container.querySelector('[data-model-mismatch]')).toBeNull();
+    });
+  }
+  it('lists a failed run’s report once and labels who said it', async () => {
+    const open = await openReviewed({ run: { status: 'failed', result: 'failed_with_output' }, reports: [{ action: 'canopy_map', summary: 'I saved one map.', details: null, createdAt: NOW }] });
+    expect(within(open).getAllByText('I saved one map.')).toHaveLength(1);
+    const report = within(open).getByRole('region', { name: 'The agent’s report' });
+    expect(report.textContent).toContain('The agent said:');
+    expect(open.querySelector('header')!.textContent).not.toContain('I saved one map.');
+  });
+  it('hides a credential-shaped canary in the stored launch prompt', async () => {
+    const canary = `sk-proj-${'Q'.repeat(40)}`;
+    const budgets = 'Keep max_tokens=4096 and token_budget: 12000; token_limit=8000.';
+    const open = await openReviewed({ run: { instruction: `Use this access key: ${canary}\nKeep map entries bounded.\n${budgets}` } });
+    fireEvent.click(within(open).getByRole('button', { name: 'Instruction at launch' }));
+    expect(open.textContent).not.toContain(canary);
+    expect(open.textContent).toContain('Keep map entries bounded.');
+    expect(open.textContent).toContain(budgets);
+    expect(open.textContent).toContain('Access keys and passwords are hidden.');
+  });
+  it('omits empty model evidence from run lists', () => {
+    const { container } = render(<ModelSummary run={runDetail(mapRuns[1]!).run} variant="list" />);
+    expect(container.textContent).toBe('');
+  });
+  it('lists requested and actual models on one line with reader mismatch words', () => {
+    const run = runDetail(mapRuns[1]!, { run: { harness: 'claude-code', requested: { tier: 'high', model: 'opus', effort: 'high', sources: { tier: 'task', model: 'default' } }, identity: { status: 'reported', source: 'result', primary: { model: 'claude-sonnet-4-6' }, models: [{ model: 'claude-sonnet-4-6', source: 'result', usage: null }] } } }).run;
+    const { container } = render(<ModelSummary run={run} variant="list" />);
+    expect(container.textContent).toContain('Asked for Opus, high effort · ran claude-sonnet-4-6');
+    expect(container.textContent).toContain('Ran a different model than requested');
+    expect(container.textContent).not.toContain('Not recorded');
+  });
 });
