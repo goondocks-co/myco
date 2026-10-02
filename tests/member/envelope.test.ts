@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ID_GRAMMAR, ENVELOPE_FIELDS } from '@myco-server-worker/ingest/envelope.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
-import { normalizeHookInput } from '@myco/hooks/normalize.js';
+import { normalizeHookInput, _resetManifestCache } from '@myco/hooks/normalize.js';
 import {
   attachmentEvent, compactionEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
   promptEvent, queuedPromptIdFor, responseEvent, sessionEndEvent, sessionStartEvent, stopFailureEvent, subagentIdFor,
@@ -36,7 +36,18 @@ afterAll(() => {
 
 const SESSION = 'sess-envelope-1';
 const ctx = (sessionId = SESSION): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: stager.stage, version: '2.0.0-test' });
-const input = (raw: Record<string, unknown>) => normalizeHookInput({ session_id: SESSION, transcript_path: '/fixture/t.jsonl', ...raw });
+/** A Claude Code hook's input, normalized as a hook whose command names Claude Code normalizes it. */
+const input = (raw: Record<string, unknown>) => {
+  const argv = process.argv;
+  process.argv = ['node', 'myco', 'hook', 'post-tool-use', '--symbiont', 'claude-code'];
+  _resetManifestCache();
+  try {
+    return normalizeHookInput({ session_id: SESSION, transcript_path: '/fixture/t.jsonl', ...raw });
+  } finally {
+    process.argv = argv;
+    _resetManifestCache();
+  }
+};
 
 /** Post an outbound event as the rig's member, uploading its blob first when it has one. */
 async function deliver(rig: MemberRig, out: OutboundEvent): Promise<Record<string, unknown>> {

@@ -30,7 +30,12 @@ hookFields:
   transcriptPath: transcriptPath
   toolName: toolCall.name
   toolInput: toolCall.args
+# Antigravity names the workspace only in the hook payload: the launch preamble reads it from stdin and starts there.
+hookInput:
+  workspaceFromStdin: workspacePaths
 capture:
+  # Antigravity has no prompt hook: its prompts are read from its transcript by the member helper.
+  promptsFromTranscript: true
   # One brain dir per conversation, under whichever surface produced it.
   transcriptDiscovery:
     roots:

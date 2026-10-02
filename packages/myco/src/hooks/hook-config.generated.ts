@@ -53,6 +53,10 @@ export interface HookConfigEntry {
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
   sessionContinuation?: SessionContinuation;
+  /** Prompts are read from the transcript by the member helper; the harness has no prompt hook. */
+  promptsFromTranscript?: boolean;
+  /** A session start whose payload `field` equals `equals` continues one compacted. */
+  compactionStart?: { field: string; equals: string };
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
@@ -110,7 +114,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     },
     "hookResponse": {
       "format": "antigravity-inject-steps"
-    }
+    },
+    "promptsFromTranscript": true
   },
   "claude-code": {
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
@@ -398,6 +403,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           "reason": "compact continuation"
         }
       ]
+    },
+    "compactionStart": {
+      "field": "source",
+      "equals": "compact"
     }
   },
   "cline": {
@@ -785,6 +794,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "{sessionId}/events.jsonl"
       ],
       "retention": "harness"
+    },
+    "hookResponse": {
+      "format": "plain-text",
+      "shapes": {
+        "SubagentStart": "flat"
+      }
     }
   },
   "cursor": {
@@ -803,6 +818,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "toolOutput": [
         "tool_output",
         "tool_response"
+      ],
+      "sessionIdFromTranscriptPath": [
+        "/agent-transcripts/([^/]+)/\\1\\.jsonl$",
+        "(?:^|/)([^/.]+)\\.txt$"
       ]
     },
     "hookEvents": {

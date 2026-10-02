@@ -55,7 +55,7 @@ describe('native plugin transcripts', () => {
     const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet);
     const composed = new Function(
       'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
-      'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
+      'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'spawnSync', 'process',
       `${js}; return transcriptPathFor;`,
     )(
       fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
@@ -208,18 +208,18 @@ function snippetModule(
   env: NodeJS.ProcessEnv,
   spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [],
   noted: string[] = [],
-  execImpl?: (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => string,
+  execImpl?: (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { status: number | null; stdout: string; stderr: string },
 ) {
   const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
   return new Function(
     'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
-    'writeSync', 'unlinkSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'execFileSync', 'process',
+    'writeSync', 'unlinkSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'spawnSync', 'process',
     `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, releaseSessionClaim, runMycoHook };`,
   )(
     fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
     fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
-    execImpl ?? ((_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return '{}'; }),
+    execImpl ?? ((_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return { status: 0, stdout: '{}', stderr: '' }; }),
     { ...process, env, platform: process.platform, stderr: { write: (line: string) => { noted.push(String(line)); return true; } } },
   ) as {
     transcriptPathFor: (d: string, a: string, s: string) => string;
@@ -479,5 +479,39 @@ describe('one instance speaks for a session', () => {
     const declared: { env?: NodeJS.ProcessEnv; args: string[] }[] = [];
     snippetModule(sandbox, declared).runMycoHook(dir, 'opencode', 'ses_5', 'session-start', {});
     expect(declared[0].env?.MYCO_HOME).toBe(sandbox.MYCO_HOME);
+  });
+});
+
+describe('the hook a plugin runs', () => {
+  it('names the plugin\'s own harness, as its manifest names it', () => {
+    const manifests = new Set(BUNDLED_MANIFESTS.map((m) => m.name));
+    for (const agent of NATIVE_PLUGIN_AGENTS) {
+      // The harness each shipped plugin passes for itself.
+      const named = /^const AGENT = "([^"]+)";$/m.exec(pluginSource(agent))?.[1];
+      expect({ agent, named, manifest: named !== undefined && manifests.has(named) }).toEqual({ agent, named: agent, manifest: true });
+      const spawns: { args: string[] }[] = [];
+      snippetModule(sandboxEnv(), spawns).runMycoHook('/repo', named!, `ses_${agent}`, 'session-start', {});
+      const args = spawns[0]?.args ?? [];
+      const at = args.indexOf('--symbiont');
+      expect({ agent, symbiont: at >= 0 ? args.slice(at, at + 2) : null, credential: args.includes('--credential') })
+        .toEqual({ agent, symbiont: ['--symbiont', agent], credential: true });
+    }
+  });
+
+  it('notes what the hook says on stderr, each line once per session, so a hook that refuses to capture is seen', () => {
+    const noted: string[] = [];
+    const refusal = '[myco] member: hook command must declare --symbiont <harness> — no capture\n';
+    const mod = snippetModule(sandboxEnv(), [], noted, () => ({ status: 0, stdout: '', stderr: refusal }));
+    mod.runMycoHook('/repo', 'opencode', 'ses_said', 'session-start', {});
+    mod.runMycoHook('/repo', 'opencode', 'ses_said', 'user-prompt-submit', {});
+    const said = noted.filter((l) => l.includes('must declare --symbiont'));
+    expect(said).toEqual(['[myco] opencode session ses_said: member: hook command must declare --symbiont <harness> — no capture\n']);
+  });
+
+  it('says once that it could not run a hook that exits non-zero', () => {
+    const noted: string[] = [];
+    const mod = snippetModule(sandboxEnv(), [], noted, () => ({ status: 3, stdout: '', stderr: '' }));
+    mod.runMycoHook('/repo', 'opencode', 'ses_exit', 'stop', {});
+    expect(noted.filter((l) => l.includes('could not run `myco hook stop`: exited 3'))).toHaveLength(1);
   });
 });

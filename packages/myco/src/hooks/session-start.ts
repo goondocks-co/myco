@@ -9,13 +9,11 @@ import { projectLineOnly, renderedBlock, type ContextAsk, type SessionBlockKind 
 import { BLOCK_JOIN } from '@goondocks/myco-shared/recall';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
-import { TRANSCRIPT_PROMPTS_AGENT } from '../member/transcript-prompts.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { isCompactionOrdinal } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import type { HookResponse } from './response.js';
 
-export { readAntigravityPromptsFromTranscript } from '../member/transcript-prompts.js';
 
 /**
  * The block served at the session's start (or a compaction's), rendered here (`renderedBlock`), with the branch and
@@ -69,8 +67,8 @@ export async function main(opts: HookMainOptions = {}) {
     const due = HOOK_CONFIG[agent]?.capabilities.sessionStartInjection === true && !readSessionState(run.spool.dir, sessionId).delivered.includes(delivered);
     const served = due ? sessionStartBlock(run, ask.kind === 'compact' ? 'compact' : 'start', git.branch) : undefined;
     const response = served?.response;
-    // A harness with no prompt hook writes its prompts only to its transcript: the helper reads them from it.
-    const backfill = agent === TRANSCRIPT_PROMPTS_AGENT && transcriptPath ? { transcriptPath, at: run.now() } : undefined;
+    // A harness with no prompt hook (`capture.promptsFromTranscript`) has its prompts read from the transcript by the helper.
+    const backfill = HOOK_CONFIG[agent]?.promptsFromTranscript === true && transcriptPath ? { transcriptPath, at: run.now() } : undefined;
     return {
       events,
       response,

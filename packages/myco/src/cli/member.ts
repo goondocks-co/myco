@@ -28,6 +28,7 @@ import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-u
 import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
+import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
 import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
@@ -882,7 +883,20 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     err(`myco member: no registry entry for ${selection.root} — run \`myco member join <server-url> --project <id>\``);
   }
   reportMissedCapture(out, selection, deps);
+  reportRefusedHooks(out, deps);
   reportAutoJoin(out, selection, deps);
+}
+
+/** The hooks on this machine their own command refused (`member/refused-hooks.ts`): a count each, machine-wide. */
+function reportRefusedHooks(out: (line: string) => void, deps: MemberCliDeps): void {
+  const mycoHome = homeFor(deps);
+  const now = (deps.now ?? Date.now)();
+  for (const kind of REFUSED_HOOK_KINDS) {
+    const record = readRefusedHook(kind, mycoHome, now);
+    if (record === null) continue;
+    out(`refused hook: ${refusedHookWords(record)}`);
+    out(`            first ${when(record.firstAt)}, last ${when(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}; \`myco member provision\` rewrites the hooks it installed`);
+  }
 }
 
 /**

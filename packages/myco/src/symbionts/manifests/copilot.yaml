@@ -98,6 +98,11 @@ registration:
   # (vs. silent fallback) per /code-review finding C9.
   globalSettingsTarget: ~/.copilot/hooks/myco-hooks.json
   instructionsFile: .github/copilot-instructions.md
+  hookResponse:
+    format: plain-text
+    # Copilot reads a subagent's context at the top level of the answer, not inside `hookSpecificOutput`.
+    shapes:
+      SubagentStart: flat
 capabilities:
   # Copilot's PreToolUse hook accepts JSON on stdout and threads
   # `additionalContext` into the agent's context window before the

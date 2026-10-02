@@ -54,6 +54,8 @@ const ALLOWLIST: readonly string[] = [
   'member/**',
   'packages/myco-shared/src/recall.ts',
   'packages/myco-shared/src/capture-rules.ts',
+  // The harness `any_agent` capture rules also apply to, generated from the manifests: data only.
+  'packages/myco-shared/src/any-agent-rules.generated.ts',
   'packages/myco-shared/src/dot-path.ts',
   'packages/myco-shared/src/member-protocol.ts',
   'packages/myco-shared/src/run-control.ts',
@@ -84,6 +86,8 @@ const ALLOWLIST: readonly string[] = [
   // The `hook` verb's launch preamble (#1561): it anchors the process to the harness's project and honours the
   // project's runtime pin, read by the pin leaf, the binary resolver it shares, and the managed install paths.
   'cli/launch-preamble.ts',
+  // What the preamble reads from the manifests (each harness's project directory and stdin workspace), generated.
+  'cli/launch-preamble.generated.ts',
   'runtime/runtime-pin.ts',
   'runtime/binary-resolution.ts',
   'runtime/self-exec.ts',
