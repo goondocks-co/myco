@@ -19,6 +19,7 @@ import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { projectDiagnostics } from '../member/diagnostics.js';
+import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
@@ -104,6 +105,17 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string): Doc
  * build, and each recorded agent's skills folder still links this home's skills. Drift names the one command that
  * refreshes it.
  */
+/**
+ * The hooks on this machine their own command refused (`member/refused-hooks.ts`): one that names no harness, or no
+ * credential source. Each exits 0, so this is where the loss shows.
+ */
+export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] {
+  return REFUSED_HOOK_KINDS.flatMap((kind) => {
+    const record = readRefusedHook(kind, mycoHome, now);
+    return record === null ? [] : [row('Capture', 'warn', `${refusedHookWords(record)}, last ${iso(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}. Run \`myco member provision\` to rewrite the hooks it installed.`)];
+  });
+}
+
 export function setupChecks(mycoHome: string, version: string = getPluginVersion()): DoctorCheck[] {
   const record = readProvisionRecord(mycoHome);
   if (record === null) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
@@ -187,6 +199,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
   checks.push(...captureChecks(root, mycoHome, packageRoot));
+  checks.push(...refusedHookChecks(mycoHome, now));
   checks.push(...setupChecks(mycoHome));
   const vaultDir = path.join(root, '.myco');
   checks.push(...await checkMemberMcpResolution(vaultDir, { ...envOf(deps), MYCO_HOME: mycoHome }, { registryRead: 'strict' }));

@@ -6,11 +6,20 @@ detectionDir: ~/.claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json
 resumeCommand: "claude --resume {sessionId}"
+# The launch preamble starts a hook in the project directory Claude Code names here.
+projectDirEnvVar: CLAUDE_PROJECT_DIR
 hookFields:
   sessionId: session_id
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  # A session that continues one compacted starts with `source: compact` (`member/compaction.ts`).
+  compactionStart:
+    field: source
+    equals: compact
+  # A capture rule another manifest scopes `any_agent` applies to Claude Code's hooks too: Codex's drop of a session
+  # with no transcript path drops a Claude Code session with none.
+  anyAgentRules: true
   # Claude Code continues one conversation under a new session id on both an
   # auto-compact rollover and a fork. Either way it carries the transcript
   # forward and rewrites camelCase `sessionId` on every line, leaving the

@@ -1,4 +1,4 @@
-import { DEFAULT_SYMBIONT_NAME } from '../constants.js';
+import { DEFAULT_SYMBIONT_NAME } from '../daemon/default-symbiont.js';
 import { evaluateUserPromptRules, type PromptOrigin } from '../hooks/capture-rules.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';

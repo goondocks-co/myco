@@ -364,8 +364,6 @@ export const PROMPT_VECTOR_POOL_SIZE = 50;
 // --- Agent identity ---
 /** Default agent ID for the built-in intelligence agent. */
 export const DEFAULT_AGENT_ID = 'myco-agent';
-/** Fallback symbiont name when hook events arrive without agent attribution. */
-export { DEFAULT_CAPTURE_AGENT as DEFAULT_SYMBIONT_NAME } from '@goondocks/myco-shared/capture-rules';
 /** Agent ID for user-initiated MCP operations. */
 export const USER_AGENT_ID = 'user';
 /** Agent name for user-initiated MCP operations. */

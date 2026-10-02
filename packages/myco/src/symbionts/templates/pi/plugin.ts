@@ -16,7 +16,7 @@
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 // myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -44,7 +44,7 @@ import { Type } from "@sinclair/typebox";
 //   `accessSync`,
 //   `openSync`, `closeSync`, `writeSync`, `unlinkSync`,
 //   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
-//   `execFileSync`
+//   `spawnSync`
 // and nothing else from the outer file.
 //
 // Export discipline: opencode's legacy-plugin loader throws on any module
@@ -479,6 +479,10 @@ function appendTranscriptLine(
  * already resolved a home says which one, and `MYCO_HOME` is what the binary
  * reads first.
  *
+ * What the hook says on stderr is noted, each line once per session: a hook
+ * that refuses to capture (a command missing `--symbiont` or `--credential`,
+ * no membership) exits 0 and says why only there.
+ *
  * Returns the hook's parsed response, or null when Myco is not installed, the
  * binary fails, or the output is not the expected shape. Never throws and
  * never rejects: a capture path that breaks the host is worse than one that
@@ -502,7 +506,7 @@ function runMycoHook(
   // taken once and never touched goes stale on its own.
   if (!keepsSessionClaim(directory, agent, sessionId)) return null;
   try {
-    const stdout = execFileSync(
+    const run = spawnSync(
       resolveMycoBinary(directory),
       ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
       {
@@ -512,9 +516,16 @@ function runMycoHook(
         timeout: MYCO_HOOK_TIMEOUT_MS,
         maxBuffer: 4 * 1024 * 1024,
         encoding: "utf-8",
-        stdio: ["pipe", "pipe", "ignore"],
+        stdio: ["pipe", "pipe", "pipe"],
       },
     );
+    const said = typeof run.stderr === "string" ? run.stderr : "";
+    for (const line of said.split("\n").map((l) => l.trim().replace(/^\[myco\]\s*/, "")).filter(Boolean)) {
+      noteOnce(`hook-said-${agent}-${sessionId}-${line}`, `${agent} session ${sessionId}: ${line}`);
+    }
+    if (run.error) throw run.error;
+    if (run.status !== 0) throw new Error(`exited ${run.status ?? run.signal}`);
+    const stdout = run.stdout;
     const trimmed = typeof stdout === "string" ? stdout.trim() : "";
     if (!trimmed) return {};
     if (!trimmed.startsWith("{")) return { additionalContext: trimmed };

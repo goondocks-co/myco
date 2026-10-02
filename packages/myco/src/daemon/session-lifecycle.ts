@@ -69,7 +69,8 @@
  */
 import type { Logger } from './logger.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { epochSeconds, DEFAULT_SYMBIONT_NAME } from '@myco/constants.js';
+import { epochSeconds } from '@myco/constants.js';
+import { DEFAULT_SYMBIONT_NAME } from './default-symbiont.js';
 import { upsertSession, getSession, updateSession } from '@myco/db/queries/sessions.js';
 import { hasSessionTombstone } from '@myco/db/queries/session-tombstones.js';
 import { findTranscriptFor } from '@myco/symbionts/transcript-discovery.js';

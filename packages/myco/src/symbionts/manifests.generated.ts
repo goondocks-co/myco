@@ -28,6 +28,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "tool_response"
       ]
     },
+    "hookInput": {
+      "workspaceFromStdin": "workspacePaths"
+    },
     "capture": {
       "planDirs": [
         ".agents/plugins/myco/plans/"
@@ -44,7 +47,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
         ],
         "retention": "harness"
-      }
+      },
+      "promptsFromTranscript": true
     },
     "registration": {
       "hooksTarget": ".agents/plugins/myco/hooks.json",
@@ -149,6 +153,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "tool_response"
       ]
     },
+    "projectDirEnvVar": "CLAUDE_PROJECT_DIR",
     "resumeCommand": "claude --resume {sessionId}",
     "capture": {
       "planDirs": [
@@ -392,7 +397,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "reason": "compact continuation"
           }
         ]
-      }
+      },
+      "compactionStart": {
+        "field": "source",
+        "equals": "compact"
+      },
+      "anyAgentRules": true
     },
     "registration": {
       "hooksTarget": ".claude/settings.json",
@@ -986,6 +996,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "globalSettingsTarget": "~/.copilot/hooks/myco-hooks.json",
       "hooksFormat": "json",
+      "hookResponse": {
+        "format": "plain-text",
+        "shapes": {
+          "SubagentStart": "flat"
+        }
+      },
       "mcpTarget": ".vscode/mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
@@ -1238,8 +1254,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "toolOutput": [
         "tool_output",
         "tool_response"
+      ],
+      "sessionIdFromTranscriptPath": [
+        "/agent-transcripts/([^/]+)/\\1\\.jsonl$",
+        "(?:^|/)([^/.]+)\\.txt$"
       ]
     },
+    "projectDirEnvVar": "CURSOR_PROJECT_DIR",
     "capture": {
       "planDirs": [
         "~/.cursor/plans/",
@@ -1640,6 +1661,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "tool_response"
       ]
     },
+    "projectDirEnvVar": "WINDSURF_PROJECT_DIR",
     "capture": {
       "planDirs": [
         "~/.windsurf/plans/"

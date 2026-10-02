@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import path from 'node:path';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
+import { PROJECT_DIR_ENV_VARS } from '@myco/cli/launch-preamble.generated.js';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { recordStartingJob, resetStartingJob, startingJobRecorded as startingJobRecordedNow, STARTING_JOB_ENV } from '@myco/runtime/spawn-detached.js';
 import { runHook } from '@myco/hooks/entry.js';
@@ -99,16 +100,13 @@ function withInjectedFd0(buf: Buffer | null, deps: LaunchPreambleDeps): LaunchPr
 }
 
 const SAVED_ENV = { ...process.env };
+/** Every variable the preamble reads before a hook runs: the manifests' project directories among them. */
+const PREAMBLE_ENV = ['MYCO_AGENT_SESSION', 'MYCO_TRAMPOLINED', ...Object.values(PROJECT_DIR_ENV_VARS), 'MYCO_PROJECT_ROOT'];
 beforeEach(() => {
-  delete process.env.MYCO_AGENT_SESSION;
-  delete process.env.MYCO_TRAMPOLINED;
-  delete process.env.CURSOR_PROJECT_DIR;
-  delete process.env.CLAUDE_PROJECT_DIR;
-  delete process.env.WINDSURF_PROJECT_DIR;
-  delete process.env.MYCO_PROJECT_ROOT;
+  for (const k of PREAMBLE_ENV) delete process.env[k];
 });
 afterEach(() => {
-  for (const k of ['MYCO_AGENT_SESSION', 'MYCO_TRAMPOLINED', 'CURSOR_PROJECT_DIR', 'CLAUDE_PROJECT_DIR', 'WINDSURF_PROJECT_DIR', 'MYCO_PROJECT_ROOT']) {
+  for (const k of PREAMBLE_ENV) {
     if (SAVED_ENV[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED_ENV[k];
   }
@@ -147,12 +145,41 @@ describe('runLaunchPreamble — cwd anchor (hook only)', () => {
     expect(h.chdirCalls).toContain('/work/project');
   });
 
-  it('first matching project-dir env var wins (CURSOR before CLAUDE)', () => {
+  it('the project directory the named harness sets wins over another harness\'s', () => {
+    process.env.CURSOR_PROJECT_DIR = '/work/cursor';
+    process.env.CLAUDE_PROJECT_DIR = '/work/claude';
+    for (const [harness, dir] of [['cursor', '/work/cursor'], ['claude-code', '/work/claude']] as const) {
+      const h = makeHarness({ pin: null });
+      runLaunchPreamble('hook', ['session-start', `--symbiont=${harness}`], h.deps);
+      expect({ harness, chdir: h.chdirCalls }).toEqual({ harness, chdir: [dir] });
+    }
+  });
+
+  it('tries the other harnesses\' project directories in manifest-name order when the named harness sets none', () => {
+    // The table's order is the manifests' (by name): Claude Code's before Cursor's before Windsurf's.
+    expect(Object.keys(PROJECT_DIR_ENV_VARS)).toEqual([...Object.keys(PROJECT_DIR_ENV_VARS)].sort());
+    process.env.WINDSURF_PROJECT_DIR = '/work/windsurf';
     process.env.CURSOR_PROJECT_DIR = '/work/cursor';
     process.env.CLAUDE_PROJECT_DIR = '/work/claude';
     const h = makeHarness({ pin: null });
-    runLaunchPreamble('hook', ['session-start', '--symbiont', 'cursor'], h.deps);
-    expect(h.chdirCalls).toEqual(['/work/cursor']);
+    runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], h.deps);
+    expect(h.chdirCalls).toEqual(['/work/claude']);
+    delete process.env.CLAUDE_PROJECT_DIR;
+    const g = makeHarness({ pin: null });
+    runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], g.deps);
+    expect(g.chdirCalls).toEqual(['/work/cursor']);
+  });
+
+  it('starts in any harness\'s project directory, then MYCO_PROJECT_ROOT, when the named harness sets none', () => {
+    process.env.WINDSURF_PROJECT_DIR = '/work/windsurf';
+    process.env.MYCO_PROJECT_ROOT = '/work/myco';
+    const h = makeHarness({ pin: null });
+    runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], h.deps);
+    expect(h.chdirCalls).toEqual(['/work/windsurf']);
+    delete process.env.WINDSURF_PROJECT_DIR;
+    const g = makeHarness({ pin: null });
+    runLaunchPreamble('hook', ['session-start', '--symbiont', 'codex'], g.deps);
+    expect(g.chdirCalls).toEqual(['/work/myco']);
   });
 
   it('ignores a "." project-dir value', () => {

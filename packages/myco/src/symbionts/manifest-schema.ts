@@ -269,6 +269,22 @@ const CaptureManifestSchema = z.object({
    * pre-compact grandparent.
    */
   sessionContinuation: SessionContinuationSchema.optional(),
+  /**
+   * The harness writes its prompts to its transcript and to no hook: the hook that starts an invocation asks the
+   * member helper to read them from the transcript (`member/transcript-prompts.ts`), with this harness's parser.
+   */
+  promptsFromTranscript: z.boolean().optional(),
+  /**
+   * The session-start hook payload of a session that continues one compacted: the start is a compaction's when the
+   * payload's `field` equals `equals` (`member/compaction.ts`).
+   */
+  compactionStart: z.object({ field: z.string().min(1), equals: z.string() }).strict().optional(),
+  /**
+   * A capture rule any manifest scopes `any_agent` also applies to this harness's hooks, as well as to its own
+   * harness's: Codex's drop of a session with no transcript, say, applies to this harness's sessions too. Exactly one
+   * manifest declares it (codegen refuses none or two).
+   */
+  anyAgentRules: z.boolean().optional(),
 });
 
 const RegistrationSchema = z.object({
@@ -425,6 +441,11 @@ const RegistrationSchema = z.object({
     // rename — it's a structural wrap.
     format: z.enum(['plain-text', 'json', 'antigravity-inject-steps']),
     fieldNames: z.record(z.string(), z.string()).optional(),
+    /**
+     * How an event's answer is shaped where the harness departs from the `hookSpecificOutput` envelope: `flat` writes
+     * `{ additionalContext }` at the top level.
+     */
+    shapes: z.object({ SubagentStart: z.enum(['hookSpecificOutput', 'flat']) }).partial().strict().optional(),
   }).optional(),
   /**
    * Optional file path for a plugin deps package.json. When set, the installer writes
@@ -713,7 +734,19 @@ export const SymbiontManifestSchema = z.object({
     toolOutput: HookFieldPathSchema.default(['tool_output', 'tool_response']),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
+    /**
+     * Where the session id sits in the transcript path, for a payload that carries none: each a regular expression
+     * over the path with forward slashes, its first group the id, tried in order.
+     */
+    sessionIdFromTranscriptPath: z.array(z.string().min(1)).optional(),
   }),
+  /** The environment variable the harness sets to its project directory for a hook: the launch preamble starts there. */
+  projectDirEnvVar: z.string().optional(),
+  /** What a hook reads from its standard input before anything else does. */
+  hookInput: z.object({
+    /** The field of the hook payload naming the workspace the hook runs for (its first entry, for a list). */
+    workspaceFromStdin: z.string().min(1),
+  }).strict().optional(),
   /** Resume command template with {sessionId} placeholder. Omit for IDE-based agents. */
   resumeCommand: z.string().optional(),
   capture: CaptureManifestSchema.optional(),

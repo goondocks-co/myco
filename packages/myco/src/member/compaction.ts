@@ -1,14 +1,17 @@
 import { isCompactionOrdinal, type SessionContextRequest } from '@goondocks/myco-shared/recall';
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import type { HookRun } from './capture.js';
 import { readSessionState, type SessionState } from './session-state.js';
 
 /**
  * Whether this session-start is the one a harness fires after compacting the
- * conversation. Claude Code names the cause in `source`; the block served
- * after a compaction is the one thing the hook asks for on it.
+ * conversation: a harness whose manifest names the payload field and value that
+ * say so (`capture.compactionStart`). The block served after a compaction is the
+ * one thing the hook asks for on it.
  */
 export function compactionStart(run: Pick<HookRun, 'agent' | 'input'>): boolean {
-  return run.agent === 'claude-code' && run.input.raw.source === 'compact';
+  const when = HOOK_CONFIG[run.agent]?.compactionStart;
+  return when !== undefined && run.input.raw[when.field] === when.equals;
 }
 
 /** Applied under the spool append lock by the hook that observes a compaction, before the block for it is asked for. */

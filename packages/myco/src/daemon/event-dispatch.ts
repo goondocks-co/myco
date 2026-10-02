@@ -50,7 +50,8 @@ import { getSession, updateSession, reactivateSessionIfCompleted } from '@myco/d
 import { hasSessionTombstone, getSessionTombstone, deleteSessionTombstone, SESSION_TOMBSTONE_SOURCE } from '@myco/db/queries/session-tombstones.js';
 import { ensureSession, ensureSessionRowExists, ensureTranscriptPath, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { captureBatchImages, type CapturedImage } from './capture-images.js';
-import { DEFAULT_SYMBIONT_NAME, epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
+import { epochSeconds, LOG_PROMPT_PREVIEW_CHARS } from '@myco/constants.js';
+import { DEFAULT_SYMBIONT_NAME } from './default-symbiont.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { gateEventByCaptureRules } from './capture-gating.js';

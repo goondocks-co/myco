@@ -31,7 +31,8 @@ export interface HookRunResult {
 export interface RunHookOptions {
   fetch: FetchLike;
   credential?: CredentialSource | null;
-  symbiont?: string;
+  /** The harness the hook command names; null names none. */
+  symbiont?: string | null;
   /** Extra argv after `--symbiont <name>` (e.g. `--phases response`). */
   argv?: string[];
   now?: () => number;
@@ -75,7 +76,7 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
   const err: string[] = [];
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
-  process.argv = [originalArgv[0], 'myco', 'hook', name, '--symbiont', opts.symbiont ?? 'claude-code', ...(opts.argv ?? [])];
+  process.argv = [originalArgv[0], 'myco', 'hook', name, ...(opts.symbiont === null ? [] : ['--symbiont', opts.symbiont ?? 'claude-code']), ...(opts.argv ?? [])];
   _resetManifestCache();
   setBufferedStdin(Buffer.from(JSON.stringify(raw)));
   (process.stdout as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { out.push(String(chunk)); return true; }) as never;

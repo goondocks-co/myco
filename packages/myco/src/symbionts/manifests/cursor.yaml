@@ -5,10 +5,16 @@ configDir: .cursor
 detectionDir: ~/.cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
 settingsPath: .cursor/mcp.json
+projectDirEnvVar: CURSOR_PROJECT_DIR
 hookFields:
   sessionId: [conversation_id, session_id]
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
+  # A payload with no session id: the id is the transcript's directory and file name in the per-session layout, or
+  # the flat transcript's file name.
+  sessionIdFromTranscriptPath:
+    - '/agent-transcripts/([^/]+)/\1\.jsonl$'
+    - '(?:^|/)([^/.]+)\.txt$'
 capture:
   # Two layouts are in use: a flat `.txt` and a per-session directory holding
   # `.jsonl`. Order is significant — a session with both resolves to `.txt`.
