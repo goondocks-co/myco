@@ -100,27 +100,64 @@ describe('embedding in effect', () => {
     expect(await compatible.env!.embeddingProvider!()).toBeNull();
   });
 
-  it('refuses a model whose vectors would not compare with the ones search holds, and says why', async () => {
+  it('holds every change of the model while search holds results, leaving the stored choice and every result as they were', async () => {
     const t = hosted();
-    t.sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES ('proj_1', ?, 'v1', 'spore', 's1', 'r1', 1, 1)`,
-      [JSON.stringify(['cloudflare', '@cf/baai/bge-m3'])]);
-    const choices = (await json(await t.fetch(await asOwner('/api/settings')))).embedding as { providers: Array<{ id: string; models: Array<{ id: string; dimensions: number; refusal: string | null }> }> };
+    const receipt = (key: unknown[], id: string) => t.sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES ('proj_1', ?, ?, 'spore', ?, 'r1', 1, 1)`, [JSON.stringify(key), id, id]);
+    receipt(['cloudflare', '@cf/baai/bge-m3'], 'v1');
+    receipt(['cloudflare', '@cf/baai/bge-m3'], 'v2');
+    const receipts = () => t.sqlite.query(`SELECT model_key, id, ready FROM embedding_receipts ORDER BY id`).all();
+    const held = receipts();
+    const choices = (await json(await t.fetch(await asOwner('/api/settings')))).embedding as { switchable: boolean; providers: Array<{ id: string; models: Array<{ id: string; refusal: string | null }> }> };
     const workersAi = Object.fromEntries(choices.providers.find((p) => p.id === 'workers-ai')!.models.map((m) => [m.id, m.refusal]));
+    expect(choices.switchable).toBe(false);
     expect(workersAi['@cf/baai/bge-m3']).toBeNull();
-    expect(workersAi['@cf/baai/bge-large-en-v1.5']).toBeNull();
-    expect(workersAi['@cf/baai/bge-base-en-v1.5']).toMatch(/re-index/);
-    expect(workersAi['@cf/pfnet/plamo-embedding-1b']).toMatch(/at most 1536/);
-    const leaf = await put(t, 'embedding.model', '@cf/baai/bge-base-en-v1.5');
-    expect(leaf.status).toBe(400);
-    expect(String((await json(leaf)).detail)).toMatch(/768-dimension.*1024-dimension.*re-index/);
-    const whole = await t.fetch(await asOwnerPut('/api/embedding', { provider: 'openrouter', model: 'openai/text-embedding-3-small' }));
-    expect(whole.status).toBe(400);
-    expect(String((await json(whole)).detail)).toMatch(/1536-dimension.*1024-dimension.*re-index/);
-    expect(stored(t, 'embedding.model')).toBeUndefined();
-    expect(stored(t, 'embedding.provider')).toBeUndefined();
-    const same = await t.fetch(await asOwnerPut('/api/embedding', { provider: 'openrouter', model: 'baai/bge-m3' }));
+    expect(workersAi['@cf/baai/bge-large-en-v1.5']).toMatch(/rebuilds search for every source/);
+    expect(workersAi['@cf/pfnet/plamo-embedding-1b']).toMatch(/too large for search/);
+    for (const request of [
+      () => put(t, 'embedding.model', '@cf/baai/bge-large-en-v1.5'),
+      () => put(t, 'embedding.provider', 'openrouter'),
+      async () => t.fetch(await asOwnerPut('/api/embedding', { provider: 'openrouter', model: 'baai/bge-m3' })),
+      async () => t.fetch(await asOwnerPut('/api/embedding', { provider: 'workers-ai', model: '@cf/qwen/qwen3-embedding-0.6b' })),
+    ]) {
+      const answer = await request();
+      expect(answer.status).toBe(400);
+      expect(String((await json(answer)).detail)).toBe('Switching the embedding model rebuilds search for every source. Use Switch embedding model to build the new index alongside the current one');
+    }
+    expect([stored(t, 'embedding.provider'), stored(t, 'embedding.model')]).toEqual([undefined, undefined]);
+    expect(receipts()).toEqual(held);
+    const same = await t.fetch(await asOwnerPut('/api/embedding', { provider: 'workers-ai', model: '@cf/baai/bge-m3' }));
     expect(await json(same)).toEqual({ applied: true });
+  });
+
+  it('lets the model change freely while search holds nothing', async () => {
+    const t = hosted();
+    expect(await json(await t.fetch(await asOwnerPut('/api/embedding', { provider: 'openrouter', model: 'openai/text-embedding-3-small' })))).toEqual({ applied: true });
+    expect(await json(await put(t, 'embedding.model', 'baai/bge-m3'))).toEqual({ applied: true });
     expect([stored(t, 'embedding.provider'), stored(t, 'embedding.model')]).toEqual(['openrouter', 'baai/bge-m3']);
+    const plamo = await t.fetch(await asOwnerPut('/api/embedding', { provider: 'workers-ai', model: '@cf/pfnet/plamo-embedding-1b' }));
+    expect(plamo.status).toBe(400);
+  });
+
+  it('keeps a self-hosted OpenAI endpoint of its own in use without the key, reported invalid, until it is reset', async () => {
+    const t = selfHosted();
+    t.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.provider', '"openai"', 1, 'historic'), ('embedding.base_url', '"https://proxy.internal/v1"', 1, 'historic')`);
+    await t.fetch(await asOwnerPut('/api/secrets/openai', { value: 'openai-key-for-the-test' }));
+    const leaves = await rows(t);
+    expect(leaves.get('embedding.base_url')).toMatchObject({ state: 'invalid', effective: 'https://proxy.internal/v1', reason: expect.stringContaining('without your OpenAI key') });
+    let request: Request | undefined;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => { request = new Request(url, init); return Response.json({ data: [{ embedding: [1, 0] }] }); }) as typeof fetch;
+    try { await (await t.env!.embeddingProvider!())!.embed('query'); } finally { globalThis.fetch = original; }
+    expect(request!.url).toBe('https://proxy.internal/v1/embeddings');
+    expect(request!.headers.get('authorization')).toBeNull();
+    expect((await t.env!.embeddingProvider!())!.modelKey).toBe(JSON.stringify(['openai', 'text-embedding-3-small', 'https://proxy.internal/v1/embeddings']));
+    t.sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES ('proj_1', ?, 'v1', 'spore', 's1', 'r1', 1, 1)`,
+      [JSON.stringify(['openai', 'text-embedding-3-small', 'https://proxy.internal/v1/embeddings'])]);
+    expect((await reset(t, 'embedding.base_url')).status).toBe(400);
+    expect(stored(t, 'embedding.base_url')).toBe('https://proxy.internal/v1');
+    t.sqlite.run(`DELETE FROM embedding_receipts`);
+    expect(await json(await reset(t, 'embedding.base_url'))).toEqual({ applied: true });
+    expect((await t.env!.embeddingProvider!())!.modelKey).toBe(JSON.stringify(['openai', 'text-embedding-3-small', 'https://api.openai.com/v1/embeddings']));
   });
 });
 

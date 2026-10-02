@@ -18,7 +18,7 @@ import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, ty
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
-import { enabledCapabilities, isScheduleCount, settingTexts, type ProjectCapability } from './settings.js';
+import { DEPLOYMENT_LEAF_SPECS, enabledCapabilities, isScheduleCount, settingTexts, storedSettings, type ProjectCapability } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
@@ -87,11 +87,24 @@ const parse = (value: string | undefined): unknown => {
   try { return JSON.parse(value); } catch { return undefined; }
 };
 
+/**
+ * The code map's own refresh period in minutes, or undefined where none is stored. A stored period the rule refuses
+ * keeps the map refreshing as near to it as the rule allows: a number is clamped into the bounds, and anything else
+ * keeps the declared interval.
+ */
+async function mapPeriodMinutes(env: ServerEnv): Promise<number | undefined> {
+  const leaf = 'cortex.canopy.refresh.background_period_minutes';
+  const held = (await storedSettings(env.db, [leaf])).get(leaf);
+  if (held === undefined) return undefined;
+  if (held.violation === null) return held.value as number;
+  const spec = DEPLOYMENT_LEAF_SPECS[leaf] as { min: number; max: number };
+  return typeof held.value === 'number' && Number.isFinite(held.value) ? Math.min(spec.max, Math.max(spec.min, Math.floor(held.value))) : undefined;
+}
+
 /** The Deployment's scheduling leaves: off until the owner turns scheduling on. */
 export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
   const mapEnabled = 'cortex.canopy.refresh.background_enabled';
-  const mapPeriod = 'cortex.canopy.refresh.background_period_minutes';
-  const byLeaf = await settingTexts(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks', mapEnabled, mapPeriod]);
+  const byLeaf = await settingTexts(env.db, ['agent.scheduled_tasks_enabled', 'agent.cold_project_threshold_days', 'agent.scheduled_tasks_active_window_days', 'agent.tasks', mapEnabled]);
   const days = (leaf: string, fallback: number): number => {
     const v = parse(byLeaf.get(leaf));
     return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback;
@@ -100,7 +113,7 @@ export async function scheduleLeaves(env: ServerEnv): Promise<ScheduleLeaves> {
   const tasks = overrides !== null && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides as Record<string, unknown> : {};
   // Unset, the map refresh is off and keeps the interval `TASK_SCHEDULE` declares.
   const enabled = parse(byLeaf.get(mapEnabled)) === true;
-  const period = parse(byLeaf.get(mapPeriod));
+  const period = await mapPeriodMinutes(env);
   const mapOverride = tasks[MAP_TASK];
   const mapTask = mapOverride !== null && typeof mapOverride === 'object' && !Array.isArray(mapOverride) ? mapOverride as Record<string, unknown> : {};
   const configured = scheduleOverride(MAP_TASK, tasks);

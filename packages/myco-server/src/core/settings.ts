@@ -5,9 +5,9 @@ import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS } from './task-catalogue.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
+import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import {
-  EMBEDDING_SELECTION_LEAVES, dimensionRefusal, embeddingEndpointRefusal, heldPartition, resolveEmbedding,
+  EMBEDDING_SELECTION_LEAVES, embeddingEndpointRefusal, heldPartition, resolveEmbedding, selectionChangeRefusal,
   type EmbeddingSelectionLeaf, type StoredEmbedding,
 } from './embedding/policy.js';
 
@@ -416,6 +416,8 @@ export type SettingsRefusal =
   | { reason: 'invalid_value'; leaf: string; detail: string }
   | { reason: 'unauthorized'; leaf: string }
   | { reason: 'retired'; leaf: string }
+  /** Another write changed the leaves this one is judged against before it landed; nothing is written. */
+  | { reason: 'conflict'; leaf: string }
   | { reason: 'unknown_capability'; capability: string };
 
 /** A stored leaf: its value and who last wrote it. */
@@ -451,6 +453,11 @@ export interface SettingsWriter {
   setEmbedding(choice: EmbeddingChoice, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Remove one configured leaf so its built-in value applies. */
   resetLeaf(leaf: string, actor: string, nowMs?: number): Promise<SettingsResult>;
+  /**
+   * Set one task's schedule switch in the task overrides document, keeping every other field. An absent task entry or
+   * schedule is created; a stored document, entry or schedule that is present and not an object is refused.
+   */
+  setTaskSwitch(task: string, enabled: boolean, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Change one task tier in the live task overrides document. */
   setTaskTier(task: string, tier: ReasoningTier | null, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Admit or withdraw a Project's capability. */
@@ -489,9 +496,48 @@ export function leafOffChecks(leaf: string, off: string): { admission: { sql: st
   };
 }
 
+/** A settings table read once, keyed by leaf. */
+type SettingsRows = Map<string, { value: string; updated_at: number; updated_by: string }>;
+
+/** Stores whose settings reads answer from one read made earlier. */
+const SNAPSHOTS = new WeakMap<RelationalStore, SettingsRows>();
+
+/**
+ * A view of `db` whose settings reads all answer from one read of the settings table, made now; every other
+ * statement goes to `db` itself. A request that resolves many policies reads the table once through it.
+ */
+export async function settingsSnapshot(db: RelationalStore): Promise<RelationalStore> {
+  if (SNAPSHOTS.has(db)) return db;
+  const { results } = await db.prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
+    .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>();
+  const view = new Proxy(db, { get: (target, key) => { const member = Reflect.get(target, key, target) as unknown; return typeof member === 'function' ? member.bind(target) : member; } });
+  SNAPSHOTS.set(view, new Map(results.map((row) => [row.leaf, row])));
+  return view;
+}
+
+/** One stored leaf as a policy that judges its own stored values reads it: the value, and what its rule says of it. */
+export interface StoredSetting { value: unknown; violation: string | null }
+
+/**
+ * Each named leaf's stored value with its rule's verdict, for a policy that does not fall back to the default when the
+ * stored value is unusable: one that holds, clamps or keeps everything instead. A leaf never written is absent.
+ */
+export async function storedSettings(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, StoredSetting>> {
+  const out = new Map<string, StoredSetting>();
+  for (const [leaf, text] of await leafValues(db, leaves)) {
+    let value: unknown;
+    try { value = JSON.parse(text); } catch (error) { if (!(error instanceof SyntaxError)) throw error; out.set(leaf, { value: text, violation: 'The stored value does not read' }); continue; }
+    const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+    out.set(leaf, { value, violation: spec === undefined ? 'not a Deployment leaf' : leafRuleViolation(spec, value) });
+  }
+  return out;
+}
+
 /** The stored value of each named leaf, as the JSON text the settings surface wrote; a leaf never written is absent from the map. */
 export async function leafValues(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
   if (leaves.length === 0) return new Map();
+  const snapshot = SNAPSHOTS.get(db);
+  if (snapshot !== undefined) return new Map(leaves.flatMap((leaf) => { const row = snapshot.get(leaf); return row === undefined ? [] : [[leaf, row.value] as const]; }));
   const rows = await db
     .prepare(`SELECT leaf, value FROM deployment_settings WHERE leaf IN (${leaves.map(() => '?').join(', ')})`)
     .bind(...leaves)
@@ -511,7 +557,7 @@ export function storedLeafViolation(leaf: string, text: string): string | null {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec === undefined) return 'not a Deployment leaf';
   let value: unknown;
-  try { value = JSON.parse(text); } catch (error) { if (error instanceof SyntaxError) return 'Stored value is not valid JSON'; throw error; }
+  try { value = JSON.parse(text); } catch (error) { if (error instanceof SyntaxError) return 'The stored value does not read'; throw error; }
   return leafRuleViolation(spec, value);
 }
 
@@ -555,28 +601,70 @@ export async function heldPartitions(db: RelationalStore) {
   return results.map((row) => heldPartition(row.model_key));
 }
 
+/** The stored embedding leaves as one write reads and conditions on them: each parsed, with the stamp of its last write. */
+async function embeddingRows(db: RelationalStore): Promise<{ stored: StoredEmbedding; stamps: Map<string, string> }> {
+  const { results } = await db.prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings WHERE leaf IN (${EMBEDDING_SELECTION_LEAVES.map(() => '?').join(', ')})`)
+    .bind(...EMBEDDING_SELECTION_LEAVES).all<{ leaf: EmbeddingSelectionLeaf; value: string; updated_at: number; updated_by: string }>();
+  const stored: StoredEmbedding = {};
+  for (const row of results) {
+    try { stored[row.leaf] = JSON.parse(row.value); } catch (error) { if (!(error instanceof SyntaxError)) throw error; stored[row.leaf] = { malformed: row.value }; }
+  }
+  return { stored, stamps: new Map(results.map((row) => [row.leaf, `${row.updated_at}:${row.updated_by}`])) };
+}
+
+/** A stored leaf's stamp, or `absent`, in SQL. Bound as: the leaf. */
+const STAMP_SQL = `COALESCE((SELECT updated_at || ':' || updated_by FROM deployment_settings WHERE leaf = ?), 'absent')`;
+
 /**
- * Why a change to the embedding selection is refused on this target, or null. `changes` names each leaf written,
- * with undefined for one removed. A written part that is invalid or not offered here is refused; so is a selection
- * whose vectors could not be compared with those the index holds (`dimensionRefusal`). A removal is judged on
- * dimensions alone: it is how a value the target ignores is cleared.
+ * Judge and write a change to the embedding selection on this target, as one compare-and-set. `changes` names each
+ * leaf written, with undefined for one removed. A written part that is invalid or not offered here is refused; so is
+ * any change of the model identity while search holds results (`selectionChangeRefusal`). Every statement of the
+ * write carries the condition that the three leaves still stand as they were judged, or as this write left them, and
+ * that search still holds nothing where it held nothing: a write that lost a race to another changes nothing and
+ * answers a conflict.
  */
-async function embeddingChangeRefusal(db: RelationalStore, target: DeploymentTarget | undefined, changes: StoredEmbedding): Promise<string | null> {
-  if (target === undefined) return 'this write names no server type, so the embedding choice cannot be judged';
-  const before = await storedEmbedding(db);
+async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | undefined, changes: StoredEmbedding, actor: string, nowMs: number, leaf: string): Promise<SettingsResult> {
+  if (target === undefined) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'this write names no server type, so the embedding choice cannot be judged' } };
+  const { stored: before, stamps } = await embeddingRows(db);
   const candidate: StoredEmbedding = { ...before };
-  for (const [leaf, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
-    if (value === undefined) delete candidate[leaf];
-    else candidate[leaf] = value;
+  const parts = Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>;
+  for (const [part, value] of parts) {
+    if (value === undefined) delete candidate[part];
+    else candidate[part] = value;
+  }
+  const fixed = candidate['embedding.base_url'] !== undefined && changes['embedding.base_url'] !== undefined && isEmbeddingProvider(candidate['embedding.provider'])
+    && !EMBEDDING_CATALOGUE[candidate['embedding.provider']].endpoint.editable ? EMBEDDING_CATALOGUE[candidate['embedding.provider']] : null;
+  if (fixed !== null) {
+    return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: `${fixed.label} uses its own endpoint; choose ${EMBEDDING_CATALOGUE['openai-compatible'].label} to name an endpoint of your own` } };
   }
   const resolved = resolveEmbedding(candidate, target);
-  for (const [leaf, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
+  for (const [part, value] of parts) {
     if (value === undefined) continue;
-    const { state, reason } = resolved.leaves[leaf];
-    if (state === 'invalid' || state === 'not-applicable') return reason;
+    const { state, reason } = resolved.leaves[part];
+    if (state === 'invalid' || state === 'not-applicable') return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: reason ?? 'refused' } };
   }
-  if (resolved.selection?.modelKey === resolveEmbedding(before, target).selection?.modelKey) return null;
-  return dimensionRefusal(resolved.selection, await heldPartitions(db));
+  const held = await heldPartitions(db);
+  const refusal = selectionChangeRefusal(resolveEmbedding(before, target).selection, resolved.selection, held);
+  if (refusal !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: refusal } };
+
+  const ours = `${nowMs}:${actor}`;
+  const removed = new Set(parts.filter(([, value]) => value === undefined).map(([part]) => part));
+  const unchanged = EMBEDDING_SELECTION_LEAVES.map((part) => `${STAMP_SQL} IN (?, ?${removed.has(part) ? ", 'absent'" : ''})`).join(' AND ')
+    + (held.length === 0 ? ' AND NOT EXISTS (SELECT 1 FROM embedding_receipts WHERE ready >= 0)' : '');
+  const unchangedBinds = EMBEDDING_SELECTION_LEAVES.flatMap((part) => [part, stamps.get(part) ?? 'absent', ours]);
+  const statements = parts.flatMap(([part, value]) => value !== undefined
+    ? [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) SELECT ?, ?, ?, ? WHERE ${unchanged}
+        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+      .bind(part, JSON.stringify(value), nowMs, actor, ...unchangedBinds)]
+    : stamps.has(part) ? [
+      db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${unchanged}`).bind(part, ...unchangedBinds),
+      db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) SELECT ?, ?, ? WHERE ${unchanged}
+        ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(part, nowMs, actor, ...unchangedBinds),
+    ] : []);
+  if (statements.length === 0) return { applied: true };
+  const results = await db.batch(statements);
+  if (results.some((result) => result.meta.changes === 0)) return { applied: false, refusal: { reason: 'conflict', leaf } };
+  return { applied: true };
 }
 
 /**
@@ -627,10 +715,14 @@ export function settingsWriter(
           catch (error) { if (!(error instanceof SyntaxError)) throw error; }
         }
         const spec = DEPLOYMENT_LEAF_SPECS[leaf]!;
-        const detail = leafRuleViolation(spec, value, previous)
-          ?? ('type' in spec && spec.type === 'embedding' ? await embeddingChangeRefusal(db, opts.target, { [spec.leaf]: value }) : null);
+        const detail = leafRuleViolation(spec, value, previous);
         if (detail !== null) {
           return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+        }
+        if ('type' in spec && spec.type === 'embedding') {
+          const written = await writeEmbedding(db, opts.target, { [spec.leaf]: value }, actor, nowMs, leaf);
+          if (written.applied) await rearm({ leaf });
+          return written;
         }
         await db
           .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
@@ -650,16 +742,9 @@ export function settingsWriter(
           const violation = value === undefined ? null : embeddingPartViolation(part, value);
           if (violation !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf: part, detail: violation } };
         }
-        const detail = await embeddingChangeRefusal(db, opts.target, changes);
-        if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
-        const upsert = (part: string, value: unknown) => db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
-          ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-          .bind(part, JSON.stringify(value), nowMs, actor);
-        const held = await leafValues(db, EMBEDDING_SELECTION_LEAVES);
-        await db.batch((Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>).flatMap(([part, value]) => value !== undefined ? [upsert(part, value)]
-          : held.has(part) ? [db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(part), resetRecord(part, actor, nowMs)] : []));
-        for (const part of EMBEDDING_SELECTION_LEAVES) await rearm({ leaf: part });
-        return { applied: true };
+        const written = await writeEmbedding(db, opts.target, changes, actor, nowMs, leaf);
+        if (written.applied) for (const part of EMBEDDING_SELECTION_LEAVES) await rearm({ leaf: part });
+        return written;
       });
     },
 
@@ -667,8 +752,9 @@ export function settingsWriter(
       return withLeafWrite({ leaf, actor }, async () => {
         const spec = DEPLOYMENT_LEAF_SPECS[leaf]!;
         if ('type' in spec && spec.type === 'embedding') {
-          const detail = await embeddingChangeRefusal(db, opts.target, { [spec.leaf]: undefined });
-          if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+          const written = await writeEmbedding(db, opts.target, { [spec.leaf]: undefined }, actor, nowMs, leaf);
+          if (written.applied) await rearm({ leaf });
+          return written;
         }
         const held = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
         let previous: unknown;
@@ -687,6 +773,22 @@ export function settingsWriter(
       });
     },
 
+    async setTaskSwitch(task, enabled, actor, nowMs) {
+      const leaf = 'agent.tasks';
+      const unreadable: SettingsResult = { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the task overrides held by the server cannot be read' } };
+      const raw = (await leafValues(db, [leaf])).get(leaf);
+      let held: unknown = {};
+      if (raw !== undefined) {
+        try { held = JSON.parse(raw); } catch (error) { if (!(error instanceof SyntaxError)) throw error; return unreadable; }
+      }
+      if (!isRecord(held)) return unreadable;
+      const entry = Object.hasOwn(held, task) ? held[task] : {};
+      if (!isRecord(entry)) return unreadable;
+      const schedule = Object.hasOwn(entry, 'schedule') ? entry.schedule : {};
+      if (!isRecord(schedule)) return unreadable;
+      return this.setLeaf(leaf, { ...held, [task]: { ...entry, schedule: { ...schedule, enabled } } }, actor, nowMs);
+    },
+
     async setTaskTier(task, tier, actor, nowMs) {
       const leaf = 'agent.tasks';
       return withLeafWrite({ leaf, value: { task, tier }, actor }, async () => {
@@ -695,7 +797,7 @@ export function settingsWriter(
         const held = (await leafValues(db, [leaf])).get(leaf);
         if (held !== undefined) {
           let value: unknown;
-          try { value = JSON.parse(held); } catch { return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'stored task overrides are not valid JSON' } }; }
+          try { value = JSON.parse(held); } catch { return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the stored task overrides do not read' } }; }
           if (!isRecord(value)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'stored task overrides are not an object' } };
         }
         const taskPath = `$.${JSON.stringify(task)}`;
@@ -742,9 +844,10 @@ export function settingsWriter(
     },
 
     async leaves() {
-      const { results } = await db
+      const snapshot = SNAPSHOTS.get(db);
+      const results = snapshot !== undefined ? [...snapshot.entries()].map(([leaf, row]) => ({ ...row, leaf })) : (await db
         .prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
-        .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>();
+        .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>()).results;
       const out: Record<string, LeafRecord> = {};
       for (const r of results) {
         try {

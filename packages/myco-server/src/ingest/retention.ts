@@ -16,10 +16,10 @@
  * belongs to no row and follows no deletion, so nothing signals it. That gap
  * predates this module and needs a sweep walking the store rather than the rows.
  */
-import type { ServerEnv } from '../core/adapters.js';
+import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { blobHeld, type BlobRef } from '../core/blob-references.js';
 import { recordBlobCandidates, releaseBlobs } from '../core/object-release.js';
-import { leafValues } from '../core/settings.js';
+import { storedSettings } from '../core/settings.js';
 import { emit } from '../telemetry.js';
 
 const DAY_MS = 86_400_000;
@@ -35,6 +35,29 @@ export function transcriptRetentionDays(raw: string | undefined): number | null 
   try { parsed = JSON.parse(raw); } catch { return 'unreadable'; }
   if (typeof parsed !== 'number' || !Number.isInteger(parsed) || parsed < 0 || parsed > TRANSCRIPT_RETENTION_MAX_DAYS) return 'unreadable';
   return parsed === 0 ? null : parsed;
+}
+
+/** The leaf naming how long processed raw transcript bytes are kept. */
+export const TRANSCRIPT_RETENTION_LEAF = 'retention.transcripts';
+
+/**
+ * How long the Deployment keeps a transcript's raw bytes once they are processed, as `retention.transcripts` says:
+ * `forever` when no window is set or it is set to 0, `days` for a window, `unavailable` when the stored value breaks
+ * the leaf's rule — the retention job then prunes nothing. `configured` says whether an owner wrote the leaf. Only
+ * processed raw bytes are ever pruned; everything derived from them is kept.
+ */
+export type RetentionFact =
+  | { state: 'forever'; configured: boolean }
+  | { state: 'days'; days: number; configured: true }
+  | { state: 'unavailable'; reason: string };
+
+/** The Deployment's transcript window, as the retention job applies it. */
+export async function transcriptRetentionFact(db: RelationalStore): Promise<RetentionFact> {
+  const held = (await storedSettings(db, [TRANSCRIPT_RETENTION_LEAF])).get(TRANSCRIPT_RETENTION_LEAF);
+  if (held === undefined) return { state: 'forever', configured: false };
+  if (held.violation !== null) return { state: 'unavailable', reason: 'the stored window does not read; nothing is pruned until it is set again' };
+  const days = held.value as number;
+  return days === 0 ? { state: 'forever', configured: true } : { state: 'days', days, configured: true };
 }
 
 /**
@@ -87,14 +110,14 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
   // makes an orphan, so the sweep runs only where one has happened recently.
   const orphans = (await orphansPossible(env.db, now)) ? await freeOrphanedBlobs(env, now) : 0;
 
-  const window = transcriptRetentionDays((await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts'));
-  if (window === 'unreadable') {
+  const fact = await transcriptRetentionFact(env.db);
+  if (fact.state === 'unavailable') {
     emit({ kind: 'transcript_retention_refused', reason: 'refused' });
     return orphans;
   }
-  if (window === null) return orphans;
+  if (fact.state === 'forever') return orphans;
 
-  const cutoff = now - window * DAY_MS;
+  const cutoff = now - fact.days * DAY_MS;
   const { results: candidates } = await env.db
     .prepare(`SELECT s.project_id, s.transcript_id, s.base_offset, s.blob_key
                 FROM transcript_segments s

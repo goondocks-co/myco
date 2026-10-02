@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { EmbeddingChoices, EmbeddingModelChoice, EmbeddingProviderChoice } from '@goondocks/myco-shared/settings-contract';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { EmbeddingChoices, EmbeddingModelChoice } from '@goondocks/myco-shared/settings-contract';
 import { Button, Input, Select } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { settingsRefusalText, useSettings, useSettingsActions } from '../../../hooks/use-settings';
@@ -15,10 +16,10 @@ export const shortModel = (id: string): string => id.split('/').at(-1) ?? id;
 
 const dimensionWords = (dimensions: number | null): string => dimensions === null ? 'size not published' : `${dimensions} dimensions`;
 
-/** One model as the picker lists it: its name, its vector size, and whether it needs a re-index first. */
+/** One model as the picker lists it: its name, its size, and why it cannot be chosen now, in a word. */
 const modelOption = (model: EmbeddingModelChoice, capacity: number) => ({
   value: model.id,
-  label: `${model.id} · ${dimensionWords(model.dimensions)}${model.refusal === null ? '' : model.dimensions !== null && model.dimensions > capacity ? ' · too large for search' : ' · needs a re-index'}`,
+  label: `${model.id} · ${dimensionWords(model.dimensions)}${model.refusal === null ? '' : model.dimensions !== null && model.dimensions > capacity ? ' · too large for search' : ' · rebuilds search'}`,
   short: model.id,
 });
 
@@ -31,41 +32,59 @@ export function inUseWords(choices: EmbeddingChoices): string {
   return choices.reason === null ? words : `${words}. ${choices.reason}`;
 }
 
-/** The model a provider starts on: its default, unless the index's vectors rule it out, then the first that fits. */
-function startingModel(provider: EmbeddingProviderChoice): string {
-  const fits = provider.models.filter((m) => m.refusal === null);
-  return fits.some((m) => m.id === provider.defaultModel) || fits.length === 0 ? provider.defaultModel : fits[0]!.id;
+/** The cache key holding the provider a person has picked and not yet chosen a model for. */
+const PENDING_KEY = ['embedding-pending-provider'] as const;
+
+/**
+ * The provider a person has picked and not yet chosen a model for, shared by the provider and model rows through the
+ * page's query cache. Picking a provider writes nothing: only a model chosen for it does.
+ */
+function usePendingProvider(): [string | null, (next: string | null) => void] {
+  const client = useQueryClient();
+  const { data } = useQuery({ queryKey: PENDING_KEY, queryFn: () => null as string | null, initialData: null as string | null, staleTime: Infinity, gcTime: Infinity });
+  return [data ?? null, (next) => client.setQueryData(PENDING_KEY, next)];
 }
 
 /**
- * One row of the embedding picker. Provider, model and endpoint are written together through one request, so a
- * provider never meets a model or endpoint it does not offer; each row shows what the server resolves the leaf to
- * and, when it is not in use, why, with a reset where a value is stored.
+ * One row of the embedding picker. Provider, model and endpoint are written together, through one request, only when
+ * a model is chosen: picking a provider lists its models and changes nothing. Each row shows what the server resolves
+ * the leaf to and, when it is not in use, why, with a reset where a value is stored.
  */
 export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const settings = useSettings();
   const actions = useSettingsActions();
   const admin = useIsAdmin();
+  const [pending, setPendingProvider] = usePendingProvider();
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const choices = settings.data?.embedding;
   if (choices === undefined) return null;
+  if (choices === null) {
+    return field.kind === 'embedding-provider'
+      ? <SettingRow setting={field.leaf} label={field.label} note={field.note} status="Myco could not read the embedding choices; reload to try again." refused control={null} />
+      : null;
+  }
   // A leaf this server does not offer, with nothing stored, has nothing to show or change.
   if (row !== undefined && !row.appliesTo.includes(choices.target) && !row.configured) return null;
 
   const leafOf = (leaf: string) => settings.data?.leaves.find((l) => l.leaf === leaf);
-  const providerId = typeof leafOf('embedding.provider')?.effective === 'string' ? leafOf('embedding.provider')!.effective as string : null;
+  const inUse = typeof leafOf('embedding.provider')?.effective === 'string' ? leafOf('embedding.provider')!.effective as string : null;
+  const providerId = pending ?? inUse;
   const provider = choices.providers.find((p) => p.id === providerId) ?? null;
-  const model = typeof leafOf('embedding.model')?.effective === 'string' ? leafOf('embedding.model')!.effective as string : null;
-  const storedEndpoint = leafOf('embedding.base_url')?.configured === true && provider?.endpoint.editable === true ? leafOf('embedding.base_url')!.effective as string | null : null;
-  const pending = actions.setEmbedding.isPending || actions.resetLeaf.isPending;
+  const model = pending === null && typeof leafOf('embedding.model')?.effective === 'string' ? leafOf('embedding.model')!.effective as string : null;
+  const storedEndpoint = pending === null && leafOf('embedding.base_url')?.configured === true && provider?.endpoint.editable === true
+    ? leafOf('embedding.base_url')!.effective as string | null : null;
+  const busy = actions.setEmbedding.isPending || actions.resetLeaf.isPending;
   const locked = !admin;
   const id = `leaf-${field.leaf}`;
 
   const choose = (choice: { provider: string; model?: string; endpoint?: string }) => {
     setError(null);
     if (locked) return;
-    actions.setEmbedding.mutate(choice, { onError: (err) => setError(settingsRefusalText(err)), onSuccess: () => setDraft(null) });
+    actions.setEmbedding.mutate(choice, {
+      onError: (err) => setError(settingsRefusalText(err)),
+      onSuccess: () => { setDraft(null); setPendingProvider(null); },
+    });
   };
   const reset = () => {
     setError(null);
@@ -94,18 +113,19 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
         label={field.label}
         value={providerId ?? (none ? NONE : '')}
         placeholder="Choose a provider"
-        disabled={pending || locked}
+        disabled={busy || locked}
         options={[
           ...(none ? [{ value: NONE, label: 'None — search matches words only' }] : []),
           ...choices.providers.map((p) => ({ value: p.id, label: p.label, short: p.label.replace(/^Cloudflare /, '') })),
         ]}
         onValueChange={(next) => {
-          if (next === NONE) { if (row?.configured) reset(); return; }
-          const picked = choices.providers.find((p) => p.id === next);
-          if (picked !== undefined && picked.id !== providerId) choose({ provider: picked.id, model: startingModel(picked) });
+          setError(null);
+          if (next === NONE) { setPendingProvider(null); if (row?.configured) reset(); return; }
+          setPendingProvider(next === inUse ? null : next);
         }}
       />
     );
+    if (pending !== null && provider !== null) status = `Choose a model below to switch search to ${provider.label}.`;
     status ??= inUseWords(choices);
   } else if (field.kind === 'embedding-model') {
     stacked = provider?.customModels === true;
@@ -114,14 +134,14 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
     labelled = provider !== null;
     control = provider === null ? <p aria-label={field.label} className="t-small text-muted">Choose a provider first.</p> : (
       <div className="flex w-full flex-col gap-s2">
-        <Select id={id} label={field.label} value={model ?? ''} placeholder={provider.defaultModel} disabled={pending || locked} options={options} onValueChange={pickModel} />
+        <Select id={id} label={field.label} value={model ?? ''} placeholder="Choose a model" disabled={busy || locked} options={options} onValueChange={pickModel} />
         {provider.customModels && !locked && (
           <Input
             aria-label="Another model name"
             className="max-w-measure t-mono"
             placeholder="Another model this server has loaded"
             value={draft ?? ''}
-            disabled={pending}
+            disabled={busy}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && draft !== null && draft.trim() !== '') pickModel(draft.trim()); }}
             onBlur={() => { if (draft !== null && draft.trim() !== '') pickModel(draft.trim()); }}
@@ -129,9 +149,9 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
         )}
       </div>
     );
-    const held = choices.held[0];
-    if (status === null && held !== undefined) {
-      status = `Search holds ${held.dimensions === null ? '' : `${held.dimensions}-dimension `}vectors from ${shortModel(held.model)}; a model of another size needs a re-index.`;
+    const built = choices.held[0];
+    if (status === null && built !== undefined && !choices.switchable) {
+      status = `Search was built with ${shortModel(built.model)}${built.dimensions === null ? '' : ` (${built.dimensions} dimensions)`}. Another model rebuilds search, so it waits for Switch embedding model.`;
     }
     if (status === null && model !== null) status = `${dimensionWords(listed.find((m) => m.id === model)?.dimensions ?? null)}${row?.source === 'default' ? ' · the provider’s default' : ''}`;
   } else {
@@ -173,7 +193,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
       control={(
         <div className={`flex w-full items-center gap-s2${stacked || row?.configured === true ? ' max-w-measure' : ''}`}>
           {control}
-          {row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}
+          {row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={busy} onClick={reset}>Reset</Button>}
         </div>
       )}
     />

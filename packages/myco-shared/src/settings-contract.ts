@@ -68,6 +68,8 @@ export interface EmbeddingChoices {
   held: Array<{ model: string; dimensions: number | null }>;
   /** The most dimensions one vector may have in the index. */
   capacity: number;
+  /** Whether the model may change now: true only while search holds no results, since a change rebuilds it. */
+  switchable: boolean;
 }
 
 /** The embedding providers Myco can compute vectors with. */
@@ -101,6 +103,12 @@ export interface EmbeddingProviderSpec {
   /** The name a platform-bound provider's vectors are partitioned under, beside the model alone. */
   partition?: string;
 }
+
+/**
+ * Targets whose earlier releases sent a fixed-endpoint provider's requests to a stored endpoint of the admin's
+ * choosing, without its key. Such a stored endpoint is still honoured there, reported invalid, until it is reset.
+ */
+export const LEGACY_ENDPOINT_TARGETS: readonly DeploymentTarget[] = ['bun'];
 
 /** The default embedding provider of each target; null means none until an admin chooses one. */
 export const DEFAULT_EMBEDDING_PROVIDER: Readonly<Record<DeploymentTarget, EmbeddingProviderId | null>> = { cloudflare: 'workers-ai', bun: null };

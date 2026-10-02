@@ -6,7 +6,7 @@
  * settings surface all resolve through `resolveEmbedding`, so what Settings reports is what search uses.
  */
 import {
-  DEFAULT_EMBEDDING_PROVIDER, EMBEDDING_CATALOGUE, EMBEDDING_PROVIDERS, TARGET_LABELS, embeddingDimensions, embeddingProvidersFor, isEmbeddingProvider,
+  DEFAULT_EMBEDDING_PROVIDER, EMBEDDING_CATALOGUE, EMBEDDING_PROVIDERS, LEGACY_ENDPOINT_TARGETS, TARGET_LABELS, embeddingDimensions, embeddingProvidersFor, isEmbeddingProvider,
   type DeploymentTarget, type EmbeddingProviderId, type SettingSource, type SettingState,
 } from '@goondocks/myco-shared/settings-contract';
 import { VECTOR_DIMENSIONS } from './vectors.js';
@@ -67,9 +67,7 @@ export function embeddingModelRefusal(provider: EmbeddingProviderId, model: unkn
   if (model !== model.trim() || model.length > MODEL_MAX_CHARS || CONTROL.test(model)) return `expected a model name of at most ${MODEL_MAX_CHARS} characters without spaces at either end`;
   const dimensions = embeddingDimensions(provider, model);
   if (dimensions === null && !spec.customModels) return `${spec.label} does not offer ${model}`;
-  if (dimensions !== null && dimensions > VECTOR_DIMENSIONS) {
-    return `${model} produces ${dimensions}-dimension vectors; the search index holds at most ${VECTOR_DIMENSIONS}`;
-  }
+  if (dimensions !== null && dimensions > VECTOR_DIMENSIONS) return tooLargeRefusal(model, dimensions);
   return null;
 }
 
@@ -147,9 +145,17 @@ export function resolveEmbedding(stored: StoredEmbedding, target: DeploymentTarg
 
   let base = spec.endpoint.url;
   let endpointAnswer: EmbeddingLeafAnswer;
+  let credential = spec.credential;
   if (!spec.endpoint.editable) {
-    endpointAnswer = held.endpoint === undefined ? answer(base, base === null ? 'platform' : 'default', 'active')
-      : answer(base, base === null ? 'platform' : 'default', 'not-applicable', `${spec.label} uses its own endpoint, so this is not used. Reset it.`);
+    const legacy = held.endpoint !== undefined && LEGACY_ENDPOINT_TARGETS.includes(target) && spec.api !== 'workers-ai' && embeddingEndpointRefusal(held.endpoint) === null;
+    if (legacy) {
+      base = held.endpoint as string;
+      credential = null;
+      endpointAnswer = answer(base, 'configured', 'invalid', `${spec.label} with an endpoint of its own is no longer offered. Search keeps sending requests to ${base}, without your ${spec.label} key, until you reset this to use ${spec.label}'s own endpoint and key, or choose ${EMBEDDING_CATALOGUE['openai-compatible'].label}.`);
+    } else {
+      endpointAnswer = held.endpoint === undefined ? answer(base, base === null ? 'platform' : 'default', 'active')
+        : answer(base, base === null ? 'platform' : 'default', 'not-applicable', `${spec.label} uses its own endpoint, so this is not used. Reset it.`);
+    }
   } else if (held.endpoint === undefined) {
     endpointAnswer = base === null ? answer(null, 'unset', 'inactive', `${spec.label} needs an endpoint.`) : answer(base, 'default', 'active');
   } else {
@@ -161,8 +167,8 @@ export function resolveEmbedding(stored: StoredEmbedding, target: DeploymentTarg
   const leaves = { [EMBEDDING_PROVIDER_LEAF]: providerAnswer, [EMBEDDING_MODEL_LEAF]: modelAnswer, [EMBEDDING_ENDPOINT_LEAF]: endpointAnswer };
   let reason: string | null = null;
   if (spec.api !== 'workers-ai' && base === null) reason = `${spec.label} needs an endpoint before search can use it.`;
-  else if (readiness !== undefined && spec.api === 'workers-ai' && !readiness.workersAi) reason = 'This server has no Workers AI binding, so search matches words only.';
-  else if (readiness !== undefined && spec.credential !== null && !readiness.credentials.has(spec.credential)) {
+  else if (readiness !== undefined && spec.api === 'workers-ai' && !readiness.workersAi) reason = 'Workers AI is not set up on this server, so search matches words only.';
+  else if (readiness !== undefined && credential !== null && !readiness.credentials.has(credential)) {
     reason = `No ${spec.label} key is stored, so search matches words only. Add one under Provider keys.`;
   }
   if (reason !== null) {
@@ -171,7 +177,7 @@ export function resolveEmbedding(stored: StoredEmbedding, target: DeploymentTarg
   }
   const url = base === null ? null : requestUrl(provider, base);
   return {
-    selection: { provider, model, url, dimensions: embeddingDimensions(provider, model), credential: spec.credential, modelKey: modelKeyOf(provider, model, url) },
+    selection: { provider, model, url, dimensions: embeddingDimensions(provider, model), credential, modelKey: modelKeyOf(provider, model, url) },
     reason: null,
     leaves,
   };
@@ -185,24 +191,23 @@ export function heldPartition(modelKey: string): HeldPartition {
   return { modelKey, label: named?.model ?? modelKey, dimensions: named === null ? null : embeddingDimensions(named.provider, named.model) };
 }
 
+/** Why a model change is held while search holds results built with the current model. */
+export const SWITCH_REFUSAL = 'Switching the embedding model rebuilds search for every source. Use Switch embedding model to build the new index alongside the current one';
+
+/** Why a model cannot serve search on any server: its results are larger than search stores. */
+export const tooLargeRefusal = (model: string, dimensions: number): string =>
+  `${model} is too large for search: it has ${dimensions} dimensions and search stores at most ${VECTOR_DIMENSIONS}`;
+
 /**
- * Why a selection cannot replace the vectors the index holds, or null. A model whose dimensions differ from the held
- * vectors' — or whose dimensions Myco cannot confirm — leaves search with nothing to compare against until every
- * source is embedded again, so it is refused: switching across dimensions is a re-index, not a setting.
+ * Why `candidate` cannot replace `current`, or null. While search holds any results, every change of the model
+ * identity is refused: the change would retire every held result and leave search with nothing comparable until each
+ * source is embedded again. With nothing held any model that fits may be chosen, and turning search off retires
+ * nothing. Returning to a model whose results are still held is allowed when none is in use.
  */
-export function dimensionRefusal(selection: EmbeddingSelection | null, held: readonly HeldPartition[]): string | null {
-  if (selection === null) return null;
-  if (selection.dimensions !== null && selection.dimensions > VECTOR_DIMENSIONS) {
-    return `${selection.model} produces ${selection.dimensions}-dimension vectors; the search index holds at most ${VECTOR_DIMENSIONS}`;
-  }
-  for (const partition of held) {
-    if (partition.modelKey === selection.modelKey) continue;
-    if (partition.dimensions === null || selection.dimensions === null) {
-      return `Myco cannot confirm that ${selection.model} produces vectors of the same size as the ${partition.label} vectors search holds; switching needs a re-index of every source`;
-    }
-    if (partition.dimensions !== selection.dimensions) {
-      return `${selection.model} produces ${selection.dimensions}-dimension vectors and search holds ${partition.dimensions}-dimension ${partition.label} vectors; switching needs a re-index of every source`;
-    }
-  }
-  return null;
+export function selectionChangeRefusal(current: EmbeddingSelection | null, candidate: EmbeddingSelection | null, held: readonly HeldPartition[]): string | null {
+  if (candidate === null) return null;
+  if (candidate.dimensions !== null && candidate.dimensions > VECTOR_DIMENSIONS) return tooLargeRefusal(candidate.model, candidate.dimensions);
+  if (candidate.modelKey === current?.modelKey || held.length === 0) return null;
+  if (current === null && held.some((partition) => partition.modelKey === candidate.modelKey)) return null;
+  return SWITCH_REFUSAL;
 }

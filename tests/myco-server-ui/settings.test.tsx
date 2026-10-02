@@ -51,18 +51,27 @@ const rowFor = (leaf: string) => ({
   appliesTo: leaf === 'embedding.base_url' ? ['bun'] : ['cloudflare', 'bun'], revision: '0',
 });
 /** The embedding picker's choices on a hosted server whose index holds bge-m3 vectors. */
+const SWITCH = 'Switching the embedding model rebuilds search for every source. Use Switch embedding model to build the new index alongside the current one';
 const HOSTED_CHOICES = {
   target: 'cloudflare',
   providers: [
     { id: 'workers-ai', label: 'Cloudflare Workers AI', defaultModel: '@cf/baai/bge-m3', customModels: false, credential: null, endpoint: { editable: false, url: null },
-      models: [{ id: '@cf/baai/bge-m3', dimensions: 1024, refusal: null }, { id: '@cf/baai/bge-base-en-v1.5', dimensions: 768, refusal: '@cf/baai/bge-base-en-v1.5 produces 768-dimension vectors and search holds 1024-dimension bge-m3 vectors; switching needs a re-index of every source' }] },
+      models: [{ id: '@cf/baai/bge-m3', dimensions: 1024, refusal: null }, { id: '@cf/baai/bge-base-en-v1.5', dimensions: 768, refusal: SWITCH }] },
     { id: 'openrouter', label: 'OpenRouter', defaultModel: 'openai/text-embedding-3-small', customModels: false, credential: 'openrouter', endpoint: { editable: false, url: 'https://openrouter.ai/api/v1' },
-      models: [{ id: 'openai/text-embedding-3-small', dimensions: 1536, refusal: 'needs a re-index' }, { id: 'baai/bge-m3', dimensions: 1024, refusal: null }] },
+      models: [{ id: 'openai/text-embedding-3-small', dimensions: 1536, refusal: SWITCH }, { id: 'baai/bge-m3', dimensions: 1024, refusal: SWITCH }] },
   ],
   selection: { provider: 'workers-ai', model: '@cf/baai/bge-m3', endpoint: null, dimensions: 1024 },
   reason: null,
   held: [{ model: '@cf/baai/bge-m3', dimensions: 1024 }],
   capacity: 1536,
+  switchable: false,
+};
+/** The same server before search has built anything: every model that fits may be chosen. */
+const UNBUILT_CHOICES = {
+  ...HOSTED_CHOICES,
+  providers: HOSTED_CHOICES.providers.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m, refusal: null })) })),
+  held: [],
+  switchable: true,
 };
 /** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
@@ -358,23 +367,31 @@ describe('Settings, in five sections', () => {
     expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.scheduled_tasks_active_window_days', body: { value: 30 } });
   });
 
-  it('names the embedding search uses on a hosted server that stores nothing, and changes provider and model in one write', async () => {
-    const { sent } = server(base({ '/api/embedding': () => Response.json({ applied: true }) }));
+  it('names the embedding search uses on a hosted server that stores nothing, and writes a provider only with the model chosen for it', async () => {
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(), embedding: UNBUILT_CHOICES }),
+      '/api/embedding': () => Response.json({ applied: true }),
+    }));
     mount('/settings/models');
     await screen.findByLabelText('Embedding provider');
     await waitFor(() => expect(statusOf('embedding.provider')).toBe('In use: Cloudflare Workers AI · bge-m3 (1024 dimensions)'));
     expect(screen.queryByLabelText('Embedding endpoint')).toBeNull();
     await pick('Embedding provider', 'OpenRouter');
+    await waitFor(() => expect(statusOf('embedding.provider')).toBe('Choose a model below to switch search to OpenRouter.'));
+    expect(sent).toEqual([]);
+    await pick('Embedding model', 'baai/bge-m3 · 1024 dimensions');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/embedding', body: { provider: 'openrouter', model: 'baai/bge-m3' } });
     expect(Object.keys(sent[0]!.headers).some((h) => h.startsWith('x-myco-'))).toBe(false);
   });
 
-  it('says why a model of another size needs a re-index, and sends nothing', async () => {
+  it('holds a model change while search holds results, says why, and sends nothing', async () => {
     const { sent } = server(base({ '/api/embedding': () => Response.json({ applied: true }) }));
     mount('/settings/models');
-    await pick('Embedding model', '@cf/baai/bge-base-en-v1.5 · 768 dimensions · needs a re-index');
-    await waitFor(() => expect(statusOf('embedding.model')).toContain('switching needs a re-index'));
+    await waitFor(() => expect(statusOf('embedding.model')).toContain('Another model rebuilds search'));
+    await pick('Embedding provider', 'OpenRouter');
+    await pick('Embedding model', 'baai/bge-m3 · 1024 dimensions · rebuilds search');
+    await waitFor(() => expect(statusOf('embedding.model')).toBe(SWITCH));
     expect(sent).toEqual([]);
   });
 
@@ -416,7 +433,7 @@ describe('Settings, in five sections', () => {
     const row = doc.closest('[data-setting]') as HTMLElement;
     fireEvent.change(doc, { target: { value: '{"title-summary":' } });
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(statusOf('agent.tasks')).toBe('Enter valid JSON.'));
+    await waitFor(() => expect(statusOf('agent.tasks')).toBe('Enter the overrides as an object in braces, keyed by task name.'));
     fireEvent.change(doc, { target: { value: '{"title-summary": {"harness": "codex"}}' } });
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(sent).toHaveLength(1));

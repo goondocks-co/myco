@@ -172,7 +172,7 @@ it('keeps the retained probe manual-only even when an archived override asks for
   expect(TASK_SCHEDULE['container-smoke']).toBeNull();
   expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: true, intervalSeconds: 1 } } }).map(({ task }) => task)).not.toContain('container-smoke');
 });
-it('names request-driven titling admission and the probe credential use', () => {
+it('names request-driven titling admission, and no retired use of the Anthropic key on the page', () => {
   expect(admissionForTask(TITLING_TASK)).toEqual({ kind: 'capture' });
-  expect(SECRET_SLOTS.find(({ name }) => name === 'anthropic')?.alsoUsedFor).toContain('retained container probe');
+  expect(SECRET_SLOTS.find(({ name }) => name === 'anthropic')?.alsoUsedFor).toBeNull();
 });

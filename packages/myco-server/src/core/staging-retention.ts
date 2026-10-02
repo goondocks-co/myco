@@ -13,7 +13,7 @@
  * nothing.
  */
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { settingTexts } from './settings.js';
+import { storedSettings } from './settings.js';
 import { openRecoveryHold } from './object-release.js';
 import { within } from './recovery-inventory.js';
 import { classify, emit } from '../telemetry.js';
@@ -46,10 +46,14 @@ export const KEEP_FAILED_STAGINGS = 1;
  */
 export const PRUNE_FILE_BUDGET = 200;
 
-/** How many complete stagings this Deployment keeps now, with the default for a leaf never written. */
-export async function keptStagings(db: RelationalStore): Promise<number> {
-  const raw = (await settingTexts(db, [KEEP_STAGINGS_SETTING])).get(KEEP_STAGINGS_SETTING);
-  return raw === undefined ? KEEP_STAGINGS_DEFAULT : JSON.parse(raw) as number;
+/**
+ * How many complete stagings this Deployment keeps now, with the default for a leaf never written, or null while the
+ * stored count breaks its rule: then nothing is released until it is corrected or reset.
+ */
+export async function keptStagings(db: RelationalStore): Promise<number | null> {
+  const held = (await storedSettings(db, [KEEP_STAGINGS_SETTING])).get(KEEP_STAGINGS_SETTING);
+  if (held === undefined) return KEEP_STAGINGS_DEFAULT;
+  return held.violation === null ? held.value as number : null;
 }
 
 /** How long a pass waits for the producer's own reading before this wake leaves retention alone. */
@@ -62,10 +66,11 @@ export const PRUNE_READ_MS = 5_000;
  * advancing or its settlement is still unverified, and its operator's, while a full backup runs. A hold stays open
  * until the producer answers for it, so a Deployment that cannot reach its producer protects that attempt.
  */
-export async function stagingPrunePolicy(env: Pick<ServerEnv, 'db'>): Promise<StagingPrunePolicy> {
+export async function stagingPrunePolicy(env: Pick<ServerEnv, 'db'>): Promise<StagingPrunePolicy | null> {
   const [keep, producer, operator] = await Promise.all([
     keptStagings(env.db), openRecoveryHold(env.db, 'producer'), openRecoveryHold(env.db, 'operator'),
   ]);
+  if (keep === null) return null;
   return { keep, protect: [producer?.token, operator?.token].filter((token): token is string => token !== undefined) };
 }
 
@@ -81,6 +86,7 @@ export async function stagingPruneDue(env: Pick<ServerEnv, 'db' | 'recovery'>, r
   const recovery = env.recovery;
   if (recovery === undefined) return false;
   const policy = await stagingPrunePolicy(env);
+  if (policy === null) return false;
   const pending = await within(() => recovery.pendingStagingPrunes(policy), readMs, Date.now)
     .catch((error: unknown) => { emit({ kind: 'recovery_prune_unreadable', error_class: classify(error) }); return 0; });
   return pending > 0;

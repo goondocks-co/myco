@@ -10,7 +10,7 @@
  * cadence.
  */
 import type { ServerEnv } from './adapters.js';
-import { settingTexts } from './settings.js';
+import { storedSettings } from './settings.js';
 import { deferringOperatorHold } from './object-release.js';
 import type { ExportWait, ProducerRefusal, RecoveryProducerStatus } from './recovery-producer.js';
 
@@ -76,15 +76,23 @@ export interface RecoverySchedule {
   idleBecause: string | null;
 }
 
+/** The hours the leaf's rule admits. */
+const INTERVAL_MIN_HOURS = 1;
+const INTERVAL_MAX_HOURS = 720;
+
 /**
  * The interval, or null when automatic recovery is off.
  *
- * Off is the default and is never inferred from a Deployment's other settings: an absent, zero, negative or
- * unreadable value schedules nothing at all: no Deployment exports merely by existing.
+ * Off is the default and is never inferred from a Deployment's other settings: an absent value schedules nothing, so
+ * no Deployment exports merely by existing. A stored interval the rule refuses keeps backups running rather than
+ * turning them off: a number is clamped into the bounds, and anything else backs up at the longest interval.
  */
 export async function scheduledIntervalHours(env: Pick<ServerEnv, 'db'>): Promise<number | null> {
-  const held = (await settingTexts(env.db, [INTERVAL_SETTING])).get(INTERVAL_SETTING);
-  return held === undefined ? null : JSON.parse(held) as number;
+  const held = (await storedSettings(env.db, [INTERVAL_SETTING])).get(INTERVAL_SETTING);
+  if (held === undefined) return null;
+  if (held.violation === null) return held.value as number;
+  return typeof held.value === 'number' && Number.isFinite(held.value)
+    ? Math.min(INTERVAL_MAX_HOURS, Math.max(INTERVAL_MIN_HOURS, Math.floor(held.value))) : INTERVAL_MAX_HOURS;
 }
 
 /** Whether the last attempt is still going: it has settled in none of the stages an attempt rests in. */
@@ -163,7 +171,7 @@ export async function recoveryScheduleOf(env: ServerEnv, now: number, held?: Rec
   const status = env.recovery === undefined ? null : held ?? await env.recovery.status();
   const latest = status === null ? null : latestOf(status);
   const available = status === null ? { state: 'none' as const } : availabilityOf(status);
-  const readiness = env.recovery?.admission ?? { ready: false as const, reason: 'no producer' };
+  const readiness = env.recovery?.admission ?? { ready: false as const, reason: 'this server makes no recovery copies' };
   const ready = readiness.ready;
   const idle = { idleCode: null, supported, intervalHours, ready, dueAt: null, due: false, latest, available };
 

@@ -145,8 +145,8 @@ it('asks for the default policy where the leaf holds no value, rather than leavi
   } finally { d.close(); }
 });
 
-it('reads the leaf as a count, and a count its rule refuses as the default', async () => {
-  for (const [stored, expected] of [[1, 1], [5, 5], [0, 2], [-2, 2], ['two', 2], [3.7, 2]] as Array<[number | string, number]>) {
+it('reads the leaf as a count, and a count its rule refuses as keep everything', async () => {
+  for (const [stored, expected] of [[1, 1], [5, 5], [0, null], [-2, null], ['two', null], [3.7, null]] as Array<[number | string, number | null]>) {
     const d = await deployment({ keep: stored });
     try {
       expect(await keptStagings((d.env as unknown as { db: Parameters<typeof keptStagings>[0] }).db)).toBe(expected);
@@ -160,11 +160,11 @@ it('protects the holds this Deployment holds open, and stops protecting a releas
     const db = (d.env as unknown as { db: Parameters<typeof acquireRecoveryHold>[0] }).db;
     await acquireRecoveryHold(db, 'tok-producer', 1_000);
     await acquireRecoveryHold(db, 'tok-operator', 1_000, 'operator');
-    const policy = await stagingPrunePolicy(d.env as never);
+    const policy = (await stagingPrunePolicy(d.env as never))!;
     expect([policy.keep, [...policy.protect].sort()]).toEqual([1, ['tok-operator', 'tok-producer']]);
 
     await releaseRecoveryHold(db, 'tok-producer', 2_000, 'retired');
-    expect((await stagingPrunePolicy(d.env as never)).protect).toEqual(['tok-operator']);
+    expect((await stagingPrunePolicy(d.env as never))!.protect).toEqual(['tok-operator']);
   } finally { d.close(); }
 });
 

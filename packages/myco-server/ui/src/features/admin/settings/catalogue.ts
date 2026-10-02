@@ -149,7 +149,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     id: 'embedding',
     section: 'models',
     label: 'Search embeddings',
-    note: 'What makes search find things by meaning: the provider and model that turn text into vectors. A new model embeds every source again; one whose vectors are a different size from the ones search holds needs a re-index first.',
+    note: 'What makes search find things by meaning: the provider and model search reads every source with. Changing the model rebuilds search for every source, so a model is chosen once, before search is built.',
     leaves: [
       { leaf: 'embedding.provider', label: 'Embedding provider', kind: 'embedding-provider' },
       { leaf: 'embedding.model', label: 'Embedding model', kind: 'embedding-model' },
@@ -163,7 +163,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Per-task overrides',
     note: 'Overrides for each task, as one document.',
     leaves: [
-      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name. A model pin requires an agent in the same task override. “Title imported sessions” under Myco’s work writes its switch here.' },
+      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'An object keyed by task name, in braces. A model pin requires an agent in the same task override. “Title imported sessions” under Myco’s work writes its switch here.' },
     ],
   },
   {

@@ -35,6 +35,8 @@ export function settingsRefusalText(err: unknown): string {
         return 'The server could not read that value.';
       case 'retired':
         return 'That setting is retired.';
+      case 'conflict':
+        return 'This changed since the page read it. Refresh before saving again.';
       case 'invalid_value':
         return typeof body.detail === 'string' && body.detail !== '' ? `The server refused that value: ${body.detail.replace(/\.$/, '')}.` : 'The server refused that value.';
       case 'unknown_capability':

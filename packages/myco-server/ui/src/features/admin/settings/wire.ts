@@ -31,7 +31,8 @@ export type LeafRow = {
 export interface SettingsAnswer {
   leaves: LeafRow[];
   taskTiers: TaskTierRow[];
-  embedding: EmbeddingChoices;
+  /** Null where the server could not read them. */
+  embedding: EmbeddingChoices | null;
 }
 
 /** One worker outcome's effective reasoning tier. */

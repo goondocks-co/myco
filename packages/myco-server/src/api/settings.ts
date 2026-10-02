@@ -3,11 +3,12 @@ import { machineBlockFor } from '../core/machine-settings.js';
 import type { CredentialContext } from '../context.js';
 import type { OwnerContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
+import { classify, emit } from '../telemetry.js';
 import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter, taskOverridesMetadata, derivedLeafMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, derivedLeafMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
@@ -28,7 +29,7 @@ import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
 /** The credential slots this Deployment stores, each with the one use it serves (`secret-slots.ts`). */
 const SECRET_SLOTS = SECRET_SLOT_NAMES;
 
-const refusalStatus = (r: SettingsRefusal): number => (r.reason === 'unauthorized' ? 403 : 400);
+const refusalStatus = (r: SettingsRefusal): number => (r.reason === 'unauthorized' ? 403 : r.reason === 'conflict' ? 409 : 400);
 
 /**
  * One refusal shape for this surface.
@@ -83,11 +84,6 @@ function effectiveTaskTiers(value: unknown): TaskTierRow[] {
   });
 }
 
-/**
- * Every Deployment leaf: what is stored, and for a live leaf the effective answer of the policy its consumer acts
- * through (`core/settings-policies.ts`); the embedding picker's choices; and every outcome's tier. URL secrets are
- * redacted for non-admin readers.
- */
 /** A derived leaf's row: the constant its consumer applies, shown and never written. */
 function derivedRow(leaf: string): Partial<SettingsLeafRow> {
   const derived = derivedLeafMetadata(leaf);
@@ -110,9 +106,15 @@ export type SettingsLeafRow = {
   repair?: 'reset-leaf';
 } & EffectiveSetting;
 
-async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ leaves: SettingsLeafRow[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices }> {
-  const stored = await settingsWriter(env.db).leaves();
-  const effective = await effectiveSettings(env);
+/**
+ * Every Deployment leaf: what is stored, and for a live leaf the effective answer of the policy its consumer acts
+ * through (`core/settings-policies.ts`); the embedding picker's choices, or null where they cannot be read; and every
+ * outcome's tier. The settings table is read once for all of it. URL secrets are redacted for non-admin readers.
+ */
+async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ leaves: SettingsLeafRow[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices | null }> {
+  const read: ServerEnv = { ...env, db: await settingsSnapshot(env.db) };
+  const stored = await settingsWriter(read.db).leaves();
+  const effective = await effectiveSettings(read);
   const leaves = DEPLOYMENT_LEAVES.map((leaf): SettingsLeafRow => {
     const held = stored[leaf];
     const retired = RETIRED_LEAVES.has(leaf);
@@ -133,7 +135,10 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
     };
   });
   const taskTiers = effectiveTaskTiers(stored['agent.tasks']?.value);
-  const embedding = await embeddingChoices(env);
+  const embedding = await embeddingChoices(read).catch((error: unknown) => {
+    emit({ kind: 'embedding_choices_unreadable', error_class: classify(error) });
+    return null;
+  });
   if (!redacted) return { leaves, taskTiers, embedding };
   const redact = <T>(value: T): T => JSON.parse(JSON.stringify(value), (_key, v: unknown) => (typeof v === 'string' ? withoutUrlSecrets(v) : v)) as T;
   return { leaves: redact(leaves), taskTiers, embedding: redact(embedding) };
@@ -164,9 +169,13 @@ const withoutUrlSecrets = (value: string): string =>
  * fragment.
  */
 export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
-  const deployment = { persisted: true, ...await deploymentSettings(env, true) };
   // The asking machine's own settings, where its member claims it: what `myco login`, `member join` and `cutover` cache.
+  // Read first and apart: a Deployment leaf that cannot be described never keeps a machine from its own settings.
   const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId);
+  const deployment = await deploymentSettings(env, true).then((answer) => ({ persisted: true, ...answer })).catch((error: unknown) => {
+    emit({ kind: 'member_settings_unreadable', error_class: classify(error) });
+    return { persisted: true, leaves: [], taskTiers: [], embedding: null, unreadable: true };
+  });
   return ok({ ...deployment, ...(machine === null ? {} : { machine }) });
 });
 
@@ -182,7 +191,7 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
 /** `PUT /api/embedding`: set the embedding provider, and its model and endpoint, in one write. */
 export async function handleSetEmbedding(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
-  if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be a JSON object carrying a provider');
+  if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
   const choice = { provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) };
   const result = await writerFor(env).setEmbedding(choice, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);

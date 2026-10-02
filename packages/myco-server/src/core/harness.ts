@@ -91,7 +91,7 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   no_instruction: 'this server has no instructions for that task',
   not_landed: 'no machine can run that task yet',
   unknown_project: 'the project is not on this server',
-  probe_preferences_invalid: 'The retained probe cannot use its stored preferences or key.',
+  probe_preferences_invalid: 'The retained container check cannot use its stored preferences or key.',
   no_provider: 'search embeddings are unavailable; configure an embedding provider',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
 };
@@ -894,6 +894,11 @@ export function harnessPreference(byLeaf: ReadonlyMap<string, string>, task: str
 /** The leaves a claim resolves its worker, profile and credential through. */
 export const CLAIM_SETTING_LEAVES: readonly string[] = ['worker.harness', 'worker.harness_fallback', 'agent.tasks', ...PROFILE_SETTING_LEAVES];
 
+/** The leaves a claim resolves its worker, profile and credential through, as they stand now. */
+export function claimSettings(env: Pick<ServerEnv, 'db'>): Promise<Map<string, string>> {
+  return settingTexts(env.db, CLAIM_SETTING_LEAVES);
+}
+
 /** The worker preference every claim resolves, as the Deployment's leaves hold it now. */
 export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ preferred: string | null; fallback: string[] }> {
   const { preferred, fallback } = harnessPreference(await settingTexts(env.db, ['worker.harness', 'worker.harness_fallback']), '');
@@ -1018,7 +1023,7 @@ export async function claimNextRun(
   // A task is offered only to a worker that reports everything it needs.
   const reported = worker.capabilities ?? [];
   const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
-  const settings = await settingTexts(env.db, CLAIM_SETTING_LEAVES);
+  const settings = await claimSettings(env);
   await recordCapabilityHolds(env, reported, unmet, worker.now, settings);
   const excluded = [...RUNTIME_SERVED_TASKS, ...unmet];
   await recordProfileHolds(env, worker, settings);

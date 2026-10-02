@@ -132,7 +132,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       }
       save(n);
     } else if (field.kind === 'json') {
-      try { save(JSON.parse(draft)); } catch { setError('Enter valid JSON.'); }
+      try { save(JSON.parse(draft)); } catch { setError('Enter the overrides as an object in braces, keyed by task name.'); }
     } else {
       save(draft);
     }
