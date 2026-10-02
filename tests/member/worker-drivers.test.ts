@@ -20,7 +20,8 @@ import { offerOf } from '@myco/runner/detect.js';
 import { CALL_DETAIL_CHARS, callFailureDetail, failedCallsNote, reachedEnd, type RunEvent } from '@myco/runner/events.js';
 import { discardRunDir, mcpConfigOf, MCP_SERVER_NAME, RUN_INSTRUCTIONS_FILES, writeRunDir } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
-import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
+import { profileSupported, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret_value' };
 
@@ -50,6 +51,25 @@ describe('the harness manifest', () => {
     expect(Object.fromEntries(Object.entries(HARNESS_CREDENTIALS).map(([id, c]) => [id, c.slot]))).toEqual({
       'claude-code': 'anthropic', codex: 'codex', opencode: 'anthropic', cursor: 'anthropic', antigravity: null,
     });
+  });
+
+  it('offers explicit profile capabilities and keeps subscription credentials on Claude Code', () => {
+    expect(Object.fromEntries(HARNESSES.map((h) => [h.id, h.profile.model]))).toEqual({
+      'claude-code': 'flag', codex: 'config', opencode: 'config', cursor: 'none', antigravity: 'none',
+    });
+    const offered = offerOf(HARNESSES.map((h) => ({ id: h.id, installed: true, authenticated: true })));
+    expect(offered.offered.map((h) => h.profile)).toEqual(HARNESSES.filter(offerable).map((h) => h.profile));
+    const oauth = 'sk-ant-oat-test-token';
+    expect(credentialEnvFor('claude-code', oauth)).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: oauth });
+    expect(credentialEnvFor('opencode', oauth)).toEqual({});
+    expect(credentialEnvFor('cursor', oauth)).toEqual({});
+    expect(credentialEnvFor('opencode', 'sk-ant-api-test')).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-api-test' });
+  });
+
+  it('refuses an unknown advertised model capability', () => {
+    const profile = { tier: 'low', model: 'haiku', effort: 'low', sources: { tier: 'task', model: 'default' } } as const;
+    const malformed = { model: 'surprise', efforts: ['low'] } as unknown as ProfileCapability;
+    expect(profileSupported(profile, malformed)).toBe(false);
   });
 
   it('names three launch shapes, and the two harnesses with native drivers speak no protocol of their own', () => {
@@ -213,4 +233,3 @@ describe('what a run\'s record says of the calls that failed in it', () => {
     expect(failedCallsNote(events)).toBe('7 calls failed or were refused: a; b; c; d; e, and 2 more; the turn ended right after the last of them');
   });
 });
-

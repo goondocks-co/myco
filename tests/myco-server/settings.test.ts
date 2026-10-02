@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
+import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '@myco-server-worker/constants.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -23,6 +23,48 @@ function rig(opts: Parameters<typeof settingsWriter>[1] = {}) {
 }
 
 describe('deployment settings', () => {
+  it('patches the live task entry when a malformed entry is concurrently repaired', async () => {
+    for (const tier of [null, 'high'] as const) {
+      const r = rig();
+      r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
+        JSON.stringify({ 'title-summary': 'broken', 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
+      ]);
+      let interleaved = false;
+      const db = {
+        prepare: (sql: string) => {
+          if (!interleaved && sql.includes('INSERT INTO deployment_settings') && sql.includes('ON CONFLICT(leaf) DO UPDATE SET value')) {
+            interleaved = true;
+            r.sqlite.run(`UPDATE deployment_settings SET value = ? WHERE leaf = 'agent.tasks'`, [JSON.stringify({
+              'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+              'canopy-map': { schedule: { intervalSeconds: 600 } },
+            })]);
+          }
+          return r.db.prepare(sql);
+        },
+        batch: r.db.batch,
+      };
+      expect(await settingsWriter(db).setTaskTier('title-summary', tier, 'mem_editor', 2)).toEqual({ applied: true });
+      expect(interleaved).toBe(true);
+      expect(JSON.parse((r.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value))
+        .toEqual({
+          'title-summary': { ...(tier === null ? {} : { reasoningLevel: tier }), schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+          'canopy-map': { schedule: { intervalSeconds: 600 } },
+        });
+    }
+  });
+
+  it('keeps the last reset actor and time after the configured row is deleted', async () => {
+    const r = rig();
+    await r.w.setLeaf('embedding.model', 'old-model', 'mem_writer', 1_000);
+    expect(await r.w.resetLeaf('embedding.model', 'mem_resetter', 2_000)).toEqual({ applied: true });
+    expect((await r.w.leaves())['embedding.model']).toBeUndefined();
+    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='embedding.model'`).get())
+      .toEqual({ reset_by: 'mem_resetter', reset_at: 2_000 });
+    expect(await r.w.resetLeaf('embedding.model', 'mem_other', 3_000)).toEqual({ applied: true });
+    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='embedding.model'`).get())
+      .toEqual({ reset_by: 'mem_other', reset_at: 3_000 });
+  });
+
   it('sets a leaf, records who set it, and reads it back', async () => {
     const r = rig();
     expect(await r.w.setLeaf('cortex.digest.tier', 5000, 'mem_1', 1_000)).toEqual({ applied: true });
@@ -152,14 +194,19 @@ describe('the deployment leaf registry', () => {
     const fs = require('node:fs') as typeof import('node:fs');
     const ledger = fs.readFileSync('docs/architecture/myco-2.0.md', 'utf8');
     const deployment = new Set<string>();
+    const dropped = new Set<string>();
     for (const line of ledger.split('\n')) {
       const m = line.match(/^\| `([^`]+)` \| \w+ \| Deployment \|/);
       if (m) deployment.add(m[1]);
+      const d = line.match(/^\| `([^`]+)` \| DROP \| — \| — \|/);
+      if (d) dropped.add(d[1]);
     }
     expect(deployment.size).toBeGreaterThan(20);
     // Both directions: the runtime cannot accept a leaf the ledger did not assign
     // here, and cannot silently ignore one it did.
-    expect([...DEPLOYMENT_LEAVES].sort()).toEqual([...deployment].sort());
+    const historical = DEPLOYMENT_LEAVES.filter((leaf) => dropped.has(leaf));
+    expect(historical.every((leaf) => RETIRED_LEAVES.has(leaf))).toBe(true);
+    expect(DEPLOYMENT_LEAVES.filter((leaf) => !dropped.has(leaf)).sort()).toEqual([...deployment].sort());
   });
 });
 
@@ -209,8 +256,8 @@ describe('the instructions template leaf', () => {
     expect(await instructionsTemplate(db)).toBe('');
   });
 
-  it('leaves every other leaf taking any JSON value', async () => {
+  it('leaves untyped active leaves taking any JSON value', async () => {
     const { w } = rig();
-    expect(await w.setLeaf('agent.model', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
+    expect(await w.setLeaf('worker.harness', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
   });
 });

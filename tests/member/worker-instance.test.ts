@@ -1,3 +1,4 @@
+import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * One worker per Deployment per machine, and a worker that outlives its credential's rotation.
  *
@@ -34,10 +35,11 @@ afterEach(() => { fs.rmSync(scratch, { recursive: true, force: true }); });
 const idle = (): Response => new Response(JSON.stringify({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 5 }), { status: 200 });
 
 function options(over: Partial<WorkerOptions> & { signal: AbortSignal }): WorkerOptions {
-  return {
+  const configured: WorkerOptions = {
     serverUrl: URL_, token: 'tok', lockDir, runRoot: path.join(scratch, 'runs'), only: ['no-such-harness'],
     pollIdleMs: 5, log: () => {}, fetchImpl: (async () => idle()) as unknown as typeof fetch, ...over,
   };
+  return { ...configured, fetchImpl: profileWorkerServer(configured.fetchImpl!) };
 }
 
 const until = async (condition: () => boolean): Promise<void> => {

@@ -1,9 +1,10 @@
+import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * The lease a worker holds, as the worker keeps it (#1424).
  *
  * The Deployment here is hand-written, so a test decides exactly when an answer
  * lands and what it says: after a sleep, never, or after the run it renewed has
- * ended. The harness is the stub on PATH from `tests/helpers/stub-acp-harness.ts`,
+ * ended. The harness is the stub on PATH from `tests/helpers/stub-profile-harness.ts`,
  * held open until the test releases it. The worker's clock and the Deployment's
  * are separate, and a sleep moves both, as it does between two real machines.
  */
@@ -13,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
-import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
+import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, STUB_PROFILE } from '../helpers/stub-profile-harness.ts';
 
 const SERVER_URL = 'https://deployment.example';
 const LEASE_MS = 90_000;
@@ -41,7 +42,7 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
   const dir = mkdtempSync(join(tmpdir(), 'myco-lease-clock-'));
   const release = join(dir, 'release');
   const spawned = join(dir, 'spawned');
-  expect(stubAcpHarness({ holdUntil: release, spawnedFile: spawned })).toEqual(STUB_DETECTED);
+  expect(stubProfileHarness({ holdUntil: release, spawnedFile: spawned })).toEqual(PROFILE_STUB_DETECTED);
   let offset = 0;
   const serverClock = (): number => Date.now() + offset;
   const workerClock = (): number => serverClock() + (options.skewMs ?? 0);
@@ -49,7 +50,7 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
   const lines: string[] = [];
   let claimed = false;
 
-  const run = { projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it', harness: STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 60, attemptId: ATTEMPT };
+  const run = { projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it', harness: PROFILE_STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 60, attemptId: ATTEMPT };
   const defaultClaim: Handler = () => {
     if (claimed) return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 });
     claimed = true;
@@ -73,8 +74,8 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
   const start = (): Promise<WorkerOutcome> => withRunMcp(SERVER_URL, (request) => listingOnly(request), () => runWorker({
     serverUrl: SERVER_URL, token: 'x'.repeat(43), lockDir: null,
     runRoot: mkdtempSync(join(tmpdir(), 'myco-lease-clock-runs-')),
-    only: [STUB_HARNESS], once: options.once ?? true, pollIdleMs: 50,
-    log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal, clock: workerClock,
+    only: [PROFILE_STUB_HARNESS], once: options.once ?? true, pollIdleMs: 50,
+    log: (line) => { lines.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal, clock: workerClock,
   }));
   return {
     sent, lines, start, stopping, run,
@@ -97,7 +98,7 @@ describe('the lease a worker holds', () => {
         answered = true;
         // The machine slept with the claim in flight; its answer lands after the lease the claim won ran out.
         r.sleep(LEASE_MS + 30_000);
-        return Response.json({ persisted: true, claimed: true, heartbeatMs: HEARTBEAT_MS, leaseMs: LEASE_MS, run: { projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it', harness: STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 60, attemptId: ATTEMPT } });
+        return Response.json({ persisted: true, claimed: true, heartbeatMs: HEARTBEAT_MS, leaseMs: LEASE_MS, run: { projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it', harness: PROFILE_STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 60, attemptId: ATTEMPT } });
       },
     });
     try {
@@ -369,4 +370,3 @@ describe('an answer cut short by the worker\'s own deadline', () => {
     } finally { r.release(); r.stopping.abort(); }
   }, 20_000);
 });
-

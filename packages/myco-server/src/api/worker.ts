@@ -23,6 +23,7 @@ import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
 import { recordWorkerContact } from '../core/worker-contacts.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
+import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 const RUN_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -47,10 +48,19 @@ function offered(value: unknown): OfferedHarness[] {
   const out: OfferedHarness[] = [];
   for (const entry of value) {
     if (entry === null || typeof entry !== 'object') continue;
-    const { id, authenticated } = entry as Record<string, unknown>;
-    if (typeof id === 'string' && HARNESS_ID_SHAPE.test(id)) out.push({ id, authenticated: authenticated === true });
+    const { id, authenticated, profile } = entry as Record<string, unknown>;
+    const capability = offeredProfile(profile);
+    if (typeof id === 'string' && HARNESS_ID_SHAPE.test(id)) out.push({ id, authenticated: authenticated === true, ...(capability === undefined ? {} : { profile: capability }) });
   }
   return out;
+}
+
+function offeredProfile(value: unknown): ProfileCapability | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { model, efforts } = value as Record<string, unknown>;
+  if (!(model === 'flag' || model === 'config' || model === 'none') || !Array.isArray(efforts)
+    || efforts.length > 16 || !efforts.every((effort) => typeof effort === 'string' && effort.length <= 64)) return undefined;
+  return { model, efforts };
 }
 
 function named(value: Record<string, unknown>): { projectId: string; runId: string } | null {

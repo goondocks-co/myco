@@ -1,4 +1,5 @@
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { EXECUTION_PROFILE_FEATURE, profileSupported, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -50,6 +51,7 @@ interface ClaimedRun {
   runToken: string;
   attemptId?: string;
   credentialEnv: Record<string, string>;
+  profile?: ExecutionProfile;
   /** The run's own budget, as the Deployment decided it. The worker records it; the Deployment enforces it through the sweep. */
   timeoutSeconds: number;
 }
@@ -116,7 +118,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -187,6 +189,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
   let accounting = false;
+  let executionProfile = false;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
@@ -195,6 +198,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
       signal: options.signal,
     });
     accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
+    executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
     raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
@@ -202,7 +206,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile };
     case 'protocol':
       return {
         kind: 'refused',
@@ -312,6 +316,9 @@ async function drive(
   if (named !== null && !offerable(named)) return failedBeforeStart(`this worker does not drive ${run.harness}: ${WITHHELD_REASON}`);
   const driver = driverFor(run.harness);
   if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
+  if (named === null || run.profile === undefined || !profileSupported(run.profile, named.profile)) {
+    return failedBeforeStart('profile_unapplied');
+  }
   // A harness given nothing to do ends its turn at once, and a worker that
   // launched it would then report a run that did nothing as one that finished.
   // The Deployment ends such a run at the claim; a Deployment that hands one
@@ -421,6 +428,7 @@ async function drive(
     stopping.signal.throwIfAborted();
     stream = driver.run({
       prompt: run.instruction, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
+      profile: run.profile,
       sourceReadOnly: checkout !== undefined,
     }, stopping.signal)[Symbol.asyncIterator]();
     for (;;) {
@@ -558,6 +566,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   let driven = 0;
   let unreachable = false;
   let attached = false;
+  let needsServerUpdate = false;
   /** The reason the last claim answered nothing, so a change in it is said once and a repeat is not. */
   let waiting: string | null = null;
   /** The cadence the Deployment last answered, which also bounds each request a worker makes of it. */
@@ -596,6 +605,25 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
       continue;
     }
     settling = false;
+    // Compatibility is checked on a read before the queue can be claimed.
+    {
+      const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/members/status', {}));
+      if (compatibility.kind === 'refused') {
+        options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
+        return { driven, refused: compatibility.code };
+      }
+      if (compatibility.kind === 'unreachable') {
+        if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${compatibility.detail}; still polling`); }
+        await pause(options.pollIdleMs);
+        continue;
+      }
+      if (!compatibility.executionProfile) {
+        if (!needsServerUpdate) { needsServerUpdate = true; options.log('this server needs updating before it can give this worker work'); }
+        await pause(options.pollIdleMs);
+        continue;
+      }
+      if (!wake.settled()) continue;
+    }
     const claimSentAt = (options.clock ?? Date.now)();
     const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
     if (answer.kind === 'refused') {

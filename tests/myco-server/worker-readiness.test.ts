@@ -24,7 +24,7 @@ function post(token: string, path: string, body: unknown): Request {
 }
 
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   await ensureMember(e.db, HARNESS_MEMBER_ID, NOW, 'member', 'harness runtime');
   const admin = async (id: string, machineId: string) => {
@@ -247,10 +247,9 @@ describe('what Status answers about workers', () => {
 
   it('keeps a value an older deployment stored for a control the dashboard no longer offers', async () => {
     const r = await rig();
-    // `agent.harness` named the retired in-binary runtime. Its editor is gone, and
-    // the leaf is still accepted and still readable, so nothing an owner stored is lost.
-    const written = await worker.fetch(await asOwnerPut('/api/settings/agent.harness', { value: 'claude-sdk' }), { ...r.e.env, ...OWNER_ENV });
-    expect(written.status).toBe(200);
+    r.e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.harness','"claude-sdk"',1,'historic')`);
+    const written = await worker.fetch(await asOwnerPut('/api/settings/agent.harness', { value: 'replacement' }), { ...r.e.env, ...OWNER_ENV });
+    expect(written.status).toBe(400);
 
     const res = await worker.fetch(await asOwner('/api/settings'), { ...r.e.env, ...OWNER_ENV });
     const body = await res.json() as { leaves: { leaf: string; value: unknown; configured: boolean }[] };

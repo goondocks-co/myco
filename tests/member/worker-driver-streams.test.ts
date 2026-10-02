@@ -1,3 +1,4 @@
+import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * Each driver run against its harness's real stream, and the protocol client
  * run against a real peer.
@@ -30,6 +31,7 @@ import { parse } from 'smol-toml';
 import { MCP_SERVER_NAME } from '@myco/runner/mcp-config.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
+import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, STUB_PROFILE } from '../helpers/stub-profile-harness.ts';
 import { readFileSync } from 'node:fs';
 import { runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
@@ -37,12 +39,13 @@ import { runGrant } from '@myco/runner/drivers/grant.js';
 import { failedCallsNote, type RunEvent } from '@myco/runner/events.js';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret' };
 
 /** A stub on PATH that writes these lines and exits with this status, in place of a harness. */
 function stubHarness(name: string, lines: readonly string[], exitCode = 0): string {
-  const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+  const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-stub-')));
   const path = join(dir, name);
   const body = lines.map((l) => `printf '%s\\n' ${JSON.stringify(l)}`).join('\n');
   writeFileSync(path, `#!/bin/sh\n${body}\nexit ${exitCode}\n`, { mode: 0o755 });
@@ -57,7 +60,7 @@ async function collect(events: AsyncIterable<RunEvent>): Promise<RunEvent[]> {
 }
 
 function runDir(): { scratchDir: string; mcpConfigPath: string } {
-  return writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
+  return writeRunDir(removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-run-'))), 'run_1', CONNECTION);
 }
 
 /** Where a Mac's command line tools are, which is the developer directory `FAKE_MAC` selects. */
@@ -149,13 +152,46 @@ describe('the Claude Code driver', () => {
     // own mode asks would run a harness that calls nothing; a machine whose own
     // mode bypasses would hand a queued run every tool it has. Neither reaches
     // the run: what it may call is exactly its own server.
-    const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
+    const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-stub-')));
     writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\nprintf '%s\\n' '${RESULT_SUCCESS}'\n`, { mode: 0o755 });
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
     expect(argv.slice(argv.indexOf('--permission-mode'))).toEqual(['--permission-mode', 'manual', '--permission-prompts', 'none', '--allowedTools', `mcp__${MCP_SERVER_NAME}`, '']);
     expect(argv).toContain('--strict-mcp-config');
+  });
+
+  it('passes the claimed model and effort to Claude and protects injected OAuth from inherited API credentials', async () => {
+    const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-stub-')));
+    writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\nenv > "$(dirname "$0")/env.txt"\nprintf '%s\\n' '${RESULT_SUCCESS}'\n`, { mode: 0o755 });
+    const previousPath = process.env.PATH;
+    const operatorOverrides = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL', 'ANTHROPIC_SMALL_FAST_MODEL'];
+    const previous = Object.fromEntries(operatorOverrides.map((key) => [key, process.env[key]]));
+    process.env.PATH = `${dir}:${previousPath ?? ''}`;
+    process.env.ANTHROPIC_API_KEY = 'inherited-api-key';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'inherited-auth-token';
+    process.env.ANTHROPIC_MODEL = 'opus';
+    for (const key of operatorOverrides.slice(3)) process.env[key] = 'operator-override';
+    try {
+      await collect(claudeCodeDriver.run({
+        ...runDir(), prompt: 'do it', credentialEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'injected-oauth' },
+        profile: { tier: 'low', model: 'haiku', effort: 'low', sources: { tier: 'task', model: 'default' } },
+      }, new AbortController().signal));
+      const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').trim().split('\n');
+      expect(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 4)).toEqual(['--model', 'haiku', '--effort', 'low']);
+      expect(argv.slice(argv.indexOf('--setting-sources'), argv.indexOf('--setting-sources') + 2)).toEqual(['--setting-sources', 'project,local']);
+      const env = readFileSync(join(dir, 'env.txt'), 'utf8');
+      expect(env).toContain('CLAUDE_CODE_OAUTH_TOKEN=injected-oauth');
+      expect(env).not.toContain('ANTHROPIC_API_KEY=');
+      expect(env).not.toContain('ANTHROPIC_AUTH_TOKEN=');
+      expect(env).not.toContain('ANTHROPIC_MODEL=');
+      for (const key of operatorOverrides.slice(3)) expect(env).not.toContain(`${key}=`);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
   });
 
   it('allows source history commands with relative, absolute and current-directory paths', async () => {
@@ -509,6 +545,23 @@ describe('the Codex driver', () => {
     expect(written).toContain(CONNECTION.runToken);
   });
 
+  it('pins the claimed Codex model and effort in its generated run configuration', async () => {
+    const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${dir}:${previousPath ?? ''}`;
+    try {
+      const run = runDir();
+      await collect(codexDriver.run({
+        ...run, prompt: 'do it', credentialEnv: {},
+        profile: { tier: 'high', model: 'gpt-6.1', effort: 'high', sources: { tier: 'task-override', model: 'configured' } },
+      }, new AbortController().signal));
+      const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+      expect({ model: config.model, effort: config.model_reasoning_effort }).toEqual({ model: 'gpt-6.1', effort: 'high' });
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    }
+  });
+
   it('holds a run to a sandbox of its own, since the harness never asks and the run\'s grant never reaches it', async () => {
     const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
@@ -708,6 +761,42 @@ describe('the Codex driver', () => {
     return dir;
   }
 
+  it('does not let a selected machine profile override the claimed model or effort', async () => {
+    const machine = machineCodexHome({
+      'auth.json': LOGIN,
+      'config.toml': [
+        'profile = "personal"',
+        'model = "root-model"',
+        'model_reasoning_effort = "low"',
+        '',
+        '[profiles.personal]',
+        'model = "personal-model"',
+        'model_provider = "custom-provider"',
+        'model_reasoning_effort = "xhigh"',
+        '',
+        '[model_providers.custom-provider]',
+        'name = "Custom"',
+        'base_url = "https://example.invalid"',
+      ].join('\n'),
+    });
+    process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
+    try {
+      const run = runDir();
+      const events = await collect(codexDriver.run({
+        ...run, prompt: 'do it', credentialEnv: {},
+        profile: { tier: 'default', model: 'gpt-6.1', effort: 'medium', sources: { tier: 'task', model: 'configured' } },
+      }, new AbortController().signal));
+      expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
+      const config = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
+      expect({ model: config.model, effort: config.model_reasoning_effort, provider: config.model_provider }).toEqual({
+        model: 'gpt-6.1', effort: 'medium', provider: 'custom-provider',
+      });
+      expect(config.profile).toBeUndefined();
+      expect(config.profiles).toBeUndefined();
+      expect(objectAt(config, 'model_providers')).toHaveProperty('custom-provider');
+    } finally { machine.remove(); }
+  });
+
   it('carries the machine\'s login into the run\'s home, so a run on a signed-in machine authenticates', async () => {
     const machine = machineCodexHome({ 'auth.json': LOGIN });
     process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
@@ -885,6 +974,15 @@ const RUN_TOOL_NAMES = ['myco_run', 'myco_run_sessions', 'noop_ping'];
 /** The run's own agent, under the name these runs are given in place of one drawn for each. */
 const RUN_AGENT = 'myco-run-test';
 const ASKING = { asking: runAsking(harnessById('opencode'), RUN_AGENT) };
+
+describe('the OpenCode run profile', () => {
+  it('puts model and effort in the run agent configuration sent to the harness', () => {
+    const profile = { tier: 'default', model: 'openai/gpt-6.1', effort: 'medium', sources: { tier: 'task', model: 'configured' } } as const;
+    const asking = runAsking(harnessById('opencode'), RUN_AGENT, profile);
+    const config = JSON.parse(asking.env.OPENCODE_CONFIG_CONTENT!) as { agent: Record<string, { model?: string; reasoningEffort?: string }> };
+    expect(config.agent[RUN_AGENT]).toMatchObject({ model: 'openai/gpt-6.1', reasoningEffort: 'medium' });
+  });
+});
 
 /** A session opened in the run's own agent, as OpenCode reports its mode. */
 const RUN_AGENT_MODE = { configOptions: [{ id: 'mode', currentValue: RUN_AGENT }] };
@@ -1384,7 +1482,7 @@ describe('the cadence a worker keeps', () => {
       await runWorker({
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-        pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
+        pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
       });
     } finally {
       globalThis.setTimeout = nativeSetTimeout;
@@ -1412,7 +1510,7 @@ describe('the cadence a worker keeps', () => {
           persisted: true, claimed: true, heartbeatMs: HEARTBEAT_MS,
           run: {
             projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it',
-            harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 300,
+            harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 300,
           },
         }), { status: 200 });
       }
@@ -1424,7 +1522,7 @@ describe('the cadence a worker keeps', () => {
     await runWorker({
       serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-      once: true, pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
+      once: true, pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
     });
 
     // A run driven for RUN_MS is renewed at the answered cadence. A worker
@@ -1446,14 +1544,14 @@ describe('the budget a run is held to', () => {
       const lines: string[] = [];
       const outcomes: unknown[] = [];
       const previousPath = process.env.PATH;
-      expect(stubAcpHarness({ holdUntil: release, ignoreTermination: true, pidFile })).toEqual(STUB_DETECTED);
+      expect(stubProfileHarness({ holdUntil: release, ignoreTermination: true, pidFile })).toEqual(PROFILE_STUB_DETECTED);
       const fetchImpl = globalFetchDouble(async (input, init) => {
         const url = String(input instanceof Request ? input.url : input);
         if (url.endsWith('/worker/claim')) return Response.json({
           persisted: true, claimed: true, heartbeatMs: 100,
           run: {
             projectId: 'proj_1', id: 'run_overrun', task: 'title-summary', instruction: 'do it',
-            harness: STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 0,
+            harness: PROFILE_STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 0,
           },
         });
         // Lease loss begins only after the child receives its prompt.
@@ -1468,7 +1566,7 @@ describe('the budget a run is held to', () => {
       try {
         const outcome = await withRunMcp('https://deployment.example', (request) => listingOnly(request), () => runWorker({
           serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, runRoot: join(scratch, 'runs'),
-          only: [STUB_HARNESS], once: true, pollIdleMs: 100, log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal,
+          only: [PROFILE_STUB_HARNESS], once: true, pollIdleMs: 100, log: (line) => { lines.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
         }));
         expect(outcome).toEqual({ driven: 1, refused: null });
         expect(lines.some((line) => line.includes('lease lost'))).toBe(!leaseHeld);
@@ -1510,7 +1608,7 @@ describe('what a worker reports of a turn a failed call cut short', () => {
       if (url.endsWith('/worker/claim')) {
         return new Response(JSON.stringify({
           persisted: true, claimed: true, heartbeatMs: 60_000,
-          run: { projectId: 'proj_1', id: 'run_cut', task: 'title-summary', instruction: 'do it', harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, timeoutSeconds: 300 },
+          run: { projectId: 'proj_1', id: 'run_cut', task: 'title-summary', instruction: 'do it', harness: 'claude-code', runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 300 },
         }), { status: 200 });
       }
       if (url.endsWith('/worker/end')) { end.body = JSON.parse(String(init?.body)) as Record<string, unknown>; return new Response(JSON.stringify({ persisted: true, ended: true }), { status: 200 }); }
@@ -1519,7 +1617,7 @@ describe('what a worker reports of a turn a failed call cut short', () => {
     await runWorker({
       serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-      once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl, signal: new AbortController().signal,
+      once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
     });
     expect({ status: end.body?.status, error: end.body?.error }).toEqual({
       status: 'completed',
@@ -1568,9 +1666,9 @@ describe('a harness no worker offers', () => {
       await runWorker({
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, only: ['antigravity', STUB_HARNESS],
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-        pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl, signal: stopping.signal,
+        pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
       });
-      expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true }]]);
+      expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true, profile: harnessById(STUB_HARNESS)!.profile }]]);
       expect(logged).toContain(`not offering antigravity: ${WITHHELD_REASON}`);
     } finally { agy.remove(); }
   }, 15_000);
@@ -1594,7 +1692,7 @@ describe('a harness no worker offers', () => {
       await runWorker({
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-        once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl, signal: new AbortController().signal,
+        once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
       });
       expect({ status: end.body?.status, error: end.body?.error }).toEqual({ status: 'failed', error: `this worker does not drive antigravity: ${WITHHELD_REASON}` });
       expect(existsSync(agy.started)).toBe(false);

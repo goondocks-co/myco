@@ -206,6 +206,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound: (input, init) => fetch(input, init),
     platform: cloudflarePlatform(bindings, embeddingRuntime),
+    harnessCredentialSource: 'deployment',
     db: bindings.MYCO_DB,
     blobs: bindings.BUCKET,
     sourceLimit: bindings.SOURCE_LIMIT,

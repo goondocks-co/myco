@@ -34,6 +34,7 @@ const WHOLE_PACKAGES = [path.join(REPO_ROOT, 'packages', 'myco-shared', 'src'), 
 
 /** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data and its loader. */
 const REGISTRIES: readonly RegExp[] = [
+  /^packages\/myco-shared\/src\/execution-profile\.ts$/,
   /^packages\/myco\/src\/symbionts\/(claude-code|codex|cursor|copilot|windsurf|antigravity)\.ts$/,
   /^packages\/myco\/src\/symbionts\/parsers\//,
   /^packages\/myco\/src\/symbionts\/templates\//,
@@ -46,8 +47,6 @@ const REGISTRIES: readonly RegExp[] = [
 
 /** Today's offenders: file → how many places name a harness. Only shrinks; #1561 PR 7 folds each into manifest data. */
 const KNOWN: Readonly<Record<string, number>> = {
-  // The worker's provider credential for a harness run: the manifest's `runner:` block.
-  'packages/myco-server/src/core/harness.ts': 1,
   'packages/myco-shared/src/harness-providers.ts': 7,
   // The worker's credential slot named for a harness (`codex`): the manifest's `runner:` block.
   'packages/myco-shared/src/secret-slots.ts': 2,

@@ -1,3 +1,4 @@
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,9 @@ import { withRunMcp, listingOnly } from './run-mcp-fetch.ts';
 
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const model = 'gpt-5.4-mini';
+const PROFILE_MODELS: Readonly<Record<string, string>> = {
+  'claude-code': 'sonnet', codex: 'configured-model', opencode: 'openai/gpt-5.4-mini',
+};
 
 export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: string, end: (body: Record<string, unknown>) => Promise<Response> = async () => Response.json({ persisted: true, ended: true }), options: { stream?: Record<string, unknown>[]; features?: string | null; credentialEnv?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'myco-accounting-'));
@@ -75,11 +79,14 @@ done`;
     writeFileSync(join(root, harness.binary), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
     process.env.PATH = `${root}:${path ?? ''}`;
     let report: Record<string, unknown> | undefined;
+    const features = [EXECUTION_PROFILE_FEATURE, ...(options.features === null ? [] : (options.features ?? 'turn,worker-accounting-v1').split(','))].join(',');
     const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      if (String(_url).endsWith('/members/status')) return Response.json({ persisted: true }, { headers: { 'x-myco-features': features } });
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       if (String(_url).endsWith('/worker/end')) { report = body; return end(body); }
       return Response.json({ persisted: true, claimed: true, heartbeatMs: 30000, leaseMs: 60000,
-        run: { projectId: 'proj_1', id: 'run_usage', attemptId: 'attempt', task: 'extract-curate', instruction: 'do it', harness: harness.id, runToken: 'fixture', credentialEnv: options.credentialEnv ?? {}, timeoutSeconds: 30 } }, { headers: options.features === null ? {} : { 'x-myco-features': options.features ?? 'turn,worker-accounting-v1' } });
+        run: { projectId: 'proj_1', id: 'run_usage', attemptId: 'attempt', task: 'extract-curate', instruction: 'do it', harness: harness.id, runToken: 'fixture', credentialEnv: options.credentialEnv ?? {}, timeoutSeconds: 30,
+          profile: { tier: 'default', model: PROFILE_MODELS[harness.id] ?? 'unsupported', effort: 'medium', sources: { tier: 'task', model: 'configured' } } } }, { headers: { 'x-myco-features': features } });
     }) as typeof fetch;
     await withRunMcp('https://fixture', listingOnly, () => runWorker({ serverUrl: 'https://fixture', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'), only: [harness.id], once: true, pollIdleMs: 1, log: () => {}, fetchImpl, signal: AbortSignal.timeout(5000) }));
     return report;

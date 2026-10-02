@@ -519,7 +519,10 @@ describe('the environment a harness is started in', () => {
     const stub = envRecorder('opencode');
     process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
     const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
-    await collect(acpDriver('opencode').run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    await collect(acpDriver('opencode').run({
+      ...run, prompt: 'do it', credentialEnv: {},
+      profile: { tier: 'default', model: 'openai/gpt-6.1', effort: 'medium', sources: { tier: 'task', model: 'configured' } },
+    }, new AbortController().signal));
     const env = envOf(stub.seen);
     const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as Record<string, unknown> & { default_agent: string };
     expect(config).toEqual({
@@ -527,7 +530,7 @@ describe('the environment a harness is started in', () => {
       shell: '/bin/sh',
       // A refused call ends that call, not the turn: the agent goes on with its work.
       experimental: { continue_loop_on_deny: true },
-      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' } } },
+      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' }, model: 'openai/gpt-6.1', reasoningEffort: 'medium' } },
     });
     // A plugin runs inside the harness and can answer a permission request
     // before the driver does, so a run loads none of the machine's.

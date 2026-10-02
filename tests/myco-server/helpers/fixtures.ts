@@ -144,8 +144,13 @@ export function journaled(sqlite: Database): string[] {
 export const RETIRED_BYTE_CEILING = 1_073_741_824;
 
 /** A SQLite-backed Env with the migrated schema, two projects, recording limiters, an in-memory blob store, and every statement it executes. */
-export function sqliteEnv(opts: { onSql?: (sql: string, sqlite: Database) => void; beforeStep42?: (sqlite: Database) => void } = {}) {
+export function sqliteEnv(opts: { onSql?: (sql: string, sqlite: Database) => void; beforeStep42?: (sqlite: Database) => void; workerLogin?: boolean } = {}) {
   const sqlite: Database = seededSqlite({ beforeStep42: opts.beforeStep42 });
+  if (opts.workerLogin) {
+    for (const harness of ['claude-code', 'codex', 'opencode']) {
+      sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?, '"worker-login"', 0, 'test')`, [`agent.harnesses.${harness}.credential`]);
+    }
+  }
   const executed: string[] = [];
   const db = sqliteD1(sqlite, {
     onSql: (sql) => { executed.push(sql); opts.onSql?.(sql, sqlite); },

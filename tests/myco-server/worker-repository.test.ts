@@ -1,3 +1,4 @@
+import { offeredHarness } from './helpers/offered-harness.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { REPOSITORY_CHECKOUT_CAPABILITY, MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import worker from '@myco-server-worker/entry/cloudflare.js';
@@ -15,12 +16,12 @@ import { jsonBody } from '../helpers/json-body.js';
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
 const CREDENTIAL = { username: 'reader', token: 'synthetic-source-read-credential' };
 const CAPABILITIES = [REPOSITORY_CHECKOUT_CAPABILITY];
-const OFFERED = [{ id: 'claude-code', authenticated: true }];
+const OFFERED = [offeredHarness('claude-code')];
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
 
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   cleanups.push(() => e.sqlite.close());
   e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };

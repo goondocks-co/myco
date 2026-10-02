@@ -1,3 +1,5 @@
+import { offeredHarness } from './helpers/offered-harness.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { fixtureRun } from '../helpers/execution-harness.ts';
 import { harnessById } from '@myco/runner/harnesses.js';
 import { describe, expect, it } from 'bun:test';
@@ -17,7 +19,7 @@ const scope = { projectId: 'proj_1' };
 const usage = { inputTokens: 100, outputTokens: 20, cachedTokens: 40, costUsd: null, estimatedCostUsd: 0.25 };
 
 async function rig(harness = 'claude-code') {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   let now = NOW;
   const server = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
@@ -27,7 +29,8 @@ async function rig(harness = 'claude-code') {
   e.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
     VALUES ('proj_1','run_usage','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`,
     [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 })]);
-  const claim = () => claimNextRun(e.serverEnv, { tokenId: token.tokenId, machineId: 'm1', harnesses: [{ id: harness, authenticated: true }], now });
+  await settingsWriter(e.db).setLeaf('agent.reasoning_map.codex.default', 'gpt-5.4-mini', 'mem_worker', NOW);
+  const claim = () => claimNextRun(e.serverEnv, { tokenId: token.tokenId, machineId: 'm1', harnesses: [offeredHarness(harness)], now });
   const claimed = await claim();
   if (!claimed.claimed) throw new Error('run was not claimed');
   const end = async (extra: Record<string, unknown>) => {

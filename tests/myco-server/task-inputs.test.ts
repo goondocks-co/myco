@@ -1,3 +1,4 @@
+import { offeredHarness } from './helpers/offered-harness.js';
 import { MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_DIGEST_TASKS, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 /**
  * What a run is told, and what happens to one nobody can instruct.
@@ -28,10 +29,10 @@ import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
-const OFFERED = [{ id: 'codex', authenticated: true }];
+const OFFERED = [offeredHarness('claude-code')];
 
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);

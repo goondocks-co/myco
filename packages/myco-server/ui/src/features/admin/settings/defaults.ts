@@ -10,11 +10,18 @@
  * setting that still does something to an entry.
  */
 import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
+import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS } from '@goondocks/myco-shared/execution-profile';
 
 /** The value the server applies to an unwritten setting, or what unset means, in a word or two. */
 export type LeafDefault = { value: unknown } | { unset: string };
 
 export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
+  ...Object.fromEntries(CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
+    ...REASONING_TIERS.map((tier) => [`agent.reasoning_map.${harness}.${tier}`,
+      PROFILE_HARNESSES[harness]!.models[tier] === null ? { unset: 'Required before this tier runs' } : { value: PROFILE_HARNESSES[harness]!.models[tier] }]),
+    ...REASONING_TIERS.map((tier) => [`agent.effort_map.${harness}.${tier}`, { value: PROFILE_HARNESSES[harness]!.efforts[tier] }]),
+    [`agent.harnesses.${harness}.credential`, { unset: 'Server login when hosted; worker login locally' }],
+  ])),
   // When Myco works (core/scheduled-tasks.ts scheduleLeaves).
   'agent.scheduled_tasks_enabled': { value: false },
   'agent.scheduled_tasks_active_window_days': { value: 14 },
@@ -45,7 +52,6 @@ export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
   'agent.provider.type': { unset: 'None' },
   'agent.provider.model': { unset: 'None' },
   'agent.provider.base_url': { unset: 'The provider’s own' },
-  'agent.model': { unset: 'None' },
   'agent.tasks': { value: {} },
   // core/embedding/configured-provider.ts; core/embedding/jobs.ts keeps embedding unless the leaf is false.
   'embedding.provider': { unset: 'None' },

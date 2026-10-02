@@ -12,6 +12,12 @@ const SRC = path.join(ROOT, 'packages/myco-server/src');
 
 /** Exact diagnostic text allowed at a non-dashboard seam, with its purpose. */
 const ALLOWED: Readonly<Record<string, string>> = {
+  'core/settings.ts:deployment': 'Settings wire enum; the editor supplies a user-facing label.',
+  'core/settings.ts:agent.harnesses. … .credential': 'Settings leaf address; the editor supplies a user-facing label.',
+  'core/settings.ts:credential-source': 'Validation descriptor tag; the editor supplies a user-facing label.',
+  'core/harness.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
+  'core/execution-profile.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the execution profile.',
+
   'core/jobs.ts:worker-lease-sweep': 'Scheduled job identifier; housekeeping renders its outcome in its own words.',
   'core/worker-run.ts:the lease is no longer held': 'Worker protocol diagnostic; the dashboard never quotes it.',
   'core/harness.ts:the lease is no longer held': 'Worker completion diagnostic; the dashboard never quotes it.',

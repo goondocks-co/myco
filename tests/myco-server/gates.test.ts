@@ -200,7 +200,7 @@ describe('gates', () => {
       for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null }).toEqual({ target, known: true });
       const anonymous = await worker.fetch(withSource(r.path, { method: r.method, body: '{}' }), env());
       expect({ path: r.path, status: anonymous.status }).toEqual({ path: r.path, status: 401 });
-      const e = sqliteEnv();
+      const e = sqliteEnv({ workerLogin: true });
       const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
       const member = await worker.fetch(new Request(`https://s${r.path}`, { method: r.method, headers: memberHeaders(t.token), body: '{}' }), e.env);
       expect({ path: r.path, status: member.status }).toEqual({ path: r.path, status: 401 });
@@ -218,7 +218,7 @@ describe('gates', () => {
     // quietly become an unauthenticated route that admits.
     const enroll = ROUTES.filter((x) => x.auth === 'enroll');
     expect(enroll.map((r) => `${r.method} ${r.path}`)).toEqual(['POST /members/join']);
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     for (const key of ['x'.repeat(43), 'not-a-key', '']) {
       const res = await worker.fetch(withSource('/members/join', { method: 'POST', body: JSON.stringify({ key, machineId: 'machine_9' }) }), e.env);
       expect({ key: key.slice(0, 8), status: res.status, body: await res.json() })
@@ -249,7 +249,7 @@ describe('gates', () => {
   });
 
   it('takes tenancy and attribution from the authenticated token only, via the deployed entry', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const t2 = await issueMemberToken(db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
     // The URL, the machine header and the token header all name t1's identity whoever
@@ -278,7 +278,7 @@ describe('gates', () => {
   });
 
   it('projects sessions only from stored events, so an unstored request by another token cannot open or move a session', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const t3 = await issueMemberToken(db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now());
     expect(await jsonBody((await worker.fetch(memberPost(t1.token, envelope()), e)))).toEqual({ persisted: true, projected: true });
@@ -291,7 +291,7 @@ describe('gates', () => {
   });
 
   it('answers 401 to an authenticated member on an unmatched route, charging its own token bucket and never the shared source bucket', async () => {
-    const { env: e, db, sourceKeys, tokenKeys } = sqliteEnv();
+    const { env: e, db, sourceKeys, tokenKeys } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const paths = ['/nope', '/events/stop', '/v2/events'];
     for (const path of paths) {
@@ -319,7 +319,7 @@ describe('gates', () => {
   });
 
   it('tells an authenticated principal a served path\'s methods only among the routes it could reach: a member is told 405 on a member path and 401 on an owner, auth or enrollment path; a grant is told 405 on the grant route alone', async () => {
-    const { env: e, db } = sqliteEnv();
+    const { env: e, db } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const grant = await issueExternalGrant(db, { projectId: 'proj_1' }, null, 'mem_machine_1', Date.now());
     const concrete = (path: string) => path.replace(/\{(sha256|key)\}/g, 'a'.repeat(64)).replace(/\{tier\}/g, '1').replace(/\{[^}]+\}/g, 'a');
@@ -348,7 +348,7 @@ describe('gates', () => {
   });
 
   it('keys the token limiter on the issued token id and never on credential material', async () => {
-    const { env: e, db, tokenKeys } = sqliteEnv();
+    const { env: e, db, tokenKeys } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const digest = await sha256Hex(t1.token);
     for (let i = 0; i < 3; i++) {
@@ -360,7 +360,7 @@ describe('gates', () => {
   });
 
   it('keys the source limiter on the adapter identity only, whatever proxy headers the caller sends', async () => {
-    const { env: e, sourceKeys, tokenKeys } = sqliteEnv();
+    const { env: e, sourceKeys, tokenKeys } = sqliteEnv({ workerLogin: true });
     const spoofed: Record<string, string> = {
       'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '9.9.9.9', 'true-client-ip': '8.8.8.8', 'x-client-ip': '7.7.7.7',
       forwarded: 'for=6.6.6.6', 'x-real-ip': '5.5.5.5', 'x-cluster-client-ip': '4.4.4.4',
@@ -374,7 +374,7 @@ describe('gates', () => {
   });
 
   it('admits an event past the retired 1 GiB lifetime ceiling, and keeps counting it (#1416)', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, t1.tokenId);
     const body = envelope({ payload: { promptId: uuid(2), text: 'x'.repeat(200), origin: 'user' } });
@@ -386,7 +386,7 @@ describe('gates', () => {
   });
 
   it('counts bytes only for a stored event: a replay and another machine\'s attempt leave bytes_written unchanged', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const t3 = await issueMemberToken(db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now());
     const body = envelope();
@@ -401,7 +401,7 @@ describe('gates', () => {
   });
 
   it('refuses a reused event id whose payload differs, keeping the stored event', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     expect(await jsonBody((await worker.fetch(memberPost(t1.token, envelope()), e)))).toEqual({ persisted: true, projected: true });
     const res = await worker.fetch(memberPost(t1.token, envelope({ payload: { promptId: uuid(2), text: 'other', origin: 'user' } })), e);
@@ -411,7 +411,7 @@ describe('gates', () => {
   });
 
   it('refuses every member request with 503 in the route\'s own refusal shape when the database schema version is not this build\'s', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.query(`UPDATE schema_meta SET value = ? WHERE key = 'version'`).run(String(SERVER_SCHEMA_VERSION + 1));
     const res = await worker.fetch(memberPost(t1.token, envelope()), e);
@@ -430,7 +430,7 @@ describe('gates', () => {
   });
 
   it('answers a post-auth storage failure with 503 and retry-after, never 200', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.query(`DROP TABLE events`).run();
     const res = await worker.fetch(memberPost(t1.token, envelope()), e);
@@ -554,7 +554,7 @@ describe('gates', () => {
   });
 
   it('declares an auth kind, a body mode and a shape for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape with a code, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
-    const { env: e, db, sqlite, bucket } = sqliteEnv();
+    const { env: e, db, sqlite, bucket } = sqliteEnv({ workerLogin: true });
     /** Issued far enough back that the refresh window is open now, and far enough forward that the tokens are live. */
     const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
@@ -799,6 +799,7 @@ describe('gates', () => {
     // path, and the one that goes missing silently is the actor.
     const OWNED: Record<string, string> = {
       deployment_settings: join('core', 'settings.ts'),
+      deployment_setting_resets: join('core', 'settings.ts'),
       project_capabilities: join('core', 'settings.ts'),
       deployment_secrets: join('core', 'secrets.ts'),
     };
@@ -1028,7 +1029,7 @@ describe('gates', () => {
   });
 
   it('never rewrites a session\'s identity columns on receipt: a second token of the same machine moves only the last receipt', async () => {
-    const { env: e, db, sqlite } = sqliteEnv();
+    const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const first = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const second = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     expect(await jsonBody((await worker.fetch(memberPost(first.token, envelope()), e)))).toEqual({ persisted: true, projected: true });
@@ -1102,7 +1103,7 @@ describe('gates', () => {
       if (r.auth !== 'session' || r.authority === 'account') continue;
       const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{planKey}', '00000000-0000-5000-8000-000000000002').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64)).replace(/\{[A-Za-z]+\}/g, 'x');
       for (const [who, cookie] of [['member', asMember], ['admin', asAdmin]] as const) {
-        const e = sqliteEnv();
+        const e = sqliteEnv({ workerLogin: true });
         seedMemberRoleAccount(e.sqlite);
         const res = await worker.fetch(
           new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'GET' ? undefined : '{}' }),
@@ -1121,7 +1122,7 @@ describe('gates', () => {
 
   it('answers the Deployment settings to a member who is not an admin with every URL\'s userinfo and query stripped, and raw to an admin (#1491)', async () => {
     const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     seedMemberRoleAccount(e.sqlite);
     const secretUrl = 'https://user:hunter2@embed.example/v1?api-key=sk-live';
     e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.base_url', ?, 1, 'mem_machine_1')`, [JSON.stringify(secretUrl)]);
@@ -1134,7 +1135,7 @@ describe('gates', () => {
 
   it('refuses a member who is not an admin on an admin route before reading a byte of its body (#1491)', async () => {
     const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     seedMemberRoleAccount(e.sqlite);
     let pulled = 0;
     // Nothing is pulled until something reads it; a reader would take four chunks and the end.
@@ -1149,7 +1150,7 @@ describe('gates', () => {
 
   it('signs out an account whose member was removed, so it can still clear its cookie (#1491)', async () => {
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     const res = await worker.fetch(new Request('https://s/auth/logout', {
       method: 'POST', headers: { cookie: await ownerCookie(Date.now(), '999999'), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     }), { ...e.env, ...OWNER_ENV });
@@ -1185,7 +1186,7 @@ describe('gates', () => {
     const cookie = await ownerCookie();
     for (const r of owner) {
       const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{planKey}', '00000000-0000-5000-8000-000000000002').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
-      const e = sqliteEnv();
+      const e = sqliteEnv({ workerLogin: true });
       const res = await worker.fetch(
         new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
         { ...e.env, ...OWNER_ENV }
@@ -1268,6 +1269,7 @@ describe('gates', () => {
       'session:account POST /auth/logout',
       'session:admin DELETE /api/projects/{projectId}/repository',
       'session:admin DELETE /api/secrets/{name}',
+      'session:admin DELETE /api/settings/{leaf}',
       'session:admin GET /api/attention',
       'session:admin GET /api/backups',
       'session:admin GET /api/backups/{backupId}/artifact',
@@ -1282,6 +1284,7 @@ describe('gates', () => {
       'session:admin GET /api/titling-backfill',
       'session:admin PATCH /api/projects/{projectId}',
       'session:admin PATCH /api/projects/{projectId}/skill-candidates/{candidateId}',
+      'session:admin PATCH /api/settings/agent.tasks',
       'session:admin POST /api/backups',
       'session:admin POST /api/backups/restore-upload',
       'session:admin POST /api/backups/{backupId}/pin',
@@ -1457,7 +1460,7 @@ describe('gates', () => {
   });
 
   it('leaves owner routes ingest-neutral', async () => {
-    const e = sqliteEnv();
+    const e = sqliteEnv({ workerLogin: true });
     const before = count(e.sqlite, 'events');
     const res = await worker.fetch(
       new Request('https://s/api/projects', { headers: { cookie: await ownerCookie2(), 'cf-connecting-ip': '1.2.3.4' } }),

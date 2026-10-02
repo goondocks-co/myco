@@ -305,6 +305,14 @@ function runConfig(spec: RunSpec, harness: Harness, home: string, probe: Develop
   for (const key of ['model', 'model_provider']) {
     if (profile?.[key] !== undefined) machine[key] = profile[key];
   }
+  // The run config has no active machine profile after its provider choice is carried to the root.
+  delete machine.profile;
+  delete machine.profiles;
+  if (spec.profile !== undefined) {
+    machine.model = spec.profile.model;
+    if (spec.profile.effort === null) delete machine.model_reasoning_effort;
+    else machine.model_reasoning_effort = spec.profile.effort;
+  }
   machine.approval_policy = 'never';
   // The run's permission profile is the run's whole sandbox, so the machine's
   // own sandbox settings are dropped rather than left beside it.

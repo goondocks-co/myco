@@ -165,12 +165,12 @@ const RUN_SHELL = '/bin/sh';
  * decides it. A refused call is that call's failure and not the end of the
  * agent's turn, so the agent goes on with the rest of its work.
  */
-export function runAgentConfig(agent: string, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
+export function runAgentConfig(agent: string, platform: NodeJS.Platform = process.platform, profile?: RunSpec['profile']): Record<string, unknown> {
   return {
     default_agent: agent,
     ...(platform === 'win32' ? {} : { shell: RUN_SHELL }),
     experimental: { continue_loop_on_deny: true },
-    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' } } },
+    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' }, ...(profile === undefined ? {} : { model: profile.model, ...(profile.effort === null ? {} : { reasoningEffort: profile.effort }) }) } },
   };
 }
 
@@ -185,9 +185,9 @@ export interface RunAsking {
  * run's own agent under a name drawn for it and the environment that keeps the
  * machine's extensions out. Every other harness needs nothing here.
  */
-export function runAsking(harness: Harness | null, agent: string = runAgentName()): RunAsking {
+export function runAsking(harness: Harness | null, agent: string = runAgentName(), profile?: RunSpec['profile']): RunAsking {
   if (harness?.asking.kind !== 'run-agent') return { env: {}, mode: null };
-  return { env: { ...harness.asking.extensionsOff, [harness.asking.env]: JSON.stringify(runAgentConfig(agent)) }, mode: agent };
+  return { env: { ...harness.asking.extensionsOff, [harness.asking.env]: JSON.stringify(runAgentConfig(agent, process.platform, profile)) }, mode: agent };
 }
 
 /** The mode a session reports it started in: a configuration option named `mode`, or the protocol's own current mode. */
@@ -337,7 +337,7 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
       const harness = harnessById(id)!;
       const { command, args } = commandOf(harness);
       const grant = runGrant(spec, harness);
-      const asking = runAsking(harness);
+      const asking = runAsking(harness, runAgentName(), spec.profile);
       let home: Record<string, string>;
       try { home = runHomeOf(harness, spec, writeHome); } catch (error) {
         yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error) };

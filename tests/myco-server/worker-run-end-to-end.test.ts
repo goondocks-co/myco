@@ -1,3 +1,4 @@
+import { offeredHarness } from './helpers/offered-harness.js';
 import { MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 /**
  * A worker's run, from the claim to the work it owed.
@@ -31,10 +32,10 @@ import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
-const OFFERED = [{ id: 'claude-code', authenticated: true }];
+const OFFERED = [offeredHarness('claude-code')];
 
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
@@ -103,6 +104,7 @@ describe('a titling run a worker claimed', () => {
     // The Deployment asks for a title the way a session's end does, and a worker takes it.
     const run = await r.claimedTitling(NOW + 1);
     expect(run.task).toBe('title-summary');
+    expect(run.profile).toEqual({ tier: 'low', model: 'haiku', effort: 'low', sources: { tier: 'task', model: 'default' } });
 
     // The run's own credential reaches its session, which only the session and
     // mode on the run's context make possible.

@@ -12,11 +12,16 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
+import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 export interface DetectedHarness {
   id: string;
   installed: boolean;
   authenticated: boolean;
+}
+
+export interface OfferedHarness extends DetectedHarness {
+  profile: ProfileCapability;
 }
 
 /**
@@ -88,13 +93,16 @@ export function detectHarnesses(only?: readonly string[]): DetectedHarness[] {
  * What a worker offers of what it detected: each logged-in harness a run can be
  * held on, and the rest named with why they are not offered, for the operator.
  */
-export function offerOf(detected: readonly DetectedHarness[]): { offered: DetectedHarness[]; withheld: string[] } {
+export function offerOf(detected: readonly DetectedHarness[]): { offered: OfferedHarness[]; withheld: string[] } {
   const holdable = (found: DetectedHarness): boolean => {
     const harness = harnessById(found.id);
     return harness !== null && offerable(harness);
   };
   return {
-    offered: detected.filter(holdable),
+    offered: detected.flatMap((found) => {
+      const harness = harnessById(found.id);
+      return harness !== null && offerable(harness) ? [{ ...found, profile: harness.profile }] : [];
+    }),
     withheld: detected.filter((found) => found.authenticated && !holdable(found)).map((found) => found.id),
   };
 }

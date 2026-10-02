@@ -1,3 +1,4 @@
+import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * The repository map as a worker run outcome, from the dispatch to the row it
  * owed and the read an agent makes of it.
@@ -34,7 +35,7 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 
 const ORIGIN = 'https://s';
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
-const OFFERED = [{ id: 'claude-code', authenticated: true }];
+const OFFERED = [offeredHarness('claude-code')];
 const COMMIT_A = 'a'.repeat(40);
 const COMMIT_B = 'b'.repeat(40);
 const scope = { projectId: 'proj_1' };
@@ -48,7 +49,7 @@ const ARTIFACT: MapArtifact = {
 };
 
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   cleanups.push(() => e.sqlite.close());
   e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
   let now = 1_800_000_000_000;
