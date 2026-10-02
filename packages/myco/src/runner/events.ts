@@ -1,4 +1,4 @@
-import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 
 /**
  * One run-event model, behind every driver.
@@ -21,6 +21,7 @@ export type RunEvent =
   | { kind: 'message'; role: 'assistant' | 'thought'; text: string }
   /** `detail` says why a call failed, where the driver refused it or the harness reported why. */
   | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string }
+  | { kind: 'identity'; identity: ExecutionIdentity; snapshot?: true }
   | ({ kind: 'usage' } & WorkerUsage)
   | { kind: 'ended'; stop: StopReason; detail: string | null };
 

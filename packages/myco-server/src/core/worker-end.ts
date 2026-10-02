@@ -1,6 +1,6 @@
-import { parseWorkerAccounting, type WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { parseWorkerAccounting, type WorkerUsage, type ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 import { MAX_RUN_ERROR_CHARS } from '../constants.js';
-import { resolveCost } from './cost/resolver.js';
+import { resolveWorkerCost } from './cost/worker.js';
 import { runCloseRefusal } from './run-postconditions.js';
 import type { RunUpdate } from './runs.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
@@ -9,6 +9,8 @@ interface WorkerEnd extends WorkerRunIdentity {
   status: 'completed' | 'failed';
   error?: string | null;
   usage?: WorkerUsage | null;
+  identity?: ExecutionIdentity;
+  accountingVersion?: number;
 }
 
 /**
@@ -29,19 +31,16 @@ function runError(status: 'completed' | 'failed', unmet: string | null, reported
 
 /** Close evidence and accounting are prepared under the same dispatched attempt. */
 export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEnd, row) => {
-  const { usage = null, attemptId } = parseWorkerAccounting(run);
+  const { usage = null, attemptId, identity, accountingVersion } = parseWorkerAccounting(run);
   const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, { projectId: run.projectId }, row) : null;
   const status = unmet === null ? run.status : 'failed';
   const error = runError(status, unmet, run.error ?? null);
-  const cost = await resolveCost({
-    harness: '', model: '',
-    usage: usage === null ? {} : Object.fromEntries(Object.entries(usage).filter(([key, value]) =>
-      typeof value === 'number' && (usage.tokenScope === undefined || key === 'costUsd' || key === 'estimatedCostUsd'))),
-  });
+  const cost = await resolveWorkerCost(row.harness ?? '', usage, identity);
+  const primary = identity === undefined || identity.status === 'unknown' ? null : identity.primary;
   const accounting: RunUpdate = attemptId === undefined ? {} : {
-    ...(usage?.model === undefined ? {} : { model: usage.model }),
-    ...(usage?.provider === undefined ? {} : { provider: usage.provider }),
-    usage_data: usage === null ? null : JSON.stringify(usage),
+    ...(identity === undefined ? (usage?.model === undefined ? {} : { model: usage.model }) : { model: primary?.model ?? null }),
+    ...(identity === undefined ? (usage?.provider === undefined ? {} : { provider: usage.provider }) : { provider: primary?.provider ?? null }),
+    usage_data: identity === undefined ? (usage === null ? null : JSON.stringify(usage)) : JSON.stringify({ ...usage, accountingVersion, identity }),
     tokens_used: usage?.tokenScope !== undefined || usage?.inputTokens == null || usage.outputTokens == null ? null : usage.inputTokens + usage.outputTokens,
     cost_usd: cost.costUsd, actual_cost_usd: cost.actualCostUsd,
     estimated_cost_usd: cost.estimatedCostUsd, cost_source: cost.source,

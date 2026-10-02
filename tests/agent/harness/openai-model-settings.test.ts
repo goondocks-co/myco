@@ -33,6 +33,9 @@ import { OpenAIAgentsHarness } from '@myco/agent/harness/openai.js';
 mock.module('@myco/intelligence/lmstudio-instances.js', () => ({
   ensureLmStudioModelInstance: async () => ({ instanceId: 'stub-lmstudio-model', loaded: true }),
 }));
+mock.module('@myco/agent/ollama-context.js', () => ({
+  ensureOllamaContextVariant: async (model: string) => model,
+}));
 
 function stubModelProvider() {
   return {

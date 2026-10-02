@@ -1,3 +1,4 @@
+import type { CostProvenance } from '@goondocks/myco-shared/worker-usage';
 /** Run accounting with explicit actual, estimated and unavailable cost provenance. */
 
 /** Whether the figure is an actual charge, an estimate or unavailable. */
@@ -10,6 +11,9 @@ export interface RunUsage {
   outputTokens?: number;
   totalTokens?: number;
   reasoningTokens?: number;
+  cacheCreationTokens?: number;
+  cacheCreation5mTokens?: number;
+  cacheCreation1hTokens?: number;
   cachedTokens?: number;
   durationMs?: number;
   costUsd?: number | null;
@@ -26,6 +30,8 @@ export interface CostBreakdown {
   inputCostUsd?: number;
   cachedInputCostUsd?: number;
   outputCostUsd?: number;
+  cacheCreation5mCostUsd?: number;
+  cacheCreation1hCostUsd?: number;
   reasoningCostUsd?: number;
   requestCostUsd?: number;
   totalCostUsd?: number;
@@ -34,6 +40,8 @@ export interface CostBreakdown {
 
 export interface CostResolution {
   source: CostSource;
+  provenance?: CostProvenance;
+  models?: (CostResolution & { model: string; provider: string | null })[];
   costUsd: number | null;
   actualCostUsd: number | null;
   estimatedCostUsd: number | null;
@@ -55,6 +63,7 @@ export interface CostResolutionInput {
   harness: string;
   model: string;
   usage: RunUsage;
+  context?: '1m';
   provider?: CostProvider;
 }
 

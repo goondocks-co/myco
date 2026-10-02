@@ -1,10 +1,11 @@
-import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import type { WorkerUsage, WorkerModelUsage } from '@goondocks/myco-shared/worker-usage';
+import { harnessById, type HarnessAccounting } from '../harnesses.js';
+import { accountingEvents, modelSelection, reportedDollars, reportedModel } from '../accounting.js';
 import type { RunEvent } from '../events.js';
 import { numberOf, recordOf, stringOf } from './stream.js';
 
 const TOOL_STATUS = { pending: 'started', in_progress: 'started', completed: 'ok', failed: 'error' } as const;
 type RunToolStatus = (typeof TOOL_STATUS)[keyof typeof TOOL_STATUS];
-const LAST_RESPONSE_VERSIONS = new Set(['1.18.21', '1.18.29']);
 
 function countOf(value: unknown): number | null {
   if (value === undefined || value === null) return null;
@@ -12,10 +13,13 @@ function countOf(value: unknown): number | null {
   return value;
 }
 
-function modelOf(value: Record<string, unknown>): string | null {
+function modelOf(value: Record<string, unknown>): { model: string; source: string } | null {
   const options = Array.isArray(value.configOptions) ? value.configOptions.map(recordOf) : [];
   const model = options.find((option) => option?.category === 'model' || option?.id === 'model');
-  return stringOf(model?.currentValue) ?? stringOf(recordOf(value.models)?.currentModelId);
+  const configured = stringOf(model?.currentValue);
+  if (configured !== null) return { model: configured, source: 'session.configOptions' };
+  const selected = stringOf(recordOf(value.models)?.currentModelId);
+  return selected === null ? null : { model: selected, source: 'session.models' };
 }
 
 /** One newly created ACP session and its reported accounting. */
@@ -24,10 +28,16 @@ export class AcpEvents {
   /** Calls this client refused, whose failure is final. */
   private readonly refusals = new Set<string>();
   private model: string | null;
+  private modelSource: string;
+  private readonly models = new Map<string, WorkerModelUsage>();
+  private readonly used = new Set<string>();
+  private selected: string | null = null;
   private estimatedCostUsd: number | null = null;
 
-  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>) {
-    this.model = modelOf(session);
+  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>, private readonly policy: HarnessAccounting = harnessById(harness)!.accounting) {
+    const selected = modelOf(session);
+    this.model = selected?.model ?? null;
+    this.modelSource = selected?.source ?? 'session.models';
   }
 
   *update(message: Record<string, unknown>, sessionId: string): Iterable<RunEvent> {
@@ -38,21 +48,28 @@ export class AcpEvents {
     if (update === null) return;
     const type = update.sessionUpdate;
     if (type === 'agent_message_chunk' || type === 'agent_thought_chunk') {
+      if (this.selected !== null) this.used.add(this.selected);
       const text = stringOf(recordOf(update.content)?.text);
       if (text !== null) yield { kind: 'message', role: type === 'agent_thought_chunk' ? 'thought' : 'assistant', text };
     } else if (type === 'tool_call' || type === 'tool_call_update') {
+      if (this.selected !== null) this.used.add(this.selected);
       const id = stringOf(update.toolCallId);
       if (id === null) return;
       const raw = stringOf(update.status);
       yield* this.call(id, stringOf(update.title), raw !== null && Object.hasOwn(TOOL_STATUS, raw) ? TOOL_STATUS[raw as keyof typeof TOOL_STATUS] : null);
     } else if (type === 'config_option_update') {
-      this.model = modelOf(update) ?? this.model;
+      const selected = modelOf(update);
+      if (selected !== null) { this.model = selected.model; this.modelSource = selected.source; }
+      yield* this.identity();
     } else if (type === 'current_model_update') {
-      this.model = stringOf(update.currentModelId) ?? this.model;
+      const selected = stringOf(update.currentModelId);
+      if (selected !== null) { this.model = selected; this.modelSource = 'session.currentModelId'; }
+      yield* this.identity();
     } else if (type === 'usage_update') {
       const cost = recordOf(update.cost);
       const amount = numberOf(cost?.amount);
-      if (cost?.currency === 'USD' && amount !== null && amount > 0) this.estimatedCostUsd = amount;
+      if (cost?.currency === 'USD' && amount !== null && amount >= 0) this.estimatedCostUsd = reportedDollars(this.policy, amount);
+      if (this.selected !== null && ((cost?.currency === 'USD' && amount !== null && amount > 0) || (numberOf(update.used) ?? 0) > 0)) this.used.add(this.selected);
     }
   }
 
@@ -81,14 +98,26 @@ export class AcpEvents {
     if (status !== null && status !== previous?.status) yield { kind: 'tool_call', name, status };
   }
 
+  *identity(source = this.modelSource): Iterable<RunEvent> {
+    yield* accountingEvents(() => {
+      if (this.model === null) return [];
+      const model = reportedModel(harnessById(this.harness)!, this.model, source);
+      const key = JSON.stringify([model.provider, model.model]);
+      if (this.selected !== null && !this.used.has(this.selected)) this.models.delete(this.selected);
+      this.models.set(key, model);
+      this.selected = key;
+      return [{ kind: 'identity', snapshot: true, identity: { ...modelSelection(model), models: [...this.models.values()] } }];
+    });
+  }
+
   usage(result: Record<string, unknown>): WorkerUsage {
     const reported = recordOf(result.usage);
     const fresh = countOf(reported?.inputTokens);
     const cached = countOf(reported?.cachedReadTokens);
     const written = countOf(reported?.cachedWriteTokens);
     const output = countOf(reported?.outputTokens);
-    const isOpenCode = this.harness === 'opencode';
-    const separator = isOpenCode ? this.model?.indexOf('/') ?? -1 : -1;
+    const harness = harnessById(this.harness)!;
+    const selected = this.model === null ? null : reportedModel(harness, this.model, this.modelSource);
     return {
       inputTokens: fresh === null ? null : fresh + (cached ?? 0) + (written ?? 0),
       outputTokens: output,
@@ -97,11 +126,10 @@ export class AcpEvents {
       reasoningTokens: countOf(reported?.thoughtTokens),
       costUsd: null,
       estimatedCostUsd: this.estimatedCostUsd,
-      ...(fresh === null && output === null ? {} : {
-        tokenScope: isOpenCode && LAST_RESPONSE_VERSIONS.has(this.version ?? '') ? 'last_response' as const : 'unverified' as const,
+      ...((fresh === null && output === null) || harness.accounting.tokenScope === 'attempt' ? {} : {
+        tokenScope: harness.accounting.lastResponseVersions?.includes(this.version ?? '') === true ? 'last_response' as const : 'unverified' as const,
       }),
-      ...(this.model === null ? {} : { model: separator > 0 ? this.model.slice(separator + 1) : this.model }),
-      ...(separator > 0 ? { provider: this.model!.slice(0, separator) } : {}),
+      ...(selected === null ? {} : { model: selected.model, ...(selected.provider === undefined ? {} : { provider: selected.provider }) }),
     };
   }
 }

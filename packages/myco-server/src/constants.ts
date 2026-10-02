@@ -23,10 +23,13 @@ export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
 /**
- * The features this Deployment takes beyond its protocol's kinds, named to an authenticated member on every answer in
- * `FEATURES_HEADER`: every feature the shared protocol lists in the source this Deployment is built from.
+ * Supported member event features and worker accounting are advertised to authenticated callers
+ * on every answer in `FEATURES_HEADER`.
  */
-export { FEATURES_HEADER, MEMBER_FEATURES as SERVER_FEATURES } from '@goondocks/myco-shared/member-protocol';
+export { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { MEMBER_FEATURES } from '@goondocks/myco-shared/member-protocol';
+import { WORKER_ACCOUNTING_FEATURE } from '@goondocks/myco-shared/worker-usage';
+export const SERVER_FEATURES = [...MEMBER_FEATURES, WORKER_ACCOUNTING_FEATURE] as const;
 /** The Project a member request acts on. A credential is Deployment-wide, so the Project travels per request. It rides a header rather than the envelope: an envelope field is a protocol bump, and a member whose spool holds records of the older protocol stops draining them entirely. */
 export const PROJECT_HEADER = 'x-myco-project';
 /**

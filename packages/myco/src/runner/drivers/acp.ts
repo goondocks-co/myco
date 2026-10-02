@@ -1,3 +1,4 @@
+import { accountingEvents } from '../accounting.js';
 /**
  * OpenCode, Cursor and Antigravity, over the agent protocol.
  *
@@ -276,11 +277,12 @@ export async function* turnOver(
     sessionId = stringOf(info.sessionId);
     events = new AcpEvents(id, stringOf(recordOf(recordOf(initialized.result)?.agentInfo)?.version), info);
     yield { kind: 'started', harness: id, sessionId };
+    yield* events.identity();
 
     const answered = await connection.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: spec.prompt }] });
     yield* updates();
     const result = recordOf(answered.result) ?? {};
-    yield { kind: 'usage', ...events.usage(result) };
+    yield* accountingEvents(() => [{ kind: 'usage', ...events!.usage(result) }]);
     const reason = typeof result.stopReason === 'string' ? result.stopReason : '';
     const known = STOP.find((s) => s === reason) ?? null;
     yield known === null
@@ -289,7 +291,7 @@ export async function* turnOver(
     await connection.call('session/close', { sessionId }).catch(() => undefined);
   } catch (error) {
     yield* updates();
-    if (events !== undefined) yield { kind: 'usage', ...events.usage({}) };
+    if (events !== undefined) yield* accountingEvents(() => [{ kind: 'usage', ...events!.usage({}) }]);
     yield { kind: 'ended', stop: 'error', detail: error instanceof PeerClosed ? `${error.message} ${detailOnFailure()}`.trim() : String(error) };
   }
 }

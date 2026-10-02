@@ -1,8 +1,8 @@
 /**
- * Every harness a worker can drive, and the six facts that differ between them.
+ * Every harness a worker can drive, and the facts that differ between them.
  *
  * Detection, the three drivers and `myco doctor` all read this one table, so a
- * fact about a harness is stated once. The six that differ:
+ * fact about a harness is stated once. The facts that differ:
  *
  * - **`binary`** — what to look for on PATH.
  * - **`launch`** — three shapes, not two. A harness may speak the protocol
@@ -20,6 +20,8 @@
  *   run where the harness never asks. A harness whose own configuration would
  *   approve a run's calls unasked, and that a run cannot be given a
  *   configuration of its own, is offered by no worker.
+ * - **`accounting`** — the reported format, launch fallback, provider decoding
+ *   and token coverage a driver reads for the run's accounting.
  * - **`sourceGit`** — whether a source run's shell commands reach the run's
  *   own `git`, so the grant offers Git reads only where they can be held to
  *   reads of the checkout.
@@ -95,6 +97,18 @@ export type Asking =
  */
 export type SourceGit = 'shim' | 'none';
 
+export interface HarnessAccounting {
+  reported: 'claude-stream' | 'codex-session' | 'acp-session';
+  modelSources: readonly string[];
+  launchFallback: 'none' | 'resolved-config';
+  primarySources?: readonly string[];
+  modelVariants?: readonly { suffix: string; context: '1m' }[];
+  zeroDollars?: 'reported' | 'unavailable';
+  provider: { kind: 'environment'; default: string; selectors: readonly { variable: string; provider: string }[]; unknownIfSet: readonly string[] } | { kind: 'fixed'; id: string } | { kind: 'session-config'; default: string } | { kind: 'model-prefix' } | { kind: 'unavailable' };
+  tokenScope: 'attempt' | 'unverified';
+  lastResponseVersions?: readonly string[];
+}
+
 export interface Harness {
   id: string;
   binary: string;
@@ -103,11 +117,13 @@ export interface Harness {
   isolation: Isolation;
   asking: Asking;
   sourceGit: SourceGit;
+  accounting: HarnessAccounting;
 }
 
 export const HARNESSES: readonly Harness[] = [
   {
     id: 'claude-code',
+    accounting: { reported: 'claude-stream', modelSources: ['system.init.model', 'assistant.message.model', 'result.modelUsage'], primarySources: ['system.init.model'], modelVariants: [{ suffix: '[1m]', context: '1m' }], zeroDollars: 'reported', launchFallback: 'none', provider: { kind: 'environment', default: 'anthropic', selectors: [{ variable: 'CLAUDE_CODE_USE_BEDROCK', provider: 'bedrock' }, { variable: 'CLAUDE_CODE_USE_VERTEX', provider: 'vertex' }, { variable: 'CLAUDE_CODE_USE_FOUNDRY', provider: 'foundry' }], unknownIfSet: ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL'] }, tokenScope: 'attempt' },
     binary: 'claude',
     launch: { kind: 'native' },
     // The value lives in the OS keyring on macOS and in the file elsewhere, so
@@ -119,6 +135,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'codex',
+    accounting: { reported: 'codex-session', modelSources: ['session.turn_context.model'], launchFallback: 'resolved-config', provider: { kind: 'session-config', default: 'openai' }, tokenScope: 'attempt' },
     binary: 'codex',
     launch: { kind: 'native' },
     // A file holding none of the three is a logged-out file, not a login.
@@ -131,6 +148,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'opencode',
+    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'model-prefix' }, tokenScope: 'unverified', lastResponseVersions: ['1.18.21', '1.18.29'] },
     binary: 'opencode',
     launch: { kind: 'subcommand', args: ['acp'] },
     credential: { kind: 'file', path: '~/.local/share/opencode/auth.json', requires: [] },
@@ -142,6 +160,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'cursor',
+    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
     binary: 'cursor-agent',
     launch: { kind: 'subcommand', args: ['acp'] },
     credential: { kind: 'command', args: ['status'] },
@@ -154,6 +173,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'antigravity',
+    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
     binary: 'agy',
     launch: { kind: 'sidecar', binary: 'agy_acp_server.par' },
     credential: { kind: 'file', path: '~/.gemini/antigravity-cli/settings.json', requires: [] },

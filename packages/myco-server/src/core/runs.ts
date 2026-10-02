@@ -529,6 +529,7 @@ export const DISPATCHER_OWNED_COLUMNS = ['run_context', 'dry_run'] as const;
 export type RunUpdate = Partial<Record<RunUpdateColumn, string | number | null>>;
 
 export interface RunRow {
+  harness: string | null;
   id: string;
   agentId: string;
   task: string | null;
@@ -549,7 +550,7 @@ export interface RunRow {
   leaseExpiresAt: number | null;
 }
 
-const RUN_COLUMNS = `id, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
+const RUN_COLUMNS = `id, harness, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
     dry_run AS dryRun, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;

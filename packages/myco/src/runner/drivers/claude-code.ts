@@ -1,4 +1,4 @@
-import { claudeUsage } from './usage.js';
+import { ClaudeAccounting } from './claude-accounting.js';
 /**
  * Claude Code, driven natively.
  *
@@ -98,6 +98,7 @@ export const claudeCodeDriver: Driver = {
       '--allowedTools', ...grant,
     ], { cwd: spec.scratchDir, env: { ...spec.credentialEnv, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal });
 
+    const accounting = new ClaudeAccounting(harness, { ...process.env, ...spec.credentialEnv, ...env });
     let ended = false;
     let failure: string | null = null;
     /** The tool each call id named, so a result can be read back as that call's outcome. */
@@ -115,10 +116,12 @@ export const claudeCodeDriver: Driver = {
       const type = stringOf(line.type);
       if (type === 'system' && stringOf(line.subtype) === 'init') {
         yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
+        yield* accounting.events(line);
       } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
         if (firstReport(stringOf(line.tool_use_id))) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error' };
       } else if (type === 'assistant') {
         failure ??= stringOf(line.error);
+        yield* accounting.events(line);
         for (const block of blocksOf(recordOf(line.message))) {
           const kind = stringOf(block.type);
           if (kind === 'text') {
@@ -142,7 +145,7 @@ export const claudeCodeDriver: Driver = {
           yield { kind: 'tool_call', name, status: 'error', ...(detail === undefined ? {} : { detail }) };
         }
       } else if (type === 'result') {
-        yield { kind: 'usage', ...claudeUsage(line) };
+        yield* accounting.events(line);
         ended = true;
         // A refused call outside the grant is the harness keeping the run to
         // its tools, and is reported as that call's failure. A refusal of a

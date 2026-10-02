@@ -42,6 +42,6 @@ export function estimateOpenAICost(model: string, usage: RunUsage): CostResoluti
     estimatedCostUsd: totalCostUsd,
     breakdown: { ...breakdown, inputCostUsd, cachedInputCostUsd, outputCostUsd, totalCostUsd, cacheSavingsUsd },
     pricingVersion: OPENAI_PRICING_VERSION,
-    providerMetadata: { model, ...pricing },
+    providerMetadata: { model, pricingSource: 'https://developers.openai.com/api/docs/pricing', ...pricing },
   };
 }
