@@ -27,7 +27,7 @@ import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { locate } from '../detect.js';
 import { credentialFile, harnessById, type Harness } from '../harnesses.js';
-import type { Driver, RunEvent, RunSpec } from '../events.js';
+import type { Driver, Launch, LaunchSpec, RunEvent, RunSpec } from '../events.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { workerLogLine } from '../log.js';
 import { freshRunHome } from './run-home.js';
@@ -57,7 +57,7 @@ const LOGIN_KEY_FIELD = 'OPENAI_API_KEY';
  * signs in with rather than in a copy this then deletes, and no second copy of
  * a credential is written for anything to read.
  */
-function carryLogin(home: string, spec: RunSpec, harness: Harness): void {
+function carryLogin(home: string, spec: LaunchSpec, harness: Harness): void {
   const key = spec.credentialEnv[CREDENTIAL_VARIABLE];
   if (key !== undefined && key !== '') {
     writeFileSync(join(home, 'auth.json'), `${JSON.stringify({ [LOGIN_KEY_FIELD]: key }, null, 2)}\n`, { mode: 0o600 });
@@ -195,7 +195,7 @@ export const RUN_PERMISSIONS = 'myco_run';
  * A command reaches no network. Paths are physical, since the sandbox judges
  * the path a file really has.
  */
-export function runFilesystem(spec: RunSpec, home: string, installed: string | null, developerDir: string | null): Record<string, string> {
+export function runFilesystem(spec: LaunchSpec, home: string, installed: string | null, developerDir: string | null): Record<string, string> {
   const source = spec.sourceReadOnly === true;
   return {
     ':minimal': 'read',
@@ -205,7 +205,7 @@ export function runFilesystem(spec: RunSpec, home: string, installed: string | n
     ...(source && developerDir !== null ? { [developerDir]: 'read' } : {}),
     [realpathSync(spec.scratchDir)]: source ? 'read' : 'write',
     [realpathSync(home)]: 'deny',
-    [realpathSync(spec.mcpConfigPath)]: 'deny',
+    ...(spec.mcpConfigPath === undefined ? {} : { [realpathSync(spec.mcpConfigPath)]: 'deny' }),
   };
 }
 
@@ -293,7 +293,7 @@ export function sourceGitEnvironment(developerDir: string | null, path: string =
  * scan for the lines that look like server declarations mistakes a multi-line
  * string that contains one for the real thing.
  */
-function runConfig(spec: RunSpec, harness: Harness, home: string, probe: DeveloperDirProbe, log: (line: string) => void): string {
+function runConfig(spec: LaunchSpec, harness: Harness, home: string, probe: DeveloperDirProbe, log: (line: string) => void): string {
   const login = credentialFile(harness);
   // A harness keeps its login inside its configuration home, so the directory
   // holding the declared login file is the home this run is additive over.
@@ -333,16 +333,20 @@ function runConfig(spec: RunSpec, harness: Harness, home: string, probe: Develop
   // The run's connection is authored once, in `mcp-config.ts`. This reads that
   // file and restates it in the language this harness configures servers in,
   // rather than naming the server, the URL or the headers a second time.
-  const config = JSON.parse(readFileSync(spec.mcpConfigPath, 'utf8')) as { mcpServers: Record<string, { url: string; headers: Record<string, string> }> };
-  const server = config.mcpServers[MCP_SERVER_NAME]!;
   // Every server the machine declared, under a header or at the root, is one
-  // value under one key: the run's server replaces the lot rather than joining it.
-  machine[MCP_TABLE] = { [MCP_SERVER_NAME]: { url: server.url, http_headers: server.headers } };
+  // value under one key: the run's server replaces the lot rather than joining
+  // it, and a launch with no server of its own has none.
+  if (spec.mcpConfigPath === undefined) machine[MCP_TABLE] = {};
+  else {
+    const config = JSON.parse(readFileSync(spec.mcpConfigPath, 'utf8')) as { mcpServers: Record<string, { url: string; headers: Record<string, string> }> };
+    const server = config.mcpServers[MCP_SERVER_NAME]!;
+    machine[MCP_TABLE] = { [MCP_SERVER_NAME]: { url: server.url, http_headers: server.headers } };
+  }
   return stringify(machine as TomlTableWithoutBigInt);
 }
 
 /** The configuration home a run reads, built where the run's own files are (`run-home.ts`). */
-function runHome(spec: RunSpec, harness: Harness, probe: DeveloperDirProbe, log: (line: string) => void): string {
+function runHome(spec: LaunchSpec, harness: Harness, probe: DeveloperDirProbe, log: (line: string) => void): string {
   const home = freshRunHome(spec.scratchDir, 'codex-home');
   carryLogin(home, spec, harness);
   writeFileSync(join(home, 'config.toml'), runConfig(spec, harness, home, probe, log), { mode: 0o600 });
@@ -361,15 +365,23 @@ function toolStatus(status: string | null): 'started' | 'ok' | 'error' {
 export function codexDriverWith(probe: DeveloperDirProbe, log: (line: string) => void = (line) => { console.log(workerLogLine(line)); }): Driver {
   return {
     id: 'codex',
+    launch: (spec) => codexLaunch(spec, probe, log).launch,
     run: (spec, signal) => runCodex(spec, signal, probe, log),
   };
+}
+
+/** A configuration home of the launch's own under its directory, signed in as `carryLogin` says, and the Deployment's credential. */
+function codexLaunch(spec: LaunchSpec, probe: DeveloperDirProbe, log: (line: string) => void): { launch: Launch; home: string } {
+  const harness = harnessById('codex')!;
+  const home = runHome(spec, harness, probe, log);
+  return { home, launch: { env: { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) }, omitInherited: [] } };
 }
 
 export const codexDriver: Driver = codexDriverWith(SYSTEM_DEVELOPER_DIR_PROBE);
 
 async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDirProbe, log: (line: string) => void): AsyncIterable<RunEvent> {
   const harness = harnessById('codex')!;
-  const home = runHome(spec, harness, probe, log);
+  const { home, launch } = codexLaunch(spec, probe, log);
   const configured = parse(readFileSync(join(home, 'config.toml'), 'utf8')) as Record<string, unknown>;
   const launchEvents = accountingEvents(() => {
     const identity = codexLaunchIdentity(harness, configured);
@@ -377,12 +389,11 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
   });
   yield* launchEvents;
   const launched = launchEvents.find((event) => event.kind === 'identity')?.identity ?? null;
-  const env = { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) };
   const selection = launched === null || launched.status === 'unknown' ? [] : [
     '-c', `model=${JSON.stringify(launched.primary.model)}`,
     ...(launched.primary.provider === undefined ? [] : ['-c', `model_provider=${JSON.stringify(launched.primary.provider)}`]),
   ];
-  const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', ...selection, spec.prompt], { cwd: spec.scratchDir, env, signal });
+  const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', ...selection, spec.prompt], { cwd: spec.scratchDir, env: launch.env, omitInherited: launch.omitInherited, signal });
 
   let terminal: Extract<RunEvent, { kind: 'ended' }> | null = null;
   let threadId: string | null = null;

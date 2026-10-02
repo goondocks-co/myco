@@ -34,6 +34,7 @@ import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js'
 import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.ts';
+import { MODEL_CATALOG_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
@@ -323,8 +324,8 @@ describe('a worker on the real claim wire', () => {
     const paths = r.sent.map((s) => s.path);
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('a 503 ended the attachment', attached, paths));
     expect(r.runRow('run_after_503')).toEqual({ status: 'failed', harness: PROFILE_STUB_HARNESS, error: RUN_CLOSE_ERROR });
-    // Two claims: the faulted one and the one that was answered.
-    expect(paths).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/end']);
+    // Two claims: the faulted one and the one that was answered. The model list it reports beside them is its own.
+    expect(paths.filter((path) => path !== '/worker/models')).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/end']);
     expect(attached.lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);
     expect(attached.lines.filter((l) => l.includes('again'))).toHaveLength(1);
   }, 30_000);
@@ -376,4 +377,69 @@ describe('a worker on the real claim wire', () => {
     expect({ driven, refused, polls }).toEqual({ driven: 0, refused: null, polls: 3 });
     expect(lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);
   }, 30_000);
+
+  it('lists its harness\'s models for a Deployment that stores them, and the next claim records what the requested alias resolves to', async () => {
+    expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
+    const stopping = new AbortController();
+    let listing = true;
+    let reported = false;
+    const r = await rig((path) => {
+      if (!listing) return null;
+      if (path === '/members/status' && reported) stopping.abort();
+      if (path === '/worker/models') reported = true;
+      if (path === '/worker/claim') return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
+      return null;
+    });
+    const admin = await r.member('mem_admin', 'admin');
+    const attached = await r.attach(admin, { once: false, stopping });
+    if (!reported) throw new Error(reportOf('the worker reported no models', attached, r.sent.map((s) => s.path)));
+    const rows = r.e.sqlite.query(`SELECT harness, catalog FROM worker_model_catalogs`).all() as Array<{ harness: string; catalog: string }>;
+    // `default` is no model id Claude Code's settings accept, so it is not offered.
+    expect(rows.map((row) => ({ harness: row.harness, models: JSON.parse(row.catalog).models }))).toEqual([{ harness: 'claude-code', models: [
+      { id: 'sonnet', label: 'Sonnet 5.5', resolvesTo: 'claude-sonnet-5-5', efforts: ['low', 'medium', 'high'] },
+      { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+    ] }]);
+
+    listing = false;
+    r.queueRun('run_alias');
+    expect(await r.attach(admin)).toMatchObject({ driven: 1, refused: null });
+    const stored = r.e.sqlite.query(`SELECT execution_overrides, usage_data FROM agent_runs WHERE id = 'run_alias'`).get() as { execution_overrides: string; usage_data: string };
+    expect(JSON.parse(stored.execution_overrides).requested).toMatchObject({ model: 'sonnet', resolvesTo: 'claude-sonnet-5-5' });
+    const identity = JSON.parse(stored.usage_data).identity as { primary: { model: string }; warnings?: string[] };
+    expect({ model: identity.primary.model, mismatch: (identity.warnings ?? []).includes('model_mismatch') }).toEqual({ model: 'claude-sonnet-5-5', mismatch: false });
+    r.e.sqlite.close();
+  }, 30_000);
+
+  it('neither lists nor reports models to a Deployment that does not advertise storing them, and still claims', async () => {
+    const evidence = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-unlisted-')));
+    const listedFile = join(evidence, 'listed');
+    expect(stubProfileHarness({ listedFile })).toEqual(PROFILE_STUB_DETECTED);
+    const stopping = new AbortController();
+    const r = await rig((path, n) => {
+      if (path === '/members/status') {
+        if (n >= 6) stopping.abort();
+        return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'turn,worker-accounting-v1,execution-profile,profile-outcome-v1' } });
+      }
+      return null;
+    });
+    const admin = await r.member('mem_admin', 'admin');
+    r.queueRun('run_older_deployment');
+    const attached = await r.attach(admin, { once: false, stopping });
+    expect(attached).toMatchObject({ driven: 1, refused: null });
+    expect(r.sent.filter((sent) => sent.path === '/members/status').length).toBeGreaterThanOrEqual(5);
+    expect(r.sent.filter((sent) => sent.path === '/worker/models')).toEqual([]);
+    expect(existsSync(listedFile)).toBe(false);
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM worker_model_catalogs`).get()).toEqual({ n: 0 });
+    r.e.sqlite.close();
+  }, 30_000);
+
+  it('advertises storing model lists, so a worker reports them', async () => {
+    const r = await rig();
+    const admin = await r.member('mem_admin', 'admin');
+    const response = await workerServer.fetch(new Request('https://s/members/status', {
+      method: 'POST', headers: { authorization: `Bearer ${admin}`, 'cf-connecting-ip': '1.2.3.4', 'x-myco-protocol': '1', 'content-type': 'application/json' }, body: '{}',
+    }), r.e.env);
+    expect(response.headers.get('x-myco-features')?.split(',')).toContain(MODEL_CATALOG_FEATURE);
+  });
+
 });

@@ -708,6 +708,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
       },
+      'POST /worker/models': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ catalog: { harness: 'codex', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: 1, models: [] } }) }),
+      },
       'POST /mcp': {
         shape: 'answered',
         malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
@@ -1264,6 +1269,7 @@ describe('gates', () => {
       'member POST /worker/claim',
       'member POST /worker/end',
       'member POST /worker/lease',
+      'member POST /worker/models',
       'member POST /worker/repository',
       'public GET /health',
       'session:account GET /auth/me',

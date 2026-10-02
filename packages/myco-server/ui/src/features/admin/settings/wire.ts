@@ -9,6 +9,7 @@
  * under `typecheck:tests`.
  */
 import type { EffectiveSetting, EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
+import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 
 /** `GET /api/settings`: one leaf, what is stored for it, and the effective answer of the policy that acts on it. */
 export type LeafRow = {
@@ -33,7 +34,12 @@ export interface SettingsAnswer {
   taskTiers: TaskTierRow[];
   /** Null where the server could not read them. */
   embedding: EmbeddingChoices | null;
+  /** The models each worker last listed for each harness it offers, newest received first. */
+  models?: SettingsModelCatalog[];
 }
+
+/** One harness's models as a worker last listed them, and when the server received the list. */
+export type SettingsModelCatalog = ModelCatalog & { receivedAt: number };
 
 /** One worker outcome's effective reasoning tier. */
 export type TaskTierRow =

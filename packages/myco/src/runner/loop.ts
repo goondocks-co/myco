@@ -1,5 +1,5 @@
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -36,6 +36,8 @@ import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import type { RepositoryCheckout } from './repository-checkout.js';
 import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
+import { modelCatalogs, type ListModels } from './catalogs.js';
+import { listModels } from './models.js';
 import type { KeepAwake } from './keep-awake.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
@@ -103,6 +105,8 @@ export interface WorkerOptions {
   wakeSettle?: WakeSettle;
   /** Held while a run is driven, so the machine does not sleep under it. Nothing is held when omitted. */
   keepAwake?: KeepAwake;
+  /** Lists the models of the harnesses this worker offers, for a Deployment that stores them. Defaults to each manifest's listing (`models.ts`). */
+  listModels?: ListModels;
 }
 
 /** What a request needs of a worker: where, as whom, and when to give up. */
@@ -117,8 +121,8 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * attachment; an unreachable Deployment is not, and the worker keeps polling. A
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
-type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean }
+export type WorkerAnswer =
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -202,6 +206,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let accounting = false;
   let executionProfile = false;
   let profileOutcome = false;
+  let modelCatalog = false;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
@@ -212,6 +217,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
     accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
     executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
+    modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
     raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
@@ -219,7 +225,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog };
     case 'protocol':
       return {
         kind: 'refused',
@@ -602,118 +608,135 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     }
   };
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
-  while (!options.signal.aborted) {
-    if (options.stillCurrent !== undefined && !options.stillCurrent()) {
-      options.log('the myco program on disk changed; stopping so the new one starts');
-      return { driven, refused: null, replaced: true };
-    }
-    // A machine that has only just woken may be about to sleep again — a closed
-    // laptop wakes for a while at a time — and a run claimed now would lapse
-    // under it. It claims once it has stayed awake for the settle.
-    if (!wake.settled()) {
-      const awake = wake.awakeFor();
-      const settleMs = wake.settleMs();
-      if (!settling) { settling = true; options.log(`this machine woke ${Math.max(0, Math.round(awake / 1000))}s ago; claiming once it has been awake ${Math.round(settleMs / 1000)}s`); }
-      await pause(Math.min(settleMs - awake, Math.max(options.pollIdleMs, 1)));
-      continue;
-    }
-    settling = false;
-    // Compatibility is checked on a read before the queue can be claimed.
-    {
-      const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/members/status', {}));
-      if (compatibility.kind === 'refused') {
-        options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
-        return { driven, refused: compatibility.code };
+  const clock = options.clock ?? Date.now;
+  const catalogs = modelCatalogs({
+    harnesses: ready,
+    list: options.listModels ?? ((ids, signal) => listModels(ids, options.runRoot, signal, clock)),
+    send: (catalog) => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/models', { catalog }),
+    log: options.log,
+    clock,
+  });
+  try {
+    return await claimLoop();
+  } finally {
+    catalogs.stop();
+  }
+
+  async function claimLoop(): Promise<WorkerOutcome> {
+    while (!options.signal.aborted) {
+      if (options.stillCurrent !== undefined && !options.stillCurrent()) {
+        options.log('the myco program on disk changed; stopping so the new one starts');
+        return { driven, refused: null, replaced: true };
       }
-      if (compatibility.kind === 'unreachable') {
-        if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${compatibility.detail}; still polling`); }
+      // A machine that has only just woken may be about to sleep again — a closed
+      // laptop wakes for a while at a time — and a run claimed now would lapse
+      // under it. It claims once it has stayed awake for the settle.
+      if (!wake.settled()) {
+        const awake = wake.awakeFor();
+        const settleMs = wake.settleMs();
+        if (!settling) { settling = true; options.log(`this machine woke ${Math.max(0, Math.round(awake / 1000))}s ago; claiming once it has been awake ${Math.round(settleMs / 1000)}s`); }
+        await pause(Math.min(settleMs - awake, Math.max(options.pollIdleMs, 1)));
+        continue;
+      }
+      settling = false;
+      // Compatibility is checked on a read before the queue can be claimed.
+      {
+        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/members/status', {}));
+        if (compatibility.kind === 'refused') {
+          options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
+          return { driven, refused: compatibility.code };
+        }
+        if (compatibility.kind === 'unreachable') {
+          if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${compatibility.detail}; still polling`); }
+          await pause(options.pollIdleMs);
+          continue;
+        }
+        if (!compatibility.executionProfile) {
+          if (!needsServerUpdate) { needsServerUpdate = true; options.log('this server needs updating before it can give this worker work'); }
+          await pause(options.pollIdleMs);
+          continue;
+        }
+        if (compatibility.modelCatalog) catalogs.due();
+        if (!wake.settled()) continue;
+      }
+      const claimSentAt = (options.clock ?? Date.now)();
+      const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
+      if (answer.kind === 'refused') {
+        options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
+        return { driven, refused: answer.code };
+      }
+      if (answer.kind === 'unreachable') {
+        // Said once rather than every poll: a worker left attached across an
+        // outage would otherwise fill a log with one line per poll, and the
+        // recovery — the line that says claiming resumed — would be lost in it.
+        if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${answer.detail}; still polling`); }
         await pause(options.pollIdleMs);
         continue;
       }
-      if (!compatibility.executionProfile) {
-        if (!needsServerUpdate) { needsServerUpdate = true; options.log('this server needs updating before it can give this worker work'); }
-        await pause(options.pollIdleMs);
+      if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
+      if (!attached) { attached = true; options.onAttached?.(); }
+
+      const claim = answer.body;
+      if (claim.claimed !== true) {
+        // Said once per change rather than once per poll. `no_work` is an idle
+        // queue and `no_harness` is work this worker cannot run — actionable, and
+        // indistinguishable from idleness to anyone reading an unlabelled silence.
+        const reason = typeof claim.reason === 'string' ? claim.reason : 'unexplained';
+        if (reason !== waiting) { waiting = reason; options.log(`nothing claimed: ${reason}`); }
+        await pause(waitOf(claim.pollAfterMs, options.pollIdleMs));
         continue;
       }
-      if (!wake.settled()) continue;
-    }
-    const claimSentAt = (options.clock ?? Date.now)();
-    const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
-    if (answer.kind === 'refused') {
-      options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
-      return { driven, refused: answer.code };
-    }
-    if (answer.kind === 'unreachable') {
-      // Said once rather than every poll: a worker left attached across an
-      // outage would otherwise fill a log with one line per poll, and the
-      // recovery — the line that says claiming resumed — would be lost in it.
-      if (!unreachable && !options.signal.aborted) { unreachable = true; options.log(`cannot reach ${options.serverUrl}: ${answer.detail}; still polling`); }
-      await pause(options.pollIdleMs);
-      continue;
-    }
-    if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
-    if (!attached) { attached = true; options.onAttached?.(); }
+      waiting = null;
 
-    const claim = answer.body;
-    if (claim.claimed !== true) {
-      // Said once per change rather than once per poll. `no_work` is an idle
-      // queue and `no_harness` is work this worker cannot run — actionable, and
-      // indistinguishable from idleness to anyone reading an unlabelled silence.
-      const reason = typeof claim.reason === 'string' ? claim.reason : 'unexplained';
-      if (reason !== waiting) { waiting = reason; options.log(`nothing claimed: ${reason}`); }
-      await pause(waitOf(claim.pollAfterMs, options.pollIdleMs));
-      continue;
-    }
-    waiting = null;
-
-    const run = asRun(claim.run);
-    if (run === null) {
-      options.log('the Deployment answered a claim naming no run');
-      return { driven, refused: 'malformed_answer' };
-    }
-    options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
-    // The cadence and the lease are the Deployment's, carried on the claim it answered.
-    requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);
-    const outcome = await drive(options, run, { heartbeatMs: requestMs, deadline: leaseDeadline(claimSentAt, claim.leaseMs) }, wake);
-    // A worker that lost its lease writes nothing: the run belongs to whoever
-    // holds it now, and a late outcome would be one worker reporting on
-    // another's run. The Deployment refuses such a write anyway; not making it
-    // is what keeps the two accounts of a run from disagreeing.
-    if (outcome.status !== 'lost') {
-      const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
-      const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
-        attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: answer.profileOutcome ? outcome.identity : withoutProfileOutcome(outcome.identity),
-      } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
-      const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
-        ...accounting,
-        ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
-      }));
-      if (ended.kind === 'refused') {
-        options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
-        return { driven, refused: ended.code };
+      const run = asRun(claim.run);
+      if (run === null) {
+        options.log('the Deployment answered a claim naming no run');
+        return { driven, refused: 'malformed_answer' };
       }
-      // An outcome that never arrived leaves the run to the Deployment's sweep,
-      // which is what owns a run no worker reports on. Saying so is what makes
-      // the difference visible between that and a run nobody ever claimed.
-      if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
-      // The worker reports what the harness did; the Deployment records what the
-      // task actually left behind, and the two differ whenever a harness ends its
-      // turn having done none of the work. A worker that logged only its own
-      // report would show a clean drive against a run the Deployment failed.
-      if (ended.kind === 'answered' && ended.body.ended === false) {
-        options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
-      }
-      if (ended.kind === 'answered') {
-        const recorded = ended.body.status;
-        if (typeof recorded === 'string' && recorded !== outcome.status) {
-          options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);
+      options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
+      // The cadence and the lease are the Deployment's, carried on the claim it answered.
+      requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);
+      const outcome = await drive(options, run, { heartbeatMs: requestMs, deadline: leaseDeadline(claimSentAt, claim.leaseMs) }, wake);
+      // A worker that lost its lease writes nothing: the run belongs to whoever
+      // holds it now, and a late outcome would be one worker reporting on
+      // another's run. The Deployment refuses such a write anyway; not making it
+      // is what keeps the two accounts of a run from disagreeing.
+      if (outcome.status !== 'lost') {
+        const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
+        const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
+          attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: answer.profileOutcome ? outcome.identity : withoutProfileOutcome(outcome.identity),
+        } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
+        const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
+          ...accounting,
+          ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
+        }));
+        if (ended.kind === 'refused') {
+          options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
+          return { driven, refused: ended.code };
+        }
+        // An outcome that never arrived leaves the run to the Deployment's sweep,
+        // which is what owns a run no worker reports on. Saying so is what makes
+        // the difference visible between that and a run nobody ever claimed.
+        if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
+        // The worker reports what the harness did; the Deployment records what the
+        // task actually left behind, and the two differ whenever a harness ends its
+        // turn having done none of the work. A worker that logged only its own
+        // report would show a clean drive against a run the Deployment failed.
+        if (ended.kind === 'answered' && ended.body.ended === false) {
+          options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
+        }
+        if (ended.kind === 'answered') {
+          const recorded = ended.body.status;
+          if (typeof recorded === 'string' && recorded !== outcome.status) {
+            options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);
+          }
         }
       }
+      driven += 1;
+      if (options.once === true) return { driven, refused: null };
     }
-    driven += 1;
-    if (options.once === true) return { driven, refused: null };
+    return { driven, refused: null };
   }
-  return { driven, refused: null };
 }
 
 /** Wait `ms`, or until `signal` aborts. */

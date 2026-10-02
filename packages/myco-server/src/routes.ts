@@ -65,7 +65,7 @@ import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
 import { handleImportPlan } from './api/import.js';
 import { handleGrantMcp, handleMcp, handleRunMcp, handleUnboundMcp } from './mcp/http.js';
-import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease, handleWorkerRepository } from './api/worker.js';
+import { handleWorkerClaim, handleWorkerEnd, handleWorkerLease, handleWorkerModels, handleWorkerRepository } from './api/worker.js';
 
 /** Public handlers receive the request only; they cannot reach storage or bindings. */
 export type PublicHandler = (request: Request) => Promise<Response>;
@@ -180,6 +180,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerLease },
   { method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerEnd },
   { method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerRepository },
+  { method: 'POST', path: '/worker/models', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerModels },
   { method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', capture: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, mintsAuthority: true, handler: handleLinkGithub },

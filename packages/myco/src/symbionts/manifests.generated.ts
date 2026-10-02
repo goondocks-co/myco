@@ -609,6 +609,43 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         "sourceGit": "shim",
         "modelSetting": "flag",
+        "models": {
+          "kind": "exchange",
+          "args": [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "project,local",
+            "--no-session-persistence"
+          ],
+          "send": [
+            {
+              "type": "control_request",
+              "request_id": "myco-models",
+              "request": {
+                "subtype": "initialize"
+              }
+            }
+          ],
+          "answer": {
+            "where": {
+              "type": "control_response",
+              "response.request_id": "myco-models"
+            },
+            "list": "response.response.models"
+          },
+          "fields": {
+            "id": "value",
+            "label": "displayName",
+            "resolvesTo": "resolvedModel",
+            "efforts": "supportedEffortLevels"
+          }
+        },
         "accounting": {
           "reported": "claude-stream",
           "modelSources": [
@@ -1172,6 +1209,52 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         "sourceGit": "none",
         "modelSetting": "config",
+        "models": {
+          "kind": "exchange",
+          "args": [
+            "app-server"
+          ],
+          "send": [
+            {
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "initialize",
+              "params": {
+                "clientInfo": {
+                  "name": "myco",
+                  "version": "1"
+                }
+              }
+            },
+            {
+              "jsonrpc": "2.0",
+              "method": "initialized"
+            },
+            {
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "model/list",
+              "params": {}
+            }
+          ],
+          "answer": {
+            "where": {
+              "id": 2
+            },
+            "list": "result.data"
+          },
+          "page": {
+            "cursor": "result.nextCursor",
+            "param": "params.cursor"
+          },
+          "fields": {
+            "id": "id",
+            "label": "displayName",
+            "isDefault": "isDefault",
+            "upgrade": "upgrade",
+            "efforts": "supportedReasoningEfforts[].reasoningEffort"
+          }
+        },
         "accounting": {
           "reported": "codex-session",
           "modelSources": [
@@ -1865,8 +1948,22 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "xhigh",
           "max"
         ],
-        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
-        "modelHint": "Use provider/model. An unset model holds runs at this tier."
+        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
+        "modelHint": "Use provider/model. An unset model holds runs at this tier.",
+        "providerAliasPattern": "^openrouter/~",
+        "presets": [
+          {
+            "id": "openrouter-claude-latest",
+            "provider": "openrouter",
+            "label": "Newest Claude through OpenRouter",
+            "description": "Haiku, Sonnet and Opus through OpenRouter, always the newest version.",
+            "models": {
+              "low": "openrouter/~anthropic/claude-haiku-latest",
+              "default": "openrouter/~anthropic/claude-sonnet-latest",
+              "high": "openrouter/~anthropic/claude-opus-latest"
+            }
+          }
+        ]
       },
       "worker": {
         "binary": "opencode",
@@ -1886,6 +1983,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         "sourceGit": "shim",
         "modelSetting": "config",
+        "models": {
+          "kind": "command",
+          "args": [
+            "models"
+          ],
+          "format": "lines",
+          "provider": "id-prefix"
+        },
         "accounting": {
           "reported": "acp-session",
           "modelSources": [

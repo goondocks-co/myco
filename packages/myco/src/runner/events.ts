@@ -54,6 +54,25 @@ export interface RunSpec {
 export interface Driver {
   id: string;
   run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent>;
+  /**
+   * The environment the harness is started under, for a run and for a listing of its models alike: its isolation
+   * (a configuration home of its own built under `scratchDir`, a run agent), the credential it signs in with, and
+   * which of the worker's own variables it never inherits. A run adds only what its grant needs on top.
+   */
+  launch(spec: LaunchSpec): Launch;
+}
+
+/**
+ * What a harness is started for: a directory of its own, and the credential the Deployment handed, empty where the
+ * harness signs in with the machine's own login. A run also names its server's configuration, its profile and
+ * whether it reads source; a listing of models names none of them.
+ */
+export type LaunchSpec = Pick<RunSpec, 'scratchDir' | 'credentialEnv'> & Partial<Pick<RunSpec, 'mcpConfigPath' | 'profile' | 'sourceReadOnly'>>;
+
+/** The variables a harness is started with over the worker's own, and those of the worker's own it never inherits. */
+export interface Launch {
+  env: Record<string, string>;
+  omitInherited: readonly string[];
 }
 
 /**

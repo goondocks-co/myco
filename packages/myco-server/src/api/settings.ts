@@ -13,6 +13,7 @@ import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/sett
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
+import { readModelCatalogs, type StoredModelCatalog } from '../core/model-catalogs.js';
 import { cancelEmbeddingSwitch, embeddingSwitchStatus, estimateEmbeddingSwitch, passedOverForHealth, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
 
 /**
@@ -145,9 +146,18 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   return { leaves: redact(leaves), taskTiers, embedding: redact(embedding) };
 }
 
-/** `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member. */
+/** One harness's models as a machine's worker last listed them, as Settings offers them: the models, how and when. */
+export type SettingsModelCatalog = StoredModelCatalog;
+
+/**
+ * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member.
+ * An admin is also answered the models each machine's worker listed lately for each harness it offers, which say
+ * which providers each machine is signed in to; no other member is.
+ */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ persisted: true, ...await deploymentSettings(env, !isAdmin(ctx.member.role)) });
+  const admin = isAdmin(ctx.member.role);
+  const models: SettingsModelCatalog[] | undefined = admin ? await readModelCatalogs(env.db, ctx.now) : undefined;
+  return ok({ persisted: true, ...await deploymentSettings(env, !admin), ...(models === undefined ? {} : { models }) });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */

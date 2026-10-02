@@ -29,6 +29,7 @@ import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../cons
 export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
 import { pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
+import { catalogResolution, pruneModelCatalogs } from './model-catalogs.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
@@ -1040,7 +1041,10 @@ export async function claimNextRun(
     candidate = await nextClaimable(env.db, excluded);
   }
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : 'no_work' };
-  const { harness, profile, credentialEnv } = chosen;
+  const { harness, credentialEnv } = chosen;
+  // What the claiming machine's harness listed the requested model as resolving to, so the run's model is judged against it.
+  const resolvesTo = await catalogResolution(env.db, worker.machineId, harness, chosen.profile.model, worker.now);
+  const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
 
   // A task whose prompt the server builds has it built again here: the run
   // reads the vault as it stands at the instant a worker takes it, rather than
@@ -1184,6 +1188,8 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
   // bounded like the lease batch above. A worker holding a live lease keeps its
   // row whatever its age.
   await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
+  // And the model lists no machine has renewed within their freshness window, bounded the same way.
+  await pruneModelCatalogs(env.db, now, DRAIN_BATCH);
   // And forgets a repository no machine has reported for a month, bounded the same way.
   await pruneUncaptured(env.db, now, DRAIN_BATCH);
   return requeued;
