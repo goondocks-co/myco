@@ -13,10 +13,8 @@
  * answers it. Every retained task names one gate:
  *
  * - **A capability**, per Project, absent meaning not admitted.
- * - **A provider**, per Deployment, for the capture-driven tasks. A title and
- *   summary rides capture rather than an intelligence capability, and asks only
- *   whether there is a model to call — resolved task-first then default, as
- *   `hasConfiguredProvider` resolves it locally.
+ * - **Capture**, for request-driven titling. The worker claim selects the
+ *   harness, tier profile and login; no provider setting gates the request.
  * - **An embedding provider**, per Deployment, for deterministic vector work.
  *
  * Four of the retained tasks are run outcomes: one prompt each, built by the
@@ -60,7 +58,7 @@ export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
   'container-smoke': { kind: 'capability', capability: 'cortex' },
   [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
-  [TITLING_TASK]: { kind: 'provider' },
+  [TITLING_TASK]: { kind: 'capture' },
 };
 
 export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);

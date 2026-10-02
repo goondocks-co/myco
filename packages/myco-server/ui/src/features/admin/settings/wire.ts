@@ -14,11 +14,13 @@ export interface LeafRow {
   value: unknown;
   updatedAt: number | null;
   updatedBy: string | null;
-  /** Nothing on the server reads this leaf any more: the page shows it only where a value is stored, read-only. */
+  /** Retired editable contract: stored values are read-only metadata. */
   retired: boolean;
-  /** Present for execution profile leaves: what the next claim uses. */
+  /** Present for execution profiles and derived metadata: the live value. */
   effectiveValue?: unknown;
-  source?: 'configured' | 'default' | 'unset' | 'invalid';
+  editableValue?: unknown;
+  retiredValue?: Record<string, unknown>;
+  source?: 'configured' | 'default' | 'unset' | 'invalid' | 'derived';
   error?: 'invalid_value';
   remedy?: string;
   repair?: 'reset-leaf';

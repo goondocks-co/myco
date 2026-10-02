@@ -36,7 +36,7 @@ describe('code task runner', () => {
     const now = Date.now();
     await ensureMember(fixture.db, 'mem_harness', now, 'member', 'harness');
     const minted = await issueMemberToken(fixture.db, { memberId: 'mem_harness', machineId: 'machine_1' }, now);
-    fixture.sqlite.query("INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','skills',1,1,'test')").run();
+    fixture.sqlite.query("INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','cortex',1,1,'test')").run();
     await projectRepositories(fixture.db, deploymentSecretStore(fixture.db, fixture.serverEnv.wrappingKey)).save('proj_1', {
       url, branch: 'main', revision: null, credential: { username: 'reader', token },
     }, 'mem_machine_1', now);
@@ -48,7 +48,7 @@ describe('code task runner', () => {
     }) as typeof fetch);
     let workspace = '';
     const result = await runServerTask({
-      client, budget: { connectTimeoutMs: 1000, requestTimeoutMs: 5000 }, runId: 'code-run', taskName: 'skill-generate', admission: 'skills', repositoryGitPath: gitPath,
+      client, budget: { connectTimeoutMs: 1000, requestTimeoutMs: 5000 }, runId: 'code-run', taskName: 'skill-generate', admission: 'cortex', repositoryGitPath: gitPath,
       harness: { id: 'stand-in', execute: async (input) => {
         workspace = input.toolSurface.projectRoot!;
         expect(workspace).toBeTruthy();

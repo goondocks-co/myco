@@ -7,7 +7,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, DEPLOYMENT_LEAF_SPECS, PROJECT_CAPABILITIES, settingsWriter, executionProfileLeafDefault, leafRuleViolation, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, DEPLOYMENT_LEAF_SPECS, PROJECT_CAPABILITIES, settingsWriter, taskOverridesMetadata, derivedLeafMetadata, executionProfileLeafDefault, leafRuleViolation, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
 
@@ -87,7 +87,8 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   const leaves = DEPLOYMENT_LEAVES.map((leaf) => {
     const profileDefault = executionProfileLeafDefault(leaf, env.harnessCredentialSource);
     const held = stored[leaf];
-    const violation = held === undefined ? null : held.malformed ? 'Stored value is not valid JSON' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, held.value);
+    const retired = RETIRED_LEAVES.has(leaf);
+    const violation = retired || held === undefined ? null : held.malformed ? 'Stored value is not valid JSON' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, held.value);
     const invalid = violation !== null;
     return {
       leaf,
@@ -95,7 +96,9 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
       value: held?.value ?? null,
       updatedAt: held?.updatedAt ?? null,
       updatedBy: held?.updatedBy ?? null,
-      retired: RETIRED_LEAVES.has(leaf),
+      retired,
+      ...derivedLeafMetadata(leaf),
+      ...(leaf === 'agent.tasks' && held !== undefined ? taskOverridesMetadata(held.value) : {}),
       ...(invalid ? { source: 'invalid' as const, error: 'invalid_value' as const,
         remedy: `${violation}. Correct this setting${leaf === 'agent.tasks' && !held?.malformed ? '.' : ' or reset it.'}`,
         ...(held?.malformed ? { repair: 'reset-leaf' as const } : {}) } : {}),
@@ -170,7 +173,8 @@ export async function handleSetTaskTier(env: ServerEnv, ctx: OwnerContext): Prom
 export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  return ok({ capabilities: await settingsWriter(env.db).capabilities(ctx.params.projectId) });
+  const writer = settingsWriter(env.db);
+  return ok({ capabilities: await writer.capabilities(ctx.params.projectId), retiredCapabilities: await writer.retiredCapabilities(ctx.params.projectId) });
 }
 
 /** Admit or withdraw one capability for one Project. */
