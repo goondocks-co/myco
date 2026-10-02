@@ -1,5 +1,3 @@
-import { isProfileUnapplied } from '@goondocks/myco-shared/execution-profile';
-
 export const STALE_RUN_ERROR = 'the machine running it stopped responding';
 export const STALE_PENDING_REASON = 'no machine started the task within a day';
 export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
@@ -13,7 +11,6 @@ export function runErrorCode(error: string | null, storedCode: string | null = n
   if (error === STALE_PENDING_REASON || error === 'no runtime took the run within a day' || /^no worker reporting .+ took the run within a day$/.test(error)) return 'machine_did_not_start';
   if (error === STALE_RUN_ERROR || error === 'the runtime went away') return 'machine_unresponsive';
   if (error.startsWith(LAUNCH_REFUSED_ERROR) || error.startsWith('the runtime refused to start')) return 'task_start_failed';
-  if (isProfileUnapplied(error)) return 'model_not_applied';
   return 'run_failed';
 }
 

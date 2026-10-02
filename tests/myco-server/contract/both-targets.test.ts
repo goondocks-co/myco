@@ -38,6 +38,8 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
+import { applyRunUpdate } from '@myco-server-worker/core/runs.js';
+import { FAILURE_REASON_KEY } from '@myco-server-worker/db/run-context.js';
 import { issueExternalGrant, revokeExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { externalDefinitions } from '@myco-server-worker/mcp/external.js';
 
@@ -340,6 +342,22 @@ describe('access administration agrees on both stores', () => {
 });
 
 describe('agent runs read the same on both stores', () => {
+  it('stores a failed run\'s code and its worker\'s reason in its context, and reads them back, identically on each target (#1608)', async () => {
+    const reason = 'it kept the effort (none) after being set to high';
+    const outcomes: unknown[] = [];
+    for (const t of TARGETS) {
+      await t.env.db.prepare(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_c', 'c', 'built-in', 1, 1)`).run();
+      await t.env.db.prepare(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, run_context)
+        VALUES ('proj_1', 'run_refused', 'agent_c', 'digest', 'running', 1000, '{"session_id":"s1"}')`).run();
+      await applyRunUpdate(t.env.db, { projectId: 'proj_1' }, 'run_refused', { status: 'failed', error: 'profile_unapplied: x', completed_at: 2000 }, undefined, 'model_not_applied', { [FAILURE_REASON_KEY]: reason });
+      const detail = await getRunDetail(t.env.db, { projectId: 'proj_1' }, 'run_refused', Date.now(), 'mem_viewer');
+      const context = await t.env.db.prepare(`SELECT run_context FROM agent_runs WHERE id = 'run_refused'`).first<{ run_context: string }>();
+      outcomes.push({ code: detail?.run.errorCode, reason: detail?.run.errorReason, context: JSON.parse(context!.run_context) });
+      await t.env.db.prepare(`DELETE FROM agent_runs WHERE id = 'run_refused'`).run();
+    }
+    expect(outcomes).toEqual(TARGETS.map(() => ({ code: 'model_not_applied', reason, context: { session_id: 's1', [FAILURE_REASON_KEY]: reason } })));
+  });
+
   it('lists a failed run as failed and opens it with its record and phases, identically on each target', async () => {
     const checkpoints = JSON.stringify({ schemaVersion: 2, harness: 'h', providerConfig: { type: 'openai', apiKey: 'sk-canary' }, phases: { prepare: { name: 'prepare', status: 'completed', updatedAt: 5, turnsUsed: 2 }, write: { status: 'failed', updatedAt: 6, capHit: true, summary: 'ran out of turns' } } });
     const outcomes: unknown[] = [];
@@ -364,7 +382,7 @@ describe('agent runs read the same on both stores', () => {
       detail: {
         outcomeEvidence: null,
         source: null, map: null, toolCallCoverage: { total: 2, failed: 0, cursor: null },
-        run: { id: 'run_c', result: 'failed', requested: null, agentId: 'agent_c', task: 'digest', status: 'failed', identity: { status: 'not_recorded' }, costProvenance: null, provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: null, leasedBy: null, worker: null, leaseExpiresAt: null, startedBy: null, targetSessionId: null, skipReason: null, skipReasonCode: null, instruction: null, instructions: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', errorCode: 'run_failed', dispatchedBy: null, usageData: null, actionsTaken: null },
+        run: { id: 'run_c', result: 'failed', requested: null, agentId: 'agent_c', task: 'digest', status: 'failed', identity: { status: 'not_recorded' }, costProvenance: null, provider: null, model: null, startedAt: 1000, resumedAt: null, completedAt: 2000, tokensUsed: null, costUsd: null, costSource: null, dryRun: false, resumable: true, resumeStatus: 'session_expired', failed: true, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: null, leasedBy: null, worker: null, leaseExpiresAt: null, startedBy: null, targetSessionId: null, skipReason: null, skipReasonCode: null, instruction: null, instructions: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: null, reasoningLevel: null, resumeMode: null, resumeAttempts: 0, error: 'boom', errorCode: 'run_failed', errorReason: null, dispatchedBy: null, usageData: null, actionsTaken: null },
         phases: [
           { name: 'prepare', status: 'completed', updatedAt: 5, summary: null, turnsUsed: 2, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: false, semanticCheckBlocked: false, postConditionFailed: false },
           { name: 'write', status: 'failed', updatedAt: 6, summary: 'ran out of turns', turnsUsed: null, allowedMaxTurns: null, tokensUsed: null, costUsd: null, costSource: null, capHit: true, semanticCheckBlocked: false, postConditionFailed: false },

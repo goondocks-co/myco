@@ -294,7 +294,7 @@ export async function* turnOver(
     if (spec.profile !== undefined) {
       const applied = await applyProfile((method, params) => connection.call(method, params), sessionId ?? '', info.configOptions, spec.profile, () => announced);
       if (!applied.ok) {
-        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}` };
+        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}`, refusal: { code: PROFILE_UNAPPLIED, reason: applied.reason } };
         await connection.call('session/close', { sessionId }).catch(() => undefined);
         return;
       }

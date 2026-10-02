@@ -428,11 +428,12 @@ for (const [code, sentence] of [
   });
 }
 
-it('words a run whose agent could not use the chosen model with its reason, and keeps the worker\'s record in details', async () => {
-  const raw = 'the harness stopped: error (profile_unapplied: it offers no model openai/gpt-0-unknown (it offers openai/gpt-5.5, opencode/big-pickle))';
-  const sentence = 'The agent couldn’t use the chosen model: it offers no model openai/gpt-0-unknown.';
+it('words a run whose agent could not use the chosen model from the reason it recorded, and keeps the worker\'s record in details', async () => {
+  const raw = 'the harness stopped: error (profile_unapplied: it kept the effort (none) after being set to high (Invalid (params)))';
+  const reason = 'it kept the effort (none) after being set to high';
+  const sentence = `The agent couldn’t use the chosen model: ${reason}.`;
   server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
-    reports: [], run: { errorCode: 'model_not_applied', error: raw },
+    reports: [], run: { errorCode: 'model_not_applied', errorReason: reason, error: raw },
   })) } }));
   mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
   const open = await panel();
@@ -441,8 +442,9 @@ it('words a run whose agent could not use the chosen model with its reason, and 
   expect(MECHANISM_WORDS.test(open.querySelector('[data-run-failure]')!.textContent ?? '')).toBe(false);
   fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
   expect(open.querySelector('[data-run-technical]')!.textContent).toContain(raw);
-  expect(failureWords({ source: 'error', code: 'model_not_applied', cause: raw, error: raw })).toBe(sentence);
-  expect(failureWords({ source: 'error', code: 'model_not_applied', cause: 'profile_unapplied', error: 'profile_unapplied' })).toBe('The agent couldn’t use the chosen model.');
+  expect(failureWords({ source: 'error', code: 'model_not_applied', reason, cause: raw, error: raw })).toBe(sentence);
+  // With no recorded reason, the sentence stands alone: the error's text is never read for one.
+  expect(failureWords({ source: 'error', code: 'model_not_applied', cause: raw, error: raw })).toBe('The agent couldn’t use the chosen model.');
 });
 
 it('words a free-text skip from its fallback code', async () => {

@@ -10,9 +10,10 @@
  * not report, or does not offer, is never run: the turn ends unprompted with the
  * profile unapplied rather than on the harness's own default.
  *
- * A refusal's reason is written for the run's page, which shows it after "The
- * agent couldn't use the chosen model:"; the values a session offers follow it in
- * parentheses, which the page leaves to the run's technical details.
+ * A refusal carries a reason apart from its detail, and that reason is written for
+ * the run's page, which shows it after "The agent couldn't use the chosen
+ * model:"; the detail adds what the page leaves to the run's technical details,
+ * such as the values a session offers or what the agent said.
  */
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { recordOf, stringOf } from './stream.js';
@@ -56,12 +57,17 @@ const NAMED_OFFERS = 8;
 const listed = (values: readonly string[]): string => values.length === 0 ? 'none'
   : values.length <= NAMED_OFFERS ? values.join(', ') : `${values.slice(0, NAMED_OFFERS).join(', ')} and ${values.length - NAMED_OFFERS} more`;
 
+/** Why a profile could not be applied: words for the run's page, and the detail its technical record keeps. */
+export interface Unapplied { ok: false; reason: string; detail: string }
+
+const unapplied = (reason: string, aside?: string): Unapplied => ({ ok: false, reason, detail: aside === undefined ? reason : `${reason} (${aside})` });
+
 /**
  * What applying the profile came to: the session's options once applied, and
  * whether the claimed effort went unapplied because the model offers no effort
  * setting; or why it could not be applied.
  */
-export type Applied = { ok: true; configOptions: ConfigOption[]; effortUnapplied: boolean } | { ok: false; detail: string };
+export type Applied = { ok: true; configOptions: ConfigOption[]; effortUnapplied: boolean } | Unapplied;
 
 /**
  * Set one option to `value` where the session is not already on it and offers
@@ -74,24 +80,24 @@ export type Applied = { ok: true; configOptions: ConfigOption[]; effortUnapplied
 async function setOption(
   call: AgentCall, announced: () => AnnouncedOptions, sessionId: string, options: ConfigOption[],
   kind: { id: string; category: string }, value: string, what: string, missing: 'refuse' | 'accept',
-): Promise<{ ok: true; configOptions: ConfigOption[]; absent: boolean } | { ok: false; detail: string }> {
+): Promise<{ ok: true; configOptions: ConfigOption[]; absent: boolean } | Unapplied> {
   const option = find(options, kind);
   if (option === undefined) {
-    return missing === 'accept' ? { ok: true, configOptions: options, absent: true } : { ok: false, detail: `it reported no ${what} for the session` };
+    return missing === 'accept' ? { ok: true, configOptions: options, absent: true } : unapplied(`it reported no ${what} for the session`);
   }
   if (option.currentValue === value) return { ok: true, configOptions: options, absent: false };
   const values = offered(option);
-  if (!values.includes(value)) return { ok: false, detail: `it offers no ${what} ${value}${what === 'effort' ? ' for this model' : ''} (it offers ${listed(values)})` };
+  if (!values.includes(value)) return unapplied(`it offers no ${what} ${value}${what === 'effort' ? ' for this model' : ''}`, `it offers ${listed(values)}`);
   const before = announced().count;
   const answer = await call('session/set_config_option', { sessionId, configId: option.id, value });
   const error = recordOf(answer.error);
-  if (error !== null) return { ok: false, detail: `it refused the ${what} ${value} (${stringOf(error.message) ?? 'no reason given'})` };
+  if (error !== null) return unapplied(`it refused the ${what} ${value}`, stringOf(error.message) ?? 'no reason given');
   const replied = optionsOf(recordOf(answer.result)?.configOptions);
   const after = announced();
   const next = replied.length > 0 ? replied : after.count > before ? after.options : null;
-  if (next === null) return { ok: false, detail: `it reported no ${what} after being set to ${value}` };
+  if (next === null) return unapplied(`it reported no ${what} after being set to ${value}`);
   const now = find(next, kind)?.currentValue;
-  return now === value ? { ok: true, configOptions: next, absent: false } : { ok: false, detail: `it kept the ${what} ${String(now ?? '(none)')} after being set to ${value}` };
+  return now === value ? { ok: true, configOptions: next, absent: false } : unapplied(`it kept the ${what} ${String(now ?? '(none)')} after being set to ${value}`);
 }
 
 /**

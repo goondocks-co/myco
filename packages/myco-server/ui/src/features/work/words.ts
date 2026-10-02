@@ -4,7 +4,6 @@
  * machine by its name, a member by theirs, and Myco's own schedule as "its
  * schedule". Nothing here names a mechanism or shows an id.
  */
-import { profileUnappliedReason } from '@goondocks/myco-shared/execution-profile';
 import { heldByWords } from '@goondocks/myco-shared/run-holds';
 import type { OutcomeKind, Range, WorkRun } from '../today/wire';
 import { causeSentence, clockTime, count, when } from '../today/words';
@@ -335,9 +334,10 @@ export function ranOn(worker: RunWorker | null, name: (id: string) => string | n
 
 /**
  * The dashboard's sentence for a stored run failure, including unknown and older codes. A run whose agent could not
- * use the chosen model says why where the run recorded it (`error`), without the values the agent listed.
+ * use the chosen model says why where the worker that ran it gave a reason (`reason`); the run's own record of the
+ * failure is left to its technical details.
  */
-export function runErrorWords(code: string | null | undefined, error: string | null = null): string {
+export function runErrorWords(code: string | null | undefined, reason: string | null = null): string {
   const words: Readonly<Record<string, string>> = {
     machine_did_not_start: 'No machine started the task within a day.',
     machine_unresponsive: 'The machine running it stopped responding.',
@@ -345,14 +345,13 @@ export function runErrorWords(code: string | null | undefined, error: string | n
     model_not_applied: 'The agent couldn’t use the chosen model.',
     run_failed: 'The task stopped before it could finish.',
   };
-  const reason = code === 'model_not_applied' ? profileUnappliedReason(error) : null;
-  if (reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
+  if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
   return words[code ?? ''] ?? words.run_failed!;
 }
 
 /** A coded failure uses the dashboard's sentence; an uncoded report retains its own words. */
 export function failureWords(failure: WorkRun['failure'] | undefined): string {
-  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code, failure?.error ?? null);
+  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code, failure?.reason ?? null);
 }
 
 /** Machine-reported reasons are available inside the failure's details disclosure. */

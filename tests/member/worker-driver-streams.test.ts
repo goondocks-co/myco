@@ -37,7 +37,7 @@ import { runAsking, turnOver, type Channel } from '@myco/runner/drivers/acp.js';
 import { listRunTools, type RunTools } from '@myco/runner/drivers/run-tools.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
 import { failedCallsNote, type RunEvent } from '@myco/runner/events.js';
-import { EFFORT_UNAPPLIED, profileUnappliedReason, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, PROFILE_UNAPPLIED, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { MECHANISM_WORDS, RETIRED_VOCABULARY } from '../helpers/reader-vocabulary.ts';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
@@ -1176,32 +1176,67 @@ describe('the claimed model on OpenCode, as recorded (#1608)', () => {
     expect(last?.kind === 'ended' ? last.detail : null).toBe(`profile_unapplied: it reported no model after being set to ${RECORDED_MODEL}`);
   });
 
-  it('gives every reason a run is refused in words a reader meets on its page', async () => {
+  it('gives every refusal a reason of its own, in words a reader meets on its page, whatever parentheses it or the detail holds', async () => {
     const opened = inRunAgent(recorded('default', 2));
-    /** The detail a turn ends on against a peer that opens the default session and answers every other call with `other`. */
-    const refusal = async (other: (method: string) => Record<string, unknown>, session: Record<string, unknown> = opened): Promise<string | null> => {
+    /** The ending a turn reaches against a peer that opens `session` and answers every other call with `other`. */
+    const ending = async (other: (method: string) => Record<string, unknown>, session: Record<string, unknown> = opened, profile = claimed(RECORDED_MODEL, 'medium')) => {
       const p = peer((method, id) => `${JSON.stringify({ jsonrpc: '2.0', ...(method === 'session/new' ? session : other(method)), id })}\n`);
-      const last = (await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING))).at(-1);
-      return last?.kind === 'ended' ? last.detail : null;
+      const last = (await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile }, () => '', listed, ASKING))).at(-1);
+      return last?.kind === 'ended' ? last : null;
     };
-    const recordedRefusal = async (profile: ExecutionProfile): Promise<string | null> => {
+    const recordedEnding = async (profile: ExecutionProfile) => {
       const last = (await onRecordedOpenCode(profile)).events.at(-1);
-      return last?.kind === 'ended' ? last.detail : null;
+      return last?.kind === 'ended' ? last : null;
     };
-    const details = [
-      await recordedRefusal(claimed('openai/gpt-0-unknown', 'medium')),
-      await recordedRefusal(claimed(RECORDED_MODEL, 'max')),
-      await refusal((method) => (method === 'session/set_config_option' ? { error: { code: -32603, message: 'Internal error: the harness runtime said no' } } : { result: {} })),
-      await refusal(() => ({ result: {} })),
-      await refusal(() => ({ result: opened.result as Record<string, unknown> })),
-      await refusal(() => ({ result: {} }), { result: { sessionId: 's', ...RUN_AGENT_MODE } }),
+    const configured = recorded('configured', 2).result as { configOptions: Array<Record<string, unknown>> };
+    /** The configured session, with its effort option's current value removed. */
+    const effortless = { result: { ...configured, configOptions: inRunAgent(recorded('configured', 2)).result && configured.configOptions.map((o) => (o.id === 'effort' ? { ...o, currentValue: undefined } : o.id === 'mode' ? { ...o, currentValue: RUN_AGENT } : o)) } };
+    const endings = [
+      await recordedEnding(claimed('openai/gpt-0-unknown', 'medium')),
+      await recordedEnding(claimed(RECORDED_MODEL, 'max')),
+      await ending((method) => (method === 'session/set_config_option' ? { error: { code: -32602, message: 'Invalid (params): model (unknown)' } } : { result: {} })),
+      await ending(() => ({ result: {} })),
+      await ending(() => ({ result: opened.result as Record<string, unknown> })),
+      await ending(() => ({ result: {} }), { result: { sessionId: 's', ...RUN_AGENT_MODE } }),
+      await ending(() => ({ result: effortless.result }), effortless, claimed(RECORDED_MODEL, 'high')),
     ];
-    const reasons = details.map((detail) => profileUnappliedReason(detail));
-    expect(reasons).toEqual([
+    expect(endings.map((last) => last?.refusal)).toEqual([
       'it offers no model openai/gpt-0-unknown', 'it offers no effort max for this model', `it refused the model ${RECORDED_MODEL}`,
       `it reported no model after being set to ${RECORDED_MODEL}`, `it kept the model opencode/big-pickle after being set to ${RECORDED_MODEL}`, 'it reported no model for the session',
-    ]);
-    for (const reason of reasons) expect({ reason, mechanism: MECHANISM_WORDS.test(reason!) || RETIRED_VOCABULARY.test(reason!) }).toEqual({ reason, mechanism: false });
+      'it kept the effort (none) after being set to high',
+    ].map((reason) => ({ code: PROFILE_UNAPPLIED, reason })));
+    // The detail keeps what the page leaves to technical details, nested parentheses and all.
+    expect(endings[2]?.detail).toBe(`profile_unapplied: it refused the model ${RECORDED_MODEL} (Invalid (params): model (unknown))`);
+    expect(endings[0]?.detail).toStartWith('profile_unapplied: it offers no model openai/gpt-0-unknown (it offers ');
+    for (const last of endings) {
+      const reason = last!.refusal!.reason!;
+      expect({ reason, mechanism: MECHANISM_WORDS.test(reason) || RETIRED_VOCABULARY.test(reason) }).toEqual({ reason, mechanism: false });
+    }
+  });
+
+  it('refuses rather than waits where the agent announces its options only after an empty set reply', async () => {
+    const opened = inRunAgent(recorded('default', 2));
+    const moved = inRunAgent(recorded('set-model', 3));
+    const readers: Array<(line: string) => void> = [];
+    const late = { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'session_fixture', update: { sessionUpdate: 'config_option_update', configOptions: (moved.result as { configOptions: unknown }).configOptions } } };
+    const p = peer((method, id) => {
+      if (method === 'session/new') return `${JSON.stringify({ ...opened, id })}\n`;
+      // The announcement comes in a read of its own, after the reply has been read.
+      if (method === 'session/set_config_option') setTimeout(() => { readers.forEach((read) => { read(`${JSON.stringify(late)}\n`); }); }, 20);
+      return `${JSON.stringify({ jsonrpc: '2.0', id, result: method === 'session/prompt' ? { stopReason: 'end_turn' } : {} })}\n`;
+    });
+    const onLine = p.channel.onLine;
+    p.channel.onLine = (read) => { readers.push(read); onLine(read); };
+    const events = await collect(turnOver(p.channel, 'opencode', { ...runDir(), prompt: 'do it', credentialEnv: {}, profile: claimed(RECORDED_MODEL, 'medium') }, () => '', listed, ASKING));
+    expect(p.asked).not.toContain('session/prompt');
+    const last = events.at(-1);
+    expect(last?.kind === 'ended' ? last.refusal : null).toEqual({ code: PROFILE_UNAPPLIED, reason: `it reported no model after being set to ${RECORDED_MODEL}` });
+  });
+
+  it('marks no effort skipped where the run claimed none', async () => {
+    const { events, promptedOn } = await onRecordedOpenCode(claimed('opencode/big-pickle', null));
+    expect(promptedOn).toEqual({ model: 'opencode/big-pickle' });
+    expect(JSON.stringify(events.filter((event) => event.kind === 'identity'))).not.toContain(EFFORT_UNAPPLIED);
   });
 
   it('never prompts where the harness reports no model for its session', async () => {
