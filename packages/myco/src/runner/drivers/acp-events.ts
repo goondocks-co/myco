@@ -110,7 +110,7 @@ export class AcpEvents {
    * is the call's outcome: whatever the agent reports about the call afterwards,
    * failed or completed, changes nothing.
    */
-  *refused(toolCall: Record<string, unknown>, detail: string): Iterable<RunEvent> {
+  *refused(toolCall: Record<string, unknown>): Iterable<RunEvent> {
     const id = stringOf(toolCall.toolCallId);
     const name = factsOf(toolCall).category ?? (id === null ? undefined : this.calls.get(id)?.name) ?? 'tool';
     const facts = { ...(id === null ? {} : this.calls.get(id)), ...factsOf(toolCall) };
@@ -119,7 +119,7 @@ export class AcpEvents {
       this.refusals.add(id);
       this.calls.set(id, { name, status: 'error', ...facts });
     }
-    yield { kind: 'tool_call', name, status: 'error', detail, refused: true, ...(id === null ? {} : { callId: id }), ...stepFacts(facts) };
+    yield { kind: 'tool_call', name, status: 'error', refused: true, ...(id === null ? {} : { callId: id }), ...stepFacts(facts) };
   }
 
   /**

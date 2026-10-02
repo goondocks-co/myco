@@ -80,14 +80,14 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "tool": "Glob",
         "kind": "search",
         "target": [
-          "pattern"
+          "path"
         ]
       },
       {
         "tool": "Grep",
         "kind": "search",
         "target": [
-          "pattern"
+          "path"
         ]
       },
       {
@@ -351,10 +351,8 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "category": "search",
         "kind": "search",
         "target": [
-          "rawInput.pattern",
-          "rawInput.query",
-          "rawInput.glob",
-          "locations.0.path"
+          "locations.0.path",
+          "rawInput.path"
         ]
       },
       {
@@ -454,10 +452,8 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "category": "search",
         "kind": "search",
         "target": [
-          "rawInput.pattern",
-          "rawInput.query",
-          "rawInput.glob",
-          "locations.0.path"
+          "locations.0.path",
+          "rawInput.path"
         ]
       },
       {
@@ -552,10 +548,8 @@ export const HARNESS_FACTS: readonly HarnessFacts[] = [
         "category": "search",
         "kind": "search",
         "target": [
-          "rawInput.pattern",
-          "rawInput.query",
-          "rawInput.glob",
-          "locations.0.path"
+          "locations.0.path",
+          "rawInput.path"
         ]
       },
       {

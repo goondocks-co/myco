@@ -7,15 +7,19 @@
  *
  * - the first non-empty line alone, lines broken at `\r`, `\n`, U+2028, U+2029, U+0085, VT and FF;
  * - leading `NAME=value` assignments, of the line, of each command and after `env` and `export`, are dropped;
- * - the program is kept where it is a safe name or a path, and a subcommand only where it is the program's first
- *   positional word, a lowercase name, and the program is one `SUBCOMMAND_PROGRAMS` lists;
+ * - the line's first program is kept where it is a safe name or a path; a program after an operator or in a shell's
+ *   `-c` script only where it is one `KNOWN_PROGRAMS` lists, or a path;
+ * - a subcommand is kept only where it is the program's first positional word, before any `--`, and one the program's
+ *   entry in `SUBCOMMANDS` lists;
  * - a flag keeps its name and never its value: `-x` reads `-x`, `-xVALUE` reads `-x…`, `--name=VALUE` reads
- *   `--name=…`; a word is never read as a flag's value or not, so the word after a flag is kept only where it is a path;
- * - any other argument is kept only where it is a path: it holds a `/` or ends in a file extension, holds no
- *   `@ : = ? &`, and is not key-like taken whole (`safeWord`);
- * - a URL reads as its scheme and host alone;
+ *   `--name=…`; a word is never read as a flag's value or not, so the word after a flag is kept only where it is a path,
+ *   and never after a flag whose name says it carries a secret (token, secret, pass, key, auth, credential);
+ * - any other argument is kept only where it is a path: it holds a `/`, or ends in an extension `FILE_EXTENSIONS`
+ *   lists; it holds no `@ : = ? &`, and is not key-like taken whole;
+ * - a URL reads as its scheme and host alone, and as its scheme alone where the host is key-like;
  * - after a redirection (`<`, `<<`, `<<<`, `>`, `>>`) every word reads `…` up to the next command, and each command of
- *   a list or pipeline (after `|`, `;`, `&&`, `||`) starts again at its program;
+ *   a list or pipeline (after `|`, `;`, `&&`, `||`) starts again at its program; `!`, `(`, `)`, `{` and `}` are kept
+ *   only where a program stands, and read `…` anywhere else;
  * - a shell's `-c` script is shaped as the command it runs.
  *
  * Masking known access-key shapes (`redactSecrets`) is a second layer a caller applies after this one.
@@ -25,7 +29,9 @@ const ELIDED = '…';
 const LINE_BREAK = /\r\n|[\r\n\u2028\u2029\u0085\v\f]/;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** Operators that end one command, so the next word is a program. */
-const COMMAND_BREAKS: ReadonlySet<string> = new Set(['|', '||', '&&', ';', '&', '|&', '(', ')', '{', '}', '!']);
+const COMMAND_BREAKS: ReadonlySet<string> = new Set(['|', '||', '&&', ';', '&', '|&']);
+/** Words that group or negate a command, kept only where a program stands. */
+const GROUPS: ReadonlySet<string> = new Set(['(', ')', '{', '}', '!']);
 /** Redirections that take no word after them. */
 const CLOSED_REDIRECTS: ReadonlySet<string> = new Set(['2>&1', '1>&2', '>&2', '>&1', '&>-', '2>&-']);
 /** A redirection, alone or with its target glued to it; every word after one, up to the next command, reads `…`. */
@@ -34,8 +40,9 @@ const URL_SHAPE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#\s]*)/;
 const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 const PATH_CHARS = /^[A-Za-z0-9._/~+,*{}[\]-]{1,160}$/;
-const EXTENSION = /\.[A-Za-z][A-Za-z0-9]{0,9}$/;
-const SUBCOMMAND = /^[a-z][a-z0-9-]{0,30}$/;
+const EXTENSION = /\.([A-Za-z][A-Za-z0-9]{0,9})$/;
+/** A flag whose name says the word after it carries a secret, so that word is never kept. */
+const SECRET_FLAG = /token|secret|pass|key|auth|credential/i;
 const FLAG_NAME = /^--[A-Za-z0-9][A-Za-z0-9-]{0,40}$/;
 const SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
 const SHELL_SCRIPT_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
@@ -46,9 +53,50 @@ const LONG_RUN = 40;
 const SHORT_RUN = 4;
 const MIXED_RUN = 24;
 
-/** The programs whose first positional word is a subcommand a reader needs. */
-export const SUBCOMMAND_PROGRAMS: ReadonlySet<string> = new Set([
-  'git', 'npm', 'npx', 'pnpm', 'yarn', 'bun', 'gh', 'docker', 'cargo', 'go', 'kubectl', 'make', 'pip', 'uv', 'brew', 'myco', 'wrangler',
+/** The programs whose first positional word is a subcommand a reader needs, each with the subcommands it is read as. */
+export const SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(Object.entries({
+  git: ['status', 'diff', 'log', 'show', 'add', 'commit', 'push', 'pull', 'fetch', 'checkout', 'switch', 'branch', 'rebase', 'merge', 'stash', 'worktree', 'rev-parse', 'ls-files', 'grep', 'blame', 'remote', 'tag', 'clone', 'init', 'reset', 'restore', 'cherry-pick', 'rm', 'mv', 'config', 'describe', 'reflog', 'shortlog', 'bisect', 'apply', 'submodule', 'clean', 'revert', 'cat-file', 'ls-tree', 'merge-base'],
+  npm: ['test', 'run', 'install', 'ci', 'exec', 'publish', 'pack', 'version', 'ls', 'outdated', 'update', 'uninstall', 'init', 'view', 'audit', 'link', 'start', 'build'],
+  npx: ['tsc', 'tsx', 'eslint', 'prettier', 'vitest', 'jest', 'playwright', 'wrangler', 'vite', 'biome'],
+  pnpm: ['test', 'run', 'install', 'add', 'remove', 'exec', 'dlx', 'build', 'publish', 'update', 'ls'],
+  yarn: ['test', 'run', 'install', 'add', 'remove', 'build', 'dlx', 'workspace'],
+  bun: ['test', 'run', 'install', 'add', 'remove', 'build', 'x', 'update', 'pm'],
+  gh: ['pr', 'issue', 'run', 'repo', 'api', 'release', 'workflow', 'auth', 'browse', 'search', 'label', 'gist', 'secret', 'variable'],
+  docker: ['build', 'run', 'ps', 'exec', 'logs', 'pull', 'push', 'images', 'compose', 'stop', 'start', 'restart', 'rm', 'rmi', 'inspect', 'login', 'logout', 'tag', 'network', 'volume', 'system', 'buildx'],
+  cargo: ['build', 'test', 'run', 'check', 'clippy', 'fmt', 'add', 'install', 'doc', 'publish', 'update', 'bench', 'clean'],
+  go: ['build', 'test', 'run', 'mod', 'vet', 'fmt', 'get', 'install', 'generate', 'env', 'version', 'work'],
+  kubectl: ['get', 'describe', 'apply', 'delete', 'logs', 'exec', 'rollout', 'port-forward', 'config', 'create', 'edit', 'scale', 'top'],
+  make: ['all', 'build', 'test', 'lint', 'check', 'install', 'clean', 'dev', 'release', 'deploy', 'format', 'run'],
+  pip: ['install', 'uninstall', 'list', 'show', 'freeze', 'download', 'check'],
+  uv: ['run', 'sync', 'add', 'remove', 'pip', 'venv', 'lock', 'tool', 'python', 'init', 'build'],
+  brew: ['install', 'uninstall', 'upgrade', 'update', 'list', 'info', 'services', 'search', 'outdated', 'doctor'],
+  myco: ['init', 'status', 'doctor', 'update', 'upgrade', 'login', 'join', 'search', 'session', 'stats', 'logs', 'restart', 'server', 'service', 'worker', 'settings', 'config', 'verify', 'open', 'import', 'remove', 'agent', 'grove', 'version', 'help'],
+  wrangler: ['deploy', 'dev', 'tail', 'd1', 'kv', 'r2', 'secret', 'login', 'whoami', 'types', 'versions', 'deployments', 'queues'],
+}).map(([program, subcommands]) => [program, new Set(subcommands)]));
+
+/** The programs a word after an operator, or a shell script's first word, is kept as: shell utilities, runtimes and the subcommand programs. */
+export const KNOWN_PROGRAMS: ReadonlySet<string> = new Set([
+  ...Object.keys(SUBCOMMANDS),
+  'ls', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'rg', 'ag', 'find', 'fd', 'sed', 'awk', 'sort', 'uniq', 'wc', 'cut', 'tr', 'xargs',
+  'echo', 'printf', 'cd', 'pwd', 'pushd', 'popd', 'mkdir', 'rmdir', 'rm', 'cp', 'mv', 'ln', 'touch', 'chmod', 'chown', 'stat', 'file', 'diff',
+  'patch', 'tar', 'gzip', 'gunzip', 'zip', 'unzip', 'curl', 'wget', 'ssh', 'scp', 'rsync', 'jq', 'yq', 'sleep', 'date', 'env', 'export', 'true',
+  'false', 'test', '[', 'which', 'type', 'command', 'kill', 'ps', 'df', 'du', 'uname', 'whoami', 'id', 'sudo', 'time', 'timeout', 'nohup', 'tee',
+  'open', 'code', 'source', 'exec', 'set', 'unset', 'read', 'basename', 'dirname', 'realpath', 'readlink', 'tree', 'base64', 'shasum',
+  'sha256sum', 'md5', 'md5sum', 'openssl', 'psql', 'mysql', 'sqlite3', 'redis-cli', 'mongosh',
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'node', 'deno', 'python', 'python3', 'pip3', 'ruby', 'perl', 'java', 'rustc', 'tsc', 'tsx', 'vitest',
+  'jest', 'eslint', 'prettier', 'playwright', 'terraform',
+]);
+
+/** The extensions a bare `name.ext` word with no `/` is read as a file by. */
+export const FILE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs', 'json', 'jsonl', 'jsonc', 'md', 'mdx', 'txt', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+  'env', 'lock', 'log', 'csv', 'tsv', 'xml', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico',
+  'pdf', 'py', 'pyi', 'ipynb', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'php', 'sh', 'bash', 'zsh', 'fish',
+  'ps1', 'sql', 'db', 'sqlite', 'sqlite3', 'wasm', 'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'pem', 'crt', 'key', 'pub', 'cert', 'der', 'p12',
+  'pfx', 'gitignore', 'gitattributes', 'dockerignore', 'npmrc', 'nvmrc', 'editorconfig', 'prettierrc', 'eslintrc', 'mod', 'sum', 'proto',
+  'graphql', 'gql', 'vue', 'svelte', 'astro', 'lua', 'pl', 'r', 'scala', 'ex', 'exs', 'erl', 'hs', 'ml', 'clj', 'dart', 'nix', 'tf', 'hcl',
+  'patch', 'diff', 'bak', 'tmp', 'out', 'err', 'pid', 'plist', 'jar', 'vsix', 'map', 'snap', 'bin', 'dat', 'mp4', 'mp3', 'wav', 'ttf', 'woff',
+  'woff2', 'otf', 'dockerfile', 'makefile', 'cmake', 'gradle', 'properties', 'storyboard', 'junit',
 ]);
 
 const transitions = (run: string, test: (a: string, b: string) => boolean): number => {
@@ -84,9 +132,15 @@ export function keyLike(word: string): boolean {
 /** A word that is a safe name or a path as it stands, never one that is key-like. */
 const safeName = (word: string): boolean => NAME.test(word) && !keyLike(word);
 
-/** A path: it holds a `/` or ends in a file extension, holds only path characters, and is not key-like taken whole. */
+/** Whether the word ends in an extension `FILE_EXTENSIONS` lists. */
+const fileExtension = (word: string): boolean => {
+  const extension = EXTENSION.exec(word);
+  return extension !== null && FILE_EXTENSIONS.has(extension[1]!.toLowerCase());
+};
+
+/** A path: it holds a `/` or ends in a listed file extension, holds only path characters, and is not key-like taken whole. */
 export function pathLike(word: string): boolean {
-  return PATH_CHARS.test(word) && (word.includes('/') || EXTENSION.test(word)) && !keyLike(word);
+  return PATH_CHARS.test(word) && (word.includes('/') || fileExtension(word)) && !keyLike(word);
 }
 
 /** A URL as its scheme and host, the host read after the last `@` before the path; null for a word that is no URL. */
@@ -99,7 +153,7 @@ export function urlShape(word: string): string | null {
   const colon = hostPort.lastIndexOf(':');
   const host = colon < 0 ? hostPort : hostPort.slice(0, colon);
   const port = colon < 0 ? '' : hostPort.slice(colon + 1);
-  if (!HOST.test(host) || !/^\d*$/.test(port)) return `${scheme}://${ELIDED}`;
+  if (!HOST.test(host) || !/^\d*$/.test(port) || keyLike(host)) return `${scheme}://${ELIDED}`;
   return `${scheme}://${host.toLowerCase()}`;
 }
 
@@ -142,12 +196,21 @@ function argument(token: string): string {
   return urlShape(bare) ?? (pathLike(bare) ? bare : ELIDED);
 }
 
-/** A program in its allowed shape: a URL as its scheme and host, a safe name or a path as it stands, anything else `…`. */
-function program(token: string): string {
+/**
+ * A program in its allowed shape: a URL as its scheme and host, a path as it stands, and a name as it stands where it
+ * is the line's first word and safe, or one `KNOWN_PROGRAMS` lists; anything else `…`.
+ */
+function program(token: string, first: boolean): string {
   const bare = unquoted(token);
   if (bare === null || bare === '') return ELIDED;
-  return urlShape(bare) ?? (safeName(bare) || pathLike(bare) ? bare : ELIDED);
+  const url = urlShape(bare);
+  if (url !== null) return url;
+  if (pathLike(bare) || KNOWN_PROGRAMS.has(bare)) return bare;
+  return first && safeName(bare) ? bare : ELIDED;
 }
+
+/** Whether a flag's name says the word after it carries a secret. */
+const secretFlag = (token: string): boolean => SECRET_FLAG.test(token.replace(/^-+/, '').split('=')[0]!);
 
 /** A flag's name without its value. */
 function flag(token: string): string {
@@ -166,9 +229,11 @@ function flag(token: string): string {
 function shapeWords(tokens: readonly string[], depth: number): string[] {
   const out: string[] = [];
   let atProgram = true;
+  let first = depth === 0;
   let name = '';
   let positionals = 0;
   let afterFlag = false;
+  let secretNext = false;
   let redirected = false;
   let endOfFlags = false;
   let scriptNext = false;
@@ -176,7 +241,11 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
   for (const token of tokens) {
     if (COMMAND_BREAKS.has(token)) {
       out.push(token);
-      atProgram = true; name = ''; positionals = 0; afterFlag = false; redirected = false; endOfFlags = false; scriptNext = false;
+      atProgram = true; first = false; name = ''; positionals = 0; afterFlag = false; secretNext = false; redirected = false; endOfFlags = false; scriptNext = false;
+      continue;
+    }
+    if (GROUPS.has(token)) {
+      out.push(atProgram ? token : ELIDED);
       continue;
     }
     if (CLOSED_REDIRECTS.has(token)) { out.push(token); continue; }
@@ -191,9 +260,10 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
     if ((atProgram || assignments) && ASSIGNMENT.test(token)) continue;
     assignments = false;
     if (atProgram) {
-      const shaped = program(token);
+      const shaped = program(token, first);
       out.push(shaped);
       atProgram = false;
+      first = false;
       name = shaped.slice(shaped.lastIndexOf('/') + 1);
       if (name === 'env') { atProgram = true; assignments = true; }
       if (name === 'export') assignments = true;
@@ -205,16 +275,18 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
       out.push(script === null ? ELIDED : shapeLine(script, depth + 1) ?? ELIDED);
       continue;
     }
-    if (!endOfFlags && token === '--') { out.push(token); endOfFlags = true; afterFlag = false; continue; }
+    if (!endOfFlags && token === '--') { out.push(token); endOfFlags = true; afterFlag = false; secretNext = false; continue; }
     if (!endOfFlags && token.startsWith('-') && token.length > 1) {
       out.push(flag(token));
       afterFlag = true;
+      secretNext = secretFlag(token) && !token.includes('=');
       scriptNext = SHELLS.has(name) && SHELL_SCRIPT_FLAG.test(token);
       continue;
     }
+    if (secretNext) { out.push(ELIDED); secretNext = false; afterFlag = false; continue; }
     if (!afterFlag) positionals += 1;
     const bare = unquoted(token);
-    const subcommand = !afterFlag && positionals === 1 && SUBCOMMAND_PROGRAMS.has(name) && bare !== null && SUBCOMMAND.test(bare) && !keyLike(bare);
+    const subcommand = !afterFlag && !endOfFlags && positionals === 1 && bare !== null && SUBCOMMANDS[name]?.has(bare) === true;
     out.push(subcommand ? bare! : argument(token));
     afterFlag = false;
   }

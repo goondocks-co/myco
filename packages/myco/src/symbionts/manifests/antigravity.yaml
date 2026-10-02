@@ -167,7 +167,7 @@ runner:
     stepTool: category
     steps:
       - { category: read, kind: read, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path] }
-      - { category: search, kind: search, target: [rawInput.pattern, rawInput.query, rawInput.glob, locations.0.path] }
+      - { category: search, kind: search, target: [locations.0.path, rawInput.path] }
       - { category: edit, kind: edit, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path] }
       - { category: delete, kind: edit, target: [locations.0.path, rawInput.path] }
       - { category: move, kind: edit, target: [locations.0.path, rawInput.path] }

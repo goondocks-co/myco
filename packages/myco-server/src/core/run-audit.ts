@@ -6,11 +6,12 @@
  * object, or it names no step or no reasoning — and is judged by its shape alone, never by what it says. Everything
  * else is repaired rather than refused: an undeclared field is dropped, an empty or non-text entry is dropped, a long
  * string is cut, a list past its bound is cut with the entries cut counted in `omitted`, and a failure given as text
- * reads as one with no recovery. The commands and the files examined are kept in the allowed shape of a command
- * (`commandShape`), so neither ever holds a body, a flag's value or a credential; every string is stored with known
+ * reads as one with no recovery. The commands are kept in the allowed shape of a command (`commandShape`), and each
+ * file examined only where it is a path (`pathShape`), anything else reading `…`, so neither ever holds a body, a
+ * flag's value, prose or a credential; every string is stored with known
  * access-key shapes masked. The stored audit holds the six declared fields and nothing else.
  */
-import { commandShape } from '@goondocks/myco-shared/command-shape';
+import { commandShape, pathShape } from '@goondocks/myco-shared/command-shape';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 
 export interface RunAuditFailure {
@@ -54,7 +55,13 @@ function prose(value: unknown, max: number): string | null {
   return folded.length > max ? `${folded.slice(0, max - 1)}…` : folded;
 }
 
-/** A command or a file examined, in the allowed shape of a command, cut to the item bound; null for none. */
+/** A file examined as a path, or `…` where the entry is anything else; null for none. */
+function examinedPath(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  return prose(pathShape(value) ?? '…', MAX_ITEM_CHARS);
+}
+
+/** A command in the allowed shape of a command, cut to the item bound; null for none. */
 function shaped(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const shape = commandShape(value);
@@ -108,7 +115,7 @@ export function parseRunAudit(value: unknown): AuditParse {
   if (unknown.length > 0) repair.notes.push(`unknown fields dropped: ${unknown.join(', ')}`);
   const audit: RunAudit = {
     steps,
-    examined: repair.list('examined', raw.examined, MAX_LISTED, shaped),
+    examined: repair.list('examined', raw.examined, MAX_LISTED, examinedPath),
     commands: repair.list('commands', raw.commands, MAX_LISTED, shaped),
     failures: repair.list('failures', raw.failures, MAX_FAILURES, failureOf),
     reasoning,

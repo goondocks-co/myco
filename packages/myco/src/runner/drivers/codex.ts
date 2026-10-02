@@ -373,7 +373,7 @@ function callEvent(item: Record<string, unknown>, itemType: string, status: 'sta
   return {
     kind: 'tool_call', name: mcp ? stringOf(item.tool) ?? 'mcp' : itemType, status,
     ...(id === null ? {} : { callId: id }),
-    ...(mcp ? { category: 'mcp' } : {}),
+    ...(mcp ? { category: stringOf(item.server) === MCP_SERVER_NAME ? 'mcp' : 'mcp_other' } : {}),
     input: mcp ? argumentsOf(item.arguments) : item,
     ...(stringOf(item.status) === 'declined' ? { refused: true as const } : {}),
     ...(exitCode === null || !Number.isSafeInteger(exitCode) || status === 'started' ? {} : { exitCode }),

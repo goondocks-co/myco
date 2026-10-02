@@ -104,7 +104,7 @@ describe('a step log from a harness\'s stream', () => {
     for (const never of [FILE_BODY, COMMAND_OUTPUT, ACCESS_KEY, 'export function drive', 'src/runner/loop.ts:270']) expect({ never, kept: kept.includes(never) }).toEqual({ never, kept: false });
   });
 
-  it('reads a Codex run\'s items as its steps, a Myco call by its arguments, and an item it does not know as unrecognized', async () => {
+  it('reads a Codex run\'s items as its steps, a call to Myco\'s own server by its arguments and any other server\'s by nothing, and an item it does not know as unrecognized', async () => {
     process.env.PATH = `${stubHarness('codex', [
       '{"type":"thread.started","thread_id":"t1"}',
       '{"type":"turn.started"}',
@@ -113,6 +113,7 @@ describe('a step log from a harness\'s stream', () => {
       '{"type":"item.completed","item":{"id":"i2","type":"file_change","changes":[{"path":"docs/notes.md","kind":"add"}],"status":"completed"}}',
       '{"type":"item.started","item":{"id":"i3","type":"mcp_tool_call","server":"myco","tool":"myco_run","arguments":{"op":"report"},"status":"in_progress"}}',
       '{"type":"item.completed","item":{"id":"i3","type":"mcp_tool_call","server":"myco","tool":"myco_run","arguments":{"op":"report"},"status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"i6","type":"mcp_tool_call","server":"context7","tool":"resolve","arguments":{"op":"hunter22"},"status":"completed"}}',
       '{"type":"item.completed","item":{"id":"i4","type":"collab_tool_call","status":"completed"}}',
       '{"type":"session.compacted"}',
       '{"type":"item.completed","item":{"id":"i5","type":"agent_message","text":"done"}}',
@@ -123,6 +124,7 @@ describe('a step log from a harness\'s stream', () => {
       { callId: 'i1', kind: 'command', tool: 'command_execution', target: 'bash -l… ls', outcome: 'error', exitCode: 2 },
       { callId: 'i2', kind: 'edit', tool: 'file_change', target: 'docs/notes.md', outcome: 'ok', exitCode: null },
       { callId: 'i3', kind: 'myco', tool: 'myco_run', target: 'report', outcome: 'ok', exitCode: null },
+      { callId: 'i6', kind: 'tool', tool: 'resolve', target: null, outcome: 'ok', exitCode: null },
     ]);
     expect(unrecognized).toEqual({ total: 2, shapes: { 'item.completed/collab_tool_call': 1, 'session.compacted': 1 } });
     expect(JSON.stringify(steps)).not.toContain(COMMAND_OUTPUT);
@@ -139,7 +141,7 @@ describe('a step log from a harness\'s stream', () => {
       ...update({ sessionUpdate: 'tool_call', toolCallId: 'c2', title: 'npm test', kind: 'execute', status: 'in_progress', rawInput: { command: 'npm test' } }),
       ...update({ sessionUpdate: 'tool_call_update', toolCallId: 'c2', status: 'failed', rawOutput: { output: COMMAND_OUTPUT } }),
       ...update({ sessionUpdate: 'plan', entries: [] }),
-      ...[...acp.refused({ toolCallId: 'c3', title: 'rm -rf build', kind: 'execute', rawInput: { command: 'rm -rf build' } }, 'outside the run\'s grant')],
+      ...[...acp.refused({ toolCallId: 'c3', title: 'rm -rf build', kind: 'execute', rawInput: { command: 'rm -rf build' } })],
     ]) log.observe(event);
     const { steps, unrecognized } = log.result();
     expect(steps.map(({ callId, kind, tool, target, outcome }) => ({ callId, kind, tool, target, outcome }))).toEqual([

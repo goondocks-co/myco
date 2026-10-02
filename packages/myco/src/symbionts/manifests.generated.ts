@@ -190,10 +190,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "category": "search",
             "kind": "search",
             "target": [
-              "rawInput.pattern",
-              "rawInput.query",
-              "rawInput.glob",
-              "locations.0.path"
+              "locations.0.path",
+              "rawInput.path"
             ]
           },
           {
@@ -737,14 +735,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "tool": "Glob",
             "kind": "search",
             "target": [
-              "pattern"
+              "path"
             ]
           },
           {
             "tool": "Grep",
             "kind": "search",
             "target": [
-              "pattern"
+              "path"
             ]
           },
           {
@@ -1976,10 +1974,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "category": "search",
             "kind": "search",
             "target": [
-              "rawInput.pattern",
-              "rawInput.query",
-              "rawInput.glob",
-              "locations.0.path"
+              "locations.0.path",
+              "rawInput.path"
             ]
           },
           {
@@ -2261,10 +2257,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "category": "search",
             "kind": "search",
             "target": [
-              "rawInput.pattern",
-              "rawInput.query",
-              "rawInput.glob",
-              "locations.0.path"
+              "locations.0.path",
+              "rawInput.path"
             ]
           },
           {
