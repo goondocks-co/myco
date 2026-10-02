@@ -15,11 +15,10 @@ import { repositoryIdentity } from './repositories.js';
  * claim to make (titling stamps the session first) prepares, claims, then
  * launches, and a refusal decided in preparation never costs it the claim.
  *
- * The provider resolves task-first, then the Deployment default —
- * `agent.tasks.<task>.{provider,model}` before `agent.provider.*` — so a
- * per-task override in Settings routes that task alone. A credential travels
- * only into the launched runtime's environment, under the variable its harness
- * reads, and never into telemetry or an answer.
+ * Worker tasks resolve their harness, execution profile and login at claim.
+ * The retained runtime probe reads archived provider preferences and a per-task
+ * model pin. Credentials travel only in the runtime environment, never in
+ * telemetry or answers.
  */
 import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
@@ -36,6 +35,7 @@ import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
+import { runtimeProbePreferences } from './runtime-probe.js';
 import { enabledCapabilities, leafValues, type ProjectCapability } from './settings.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileCapability } from '@goondocks/myco-shared/execution-profile';
@@ -82,7 +82,7 @@ const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts
  */
 export type DispatchRefusal =
   | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction' | 'not_landed'
-  | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'capability_off';
+  | 'no_provider' | 'capability_off' | 'probe_preferences_invalid';
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
@@ -91,10 +91,8 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   no_instruction: 'this server has no instructions for that task',
   not_landed: 'no machine can run that task yet',
   unknown_project: 'the project is not on this server',
-  no_provider: 'no provider is configured; Settings names one before a dispatch can run',
-  no_credential: 'no Anthropic key is saved; add one in Settings before starting a task',
-  no_endpoint: 'openai-compatible needs agent.provider.base_url',
-  unsupported_provider: 'the dispatcher serves anthropic and openai-compatible providers',
+  probe_preferences_invalid: 'The retained probe cannot use its stored preferences or key.',
+  no_provider: 'search embeddings are unavailable; configure an embedding provider',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
 };
 
@@ -422,10 +420,9 @@ export async function endQueuedRun(
 }
 
 /**
- * Launch every queued run the limits now admit, oldest first. Each is prepared
- * again — a provider changed after it queued applies, and a refusal fails the
- * row by its own message — and admitted again against the load as it stands
- * after the launches before it. Answers how many launched.
+ * Launch queued runs oldest first, checking stored preferences and availability,
+ * then admitting each against the live load after earlier launches. Unavailable
+ * harnesses hold their rows; terminal refusals fail them. Answers how many launched.
  */
 export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   let launched = 0;
@@ -544,39 +541,31 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
     // task carries its admission into its container (`MYCO_TASK_ADMISSION`), which refuses there.
     const capability = capabilityOf(task);
     if (capability !== null && !(await capabilityOn(env.db, projectId, capability))) return { ok: false, refusal: 'capability_off', capability };
-    const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
+    const admission = gate.kind === 'capture' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
     return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
   }
 
-  if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'harness_unavailable' };
+  if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
+  if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'not_landed' };
   if (gate.kind === 'embedding') {
     const embedding = await env.embeddingProvider?.();
     if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
     return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
   }
 
-  const byLeaf = await leafValues(env.db, ['agent.tasks', 'agent.provider.type', 'agent.provider.model', 'agent.provider.base_url']);
-  const override = record(record(parseLeaf(byLeaf.get('agent.tasks')))[task]);
-  const providerType = str(override.provider) ?? str(parseLeaf(byLeaf.get('agent.provider.type')));
-  if (providerType === null) return { ok: false, refusal: 'no_provider' };
-  const model = str(override.model) ?? str(parseLeaf(byLeaf.get('agent.provider.model')));
-  const baseUrl = str(parseLeaf(byLeaf.get('agent.provider.base_url')));
-
-  const credentialEnv: Record<string, string> = {};
-  const provider: Record<string, unknown> = { type: providerType };
-  if (model !== null) provider.model = model;
+  const archived = await runtimeProbePreferences(env.db, task);
+  const { type: providerType, model, baseUrl } = archived;
+  if (providerType === null) return { ok: false, refusal: 'probe_preferences_invalid' };
+  const provider: Record<string, unknown> = { type: providerType, ...(model === null ? {} : { model }) };
+  let credentialEnv: Record<string, string> = {};
   if (providerType === 'anthropic') {
     const key = await openProviderCredential(env.db, env.wrappingKey, 'anthropic');
-    if (key === null) return { ok: false, refusal: 'no_credential' };
-    Object.assign(credentialEnv, providerCredentialEnv(providerType, key));
-  } else if (providerType === 'openai-compatible') {
-    if (baseUrl === null) return { ok: false, refusal: 'no_endpoint' };
+    if (key === null) return { ok: false, refusal: 'probe_preferences_invalid' };
+    credentialEnv = providerCredentialEnv(providerType, key);
+  } else if (providerType === 'openai-compatible' && baseUrl !== null) {
     provider.baseUrl = baseUrl;
-  } else {
-    return { ok: false, refusal: 'unsupported_provider', providerType };
-  }
-
-  const admission = gate.kind === 'provider' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
+  } else return { ok: false, refusal: 'probe_preferences_invalid' };
+  const admission = gate.kind === 'capture' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
   return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType, model, provider, credentialEnv, admission } };
 }
 

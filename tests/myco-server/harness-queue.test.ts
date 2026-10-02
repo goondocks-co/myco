@@ -15,6 +15,9 @@ import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { indexFixture } from './helpers/vector-index.js';
+import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
+import { cloudflareEmbeddingProvider } from '@myco-server-worker/platform/cloudflare/embedding.js';
 import { prepared } from './helpers/prepared.js';
 
 const NOW = 1_800_000_000_000;
@@ -157,7 +160,7 @@ describe('the drain', () => {
     expect(await runTick(f.env, later)).toMatchObject({ state: 'active', heldBy: 'queue:pending' });
   });
 
-  it('fails a queued run by name when the Deployment can no longer prepare it, and launches all once the limit is lifted', async () => {
+  it('ends queued probes with invalid archived preferences, and admits new valid probes', async () => {
     const f = fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     const first = (await f.dispatch()) as { runId: string };
@@ -166,8 +169,8 @@ describe('the drain', () => {
     f.complete(first.runId);
     f.clear('agent.provider.type');
     expect(await drainQueue(f.env, NOW + 3)).toBe(0);
-    expect(f.run(second.runId)).toMatchObject({ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' });
-    expect(f.run(third.runId)).toMatchObject({ status: 'failed' });
+    expect(f.run(second.runId)).toMatchObject({ status: 'failed', error: expect.any(String) });
+    expect(f.run(third.runId)).toMatchObject({ status: 'failed', error: expect.any(String) });
     f.setting('agent.provider.type', 'openai-compatible');
     f.clear('agent.limits.concurrent_runs');
     const a = (await f.dispatch('container-smoke', NOW + 10)) as { runId: string };
@@ -737,7 +740,7 @@ describe('a runtime that is not taking runs', () => {
     const preparedRefused = await prepareDispatch(refused.env, 'container-smoke', 'proj_1');
     await dispatchPrepared(refused.env, prepared(preparedRefused), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_refused_later' }, NOW);
     const refusedCredential = credentialOf(refused, 'run_refused_later');
-    refused.clear('agent.provider.type');
+    refused.sqlite.run(`UPDATE agent_runs SET dispatch_spec = NULL WHERE id = 'run_refused_later'`);
     expect(await drainQueue(refused.env, NOW + 1)).toBe(0);
     expect(refused.run('run_refused_later')?.status).toBe('failed');
     expect(revokedAt(refused, refusedCredential)).toBe(NOW + 1);
@@ -784,5 +787,36 @@ describe('a runtime that is not taking runs', () => {
     await agentRunRetention(f.env, NOW);
     expect((f.sqlite.query(`SELECT id FROM member_credentials ORDER BY id`).all() as Array<{ id: string }>).map((r) => r.id))
       .toEqual(['cred_live', 'cred_named', 'cred_recent']);
+  });
+});
+
+
+describe('archived probe preferences', () => {
+  it.each([
+    { provider: null, embeddingOnly: false },
+    { provider: 'anthropic', embeddingOnly: false },
+    { provider: 'openai-compatible', embeddingOnly: false },
+    { provider: 'unsupported', embeddingOnly: false },
+    { provider: 'openai-compatible', embeddingOnly: true },
+  ])('ends an unusable probe %j without blocking embedding work behind it', async ({ provider, embeddingOnly }) => {
+    const f = fixture();
+    try {
+      await f.dispatch();
+      f.sqlite.run(`UPDATE agent_runs SET status='completed', completed_at=?`, [NOW]);
+      f.clear('agent.provider.type');
+      f.clear('agent.provider.base_url');
+      if (provider !== null) f.setting('agent.provider.type', provider);
+      if (embeddingOnly) f.setting('agent.provider.base_url', 'http://models.internal/v1');
+      const env: ServerEnv = { ...f.env, ...(embeddingOnly ? { harnessTasks: ['embedding-reconcile'] } : {}), vectors: cloudflareVectorStore(indexFixture()),
+        embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }) };
+      for (const [id, task, at] of [['bad-probe', 'container-smoke', NOW], ['vectors-behind', 'embedding-reconcile', NOW + 1]] as const) {
+        f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec)
+          VALUES ('proj_1',?,'myco-agent',?,'queued',?,'runtime',?)`, [id, task, at, JSON.stringify({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 })]);
+      }
+      expect(await drainQueue(env, NOW + 2)).toBe(1);
+      expect(f.run('bad-probe')).toMatchObject({ status: 'failed', error: expect.any(String) });
+      expect(f.run('vectors-behind')?.status).toBe('pending');
+      expect(f.launches.at(-1)?.envVars.MYCO_TASK).toBe('embedding-reconcile');
+    } finally { f.sqlite.close(); }
   });
 });

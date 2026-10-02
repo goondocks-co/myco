@@ -200,10 +200,10 @@ describe('capability admission', () => {
 
   it('refuses a claim whose capability is withdrawn even while another remains admitted', async () => {
     const { db, sqlite } = store();
-    sqlite.query(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'skills', 1, ?, 'test')`).run(SCOPE.projectId, NOW);
+    sqlite.query(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'canopy', 1, ?, 'test')`).run(SCOPE.projectId, NOW);
     sqlite.query(`UPDATE project_capabilities SET enabled = 0 WHERE project_id = ? AND capability = ?`).run(SCOPE.projectId, CAPABILITY);
     expect(await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW)).toEqual({ claimed: false, notAdmitted: CAPABILITY });
-    expect(await claimRun(db, SCOPE, run('r2', 'survey'), { taskName: 'survey', admission: { kind: 'capability', capability: 'skills' } as const }, NOW)).toEqual({ claimed: true });
+    expect(await claimRun(db, SCOPE, run('r2', 'survey'), { taskName: 'survey', admission: { kind: 'capability', capability: 'canopy' } as const }, NOW)).toEqual({ claimed: true });
   });
 
   it('distinguishes a refused admission from an id already claimed: they are different answers', async () => {
@@ -215,51 +215,18 @@ describe('capability admission', () => {
   });
 });
 
-describe('provider admission', () => {
-  const captureGuard = { taskName: 'title-summary', admission: { kind: 'provider' } as const };
+describe('request-driven title admission', () => {
+  const captureGuard = { taskName: 'title-summary', admission: { kind: 'capture' } as const };
 
-  const setLeaf = (sqlite: Database, leaf: string, value: unknown) =>
-    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'test')`)
-      .run(leaf, JSON.stringify(value), NOW);
-
-  it('refuses a capture-driven task when the Deployment has no provider at all', async () => {
-    const { db, sqlite } = store();
-    const outcome = await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW);
-    expect(outcome).toEqual({ claimed: false, noProvider: true });
-    expect(runCount(sqlite)).toBe(0);
-  });
-
-  it('admits it on the default provider', async () => {
-    const { db, sqlite } = store();
-    setLeaf(sqlite, 'agent.provider.type', 'anthropic');
-    expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: true });
-    expect(runCount(sqlite)).toBe(1);
-  });
-
-  it('admits it on a task-specific provider with no default set', async () => {
-    const { db, sqlite } = store();
-    setLeaf(sqlite, 'agent.tasks', { 'title-summary': { provider: { type: 'openai' } } });
-    expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: true });
-  });
-
-  it('does not let another task overrides entry admit this one', async () => {
-    const { db, sqlite } = store();
-    setLeaf(sqlite, 'agent.tasks', { 'extract-curate': { provider: { type: 'openai' } } });
-    expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: false, noProvider: true });
-  });
-
-  it('reads a malformed overrides document as no per-task provider rather than throwing', async () => {
-    const { db, sqlite } = store();
-    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', 'not json', ?, 'test')`).run(NOW);
-    expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: false, noProvider: true });
-  });
-
-  it('gates the capture-driven task on the Deployment, never on a Project capability', async () => {
-    const { db, sqlite } = store();
-    // Every capability withdrawn; the provider alone decides.
-    sqlite.query(`DELETE FROM project_capabilities`).run();
-    setLeaf(sqlite, 'agent.provider.type', 'anthropic');
-    expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: true });
+  it('admits title work independently of obsolete provider preferences and project capabilities', async () => {
+    for (const preference of [undefined, null, 'anthropic', 'openai-compatible']) {
+      const { db, sqlite } = store();
+      sqlite.query(`DELETE FROM project_capabilities`).run();
+      if (preference !== undefined) sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', ?, ?, 'historic')`)
+        .run(JSON.stringify(preference), NOW);
+      expect(await claimRun(db, SCOPE, run('r1', 'title-summary'), captureGuard, NOW)).toEqual({ claimed: true });
+      expect(runCount(sqlite)).toBe(1);
+    }
   });
 });
 

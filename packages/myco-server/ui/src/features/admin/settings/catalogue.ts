@@ -3,7 +3,7 @@
  * in one of the five sections of Settings.
  *
  * The server stores any JSON under a leaf; the shape a person can enter comes
- * from here. A gate holds this list equal to the server's leaf list, so a leaf
+ * from here. A gate holds the editable fields equal to the server's admitted leaves, so a leaf
  * added on one side without the other fails by name.
  */
 import type { SettingsSectionId } from '../../../routes/nav';
@@ -49,18 +49,7 @@ export interface LeafGroup {
   leaves: readonly LeafField[];
 }
 
-const PROVIDERS = ['anthropic', 'ollama', 'lmstudio', 'openai', 'openrouter', 'openai-compatible'] as const;
-const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
-const VERBOSITY = ['low', 'medium', 'high'] as const;
 const SIGN_IN_OPTIONS = { deployment: 'Server login', 'worker-login': 'Worker login' } as const;
-
-const tierMaps = (): LeafField[] =>
-  ['default', 'high', 'low'].flatMap((tier) => [
-    { leaf: `agent.provider.reasoning_map.${tier}`, label: `Model at the ${tier} tier`, kind: 'text' as const },
-    { leaf: `agent.provider.effort_map.${tier}.effort`, label: `Effort at the ${tier} tier`, kind: 'select' as const, options: EFFORTS },
-    { leaf: `agent.provider.effort_map.${tier}.verbosity`, label: `Verbosity at the ${tier} tier`, kind: 'select' as const, options: VERBOSITY },
-    { leaf: `agent.provider.thinking_budget_map.${tier}`, label: `Thinking budget at the ${tier} tier`, kind: 'json' as const },
-  ]);
 
 const profileFields = (harness: string): LeafField[] => [
   ...REASONING_TIERS.flatMap((tier) => [
@@ -82,10 +71,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'When Myco learns, titles and maps on its own, without being asked.',
     leaves: [
       { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on a schedule', kind: 'toggle' },
-      { leaf: 'agent.event_tasks_enabled', label: 'Work as sessions arrive', kind: 'toggle' },
       { leaf: 'agent.scheduled_tasks_active_window_days', label: 'Treat a project as active for', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.cold_project_threshold_days', label: 'Treat a project as quiet after', kind: 'number', min: 0, max: 365, unit: 'days' },
-      { leaf: 'agent.summary_batch_interval', label: 'Summary batch interval', kind: 'number', min: 0 },
       { leaf: 'release_provenance.reconcile_interval_minutes', label: 'Check what has shipped every', kind: 'number', min: 1, max: 1440, unit: 'minutes', note: 'How often each project with release tracking on is checked against its release tags.' },
     ],
   },
@@ -111,15 +98,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
-    id: 'learning',
-    section: 'work',
-    label: 'Learning',
-    note: 'How Myco checks what it learns before keeping it.',
-    leaves: [
-      { leaf: 'agent.semantic_write_check_enabled', label: 'Check what Myco saves before it lands', kind: 'toggle' },
-    ],
-  },
-  {
     id: 'cortex',
     section: 'work',
     label: 'What sessions receive',
@@ -128,8 +106,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'instructions.template', label: 'Session-start instructions', kind: 'textarea', maxLength: 4096, note: 'Markdown every session is handed at start, beside its project. Up to 4 KB; anything longer is refused when you save.' },
       { leaf: 'cortex.instructions.inject_on_session_start', label: 'Instructions at session start', kind: 'toggle' },
       { leaf: 'cortex.instructions.inject_on_subagent_start', label: 'Instructions when a subagent starts', kind: 'toggle' },
-      { leaf: 'cortex.digest.inject_on_session_start', label: 'Digest at session start', kind: 'toggle' },
-      { leaf: 'cortex.digest.tier', label: 'Digest size', kind: 'select', options: [1500, 5000, 10000], unit: 'tokens', note: 'Sizes the digest a scheduled task writes. It is no longer served at session start.' },
       { leaf: 'cortex.spores.inject_on_prompt_submit', label: 'Spores on every prompt', kind: 'toggle' },
       { leaf: 'cortex.spores.max_per_prompt', label: 'Items per prompt', kind: 'number', min: 0, max: 10, note: 'Spores and plans share this count; the 300-token budget may serve fewer.' },
       { leaf: 'cortex.plans.inject_intent_nudge_on_prompt_submit', label: 'Plan nudge on every prompt', kind: 'toggle' },
@@ -144,17 +120,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Update the map on its own', kind: 'toggle', note: 'Needs work on a schedule and the project’s Code map switch in its project settings. Task limits also apply.' },
       { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Update every', kind: 'number', min: 1, unit: 'minutes' },
       { leaf: 'cortex.canopy.exclude.patterns', label: 'Paths left out', kind: 'patterns', note: 'Paths the map leaves out, beside the built-in ones. The map reads committed files only, so ignored files never reach it.' },
-      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Paths always left out', kind: 'patterns', readOnly: true, note: 'Kept by Myco. Add your own above.' },
-    ],
-  },
-  {
-    id: 'skills',
-    section: 'work',
-    label: 'Skills',
-    note: 'Thresholds for skills Myco once scored. Skills ship with Myco now.',
-    leaves: [
-      { leaf: 'skills.confidence_threshold', label: 'Promote skills at confidence', kind: 'number', min: 0, max: 1, step: 0.05 },
-      { leaf: 'skills.usage_stale_days', label: 'Skills stale after', kind: 'number', min: 1, unit: 'days' },
+      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Paths always left out', kind: 'patterns', readOnly: true, note: 'Derived from Myco’s built-in code map patterns. Add your own above.' },
     ],
   },
   {
@@ -163,22 +129,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Claude Code tiers',
     note: 'The model and effort requested for each tier when Claude Code runs Myco’s work. A task may override its tier under Per-task overrides.',
     leaves: profileFields('claude-code'),
-  },
-  {
-    id: 'agent',
-    section: 'models',
-    label: 'Model for Myco’s own work',
-    note: 'Provider settings for work this server launches directly. Worker-run tasks use the tier profiles below.',
-    leaves: [
-      { leaf: 'agent.provider.type', label: 'Provider', kind: 'select', options: PROVIDERS, note: 'Which service does this server’s own thinking; its key is under Keys below.' },
-      { leaf: 'agent.provider.model', label: 'Model', kind: 'text', note: 'The provider’s name for the model.' },
-      { leaf: 'agent.provider.base_url', label: 'Provider endpoint', kind: 'text', note: 'For a self-hosted or compatible endpoint. No stored key is sent to a custom endpoint.' },
-      { leaf: 'agent.provider.context_length', label: 'Context length', kind: 'number', min: 1, unit: 'tokens' },
-      { leaf: 'agent.provider.local_backend', label: 'Local backend', kind: 'select', options: ['ollama', 'lmstudio'] },
-      { leaf: 'agent.reasoningLevel', label: 'Reasoning profile', kind: 'select', options: ['low', 'default', 'high'] },
-      { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
-      { leaf: 'agent.harness', label: 'Agent for Myco’s work', kind: 'text' },
-    ],
   },
   {
     id: 'codex-profile',
@@ -212,7 +162,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Per-task overrides',
     note: 'Overrides for each task, as one document.',
     leaves: [
-      ...tierMaps(),
       { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'A JSON object keyed by task name. A model pin requires an agent in the same task override. “Title imported sessions” under Myco’s work writes its switch here.' },
     ],
   },
@@ -246,7 +195,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       // 0 is how a server returns to keeping everything, and the minimum stays 0.
       { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Removes raw transcript bytes already read into sessions once they are older than this. Bytes not yet read are kept whatever their age, and sessions, prompts, replies, tool calls and plans are never removed. Unset or 0 keeps raw transcripts forever. Capture is never refused for the space it takes.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
-      { leaf: 'notifications.retention_days', label: 'Keep notifications for', kind: 'number', min: 0, max: 365, unit: 'days' },
     ],
   },
   {
@@ -256,9 +204,9 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'How often this server backs itself up and what it keeps.',
     leaves: [
       { leaf: 'backup.auto_interval_hours', label: 'Back up every', kind: 'number', min: 1, max: 720, unit: 'hours', note: 'A self-hosted server writes a verified recovery copy on this interval; a Cloudflare one stages a copy an operator then turns into one.' },
-      { leaf: 'backup.recovery.keep_stagings', label: 'Recovery copies to keep', kind: 'number', min: 1, max: 30, note: 'Complete copies kept, newest first; older ones are released, and so are failed ones past the newest. Unset keeps 2.' },
-      { leaf: 'backup.retention.keep_daily', label: 'Daily backups to keep', kind: 'number', min: 1, max: 365 },
-      { leaf: 'backup.retention.keep_weekly', label: 'Weekly backups to keep', kind: 'number', min: 0, max: 52 },
+      { leaf: 'backup.recovery.keep_stagings', label: 'Full recovery copies to keep', kind: 'number', min: 1, max: 30, note: 'Complete copies kept, newest first; older ones are released, and so are failed ones past the newest. Unset keeps 2.' },
+      { leaf: 'backup.retention.keep_daily', label: 'Newest manual relational exports to keep (daily)', kind: 'number', min: 1, max: 365, note: 'Keeps the newest export copies, rather than one per day. Pruned when a manual export is created.' },
+      { leaf: 'backup.retention.keep_weekly', label: 'Recent export weeks to keep', kind: 'number', min: 0, max: 52, note: 'Keeps the newest export from each of the N most recent weeks that contain exports. Empty weeks consume no slot. Pruned when a manual export is created.' },
     ],
   },
   {

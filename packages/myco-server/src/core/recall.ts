@@ -76,19 +76,14 @@ const PLAN_NUDGE_LEAF = 'cortex.plans.inject_intent_nudge_on_prompt_submit';
 
 const INSTRUCTIONS_START_LEAF = 'cortex.instructions.inject_on_session_start';
 const INSTRUCTIONS_SUBAGENT_LEAF = 'cortex.instructions.inject_on_subagent_start';
-const DIGEST_TIER_LEAF = 'cortex.digest.tier';
 
 /** Instructions travel to a starting session and to a starting subagent unless the Deployment says not to. */
 export const INSTRUCTIONS_START_DEFAULT = true;
 export const INSTRUCTIONS_SUBAGENT_DEFAULT = true;
-/** The digest sizes the Settings page offers, and the one it starts on. Read by the digest run; nothing is served at session start. */
-export const DIGEST_TIERS: readonly number[] = [1500, 5000, 10000];
-export const DIGEST_TIER_DEFAULT = 5000;
-
 /** The leaves recall reads. */
 export const RECALL_LEAVES: readonly string[] = [
   ...INJECTION_LEAVES, PLAN_NUDGE_LEAF,
-  INSTRUCTIONS_START_LEAF, INSTRUCTIONS_SUBAGENT_LEAF, INSTRUCTIONS_TEMPLATE_LEAF, DIGEST_TIER_LEAF,
+  INSTRUCTIONS_START_LEAF, INSTRUCTIONS_SUBAGENT_LEAF, INSTRUCTIONS_TEMPLATE_LEAF,
 ];
 
 export interface RecallLeaves {
@@ -98,8 +93,6 @@ export interface RecallLeaves {
   instructionsAtSubagentStart: boolean;
   /** The Deployment's session-start text, empty where none is written. */
   instructionsTemplate: string;
-  /** One of `DIGEST_TIERS`; a stored value naming any other size falls to the default. */
-  digestTier: number;
 }
 
 const bool = (value: unknown, fallback: boolean): boolean => (typeof value === 'boolean' ? value : fallback);
@@ -107,14 +100,12 @@ const bool = (value: unknown, fallback: boolean): boolean => (typeof value === '
 /** Recall's leaves over the stored values, each defaulted. */
 export function recallLeaves(leaves: Record<string, unknown>): RecallLeaves {
   const template = leaves[INSTRUCTIONS_TEMPLATE_LEAF];
-  const tier = leaves[DIGEST_TIER_LEAF];
   return {
     injection: injectionLeaves(leaves),
     planNudge: bool(leaves[PLAN_NUDGE_LEAF], PLAN_NUDGE_DEFAULT),
     instructionsAtSessionStart: bool(leaves[INSTRUCTIONS_START_LEAF], INSTRUCTIONS_START_DEFAULT),
     instructionsAtSubagentStart: bool(leaves[INSTRUCTIONS_SUBAGENT_LEAF], INSTRUCTIONS_SUBAGENT_DEFAULT),
     instructionsTemplate: typeof template === 'string' ? template : '',
-    digestTier: typeof tier === 'number' && DIGEST_TIERS.includes(tier) ? tier : DIGEST_TIER_DEFAULT,
   };
 }
 

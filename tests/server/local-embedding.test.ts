@@ -44,7 +44,7 @@ async function fixture() {
 test('native runtime indexes clock-dispatched work and serves semantic results with a persisted report', async () => {
   const f = await fixture();
   try {
-    expect(await prepareDispatch(f.server.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'harness_unavailable' });
+    expect(await prepareDispatch(f.server.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'not_landed' });
     expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
     const run = await f.waitForRun();
     expect(run.status).toBe('completed');

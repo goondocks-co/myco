@@ -74,12 +74,11 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const task = str(body.task);
   // The claim guards the run id alone; a field that once named an age floor is refused rather than ignored.
   if (body.maxAgeSeconds !== undefined) return Response.json(refused(ctx, refusal('claim takes no maxAgeSeconds', 'parse')));
-  // A claim names the capability its task needs, or declares the task
-  // capture-driven and gated on a provider instead. Neither may be omitted:
-  // a claim that named nothing would run under no admission at all.
+  // A claim names the capability its task needs or declares capture-driven work.
+  // Every claim must declare its admission.
   const admission: RunAdmissionGate | null =
     body.capability === undefined && body.captureDriven === true
-      ? { kind: 'provider' }
+      ? { kind: 'capture' }
       : (PROJECT_CAPABILITIES as readonly string[]).includes(body.capability as string)
         ? { kind: 'capability', capability: body.capability as ProjectCapability }
         : null;

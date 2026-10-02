@@ -27,7 +27,7 @@ describe('POST /api/harness/dispatch', () => {
     }
   };
 
-  it('refuses without a bound runtime, an unknown project, and a missing provider, each by name', async () => {
+  it('refuses without a bound runtime or for an unknown task or project', async () => {
     const { env, sqlite } = setup();
     const unbound = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), env);
     expect(unbound.status).toBe(409);
@@ -36,12 +36,6 @@ describe('POST /api/harness/dispatch', () => {
     const ghost = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_ghost' }), bound);
     expect({ status: ghost.status, reason: ((await ghost.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the project is not on this server' });
 
-    const unconfigured = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
-    expect(unconfigured.status).toBe(400);
-    seedProvider(sqlite, { 'agent.provider.type': 'ollama' });
-    const unsupported = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
-    expect(((await unsupported.json()) as { reason: string }).reason).toContain('ollama');
-    seedProvider(sqlite, { 'agent.provider.type': 'anthropic' });
     const unknown = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
     expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'this server cannot run that task' });
   });
@@ -53,6 +47,7 @@ describe('POST /api/harness/dispatch', () => {
       'agent.tasks': { 'container-smoke': { schedule: { maxRunsPerDay: 0 } } },
       'agent.limits.concurrent_runs': 1,
     });
+    await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
     const dispatch = async () => worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), { ...env, HARNESS_LAUNCH_MODE: 'record' });
     expect(await jsonBody(await dispatch())).toMatchObject({ queued: false });
     const response = await dispatch();

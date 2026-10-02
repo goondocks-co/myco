@@ -12,6 +12,8 @@
  * validated operation and the store are all in the path a form actually takes.
  */
 import { describe, expect, it } from 'bun:test';
+import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
+import { RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
@@ -51,7 +53,7 @@ async function harness() {
     const body = await res.json() as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> };
     return new Map(body.leaves.filter((l) => l.configured).map((l) => [l.leaf, l.value]));
   };
-  return { env, put, stored };
+  return { ...fixture, env, put, stored };
 }
 
 describe('the Settings leaves the dashboard exposes', () => {
@@ -101,5 +103,44 @@ describe('the Settings leaves the dashboard exposes', () => {
     const refused = await put('capture.buffer_max_events', 10);
     expect({ status: refused.status, reason: refused.body.reason }).toEqual({ status: 400, reason: 'not_deployment_tier' });
     expect(Object.fromEntries(await stored())).toEqual(before);
+  });
+});
+
+describe('obsolete settings contracts', () => {
+  it('refuses every retired PUT and preserves stored history and live siblings', async () => {
+    const { sqlite, put, stored } = await harness();
+    for (const leaf of RETIRED_LEAVES) sqlite.run(
+      `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'historic')`, [leaf, JSON.stringify('historic')]);
+    await put('instructions.template', 'kept');
+    const before = Object.fromEntries(await stored());
+    for (const leaf of RETIRED_LEAVES) {
+      expect({ leaf, ...await put(leaf, 'replacement') }).toEqual({ leaf, status: 400, body: { applied: false, reason: 'retired', leaf } });
+    }
+    expect(Object.fromEntries(await stored())).toEqual(before);
+  });
+
+  it('reports every obsolete stored contract as retired metadata', async () => {
+    const { sqlite, env } = await harness();
+    const obsolete = ['agent.harness', 'agent.event_tasks_enabled', 'agent.semantic_write_check_enabled',
+      'agent.summary_batch_interval', 'agent.provider.type', 'agent.provider.model', 'agent.provider.base_url',
+      'cortex.digest.tier', 'cortex.digest.inject_on_session_start', 'skills.confidence_threshold',
+      'skills.usage_stale_days', 'notifications.retention_days', 'cortex.canopy.exclude.default_patterns'];
+    for (const leaf of obsolete) sqlite.run(
+      `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'historic')`, [leaf, JSON.stringify('historic')]);
+    const res = await worker.fetch(await asOwner('/api/settings'), env);
+    const body = await res.json() as { leaves: Array<{ leaf: string; configured: boolean; value: unknown; retired: boolean }> };
+    expect(body.leaves.filter((row) => obsolete.includes(row.leaf)).map(({ leaf, configured, value, retired }) => ({ leaf, configured, value, retired })).sort((a, b) => a.leaf.localeCompare(b.leaf)))
+      .toEqual(obsolete.map((leaf) => ({ leaf, configured: true, value: 'historic', retired: true })).sort((a, b) => a.leaf.localeCompare(b.leaf)));
+  });
+});
+
+describe('derived Canopy metadata', () => {
+  it('reports built-in patterns independently of a retired stored override', async () => {
+    const { sqlite, env } = await harness();
+    sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('cortex.canopy.exclude.default_patterns', '["stale"]', 1, 'historic')`);
+    const res = await worker.fetch(await asOwner('/api/settings'), env);
+    const body = await res.json() as { leaves: Array<{ leaf: string; value: unknown; source?: string; effectiveValue?: unknown }> };
+    const row = body.leaves.find((row) => row.leaf === 'cortex.canopy.exclude.default_patterns');
+    expect(row).toMatchObject({ value: ['stale'], source: 'derived', effectiveValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS });
   });
 });

@@ -755,7 +755,7 @@
   },
   "parity": {
     "titling backfill: imported sessions off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent; what live capture owes converges regardless, bounded by worker-claimed attempts; at the ceiling the owner reads the wait and when it lifts": 51095,
-    "the clock: the daily probe dispatched once, held by its interval, capped by its ceiling, withheld from a cold Project": 42648,
+    "the clock: extraction queued once, held by its interval, capped by its ceiling, withheld from a cold Project": 42648,
     "a replaced run: the row says a deploy ended it, a successor stands in for it once, and the day is not spent": 38873,
     "the claim queue: a worker's runs wait in order whatever the limit says, and no front door launches one": 38654,
     "token refresh: a token lapsed offline rotates once within its lineage, a superseded one asking to rotate revokes it, a lineage never ends for age, and one silent past the inactivity bound is refused by name": 33451,

@@ -16,6 +16,7 @@
  * and that the page made no failed request.
  */
 import { expect, test, type Page } from '@playwright/test';
+import type { SettingsAnswer } from '../../packages/myco-server/ui/src/features/admin/settings/wire.ts';
 import { INVITE_CONTROLS } from '../../packages/myco-shared/src/member-protocol.ts';
 import {
   expectAxeClean, expectFits, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
@@ -66,14 +67,29 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
   if (onFixture()) await expect(titling).toBeChecked();
   // With nothing stored, a switch the server treats as on reads on.
   if (onFixture()) await expect(page.getByRole('switch', { name: 'Instructions at session start' })).toBeChecked();
-  // A setting nothing reads any more is not offered.
-  await expect(page.locator('[data-setting="agent.event_tasks_enabled"]')).toHaveCount(0);
+  const response = await page.evaluate(async () => {
+    const answer = await fetch('/api/settings');
+    return { ok: answer.ok, body: await answer.json() };
+  });
+  expect(response.ok).toBe(true);
+  const settings = response.body as SettingsAnswer;
+  for (const row of settings.leaves.filter((row: { retired: boolean }) => row.retired)) {
+    const control = page.locator(`[data-setting="${row.leaf}"]`);
+    if (row.source === 'derived') {
+      await expect(control).toBeVisible();
+      await expect(control.locator('input, textarea, button')).toHaveCount(0);
+    } else await expect(control).toHaveCount(0);
+  }
+  const digest = settings.leaves.find((row: { leaf: string }) => row.leaf === 'cortex.digest.tier');
+  expect(digest?.retired).toBe(true);
 }
 
 async function expectModels(page: Page): Promise<void> {
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(tabs.getByRole('link', { name: 'Models and keys' })).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByLabel('Provider').first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Claude Code tiers' })).toBeVisible();
+  await expect(page.getByLabel('Embedding provider')).toBeVisible();
+  await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
   await expect(page.locator('#credentials')).toBeVisible();
 }
 
@@ -96,6 +112,7 @@ async function expectProjectSettings(page: Page, name: string): Promise<void> {
   await expect(page.getByText(name).first()).toBeInViewport();
   for (const id of ['capabilities', 'repository', 'access-keys', 'release-tracking']) await expect(page.locator(`section#${id}`)).toBeVisible();
   await expect(page.locator('section#capabilities').getByRole('switch').first()).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Skills', exact: true })).toHaveCount(0);
   if (onFixture()) await expect(page.locator('section#access-keys')).toContainText('CI deploys');
 }
 

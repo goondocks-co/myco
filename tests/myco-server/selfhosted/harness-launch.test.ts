@@ -83,17 +83,13 @@ async function boot(): Promise<Seam> {
   const db = sqliteRelationalStore(sqlite);
   await linkStatement(db, MEMBER_ID, GITHUB_SUB).run();
   await issueMemberToken(db, { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());
-  // What a dispatch needs before it can prepare: a provider, and the Project
-  // admitted to the capability this task's claim names.
   const now = Date.now();
   for (const [leaf, value] of [
     ['agent.provider.type', 'openai-compatible'],
     ['agent.provider.model', 'seam-model'],
     ['agent.provider.base_url', 'http://models.internal/v1'],
-  ] as const) {
-    sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)`)
-      .run(leaf, JSON.stringify(value), now, MEMBER_ID);
-  }
+  ] as const) sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)`)
+    .run(leaf, JSON.stringify(value), now, MEMBER_ID);
   sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, ?)`)
     .run(PROJECT_ID, now, MEMBER_ID);
   sqlite.close();

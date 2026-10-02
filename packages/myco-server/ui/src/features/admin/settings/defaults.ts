@@ -39,7 +39,6 @@ export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
   'instructions.template': { value: '' },
   'cortex.instructions.inject_on_session_start': { value: true },
   'cortex.instructions.inject_on_subagent_start': { value: true },
-  'cortex.digest.tier': { value: 5000 },
   'cortex.spores.inject_on_prompt_submit': { value: true },
   'cortex.spores.max_per_prompt': { value: 7 },
   'cortex.plans.inject_intent_nudge_on_prompt_submit': { value: true },
@@ -48,10 +47,6 @@ export const LEAF_DEFAULTS: Readonly<Record<string, LeafDefault>> = {
   'cortex.canopy.refresh.background_period_minutes': { value: 360 },
   'cortex.canopy.exclude.patterns': { value: [] },
   'cortex.canopy.exclude.default_patterns': { value: CANOPY_DEFAULT_EXCLUDE_PATTERNS },
-  // core/harness.ts: with no provider, the server runs none of its own work.
-  'agent.provider.type': { unset: 'None' },
-  'agent.provider.model': { unset: 'None' },
-  'agent.provider.base_url': { unset: 'The provider’s own' },
   'agent.tasks': { value: {} },
   // core/embedding/configured-provider.ts; core/embedding/jobs.ts keeps embedding unless the leaf is false.
   'embedding.provider': { unset: 'None' },

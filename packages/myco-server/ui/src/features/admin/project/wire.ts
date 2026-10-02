@@ -11,6 +11,7 @@
 /** `GET /api/projects/{p}/capabilities`: every capability, on or off. */
 export interface CapabilitiesAnswer {
   capabilities: Record<string, boolean>;
+  retiredCapabilities?: Record<string, boolean>;
 }
 
 /** A stored key described, never shown. */

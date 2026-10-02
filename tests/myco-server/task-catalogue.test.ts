@@ -4,6 +4,7 @@
  * are held to a close rule and an input builder each — no outcome without a
  * rule, no rule without an outcome.
  */
+import { SECRET_SLOTS } from '@goondocks/myco-shared/secret-slots';
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,8 +46,8 @@ describe('the task catalogue', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('gates exactly the capture-driven tasks on a provider rather than a capability', () => {
-    const providerGated = Object.entries(TASK_ADMISSION).filter(([, g]) => g.kind === 'provider').map(([t]) => t);
+  it('admits capture-driven titling independently of provider settings', () => {
+    const providerGated = Object.entries(TASK_ADMISSION).filter(([, g]) => g.kind === 'capture').map(([t]) => t);
     expect(providerGated).toEqual([TITLING_TASK]);
   });
 
@@ -66,14 +67,14 @@ describe('the task catalogue', () => {
 
 describe('what the clock runs', () => {
   it('schedules extraction with its unread-prompt guard and keeps seeding and titling off the clock', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', EXTRACTION_TASK]);
+    expect(scheduledTasks().map((t) => t.task)).toEqual([EXTRACTION_TASK]);
     expect(TASK_SCHEDULE[EXTRACTION_TASK]).toEqual({ intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' });
     for (const task of [SEEDING_TASK, TITLING_TASK]) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
   it('makes a declared, switched-off schedule live when an owner switches it on', () => {
     const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
-    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', 'container-smoke', EXTRACTION_TASK]);
+    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', EXTRACTION_TASK]);
     expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip', preCondition: 'has-capture-since-map' });
   });
 
@@ -164,4 +165,14 @@ describe('the tasks a run checks a repository out for', () => {
     expect(REPOSITORY_TASKS).toContain(MAP_TASK);
     expect(REPOSITORY_TASKS).toContain(SEEDING_TASK);
   });
+});
+
+
+it('keeps the retained probe manual-only even when an archived override asks for a schedule', () => {
+  expect(TASK_SCHEDULE['container-smoke']).toBeNull();
+  expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: true, intervalSeconds: 1 } } }).map(({ task }) => task)).not.toContain('container-smoke');
+});
+it('names request-driven titling admission and the probe credential use', () => {
+  expect(admissionForTask(TITLING_TASK)).toEqual({ kind: 'capture' });
+  expect(SECRET_SLOTS.find(({ name }) => name === 'anthropic')?.alsoUsedFor).toContain('retained container probe');
 });

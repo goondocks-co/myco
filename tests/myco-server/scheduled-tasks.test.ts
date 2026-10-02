@@ -18,7 +18,7 @@ import { sqliteEnv, withHarness } from './helpers/fixtures.js';
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
 const ORIGIN = 'https://s';
-const SMOKE: TaskSchedule = TASK_SCHEDULE['container-smoke']!;
+const SMOKE: TaskSchedule = { intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 };
 
 function fixture(opts: { bound?: boolean } = {}) {
   const e = sqliteEnv();
@@ -39,9 +39,23 @@ function fixture(opts: { bound?: boolean } = {}) {
   return { ...e, env, launches, setting, receipt, capability, runs };
 }
 
+
+function scheduledFixture() {
+  const f = fixture();
+  f.capability('proj_1', 'vault_evolution', true);
+  f.capability('proj_2', 'vault_evolution', true);
+  f.setting('agent.tasks', { 'extract-curate': { schedule: { ...SMOKE, reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+  for (const [project, at] of [['proj_1', NOW - 3_600_000], ['proj_2', NOW - 20 * DAY]] as const) {
+    f.sqlite.run(`INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,ended_at) VALUES (?, 's_clock','m1','tok_1',?,?, 'claude-code',?)`, [project, at, at, at]);
+    f.sqlite.run(`INSERT INTO prompt_batches (project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at,processed) VALUES (?,'s_clock','p_clock','e_clock','scheduled extraction input','user','h_clock',?,?,'tok_1',?,0)`, [project, at, at, at]);
+  }
+  return f;
+}
+
 describe('the schedule envelope', () => {
-  it('catalogues every schedule and its precondition, including the daily harness health probe', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['container-smoke', 'extract-curate']);
+  it('catalogues every schedule and its precondition, excluding the retained harness probe', () => {
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['extract-curate']);
+    expect(TASK_SCHEDULE['container-smoke']).toBeNull();
     expect(SMOKE).toEqual({ intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 });
     for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, catalogued: task in TASK_ADMISSION }).toEqual({ task, catalogued: true });
     for (const task of Object.keys(TASK_ADMISSION)) expect({ task, scheduled: task in TASK_SCHEDULE }).toEqual({ task, scheduled: true });
@@ -191,7 +205,7 @@ describe('each gate, by name, in order', () => {
     expect(await decide(f, NOW - DAY)).toBe('already_running');
     expect(await decide(f, NOW - DAY, { ...SMOKE, enabled: false })).toBe('disabled');
     expect(await decide(f, NOW - DAY, { ...SMOKE, overlap: 'queue' })).toBe('not_yet');
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'live'`, [NOW - 59_000]);
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE id = 'live'`, [NOW - 59_000]);
     expect(await decide(f, NOW - DAY)).toBe('not_yet');
     expect(await decide(f, NOW - DAY, SMOKE, 'sleep', NOW + DAY)).toBeNull();
     expect(await decide(f, NOW - DAY, SMOKE, 'active', NOW + DAY)).toBe('not_in_state');
@@ -203,34 +217,34 @@ describe('each gate, by name, in order', () => {
 });
 
 describe('one wake of the clock', () => {
-  it('dispatches the probe for each Project that qualifies, attributes it to the clock, and does nothing twice', async () => {
-    const f = fixture();
+  it('dispatches extraction for each Project that qualifies, attributes it to the clock, and does nothing twice', async () => {
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
     f.receipt('proj_2', NOW - 20 * DAY);
     const first = await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN);
     expect(first).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['container-smoke', 'pending']]);
+    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['extract-curate', 'queued']]);
     expect(f.runs('proj_2')).toEqual([]);
-    expect(f.launches[0]!.envVars.MYCO_SERVER_URL).toBe(ORIGIN);
-    expect(f.launches[0]!.envVars.MYCO_TASK).toBe('container-smoke');
+    const spec = f.sqlite.query(`SELECT dispatch_spec FROM agent_runs WHERE task = 'extract-curate'`).get() as { dispatch_spec: string };
+    expect(JSON.parse(spec.dispatch_spec)).toMatchObject({ serverUrl: ORIGIN, actor: CLOCK_ACTOR });
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 1, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
     expect(f.runs('proj_1')).toHaveLength(1);
   });
 
   it('refuses at the ceiling rather than queueing, records one row per episode however many wakes ask, and dispatches again when the window has room', async () => {
-    const f = fixture();
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 1 } } });
+    f.setting('agent.tasks', { 'extract-curate': { schedule: { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' }, intervalSeconds: 1, maxRunsPerDay: 1 } } });
     expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    // The probe finishes; the interval is past; the day's one run is spent.
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = 'container-smoke'`, [NOW + 1_000]);
+    // Extraction finishes; the interval is past; the day's one run is spent.
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE task = 'extract-curate'`, [NOW + 1_000]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + 5_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     const rows = f.runs('proj_1');
     expect(rows.map((r) => r.status)).toEqual(['completed', 'skipped']);
     expect(JSON.parse(rows[1]!.runContext!)).toEqual({ reason: 'max_runs_per_day' });
     // A ceiling is not a queue: nothing waits for capacity, and nothing launched.
     expect(rows.filter((r) => r.status === 'queued')).toEqual([]);
-    expect(f.launches).toHaveLength(1);
+    expect(f.launches).toHaveLength(0);
 
     // Two more wakes inside the same episode: each answers the ceiling, and the
     // record of it stays one row rather than one per wake.
@@ -247,12 +261,12 @@ describe('one wake of the clock', () => {
     // The trailing day has room again: the next wake dispatches, with no queue
     // to drain and nothing owed for the wakes that refused.
     expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 5_000, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'pending']);
-    expect(f.launches).toHaveLength(2);
+    expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'queued']);
+    expect(f.launches).toHaveLength(0);
 
     // A SECOND episode leaves a second row: the record is once per episode, not
     // once per Project and task for all time.
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'pending'`, [NOW + DAY + 6_000]);
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE status = 'queued'`, [NOW + DAY + 6_000]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW + DAY + 10_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(f.runs('proj_1').map((r) => r.status)).toEqual(['completed', 'skipped', 'completed', 'skipped']);
 
@@ -261,7 +275,7 @@ describe('one wake of the clock', () => {
   });
 
   it('keeps two episodes apart when both fall on one calendar day, a ceiling above one letting them sit minutes apart', async () => {
-    const f = fixture();
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
     // Two entries just under a day apart: both sit inside the trailing window
@@ -269,9 +283,9 @@ describe('one wake of the clock', () => {
     const older = NOW + 3_600_000;
     const newer = older + DAY - 10 * 60_000;
     for (const [id, at] of [['e_older', older], ['e_newer', newer]] as const) {
-      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at) VALUES ('proj_1', ?, ?, 'container-smoke', 'completed', ?, ?)`, [id, HARNESS_AGENT_ID, at, at]);
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at) VALUES ('proj_1', ?, ?, 'extract-curate', 'completed', ?, ?)`, [id, HARNESS_AGENT_ID, at, at]);
     }
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 2 } } });
+    f.setting('agent.tasks', { 'extract-curate': { schedule: { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' }, intervalSeconds: 1, maxRunsPerDay: 2 } } });
 
     // The first episode: both entries in the window, so the ceiling is met.
     const firstRefusal = newer + 60_000;
@@ -282,16 +296,16 @@ describe('one wake of the clock', () => {
     // — a second episode, on the same calendar day as the first.
     const freed = older + DAY + 60_000;
     expect(await runScheduledTasks(f.env, 'sleep', freed, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE status = 'pending'`, [freed + 1_000]);
+    f.sqlite.run(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ? WHERE status = 'queued'`, [freed + 1_000]);
     expect(await runScheduledTasks(f.env, 'sleep', freed + 2_000, ORIGIN)).toEqual({ dispatched: 0, skipped: 1 });
     expect(Math.floor(newer / DAY)).toBe(Math.floor(freed / DAY));
     expect(f.runs('proj_1').filter((r) => r.status === 'skipped')).toHaveLength(2);
   });
 
   it('refuses a ceiling of zero with no entry to name, and records that once however many wakes ask', async () => {
-    const f = fixture();
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 1, maxRunsPerDay: 0 } } });
+    f.setting('agent.tasks', { 'extract-curate': { schedule: { reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' }, intervalSeconds: 1, maxRunsPerDay: 0 } } });
     for (const at of [NOW, NOW + 60_000, NOW + DAY + 60_000]) {
       expect({ at, report: await runScheduledTasks(f.env, 'sleep', at, ORIGIN) }).toEqual({ at, report: { dispatched: 0, skipped: 1 } });
     }
@@ -302,48 +316,50 @@ describe('one wake of the clock', () => {
   });
 
   it('writes one row for one task when two wakes decide at once: the write refuses beside a live run', async () => {
-    const f = fixture();
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
     // The second wake reads the same answers the first read, and its write meets the first's row.
     let raced = false;
     const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
-      if (!raced && sql.includes(`?, 'pending', ?`)) {
+      if (!raced && sql.startsWith(`INSERT INTO agent_runs`) && sql.includes(`'queued'`)) {
         raced = true;
         f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?) ON CONFLICT DO NOTHING`, [HARNESS_AGENT_ID, NOW]);
-        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'other-wake', ?, 'container-smoke', 'pending', ?)`, [HARNESS_AGENT_ID, NOW]);
+        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'other-wake', ?, 'extract-curate', 'queued', ?)`, [HARNESS_AGENT_ID, NOW]);
       }
       return f.env.db.prepare(sql);
     } } };
     expect(await runScheduledTasks(racing, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
+    expect(raced).toBe(true);
     expect(f.runs('proj_1').map((r) => r.id)).toEqual(['other-wake']);
     expect(f.launches).toHaveLength(0);
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE member_id = 'mem_harness' AND revoked_at IS NULL`).get() as { c: number }).c).toBe(0);
   });
 
-  it('queues the probe past a limit like any dispatch', async () => {
-    const f = fixture();
+  it('queues extraction past a limit like any dispatch', async () => {
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
     f.setting('agent.limits.concurrent_runs', 1);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'extract-curate', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'busy', ?, 'title-summary', 'running', ?)`, [HARNESS_AGENT_ID, NOW]);
     expect(await runScheduledTasks(f.env, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['extract-curate', 'running'], ['container-smoke', 'queued']]);
+    expect(f.runs('proj_1').map((r) => [r.task, r.status])).toEqual([['title-summary', 'running'], ['extract-curate', 'queued']]);
     expect(f.launches).toHaveLength(0);
   });
 });
 
 describe('the tick and the clock', () => {
   it('schedules from the origin the operator declared, and schedules nothing where none is declared', async () => {
-    const f = fixture();
+    const f = scheduledFixture();
     f.receipt('proj_1', NOW - 40 * 60_000);
     expect((await runTick(f.env, NOW)).scheduled).toEqual({ dispatched: 0, skipped: 0 });
     f.env.origin = 'https://myco.example';
     const report = await runTick(f.env, NOW);
     expect(report.state).toBe('sleep');
     expect(report.scheduled).toEqual({ dispatched: 1, skipped: 0 });
-    expect(f.launches[0]!.envVars.MYCO_SERVER_URL).toBe('https://myco.example');
-    expect(f.runs('proj_1')[0]).toMatchObject({ task: 'container-smoke', status: 'pending' });
-    expect(JSON.parse(f.launches[0]!.envVars.MYCO_TASK_PARAMS!)).toEqual({ timeoutSeconds: 300 });
+    const spec = f.sqlite.query(`SELECT dispatch_spec FROM agent_runs WHERE task = 'extract-curate'`).get() as { dispatch_spec: string };
+    expect(JSON.parse(spec.dispatch_spec)).toMatchObject({ serverUrl: 'https://myco.example', actor: CLOCK_ACTOR });
+    expect(f.runs('proj_1')[0]).toMatchObject({ task: 'extract-curate', status: 'queued' });
+    expect(JSON.parse(spec.dispatch_spec).timeoutSeconds).toBe(900);
     void CLOCK_ACTOR;
   });
 });
@@ -454,8 +470,8 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     // Another actor's entries, newer than the clock's own and inside the day.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
-    const tasks = scheduledTasks().map(({ task }) => task);
-    expect(tasks).toEqual(['container-smoke', 'extract-curate']);
+    const tasks = ['container-smoke', 'extract-curate'];
+    expect(scheduledTasks().map(({ task }) => task)).toEqual(['extract-curate']);
     const whole = await readScheduleFacts(f.env, tasks, NOW);
     // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
     expect([

@@ -89,9 +89,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
     if (outcome.refusal === 'capability_off') {
       return Response.json({ error: 'capability_off', capability: outcome.capability, message: DISPATCH_REFUSAL_MESSAGE.capability_off }, { status: 409 });
     }
-    return badRequest(outcome.refusal === 'unsupported_provider'
-      ? `${DISPATCH_REFUSAL_MESSAGE.unsupported_provider}, and the configured provider is ${outcome.providerType ?? 'another'}`
-      : DISPATCH_REFUSAL_MESSAGE[outcome.refusal]);
+    return badRequest(DISPATCH_REFUSAL_MESSAGE[outcome.refusal]);
   }
   const { dispatched: _dispatched, ...answer } = outcome;
   return ok(answer);
