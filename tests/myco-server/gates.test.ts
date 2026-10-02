@@ -799,6 +799,7 @@ describe('gates', () => {
     // path, and the one that goes missing silently is the actor.
     const OWNED: Record<string, string> = {
       deployment_settings: join('core', 'settings.ts'),
+      deployment_setting_resets: join('core', 'settings.ts'),
       project_capabilities: join('core', 'settings.ts'),
       deployment_secrets: join('core', 'secrets.ts'),
     };

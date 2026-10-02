@@ -1,3 +1,4 @@
+import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * Each driver run against its harness's real stream, and the protocol client
  * run against a real peer.
@@ -164,11 +165,13 @@ describe('the Claude Code driver', () => {
     const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-stub-')));
     writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\nenv > "$(dirname "$0")/env.txt"\nprintf '%s\\n' '${RESULT_SUCCESS}'\n`, { mode: 0o755 });
     const previousPath = process.env.PATH;
-    const previous = Object.fromEntries(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL'].map((key) => [key, process.env[key]]));
+    const operatorOverrides = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL', 'ANTHROPIC_SMALL_FAST_MODEL'];
+    const previous = Object.fromEntries(operatorOverrides.map((key) => [key, process.env[key]]));
     process.env.PATH = `${dir}:${previousPath ?? ''}`;
     process.env.ANTHROPIC_API_KEY = 'inherited-api-key';
     process.env.ANTHROPIC_AUTH_TOKEN = 'inherited-auth-token';
     process.env.ANTHROPIC_MODEL = 'opus';
+    for (const key of operatorOverrides.slice(3)) process.env[key] = 'operator-override';
     try {
       await collect(claudeCodeDriver.run({
         ...runDir(), prompt: 'do it', credentialEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'injected-oauth' },
@@ -176,11 +179,13 @@ describe('the Claude Code driver', () => {
       }, new AbortController().signal));
       const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').trim().split('\n');
       expect(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 4)).toEqual(['--model', 'haiku', '--effort', 'low']);
+      expect(argv.slice(argv.indexOf('--setting-sources'), argv.indexOf('--setting-sources') + 2)).toEqual(['--setting-sources', 'project,local']);
       const env = readFileSync(join(dir, 'env.txt'), 'utf8');
       expect(env).toContain('CLAUDE_CODE_OAUTH_TOKEN=injected-oauth');
       expect(env).not.toContain('ANTHROPIC_API_KEY=');
       expect(env).not.toContain('ANTHROPIC_AUTH_TOKEN=');
       expect(env).not.toContain('ANTHROPIC_MODEL=');
+      for (const key of operatorOverrides.slice(3)) expect(env).not.toContain(`${key}=`);
     } finally {
       if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
       for (const [key, value] of Object.entries(previous)) {
@@ -1477,7 +1482,7 @@ describe('the cadence a worker keeps', () => {
       await runWorker({
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-        pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
+        pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
       });
     } finally {
       globalThis.setTimeout = nativeSetTimeout;
@@ -1517,7 +1522,7 @@ describe('the cadence a worker keeps', () => {
     await runWorker({
       serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-      once: true, pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl, signal: stopping.signal,
+      once: true, pollIdleMs: FALLBACK_MS, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
     });
 
     // A run driven for RUN_MS is renewed at the answered cadence. A worker
@@ -1561,7 +1566,7 @@ describe('the budget a run is held to', () => {
       try {
         const outcome = await withRunMcp('https://deployment.example', (request) => listingOnly(request), () => runWorker({
           serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, runRoot: join(scratch, 'runs'),
-          only: [PROFILE_STUB_HARNESS], once: true, pollIdleMs: 100, log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal,
+          only: [PROFILE_STUB_HARNESS], once: true, pollIdleMs: 100, log: (line) => { lines.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
         }));
         expect(outcome).toEqual({ driven: 1, refused: null });
         expect(lines.some((line) => line.includes('lease lost'))).toBe(!leaseHeld);
@@ -1612,7 +1617,7 @@ describe('what a worker reports of a turn a failed call cut short', () => {
     await runWorker({
       serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-      once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl, signal: new AbortController().signal,
+      once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
     });
     expect({ status: end.body?.status, error: end.body?.error }).toEqual({
       status: 'completed',
@@ -1661,7 +1666,7 @@ describe('a harness no worker offers', () => {
       await runWorker({
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, only: ['antigravity', STUB_HARNESS],
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-        pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl, signal: stopping.signal,
+        pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
       });
       expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true, profile: harnessById(STUB_HARNESS)!.profile }]]);
       expect(logged).toContain(`not offering antigravity: ${WITHHELD_REASON}`);
@@ -1687,7 +1692,7 @@ describe('a harness no worker offers', () => {
       await runWorker({
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null,
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
-        once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl, signal: new AbortController().signal,
+        once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
       });
       expect({ status: end.body?.status, error: end.body?.error }).toEqual({ status: 'failed', error: `this worker does not drive antigravity: ${WITHHELD_REASON}` });
       expect(existsSync(agy.started)).toBe(false);

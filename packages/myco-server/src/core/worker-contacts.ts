@@ -18,11 +18,13 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
 import { asMemberRole, isAdmin } from '../auth/roles.js';
+import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 /** A harness a worker reports, as it reports it. `authenticated` is the worker's own probe, not a provider check. */
 export interface ReportedHarness {
   id: string;
   authenticated: boolean;
+  profile?: ProfileCapability;
 }
 
 /** Why the worker's last claim took no run, in the claim's own vocabulary; null when it took one. */
@@ -83,7 +85,10 @@ export interface WorkerFleetRow extends WorkerContact {
 }
 
 function boundedOffers(offers: readonly ReportedHarness[]): ReportedHarness[] {
-  return offers.slice(0, MAX_OFFERS).map((offer) => ({ id: offer.id.slice(0, MAX_ID), authenticated: offer.authenticated === true }));
+  return offers.slice(0, MAX_OFFERS).map((offer) => ({
+    id: offer.id.slice(0, MAX_ID), authenticated: offer.authenticated === true,
+    ...(offer.profile === undefined ? {} : { profile: offer.profile }),
+  }));
 }
 
 function boundedCapabilities(capabilities: readonly string[]): string[] {
@@ -99,7 +104,12 @@ function parseOffers(raw: unknown): ReportedHarness[] | null {
     const offers: ReportedHarness[] = [];
     for (const entry of parsed) {
       if (entry === null || typeof entry !== 'object' || typeof (entry as ReportedHarness).id !== 'string') return null;
-      offers.push({ id: (entry as ReportedHarness).id, authenticated: (entry as ReportedHarness).authenticated === true });
+      const offer = entry as ReportedHarness;
+      const profile = offer.profile;
+      const validProfile = profile !== null && typeof profile === 'object'
+        && (profile.model === 'flag' || profile.model === 'config' || profile.model === 'none')
+        && Array.isArray(profile.efforts) && profile.efforts.every((effort) => typeof effort === 'string');
+      offers.push({ id: offer.id, authenticated: offer.authenticated === true, ...(validProfile ? { profile } : {}) });
     }
     return offers;
   } catch {
@@ -123,7 +133,8 @@ function unchanged(stored: WorkerContact | null, offers: readonly ReportedHarnes
   if (stored === null || stored.offers === null || stored.capabilities === null) return false;
   if (stored.lastReason !== reason) return false;
   if (stored.offers.length !== offers.length || stored.capabilities.length !== capabilities.length) return false;
-  return stored.offers.every((offer, i) => offer.id === offers[i]?.id && offer.authenticated === offers[i]?.authenticated)
+  return stored.offers.every((offer, i) => offer.id === offers[i]?.id && offer.authenticated === offers[i]?.authenticated
+      && JSON.stringify(offer.profile) === JSON.stringify(offers[i]?.profile))
     && stored.capabilities.every((capability, i) => capability === capabilities[i]);
 }
 
@@ -277,6 +288,13 @@ export async function recentWorkerCapabilities(db: RelationalStore, now: number)
   const { results } = await db.prepare(`SELECT capabilities FROM worker_contacts WHERE last_seen_at >= ?`)
     .bind(now - CONTACT_RECENT_MS).all<{ capabilities: unknown }>();
   return (results ?? []).map((row) => parseCapabilities(row.capabilities) ?? []);
+}
+
+/** Recent offers and repository capabilities describe a task's fleet profile gap. */
+export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; offers: ReportedHarness[]; capabilities: string[] }>> {
+  const fleet = await readWorkerFleet(db, now);
+  return fleet.filter((row) => row.recent && row.eligible)
+    .map((row) => ({ credentialId: row.credentialId, offers: row.offers ?? [], capabilities: row.capabilities ?? [] }));
 }
 
 /**

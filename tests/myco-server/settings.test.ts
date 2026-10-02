@@ -23,6 +23,48 @@ function rig(opts: Parameters<typeof settingsWriter>[1] = {}) {
 }
 
 describe('deployment settings', () => {
+  it('patches the live task entry when a malformed entry is concurrently repaired', async () => {
+    for (const tier of [null, 'high'] as const) {
+      const r = rig();
+      r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
+        JSON.stringify({ 'title-summary': 'broken', 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
+      ]);
+      let interleaved = false;
+      const db = {
+        prepare: (sql: string) => {
+          if (!interleaved && sql.includes('INSERT INTO deployment_settings') && sql.includes('ON CONFLICT(leaf) DO UPDATE SET value')) {
+            interleaved = true;
+            r.sqlite.run(`UPDATE deployment_settings SET value = ? WHERE leaf = 'agent.tasks'`, [JSON.stringify({
+              'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+              'canopy-map': { schedule: { intervalSeconds: 600 } },
+            })]);
+          }
+          return r.db.prepare(sql);
+        },
+        batch: r.db.batch,
+      };
+      expect(await settingsWriter(db).setTaskTier('title-summary', tier, 'mem_editor', 2)).toEqual({ applied: true });
+      expect(interleaved).toBe(true);
+      expect(JSON.parse((r.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value))
+        .toEqual({
+          'title-summary': { ...(tier === null ? {} : { reasoningLevel: tier }), schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+          'canopy-map': { schedule: { intervalSeconds: 600 } },
+        });
+    }
+  });
+
+  it('keeps the last reset actor and time after the configured row is deleted', async () => {
+    const r = rig();
+    await r.w.setLeaf('embedding.model', 'old-model', 'mem_writer', 1_000);
+    expect(await r.w.resetLeaf('embedding.model', 'mem_resetter', 2_000)).toEqual({ applied: true });
+    expect((await r.w.leaves())['embedding.model']).toBeUndefined();
+    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='embedding.model'`).get())
+      .toEqual({ reset_by: 'mem_resetter', reset_at: 2_000 });
+    expect(await r.w.resetLeaf('embedding.model', 'mem_other', 3_000)).toEqual({ applied: true });
+    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='embedding.model'`).get())
+      .toEqual({ reset_by: 'mem_other', reset_at: 3_000 });
+  });
+
   it('sets a leaf, records who set it, and reads it back', async () => {
     const r = rig();
     expect(await r.w.setLeaf('cortex.digest.tier', 5000, 'mem_1', 1_000)).toEqual({ applied: true });

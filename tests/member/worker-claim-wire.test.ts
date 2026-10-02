@@ -114,6 +114,55 @@ function reportOf(what: string, attached: WorkerOutcome & { lines: string[] }, p
 }
 
 describe('a worker on the real claim wire', () => {
+  it('waits for execution-profile advertisement without claiming or failing an old server run', async () => {
+    expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
+    const stopping = new AbortController();
+    const r = await rig((path, n) => {
+      if (n >= 3) stopping.abort();
+      if (path === '/members/status') return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'worker-accounting-v1' } });
+      if (path === '/worker/claim') return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
+      return null;
+    });
+    const admin = await r.member('mem_admin', 'admin');
+    r.queueRun('run_old_server');
+    const attached = await r.attach(admin, { once: false, stopping });
+    expect(r.sent.filter((sent) => sent.path === '/worker/claim' || sent.path === '/worker/end')).toEqual([]);
+    expect(r.runRow('run_old_server')?.status).toBe('queued');
+    expect(attached.driven).toBe(0);
+    expect(attached.lines.filter((line) => line === 'this server needs updating before it can give this worker work')).toHaveLength(1);
+  });
+
+  it('rechecks execution-profile support before the next claim when the server needs updating', async () => {
+    expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
+    const stopping = new AbortController();
+    const r = await rig((path, n) => {
+      if (path === '/members/status' && n >= 2) {
+        if (n >= 3) stopping.abort();
+        return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1' } });
+      }
+      if (path === '/worker/claim' && n >= 3) stopping.abort();
+      return null;
+    });
+    const admin = await r.member('mem_admin', 'admin');
+    r.queueRun('run_before_skew');
+    r.queueRun('run_after_skew');
+    const attached = await r.attach(admin, { once: false, stopping });
+    expect(attached.driven).toBe(1);
+    expect(r.sent.filter((sent) => sent.path === '/worker/claim')).toHaveLength(1);
+    expect(r.runRow('run_after_skew')?.status).toBe('queued');
+    expect(attached.lines.filter((line) => line === 'this server needs updating before it can give this worker work')).toHaveLength(1);
+  });
+
+  it('advertises execution-profile before a worker can take a run', async () => {
+    const r = await rig();
+    const admin = await r.member('mem_admin', 'admin');
+    const response = await workerServer.fetch(new Request('https://s/members/status', {
+      method: 'POST', headers: { authorization: `Bearer ${admin}`, 'cf-connecting-ip': '1.2.3.4', 'x-myco-protocol': '1', 'content-type': 'application/json' }, body: '{}',
+    }), r.e.env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-myco-features')?.split(',')).toContain('execution-profile');
+  });
+
   it('applies changed Settings and task tier overrides through the real claim and driver', async () => {
     const evidence = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-profile-wire-')));
     const argsPath = join(evidence, 'arguments');
@@ -180,7 +229,7 @@ describe('a worker on the real claim wire', () => {
     expect(attached.lines).toContain('reported run_wire as completed; the Deployment recorded it failed');
     // Every request the worker made declared the protocol: the header is on the
     // claim and on the end, not only on the first call.
-    expect(paths).toEqual(['/worker/claim', '/worker/end']);
+    expect(paths).toEqual(['/members/status', '/worker/claim', '/worker/end']);
     expect([...new Set(r.sent.map((s) => s.protocol))]).toEqual(['1']);
   }, 30_000);
 
@@ -191,14 +240,14 @@ describe('a worker on the real claim wire', () => {
       persisted: true, claimed: true, heartbeatMs: 30_000,
       run: { projectId: PROJECT_ID, id: 'run_bare', task: 'skill-survey', instruction: null, harness: PROFILE_STUB_HARNESS, runToken: 'run_token', credentialEnv: {}, profile: STUB_PROFILE, leaseExpiresAt: Date.now() + 60_000, timeoutSeconds: 60 },
     };
-    const r = await rig((path) => (path === '/worker/claim' ? Response.json(bare, { headers: { 'x-myco-protocol': '1' } }) : null));
+    const r = await rig((path) => (path === '/worker/claim' ? Response.json(bare, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'execution-profile' } }) : null));
     const token = await r.member('mem_admin', 'admin');
     const attached = await r.attach(token);
     const paths = r.sent.map((s) => s.path);
     // No lease was ever renewed and no run directory was written: the harness never started.
     const failed = attached.lines.some((l) => l.includes('supplied no instruction'));
     if (!failed) throw new Error(reportOf('the worker did not refuse the bare run', attached, paths));
-    expect({ paths, driven: attached.driven, refused: attached.refused }).toEqual({ paths: ['/worker/claim', '/worker/end'], driven: 1, refused: null });
+    expect({ paths, driven: attached.driven, refused: attached.refused }).toEqual({ paths: ['/members/status', '/worker/claim', '/worker/end'], driven: 1, refused: null });
   });
 
   it('ends an unsupported claimed profile before spawning its harness', async () => {
@@ -212,12 +261,12 @@ describe('a worker on the real claim wire', () => {
         profile: { tier: 'default', model: 'sonnet', effort: 'medium', sources: { tier: 'task', model: 'default' } },
       },
     };
-    const r = await rig((path) => path === '/worker/claim' ? Response.json(claim, { headers: { 'x-myco-protocol': '1' } }) : null);
+    const r = await rig((path) => path === '/worker/claim' ? Response.json(claim, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'execution-profile' } }) : null);
     const token = await r.member('mem_admin', 'admin');
     const attached = await r.attach(token, { only: STUB_HARNESS });
     expect(existsSync(spawnedFile)).toBe(false);
     expect(attached.lines.some((line) => line.includes('profile_unapplied'))).toBe(true);
-    expect(r.sent.map((sent) => sent.path)).toEqual(['/worker/claim', '/worker/end']);
+    expect(r.sent.map((sent) => sent.path)).toEqual(['/members/status', '/worker/claim', '/worker/end']);
   });
 
   it('refuses a missing or malformed claimed profile before preparing or spawning a run', async () => {
@@ -232,7 +281,7 @@ describe('a worker on the real claim wire', () => {
           ...(profile === undefined ? {} : { profile }),
         },
       };
-      const r = await rig((path) => path === '/worker/claim' ? Response.json(claim, { headers: { 'x-myco-protocol': '1' } }) : null);
+      const r = await rig((path) => path === '/worker/claim' ? Response.json(claim, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'execution-profile' } }) : null);
       const token = await r.member('mem_admin', 'admin');
       const attached = await r.attach(token);
       expect(existsSync(spawnedFile)).toBe(false);
@@ -254,7 +303,7 @@ describe('a worker on the real claim wire', () => {
     if (attached.refused !== 'not_admin') throw new Error(reportOf('the worker was not refused not_admin', attached, paths));
     expect(attached.driven).toBe(0);
     expect(attached.lines.filter((l) => l.includes('not_admin'))).toHaveLength(1);
-    expect(paths).toEqual(['/worker/claim']);
+    expect(paths).toEqual(['/members/status', '/worker/claim']);
     expect(r.runRow('run_unclaimed')?.status).toBe('queued');
   }, 30_000);
 
@@ -275,7 +324,7 @@ describe('a worker on the real claim wire', () => {
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('a 503 ended the attachment', attached, paths));
     expect(r.runRow('run_after_503')).toEqual({ status: 'failed', harness: PROFILE_STUB_HARNESS, error: RUN_CLOSE_ERROR });
     // Two claims: the faulted one and the one that was answered.
-    expect(paths).toEqual(['/worker/claim', '/worker/claim', '/worker/end']);
+    expect(paths).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/end']);
     expect(attached.lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);
     expect(attached.lines.filter((l) => l.includes('again'))).toHaveLength(1);
   }, 30_000);

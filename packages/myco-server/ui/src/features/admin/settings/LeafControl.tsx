@@ -229,15 +229,16 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
       status={error ?? (retired ? 'Nothing on this server reads it any more.'
+        : row?.source === 'invalid' ? row.remedy
         // A setting Myco keeps shows its value in full; a status would only repeat it.
         : field.readOnly === true ? undefined
         // An empty field or select already shows the default in words, so the status names it only for a switch.
         : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), field.resettable && row?.source === 'default'
           ? valueWords(field, row.effectiveValue) : field.kind === 'toggle' || field.resettable ? defaultWords(field) : null))}
-      refused={error !== null}
+      refused={error !== null || row?.source === 'invalid'}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}
-      control={field.resettable ? <div className="flex w-full items-center gap-s2">{control}{row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}</div> : control}
+      control={field.resettable || row?.repair === 'reset-leaf' ? <div className="flex w-full items-center gap-s2">{control}{row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}</div> : control}
     />
   );
 }

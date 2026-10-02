@@ -25,7 +25,7 @@
  */
 import { REPOSITORY_COMMIT_PATTERN, parseRepositoryCheckoutSpec, type RepositoryCheckoutSpec, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/canopy';
-import { isExecutionProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { isExecutionProfile, requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
 import type { DispatchLimits } from './limits.js';
 import type { RunErrorCode } from './reader-codes.js';
@@ -532,7 +532,6 @@ export type RunUpdate = Partial<Record<RunUpdateColumn, string | number | null>>
 
 export interface RunRow {
   harness: string | null;
-  executionOverrides: string | null;
   id: string;
   agentId: string;
   task: string | null;
@@ -553,7 +552,7 @@ export interface RunRow {
   leaseExpiresAt: number | null;
 }
 
-const RUN_COLUMNS = `id, harness, execution_overrides AS executionOverrides, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
+const RUN_COLUMNS = `id, harness, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
     dry_run AS dryRun, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;
@@ -562,6 +561,14 @@ const RUN_SELECT = `SELECT ${RUN_COLUMNS} FROM agent_runs WHERE project_id = ? A
 
 export async function getRun(db: RelationalStore, scope: ReadScope, runId: string): Promise<RunRow | null> {
   return db.prepare(RUN_SELECT).bind(scope.projectId, runId).first<RunRow>();
+}
+
+/** Read the requested profile only for the dispatched attempt ending its lease. */
+export async function getRequestedWorkerProfile(db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string): Promise<ExecutionProfile | null> {
+  const row = await db.prepare(`SELECT execution_overrides FROM agent_runs
+    WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?`)
+    .bind(scope.projectId, runId, dispatchedBy).first<{ execution_overrides: string | null }>();
+  return requestedProfile(row?.execution_overrides);
 }
 
 /** A run row with the Project it belongs to: what a read keyed by credential answers; a credential spans every Project of its Deployment. */
@@ -1290,8 +1297,8 @@ export async function recordTaskHolder(db: RelationalStore, tasks: readonly stri
   if (tasks.length === 0 || from.length === 0) return;
   const list = (values: readonly string[]) => values.map(() => '?').join(', ');
   const profiles = includeProfileHolds ? PROFILE_HOLD_PREFIXES.map((prefix) => ` OR held_by LIKE '${prefix}%'`).join('') : '';
-  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND (held_by IN (${list(from)})${profiles})`)
-    .bind(holder, ...tasks, ...from).run();
+  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND (held_by IN (${list(from)})${profiles}) AND held_by IS NOT ?`)
+    .bind(holder, ...tasks, ...from, holder).run();
 }
 
 /** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */

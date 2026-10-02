@@ -220,14 +220,18 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
  */
 export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
 
-/** What a per-task override violates, naming the field; null when every schedule count it gives is a whole number of 0 or more. */
-function taskOverridesViolation(value: unknown): string | null {
+/** What a changed per-task override violates; unchanged stored fields remain available for a separate repair. */
+function taskOverridesViolation(value: unknown, previous?: unknown): string | null {
   if (!isRecord(value)) return 'expected an object of task overrides';
+  const prior = isRecord(previous) ? previous : {};
   for (const [task, override] of Object.entries(value)) {
+    const before = prior[task];
+    if (override === before) continue;
     if (!isRecord(override)) return `${task}: expected an object of task overrides`;
+    const old = isRecord(before) ? before : {};
     const tier = override.reasoningLevel;
-    if (tier !== undefined && !(REASONING_TIERS as readonly unknown[]).includes(tier)) return `${task}.reasoningLevel: expected low, default, or high`;
-    if (override.model !== undefined) {
+    if (tier !== undefined && tier !== old.reasoningLevel && !(REASONING_TIERS as readonly unknown[]).includes(tier)) return `${task}.reasoningLevel: expected low, default, or high`;
+    if (override.model !== undefined && (override.model !== old.model || override.harness !== old.harness)) {
       if (typeof override.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, override.harness)) {
         return `${task}.model: a fixed model requires a supported agent in the same task override`;
       }
@@ -235,9 +239,10 @@ function taskOverridesViolation(value: unknown): string | null {
       if (refusal !== null) return `${task}.model: ${refusal}`;
     }
     if (!isRecord(override.schedule)) continue;
+    const oldSchedule = isRecord(old.schedule) ? old.schedule : {};
     for (const field of SCHEDULE_COUNT_FIELDS) {
       const count = override.schedule[field];
-      if (count !== undefined && !isScheduleCount(count)) return `${task}.schedule.${field}: expected a whole number of 0 or more`;
+      if (count !== undefined && count !== oldSchedule[field] && !isScheduleCount(count)) return `${task}.schedule.${field}: expected a whole number of 0 or more`;
     }
   }
   return null;
@@ -278,14 +283,14 @@ function rootMapViolation(spec: { maxItems: number }, value: unknown): string | 
 }
 
 /** What the value violates, or null when it satisfies the leaf's rule. */
-export function leafRuleViolation(spec: LeafSpec, value: unknown): string | null {
+export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unknown): string | null {
   if (!('type' in spec)) return null;
   if (spec.type === 'integer') {
     if (typeof value !== 'number' || !Number.isInteger(value)) return 'expected a whole number';
     if (value < spec.min || value > spec.max) return `expected a whole number from ${spec.min} to ${spec.max}`;
     return null;
   }
-  if (spec.type === 'task-overrides') return taskOverridesViolation(value);
+  if (spec.type === 'task-overrides') return taskOverridesViolation(value, previous);
   if (spec.type === 'profile-model') return modelRefusal(spec.harness, value);
   if (spec.type === 'profile-effort') return effortRefusal(spec.harness, value);
   if (spec.type === 'credential-source') return value === 'deployment' || value === 'worker-login' ? null : 'choose the server login or worker login';
@@ -325,6 +330,7 @@ export interface LeafRecord {
   value: unknown;
   updatedAt: number;
   updatedBy: string;
+  malformed?: true;
 }
 
 export type SettingsResult = { applied: true } | { applied: false; refusal: SettingsRefusal };
@@ -346,7 +352,7 @@ export interface SettingsWriter {
   /** Set one Deployment leaf. */
   setLeaf(leaf: string, value: unknown, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Remove one configured leaf so its built-in value applies. */
-  resetLeaf(leaf: string, actor: string): Promise<SettingsResult>;
+  resetLeaf(leaf: string, actor: string, nowMs?: number): Promise<SettingsResult>;
   /** Change one task tier in the live task overrides document. */
   setTaskTier(task: string, tier: ReasoningTier | null, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Admit or withdraw a Project's capability. */
@@ -468,7 +474,13 @@ export function settingsWriter(
   return {
     async setLeaf(leaf, value, actor, nowMs) {
       return withLeafWrite({ leaf, value, actor }, async () => {
-        const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, value);
+        const previousRaw = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
+        let previous: unknown;
+        if (previousRaw !== undefined) {
+          try { previous = JSON.parse(previousRaw) as unknown; }
+          catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+        }
+        const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, value, previous);
         if (detail !== null) {
           return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
         }
@@ -482,9 +494,14 @@ export function settingsWriter(
       });
     },
 
-    async resetLeaf(leaf, actor) {
+    async resetLeaf(leaf, actor, nowMs = Date.now()) {
       return withLeafWrite({ leaf, actor }, async () => {
-        await db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf).run();
+        await db.batch([
+          db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf),
+          db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) VALUES (?, ?, ?)
+            ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`)
+            .bind(leaf, nowMs, actor),
+        ]);
         await rearm({ leaf });
         return { applied: true };
       });
@@ -499,8 +516,7 @@ export function settingsWriter(
         if (held !== undefined) {
           let value: unknown;
           try { value = JSON.parse(held); } catch { return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'stored task overrides are not valid JSON' } }; }
-          const detail = taskOverridesViolation(value);
-          if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+          if (!isRecord(value)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'stored task overrides are not an object' } };
         }
         const taskPath = `$.${JSON.stringify(task)}`;
         const tierPath = `${taskPath}.reasoningLevel`;
@@ -509,15 +525,19 @@ export function settingsWriter(
           ? await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
               ON CONFLICT(leaf) DO UPDATE SET value = CASE
                 WHEN json_type(deployment_settings.value, ?) IS NULL THEN deployment_settings.value
+                WHEN json_type(deployment_settings.value, ?) != 'object' THEN json_remove(deployment_settings.value, ?)
                 WHEN (SELECT COUNT(*) FROM json_each(json_remove(deployment_settings.value, ?), ?)) = 0
                   THEN json_remove(json_remove(deployment_settings.value, ?), ?)
                 ELSE json_remove(deployment_settings.value, ?) END,
                 updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-            .bind(leaf, JSON.stringify(seed), nowMs, actor, taskPath, tierPath, taskPath, tierPath, taskPath, tierPath).run()
+            .bind(leaf, JSON.stringify(seed), nowMs, actor, taskPath, taskPath, taskPath, tierPath, taskPath, tierPath, taskPath, tierPath).run()
           : await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
-              ON CONFLICT(leaf) DO UPDATE SET value = json_set(deployment_settings.value, ?, ?),
+              ON CONFLICT(leaf) DO UPDATE SET value = CASE
+                WHEN json_type(deployment_settings.value, ?) IS NOT NULL AND json_type(deployment_settings.value, ?) != 'object'
+                  THEN json_set(deployment_settings.value, ?, json(?))
+                ELSE json_set(deployment_settings.value, ?, ?) END,
                 updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-            .bind(leaf, JSON.stringify(seed), nowMs, actor, tierPath, tier).run();
+            .bind(leaf, JSON.stringify(seed), nowMs, actor, taskPath, taskPath, taskPath, JSON.stringify({ reasoningLevel: tier }), tierPath, tier).run();
         if (changed.meta.changes !== 1) throw new Error('task tier write did not change one settings row');
         await rearm({ leaf });
         return { applied: true };
@@ -546,7 +566,14 @@ export function settingsWriter(
         .prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
         .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>();
       const out: Record<string, LeafRecord> = {};
-      for (const r of results) out[r.leaf] = { value: JSON.parse(r.value), updatedAt: r.updated_at, updatedBy: r.updated_by };
+      for (const r of results) {
+        try {
+          out[r.leaf] = { value: JSON.parse(r.value), updatedAt: r.updated_at, updatedBy: r.updated_by };
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          out[r.leaf] = { value: null, updatedAt: r.updated_at, updatedBy: r.updated_by, malformed: true };
+        }
+      }
       return out;
     },
 

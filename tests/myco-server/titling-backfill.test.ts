@@ -566,14 +566,13 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     }), { ...r.bindings, ...OWNER_ENV });
     expect((await request('GET', '/api/titling-backfill')).status).toBe(200);
     const stored = () => (r.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value;
-    const before = stored();
-    // The switch over a held fraction is refused, naming the field, and the held value stands.
+    const before = JSON.parse(stored()) as Record<string, { schedule: Record<string, unknown> }>;
+    // A switch changes only enabled, leaving a held invalid count for a separate repair.
     const switched = await request('PUT', '/api/titling-backfill', { enabled: true });
-    expect(switched.status).toBe(400);
-    expect(JSON.stringify(await switched.json())).toContain('title-summary.schedule.maxRunsPerDay: expected a whole number of 0 or more');
-    expect(stored()).toBe(before);
-    // The settings write refuses every count that is not a whole number of 0 or more, and takes one that is.
-    for (const count of [2.5, -1, '3', null]) {
+    expect(switched.status).toBe(200);
+    expect(JSON.parse(stored())).toEqual({ ...before, [TITLING_TASK]: { ...before[TITLING_TASK], schedule: { ...before[TITLING_TASK]!.schedule, enabled: true } } });
+    // The settings write refuses a changed count that is not a whole number of 0 or more, and takes one that is.
+    for (const count of [3.5, -1, '3', null]) {
       const res = await request('PUT', '/api/settings/agent.tasks', { value: { [TITLING_TASK]: { schedule: { maxRunsPerDay: count } } } });
       const body: unknown = await res.json();
       expect({ count, status: res.status, body }).toEqual({ count, status: 400, body: { applied: false, reason: 'invalid_value', leaf: 'agent.tasks', detail: `${TITLING_TASK}.schedule.maxRunsPerDay: expected a whole number of 0 or more` } });

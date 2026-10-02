@@ -7,7 +7,8 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { recordTaskHolder } from '@myco-server-worker/core/runs.js';
-import { PROFILE_HOLD_PREFIXES, credentialUnavailable, heldByWords, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
+import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
+import { PROFILE_HOLD_PREFIXES, credentialUnavailable, heldByWords, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
@@ -34,7 +35,8 @@ describe('task execution profiles', () => {
   it('renders and clears every registered execution-profile hold', async () => {
     const r = await rig();
     const cases = [
-      ['unsupported', profileUnsupported('claude-code'), 'waiting for a worker that can apply the execution profile for claude-code'],
+      ['unsupported', profileUnsupported('claude-code'), "waiting for a worker that can apply the execution profile for claude-code; update this machine's Myco worker if it is older"],
+      ['invalid_tier', invalidTaskTier('extract-curate'), "this task's tier setting is invalid for extract-curate; correct it in Settings or reset the task tier"],
       ['missing_model', noModelForTier('opencode', 'high'), "waiting for a model for opencode's high tier in Settings"],
       ['missing_credential', credentialUnavailable('claude-code'), 'waiting for a usable server login for claude-code'],
     ] as const;
@@ -62,7 +64,9 @@ describe('task execution profiles', () => {
       r.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?,?,0,'test')`, [leaf, value]);
       r.queue('corrupt');
       expect(await r.claim()).toMatchObject({ claimed: false });
-      expect(String((r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='corrupt'`).get() as { held_by: string }).held_by)).toMatch(/^(profile_unsupported|no_model_for_tier):/);
+      const held = String((r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='corrupt'`).get() as { held_by: string }).held_by);
+      if (leaf === 'agent.tasks') expect(held).toBe('invalid_task_tier:extract-curate');
+      else expect(held).toMatch(/^(profile_unsupported|no_model_for_tier):/);
     }
   });
 
@@ -157,6 +161,60 @@ describe('task execution profiles', () => {
       expect(await r.claim([offer])).toEqual({ claimed: false, reason: 'no_harness' });
       expect(r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='run_held'`).get()).toEqual({ held_by: 'profile_unsupported:claude-code' });
       expect(r.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get()).toEqual(before);
+    }
+  });
+
+  it('labels every queued run of an unsupported task and leaves unchanged holds untouched', async () => {
+    const r = await rig();
+    for (const id of ['one', 'two', 'three', 'four']) r.queue(id);
+    r.sqlite.run(`CREATE TABLE hold_writes (id TEXT)`);
+    r.sqlite.run(`CREATE TRIGGER count_hold_writes AFTER UPDATE OF held_by ON agent_runs BEGIN INSERT INTO hold_writes VALUES (NEW.id); END`);
+    const oldOffer = { id: 'claude-code', authenticated: true };
+    expect(await r.claim([oldOffer])).toEqual({ claimed: false, reason: 'no_harness' });
+    expect(r.sqlite.query(`SELECT id,held_by FROM agent_runs ORDER BY id`).all()).toEqual(
+      ['four', 'one', 'three', 'two'].map((id) => ({ id, held_by: 'profile_unsupported:claude-code' })),
+    );
+    const writes = (r.sqlite.query(`SELECT COUNT(*) AS n FROM hold_writes`).get() as { n: number }).n;
+    expect(await r.claim([oldOffer])).toEqual({ claimed: false, reason: 'no_harness' });
+    expect((r.sqlite.query(`SELECT COUNT(*) AS n FROM hold_writes`).get() as { n: number }).n).toBe(writes);
+  });
+
+  it('keeps the fleet hold stable when an older worker polls beside a recently capable worker', async () => {
+    const r = await rig();
+    r.queue('fleet_wait');
+    r.sqlite.run(`UPDATE agent_runs SET held_by='profile_unsupported:claude-code' WHERE id='fleet_wait'`);
+    r.sqlite.run(`CREATE TABLE fleet_hold_writes (id TEXT)`);
+    r.sqlite.run(`CREATE TRIGGER count_fleet_hold_writes AFTER UPDATE OF held_by ON agent_runs BEGIN INSERT INTO fleet_hold_writes VALUES (NEW.id); END`);
+    const capable = await issueMemberToken(r.db, { memberId: 'mem_worker', machineId: 'capable' }, NOW);
+    await recordWorkerContact(r.db, { credentialId: capable.tokenId, machineId: 'capable', offers: [OFFER], capabilities: [], reason: 'no_work', now: NOW });
+    expect(await r.claim([{ id: 'claude-code', authenticated: true }])).toEqual({ claimed: false, reason: 'no_harness' });
+    expect(r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='fleet_wait'`).get()).toEqual({ held_by: 'worker' });
+    expect(await r.claim([{ id: 'claude-code', authenticated: true }])).toEqual({ claimed: false, reason: 'no_harness' });
+    expect(r.sqlite.query(`SELECT COUNT(*) AS n FROM fleet_hold_writes`).get()).toEqual({ n: 1 });
+  });
+
+  it('names an invalid configured task tier as the hold', async () => {
+    const r = await rig();
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,0,'test')`, [JSON.stringify({ 'extract-curate': { reasoningLevel: 'urgent' } })]);
+    r.queue('bad_tier');
+    expect(await r.claim()).toEqual({ claimed: false, reason: 'no_harness' });
+    const held = (r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='bad_tier'`).get() as { held_by: string }).held_by;
+    expect(held).toBe('invalid_task_tier:extract-curate');
+    expect(heldByWords(held)).toContain('extract-curate');
+  });
+
+  it('keeps malformed task Settings ahead of repository capability holds across repeat polls', async () => {
+    for (const value of ['{bad', JSON.stringify({ 'canopy-map': 'urgent' }), JSON.stringify({ 'canopy-map': { reasoningLevel: 'urgent' } })]) {
+      const r = await rig();
+      r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,0,'test')`, [value]);
+      for (const id of ['one', 'two', 'three', 'four']) r.queue(`${id}_${value.length}`, 'canopy-map');
+      r.sqlite.run(`CREATE TABLE invalid_tier_writes (id TEXT)`);
+      r.sqlite.run(`CREATE TRIGGER count_invalid_tier_writes AFTER UPDATE OF held_by ON agent_runs BEGIN INSERT INTO invalid_tier_writes VALUES (NEW.id); END`);
+      const oldOffer = { id: 'claude-code', authenticated: true };
+      expect(await r.claim([oldOffer])).toEqual({ claimed: false, reason: 'no_work' });
+      expect(r.sqlite.query(`SELECT DISTINCT held_by FROM agent_runs`).all()).toEqual([{ held_by: 'invalid_task_tier:canopy-map' }]);
+      expect(await r.claim([oldOffer])).toEqual({ claimed: false, reason: 'no_work' });
+      expect(r.sqlite.query(`SELECT COUNT(*) AS n FROM invalid_tier_writes`).get()).toEqual({ n: 4 });
     }
   });
 

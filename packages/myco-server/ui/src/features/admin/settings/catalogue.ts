@@ -158,6 +158,13 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
+    id: 'claude-profile',
+    section: 'models',
+    label: 'Claude Code tiers',
+    note: 'The model and effort requested for each tier when Claude Code runs Myco’s work. A task may override its tier under Per-task overrides.',
+    leaves: profileFields('claude-code'),
+  },
+  {
     id: 'agent',
     section: 'models',
     label: 'Model for Myco’s own work',
@@ -172,13 +179,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.model', label: 'Default model (advanced)', kind: 'text' },
       { leaf: 'agent.harness', label: 'Agent for Myco’s work', kind: 'text' },
     ],
-  },
-  {
-    id: 'claude-profile',
-    section: 'models',
-    label: 'Claude Code tiers',
-    note: 'The model and effort requested for each tier when Claude Code runs Myco’s work. A task may override its tier under Per-task overrides.',
-    leaves: profileFields('claude-code'),
   },
   {
     id: 'codex-profile',

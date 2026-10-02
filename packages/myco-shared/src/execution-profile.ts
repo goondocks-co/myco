@@ -1,3 +1,6 @@
+/** The server resolves and records every claimed run's execution profile. */
+export const EXECUTION_PROFILE_FEATURE = 'execution-profile';
+
 export const REASONING_TIERS = ['low', 'default', 'high'] as const;
 export type ReasoningTier = typeof REASONING_TIERS[number];
 export const MODEL_MISMATCH = 'model_mismatch';

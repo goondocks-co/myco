@@ -7,7 +7,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsWriter, executionProfileLeafDefault, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, DEPLOYMENT_LEAF_SPECS, PROJECT_CAPABILITIES, settingsWriter, executionProfileLeafDefault, leafRuleViolation, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
 
@@ -58,11 +58,9 @@ const MAX_SECRET_CHARS = 4096;
 
 
 /** An outcome's effective tier and whether a task override supplies it. */
-export interface TaskTierRow {
-  task: string;
-  tier: ReasoningTier;
-  source: 'task' | 'task-override';
-}
+export type TaskTierRow =
+  | { task: string; tier: ReasoningTier; source: 'task' | 'task-override' }
+  | { task: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -70,10 +68,15 @@ const record = (value: unknown): Record<string, unknown> | null =>
 /** Every worker outcome's tier, including the task override that changes it. */
 function effectiveTaskTiers(value: unknown): TaskTierRow[] {
   const overrides = value === undefined ? {} : record(value);
-  if (overrides === null) throw new Error('stored task overrides are not an object');
   return OUTCOME_TASKS.map((task) => {
-    const tier = record(overrides[task])?.reasoningLevel;
-    if (tier !== undefined && !isReasoningTier(tier)) throw new Error(`${task} has an invalid stored reasoning level`);
+    const entry = overrides === null ? null : overrides[task];
+    const tier = record(entry)?.reasoningLevel;
+    if (overrides === null) {
+      return { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-leaf', remedy: 'Reset task overrides to restore defaults.' };
+    }
+    if ((entry !== undefined && record(entry) === null) || (tier !== undefined && !isReasoningTier(tier))) {
+      return { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task', remedy: 'Correct the tier in Settings or reset the task tier.' };
+    }
     return { task, tier: tier ?? TASK_TIERS[task]!, source: tier === undefined ? 'task' : 'task-override' };
   });
 }
@@ -83,16 +86,22 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   const stored = await settingsWriter(env.db).leaves();
   const leaves = DEPLOYMENT_LEAVES.map((leaf) => {
     const profileDefault = executionProfileLeafDefault(leaf, env.harnessCredentialSource);
+    const held = stored[leaf];
+    const violation = held === undefined ? null : held.malformed ? 'Stored value is not valid JSON' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, held.value);
+    const invalid = violation !== null;
     return {
       leaf,
-      configured: leaf in stored,
-      value: stored[leaf]?.value ?? null,
-      updatedAt: stored[leaf]?.updatedAt ?? null,
-      updatedBy: stored[leaf]?.updatedBy ?? null,
+      configured: held !== undefined,
+      value: held?.value ?? null,
+      updatedAt: held?.updatedAt ?? null,
+      updatedBy: held?.updatedBy ?? null,
       retired: RETIRED_LEAVES.has(leaf),
+      ...(invalid ? { source: 'invalid' as const, error: 'invalid_value' as const,
+        remedy: `${violation}. Correct this setting${leaf === 'agent.tasks' && !held?.malformed ? '.' : ' or reset it.'}`,
+        ...(held?.malformed ? { repair: 'reset-leaf' as const } : {}) } : {}),
       ...(profileDefault === null ? {} : {
-        effectiveValue: stored[leaf]?.value ?? profileDefault.value,
-        source: leaf in stored ? 'configured' : profileDefault.present ? 'default' : 'unset',
+        effectiveValue: invalid ? null : held?.value ?? profileDefault.value,
+        ...(!invalid ? { source: held !== undefined ? 'configured' as const : profileDefault.present ? 'default' as const : 'unset' as const } : {}),
       }),
     };
   });
@@ -143,7 +152,7 @@ export async function handleSetSetting(env: ServerEnv, ctx: OwnerContext): Promi
 
 /** Clear one configured leaf so its built-in value applies. */
 export async function handleResetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id);
+  const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 

@@ -137,6 +137,16 @@ describe('run lifecycle over HTTP', () => {
     expect((got.run as { status: string; completedAt: number }).status).toBe('completed');
   });
 
+  it('keeps private execution overrides out of a member run read', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', { id: 'private_profile', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    sqlite.run(`UPDATE agent_runs SET execution_overrides=? WHERE id='private_profile'`, [JSON.stringify({ requested: { model: 'fixture' }, provider: { apiKey: 'sk-private-canary' } })]);
+    const answer = await post('/runs/get', { runId: 'private_profile' });
+    expect(answer.persisted).toBe(true);
+    expect(JSON.stringify(answer)).not.toContain('sk-private-canary');
+    expect((answer.run as Record<string, unknown>).executionOverrides).toBeUndefined();
+  });
+
   it('keeps the ending a run already carries, whichever ending landed first', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });

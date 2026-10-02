@@ -1,3 +1,4 @@
+import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * The lease a worker holds, as the worker keeps it (#1424).
  *
@@ -74,7 +75,7 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
     serverUrl: SERVER_URL, token: 'x'.repeat(43), lockDir: null,
     runRoot: mkdtempSync(join(tmpdir(), 'myco-lease-clock-runs-')),
     only: [PROFILE_STUB_HARNESS], once: options.once ?? true, pollIdleMs: 50,
-    log: (line) => { lines.push(line); }, fetchImpl, signal: stopping.signal, clock: workerClock,
+    log: (line) => { lines.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal, clock: workerClock,
   }));
   return {
     sent, lines, start, stopping, run,

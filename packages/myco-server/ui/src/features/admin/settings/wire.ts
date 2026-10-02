@@ -18,7 +18,10 @@ export interface LeafRow {
   retired: boolean;
   /** Present for execution profile leaves: what the next claim uses. */
   effectiveValue?: unknown;
-  source?: 'configured' | 'default' | 'unset';
+  source?: 'configured' | 'default' | 'unset' | 'invalid';
+  error?: 'invalid_value';
+  remedy?: string;
+  repair?: 'reset-leaf';
 }
 
 export interface SettingsAnswer {
@@ -27,11 +30,9 @@ export interface SettingsAnswer {
 }
 
 /** One worker outcome's effective reasoning tier. */
-export interface TaskTierRow {
-  task: string;
-  tier: 'low' | 'default' | 'high';
-  source: 'task' | 'task-override';
-}
+export type TaskTierRow =
+  | { task: string; tier: 'low' | 'default' | 'high'; source: 'task' | 'task-override' }
+  | { task: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
 
 /** `GET /api/secrets`: one provider key's slot, described and never shown. */
 export interface SecretRow {

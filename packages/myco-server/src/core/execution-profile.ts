@@ -1,4 +1,5 @@
 import { PROFILE_HARNESSES, isReasoningTier, modelRefusal, effortRefusal, profileSupported, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { invalidTaskTier } from '@goondocks/myco-shared/run-holds';
 import { noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { TASK_TIERS } from './task-catalogue.js';
 
@@ -22,14 +23,24 @@ export const taskOverride = (settings: ReadonlyMap<string, string>, task: string
 
 export type ProfileResolution = { profile: ExecutionProfile } | { reason: string };
 
+/** A malformed stored task tier holds this task by name until Settings repairs it. */
+export function taskTierRefusal(task: string, settings: ReadonlyMap<string, string>): string | null {
+  const tasks = profileSetting(settings.get('agent.tasks'));
+  if (tasks === undefined) return null;
+  if (tasks === null || typeof tasks !== 'object' || Array.isArray(tasks)) return invalidTaskTier(task);
+  const entry: unknown = (tasks as Record<string, unknown>)[task];
+  if (entry === undefined) return null;
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return invalidTaskTier(task);
+  const tier = (entry as Record<string, unknown>).reasoningLevel;
+  return tier === undefined || isReasoningTier(tier) ? null : invalidTaskTier(task);
+}
+
 /** Resolve settings only for the harness whose capability can apply them. */
 export function resolveExecutionProfile(task: string, harness: string, capability: ProfileCapability | undefined, settings: ReadonlyMap<string, string>): ProfileResolution {
   const unsupported = { reason: profileUnsupported(harness) };
+  const tierRefusal = taskTierRefusal(task, settings);
+  if (tierRefusal !== null) return { reason: tierRefusal };
   if (capability === undefined || capability.model === 'none') return unsupported;
-  const rawTasks = profileSetting(settings.get('agent.tasks'));
-  if (rawTasks !== undefined && (rawTasks === null || typeof rawTasks !== 'object' || Array.isArray(rawTasks))) return unsupported;
-  const entry = rawTasks === undefined ? undefined : (rawTasks as Record<string, unknown>)[task];
-  if (entry !== undefined && (entry === null || typeof entry !== 'object' || Array.isArray(entry))) return unsupported;
   const override = taskOverride(settings, task);
   const tier = override.reasoningLevel === undefined ? TASK_TIERS[task] : override.reasoningLevel;
   if (!isReasoningTier(tier)) return unsupported;

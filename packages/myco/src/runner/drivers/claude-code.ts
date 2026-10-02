@@ -45,7 +45,13 @@ export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual'
  * PATH as that configuration does.
  */
 const SHELL_SETUP_VARIABLE = 'CLAUDE_ENV_FILE';
-const INHERITED_ANTHROPIC_OVERRIDES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL'] as const;
+const INHERITED_CREDENTIAL_OVERRIDES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
+const INHERITED_PROFILE_OVERRIDES = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL', 'ANTHROPIC_SMALL_FAST_MODEL',
+] as const;
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -89,10 +95,11 @@ export const claudeCodeDriver: Driver = {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
     const { rules: grant, env, shellSetup } = runGrant(spec, harness);
-    const omitInherited = Object.keys(spec.credentialEnv).length > 0 ? INHERITED_ANTHROPIC_OVERRIDES : [];
+    const omitInherited = [...INHERITED_PROFILE_OVERRIDES, ...(Object.keys(spec.credentialEnv).length > 0 ? INHERITED_CREDENTIAL_OVERRIDES : [])];
     const started = startHarness(harness.binary, [
       '-p', spec.prompt,
       ...(spec.profile === undefined ? [] : ['--model', spec.profile.model, ...(spec.profile.effort === null ? [] : ['--effort', spec.profile.effort])]),
+      '--setting-sources', 'project,local',
       '--output-format', 'stream-json',
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,
