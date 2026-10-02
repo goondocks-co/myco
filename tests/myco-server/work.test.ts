@@ -2,7 +2,7 @@
  * Myco's work over a window (`/api/work`): what the runs produced, counted by outcome rather than by status.
  *
  * A learning run marked failed that saved spores reports them, with its failure as a note; a run that completed having
- * written nothing is counted and never listed; a failed search-index update a later one recovered from is a retry, not
+ * written nothing is listed as unchanged; a failed search-index update a later one recovered from is a retry, not
  * a failure. A member who is not an admin reads all of it, cost included.
  */
 import { describe, expect, it } from 'bun:test';
@@ -60,17 +60,17 @@ describe('Myco\'s work', () => {
     } finally { sqlite.close(); }
   });
 
-  it('keeps a report-only failure uncoded when no error or code was recorded', async () => {
+  it('keeps an agent report separate from a terminal failure with no recorded reason', async () => {
     const { sqlite, run, report, get } = await harness();
     try {
       run('proj_1', 'report_only', { task: 'canopy-map', status: 'failed', at: NOW - HOUR });
       report('proj_1', 'report_only', 'The requested source was unavailable.');
       const { body } = await get(`/api/work?${window}`);
-      expect(body.runs[0].failure).toEqual({ source: 'report', cause: 'The requested source was unavailable.', code: null, error: null });
+      expect(body.runs[0].failure).toEqual({ source: 'error', cause: 'the run failed without saying why', code: 'run_failed', error: null });
     } finally { sqlite.close(); }
   });
 
-  it('counts learning by the spores it wrote, keeps a failed run\'s spores with its failure as a note, and lists what produced or failed', async () => {
+  it('counts learning by the spores it wrote, keeps a failed run\'s spores with its failure as a note, and lists completed passes that changed nothing', async () => {
     const { run, spore, report, get } = await harness();
     run('proj_1', 'run_l1', { task: 'extract-curate', status: 'completed', at: NOW - 5 * HOUR, tokens: 1000, cost: 0.5, durationMs: 60_000 });
     spore('proj_1', 'sp1', 'run_l1', 's1');
@@ -98,8 +98,9 @@ describe('Myco\'s work', () => {
       map: null,
     }]);
     expect(body.runs.map((r: any) => [r.id, r.result, r.outcome.spores, r.failure])).toEqual([
-      ['run_l3', 'failed', 0, { cause: 'the runtime went away', code: 'machine_unresponsive', source: 'error' }],
-      ['run_l2', 'failed_with_output', 1, { cause: 'stopped on a refused Bash call', code: 'run_failed', error: 'the run ended without its artifact', source: 'report' }],
+      ['run_l4', 'unchanged', 0, null],
+      ['run_l3', 'failed', 0, { cause: 'the runtime went away', code: 'machine_unresponsive', error: 'the runtime went away', source: 'error' }],
+      ['run_l2', 'failed_with_output', 1, { cause: 'the run ended without its artifact', code: 'run_failed', error: 'the run ended without its artifact', source: 'error' }],
       ['run_l1', 'produced', 2, null],
     ]);
     expect(body.truncated).toBe(false);

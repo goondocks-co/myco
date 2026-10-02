@@ -1,3 +1,4 @@
+import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 
 /**
@@ -36,10 +37,14 @@ export interface WorkOutcome {
 }
 
 /** How a listed run ended, by what it produced. */
-export type RunResult = 'produced' | 'failed' | 'failed_with_output';
+export type RunResult = 'produced' | 'unchanged' | 'failed' | 'failed_with_output';
 
 /** One run the timeline lists: one that produced something, or one that failed. */
 export interface WorkRun {
+  requested: ExecutionProfile | null;
+  queuedAt: number | null;
+  startedAt: number | null;
+  completedAt: number | null;
   identity: RecordedIdentity;
   costProvenance: CostProvenance | null;
   provider: string | null;

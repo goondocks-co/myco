@@ -1,3 +1,7 @@
+import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { requestedProfileValue } from '../db/run-profile.js';
+import { producedSql, runResultSql, type RunResult } from './run-outcome.js';
+export { producedSql, type RunResult } from './run-outcome.js';
 import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
@@ -10,7 +14,7 @@ import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/wo
  * **The outcome, not the status.** A run is counted by what it left in the store: the spores it wrote (`spores.author`
  * names the run), the session title it landed and the map it wrote (each a write the run recorded). A learning run
  * marked failed that saved spores reports its spores, with the failure beside them as a note, and a run that completed
- * having written nothing is counted but never listed.
+ * having written nothing is listed as unchanged.
  *
  * **Upkeep is summarised, never listed.** The search index's own runs are frequent enough that a list of them would
  * drown every other run, so the read answers when the index last succeeded, how many of its runs failed in the window,
@@ -20,7 +24,7 @@ import { runErrorCode } from '../core/reader-codes.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../core/task-catalogue.js';
-import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
+import { TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '../core/runs.js';
 import { EMBEDDING_TASK } from '../core/embedding/jobs.js';
 import { projectsDriving, projectsFiltering, type ProjectSet } from './scope.js';
@@ -74,11 +78,12 @@ export interface WorkOutcome {
   map: { branch: string; commit: string; generatedAt: number; sourceRunId: string } | null;
 }
 
-/** How a listed run ended, by what it produced rather than by its status alone. */
-export type RunResult = 'produced' | 'failed' | 'failed_with_output';
-
-/** One run the timeline lists: a run that produced something, or one that failed. */
+/** One terminal run the timeline lists, including a completed pass that changed nothing. */
 export interface WorkRun {
+  requested: ExecutionProfile | null;
+  queuedAt: number | null;
+  startedAt: number | null;
+  completedAt: number | null;
   harness: string | null;
   model: string | null;
   provider: string | null;
@@ -95,7 +100,7 @@ export interface WorkRun {
   outcome: { spores: number; sessions: number; maps: number };
   /** The session a title run titled; null for every other run. */
   sessionId: string | null;
-  /** The failure classifier, stored reason and latest report, where present. */
+  /** The terminal failure classifier and stored reason, separate from the agent's report. */
   failure: { cause: string; code?: string | null; error?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
@@ -131,17 +136,6 @@ const RUN_AT = 'COALESCE(r.completed_at, r.queued_at, r.started_at)';
 /** The index every read of a window's runs goes through: by Project, task and status. */
 const RUNS_BY_TASK = 'agent_runs r INDEXED BY idx_agent_runs_task';
 
-const wroteSpores = (a: string): string => `EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = ${a}.project_id AND sp.author = ${a}.id)`;
-const recordedWrite = (a: string, tool: string): string => `EXISTS (SELECT 1 FROM agent_run_events e
-  WHERE e.project_id = ${a}.project_id AND e.run_id = ${a}.id AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${tool}')`;
-
-/** Whether the run aliased `a` produced what its task exists to produce: spores, a session's title, or a map. */
-export const producedSql = (a: string): string => `(CASE ${a}.task
-  WHEN '${EXTRACTION_TASK}' THEN ${wroteSpores(a)}
-  WHEN '${SEEDING_TASK}' THEN ${wroteSpores(a)}
-  WHEN '${TITLING_TASK}' THEN ${recordedWrite(a, TITLE_WRITE_TOOL)}
-  WHEN '${MAP_TASK}' THEN ${recordedWrite(a, MAP_WRITE_TOOL)}
-  ELSE 0 END)`;
 const PRODUCED_SQL = producedSql('r');
 
 /** The session a title run's recorded write names. */
@@ -236,15 +230,14 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     db.prepare(`SELECT project_id, repository_branch, repository_commit, generated_at, source_run_id FROM canopy_maps WHERE ${maps.sql}`)
       .bind(...maps.params),
     db.prepare(
-      `SELECT r.project_id, r.id, r.task, r.status, ${RUN_AT} AS at, r.tokens_used, r.cost_usd, r.harness, r.model, r.provider, r.usage_data, ${costProvenanceValue('r.')} AS cost_provenance, ${PRODUCED_SQL} AS produced,
+      `SELECT r.project_id, r.id, r.task, r.status, r.queued_at, r.started_at, r.completed_at, ${requestedProfileValue('r.')} AS requested_profile, ${runResultSql('r')} AS result, ${RUN_AT} AS at, r.tokens_used, r.cost_usd, r.harness, r.model, r.provider, r.usage_data, ${costProvenanceValue('r.')} AS cost_provenance, ${PRODUCED_SQL} AS produced,
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(*) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spores,
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(DISTINCT sp.session_id) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spore_sessions,
               CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
-              CASE WHEN r.status = 'failed' THEN (SELECT rep.summary FROM agent_reports rep WHERE rep.project_id = r.project_id AND rep.run_id = r.id ORDER BY rep.id DESC LIMIT 1) END AS report,
               CASE WHEN r.status = 'failed' THEN r.error END AS error,
               CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code
          FROM ${RUNS_BY_TASK}
-        WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
+        WHERE ${all.sql} AND r.status IN ('completed', 'failed')
         ORDER BY at DESC, r.id DESC LIMIT ?`,
     ).bind(...SPORE_TASKS, ...SPORE_TASKS, TITLING_TASK, ...all.params, MAX_WORK_RUNS + 1),
     upkeepStatement(db, set, since, until),
@@ -305,11 +298,12 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     const produced = num(row.produced) === 1;
     const failed = String(row.status) === 'failed';
     const titled = row.titled_session === null || row.titled_session === undefined ? null : String(row.titled_session);
-    const report = typeof row.report === 'string' && row.report.trim() !== '' ? row.report : null;
     const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
     const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
     return {
       ...runAccounting(row.usage_data, row.cost_provenance),
+      requested: requestedProfile(row.requested_profile),
+      queuedAt: orNull(row.queued_at), startedAt: orNull(row.started_at), completedAt: orNull(row.completed_at),
       harness: row.harness == null ? null : String(row.harness),
       model: row.model == null ? null : String(row.model),
       provider: row.provider == null ? null : String(row.provider),
@@ -318,7 +312,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
       task,
       kind,
       status: String(row.status),
-      result: failed ? (produced ? 'failed_with_output' : 'failed') : 'produced',
+      result: row.result as RunResult,
       at: orNull(row.at),
       outcome: {
         spores: num(row.spores),
@@ -326,7 +320,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
         maps: kind === 'map' && produced ? 1 : 0,
       },
       sessionId: kind === 'title' ? titled : null,
-      failure: !failed ? null : report !== null ? { cause: report, code, error, source: 'report' } : { code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', source: 'error' },
+      failure: !failed ? null : { code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', error, source: 'error' },
       tokens: orNull(row.tokens_used),
       costUsd: orNull(row.cost_usd),
     };

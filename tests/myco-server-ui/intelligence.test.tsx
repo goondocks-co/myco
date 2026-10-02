@@ -58,8 +58,8 @@ const mapRuns = TASK_RUNS['canopy-map']!;
 const READ_AND_WROTE = runDetail(learning[2]!, {
   read: { sessions: [{ sessionId: S2, title: 'Flaky test port collision fixed', readAt: NOW - 5 * HOUR - 7 * MINUTE }], total: 1, recorded: true },
   produced: { spores: { total: 4, items: WEEK_SPORES.slice(2, 6).map((s) => ({ id: s.id, observationType: s.observationType, status: 'active', agentLine: s.agentLine, sessionId: S2, createdAt: s.createdAt, runId: 'run_a2c4e6f801' })) } },
-  toolCalls: [{ tool: 'myco_run_sessions' }, { tool: 'myco_spores' }, { tool: 'myco_spores', failure: { code: 'refused', message: 'no' } }],
-  reports: [{ action: 'summary', summary: 'Saved 4 spores from 1 session.', createdAt: NOW - 5 * HOUR }],
+  toolCalls: [{ id: 1, status: 'success', tool: 'myco_run_sessions', op: 'get', recordedAt: NOW, durationMs: 10 }, { id: 2, status: 'success', tool: 'myco_spores', op: 'save', recordedAt: NOW, durationMs: 20 }, { id: 3, status: 'failed', tool: 'myco_spores', op: 'save', recordedAt: NOW, durationMs: 10, failure: { code: 'refused', message: 'no' } }],
+  reports: [{ action: 'summary', details: null, summary: 'Saved 4 spores from 1 session.', createdAt: NOW - 5 * HOUR }],
 });
 
 const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; work?: WorkAnswer; capabilities?: Record<string, boolean>; dispatch?: Endpoint } = {}): Record<string, Endpoint> => ({
@@ -105,7 +105,7 @@ describe('a run’s panel', () => {
     expect(report.textContent).toBe('Saved 4 spores from 1 session.');
     expect(report.closest('header')).not.toBeNull();
     expect(open.textContent).toContain('took 5 min');
-    const read = within(open).getByRole('region', { name: 'What it read' });
+    const read = within(open).getByRole('region', { name: 'Sessions it read' });
     expect(within(read).getByRole('link', { name: 'Flaky test port collision fixed' }).getAttribute('href')).toBe(`/p/${P}/sessions/${S2}`);
     expect(read.textContent).toContain('4 spores came from it');
     expect(read.querySelector('[data-no-record]')).toBeNull();
@@ -121,7 +121,7 @@ describe('a run’s panel', () => {
     expect(rawIdsInPage()).toEqual([]);
     fireEvent.click(within(technical).getByRole('button', { name: /Technical details/ }));
     const facts = technical.querySelector('[data-facts]') as HTMLElement;
-    for (const words of ['Ran onAda’s studio Mac', 'AgentCodex', 'ModelNot recorded for this run', 'Started byLin', 'Tokens20,000', 'The agent’s estimate, not a bill', '3 calls to Myco, 1 refused']) {
+    for (const words of ['Ran onAda’s studio Mac', 'AgentCodex', 'Model not recorded', 'Started byLin', 'Tokens20,000', 'Cost provenance not recorded']) {
       expect(facts.textContent).toContain(words);
     }
     expect(within(facts).getByRole('button', { name: 'Copy run id' })).toBeTruthy();
@@ -150,9 +150,9 @@ describe('a run’s panel', () => {
     mount(`/p/${P}/work/runs/run_7d1e2f3a40`);
     const open = await panel();
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Titled and summarized a session');
-    const read = within(open).getByRole('region', { name: 'What it read' });
-    expect(read.querySelector('[data-no-record]')!.textContent).toBe('No record of what it read. Myco didn’t record the sessions this run read, which doesn’t mean it read none.');
-    expect(open.textContent).not.toMatch(/read nothing|read no sessions/i);
+    const read = within(open).getByRole('region', { name: 'Sessions it read' });
+    expect(read.querySelector('[data-no-record]')!.textContent).toBe('No session reads were recorded. This does not mean it read no sessions.');
+    expect(read.textContent).not.toMatch(/^It read nothing|^It read no sessions/i);
   });
 
   it('says a run that recorded its reads and read none didn’t need any sessions', async () => {
@@ -160,7 +160,7 @@ describe('a run’s panel', () => {
     mount(`/p/${P}/work/runs/run_c19f7a0e55`);
     const open = await panel();
     await within(open).findByRole('heading', { level: 2 });
-    const read = within(open).getByRole('region', { name: 'What it read' });
+    const read = within(open).getByRole('region', { name: 'Sessions it read' });
     expect(read.querySelector('[data-read-none]')!.textContent).toBe('It didn’t need any sessions.');
     expect(read.querySelector('[data-no-record]')).toBeNull();
   });
@@ -169,33 +169,33 @@ describe('a run’s panel', () => {
     server(routes({ detail: { [`/api/projects/${P}/runs/run_4f1c9a2e7b`]: () => Response.json(runDetail(learning[1]!, {
       read: { sessions: [{ sessionId: S1, title: 'Search box height made uniform on list pages', readAt: null }], total: 1, recorded: false },
       produced: { spores: { total: 2, items: WEEK_SPORES.slice(0, 2).map((s) => ({ id: s.id, observationType: s.observationType, status: 'active', agentLine: s.agentLine, sessionId: S1, createdAt: s.createdAt })) } },
-      reports: [{ action: 'summary', summary: 'Saved 2 spores from 3 sessions before the turn budget ran out.', createdAt: NOW - 2 * HOUR }],
+      reports: [{ action: 'summary', details: null, summary: 'Saved 2 spores from 3 sessions before the turn budget ran out.', createdAt: NOW - 2 * HOUR }],
       run: { error: 'the run exceeded its turn budget' },
     })) } }));
     mount(`/p/${P}/work/runs/run_4f1c9a2e7b`);
     const open = await panel();
-    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Learned 2 spores from 1 session');
-    expect(open.querySelector('[data-no-record]')!.textContent).toBe('No record of what it read; these are the sessions it worked from.');
-    expect(within(open).getByRole('region', { name: 'What it read' }).textContent).toContain('Search box height made uniform on list pages');
-    // It failed, but kept what it saved: the cause from its report, and nothing to do.
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Failed with output kept');
+    expect(open.querySelector('[data-no-record]')!.textContent).toBe('No session reads were recorded; these are the sessions it worked from.');
+    expect(within(open).getByRole('region', { name: 'Sessions it read' }).textContent).toContain('Search box height made uniform on list pages');
+    // Terminal failure and retained output are shown independently.
     const failure = open.querySelector('[data-run-failure]') as HTMLElement;
-    expect(failure.textContent).toBe('Why: Saved 2 spores from 3 sessions before the turn budget ran out.What it saved is kept, so there’s nothing to do.');
+    expect(failure.textContent).toBe('Run failure: The task stopped before it could finish.What it saved is kept.');
   });
 
-  it('gives a failed map update its cause from the report, not the stored error, and what to do', async () => {
+  it('keeps a failed map update’s terminal error separate from its report', async () => {
     server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
-      reports: [{ action: 'summary', summary: 'repo.sha256 is absent from this checkout, so the previous map is kept.', createdAt: NOW - 3.5 * HOUR }],
+      reports: [{ action: 'summary', details: null, summary: 'repo.sha256 is absent from this checkout, so the previous map is kept.', createdAt: NOW - 3.5 * HOUR }],
       run: { error: 'the run ended without its artifact' },
     })) } }));
     mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
     const open = await panel();
-    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Couldn’t update the code map');
+    expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('This run failed');
     const failure = open.querySelector('[data-run-failure]') as HTMLElement;
-    expect(failure.textContent).toContain('Why: repo.sha256 is absent from this checkout, so the previous map is kept.');
+    expect(failure.textContent).toContain('Run failure: The task stopped before it could finish.');
     expect(failure.textContent).toContain('Open the run to see where it stopped.');
     // The next step never repeats what the cause already says.
-    expect(failure.textContent!.match(/previous map/g)).toHaveLength(1);
-    expect(failure.textContent).not.toContain('without its artifact');
+    expect(open.querySelector('[data-run-report]')!.textContent).toContain('previous map');
+    expect(failure.textContent).not.toContain('repo.sha256');
     expect(within(open).getByRole('region', { name: 'What it produced' }).textContent).toContain('Nothing; it stopped before writing anything.');
   });
 
@@ -444,15 +444,109 @@ it('keeps a coded failure as the headline when the run also filed a report', asy
   const reason = 'The saved output could not be read.';
   const report = 'The machine reported a missing file.';
   server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
-    reports: [{ action: 'summary', summary: report, createdAt: NOW }],
+    reports: [{ action: 'summary', details: null, summary: report, createdAt: NOW }],
     run: { errorCode: 'machine_unresponsive', error: reason },
   })) } }));
   mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
   const open = await panel();
   await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The machine running it stopped responding.'));
   expect(open.textContent).not.toContain(reason);
-  expect(open.textContent).not.toContain(report);
+  expect(open.querySelector('[data-run-report]')!.textContent).toContain(report);
   fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
   expect(open.querySelector('[data-run-technical]')!.textContent).toContain(reason);
-  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(report);
+  expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(report);
+});
+
+describe('stored run audit evidence', () => {
+  const audit = () => runDetail(mapRuns[1]!, {
+    run: {
+      requested: { tier: 'high', model: 'opus', effort: 'high', sources: { tier: 'task', model: 'default' } },
+      identity: { status: 'reported', source: 'result', primary: { model: 'claude-sonnet-4-6' }, models: [{ model: 'claude-sonnet-4-6', source: 'result', usage: null }] },
+      instruction: 'Examine this pinned repository.\nKeep the launch prompt exactly.',
+      instructions: 'One bounded line per map entry.\nDo not change repository files.',
+    },
+    reports: [{ action: 'canopy_map', summary: 'Updated the map.', details: '{"examined":"src/core","recovery":"corrected the map text"}', createdAt: NOW }],
+    toolCalls: [
+      { id: 1, status: 'success', tool: 'myco_run_map', op: 'get', recordedAt: NOW - 4 * MINUTE, durationMs: 38 },
+      { id: 2, status: 'failed', tool: 'myco_run_map', op: 'write', recordedAt: NOW - 3 * MINUTE, durationMs: 10, failure: { code: 'tool_failure', message: 'Map text must be a bounded nonempty line.' } },
+      { id: 3, status: 'success', tool: 'myco_run_map', op: 'write', recordedAt: NOW - 2 * MINUTE, durationMs: 117 },
+      { id: 4, status: 'success', tool: 'myco_run', op: 'report', recordedAt: NOW - MINUTE, durationMs: 40 },
+    ],
+  });
+  async function openAudit(answer = audit()) {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(answer) } }));
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    const open = await panel();
+    await within(open).findByRole('heading', { level: 2 });
+    return open;
+  }
+  it('shows four calls in order, the exact validation failure and its later successful correction', async () => {
+    const open = await openAudit();
+    const calls = within(open).getByRole('region', { name: 'Calls to Myco' });
+    const rows = within(calls).getAllByRole('listitem');
+    expect(rows).toHaveLength(4);
+    expect(rows[1]!.textContent).toContain('Map text must be a bounded nonempty line.');
+    expect(rows[1]!.textContent).toContain('Failed');
+    expect(rows[2]!.textContent).toContain('Succeeded');
+    expect(rows[2]!.textContent).toContain('117 ms');
+    expect(calls.textContent).not.toContain('refused');
+  });
+  it('renders requested and actual models and flags a mismatch in the summary', async () => {
+    const open = await openAudit();
+    const summary = open.querySelector('header')!;
+    expect(summary.textContent).toContain('Requested: high · opus · high effort');
+    expect(summary.textContent).toContain('Actual: claude-sonnet-4-6');
+    expect(summary.textContent).toContain('Model differs from requested');
+  });
+  it('shows the exact stored instruction and standing rules behind a disclosure', async () => {
+    const open = await openAudit();
+    fireEvent.click(within(open).getByRole('button', { name: 'Instruction at launch' }));
+    expect(open.textContent).toContain(audit().run.instruction);
+    expect(open.textContent).toContain(audit().run.instructions);
+  });
+  it('renders a single report’s supporting details', async () => {
+    const open = await openAudit();
+    fireEvent.click(within(open).getByRole('button', { name: 'Report details' }));
+    expect(open.textContent).toContain('"recovery":"corrected the map text"');
+  });
+  it('keeps a terminal failure distinct from a successful agent report and keeps output', async () => {
+    const answer = audit();
+    answer.run.status = 'failed';
+    answer.run.error = 'Worker exceeded the execution budget.';
+    answer.run.result = 'failed_with_output';
+    const open = await openAudit(answer);
+    expect(open.querySelector('[data-run-headline]')!.textContent).toBe('Failed with output kept');
+    expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The task stopped before it could finish.');
+    fireEvent.click(within(open).getByRole('button', { name: /Technical details/ }));
+    expect(open.querySelector('[data-run-technical]')!.textContent).toContain('Worker exceeded the execution budget.');
+    expect(open.querySelector('[data-run-report]')!.textContent).toContain('Updated the map.');
+  });
+  for (const task of ['canopy-map', 'title-summary']) {
+    it(`${task} with no write says checked and changed nothing`, async () => {
+      const answer = audit();
+      answer.run.task = task;
+      answer.run.result = 'unchanged';
+      const open = await openAudit(answer);
+      expect(open.querySelector('[data-run-headline]')!.textContent).toBe('Checked and changed nothing');
+      expect(within(open).getByRole('region', { name: 'What it produced' }).textContent).not.toMatch(/brought up|A title and summary/);
+    });
+  }
+});
+
+it('shows the true 201-call total and loads the remaining call', async () => {
+  const first = runDetail(mapRuns[1]!, {
+    toolCalls: Array.from({ length: 200 }, (_, i) => ({ id: i, status: 'success' as const, tool: 'myco_run_map', op: 'get', recordedAt: NOW + i, durationMs: 10 })),
+    toolCallCoverage: { total: 201, failed: 0, cursor: 'next-page' },
+  });
+  const last = runDetail(mapRuns[1]!, { toolCalls: [{ id: 200, status: 'unknown', tool: 'myco_run', op: 'report', recordedAt: NOW, durationMs: null }], toolCallCoverage: { total: 201, failed: 0, cursor: null } });
+  const { asked } = server({ ...routes(), [`/api/projects/${P}/runs/run_c19f7a0e55`]: (url) => Response.json(url.searchParams.has('callsCursor') ? last : first) });
+  mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+  const open = await panel();
+  const calls = await within(open).findByRole('region', { name: 'Calls to Myco' });
+  expect(calls.textContent).toContain('Showing 200 of 201 calls.');
+  fireEvent.click(within(calls).getByRole('button', { name: 'Show more' }));
+  await waitFor(() => expect(within(calls).getAllByRole('listitem')).toHaveLength(201));
+  expect(calls.textContent).toContain('Showing 201 of 201 calls.');
+  expect(within(calls).getAllByRole('listitem').at(-1)!.textContent).toContain('Status not recorded');
+  expect(asked.some((url) => url.searchParams.get('callsCursor') === 'next-page')).toBe(true);
 });

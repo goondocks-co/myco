@@ -1,3 +1,4 @@
+import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 
 /**
@@ -30,6 +31,8 @@ export interface RunWorker {
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */
 export interface RunFields {
+  requested: ExecutionProfile | null;
+  result: 'produced' | 'unchanged' | 'failed' | 'failed_with_output' | null;
   identity: RecordedIdentity;
   costProvenance: CostProvenance | null;
   provider: string | null;
@@ -83,6 +86,8 @@ export interface RunPage {
 
 /** The fields the run panel reads of a run's detail. */
 export interface RunDetailFields extends RunFields {
+  instruction: string | null;
+  instructions: string | null;
   estimatedCostUsd: number | null;
   actualCostUsd: number | null;
   errorCode?: string | null;
@@ -93,12 +98,18 @@ export interface RunDetailFields extends RunFields {
 export interface RunReport {
   action: string;
   summary: string;
+  details: string | null;
   createdAt: number;
 }
 
 /** One call a run made back to the Deployment. */
 export interface RunCall {
+  id: number;
+  status: 'success' | 'failed' | 'unknown';
   tool: string;
+  op: string | null;
+  durationMs: number | null;
+  recordedAt: number;
   /** Present on a call the Deployment answered with a failure. */
   failure?: { code: string; message: string };
 }
@@ -125,6 +136,9 @@ export interface RunDetailAnswer {
   run: RunDetailFields;
   reports: readonly RunReport[];
   toolCalls: readonly RunCall[];
+  toolCallCoverage: { total: number; failed: number; cursor: string | null };
+  source: { branch: string; commit: string } | null;
+  map: { revision: string; branch: string; commit: string; generatedAt: number; sourceRunId: string | null; replaced: boolean } | null;
   read: {
     sessions: readonly RunReadSession[];
     total: number;

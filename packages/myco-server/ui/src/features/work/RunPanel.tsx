@@ -1,14 +1,16 @@
-import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
+import { useState } from 'react';
+import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, ShowMore, TypeChip } from '../../design';
 import { useStarterNames } from './names';
-import { useRunDetail } from '../../hooks/use-work';
+import { useRunCalls, useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { CODE_MAP_SUFFIX, projectPath } from '../../routes/nav';
 import { agentName, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
 import type { RunDetailAnswer } from './wire';
+import { ModelSummary, costProvenanceWords } from './ModelSummary';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, failureWords, runErrorWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, runErrorWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -30,7 +32,7 @@ export function RunPanel({ projectId, runId, projectName, now, onClose }: RunPan
   const title = `${kind === null ? 'Run' : capitalize(runNoun(kind))} · ${projectName}`;
   return (
     <SlideOver open onOpenChange={(open) => { if (!open) onClose(); }} title={title} data-testid="run-panel">
-      {detail.data !== undefined ? <RunBody answer={detail.data} projectId={projectId} now={now} />
+      {detail.data !== undefined ? <RunBody key={`${projectId}/${runId}`} answer={detail.data} projectId={projectId} now={now} />
         : detail.isPending ? <LoadingState shape="reading" label="Loading the run" />
         : detail.error instanceof ApiError && detail.error.status === 404
           ? <p role="status" className="t-body text-muted">This run isn’t in {projectName}. It may have been cleared out with older runs.</p>
@@ -62,18 +64,19 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const cause = failed ? causeOf(answer) : null;
   const deploy = deployWords(run);
   const sporesFrom = (sessionId: string) => spores.items.filter((spore) => spore.sessionId === sessionId).length;
-  // What the run said it did, in its own words, leads the panel; a failed run's report is its cause instead.
-  const report = failed ? null : latestReport(reports);
+  const report = latestReport(reports);
+  const kept = run.result === 'failed_with_output';
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
       <header className="flex flex-col gap-s2">
-        <h2 className={cn('t-h2', failed && spores.total === 0 ? 'text-bad' : 'text-ink')} data-run-headline="">{headlineOf(answer)}</h2>
+        <h2 className={cn('t-h2', failed && !kept ? 'text-bad' : 'text-ink')} data-run-headline="">{headlineOf(answer)}</h2>
         <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
           {at !== null && <span>{capitalize(atWords(at, now))}</span>}
           {took !== null && <><span aria-hidden>·</span><span>took {took}</span></>}
           {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
           {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
+        <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
         {report !== null && <p className="max-w-measure t-body text-ink-2" data-run-report="">{report}</p>}
@@ -81,20 +84,22 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
 
       {cause !== null && (
         <div className="flex flex-col gap-s1 rounded-control border border-line bg-bad-bg px-s3 py-s2 t-small text-ink-2" data-run-failure="">
-          <p><span className="font-medium text-bad">Why: </span>{cause}</p>
-          <p>{kind === null ? (spores.total > 0 ? 'What it saved is kept, so there’s nothing to do.' : 'Open the technical details below to see where it stopped.') : failureNextStep(kind, spores.total > 0)}</p>
+          <p><span className="font-medium text-bad">Run failure: </span>{cause}</p>
+          <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>
         </div>
       )}
 
       {(finished || read.total > 0) && (
-        <section aria-label="What it read" className="flex flex-col gap-s3" data-run-read="">
-          <PartLabel end={read.total > 0 ? count(read.total, 'session') : undefined}>What it read</PartLabel>
+        <section aria-label="Sessions it read" className="flex flex-col gap-s3" data-run-read="">
+          <PartLabel end={read.total > 0 ? count(read.total, 'session') : undefined}>Sessions it read</PartLabel>
+          {read.recorded && <p className="t-small text-muted">Recorded session reads may be incomplete. Sessions beyond Myco’s recording limit are not listed.</p>}
           {read.recorded && read.total === 0 && <p className="t-small text-muted" data-read-none="">It didn’t need any sessions.</p>}
-          {!read.recorded && (
+          {(kind === 'map' || kind === 'seed') && <p className="t-small text-muted">Repository activity isn’t recorded yet.</p>}
+          {!read.recorded && kind !== 'map' && kind !== 'seed' && (
             <p className="t-small text-muted" data-no-record="">
               {read.total === 0
-                ? 'No record of what it read. Myco didn’t record the sessions this run read, which doesn’t mean it read none.'
-                : 'No record of what it read; these are the sessions it worked from.'}
+                ? 'No session reads were recorded. This does not mean it read no sessions.'
+                : 'No session reads were recorded; these are the sessions it worked from.'}
             </p>
           )}
           {read.sessions.length > 0 && (
@@ -110,7 +115,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
                   </li>
                 );
               })}
-              {read.total > read.sessions.length && <li className="t-small text-muted">and {(read.total - read.sessions.length).toLocaleString()} more</li>}
+              {read.total > read.sessions.length && <li className="t-small text-muted">Showing {read.sessions.length} of {read.total.toLocaleString()} sessions; this list covers only those shown</li>}
             </ul>
           )}
         </section>
@@ -123,38 +128,31 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         </section>
       )}
 
-      <TechnicalDetails answer={answer} startedBy={startedBy} took={took} now={now} reports={reports} />
+      <Calls key={answer.toolCallCoverage.total} answer={answer} projectId={projectId} />
+      <Reports reports={reports} />
+      <Instruction answer={answer} />
+      <TechnicalDetails answer={answer} startedBy={startedBy} took={took} />
     </article>
   );
 }
 
 /** The run's headline: what came of it, or where it stands while it has not finished. */
 function headlineOf({ run, read, produced }: RunDetailAnswer): string {
-  const kind = kindOf(run.task);
   if (run.status === 'skipped') return 'Held off';
   if (run.status === 'queued') return 'Waiting to start';
   if (run.status === 'running' || run.status === 'claimed') return 'Running now';
-  const failed = run.status === 'failed';
-  const spores = produced.spores.total;
-  switch (kind) {
-    case 'learn':
-    case 'seed':
-      if (spores > 0) return `Learned ${count(spores, 'spore')}${read.total > 0 && kind === 'learn' ? ` from ${count(read.total, 'session')}` : ''}`;
-      return failed ? (kind === 'learn' ? 'Couldn’t learn from recent sessions' : 'Couldn’t learn from the project’s code') : 'Found nothing new to keep';
-    case 'title':
-      return failed ? 'Couldn’t title a session' : run.targetSessionId === null ? 'Titled a session' : 'Titled and summarized a session';
-    case 'map':
-      return failed ? 'Couldn’t update the code map' : 'Updated the code map';
-    default:
-      return failed ? 'This run failed' : 'This run finished';
-  }
+  if (run.result === 'failed_with_output') return 'Failed with output kept';
+  if (run.result === 'failed') return 'This run failed';
+  if (run.result === 'unchanged') return 'Checked and changed nothing';
+  const kind = kindOf(run.task);
+  if ((kind === 'learn' || kind === 'seed') && produced.spores.total > 0) return `Learned ${count(produced.spores.total, 'spore')}${read.total > 0 && kind === 'learn' ? ` from ${count(read.total, 'session')}` : ''}`;
+  if (kind === 'title') return 'Titled and summarized a session';
+  if (kind === 'map') return 'Updated the code map';
+  return 'Wrote output';
 }
 
-/** The coded failure leads; a server carrying no code can still name its own report. */
-function causeOf({ run, reports }: RunDetailAnswer): string {
-  if (run.errorCode != null) return runErrorWords(run.errorCode);
-  const report = latestReport(reports);
-  return report === null ? runErrorWords(run.errorCode) : failureWords({ source: 'report', cause: report });
+function causeOf({ run }: RunDetailAnswer): string {
+  return runErrorWords(run.errorCode);
 }
 
 /** The run's latest report in its own words, or null when it filed none. */
@@ -177,12 +175,12 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
               <ItemLink to={projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`)}>{sporeLine({ agentLine: spore.agentLine, content: '' }) || `A ${sporeTypeWord(spore.observationType).toLowerCase()}`}</ItemLink>
             </li>
           ))}
-          {spores.total > spores.items.length && <li className="t-small text-muted">and {(spores.total - spores.items.length).toLocaleString()} more</li>}
+          {spores.total > spores.items.length && <li className="t-small text-muted">Showing {spores.items.length} of {spores.total.toLocaleString()} spores; this list covers only those shown</li>}
         </ul>
       </>
     );
   }
-  if (kind === 'title' && run.status === 'completed' && run.targetSessionId !== null) {
+  if (kind === 'title' && (run.result === 'produced' || run.result === 'failed_with_output') && run.targetSessionId !== null) {
     const titled = read.sessions.find((session) => session.sessionId === run.targetSessionId);
     return (
       <p className="t-small text-ink-2">
@@ -191,15 +189,16 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
       </p>
     );
   }
-  if (kind === 'map' && run.status === 'completed') {
+  if (kind === 'map' && (run.result === 'produced' || run.result === 'failed_with_output')) {
     return (
       <div className="flex flex-col gap-s1 t-small text-ink-2">
-        <p>The code map, brought up to the repository’s latest commit.</p>
-        <OnwardLink to={projectPath(projectId, CODE_MAP_SUFFIX)}>Open the code map</OnwardLink>
+        <p>{answer.source === null ? 'A code map.' : 'A code map from the pinned source.'}</p>
+        {answer.map?.replaced && <p className="text-muted">A newer map has replaced this run’s map.</p>}
+        <OnwardLink to={projectPath(projectId, CODE_MAP_SUFFIX)}>Open the current code map</OnwardLink>
       </div>
     );
   }
-  return <p className="t-small text-muted">Nothing{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
+  return <p className="t-small text-muted">{run.result === 'unchanged' ? 'Checked and changed nothing.' : 'Nothing'}{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
 }
 
 function tookWords(ms: number): string {
@@ -210,21 +209,19 @@ function tookWords(ms: number): string {
 }
 
 /** Machine, agent, model, times, tokens and cost, folded away under one line that already says the most of it. */
-function TechnicalDetails({ answer, startedBy, took, now, reports }: {
+function TechnicalDetails({ answer, startedBy, took }: {
   answer: RunDetailAnswer;
   startedBy: string | null;
   took: string | null;
-  now: number;
-  reports: RunDetailAnswer['reports'];
 }) {
-  const { run, toolCalls } = answer;
+  const { run } = answer;
   const name = useStarterNames();
   // A machine by its name only when the server names it to this viewer, else as its member's; never by its id.
   const machine = ranOn(run.worker, name)?.machine ?? null;
   const agent = run.harness === null ? null : agentName(run.harness);
   const cost = run.costUsd ?? run.estimatedCostUsd ?? run.actualCostUsd;
   const tokens = run.tokensUsed === null ? null : `${tokenWords(run.tokensUsed)} tokens`;
-  const failedCalls = toolCalls.filter((call) => call.failure !== undefined).length;
+
   const summary = [machine, agent, tokens, cost === null ? null : dollars(cost)].filter((part): part is string => part !== null).join(' · ');
   return (
     <section aria-label="Technical details" className="border-t border-line pt-s4" data-run-technical="">
@@ -233,27 +230,17 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
           <FactsPanel actions={<CopyButton value={run.id} label="Copy run id" variant="secondary" />}>
             {machine !== null && <FactRow term="Ran on">{machine}</FactRow>}
             <FactRow term="Agent">{agent ?? 'Not recorded'}</FactRow>
-            <FactRow term="Model">{run.model ?? 'Not recorded for this run'}</FactRow>
+            <FactRow term="Model"><ModelSummary run={run} /></FactRow>
             <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
+            {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}
+            {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Queue wait">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
+            {run.completedAt !== null && <FactRow term="Finished">{dateWords(run.completedAt)}</FactRow>}
             {run.startedAt !== null && <FactRow term="Started">{new Date(run.startedAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</FactRow>}
-            {took !== null && <FactRow term="Took">{took}</FactRow>}
+            {took !== null && <FactRow term="Execution">{took}</FactRow>}
             <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}</FactRow>
-            <FactRow term="Cost">{cost === null ? 'None reported' : <>{dollars(cost)}<span className="block t-meta text-muted">The agent’s estimate, not a bill</span></>}</FactRow>
-            <FactRow term="Steps">{toolCalls.length === 0 ? 'No calls to Myco' : `${count(toolCalls.length, 'call')} to Myco${failedCalls > 0 ? `, ${failedCalls} refused` : ''}`}</FactRow>
+            <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}</span></>}</FactRow>
           </FactsPanel>
-          {(reports.length > 1 || (run.status === 'failed' && reports.length > 0)) && (
-            <div className="flex flex-col gap-s2">
-              <PartLabel>Everything it reported</PartLabel>
-              <ul className="flex flex-col gap-s2">
-                {reports.map((report, i) => (
-                  <li key={`${report.createdAt}-${i}`} className="flex flex-col t-small text-ink-2">
-                    <span>{report.summary}</span>
-                    <span className="t-meta text-muted">{atWords(report.createdAt, now)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}
           {run.status === 'failed' && run.error !== null && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>
@@ -261,6 +248,69 @@ function TechnicalDetails({ answer, startedBy, took, now, reports }: {
               <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>
             </div>
           )}
+        </div>
+      </Disclosure>
+    </section>
+  );
+}
+
+function dateWords(at: number): string {
+  return new Date(at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+}
+
+function Calls({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
+  const next = useRunCalls(projectId, answer.run.id);
+  const [pages, setPages] = useState<RunDetailAnswer[]>([]);
+  const latest = pages.at(-1) ?? answer;
+  const calls = [...new Map([answer, ...pages].flatMap((page) => page.toolCalls).map((call) => [call.id, call])).values()];
+  const coverage = latest.toolCallCoverage;
+  return (
+    <section aria-label="Calls to Myco" className="flex flex-col gap-s3" data-run-calls="">
+      <PartLabel end={count(coverage.total, 'call')}>Calls to Myco</PartLabel>
+      <p className="t-small text-muted">{coverage.failed > 0 ? `${count(coverage.failed, 'call')} failed. ` : ''}Showing {calls.length.toLocaleString()} of {coverage.total.toLocaleString()} calls.</p>
+      {calls.length === 0 ? <p className="t-small text-muted">No calls recorded.</p> : (
+        <ol className="flex flex-col divide-y divide-line rounded-control border border-line">
+          {calls.map((call) => (
+            <li key={call.id} className="flex flex-col gap-s1 px-s3 py-s2 t-small text-ink-2">
+              <span className="break-words t-mono">{call.tool}{call.op === null ? '' : ` / ${call.op}`}</span>
+              <span className="t-meta text-muted"><time dateTime={new Date(call.recordedAt).toISOString()}>{dateWords(call.recordedAt)}</time> · {call.durationMs === null ? 'Duration not recorded' : `${call.durationMs.toLocaleString()} ms`} · <span className={call.status === 'failed' ? 'text-bad' : 'text-muted'}>{call.status === 'success' ? 'Succeeded' : call.status === 'failed' ? 'Failed' : 'Status not recorded'}</span></span>
+              {call.status === 'failed' && call.failure === undefined && <p className="text-muted">Failure reason not recorded.</p>}
+              {call.failure !== undefined && <p className="whitespace-pre-wrap break-words text-bad">{call.failure.message}</p>}
+            </li>
+          ))}
+        </ol>
+      )}
+      {next.error !== null && <ErrorState error={next.error} onRetry={() => { if (coverage.cursor !== null) next.mutate(coverage.cursor, { onSuccess: (page) => setPages((loaded) => [...loaded, page]) }); }} />}
+      {coverage.cursor !== null && <ShowMore shown={calls.length} noun="calls" hasMore pending={next.isPending} onMore={() => next.mutate(coverage.cursor ?? '', { onSuccess: (page) => setPages((loaded) => [...loaded, page]) })} />}
+    </section>
+  );
+}
+
+function Reports({ reports }: { reports: RunDetailAnswer['reports'] }) {
+  if (reports.length === 0) return null;
+  return (
+    <section aria-label="The agent’s report" className="flex flex-col gap-s3">
+      <PartLabel>The agent’s report</PartLabel>
+      {reports.map((report, index) => (
+        <div key={index} className="flex flex-col gap-s2 t-small text-ink-2">
+          <p>{report.summary}</p>
+          <time className="t-meta text-muted" dateTime={new Date(report.createdAt).toISOString()}>{dateWords(report.createdAt)}</time>
+          {report.details !== null && <Disclosure summary="Report details"><pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono">{report.details}</pre></Disclosure>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function Instruction({ answer }: { answer: RunDetailAnswer }) {
+  return (
+    <section aria-label="Instruction at launch">
+      <Disclosure summary="Instruction at launch">
+        <div className="flex flex-col gap-s3 pt-s2">
+          <PartLabel>Prompt</PartLabel>
+          {answer.run.instruction === null ? <p className="t-small text-muted">The prompt was not recorded for this run.</p> : <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono text-ink-2">{answer.run.instruction}</pre>}
+          <PartLabel>Standing rules</PartLabel>
+          {answer.run.instructions === null ? <p className="t-small text-muted">Standing rules were not recorded for this run.</p> : <pre className="max-h-96 overflow-y-auto whitespace-pre-wrap break-words t-mono text-ink-2">{answer.run.instructions}</pre>}
         </div>
       </Disclosure>
     </section>

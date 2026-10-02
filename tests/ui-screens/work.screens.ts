@@ -77,7 +77,7 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   await expect(failure).toContainText('Open the run to see where it stopped.');
   await failure.getByRole('button', { name: 'Details' }).click();
   await expect(failure).toContainText('the run ended without its artifact');
-  await expect(failure).toContainText('repo.sha256 is absent from this checkout');
+  await expect(failure).toContainText('The task stopped before it could finish.');
   await failure.getByRole('button', { name: 'Details' }).click();
   await expect(failure.getByRole('link', { name: 'Open the latest attempt →' })).toBeVisible();
   await expect(map.getByRole('list', { name: 'Latest code map updates' })).toContainText(role === 'admin' ? 'by you' : 'by Ada');
@@ -90,7 +90,7 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   await expect(page.locator('[data-upkeep]')).toContainText('1 retry along the way');
   const cost = page.locator('[data-cost]');
   await expect(cost.locator('[data-cost-total]')).toHaveText(/^\$\d+\.\d\d$/);
-  await expect(cost).toContainText('These are the agents’ own estimates, not a bill. 2 runs reported no cost, so the real total is higher.');
+  await expect(cost).toContainText('Recorded costs may include agent estimates and estimates using model prices; they are not a bill. 2 runs reported no cost, so the total is incomplete.');
 }
 
 test.describe('Myco’s work', () => {
@@ -102,10 +102,10 @@ test.describe('Myco’s work', () => {
       const panel = page.locator('[data-slide-over]');
       await expect(panel.locator('[data-run-failure]')).toContainText('The task stopped before it could finish.');
       await expect(panel).not.toContainText('the run ended without its artifact');
-      await expect(panel).not.toContainText('repo.sha256');
+      await expect(panel.locator('[data-run-report]')).toContainText('repo.sha256');
       await panel.getByRole('button', { name: /Technical details/ }).click();
       await expect(panel.locator('[data-run-technical]')).toContainText('the run ended without its artifact');
-      await expect(panel.locator('[data-run-technical]')).toContainText('repo.sha256 is absent from this checkout');
+      await expect(panel.getByRole('region', { name: 'The agent’s report' })).toContainText('repo.sha256 is absent from this checkout');
       await expectNoRawIds(page);
       await expectAxeClean(page);
       expectQuiet(watch);
@@ -156,7 +156,7 @@ test.describe('Myco’s work', () => {
           // The run's own account of what it did leads, above what it read.
           await expect(panel.locator('[data-run-report]')).toHaveText('Read 1 session and saved 4 spores from it.');
           await expect(panel.locator('[data-started-by]')).toHaveText(role === 'member' ? 'started by you' : 'started by Lin');
-          await expect(panel.getByRole('region', { name: 'What it read' })).toContainText('Flaky test port collision fixed');
+          await expect(panel.getByRole('region', { name: 'Sessions it read' })).toContainText('Flaky test port collision fixed');
           await expect(panel.getByRole('list', { name: 'Spores it wrote' }).getByRole('listitem')).toHaveCount(4);
         }
         // Technical details start folded; opened, the run's id is only ever copied.
@@ -169,8 +169,8 @@ test.describe('Myco’s work', () => {
           await expect(technical).toContainText(role === 'admin' ? 'Ada’s studio Mac' : 'Ada’s machine');
           if (role === 'member') await expect(technical).not.toContainText('Ada’s studio Mac');
           await expect(technical).toContainText('Codex');
-          await expect(technical).toContainText('Not recorded for this run');
-          await expect(technical).toContainText('The agent’s estimate, not a bill');
+          await expect(technical).toContainText('Model not recorded');
+          await expect(technical).toContainText('Cost provenance not recorded');
         }
         await expectFits(page, viewport);
         await expectNoRawIds(page);
@@ -254,3 +254,39 @@ test.describe('Myco’s work', () => {
     }
   });
 });
+
+for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light', 'dark'] as const) {
+  test(`stored run audit panel ${viewport} ${mode}`, async ({ browser }) => {
+    test.skip(!onFixture(), 'Requires the recorded audit fixture.');
+    const { context, page, watch } = await openPage(browser, { path: `${workPath()}/runs/run_c19f7a0e55`, viewport, mode, cookie: screensEnv('ownerCookie') });
+    try {
+      const panel = page.locator('[data-slide-over]');
+      await expect(panel.locator('header [data-model-summary]')).toContainText('Requested: high · opus · high effort');
+      await expect(panel.locator('header [data-model-summary]')).toContainText('Actual: claude-sonnet-4-6');
+      await expect(panel.locator('header [data-model-mismatch]')).toBeVisible();
+      const calls = panel.getByRole('region', { name: 'Calls to Myco' });
+      await expect(calls.getByRole('listitem')).toHaveCount(4);
+      await expect(calls).toContainText('Map text must be a bounded nonempty line.');
+      await expect(calls.getByRole('listitem').nth(2)).toContainText('117 ms · Succeeded');
+      await expect(panel.getByRole('link', { name: 'Open the current code map →' })).toBeVisible();
+      const shots = process.env.MYCO_RUN_PANEL_SHOTS;
+      await panel.locator('[data-run-headline]').scrollIntoViewIfNeeded();
+      const summaryShot = await shoot(page, 'run-panel-summary-viewport', viewport, mode, shots);
+      await page.screenshot({ path: summaryShot, fullPage: false });
+      await calls.scrollIntoViewIfNeeded();
+      const callsShot = await shoot(page, 'run-panel-calls-viewport', viewport, mode, shots);
+      await page.screenshot({ path: callsShot, fullPage: false });
+      await panel.getByRole('button', { name: 'Report details' }).click();
+      await expect(panel.getByRole('region', { name: 'The agent’s report' })).toContainText('Corrected the map text');
+      await panel.getByRole('button', { name: 'Instruction at launch' }).click();
+      await expect(panel).toContainText('Keep every map entry to one bounded line.');
+      await expect(panel).toContainText('Standing rules were not recorded for this run.');
+      const instructionShot = await shoot(page, 'run-panel-instruction-viewport', viewport, mode, shots);
+      await page.screenshot({ path: instructionShot, fullPage: false });
+      await expectFits(page, viewport);
+      await expectNoRawIds(page);
+      await expectAxeClean(page, ['[data-slide-over]']);
+      expectQuiet(watch);
+    } finally { await context.close(); }
+  });
+}

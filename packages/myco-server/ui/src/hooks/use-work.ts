@@ -51,11 +51,11 @@ export function runIsLive(status: string): boolean {
 export const TASK_RUNS_SHOWN = 6;
 
 /** A project's latest runs of one task, newest first, polling while `live`. */
-export function useTaskRuns(projectId: string, task: string, live: boolean, enabled = true) {
+export function useTaskRuns(projectId: string, task: string, live: boolean, enabled = true, bounds?: { since: number; until: number }) {
   return useQuery({
     enabled,
-    queryKey: ['runs', projectId, 'task', task],
-    queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUNS_SHOWN) })}`, signal),
+    queryKey: ['runs', projectId, 'task', task, bounds?.since, bounds?.until],
+    queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUNS_SHOWN), ...(bounds === undefined ? {} : { since: String(bounds.since), until: String(bounds.until) }) })}`, signal),
     ...freshness(live),
   });
 }
@@ -140,4 +140,11 @@ export const TASK_RUN_PAGE = 20;
 export function useAllTaskRuns(projectId: string, task: string, enabled: boolean) {
   const path = `/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUN_PAGE) })}`;
   return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
+}
+
+/** The next page of admitted calls, using the detail reader’s run-scoped cursor. */
+export function useRunCalls(projectId: string, runId: string) {
+  return useMutation({
+    mutationFn: (cursor: string) => fetchJson<RunDetailAnswer>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}?${new URLSearchParams({ callsCursor: cursor })}`),
+  });
 }

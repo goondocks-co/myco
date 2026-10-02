@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Button, Card, EmptyState, ErrorState, FilterBar, LoadingState, ShowMore, Skeleton, useFilterParams, useQueryDraft, type FilterDefinition,
+  Button, Card, Disclosure, EmptyState, ErrorState, FilterBar, LoadingState, ShowMore, Skeleton, useFilterParams, useQueryDraft, type FilterDefinition,
 } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useNow } from '../../hooks/use-today';
@@ -18,6 +18,7 @@ import { costOf, recovered, summarize, type KindSummary } from './outcomes';
 import {
   EvidenceLines, FailureBlock, KeptNote, OnwardLink, OutcomeCard, PartLabel, RunLines, type EvidenceLine, type RunLineItem,
 } from './OutcomeCard';
+import { ModelSummary } from './ModelSummary';
 import { RunPanel } from './RunPanel';
 import { RunTaskConfirm, RunTaskMenu, STARTABLE_TASKS } from './RunTask';
 import type { DispatchAnswer, RunPageRow } from './wire';
@@ -79,6 +80,7 @@ export interface WorkPageProps {
  */
 export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const now = useNow();
+  const [historyParams] = useSearchParams();
   const admin = useIsAdmin();
   const navigate = useNavigate();
   const location = useLocation();
@@ -124,6 +126,11 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
         onFilterChange={filters.setFilter}
         onClear={() => { draft.reset(); filters.clear(); }}
       />
+      {projectId !== null && <Disclosure summary="All-time run history" defaultOpen={historyParams.get('runs') === 'all'}>
+        <div className="flex flex-col gap-s3">
+          {KIND_ORDER.map((kind) => <TaskHistory key={kind} kind={kind} projectId={projectId} now={now} defaultOpen={historyParams.get('runs') === 'all' && picked === kind} />)}
+        </div>
+      </Disclosure>}
       {work.data !== undefined && kinds.length > 0 && <WorkLede kinds={kinds} window={window} name={name} projectCount={new Set(kinds.flatMap((kind) => kind.projects)).size} />}
       {work.data === undefined && work.isPending && <Skeleton className="h-s5 w-3/5" />}
       <div className="grid items-start gap-s6 lg:grid-rail">
@@ -259,7 +266,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
   const { kind } = summary;
   // "Show all" opens the task's every run under a project; a link from the page across projects arrives with it open.
   const [all, setAll] = useState(projectId !== null && params.get('runs') === 'all' && params.get('outcome') === kind);
-  const runs = useTaskRuns(projectId ?? '', KIND_TASKS[kind], live, projectId !== null);
+  const runs = useTaskRuns(projectId ?? '', KIND_TASKS[kind], live, projectId !== null, bounds);
   const every = useAllTaskRuns(projectId ?? '', KIND_TASKS[kind], projectId !== null && all);
   const scopedRows = all ? every.rows : runs.data?.rows ?? [];
   const from = { from: `${location.pathname}${location.search}` };
@@ -278,7 +285,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
   const whole = matches(headline);
   const failed = summary.produced === 0 && summary.failed > 0 && summary.spores === 0;
   const loading = projectId !== null && (all ? every.isPending : runs.isPending);
-  const more = projectId !== null && !all && (runs.data?.rows.length ?? 0) > RUNS_SHOWN;
+  const more = projectId !== null && !all;
   return (
     <OutcomeCard
       kind={kind}
@@ -288,10 +295,10 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
       action={kind === 'map' && onUpdateMap !== null ? <Button size="sm" onClick={onUpdateMap}>Update now</Button> : undefined}
     >
       <Evidence summary={summary} answer={answer} projectId={projectId} bounds={bounds} window={window} now={now} matches={whole ? () => true : matches} />
-      {(lines.length > 0 || loading) && (
+      {(lines.length > 0 || loading || projectId !== null) && (
         <div className="flex flex-col gap-s2">
-          <PartLabel end={more ? <Button variant="ghost" size="sm" onClick={() => setAll(true)}>Show all</Button> : undefined}>
-            {all ? `Every ${runNoun(kind)}` : window === 'today' ? 'Today’s runs' : 'Latest runs'}
+          <PartLabel end={more ? <Button variant="ghost" size="sm" onClick={() => setAll(true)}>Show all · all time</Button> : undefined}>
+            {all ? `Every ${runNoun(kind)} · all time` : window === 'today' ? 'Today’s runs' : 'This week’s runs'}
           </PartLabel>
           {loading ? <Skeleton className="h-s12 w-full rounded-control" /> : <RunLines items={lines} label={`Latest ${runNoun(kind, 2)}`} state={from} />}
           {all && every.hasMore && <ShowMore shown={every.rows.length} noun={runNoun(kind, 2)} onMore={every.more} pending={every.isFetchingMore} hasMore />}
@@ -299,7 +306,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
             <p className="flex flex-wrap gap-x-s4 gap-y-s1" data-all-runs="">
               {summary.projects.map((id) => (
                 <OnwardLink key={id} to={`${projectPath(id, WORK_SUFFIX)}?${new URLSearchParams({ outcome: kind, runs: 'all' })}`}>
-                  All runs in {projectName(id) ?? 'a project'}
+                  All runs in {projectName(id) ?? 'a project'} · all time
                 </OnwardLink>
               ))}
             </p>
@@ -345,7 +352,8 @@ function workRunLine(run: WorkRun, now: number, projectName: (projectId: string)
     key: run.id,
     time: shortTime(at, now),
     at,
-    words: runLineWords(run.kind, { status: run.status, skipReason: null, targetSessionId: run.sessionId }, { ...run.outcome, readsRecorded: true }),
+    words: runLineWords(run.kind, { status: run.status, result: run.result, skipReason: null, targetSessionId: run.sessionId }, { ...run.outcome, readsRecorded: true }),
+    model: <ModelSummary run={run} />,
     where: projectName(run.projectId) ?? 'A project',
     by: null,
     tone: run.result === 'failed' ? 'bad' : 'plain',
@@ -361,10 +369,11 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     key: row.id,
     time: shortTime(at, now),
     at,
-    words: runLineWords(kind, row, { ...row.outcome, maps: kind === 'map' && row.status === 'completed' ? 1 : 0 }),
+    words: runLineWords(kind, row, row.outcome),
+    model: <ModelSummary run={row} />,
     where: ranOn(row.worker, name)?.list ?? null,
     by: startedByChip(row.startedBy, name),
-    tone: row.status === 'failed' && row.outcome.spores === 0 ? 'bad' : row.status === 'skipped' ? 'held' : live ? 'live' : 'plain',
+    tone: row.result === 'failed' ? 'bad' : row.status === 'skipped' ? 'held' : live ? 'live' : 'plain',
     to: runPath(projectId, row.id),
   };
 }
@@ -497,8 +506,8 @@ function CostCard({ kinds, window }: { kinds: readonly KindSummary[]; window: Wo
       <p className="t-display tabular-nums text-ink" data-cost-total="">{dollars(cost.costUsd)}</p>
       <p className="t-small text-muted">{cost.tokens > 0 ? `${tokenWords(cost.tokens)} tokens over ${count(cost.runs, 'run')}.` : `${count(cost.runs, 'run')}.`}</p>
       <p className="t-small text-muted">
-        These are the agents’ own estimates, not a bill.
-        {cost.runsWithoutCost > 0 && ` ${cost.runsWithoutCost === 1 ? 'One run' : `${cost.runsWithoutCost.toLocaleString()} runs`} reported no cost, so the real total is higher.`}
+        Recorded costs may include agent estimates and estimates using model prices; they are not a bill.
+        {cost.runsWithoutCost > 0 && ` ${cost.runsWithoutCost === 1 ? 'One run' : `${cost.runsWithoutCost.toLocaleString()} runs`} reported no cost, so the total is incomplete.`}
       </p>
     </Card>
   );
@@ -522,3 +531,18 @@ function WhenCard({ projectId, name, admin }: { projectId: string | null; name: 
   );
 }
 
+function TaskHistory({ kind, projectId, now, defaultOpen }: { kind: OutcomeKind; projectId: string; now: number; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const every = useAllTaskRuns(projectId, KIND_TASKS[kind], open);
+  const name = useStarterNames();
+  return (
+    <Disclosure summary={`${capitalize(runNoun(kind, 2))} · all time`} defaultOpen={defaultOpen} onOpenChange={setOpen}>
+      {every.isPending ? <LoadingState label="Loading runs" count={3} /> : every.error !== null ? <ErrorState error={every.error} onRetry={every.retry} /> : every.rows.length === 0 ? <p className="t-small text-muted">No runs recorded.</p> : (
+        <>
+          <RunLines label={`All-time ${runNoun(kind, 2)}`} items={every.rows.map((row) => pageRowLine(row, kind, projectId, now, name))} />
+          {every.hasMore && <ShowMore shown={every.rows.length} noun="runs" hasMore onMore={every.more} pending={every.isFetchingMore} />}
+        </>
+      )}
+    </Disclosure>
+  );
+}
