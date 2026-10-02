@@ -38,7 +38,9 @@ export const outcome = (over: Partial<WorkOutcome> & Pick<WorkOutcome, 'kind' | 
 });
 
 export const workRun = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
+  requested: null,
   identity: { status: 'not_recorded' }, costProvenance: null, harness: null, model: null, provider: null,
+  queuedAt: null, startedAt: null, completedAt: null,
   projectId: P, status: 'completed', result: 'produced', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 0 },
   sessionId: null, failure: null, tokens: 1000, costUsd: 0.1, ...over,
 });
@@ -87,7 +89,9 @@ const machine = (viewer: string, owner: { id: string; label: string }, credentia
 
 /** A run on a page of the project's list; it started five minutes before it ended unless it says otherwise. */
 export const runRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task'>): RunPageRow & Record<string, unknown> => ({
+  requested: null,
   identity: { status: 'not_recorded' }, costProvenance: null,
+  result: over.status === 'failed' ? ((over.outcome?.spores ?? 0) > 0 ? 'failed_with_output' : 'failed') : over.status === 'skipped' || over.status === 'queued' ? null : 'produced',
   agentId: 'myco-agent', status: 'completed', model: null, startedAt: (over.completedAt ?? NOW - HOUR) - 5 * MINUTE, completedAt: NOW - HOUR, tokensUsed: 20_000, costUsd: 0.5,
   costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, position: null, replaced: false, replaces: null, harness: 'claude-code', worker: null,
   startedBy: 'clock', targetSessionId: null, skipReason: null, outcome: { spores: 0, sessions: 0, readsRecorded: false },
@@ -148,12 +152,13 @@ export const sessionAnswer = (sessionId: string, title: string) => ({
 
 /** One run's detail, as `GET /api/projects/{p}/runs/{r}` answers. */
 export const runDetail = (run: RunPageRow, over: Partial<Omit<RunDetailAnswer, 'run'>> & { run?: Record<string, unknown> } = {}): RunDetailAnswer & Record<string, unknown> => ({
+  source: null, map: null, toolCallCoverage: { total: over.toolCalls?.length ?? 0, failed: over.toolCalls?.filter((call) => call.failure !== undefined).length ?? 0, cursor: null },
   reports: [], toolCalls: [], phases: [], outcomeEvidence: null, projectId: P,
   read: { sessions: [], total: 0, recorded: false },
   produced: { spores: { total: 0, items: [] } },
   ...over,
   run: {
-    ...run, instruction: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: run.costUsd, reasoningLevel: null, resumeMode: null,
+    ...run, instruction: null, instructions: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: run.costUsd, reasoningLevel: null, resumeMode: null,
     resumeAttempts: 0, error: null, dispatchedBy: null, usageData: null, actionsTaken: null, ...over.run,
   } as RunDetailAnswer['run'],
 });

@@ -565,6 +565,24 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
           .run(idOf('myco'), run.id, RUN_WRITE_EVENT, run.wrote.tool, JSON.stringify(payload), startedAt + run.minutes * MINUTE);
       }
     }
+    const mapRun = 'run_c19f7a0e55';
+    const pin = { branch: 'main', commit: '8194811abcdef01238194811abcdef01238194811a' };
+    const identity = { status: 'reported', source: 'result', primary: { model: 'claude-sonnet-4-6' }, models: [{ model: 'claude-sonnet-4-6', source: 'result', usage: null }] };
+    const requested = { tier: 'high', model: 'opus', effort: 'high', sources: { tier: 'task', model: 'default' } };
+    sqlite.query(`UPDATE agent_runs SET instruction = ?, execution_overrides = ?, usage_data = ?, cost_data = ?, queued_at = started_at - 3536, run_context = ? WHERE project_id = ? AND id = ?`)
+      .run('Examine the pinned repository and update its code map.\nKeep every map entry to one bounded line.', JSON.stringify({ requested }), JSON.stringify({ identity }), JSON.stringify({ provenance: 'harness_estimate' }), JSON.stringify({ repository: pin }), idOf('myco'), mapRun);
+    sqlite.query('UPDATE agent_reports SET summary = ?, details = ? WHERE project_id = ? AND run_id = ?')
+      .run('Updated the code map after correcting one invalid entry.', JSON.stringify({ examined: 'src/core', recovery: 'Corrected the map text and saved the map.' }, null, 2), idOf('myco'), mapRun);
+    const callStart = now - 20 * 60 * MINUTE;
+    for (const [offset, call] of [
+      { tool: 'myco_run_map', op: 'get', ms: 38 },
+      { tool: 'myco_run_map', op: 'write', ms: 10, failure: { code: 'tool_failure', message: 'Map text must be a bounded nonempty line.' } },
+      { tool: 'myco_run_map', op: 'write', ms: 117 },
+      { tool: 'myco_run', op: 'report', ms: 40 },
+    ].entries()) {
+      sqlite.query(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at, duration_ms) VALUES (?, ?, 'run_tool', ?, ?, ?, ?, ?)`)
+        .run(idOf('myco'), mapRun, call.tool, call.failure === undefined ? 'success' : 'failed', JSON.stringify({ op: call.op, duration_ms: call.ms, ...(call.failure === undefined ? {} : { failure: call.failure }) }), callStart + (offset + 1) * MINUTE, call.ms);
+    }
     // Each learning run's spores, by their place in SPORES: every one in the `myco` project, saved as the run ended.
     const authored: Record<string, number[]> = { run_4f1c9a2e7b: [0, 1], run_a2c4e6f801: [2, 5, 9, 10] };
     for (const [runId, indexes] of Object.entries(authored)) {

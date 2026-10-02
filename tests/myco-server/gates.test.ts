@@ -1338,6 +1338,7 @@ describe('gates', () => {
       'session:member GET /api/projects/{projectId}/release-states',
       'session:member GET /api/projects/{projectId}/runs',
       'session:member GET /api/projects/{projectId}/runs/{runId}',
+      'session:member GET /api/projects/{projectId}/runs/{runId}/calls',
       'session:member GET /api/projects/{projectId}/search',
       'session:member GET /api/projects/{projectId}/sessions',
       'session:member GET /api/projects/{projectId}/sessions/{sessionId}',

@@ -2,7 +2,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { fetchJson, postJson } from '../lib/api';
 import type { TodaySporePage, WorkAnswer } from '../features/today/wire';
 import type { SessionResponse } from './use-sessions';
-import type { DispatchAnswer, RunDetailAnswer, RunPage, RunPageRow } from '../features/work/wire';
+import type { DispatchAnswer, RunCallPage, RunDetailAnswer, RunPage, RunPageRow } from '../features/work/wire';
 import { usePaged } from './use-paged';
 
 export type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../features/today/wire';
@@ -51,11 +51,11 @@ export function runIsLive(status: string): boolean {
 export const TASK_RUNS_SHOWN = 6;
 
 /** A project's latest runs of one task, newest first, polling while `live`. */
-export function useTaskRuns(projectId: string, task: string, live: boolean, enabled = true) {
+export function useTaskRuns(projectId: string, task: string, live: boolean, enabled = true, bounds?: { since: number; until: number }) {
   return useQuery({
     enabled,
-    queryKey: ['runs', projectId, 'task', task],
-    queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUNS_SHOWN) })}`, signal),
+    queryKey: ['runs', projectId, 'task', task, bounds?.since, bounds?.until],
+    queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUNS_SHOWN), ...(bounds === undefined ? {} : { since: String(bounds.since), until: String(bounds.until) }) })}`, signal),
     ...freshness(live),
   });
 }
@@ -140,4 +140,13 @@ export const TASK_RUN_PAGE = 20;
 export function useAllTaskRuns(projectId: string, task: string, enabled: boolean) {
   const path = `/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUN_PAGE) })}`;
   return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
+}
+
+export const CALLS_PER_PAGE = 200;
+
+/** The next page of admitted calls, without reading the prompt or other run details again. */
+export function useRunCalls(projectId: string, runId: string) {
+  return useMutation({
+    mutationFn: (cursor: string) => fetchJson<RunCallPage>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(CALLS_PER_PAGE) })}`),
+  });
 }

@@ -50,7 +50,7 @@ import {
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
 import { CHILD_SEGMENTS, handleEndSession, handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionTurn, handleSessionTurnToolCalls, handleSessionTurns, handleSetPlanStatus, handleTitleSession, handleTombstoneSession, handleTranscript } from './api/sessions.js';
-import { handleProjectRun, handleProjectRuns } from './api/agent-runs.js';
+import { handleProjectRun, handleProjectRunCalls, handleProjectRuns } from './api/agent-runs.js';
 import { handleProjectPlan, handleProjectPlans } from './api/plans.js';
 import { handleKpis } from './api/kpis.js';
 import { handlePlansAcross, handleSessionsAcross, handleSporesAcross } from './api/lists-all.js';
@@ -232,6 +232,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleRegisterAgent },
   { method: 'GET', path: '/api/projects/{projectId}/runs', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'session', authority: 'member', handler: handleProjectRuns },
   { method: 'GET', path: '/api/projects/{projectId}/runs/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleProjectRun },
+  { method: 'GET', path: '/api/projects/{projectId}/runs/{runId}/calls', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/calls$/, auth: 'session', authority: 'member', handler: handleProjectRunCalls },
   { method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/cortex\/instructions$/, auth: 'session', authority: 'member', handler: handleProjectInstructions },
   { method: 'GET', path: '/api/projects/{projectId}/plans', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans$/, auth: 'session', authority: 'member', handler: handleProjectPlans },
   { method: 'GET', path: '/api/projects/{projectId}/plans/{planKey}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'session', authority: 'member', handler: handleProjectPlan },
