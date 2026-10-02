@@ -8,15 +8,11 @@ import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
   cortex: { label: 'Context for sessions', note: 'Sessions here are handed the instructions at start, and spores and plans on their prompts.' },
   canopy: { label: 'Code map', note: 'Myco keeps a map of where things live in this project’s code, from its repository.' },
-  skills: { label: 'Skills', note: 'Nothing on this server reads this switch any more: skills ship with Myco.' },
   vault_evolution: { label: 'Learning', note: 'Myco learns spores from this project’s sessions and keeps them current.' },
 };
 
-/** Capabilities nothing on the server reads any more: shown only while on, read-only, under "Older". */
-export const RETIRED_CAPABILITIES: ReadonlySet<string> = new Set(['skills']);
-
 /** One capability's switch, saving as it is flipped and saying why when the server refuses. */
-function CapabilityRow({ projectId, capability, enabled, readOnly = false }: { projectId: string; capability: string; enabled: boolean; readOnly?: boolean }) {
+function CapabilityRow({ projectId, capability, enabled }: { projectId: string; capability: string; enabled: boolean }) {
   const actions = useSettingsActions();
   const [error, setError] = useState<string | null>(null);
   const words = CAPABILITY_WORDS[capability] ?? { label: capability, note: undefined };
@@ -35,7 +31,7 @@ function CapabilityRow({ projectId, capability, enabled, readOnly = false }: { p
           id={id}
           aria-label={words.label}
           checked={enabled}
-          disabled={readOnly || actions.setCapability.isPending}
+          disabled={actions.setCapability.isPending}
           onCheckedChange={(checked) => {
             setError(null);
             actions.setCapability.mutate({ projectId, capability, enabled: checked }, { onError: (err) => setError(settingsRefusalText(err)) });
@@ -56,17 +52,17 @@ export function Capabilities({ projectId }: { projectId: string }) {
         : (
           <>
             <RowCard label="What Myco does here">
-              {Object.entries(caps.data.capabilities).filter(([capability]) => !RETIRED_CAPABILITIES.has(capability)).map(([capability, enabled]) => (
+              {Object.entries(caps.data.capabilities).filter(([capability]) => Object.hasOwn(CAPABILITY_WORDS, capability)).map(([capability, enabled]) => (
                 <CapabilityRow key={capability} projectId={projectId} capability={capability} enabled={enabled} />
               ))}
             </RowCard>
-            {Object.entries(caps.data.capabilities).some(([capability, enabled]) => RETIRED_CAPABILITIES.has(capability) && enabled) && (
-              <Disclosure summary="Older">
-                <RowCard label="Older">
-                  {Object.entries(caps.data.capabilities).filter(([capability, enabled]) => RETIRED_CAPABILITIES.has(capability) && enabled).map(([capability, enabled]) => (
-                    <CapabilityRow key={capability} projectId={projectId} capability={capability} enabled={enabled} readOnly />
-                  ))}
-                </RowCard>
+
+            {Object.keys(caps.data.retiredCapabilities ?? {}).length > 0 && (
+              <Disclosure summary="Older capabilities">
+                <p className="t-small text-muted">Stored admissions for capabilities Myco no longer uses. Skills ship with Myco.</p>
+                {Object.entries(caps.data.retiredCapabilities ?? {}).map(([capability, enabled]) => (
+                  <p key={capability} data-retired-capability={capability} className="t-small">{capability}: {enabled ? 'On' : 'Off'}</p>
+                ))}
               </Disclosure>
             )}
           </>

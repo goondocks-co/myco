@@ -8,7 +8,7 @@
  * exists to make impossible.
  */
 import { describe, expect, it } from 'bun:test';
-import { createHttpRunStore, NoProviderConfiguredError, ProjectNotAdmittedError, RunControlError, HTTP_MUTATE_ATTEMPTS, type RunClaimAdmission } from '@myco/agent/runtime/run-store-http.js';
+import { createHttpRunStore, ProjectNotAdmittedError, RunControlError, HTTP_MUTATE_ATTEMPTS, type RunClaimAdmission } from '@myco/agent/runtime/run-store-http.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -62,15 +62,14 @@ describe('HTTP RunStore — claim', () => {
     await expect(store.getRunningRunForTask('digest', 60)).rejects.toBeInstanceOf(RunControlError);
   });
 
-  it('claims a capture-driven task on the provider gate alone, carrying the run context, and throws by name when no provider is configured', async () => {
+  it('claims a capture-driven task with its context independently of archived provider configuration', async () => {
     const provided = await harness({ admit: false, admission: { captureDriven: true }, provider: 'anthropic' });
     const context = JSON.stringify({ session_id: 'sess_1', mode: 'claim' });
     expect(await provided.store.claimRun({ ...insert('r1', 'title-summary'), run_context: context }, { taskName: 'title-summary', maxAgeSeconds: 0 })).toEqual({ claimed: true });
     expect(provided.sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ c: context });
 
     const unprovided = await harness({ admit: false, admission: { captureDriven: true } });
-    await expect(unprovided.store.claimRun(insert('r1', 'title-summary'), { taskName: 'title-summary', maxAgeSeconds: 0 }))
-      .rejects.toBeInstanceOf(NoProviderConfiguredError);
+    expect(await unprovided.store.claimRun(insert('r1', 'title-summary'), { taskName: 'title-summary', maxAgeSeconds: 0 })).toEqual({ claimed: true });
   });
 
   it('throws on a Project the Deployment has not admitted, rather than reporting contention', async () => {

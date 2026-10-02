@@ -56,7 +56,6 @@ describe('the settings page\'s defaults', () => {
       'instructions.template': recall.instructionsTemplate,
       'cortex.instructions.inject_on_session_start': recall.instructionsAtSessionStart,
       'cortex.instructions.inject_on_subagent_start': recall.instructionsAtSubagentStart,
-      'cortex.digest.tier': recall.digestTier,
       'cortex.spores.inject_on_prompt_submit': recall.injection.enabled,
       'cortex.spores.max_per_prompt': recall.injection.maxPerPrompt,
       'cortex.plans.inject_intent_nudge_on_prompt_submit': recall.planNudge,

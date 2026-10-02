@@ -157,7 +157,7 @@ describe('the drain', () => {
     expect(await runTick(f.env, later)).toMatchObject({ state: 'active', heldBy: 'queue:pending' });
   });
 
-  it('fails a queued run by name when the Deployment can no longer prepare it, and launches all once the limit is lifted', async () => {
+  it('holds queued probes while archived preferences are unavailable, and launches once preferences and limits allow', async () => {
     const f = fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     const first = (await f.dispatch()) as { runId: string };
@@ -166,8 +166,8 @@ describe('the drain', () => {
     f.complete(first.runId);
     f.clear('agent.provider.type');
     expect(await drainQueue(f.env, NOW + 3)).toBe(0);
-    expect(f.run(second.runId)).toMatchObject({ status: 'failed', error: 'no provider is configured; Settings names one before a dispatch can run' });
-    expect(f.run(third.runId)).toMatchObject({ status: 'failed' });
+    expect(f.run(second.runId)).toMatchObject({ status: 'queued', error: null });
+    expect(f.run(third.runId)).toMatchObject({ status: 'queued' });
     f.setting('agent.provider.type', 'openai-compatible');
     f.clear('agent.limits.concurrent_runs');
     const a = (await f.dispatch('container-smoke', NOW + 10)) as { runId: string };
@@ -737,7 +737,7 @@ describe('a runtime that is not taking runs', () => {
     const preparedRefused = await prepareDispatch(refused.env, 'container-smoke', 'proj_1');
     await dispatchPrepared(refused.env, prepared(preparedRefused), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_refused_later' }, NOW);
     const refusedCredential = credentialOf(refused, 'run_refused_later');
-    refused.clear('agent.provider.type');
+    refused.sqlite.run(`UPDATE agent_runs SET dispatch_spec = NULL WHERE id = 'run_refused_later'`);
     expect(await drainQueue(refused.env, NOW + 1)).toBe(0);
     expect(refused.run('run_refused_later')?.status).toBe('failed');
     expect(revokedAt(refused, refusedCredential)).toBe(NOW + 1);

@@ -1,3 +1,4 @@
+import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
@@ -21,8 +22,8 @@ import { OUTCOME_TASKS } from './task-catalogue.js';
  * path and nobody notices, which is why the gate holds every write to this module.
  */
 
-/** A capability a Project may be admitted to. Mirrors the member-side `CAPABILITY_IDS`. */
-export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'skills', 'vault_evolution'] as const;
+/** A capability the Deployment may admit a Project to. */
+export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution'] as const;
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 
 /**
@@ -68,8 +69,7 @@ export type LeafSpec =
 export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.cold_project_threshold_days': {},
   'agent.event_tasks_enabled': {},
-  // Accepted and stored; no server code reads it. A worker-driven task runs on
-  // the harness `worker.harness` and its fallback name.
+  // Preserved for stored-history inspection; writes to retired leaves are refused.
   'agent.harness': {},
   'agent.limits.concurrent_runs': {},
   'agent.limits.task_concurrent_runs': {},
@@ -152,13 +152,16 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
 };
 
 /**
- * Leaves the Deployment still holds that nothing reads: neither the server nor the member it serves them to. Most are
- * the 1.4 daemon's, which read its own configuration file; a value set here changes nothing. The dashboard shows them
- * retired. `tests/meta/retired-settings.test.ts` holds this set equal to the leaves no reader names.
+ * Retired editable contracts retained for inspection and recovery. Ordinary worker outcomes do not read them.
+ * The retained runtime probe reads archived provider preferences through this owner.
+ * The writer refuses mutations and the API reports stored rows as retired metadata.
  */
 export const RETIRED_LEAVES: ReadonlySet<string> = new Set([
   'agent.event_tasks_enabled',
   'agent.harness',
+  'agent.provider.type',
+  'agent.provider.model',
+  'agent.provider.base_url',
   'agent.provider.context_length',
   'agent.provider.effort_map.default.effort',
   'agent.provider.effort_map.default.verbosity',
@@ -179,6 +182,7 @@ export const RETIRED_LEAVES: ReadonlySet<string> = new Set([
   'agent.summary_batch_interval',
   'cortex.canopy.exclude.default_patterns',
   'cortex.digest.inject_on_session_start',
+  'cortex.digest.tier',
   'notifications.retention_days',
   'skills.confidence_threshold',
   'skills.usage_stale_days',
@@ -189,6 +193,26 @@ export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
 
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
+
+/** Archived runtime preferences for the retained container probe; editable worker profiles are independent. */
+export async function runtimeProbePreferences(db: RelationalStore, task: string): Promise<{ type: string | null; model: string | null; baseUrl: string | null }> {
+  if (task !== 'container-smoke') throw new Error('Archived provider preferences are only for the retained container probe');
+  const stored = await settingsWriter(db).leaves();
+  const overrides = stored['agent.tasks']?.value;
+  const entry = isRecord(overrides) && isRecord(overrides[task]) ? overrides[task] : {};
+  const text = (value: unknown): string | null => typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+  return {
+    type: text(entry.provider) ?? text(stored['agent.provider.type']?.value),
+    model: text(entry.model) ?? text(stored['agent.provider.model']?.value),
+    baseUrl: text(stored['agent.provider.base_url']?.value),
+  };
+}
+
+/** Derived settings metadata, independent of any stored retired override. */
+export function derivedLeafMetadata(leaf: string): { effectiveValue: unknown; source: 'derived' } | null {
+  return leaf === 'cortex.canopy.exclude.default_patterns'
+    ? { effectiveValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS, source: 'derived' } : null;
+}
 
 /** The built-in value of one execution profile leaf on this Deployment. */
 export function executionProfileLeafDefault(leaf: string, credentialSource: 'deployment' | 'worker-login'): { present: boolean; value: string | null } | null {
@@ -229,6 +253,9 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
     if (override === before) continue;
     if (!isRecord(override)) return `${task}: expected an object of task overrides`;
     const old = isRecord(before) ? before : {};
+    if (previous !== undefined && override.provider !== undefined && JSON.stringify(override.provider) !== JSON.stringify(old.provider)) {
+      return `${task}.provider: provider preferences are retired; choose an execution profile`;
+    }
     const tier = override.reasoningLevel;
     if (tier !== undefined && tier !== old.reasoningLevel && !(REASONING_TIERS as readonly unknown[]).includes(tier)) return `${task}.reasoningLevel: expected low, default, or high`;
     if (override.model !== undefined && (override.model !== old.model || override.harness !== old.harness)) {
@@ -369,20 +396,10 @@ export interface SettingsWriter {
   capabilityEnabled(projectId: string, capability: ProjectCapability): Promise<boolean>;
   /** Every capability this Project is admitted to. */
   capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
+  /** Stored admissions for capabilities outside the live set, for read-only inspection. */
+  retiredCapabilities(projectId: string): Promise<Record<string, boolean>>;
 }
 
-/**
- * Whether this Deployment can run `taskName` at all.
- *
- * A provider is resolved task-first, then default — `agent.tasks.<task>.provider`
- * before `agent.provider.type` — matching the member's own resolution order. A
- * task with neither has no model to call, and a run dispatched without one fails
- * after doing work rather than declining before it.
- *
- * Deployment-scoped on purpose: the provider credential belongs to the
- * Deployment, not to a Project, so this asks what the server can do rather than
- * what a Project is admitted to.
- */
 /**
  * SQL over one leaf's stored text, for an admission that runs inside another
  * module's batch.
@@ -409,34 +426,6 @@ export async function leafValues(db: RelationalStore, leaves: readonly string[])
     .bind(...leaves)
     .all<{ leaf: string; value: string }>();
   return new Map(rows.results.map((r) => [r.leaf, r.value]));
-}
-
-export async function providerConfiguredFor(db: RelationalStore, taskName: string): Promise<boolean> {
-  const byLeaf = await leafValues(db, ['agent.provider.type', 'agent.tasks']);
-
-  const perTask = byLeaf.get('agent.tasks');
-  if (perTask !== undefined) {
-    try {
-      const parsed: unknown = JSON.parse(perTask);
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const entry = (parsed as Record<string, unknown>)[taskName];
-        if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)
-          && (entry as Record<string, unknown>).provider != null) return true;
-      }
-    } catch {
-      // A malformed overrides document answers no per-task provider rather than
-      // throwing: the default below still decides, and the settings surface is
-      // where a malformed value is reported.
-    }
-  }
-
-  const fallback = byLeaf.get('agent.provider.type');
-  if (fallback === undefined) return false;
-  try {
-    return JSON.parse(fallback) != null;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -475,7 +464,7 @@ export function settingsWriter(
     async setLeaf(leaf, value, actor, nowMs) {
       return withLeafWrite({ leaf, value, actor }, async () => {
         const previousRaw = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
-        let previous: unknown;
+        let previous: unknown = leaf === 'agent.tasks' ? {} : undefined;
         if (previousRaw !== undefined) {
           try { previous = JSON.parse(previousRaw) as unknown; }
           catch (error) { if (!(error instanceof SyntaxError)) throw error; }
@@ -583,6 +572,13 @@ export function settingsWriter(
         .bind(projectId, capability)
         .first<{ enabled: number }>();
       return row !== null && row.enabled === 1;
+    },
+
+    async retiredCapabilities(projectId) {
+      const rows = await db.prepare(`SELECT capability, enabled FROM project_capabilities WHERE project_id = ?
+        AND capability NOT IN (${PROJECT_CAPABILITIES.map(() => '?').join(', ')})`).bind(projectId, ...PROJECT_CAPABILITIES)
+        .all<{ capability: string; enabled: number }>();
+      return Object.fromEntries(rows.results.map((row) => [row.capability, row.enabled === 1]));
     },
 
     async capabilities(projectId) {

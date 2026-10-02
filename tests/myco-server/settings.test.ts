@@ -67,9 +67,9 @@ describe('deployment settings', () => {
 
   it('sets a leaf, records who set it, and reads it back', async () => {
     const r = rig();
-    expect(await r.w.setLeaf('cortex.digest.tier', 5000, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.leaves()).toEqual({ 'cortex.digest.tier': { value: 5000, updatedAt: 1_000, updatedBy: 'mem_1' } });
-    expect(r.sqlite.query(`SELECT updated_by, updated_at FROM deployment_settings WHERE leaf='cortex.digest.tier'`).get())
+    expect(await r.w.setLeaf('cortex.spores.max_per_prompt', 5000, 'mem_1', 1_000)).toEqual({ applied: true });
+    expect(await r.w.leaves()).toEqual({ 'cortex.spores.max_per_prompt': { value: 5000, updatedAt: 1_000, updatedBy: 'mem_1' } });
+    expect(r.sqlite.query(`SELECT updated_by, updated_at FROM deployment_settings WHERE leaf='cortex.spores.max_per_prompt'`).get())
       .toEqual({ updated_by: 'mem_1', updated_at: 1_000 });
   });
 
@@ -133,22 +133,22 @@ describe('deployment settings', () => {
 describe('project capability admission', () => {
   it('reads every capability OFF for a Project nothing has admitted', async () => {
     const r = rig();
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, skills: false, vault_evolution: false });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, vault_evolution: false });
     for (const c of PROJECT_CAPABILITIES) expect(await r.w.capabilityEnabled('proj_1', c)).toBe(false);
   });
 
   it('admits one capability without admitting the others', async () => {
     const r = rig();
     expect(await r.w.setCapability('proj_1', 'cortex', true, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: false, skills: false, vault_evolution: false });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: false, vault_evolution: false });
   });
 
   it('withdraws an admitted capability', async () => {
     const r = rig();
-    await r.w.setCapability('proj_1', 'skills', true, 'mem_1', 1_000);
-    await r.w.setCapability('proj_1', 'skills', false, 'mem_2', 2_000);
-    expect(await r.w.capabilityEnabled('proj_1', 'skills')).toBe(false);
-    expect(r.sqlite.query(`SELECT updated_by FROM project_capabilities WHERE project_id='proj_1' AND capability='skills'`).get())
+    await r.w.setCapability('proj_1', 'canopy', true, 'mem_1', 1_000);
+    await r.w.setCapability('proj_1', 'canopy', false, 'mem_2', 2_000);
+    expect(await r.w.capabilityEnabled('proj_1', 'canopy')).toBe(false);
+    expect(r.sqlite.query(`SELECT updated_by FROM project_capabilities WHERE project_id='proj_1' AND capability='canopy'`).get())
       .toEqual({ updated_by: 'mem_2' });
   });
 
@@ -183,7 +183,7 @@ describe('a Project created by ingest', () => {
     expect(e.sqlite.query(`SELECT 1 FROM projects WHERE project_id='proj_brand_new'`).get()).not.toBeNull();
 
     const w = settingsWriter(e.db);
-    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: false, canopy: false, skills: false, vault_evolution: false });
+    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: false, canopy: false, vault_evolution: false });
     // And nothing wrote a row on its behalf.
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM project_capabilities`).get() as any).c).toBe(0);
   });
@@ -259,5 +259,31 @@ describe('the instructions template leaf', () => {
   it('leaves untyped active leaves taking any JSON value', async () => {
     const { w } = rig();
     expect(await w.setLeaf('worker.harness', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
+  });
+});
+
+describe('obsolete capability contracts', () => {
+  it('refuses the generated-skill capability while preserving its stored history', async () => {
+    const r = rig();
+    r.sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'skills', 1, 1, 'historic')`);
+    expect(await r.w.setCapability('proj_1', 'skills', false, 'mem_1', 2)).toEqual({ applied: false, refusal: { reason: 'unknown_capability', capability: 'skills' } });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, vault_evolution: false });
+    expect(await r.w.retiredCapabilities('proj_1')).toEqual({ skills: true });
+    expect(r.sqlite.query(`SELECT enabled, updated_by FROM project_capabilities WHERE capability='skills'`).get()).toEqual({ enabled: 1, updated_by: 'historic' });
+  });
+});
+
+describe('retired per-task provider preferences', () => {
+  it('refuses new provider selectors but preserves stored selectors while editing supported siblings', async () => {
+    const r = rig();
+    const historical = { 'title-summary': { provider: { type: 'anthropic' }, schedule: { enabled: true } } };
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ?, 1, 'historic')`, [JSON.stringify(historical)]);
+    expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { provider: 'openai' } }, 'mem_1', 2))
+      .toMatchObject({ applied: false, refusal: { reason: 'invalid_value' } });
+    expect((await r.w.leaves())['agent.tasks'].value).toEqual(historical);
+    const fresh = rig();
+    expect(await fresh.w.setLeaf('agent.tasks', { 'title-summary': { provider: 'anthropic' } }, 'mem_1', 1)).toMatchObject({ applied: false, refusal: { reason: 'invalid_value' } });
+    expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { ...historical['title-summary'], reasoningLevel: 'high' } }, 'mem_1', 2)).toEqual({ applied: true });
+    expect((await r.w.leaves())['agent.tasks'].value).toEqual({ 'title-summary': { ...historical['title-summary'], reasoningLevel: 'high' } });
   });
 });

@@ -42,7 +42,6 @@ const ON: RecallLeaves = {
   instructionsAtSessionStart: true,
   instructionsAtSubagentStart: true,
   instructionsTemplate: TEMPLATE,
-  digestTier: 5000,
 };
 
 /** The Project line every session start carries, whatever else it does. */
@@ -88,22 +87,14 @@ describe('the recall leaves', () => {
 
   it('starts a session with the template and without any generated artifact', () => {
     expect(recallLeaves({})).toMatchObject({
-      instructionsAtSessionStart: true, instructionsAtSubagentStart: true, instructionsTemplate: '', digestTier: 5000,
+      instructionsAtSessionStart: true, instructionsAtSubagentStart: true, instructionsTemplate: '',
     });
     expect(recallLeaves({ 'instructions.template': '# hi' }).instructionsTemplate).toBe('# hi');
     expect(recallLeaves({ 'cortex.instructions.inject_on_session_start': false }).instructionsAtSessionStart).toBe(false);
     expect(recallLeaves({ 'cortex.instructions.inject_on_subagent_start': false }).instructionsAtSubagentStart).toBe(false);
   });
 
-  it('takes only a digest size the Settings page offers', () => {
-    for (const tier of [1500, 5000, 10000]) {
-      expect(recallLeaves({ 'cortex.digest.tier': tier }).digestTier).toBe(tier);
-    }
-    // Anything else falls to the default rather than asking the store for a tier nobody generates.
-    for (const tier of [0, 42, 20000, '5000', null]) {
-      expect({ tier, served: recallLeaves({ 'cortex.digest.tier': tier }).digestTier }).toEqual({ tier, served: 5000 });
-    }
-  });
+
 });
 
 describe('planning intent', () => {

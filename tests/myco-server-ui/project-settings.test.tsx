@@ -108,20 +108,19 @@ describe('a project\'s settings', () => {
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
-  it('leaves out the skills switch, which nothing reads, and shows it read-only under Older only while it is on', async () => {
+  it('offers no generated-skill switch even with stored historical admission', async () => {
     server(base());
     mount(`/p/${P}/settings`);
     expect(await screen.findByRole('switch', { name: 'Learning' })).toBeTruthy();
     expect(screen.queryByRole('switch', { name: 'Skills' })).toBeNull();
     expect(within(sectionOf('capabilities')).queryByRole('button', { name: 'Older' })).toBeNull();
     cleanup();
-    const { sent } = server(base({ [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, skills: true, vault_evolution: true } }) }));
+    const { sent } = server(base({ [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, vault_evolution: true }, retiredCapabilities: { skills: true } }) }));
     mount(`/p/${P}/settings`);
     await screen.findByRole('switch', { name: 'Learning' });
-    fireEvent.click(within(sectionOf('capabilities')).getByRole('button', { name: 'Older' }));
-    const skills = await screen.findByRole('switch', { name: 'Skills' });
-    expect((skills as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(skills);
+    expect(screen.queryByRole('switch', { name: 'Skills' })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'Older capabilities' }));
+    expect(document.querySelector('[data-retired-capability="skills"]')?.textContent).toBe('skills: On');
     expect(sent).toEqual([]);
   });
 

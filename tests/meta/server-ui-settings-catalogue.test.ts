@@ -33,7 +33,7 @@ describe('settings catalogue', () => {
   it('names every Deployment leaf exactly once, and nothing else', () => {
     const catalogued = LEAF_FIELDS.map((f) => f.leaf);
     expect(new Set(catalogued).size).toBe(catalogued.length);
-    expect([...catalogued].sort()).toEqual([...DEPLOYMENT_LEAVES].sort());
+    expect(LEAF_FIELDS.filter((field) => !field.readOnly).map((field) => field.leaf).sort()).toEqual(DEPLOYMENT_LEAVES.filter((leaf) => !RETIRED_LEAVES.has(leaf)).sort());
   });
 
   it('names no retired mechanism anywhere a person or a handler reads', () => {
@@ -102,5 +102,12 @@ describe('settings catalogue', () => {
     const keptByMyco = LEAF_FIELDS.filter((f) => RETIRED_LEAVES.has(f.leaf) && !isRetired(f, served(f.leaf))).map((f) => f.leaf);
     expect(keptByMyco).toEqual(['cortex.canopy.exclude.default_patterns']);
     expect(LEAF_FIELDS.filter((f) => !RETIRED_LEAVES.has(f.leaf) && isRetired(f, served(f.leaf))).map((f) => f.leaf)).toEqual([]);
+  });
+});
+
+describe('obsolete editable contracts', () => {
+  it('offers only admitted leaves, with built-in Canopy patterns as derived metadata', () => {
+    expect(LEAF_FIELDS.filter((field) => field.readOnly !== true).map((field) => field.leaf).sort())
+      .toEqual(DEPLOYMENT_LEAVES.filter((leaf) => !RETIRED_LEAVES.has(leaf)).sort());
   });
 });

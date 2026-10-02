@@ -148,7 +148,7 @@ describe('titleSession', () => {
     expect(logged.join('\n')).not.toContain(OAT);
   });
 
-  it('hands an API key under its own variable, and the task override for provider and model ahead of the defaults, on a runtime-served launch', async () => {
+  it('runs the retained probe with its Deployment login and archived per-task provider preferences', async () => {
     const h = harness();
     await seedAnthropic(h);
     h.setting('agent.provider.model', 'claude-default');
@@ -209,16 +209,9 @@ describe('titleSession', () => {
     expect(h.runRows().map((r) => ({ status: r.status, task: r.task, held: r.held_by, credential: r.dispatched_by }))).toEqual([waiting, waiting]);
   });
 
-  it('queues and spends the claim with no provider, no credential, an unserved provider, or an endpoint provider with no endpoint — and refuses each for a runtime-served task', async () => {
+  it('queues session titles independently of obsolete provider settings', async () => {
     const h = harness();
-    // The three refusals the launch seam still answers, on the task the seam still serves.
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_provider' });
-    h.setting('agent.provider.type', 'anthropic');
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_credential' });
-    h.setting('agent.provider.type', 'openai-compatible');
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'no_endpoint' });
-    h.setting('agent.provider.type', 'openrouter');
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'unsupported_provider', providerType: 'openrouter' });
+    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'harness_unavailable' });
 
     // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
     const sessions = ['unserved', 'none', 'uncredentialed', 'endpointless'];

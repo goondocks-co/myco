@@ -357,7 +357,7 @@ export function useTurnToolCalls(projectId: string, sessionId: string, promptId:
 
 /** What the server answers when asked to title a session now: a run was started, or why none was; each names an outcome in the reader's words. */
 export type TitlingOutcome =
-  | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider' | 'error' | 'queued' | 'capture_pending';
+  | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'error' | 'queued' | 'capture_pending';
 
 export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
   dispatched: 'A new title is being written; it lands within a few minutes',
@@ -366,10 +366,6 @@ export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
   no_material: 'Nothing was typed in this session to title yet',
   capture_pending: 'Capture is incomplete. Check the session transcript before retrying.',
   harness_unavailable: 'Myco has no way to write titles here yet',
-  no_provider: 'No model provider is set for titles; set one in Settings',
-  no_credential: 'The model provider has no key; add one in Settings',
-  no_endpoint: 'The model provider has no address; set one in Settings',
-  unsupported_provider: 'Titles need an Anthropic or OpenAI-compatible provider; set one in Settings',
   error: 'Something went wrong starting the title',
 };
 

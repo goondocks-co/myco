@@ -44,7 +44,7 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
  * clears — in Settings, or by binding a runtime to the Deployment.
  */
 export type TitlingOutcome =
-  | 'already' | 'no_material' | 'harness_unavailable' | 'no_provider' | 'no_credential' | 'no_endpoint' | 'unsupported_provider'
+  | 'already' | 'no_material' | 'harness_unavailable'
   | 'error' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
 
 export type MaterialLine = Pick<MaterialRow, 'prompt' | 'response'>;
@@ -118,10 +118,7 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   harness_unavailable: 'harness_unavailable',
   no_instruction: 'error',
   not_landed: 'error',
-  no_provider: 'no_provider',
-  no_credential: 'no_credential',
-  no_endpoint: 'no_endpoint',
-  unsupported_provider: 'unsupported_provider',
+  no_provider: 'error',
   // No capability gates titling, so a titling dispatch is never refused for one.
   capability_off: 'error',
   // A titling dispatch names a catalogued task and a session the scope already resolved; neither refusal has a path here.

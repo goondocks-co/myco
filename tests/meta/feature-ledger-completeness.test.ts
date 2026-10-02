@@ -49,7 +49,7 @@ import path from 'node:path';
 import { parseLedger, REPO_ROOT } from '../helpers/ledger.ts';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
 
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -382,6 +382,16 @@ describe('feature-preservation ledger completeness', () => {
       const held = new Set(REGISTRIES.filter((registry) => registry.section === section).flatMap(tokensOf));
       const unheld = LEDGER.filter((row) => row.section === section && !held.has(row.token)).map((row) => `${row.section} ${row.token}`);
       expect(unheld, 'a row no registry produces or held: a token dropped from RETIRED_REGISTRIES, or a row in the wrong section').toEqual([]);
+    }
+  });
+});
+
+describe('retired settings dispositions', () => {
+  it('drops each retired contract while preserving its ledger row', () => {
+    const ledger = fs.readFileSync('docs/architecture/myco-2.0.md', 'utf8');
+    for (const leaf of [...RETIRED_LEAVES, 'skills.enabled']) {
+      const row = ledger.split('\n').find((line) => line.startsWith(`| \`${leaf}\` |`));
+      expect({ leaf, dropped: row?.includes(' | DROP | — | — |') }).toEqual({ leaf, dropped: true });
     }
   });
 });

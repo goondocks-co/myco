@@ -90,7 +90,7 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const entry = LEAF_DEFAULTS[field.leaf];
-  const fallback = row?.source === 'default' ? row.effectiveValue : entry !== undefined && 'value' in entry ? entry.value : null;
+  const fallback = row?.source === 'default' || row?.source === 'derived' ? row.effectiveValue : entry !== undefined && 'value' in entry ? entry.value : null;
   // A setting kept by Myco shows Myco's own value; any other shows what is stored, else what the server applies.
   const value = field.readOnly === true && fallback !== null ? fallback : row?.configured ? row.value : fallback;
   // A field typed into shows only what is stored; with nothing stored it stays empty and shows the default as its hint.
