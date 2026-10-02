@@ -44,6 +44,8 @@ const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
     'REJOIN_HINT is the CLI\'s line, printed in a terminal; the dashboard imports only the controls it names',
   'myco-shared/member-protocol.ts:A machine belongs to one member of a Deployment: every home on it signs in as the same machine':
     'MACHINE_IDENTITY_NOTE is the CLI\'s line; the dashboard shows MEMBER_KEEPS_MACHINES instead',
+  'myco-shared/command-shape.ts:deployments':
+    'a wrangler subcommand the command shaping keeps as written; it reaches a page only inside a command the run itself ran',
   'myco-shared/repository.ts:Repository URL must be HTTPS, with a repository path and no credentials, query, or fragment.':
     'the refusal of a URL that carries a user name and password, where "credentials" names exactly the part to take out',
 };
