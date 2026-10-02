@@ -131,7 +131,35 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ]
     },
-    "hooks": {}
+    "hooks": {},
+    "runner": {
+      "order": 5,
+      "asking": {
+        "kind": "unheld"
+      },
+      "credential": {
+        "provider": "google",
+        "slot": null,
+        "variables": [
+          "GEMINI_API_KEY"
+        ]
+      },
+      "profile": {
+        "models": {
+          "low": null,
+          "default": null,
+          "high": null
+        },
+        "efforts": {
+          "low": "low",
+          "default": "medium",
+          "high": "high"
+        },
+        "allowedEfforts": [],
+        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+        "modelHint": "Model selection is unavailable for this agent."
+      }
+    }
   },
   {
     "name": "claude-code",
@@ -479,6 +507,51 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "response",
           "transcript"
         ]
+      }
+    },
+    "runner": {
+      "order": 1,
+      "asking": {
+        "kind": "native"
+      },
+      "credential": {
+        "provider": "anthropic",
+        "slot": "anthropic",
+        "variables": [
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "ANTHROPIC_API_KEY"
+        ],
+        "accepts": [
+          "subscription",
+          "api-key"
+        ]
+      },
+      "profile": {
+        "models": {
+          "low": "haiku",
+          "default": "sonnet",
+          "high": "opus"
+        },
+        "efforts": {
+          "low": "low",
+          "default": "medium",
+          "high": "high"
+        },
+        "allowedEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "modelPattern": "^(haiku|sonnet|opus|fable|claude-[A-Za-z0-9][A-Za-z0-9._-]{0,240})$",
+        "modelHint": "Use haiku, sonnet, opus, fable, or a claude-* model ID.",
+        "modelFamilies": [
+          "haiku",
+          "sonnet",
+          "opus",
+          "fable"
+        ],
+        "modelFamilyPrefix": "claude-"
       }
     }
   },
@@ -945,6 +1018,41 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "transcript"
         ]
       }
+    },
+    "runner": {
+      "order": 2,
+      "asking": {
+        "kind": "sandbox"
+      },
+      "credential": {
+        "provider": "openai",
+        "slot": "own",
+        "ownSlotLabel": "Codex (OpenAI)",
+        "variables": [
+          "OPENAI_API_KEY"
+        ]
+      },
+      "profile": {
+        "models": {
+          "low": null,
+          "default": null,
+          "high": null
+        },
+        "efforts": {
+          "low": "low",
+          "default": "medium",
+          "high": "high"
+        },
+        "allowedEfforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+        "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
+      }
     }
   },
   {
@@ -1400,7 +1508,36 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ]
     },
-    "hooks": {}
+    "hooks": {},
+    "runner": {
+      "order": 4,
+      "asking": {
+        "kind": "run-home",
+        "env": "CURSOR_CONFIG_DIR"
+      },
+      "credential": {
+        "provider": "anthropic",
+        "slot": "anthropic",
+        "variables": [
+          "ANTHROPIC_API_KEY"
+        ]
+      },
+      "profile": {
+        "models": {
+          "low": null,
+          "default": null,
+          "high": null
+        },
+        "efforts": {
+          "low": "low",
+          "default": "medium",
+          "high": "high"
+        },
+        "allowedEfforts": [],
+        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+        "modelHint": "Model selection is unavailable for this agent."
+      }
+    }
   },
   {
     "name": "opencode",
@@ -1526,7 +1663,46 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ]
     },
-    "hooks": {}
+    "hooks": {},
+    "runner": {
+      "order": 3,
+      "asking": {
+        "kind": "run-agent",
+        "env": "OPENCODE_CONFIG_CONTENT",
+        "extensionsOff": {
+          "OPENCODE_PURE": "1"
+        }
+      },
+      "credential": {
+        "provider": "anthropic",
+        "slot": "anthropic",
+        "variables": [
+          "ANTHROPIC_API_KEY"
+        ]
+      },
+      "profile": {
+        "models": {
+          "low": null,
+          "default": null,
+          "high": null
+        },
+        "efforts": {
+          "low": "low",
+          "default": "medium",
+          "high": "high"
+        },
+        "allowedEfforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
+        "modelHint": "Use provider/model. An unset model holds runs at this tier."
+      }
+    }
   },
   {
     "name": "pi",

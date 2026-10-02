@@ -351,3 +351,21 @@ hooks:
   # sequence for this single event — matching pre-refactor behavior.
   Stop:
     phases: [response, transcript]
+
+# What a worker needs to run this harness for the Deployment (`runner-harnesses.generated.ts` in myco-shared).
+runner:
+  order: 2
+  # It never asks: approvals would wait on a terminal nobody is at.
+  asking: { kind: sandbox }
+  credential:
+    provider: openai
+    # A slot of its own: a key stored for embeddings is not a login for every Codex run (#1212).
+    slot: own
+    ownSlotLabel: Codex (OpenAI)
+    variables: [OPENAI_API_KEY]
+  profile:
+    models: { low: null, default: null, high: null }
+    efforts: { low: low, default: medium, high: high }
+    allowedEfforts: [minimal, low, medium, high, xhigh]
+    modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
+    modelHint: Use a Codex model ID. An unset model holds runs at this tier.

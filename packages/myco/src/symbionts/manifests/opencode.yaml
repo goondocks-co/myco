@@ -99,3 +99,20 @@ capabilities:
       pathField: command
       extract: shell-arg
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+
+# What a worker needs to run this harness for the Deployment (`runner-harnesses.generated.ts` in myco-shared).
+runner:
+  order: 3
+  # Its default configuration allows every tool without asking, and a plugin it loads can answer a permission request
+  # before the driver does.
+  asking: { kind: run-agent, env: OPENCODE_CONFIG_CONTENT, extensionsOff: { OPENCODE_PURE: '1' } }
+  credential:
+    provider: anthropic
+    slot: anthropic
+    variables: [ANTHROPIC_API_KEY]
+  profile:
+    models: { low: null, default: null, high: null }
+    efforts: { low: low, default: medium, high: high }
+    allowedEfforts: [minimal, low, medium, high, xhigh, max]
+    modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$'
+    modelHint: Use provider/model. An unset model holds runs at this tier.

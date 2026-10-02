@@ -682,6 +682,61 @@ export type StopPhase = z.infer<typeof StopPhaseSchema>;
 export type HookEventDeclaration = z.infer<typeof HookEventDeclarationSchema>;
 export type HooksManifest = z.infer<typeof HooksManifestSchema>;
 
+const ReasoningTiersOf = <T extends z.ZodTypeAny>(value: T) => z.object({ low: value, default: value, high: value }).strict();
+
+/**
+ * What a worker needs to know to run this harness for the Deployment: where it ranks among the harnesses a worker
+ * can run, the credential its runs read, and the models and efforts each reasoning tier asks of it. Generated into
+ * myco-shared (`runner-harnesses.generated.ts`), which the Deployment and the worker both read.
+ */
+const RunnerManifestSchema = z.object({
+  /** Where a worker ranks this harness among those it can run: lower first. */
+  order: z.number().int().min(1),
+  /**
+   * How the harness comes to ask before a call, or what bounds a run on one that never asks (\`Asking\` in
+   * myco-shared's \`execution-profile.ts\`): the Deployment offers only a harness whose runs can be bounded.
+   */
+  asking: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('native') }).strict(),
+    z.object({ kind: z.literal('sandbox') }).strict(),
+    z.object({ kind: z.literal('run-agent'), env: z.string().min(1), extensionsOff: z.record(z.string(), z.string()) }).strict(),
+    z.object({ kind: z.literal('run-home'), env: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('unheld') }).strict(),
+  ]),
+  credential: z.object({
+    /** The provider the harness authenticates against: a harness is not a provider. */
+    provider: z.enum(['anthropic', 'openai', 'google']),
+    /**
+     * The Deployment secret slot its runs read: a shared provider slot (`secret-slots.ts`), `own` for a slot of its
+     * own named after the harness (labelled `ownSlotLabel`), or null where the Deployment holds none for it.
+     */
+    slot: z.string().min(1).nullable(),
+    ownSlotLabel: z.string().min(1).optional(),
+    /** The variables the harness reads its credential from, in the order a value is matched to one. */
+    variables: z.array(z.string().min(1)).min(1),
+    /** Credential kinds it can use from its slot; absent means API keys only. */
+    accepts: z.array(z.enum(['api-key', 'subscription'])).optional(),
+  }).strict(),
+  profile: z.object({
+    /** The model each tier asks for; null holds runs at that tier until one is configured. */
+    models: ReasoningTiersOf(z.string().min(1).nullable()),
+    efforts: ReasoningTiersOf(z.string().min(1)),
+    allowedEfforts: z.array(z.string().min(1)),
+    /** What a configured model id must match, as a regular expression. */
+    modelPattern: z.string().min(1),
+    modelHint: z.string().min(1),
+    /** Model aliases a run may resolve to a dated id of the family. */
+    modelFamilies: z.array(z.string().min(1)).optional(),
+    /** How a dated id of a family begins: the alias follows it (`claude-` + `sonnet` + `-…`). */
+    modelFamilyPrefix: z.string().min(1).optional(),
+  }).strict(),
+}).strict().refine((r) => (r.credential.slot === 'own') === (r.credential.ownSlotLabel !== undefined), {
+  message: 'credential.ownSlotLabel is required for, and only for, credential.slot: own',
+  path: ['credential', 'ownSlotLabel'],
+});
+
+export type RunnerManifest = z.infer<typeof RunnerManifestSchema>;
+
 const HookFieldPathSchema = z.union([
   z.string().min(1),
   z.array(z.string().min(1)).min(1),
@@ -766,6 +821,8 @@ export const SymbiontManifestSchema = z.object({
    * that need phase-aware dispatch.
    */
   hooks: HooksManifestSchema.optional(),
+  /** What a worker needs to run this harness for the Deployment; absent for a harness no worker runs. */
+  runner: RunnerManifestSchema.optional(),
 }).strict().refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];

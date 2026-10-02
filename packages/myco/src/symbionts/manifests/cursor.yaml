@@ -124,3 +124,20 @@ capabilities:
       pathField: command
       extract: shell-arg
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+
+# What a worker needs to run this harness for the Deployment (`runner-harnesses.generated.ts` in myco-shared).
+runner:
+  order: 4
+  # Its allow list and Run Everything mode live in its configuration directory; its login lives in the keychain,
+  # outside it.
+  asking: { kind: run-home, env: CURSOR_CONFIG_DIR }
+  credential:
+    provider: anthropic
+    slot: anthropic
+    variables: [ANTHROPIC_API_KEY]
+  profile:
+    models: { low: null, default: null, high: null }
+    efforts: { low: low, default: medium, high: high }
+    allowedEfforts: []
+    modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
+    modelHint: Model selection is unavailable for this agent.

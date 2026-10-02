@@ -402,3 +402,21 @@ hooks:
   # sequence for this single event — matching pre-refactor behavior.
   Stop:
     phases: [response, transcript]
+
+# What a worker needs to run this harness for the Deployment (`runner-harnesses.generated.ts` in myco-shared).
+runner:
+  order: 1
+  asking: { kind: native }
+  credential:
+    provider: anthropic
+    slot: anthropic
+    variables: [CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY]
+    accepts: [subscription, api-key]
+  profile:
+    models: { low: haiku, default: sonnet, high: opus }
+    efforts: { low: low, default: medium, high: high }
+    allowedEfforts: [low, medium, high, xhigh]
+    modelPattern: '^(haiku|sonnet|opus|fable|claude-[A-Za-z0-9][A-Za-z0-9._-]{0,240})$'
+    modelHint: Use haiku, sonnet, opus, fable, or a claude-* model ID.
+    modelFamilies: [haiku, sonnet, opus, fable]
+    modelFamilyPrefix: claude-

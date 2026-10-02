@@ -26,6 +26,7 @@ const CAPTURE_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/captur
 const RESUME_COMMANDS_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/resume-commands.generated.ts');
 const PREAMBLE_PATH = path.join(REPO_ROOT, 'packages/myco/src/cli/launch-preamble.generated.ts');
 const ANY_AGENT_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/any-agent-rules.generated.ts');
+const RUNNER_HARNESSES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/runner-harnesses.generated.ts');
 
 /** 1-based line of the first difference, for a failure message that names the drift. */
 function firstDifferingLine(a: string, b: string): number {
@@ -55,6 +56,10 @@ describe('generated hook config freshness', () => {
 
   it('names the harness any_agent rules also apply to without generated drift', () => {
     expect(fs.readFileSync(ANY_AGENT_RULES_PATH, 'utf-8')).toBe(fresh.anyAgentRules);
+  });
+
+  it('gives the Deployment and the worker each harness\'s runner block without generated drift', () => {
+    expect(fs.readFileSync(RUNNER_HARNESSES_PATH, 'utf-8')).toBe(fresh.runnerHarnesses);
   });
 
   it('hooks/hook-config.generated.ts is byte-identical to a fresh generation (run `npm run codegen`)', () => {

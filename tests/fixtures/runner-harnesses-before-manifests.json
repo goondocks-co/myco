@@ -1,0 +1,475 @@
+{
+  "HARNESS_CREDENTIALS": {
+    "claude-code": {
+      "provider": "anthropic",
+      "slot": "anthropic",
+      "variables": [
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY"
+      ],
+      "accepts": [
+        "subscription",
+        "api-key"
+      ]
+    },
+    "codex": {
+      "provider": "openai",
+      "slot": "codex",
+      "variables": [
+        "OPENAI_API_KEY"
+      ]
+    },
+    "opencode": {
+      "provider": "anthropic",
+      "slot": "anthropic",
+      "variables": [
+        "ANTHROPIC_API_KEY"
+      ]
+    },
+    "cursor": {
+      "provider": "anthropic",
+      "slot": "anthropic",
+      "variables": [
+        "ANTHROPIC_API_KEY"
+      ]
+    },
+    "antigravity": {
+      "provider": "google",
+      "slot": null,
+      "variables": [
+        "GEMINI_API_KEY"
+      ]
+    }
+  },
+  "SECRET_SLOTS": [
+    {
+      "name": "anthropic",
+      "label": "Anthropic",
+      "alsoUsedFor": null
+    },
+    {
+      "name": "codex",
+      "label": "Codex (OpenAI)",
+      "alsoUsedFor": null
+    },
+    {
+      "name": "openai",
+      "label": "OpenAI",
+      "alsoUsedFor": "embeddings, when the embedding provider is OpenAI"
+    },
+    {
+      "name": "openrouter",
+      "label": "OpenRouter",
+      "alsoUsedFor": "embeddings, when the embedding provider is OpenRouter"
+    },
+    {
+      "name": "github",
+      "label": "GitHub",
+      "alsoUsedFor": null
+    }
+  ],
+  "SECRET_SLOT_NAMES": [
+    "anthropic",
+    "codex",
+    "openai",
+    "openrouter",
+    "github"
+  ],
+  "PROFILE_HARNESSES": {
+    "claude-code": {
+      "models": {
+        "low": "haiku",
+        "default": "sonnet",
+        "high": "opus"
+      },
+      "efforts": {
+        "low": "low",
+        "default": "medium",
+        "high": "high"
+      },
+      "allowedEfforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "modelPattern": "^(haiku|sonnet|opus|fable|claude-[A-Za-z0-9][A-Za-z0-9._-]{0,240})$",
+      "modelHint": "Use haiku, sonnet, opus, fable, or a claude-* model ID.",
+      "modelFamilies": [
+        "haiku",
+        "sonnet",
+        "opus",
+        "fable"
+      ]
+    },
+    "codex": {
+      "models": {
+        "low": null,
+        "default": null,
+        "high": null
+      },
+      "efforts": {
+        "low": "low",
+        "default": "medium",
+        "high": "high"
+      },
+      "allowedEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+      "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
+    },
+    "opencode": {
+      "models": {
+        "low": null,
+        "default": null,
+        "high": null
+      },
+      "efforts": {
+        "low": "low",
+        "default": "medium",
+        "high": "high"
+      },
+      "allowedEfforts": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
+      "modelHint": "Use provider/model. An unset model holds runs at this tier."
+    },
+    "cursor": {
+      "models": {
+        "low": null,
+        "default": null,
+        "high": null
+      },
+      "efforts": {
+        "low": "low",
+        "default": "medium",
+        "high": "high"
+      },
+      "allowedEfforts": [],
+      "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+      "modelHint": "Model selection is unavailable for this agent."
+    },
+    "antigravity": {
+      "models": {
+        "low": null,
+        "default": null,
+        "high": null
+      },
+      "efforts": {
+        "low": "low",
+        "default": "medium",
+        "high": "high"
+      },
+      "allowedEfforts": [],
+      "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
+      "modelHint": "Model selection is unavailable for this agent."
+    }
+  },
+  "CONFIGURABLE_PROFILE_HARNESSES": [
+    "claude-code",
+    "codex",
+    "opencode"
+  ],
+  "HARNESS_ASKING": {
+    "claude-code": {
+      "kind": "native"
+    },
+    "codex": {
+      "kind": "sandbox"
+    },
+    "opencode": {
+      "kind": "run-agent",
+      "env": "OPENCODE_CONFIG_CONTENT",
+      "extensionsOff": {
+        "OPENCODE_PURE": "1"
+      }
+    },
+    "cursor": {
+      "kind": "run-home",
+      "env": "CURSOR_CONFIG_DIR"
+    },
+    "antigravity": {
+      "kind": "unheld"
+    }
+  },
+  "OFFERABLE_PROFILE_HARNESSES": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "cursor"
+  ],
+  "HARNESSES": [
+    {
+      "id": "claude-code",
+      "profile": {
+        "model": "flag",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "accounting": {
+        "reported": "claude-stream",
+        "modelSources": [
+          "system.init.model",
+          "assistant.message.model",
+          "result.modelUsage"
+        ],
+        "primarySources": [
+          "system.init.model"
+        ],
+        "modelVariants": [
+          {
+            "suffix": "[1m]",
+            "context": "1m"
+          }
+        ],
+        "zeroDollars": "reported",
+        "launchFallback": "none",
+        "provider": {
+          "kind": "environment",
+          "default": "anthropic",
+          "selectors": [
+            {
+              "variable": "CLAUDE_CODE_USE_BEDROCK",
+              "provider": "bedrock"
+            },
+            {
+              "variable": "CLAUDE_CODE_USE_VERTEX",
+              "provider": "vertex"
+            },
+            {
+              "variable": "CLAUDE_CODE_USE_FOUNDRY",
+              "provider": "foundry"
+            }
+          ],
+          "unknownIfSet": [
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_CLIENT_DATA_URL"
+          ]
+        },
+        "tokenScope": "attempt"
+      },
+      "binary": "claude",
+      "launch": {
+        "kind": "native"
+      },
+      "credential": {
+        "kind": "file-or-command",
+        "path": "~/.claude/.credentials.json",
+        "requires": [
+          "claudeAiOauth",
+          "accessToken"
+        ],
+        "args": [
+          "auth",
+          "status"
+        ]
+      },
+      "isolation": {
+        "kind": "flag",
+        "args": [
+          "--strict-mcp-config"
+        ]
+      },
+      "asking": {
+        "kind": "native"
+      },
+      "sourceGit": "shim"
+    },
+    {
+      "id": "codex",
+      "profile": {
+        "model": "config",
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "accounting": {
+        "reported": "codex-session",
+        "modelSources": [
+          "session.turn_context.model"
+        ],
+        "launchFallback": "resolved-config",
+        "provider": {
+          "kind": "session-config",
+          "default": "openai"
+        },
+        "tokenScope": "attempt"
+      },
+      "binary": "codex",
+      "launch": {
+        "kind": "native"
+      },
+      "credential": {
+        "kind": "file",
+        "path": "~/.codex/auth.json",
+        "requires": [
+          "OPENAI_API_KEY",
+          "tokens",
+          "personal_access_token"
+        ]
+      },
+      "isolation": {
+        "kind": "home",
+        "env": "CODEX_HOME"
+      },
+      "asking": {
+        "kind": "sandbox"
+      },
+      "sourceGit": "none"
+    },
+    {
+      "id": "opencode",
+      "profile": {
+        "model": "config",
+        "efforts": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "accounting": {
+        "reported": "acp-session",
+        "zeroDollars": "unavailable",
+        "modelSources": [
+          "session.models",
+          "session.configOptions",
+          "session.currentModelId"
+        ],
+        "launchFallback": "none",
+        "provider": {
+          "kind": "model-prefix"
+        },
+        "tokenScope": "unverified",
+        "lastResponseVersions": [
+          "1.18.21",
+          "1.18.29"
+        ]
+      },
+      "binary": "opencode",
+      "launch": {
+        "kind": "subcommand",
+        "args": [
+          "acp"
+        ]
+      },
+      "credential": {
+        "kind": "file",
+        "path": "~/.local/share/opencode/auth.json",
+        "requires": []
+      },
+      "isolation": {
+        "kind": "additive"
+      },
+      "asking": {
+        "kind": "run-agent",
+        "env": "OPENCODE_CONFIG_CONTENT",
+        "extensionsOff": {
+          "OPENCODE_PURE": "1"
+        }
+      },
+      "sourceGit": "shim"
+    },
+    {
+      "id": "cursor",
+      "profile": {
+        "model": "none",
+        "efforts": []
+      },
+      "accounting": {
+        "reported": "acp-session",
+        "zeroDollars": "unavailable",
+        "modelSources": [
+          "session.models",
+          "session.configOptions",
+          "session.currentModelId"
+        ],
+        "launchFallback": "none",
+        "provider": {
+          "kind": "unavailable"
+        },
+        "tokenScope": "unverified"
+      },
+      "binary": "cursor-agent",
+      "launch": {
+        "kind": "subcommand",
+        "args": [
+          "acp"
+        ]
+      },
+      "credential": {
+        "kind": "command",
+        "args": [
+          "status"
+        ]
+      },
+      "isolation": {
+        "kind": "additive"
+      },
+      "asking": {
+        "kind": "run-home",
+        "env": "CURSOR_CONFIG_DIR"
+      },
+      "sourceGit": "none"
+    },
+    {
+      "id": "antigravity",
+      "profile": {
+        "model": "none",
+        "efforts": []
+      },
+      "accounting": {
+        "reported": "acp-session",
+        "zeroDollars": "unavailable",
+        "modelSources": [
+          "session.models",
+          "session.configOptions",
+          "session.currentModelId"
+        ],
+        "launchFallback": "none",
+        "provider": {
+          "kind": "unavailable"
+        },
+        "tokenScope": "unverified"
+      },
+      "binary": "agy",
+      "launch": {
+        "kind": "sidecar",
+        "binary": "agy_acp_server.par"
+      },
+      "credential": {
+        "kind": "file",
+        "path": "~/.gemini/antigravity-cli/settings.json",
+        "requires": []
+      },
+      "isolation": {
+        "kind": "additive"
+      },
+      "asking": {
+        "kind": "unheld"
+      },
+      "sourceGit": "none"
+    }
+  ]
+}
