@@ -9,10 +9,9 @@
  * name a use the server does not make.
  */
 import { HARNESS_CREDENTIALS } from './harness-providers.js';
+import type { ProviderSlotName } from './provider-slots.js';
 import { RUNNER_OWN_SLOTS } from './runner-harnesses.generated.js';
 
-/** The slots a provider's key fills, which any harness or server use may read. */
-type ProviderSlotName = 'anthropic' | 'openai' | 'openrouter' | 'github';
 /** A slot a harness's manifest declares as its own (`runner.credential.slot: own`), named after the harness. */
 type HarnessOwnSlotName = (typeof RUNNER_OWN_SLOTS)[number]['name'];
 export type SecretSlotName = ProviderSlotName | HarnessOwnSlotName;

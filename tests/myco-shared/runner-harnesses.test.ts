@@ -12,6 +12,8 @@ import { SECRET_SLOTS, SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/my
 import { CONFIGURABLE_PROFILE_HARNESSES, HARNESS_ASKING, OFFERABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, profileModelMatches } from '@goondocks/myco-shared/execution-profile';
 import { RUNNER_HARNESSES } from '../../packages/myco-shared/src/runner-harnesses.generated.ts';
 import { HARNESSES } from '@myco/runner/harnesses.js';
+import YAML from 'yaml';
+import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
 
 const BEFORE = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../fixtures/runner-harnesses-before-manifests.json'), 'utf-8')) as Record<string, unknown>;
 /** The same value through JSON, as the fixture holds it: key order and readonly arrays are not facts. */
@@ -67,5 +69,13 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
     expect(credentialEnvFor('codex', 'sk-1')).toEqual({ OPENAI_API_KEY: 'sk-1' });
     expect(credentialEnvFor('antigravity', 'k')).toEqual({});
     expect(harnessesReading('anthropic')).toEqual(['claude-code', 'opencode', 'cursor']);
+  });
+
+  it('name only a slot the Deployment stores, so a misspelt slot fails the generator rather than a run', () => {
+    const manifest = YAML.parse(fs.readFileSync(path.resolve(import.meta.dirname, '../../packages/myco/src/symbionts/manifests/claude-code.yaml'), 'utf-8')) as { runner: { credential: { slot: string } } };
+    expect(SymbiontManifestSchema.safeParse(manifest).success).toBe(true);
+    manifest.runner.credential.slot = 'antropic';
+    const parsed = SymbiontManifestSchema.safeParse(manifest);
+    expect(parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join('.'))).toEqual(['runner.credential.slot']);
   });
 });
