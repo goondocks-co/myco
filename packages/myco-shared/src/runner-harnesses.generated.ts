@@ -116,8 +116,20 @@ export const RUNNER_HARNESSES = [
         "xhigh",
         "max"
       ],
-      "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
-      "modelHint": "Use provider/model. An unset model holds runs at this tier."
+      "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
+      "modelHint": "Use provider/model. An unset model holds runs at this tier.",
+      "presets": [
+        {
+          "id": "openrouter-claude-latest",
+          "provider": "openrouter",
+          "label": "Latest Claude models through OpenRouter",
+          "models": {
+            "low": "openrouter/~anthropic/claude-haiku-latest",
+            "default": "openrouter/~anthropic/claude-sonnet-latest",
+            "high": "openrouter/~anthropic/claude-opus-latest"
+          }
+        }
+      ]
     }
   },
   {

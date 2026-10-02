@@ -43,11 +43,22 @@ export interface ExecutionProfile {
   model: string;
   effort: string | null;
   sources: { tier: 'task' | 'task-override'; model: 'default' | 'configured' | 'task-pin' };
+  /** The model the claiming worker's harness listed `model` as resolving to, where it listed a different one. */
+  resolvesTo?: string;
 }
 
 export interface ProfileCapability {
   model: 'flag' | 'config' | 'none';
   efforts: readonly string[];
+}
+
+/** A model for each tier, offered as one choice where a worker lists every one of them for the harness. */
+export interface ModelPreset {
+  id: string;
+  /** The provider whose login the models need, as the harness names it. */
+  provider: string;
+  label: string;
+  models: Readonly<Record<ReasoningTier, string>>;
 }
 
 interface HarnessProfileDefaults {
@@ -59,6 +70,7 @@ interface HarnessProfileDefaults {
   modelFamilies?: readonly string[];
   /** How a dated id of a family begins: an alias `sonnet` resolves to `<prefix>sonnet-…`. */
   modelFamilyPrefix?: string;
+  presets?: readonly ModelPreset[];
 }
 
 /** Model defaults and validation vocabulary for each harness's settings, from its manifest's `runner.profile`, in the order a worker ranks them. */
@@ -96,7 +108,8 @@ export function isExecutionProfile(value: unknown): value is ExecutionProfile {
   if (!isReasoningTier(p.tier) || typeof p.model !== 'string' || p.model.trim() === '' || !(p.effort === null || typeof p.effort === 'string')
     || sources === null || typeof sources !== 'object' || Array.isArray(sources)) return false;
   const s = sources as Record<string, unknown>;
-  return (s.tier === 'task' || s.tier === 'task-override') && (s.model === 'default' || s.model === 'configured' || s.model === 'task-pin');
+  return (s.tier === 'task' || s.tier === 'task-override') && (s.model === 'default' || s.model === 'configured' || s.model === 'task-pin')
+    && (p.resolvesTo === undefined || (typeof p.resolvesTo === 'string' && p.resolvesTo.trim() !== ''));
 }
 
 /** Read only the public requested profile from a run's private overrides. */
@@ -107,20 +120,143 @@ export function requestedProfile(raw: unknown): ExecutionProfile | null {
   if (parsed === null || typeof parsed !== 'object') return null;
   const candidate: unknown = (parsed as Record<string, unknown>).requested;
   if (!isExecutionProfile(candidate)) return null;
-  return { tier: candidate.tier, model: candidate.model, effort: candidate.effort, sources: { tier: candidate.sources.tier, model: candidate.sources.model } };
+  return {
+    tier: candidate.tier, model: candidate.model, effort: candidate.effort, sources: { tier: candidate.sources.tier, model: candidate.sources.model },
+    ...(candidate.resolvesTo === undefined ? {} : { resolvesTo: candidate.resolvesTo }),
+  };
 }
 
 /**
- * Whether the model a run reported is the one it was asked for. An explicit id matches the same id, or the same id
- * under the provider the run reported where the requested one names it (`openai/gpt-5.5` is `gpt-5.5` from `openai`);
- * an alias matches a dated id of its family.
+ * Whether the model a run reported is the one it was asked for, on what the harness reported and nothing else.
+ *
+ * A model id matches the same id, or the same id under the provider the run reported where the requested one names
+ * it (`openai/gpt-5.5` is `gpt-5.5` from `openai`, and `openrouter/~anthropic/claude-opus-latest` is
+ * `~anthropic/claude-opus-latest` from `openrouter`). Where the claiming worker's harness listed what the requested
+ * model resolves to (`resolvesTo`), the model it resolves to matches too. An alias the manifest declares as a family
+ * (`modelFamilies`) also matches a dated id of that family. Nothing else matches: an alias whose resolution the
+ * harness never reported does not match a model whose name merely resembles it.
  */
-export function profileModelMatches(harness: string, requested: string, actual: { model: string; provider?: string }): boolean {
+export function profileModelMatches(
+  harness: string, requested: Pick<ExecutionProfile, 'model' | 'resolvesTo'>, actual: { model: string; provider?: string },
+): boolean {
+  const same = (id: string): boolean => id === actual.model || (actual.provider !== undefined && id === `${actual.provider}/${actual.model}`);
   const spec = PROFILE_HARNESSES[harness];
-  const families = spec?.modelFamilies ?? [];
-  return requested === actual.model
-    || (actual.provider !== undefined && requested === `${actual.provider}/${actual.model}`)
-    || (families.includes(requested) && actual.model.startsWith(`${spec?.modelFamilyPrefix ?? ''}${requested}-`));
+  return same(requested.model)
+    || (requested.resolvesTo !== undefined && same(requested.resolvesTo))
+    || ((spec?.modelFamilies ?? []).includes(requested.model) && actual.model.startsWith(`${spec?.modelFamilyPrefix ?? ''}${requested.model}-`));
+}
+
+/**
+ * The Deployment stores the models each worker lists for the harnesses it offers (`POST /worker/models`) and answers
+ * them to Settings. A worker lists and sends them only where the Deployment advertises this.
+ */
+export const MODEL_CATALOG_FEATURE = 'model-catalog-v1';
+
+/** How long a worker's list of a harness's models stands before the worker lists them again. */
+export const MODEL_CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+/** The most models a catalog keeps; a harness listing more is cut to this and marked `truncated`. */
+export const MAX_CATALOG_MODELS = 1000;
+/** The most a catalog's models take as JSON, so one catalog always fits one report; past it the rest are cut and the catalog marked `truncated`. */
+export const MAX_CATALOG_MODEL_BYTES = 192 * 1024;
+/** The most catalogs one report carries: one per harness. */
+export const MAX_CATALOG_HARNESSES = 16;
+const MAX_CATALOG_ID_CHARS = 256;
+const MAX_CATALOG_LABEL_CHARS = 128;
+const MAX_CATALOG_EFFORTS = 16;
+const MAX_CATALOG_EFFORT_CHARS = 64;
+const MAX_CATALOG_SOURCE_CHARS = 256;
+
+/** One model a harness listed, as the worker read it. */
+export interface CatalogModel {
+  id: string;
+  label: string;
+  /** The provider the harness names for it, where its id carries one. */
+  provider?: string;
+  /** The model the harness runs when none is named. */
+  isDefault?: true;
+  /** The model the harness said this one resolves to, where it differs from the id. */
+  resolvesTo?: string;
+  /** The model the harness names as this one's successor. */
+  upgrade?: string;
+  /** The efforts the harness offers for it. */
+  efforts?: string[];
+}
+
+/** How a worker came by a catalog: the manifest's source kind, and the command it ran. */
+export interface CatalogSource { kind: 'command' | 'exchange'; command: string }
+
+/** The models one worker listed for one harness, and when. */
+export interface ModelCatalog {
+  harness: string;
+  source: CatalogSource;
+  fetchedAt: number;
+  models: CatalogModel[];
+  /** Set where the harness listed more than `MAX_CATALOG_MODELS`. */
+  truncated?: true;
+}
+
+const catalogText = (value: unknown, max: number): string | null =>
+  typeof value === 'string' && value.trim() !== '' && !/[\u0000-\u001f\u007f]/.test(value) ? value.trim().slice(0, max) : null;
+
+/**
+ * One listed model as a catalog keeps it, or null where its id is not one the harness's settings accept
+ * (`modelPattern`): a model that cannot be chosen is not offered.
+ */
+export function catalogModel(harness: string, raw: unknown): CatalogModel | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const entry = raw as Record<string, unknown>;
+  const id = typeof entry.id === 'string' ? entry.id.trim() : null;
+  if (id === null || id.length > MAX_CATALOG_ID_CHARS || modelRefusal(harness, id) !== null) return null;
+  const provider = catalogText(entry.provider, MAX_CATALOG_ID_CHARS);
+  const resolvesTo = catalogText(entry.resolvesTo, MAX_CATALOG_ID_CHARS);
+  const upgrade = catalogText(entry.upgrade, MAX_CATALOG_ID_CHARS);
+  const efforts = Array.isArray(entry.efforts)
+    ? [...new Set(entry.efforts.map((effort) => catalogText(effort, MAX_CATALOG_EFFORT_CHARS)).filter((effort): effort is string => effort !== null))].slice(0, MAX_CATALOG_EFFORTS)
+    : [];
+  return {
+    id, label: catalogText(entry.label, MAX_CATALOG_LABEL_CHARS) ?? id,
+    ...(provider === null ? {} : { provider }),
+    ...(entry.isDefault === true ? { isDefault: true as const } : {}),
+    ...(resolvesTo === null || resolvesTo === id ? {} : { resolvesTo }),
+    ...(upgrade === null || upgrade === id ? {} : { upgrade }),
+    ...(efforts.length === 0 ? {} : { efforts }),
+  };
+}
+
+/**
+ * A catalog as the Deployment keeps one, or null where it names no harness whose models Settings configures, no
+ * source, or no time it was listed. Models the harness's settings would refuse, and repeats, are left out; past
+ * `MAX_CATALOG_MODELS` the rest are cut and the catalog is marked `truncated`.
+ */
+export function parseModelCatalog(value: unknown): ModelCatalog | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const harness = typeof raw.harness === 'string' && CONFIGURABLE_PROFILE_HARNESSES.includes(raw.harness) ? raw.harness : null;
+  const source = raw.source !== null && typeof raw.source === 'object' && !Array.isArray(raw.source) ? raw.source as Record<string, unknown> : null;
+  const kind = source?.kind === 'command' || source?.kind === 'exchange' ? source.kind : null;
+  const command = catalogText(source?.command, MAX_CATALOG_SOURCE_CHARS);
+  const fetchedAt = typeof raw.fetchedAt === 'number' && Number.isSafeInteger(raw.fetchedAt) && raw.fetchedAt > 0 ? raw.fetchedAt : null;
+  if (harness === null || kind === null || command === null || fetchedAt === null || !Array.isArray(raw.models)) return null;
+  const seen = new Set<string>();
+  const models: CatalogModel[] = [];
+  let bytes = 0;
+  let truncated = raw.truncated === true;
+  for (const entry of raw.models) {
+    const model = catalogModel(harness, entry);
+    if (model === null || seen.has(model.id)) continue;
+    bytes += new TextEncoder().encode(JSON.stringify(model)).length + 1;
+    if (models.length >= MAX_CATALOG_MODELS || bytes > MAX_CATALOG_MODEL_BYTES) { truncated = true; break; }
+    seen.add(model.id);
+    models.push(model);
+  }
+  return { harness, source: { kind, command }, fetchedAt, models, ...(truncated ? { truncated: true as const } : {}) };
+}
+
+/** The presets a harness declares whose every model some catalog of the harness lists, so the provider each names is logged in. */
+export function offeredPresets(harness: string, catalogs: readonly Pick<ModelCatalog, 'harness' | 'models'>[]): ModelPreset[] {
+  const listed = new Set(catalogs.filter((catalog) => catalog.harness === harness).flatMap((catalog) => catalog.models.map((model) => model.id)));
+  return (PROFILE_HARNESSES[harness]?.presets ?? []).filter((preset) => REASONING_TIERS.every((tier) => listed.has(preset.models[tier])));
 }
 
 /**

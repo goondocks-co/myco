@@ -12,6 +12,7 @@ import type { LeafField } from './catalogue';
 import { LEAF_DEFAULTS } from './defaults';
 import { isRetired } from './retired';
 import { EmbeddingRow } from './EmbeddingFields';
+import { ModelRow } from './ModelPicker';
 import type { LeafRow } from './wire';
 
 /** The agents a machine can run Myco's work with: the harnesses the server opens a credential for, by the same table. */
@@ -84,6 +85,7 @@ const STACKED: ReadonlySet<LeafField['kind']> = new Set(['text', 'textarea', 'js
  */
 export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   if (field.kind === 'embedding-provider' || field.kind === 'embedding-model' || field.kind === 'embedding-endpoint') return <EmbeddingRow field={field} row={row} />;
+  if (field.kind === 'model') return <ModelRow field={field} row={row} textControl={<ValueControl field={{ ...field, kind: 'text' }} row={row} />} />;
   return <ValueControl field={field} row={row} />;
 }
 

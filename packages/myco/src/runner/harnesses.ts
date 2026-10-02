@@ -86,6 +86,22 @@ export interface HarnessAccounting {
   lastResponseVersions?: readonly string[];
 }
 
+/** Which field of a listed entry holds each fact a catalog keeps of a model, as a dotted path (`a[].b` reads every entry's `b`). */
+export interface CatalogFields { id: string; label?: string; isDefault?: string; resolvesTo?: string; upgrade?: string; efforts?: string }
+
+/**
+ * How a worker lists the models a harness can run (`models.ts`): one id per line of a command's output, or the answer
+ * to messages sent on its standard input. `provider: id-prefix` names each model's provider as its id's first segment.
+ */
+export type ModelListing =
+  | { kind: 'command'; args: readonly string[]; env?: Readonly<Record<string, string>>; format: 'lines'; provider?: 'id-prefix' }
+  | {
+    kind: 'exchange'; args: readonly string[]; env?: Readonly<Record<string, string>>;
+    send: readonly Readonly<Record<string, unknown>>[];
+    answer: { where: Readonly<Record<string, string | number>>; list: string };
+    fields: CatalogFields; provider?: 'id-prefix';
+  };
+
 export interface Harness {
   id: string;
   binary: string;
@@ -96,6 +112,8 @@ export interface Harness {
   sourceGit: SourceGit;
   accounting: HarnessAccounting;
   profile: ProfileCapability;
+  /** How a worker lists the models it can run; absent where it lists none. */
+  models?: ModelListing;
 }
 
 /** What a harness's manifest declares of how a worker runs it (`runner.worker`): all but what the shared tables hold. */

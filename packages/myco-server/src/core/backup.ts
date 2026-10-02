@@ -59,8 +59,8 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * Tables an artifact never carries, each for a stated reason: migration-owned
  * state, transient upload-reservation state, the credential-store table nothing else may
  * touch, the backup index itself, the migration guard and holding tables, operator
- * configuration, and what a worker last said about itself, which the workers
- * attached to the restored Deployment state again on their next claim. Settings (the Deployment's and each machine's), capability
+ * configuration, and what a worker last said about itself and the models it last listed, which the workers
+ * attached to the restored Deployment state again on their next claim and their next listing. Settings (the Deployment's and each machine's), capability
  * admissions, repository connections, release provenance settings and sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore. Embedding state is rebuilt from the sources an
  * artifact carries; the sources embedding passes over are found again, and an embedding model switch is not carried, so a restored Deployment
@@ -75,7 +75,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'deployment_settings', 'deployment_setting_resets', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
-  'worker_contacts',
+  'worker_contacts', 'worker_model_catalogs',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
   '_v48_credential_rows', '_v48_guard_rows_kept',

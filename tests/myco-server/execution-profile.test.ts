@@ -8,6 +8,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { recordTaskHolder } from '@myco-server-worker/core/runs.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
+import { recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
 import { PROFILE_HOLD_PREFIXES, credentialUnavailable, heldByWords, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
@@ -138,6 +139,36 @@ describe('task execution profiles', () => {
       const detail = await getRunDetail(r.db, { projectId: 'proj_1' }, claim.run.id, NOW + 2, 'mem_worker');
       expect({ requested: detail?.run.requested?.model, warned: (detail?.run.identity as { warnings?: string[] } | undefined)?.warnings?.includes('model_mismatch') === true })
         .toEqual({ requested: 'openai/gpt-5.5', warned });
+    }
+  });
+
+  it('judges an OpenRouter alias run on what the worker listed it resolving to and what the run reported, never on its name', async () => {
+    const alias = 'openrouter/~openai/gpt-sol-latest';
+    const cases = [
+      { listed: 'openrouter/openai/gpt-6.1-sol', reported: { model: 'openai/gpt-6.1-sol', provider: 'openrouter' }, warned: false },
+      { listed: null, reported: { model: '~openai/gpt-sol-latest', provider: 'openrouter' }, warned: false },
+      { listed: null, reported: { model: 'openai/gpt-6.1-sol', provider: 'openrouter' }, warned: true },
+      { listed: 'openrouter/openai/gpt-6.1-sol', reported: { model: 'openai/gpt-6-luna', provider: 'openrouter' }, warned: true },
+    ];
+    for (const { listed, reported, warned } of cases) {
+      const r = await rig();
+      await r.writer.setLeaf('agent.reasoning_map.opencode.default', alias, 'mem_worker', NOW);
+      if (listed !== null) {
+        await recordModelCatalog(r.db, { credentialId: r.token.tokenId, machineId: 'fixture', now: NOW, catalog: {
+          harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, fetchedAt: NOW, models: [{ id: alias, label: alias, provider: 'openrouter', resolvesTo: listed }],
+        } });
+      }
+      r.queue('alias_run');
+      const claim = await r.claim([{ id: 'opencode', authenticated: true, profile: { model: 'config', efforts: ['medium'] } }]);
+      if (!claim.claimed) throw new Error('claim refused');
+      expect(claim.run.profile.resolvesTo).toBe(listed ?? undefined);
+      await endLeasedRun(r.serverEnv, { tokenId: r.token.tokenId, now: NOW + 1 }, {
+        projectId: 'proj_1', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', accountingVersion: 1,
+        identity: { status: 'reported', source: 'session.configOptions', primary: reported, models: [{ ...reported, source: 'session.configOptions', usage: null }] },
+      });
+      const detail = await getRunDetail(r.db, { projectId: 'proj_1' }, claim.run.id, NOW + 2, 'mem_worker');
+      expect({ listed, reported: reported.model, requested: detail?.run.requested, warned: (detail?.run.identity as { warnings?: string[] } | undefined)?.warnings?.includes('model_mismatch') === true })
+        .toEqual({ listed, reported: reported.model, requested: expect.objectContaining({ model: alias, ...(listed === null ? {} : { resolvesTo: listed }) }), warned });
     }
   });
 

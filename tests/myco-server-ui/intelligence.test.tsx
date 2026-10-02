@@ -659,6 +659,20 @@ describe('reviewed run evidence', () => {
       applied.unmount();
     }
   });
+  it('flags an OpenRouter alias run only where it ran neither the alias nor what the worker listed it resolving to', () => {
+    const alias = 'openrouter/~openai/gpt-sol-latest';
+    const ran = (model: string) => ({ status: 'reported', source: 'session.configOptions', primary: { model, provider: 'openrouter' }, models: [{ model, provider: 'openrouter', source: 'session.configOptions', usage: null }] });
+    const flagged = (resolvesTo: string | undefined, model: string): boolean => {
+      const requested = { tier: 'default', model: alias, effort: null, sources: { tier: 'task', model: 'configured' }, ...(resolvesTo === undefined ? {} : { resolvesTo }) };
+      const view = render(<ModelSummary run={runDetail(mapRuns[1]!, { run: { harness: 'opencode', requested, identity: ran(model) } }).run} />);
+      const shown = view.container.querySelector('[data-model-mismatch]') !== null;
+      view.unmount();
+      return shown;
+    };
+    expect(flagged(undefined, '~openai/gpt-sol-latest')).toBe(false);
+    expect(flagged('openrouter/openai/gpt-6.1-sol', 'openai/gpt-6.1-sol')).toBe(false);
+    expect(flagged(undefined, 'openai/gpt-6.1-sol')).toBe(true);
+  });
   it('omits empty model evidence from run lists', () => {
     const { container } = render(<ModelSummary run={runDetail(mapRuns[1]!).run} variant="list" />);
     expect(container.textContent).toBe('');

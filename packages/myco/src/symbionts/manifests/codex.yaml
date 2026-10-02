@@ -379,6 +379,16 @@ runner:
     # Its driver holds a run to a sandbox rather than to the run's grant.
     sourceGit: none
     modelSetting: config
+    # Its app server lists the models its login offers, the one it runs by default and each one's successor.
+    models:
+      kind: exchange
+      args: [app-server]
+      send:
+        - { jsonrpc: '2.0', id: 1, method: initialize, params: { clientInfo: { name: myco, version: '1' } } }
+        - { jsonrpc: '2.0', method: initialized }
+        - { jsonrpc: '2.0', id: 2, method: model/list, params: {} }
+      answer: { where: { id: 2 }, list: result.data }
+      fields: { id: id, label: displayName, isDefault: isDefault, upgrade: upgrade, efforts: 'supportedReasoningEfforts[].reasoningEffort' }
     accounting:
       reported: codex-session
       modelSources: [session.turn_context.model]

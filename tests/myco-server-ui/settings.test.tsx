@@ -1011,3 +1011,107 @@ it('describes weekly retention by the most recent weeks containing exports', () 
   const field = LEAF_FIELDS.find(({ leaf }) => leaf === 'backup.retention.keep_weekly')!;
   expect(field.note).toContain('most recent weeks that contain exports');
 });
+
+describe('choosing a tier\'s model from the models the machines listed', () => {
+  const listed = (harness: string, models: Array<Record<string, unknown>>) => ({ harness, source: { kind: 'command', command: harness }, fetchedAt: NOW - 3_600_000, receivedAt: NOW - 3_600_000, models });
+  const CLAUDE = listed('claude-code', [
+    { id: 'haiku', label: 'Haiku 4.5', resolvesTo: 'claude-haiku-4-5-20251001' },
+    { id: 'sonnet', label: 'Sonnet 5.5', resolvesTo: 'claude-sonnet-5-5' },
+    { id: 'opus', label: 'Opus 5.5', resolvesTo: 'claude-opus-5-5' },
+  ]);
+  const CODEX = listed('codex', [
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', isDefault: true },
+    { id: 'gpt-6-sol', label: 'GPT-6-Sol' },
+    { id: 'gpt-5.5', label: 'GPT-5.5', upgrade: 'gpt-6-sol' },
+  ]);
+  const OPENROUTER_LATEST = ['haiku', 'sonnet', 'opus'].map((family) => `openrouter/~anthropic/claude-${family}-latest`);
+  const openCode = (ids: string[]) => listed('opencode', ids.map((id) => ({ id, label: id, provider: id.slice(0, id.indexOf('/')) })));
+  const withModels = (models: unknown[], over: Parameters<typeof leaves>[0] = {}) => () => Response.json({ ...leaves(over), models });
+
+  it('picks a listed model by its name and writes its id to the tier', async () => {
+    const leaf = 'agent.reasoning_map.claude-code.low';
+    const { sent } = server(base({ '/api/settings': withModels([CLAUDE]), [`/api/settings/${leaf}`]: () => Response.json({ applied: true }) }));
+    mount('/settings/models');
+    const claude = within(await group('Claude Code tiers'));
+    expect(claude.getAllByText('Listed by your machines 1 h ago.').length).toBeGreaterThan(0);
+    fireEvent.click(claude.getByLabelText('low tier model'));
+    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['Haiku 4.5 (haiku)', 'Sonnet 5.5 (sonnet)', 'Opus 5.5 (opus)']);
+    fireEvent.click(await screen.findByRole('option', { name: 'Sonnet 5.5 (sonnet)' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'sonnet' } });
+  });
+
+  it('keeps a stored model no machine listed, and says so in plain words', async () => {
+    const leaf = 'agent.reasoning_map.claude-code.high';
+    server(base({ '/api/settings': withModels([CLAUDE], { [leaf]: { value: 'claude-opus-4-1', updatedBy: ADA, updatedAt: NOW } }) }));
+    mount('/settings/models');
+    await group('Claude Code tiers');
+    expect(statusOf(leaf)).toBe('claude-opus-4-1 is not among the models your machines listed for Claude Code. Check the name, or choose a listed model.');
+    fireEvent.click(within(await group('Claude Code tiers')).getByLabelText('high tier model'));
+    expect((await screen.findAllByRole('option'))[0]!.textContent).toBe('claude-opus-4-1 (not listed)');
+  });
+
+  it('names a stored model\'s successor where the agent names one, and switches to it', async () => {
+    const leaf = 'agent.reasoning_map.codex.high';
+    const { sent } = server(base({
+      '/api/settings': withModels([CODEX], { [leaf]: { value: 'gpt-5.5', updatedBy: ADA, updatedAt: NOW } }),
+      [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
+    }));
+    mount('/settings/models');
+    const codex = within(await group('Codex tiers'));
+    expect(statusOf(leaf)).toBe('Codex names GPT-6-Sol as the successor to GPT-5.5.');
+    fireEvent.click(codex.getByRole('button', { name: 'Use GPT-6-Sol' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'gpt-6-sol' } });
+  });
+
+  it('narrows a list spanning providers to one provider', async () => {
+    server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'opencode/big-pickle', ...OPENROUTER_LATEST])]) }));
+    mount('/settings/models');
+    const opencode = within(await group('OpenCode tiers'));
+    fireEvent.click(opencode.getByLabelText('default tier model provider'));
+    fireEvent.click(await screen.findByRole('option', { name: 'openrouter' }));
+    await waitFor(() => expect(screen.queryByRole('option')).toBeNull());
+    fireEvent.click(opencode.getByLabelText('default tier model'));
+    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(OPENROUTER_LATEST);
+  });
+
+  it('marks the model the agent runs when none is named', async () => {
+    server(base({ '/api/settings': withModels([CODEX]) }));
+    mount('/settings/models');
+    fireEvent.click(within(await group('Codex tiers')).getByLabelText('low tier model'));
+    expect((await screen.findAllByRole('option'))[0]!.textContent).toBe('GPT-6.1-Sol (gpt-6.1-sol), the agent\'s default');
+  });
+
+  it('offers a preset where a machine lists all its models, and applies it tier by tier through the same write', async () => {
+    const tiers = ['low', 'default', 'high'].map((tier) => `agent.reasoning_map.opencode.${tier}`);
+    const { sent } = server(base({
+      '/api/settings': withModels([openCode(['openai/gpt-6', ...OPENROUTER_LATEST])]),
+      ...Object.fromEntries(tiers.map((leaf) => [`/api/settings/${leaf}`, () => Response.json({ applied: true })])),
+    }));
+    mount('/settings/models');
+    const opencode = within(await group('OpenCode tiers'));
+    expect(opencode.getByText('Latest Claude models through OpenRouter')).toBeTruthy();
+    fireEvent.click(opencode.getByRole('button', { name: 'Use these models' }));
+    await waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent.map((s) => ({ method: s.method, path: s.path, body: s.body }))).toEqual(tiers.map((leaf, i) => ({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: OPENROUTER_LATEST[i] } })));
+    expect(await opencode.findByText('Every tier now uses these models.')).toBeTruthy();
+  });
+
+  it('offers no preset where no machine is signed in to its provider', async () => {
+    server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'github-copilot/claude-opus-5.5'])]) }));
+    mount('/settings/models');
+    expect(within(await group('OpenCode tiers')).queryByRole('button', { name: 'Use these models' })).toBeNull();
+  });
+
+  it('types a model where no machine has listed the agent\'s models, or where the person asks to', async () => {
+    server(base({ '/api/settings': withModels([CLAUDE]) }));
+    mount('/settings/models');
+    const codex = within(await group('Codex tiers'));
+    expect(codex.getByLabelText('low tier model').tagName).toBe('INPUT');
+    const claude = within(await group('Claude Code tiers'));
+    expect(claude.getByLabelText('low tier model').tagName).toBe('BUTTON');
+    fireEvent.click(claude.getAllByRole('button', { name: 'Type a model name' })[0]!);
+    expect(claude.getByLabelText('low tier model').tagName).toBe('INPUT');
+  });
+});

@@ -14,7 +14,7 @@ import { PROFILE_HARNESSES, REASONING_TIERS } from '@goondocks/myco-shared/execu
  * Myco's work with; `agents` is an ordered list of them.
  */
 export type LeafKind = 'toggle' | 'number' | 'text' | 'textarea' | 'select' | 'json' | 'patterns' | 'agent' | 'agents'
-  | 'embedding-provider' | 'embedding-model' | 'embedding-endpoint';
+  | 'embedding-provider' | 'embedding-model' | 'embedding-endpoint' | 'model';
 
 export interface LeafField {
   leaf: string;
@@ -38,6 +38,8 @@ export interface LeafField {
   readOnly?: boolean;
   /** A configured value can be cleared to restore the server's built-in value. */
   resettable?: boolean;
+  /** The agent whose model a `model` field chooses. */
+  harness?: string;
 }
 
 export interface LeafGroup {
@@ -48,13 +50,15 @@ export interface LeafGroup {
   label: string;
   note: string;
   leaves: readonly LeafField[];
+  /** The agent whose tiers the group sets, where it sets one's. */
+  harness?: string;
 }
 
 const SIGN_IN_OPTIONS = { deployment: 'Server login', 'worker-login': 'Worker login' } as const;
 
 const profileFields = (harness: string): LeafField[] => [
   ...REASONING_TIERS.flatMap((tier) => [
-    { leaf: `agent.reasoning_map.${harness}.${tier}`, label: `${tier} tier model`, kind: 'text' as const, resettable: true,
+    { leaf: `agent.reasoning_map.${harness}.${tier}`, label: `${tier} tier model`, kind: 'model' as const, resettable: true, harness,
       note: PROFILE_HARNESSES[harness]!.modelHint },
     { leaf: `agent.effort_map.${harness}.${tier}`, label: `${tier} tier effort`, kind: 'select' as const,
       options: PROFILE_HARNESSES[harness]!.allowedEfforts, resettable: true },
@@ -130,6 +134,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Claude Code tiers',
     note: 'The model and effort requested for each tier when Claude Code runs Myco’s work. A task may override its tier under Per-task overrides.',
     leaves: profileFields('claude-code'),
+    harness: 'claude-code',
   },
   {
     id: 'codex-profile',
@@ -137,6 +142,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'Codex tiers',
     note: 'Set a model for each tier a Codex worker may run. An unset model waits for configuration.',
     leaves: profileFields('codex'),
+    harness: 'codex',
   },
   {
     id: 'opencode-profile',
@@ -144,6 +150,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'OpenCode tiers',
     note: 'Set a provider/model for every tier OpenCode may run. A tier without a model waits for configuration.',
     leaves: profileFields('opencode'),
+    harness: 'opencode',
   },
   {
     id: 'embedding',

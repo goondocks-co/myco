@@ -23,7 +23,8 @@ import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
 import { recordWorkerContact } from '../core/worker-contacts.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
-import { parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { parseModelCatalog, parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { recordModelCatalog } from '../core/model-catalogs.js';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 const RUN_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;
@@ -165,4 +166,18 @@ export async function handleWorkerRepository(env: ServerEnv, ctx: DeploymentCont
     if (error instanceof RepositoryInputError) return ok({ persisted: false, code: 'parse', reason: error.message });
     throw error;
   }
+}
+
+/**
+ * Store the models a worker listed for one harness it offers. A catalog this Deployment cannot read — one naming no
+ * harness whose models Settings configures — is answered `recorded: false` with why, in the route's own shape: the
+ * worker drops it and lists again later.
+ */
+export async function handleWorkerModels(env: ServerEnv, ctx: DeploymentContext): Promise<Response> {
+  const asked = body(ctx);
+  if (asked === null) return unreadable();
+  const catalog = parseModelCatalog(asked.catalog);
+  if (catalog === null) return ok({ persisted: true, recorded: false, reason: 'the list names no agent whose models Settings sets, or no source, listing time or models' });
+  await recordModelCatalog(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, catalog, now: ctx.now });
+  return ok({ persisted: true, recorded: true, models: catalog.models.length });
 }

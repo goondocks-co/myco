@@ -114,8 +114,19 @@ runner:
     models: { low: null, default: null, high: null }
     efforts: { low: low, default: medium, high: high }
     allowedEfforts: [minimal, low, medium, high, xhigh, max]
-    modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$'
+    # OpenRouter names a model that follows its family's newest with a leading `~`.
+    modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$'
     modelHint: Use provider/model. An unset model holds runs at this tier.
+    # OpenRouter's `~anthropic/…-latest` models follow Anthropic's newest model of each family. Other providers
+    # OpenCode reaches publish no model that follows a family, so they have no preset.
+    presets:
+      - id: openrouter-claude-latest
+        provider: openrouter
+        label: Latest Claude models through OpenRouter
+        models:
+          low: openrouter/~anthropic/claude-haiku-latest
+          default: openrouter/~anthropic/claude-sonnet-latest
+          high: openrouter/~anthropic/claude-opus-latest
   # How a worker runs it.
   worker:
     binary: opencode
@@ -124,6 +135,14 @@ runner:
     isolation: { kind: additive }
     sourceGit: shim
     modelSetting: config
+    # It lists one provider/model per line, for the providers it is logged in to and those that need no login. Its
+    # protocol session offers the same list, but opening one to read it keeps a session in its history.
+    models:
+      kind: command
+      args: [models]
+      env: { OPENCODE_PURE: '1' }
+      format: lines
+      provider: id-prefix
     accounting:
       reported: acp-session
       zeroDollars: unavailable

@@ -15,6 +15,8 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { asOwner, OWNER_ENV } from './helpers/owner.js';
+import { expireLeases } from '@myco-server-worker/core/harness.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -40,7 +42,7 @@ async function rig() {
   return { e, member, harness, anonymous, json };
 }
 
-const PATHS = ['/worker/claim', '/worker/lease', '/worker/end', '/worker/repository'] as const;
+const PATHS = ['/worker/claim', '/worker/lease', '/worker/end', '/worker/repository', '/worker/models'] as const;
 
 describe('the worker control plane', () => {
   it('answers an administrator a claim that names no Project', async () => {
@@ -119,5 +121,55 @@ describe('the worker control plane', () => {
     const answered = await r.json(post(admin, '/worker/claim', { harnesses: [] }, { [PROJECT_HEADER]: 'proj_elsewhere' }));
     expect(answered.status).toBe(200);
     expect(answered.body.persisted).toBe(true);
+  });
+});
+
+describe('the models a worker lists', () => {
+  const listed = (harness: string, models: unknown[], fetchedAt = NOW - 1_000) => ({ catalog: { harness, source: { kind: 'exchange', command: 'codex app-server' }, fetchedAt, models } });
+  const stored = (r: Awaited<ReturnType<typeof rig>>) => r.e.sqlite.query(`SELECT credential_id, harness, machine_id, catalog FROM worker_model_catalogs ORDER BY harness`).all() as Array<{ credential_id: string; harness: string; machine_id: string | null; catalog: string }>;
+
+  it('keeps the newest list of each harness from each worker, holding only models the harness\'s settings accept, each once', async () => {
+    const r = await rig();
+    const admin = await r.member('mem_admin', 'admin');
+    const first = await r.json(post(admin, '/worker/models', listed('codex', [
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', isDefault: true, efforts: ['low', 'high'] },
+      { id: 'gpt-5.5', label: 'GPT-5.5', upgrade: 'gpt-6-sol' },
+      { id: 'gpt-5.5', label: 'GPT-5.5 again' },
+      { id: 'has space', label: 'refused by the pattern' },
+    ])));
+    expect(first).toEqual({ status: 200, body: { persisted: true, recorded: true, models: 2 } });
+    const again = await r.json(post(admin, '/worker/models', listed('codex', [{ id: 'gpt-6-sol', label: 'GPT-6-Sol' }], NOW)));
+    expect(again.body).toMatchObject({ recorded: true, models: 1 });
+    const rows = stored(r);
+    expect(rows.map((row) => ({ harness: row.harness, machine: row.machine_id, models: JSON.parse(row.catalog).models }))).toEqual([
+      { harness: 'codex', machine: 'mem_admin', models: [{ id: 'gpt-6-sol', label: 'GPT-6-Sol' }] },
+    ]);
+  });
+
+  it('answers a list it cannot keep in its own shape, keeping nothing: an agent whose models Settings does not set, or no listing time', async () => {
+    const r = await rig();
+    const admin = await r.member('mem_admin', 'admin');
+    for (const body of [listed('cursor', [{ id: 'gpt-6' }]), listed('no-such-agent', []), { catalog: { harness: 'codex', source: { kind: 'exchange', command: 'codex' }, models: [] } }, {}]) {
+      expect((await r.json(post(admin, '/worker/models', body))).body).toEqual({ persisted: true, recorded: false, reason: expect.any(String) });
+    }
+    expect(stored(r)).toEqual([]);
+  });
+
+  it('answers Settings every stored list, naming no machine, and forgets a list once its worker is forgotten', async () => {
+    const r = await rig();
+    const admin = await r.member('mem_admin', 'admin');
+    await r.json(post(admin, '/worker/claim', { harnesses: [] }));
+    await r.json(post(admin, '/worker/models', listed('opencode', [
+      { id: 'openrouter/~anthropic/claude-opus-latest', label: 'openrouter/~anthropic/claude-opus-latest', provider: 'openrouter' },
+    ])));
+    const settings = await (await worker.fetch(await asOwner('/api/settings'), { ...r.e.env, ...OWNER_ENV })).json() as { models: Array<Record<string, unknown>> };
+    expect(settings.models).toEqual([{
+      harness: 'opencode', source: { kind: 'exchange', command: 'codex app-server' }, fetchedAt: NOW - 1_000, receivedAt: expect.any(Number),
+      models: [{ id: 'openrouter/~anthropic/claude-opus-latest', label: 'openrouter/~anthropic/claude-opus-latest', provider: 'openrouter' }],
+    }]);
+    expect(JSON.stringify(settings.models)).not.toContain('mem_admin');
+    r.e.sqlite.run(`DELETE FROM worker_contacts`);
+    await expireLeases(r.e.serverEnv, NOW);
+    expect(stored(r)).toEqual([]);
   });
 });

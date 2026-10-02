@@ -430,6 +430,15 @@ runner:
     isolation: { kind: flag, args: [--strict-mcp-config] }
     sourceGit: shim
     modelSetting: flag
+    # It answers an initialize request on its input stream with every model it offers, each alias with the model it
+    # resolves to, before any prompt. Its user settings are not read, so no user hook runs for the listing.
+    models:
+      kind: exchange
+      args: [-p, --input-format, stream-json, --output-format, stream-json, --verbose, --strict-mcp-config, --setting-sources, 'project,local']
+      send:
+        - { type: control_request, request_id: myco-models, request: { subtype: initialize } }
+      answer: { where: { type: control_response, response.request_id: myco-models }, list: response.response.models }
+      fields: { id: value, label: displayName, resolvesTo: resolvedModel, efforts: supportedEffortLevels }
     accounting:
       reported: claude-stream
       modelSources: [system.init.model, assistant.message.model, result.modelUsage]

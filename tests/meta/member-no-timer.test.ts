@@ -82,6 +82,7 @@ const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string 
   'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },
   'packages/myco/src/runner/drivers/acp.ts': { calls: 1, bound: "the listing of the run's own tools" },
   'packages/myco/src/runner/loop.ts': { calls: 1, bound: "one worker request (claim, renewal, end), through the loop's one helper" },
+  'packages/myco/src/runner/models.ts': { calls: 1, bound: "one listing of a harness's models" },
   'packages/myco/src/runner/repository-checkout.ts': { calls: 1, bound: "one run's source checkout request" },
   'packages/myco/src/runner/repository.ts': { calls: 1, bound: "one run's source checkout" },
 };

@@ -39,7 +39,7 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const { usage = null, attemptId, accountingVersion, identity: reportedIdentity } = parseWorkerAccounting(run);
   const requested = await getRequestedWorkerProfile(env.db, { projectId: run.projectId }, run.runId, row.dispatchedBy);
   const mismatch = requested !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
-    && !profileModelMatches(row.harness ?? '', requested.model, reportedIdentity.primary);
+    && !profileModelMatches(row.harness ?? '', requested, reportedIdentity.primary);
   const identity = mismatch && reportedIdentity !== undefined
     ? { ...reportedIdentity, warnings: [...new Set([...(reportedIdentity.warnings ?? []), MODEL_MISMATCH])] } : reportedIdentity;
   const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, { projectId: run.projectId }, row) : null;

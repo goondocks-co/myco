@@ -13,7 +13,7 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
   const identity = run.identity;
   const known = identity.status === 'reported' || identity.status === 'launched';
   const models = known ? [...new Set(identity.models.map((model) => model.model))] : [];
-  const mismatch = known && run.requested !== null && run.harness !== null && !profileModelMatches(run.harness, run.requested.model, identity.primary);
+  const mismatch = known && run.requested !== null && run.harness !== null && !profileModelMatches(run.harness, run.requested, identity.primary);
   if (variant !== 'details' && run.requested === null && !known) return null;
   const different = mismatch && <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>;
   const effortSkipped = known && identity.warnings?.includes(EFFORT_UNAPPLIED) === true

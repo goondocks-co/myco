@@ -13,6 +13,7 @@ import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/sett
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
+import { readModelCatalogs, type StoredModelCatalog } from '../core/model-catalogs.js';
 import { cancelEmbeddingSwitch, embeddingSwitchStatus, estimateEmbeddingSwitch, passedOverForHealth, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
 
 /**
@@ -145,9 +146,16 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   return { leaves: redact(leaves), taskTiers, embedding: redact(embedding) };
 }
 
-/** `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member. */
+/** One harness's models as a worker last listed them, as Settings offers them: the models, how they were listed and when. */
+export type SettingsModelCatalog = Omit<StoredModelCatalog, 'machineId'>;
+
+/**
+ * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member,
+ * with the models each worker last listed for each harness it offers.
+ */
 export async function handleSettings(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ persisted: true, ...await deploymentSettings(env, !isAdmin(ctx.member.role)) });
+  const models: SettingsModelCatalog[] = (await readModelCatalogs(env.db)).map(({ machineId: _machine, ...catalog }) => catalog);
+  return ok({ persisted: true, ...await deploymentSettings(env, !isAdmin(ctx.member.role)), models });
 }
 
 /** A token that addresses a host: a scheme or `//` ahead of it, or `name:secret@host` followed by a port or a path. */
