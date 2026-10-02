@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { NO_LAUNCH_ERROR } from '@myco-server-worker/core/harness.js';
+import { DISPATCH_REFUSAL_MESSAGE } from '@myco-server-worker/core/harness.js';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
@@ -95,10 +95,10 @@ export const dispatchQueue: ParityScenario = {
         .toEqual([{ status: 'queued', error: null }]);
       expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
         .toEqual([{ revoked: 0 }]);
-      await target.sql(`UPDATE agent_runs SET dispatch_spec = NULL WHERE id = ${lit(stranded)}`);
+      await target.sql(`UPDATE agent_runs SET task = 'unknown-parity-task' WHERE id = ${lit(stranded)}`);
       await wake();
       expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-        .toEqual([{ status: 'failed', error: NO_LAUNCH_ERROR }]);
+        .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.unknown_task }]);
       expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
         .toEqual([{ revoked: 1 }]);
     } finally {
