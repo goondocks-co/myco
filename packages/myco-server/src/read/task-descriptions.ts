@@ -7,14 +7,14 @@ import { listProjects } from './sessions.js';
 import type { ProjectSet } from './scope.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { readMapSettings } from '../core/canopy.js';
-import { PROFILE_SETTING_LEAVES, resolveExecutionProfile, taskOverride, taskTierRefusal } from '../core/execution-profile.js';
-import { capabilityOf, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS } from '../core/harness.js';
+import { resolveExecutionProfile, taskOverride, taskTierRefusal } from '../core/execution-profile.js';
+import { capabilityOf, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS } from '../core/harness.js';
 import { EMBEDDING_RETRY_MS } from '../core/embedding/jobs.js';
 import { SERVER_JOBS, TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE, type TaskSchedule } from '../core/jobs.js';
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/scheduled-tasks.js';
-import { enabledCapabilities, leafValues } from '../core/settings.js';
+import { enabledCapabilities } from '../core/settings.js';
 import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK } from '../core/task-catalogue.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
 import { runAllowlist } from '../mcp/run-surface.js';
@@ -115,7 +115,7 @@ export const readTaskNames = () => RETAINED_TASKS.map((task) => ({ task, name: T
 /** Every task the Deployment can run, under its effective settings. */
 export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Promise<TaskDescription[]> {
   const [settings, leaves, mapSettings, availability] = await Promise.all([
-    leafValues(env.db, ['worker.harness', 'worker.harness_fallback', 'agent.tasks', ...PROFILE_SETTING_LEAVES]),
+    claimSettings(env),
     scheduleLeaves(env), readMapSettings(env.db), availabilityNotes(env, set),
   ]);
   return RETAINED_TASKS.map((task) => {

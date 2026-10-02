@@ -6,7 +6,7 @@
  * changed follows the policy in force.
  */
 import type { RelationalStore } from './adapters.js';
-import { leafValues } from './settings.js';
+import { storedSettings } from './settings.js';
 
 export const KEEP_DAILY_DEFAULT = 14;
 export const KEEP_WEEKLY_DEFAULT = 8;
@@ -16,20 +16,16 @@ export interface BackupRetentionPolicy { keepDaily: number; keepWeekly: number }
 /** A catalogued backup as retention reads it. */
 export interface RetainedBackup { id: string; created_at: number; pinned: number }
 
-const leafNumber = (raw: string | undefined, fallback: number): number => {
-  if (raw === undefined) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'number' && Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
-  } catch { return fallback; }
-};
-
 /** The retention policy the settings leaves hold now, with the defaults for a leaf never written. */
 export async function backupRetentionPolicy(db: RelationalStore): Promise<BackupRetentionPolicy> {
-  const leaves = await leafValues(db, ['backup.retention.keep_daily', 'backup.retention.keep_weekly']);
+  const leaves = await storedSettings(db, ['backup.retention.keep_daily', 'backup.retention.keep_weekly']);
+  const daily = leaves.get('backup.retention.keep_daily');
+  const weekly = leaves.get('backup.retention.keep_weekly');
+  // Either count breaking its rule turns retention off: nothing is let go of until it is corrected or reset.
+  if (daily?.violation != null || weekly?.violation != null) return { keepDaily: 0, keepWeekly: 0 };
   return {
-    keepDaily: leafNumber(leaves.get('backup.retention.keep_daily'), KEEP_DAILY_DEFAULT),
-    keepWeekly: leafNumber(leaves.get('backup.retention.keep_weekly'), KEEP_WEEKLY_DEFAULT),
+    keepDaily: daily === undefined ? KEEP_DAILY_DEFAULT : daily.value as number,
+    keepWeekly: weekly === undefined ? KEEP_WEEKLY_DEFAULT : weekly.value as number,
   };
 }
 

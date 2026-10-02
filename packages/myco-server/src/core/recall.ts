@@ -35,7 +35,7 @@
 import type { RelationalStore } from './adapters.js';
 import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import type { SemanticSearch } from '../read/embedding.js';
-import { INSTRUCTIONS_TEMPLATE_LEAF, leafValues } from './settings.js';
+import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
@@ -116,7 +116,7 @@ const parse = (value: string | undefined): unknown => {
 
 /** The Deployment's stored recall leaves, defaulted. */
 export async function readRecallLeaves(db: RelationalStore): Promise<RecallLeaves> {
-  const byLeaf = await leafValues(db, RECALL_LEAVES);
+  const byLeaf = await settingTexts(db, RECALL_LEAVES);
   return recallLeaves(Object.fromEntries(RECALL_LEAVES.map((leaf) => [leaf, parse(byLeaf.get(leaf))])));
 }
 

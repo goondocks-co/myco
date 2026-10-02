@@ -24,6 +24,18 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'core/harness.ts:the lease is no longer held': 'Worker completion diagnostic; the dashboard never quotes it.',
   'api/worker.ts:the lease is no longer held': 'Worker protocol diagnostic; the dashboard never quotes it.',
   'api/worker.ts:lease names a projectId and a runId': 'Worker renewal request grammar; the dashboard never sends it.',
+  'api/identity.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/runs.ts:body is not json': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/projects.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/grants.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/transcript-reread.ts:the body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/machines.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/backups.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/harness.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/access.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/settings.ts:body must be a JSON object carrying a value': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/machine-settings.ts:body must be a JSON object carrying a value': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/worker.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
 };
 
 function sources(dir: string): string[] {

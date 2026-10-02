@@ -139,10 +139,10 @@ describe('a named precondition reads the Project it is a condition on', () => {
     expect(typeof check).toBe('function');
     expect(await check!({ db: f.env.db, projectId: 'proj_1', now: NOW })).toBe(false);
     const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBe('precondition');
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBe('precondition');
     seedSession(f, 'proj_1', 's_done', NOW);
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} }, NOW)).toBeNull();
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBeNull();
   });
 
   it('queues extraction from its declared schedule only after an ended session has unread prompts', async () => {
@@ -163,7 +163,8 @@ describe('the leaves the clock reads', () => {
   it('is off until the owner turns scheduling on, with the 1.4 defaults for the recency gates', async () => {
     const f = fixture();
     f.sqlite.run(`DELETE FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'`);
-    expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: { 'canopy-map': { schedule: { enabled: false } } } });
+    expect(await scheduleLeaves(f.env)).toEqual({ enabled: false, coldThresholdDays: COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, activeWindowDays: ACTIVE_WINDOW_DAYS_DEFAULT, overrides: { 'canopy-map': { schedule: { enabled: false } } },
+      mapRefresh: { enabled: false, intervalSeconds: 21_600, overridden: { enabled: false, interval: false } } });
     f.setting('agent.scheduled_tasks_enabled', true);
     f.setting('agent.cold_project_threshold_days', 3);
     f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 60 } } });

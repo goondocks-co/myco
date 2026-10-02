@@ -127,7 +127,7 @@ describe('agent-run-retention', () => {
     expect((await runTick(f.env, NOW)).jobs.find((j) => j.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: 0, failed: null, more: false });
   });
 
-  it('reads the window from the Deployment leaf, clamped to the leaf\'s own bounds', async () => {
+  it('reads the window from the Deployment leaf', async () => {
     const f = fixture();
     f.setting('agent.run_retention_days', 7);
     f.seedRun({ id: 'eight-days', completedAt: NOW - 8 * DAY });
@@ -135,7 +135,7 @@ describe('agent-run-retention', () => {
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
     await runTick(f.env, NOW);
     expect(f.sqlite.query(`SELECT id FROM agent_runs`).all().map((r) => (r as { id: string }).id)).toEqual(['six-days']);
-    f.setting('agent.run_retention_days', 0);
+    f.setting('agent.run_retention_days', 1);
     f.seedRun({ id: 'one-day', completedAt: NOW - DAY - 1 });
     f.seedRun({ id: 'hours', completedAt: NOW - 3_600_000 });
     await runTick(f.env, NOW);

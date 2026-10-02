@@ -20,7 +20,7 @@
  */
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
-import { leafValues } from './settings.js';
+import { storedSettings } from './settings.js';
 import { recordedBlobBytes } from '../read/blobs.js';
 import { classify, emit } from '../telemetry.js';
 
@@ -158,24 +158,20 @@ export type Cadence =
 
 const metaKey = (check: MaintenanceCheck) => `${META_KEY_PREFIX}${check}`;
 
-function parseLeaf(raw: string | undefined): unknown {
-  if (raw === undefined) return undefined;
-  try { return JSON.parse(raw); } catch { return null; }
-}
-
 /** The owner's cadence for a check, read from the stored leaves alone. */
 export async function cadenceOf(env: Pick<ServerEnv, 'db'>, check: MaintenanceCheck): Promise<Cadence> {
   const spec = MAINTENANCE_SETTINGS[check];
-  const held = await leafValues(env.db, [spec.enabled, spec.interval]);
-  const enabled = parseLeaf(held.get(spec.enabled));
+  const held = await storedSettings(env.db, [spec.enabled, spec.interval]);
+  const enabled = held.get(spec.enabled);
   if (enabled === undefined) return { state: 'not_configured', leaf: spec.enabled };
-  if (typeof enabled !== 'boolean') return { state: 'invalid', leaf: spec.enabled, reason: 'expected on or off' };
-  if (!enabled) return { state: 'off' };
-  const hours = parseLeaf(held.get(spec.interval));
-  if (hours === undefined) return { state: 'not_configured', leaf: spec.interval };
-  if (typeof hours !== 'number' || !Number.isInteger(hours) || hours < spec.minHours || hours > spec.maxHours) {
+  if (enabled.violation !== null) return { state: 'invalid', leaf: spec.enabled, reason: 'expected on or off' };
+  if (enabled.value !== true) return { state: 'off' };
+  const interval = held.get(spec.interval);
+  if (interval === undefined) return { state: 'not_configured', leaf: spec.interval };
+  if (interval.violation !== null) {
     return { state: 'invalid', leaf: spec.interval, reason: `expected a whole number of hours from ${spec.minHours} to ${spec.maxHours}` };
   }
+  const hours = interval.value as number;
   return { state: 'on', intervalHours: hours };
 }
 

@@ -12,8 +12,11 @@ import { inProcessRateLimiter } from './limiter.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { sqliteVectorStore } from './vectors.js';
 import type { NativeSqlite } from './native.js';
-import { configuredEmbeddingProvider } from '../../core/embedding/configured-provider.js';
+import { configuredEmbeddingProvider, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
 import { sqliteStoreMaintenance } from './store-maintenance.js';
+
+/** The self-hosted embedding platform: no binding of its own, so every provider is reached over HTTP. */
+export const BUN_EMBEDDING_PLATFORM: EmbeddingPlatform = { target: 'bun' };
 
 export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
 export const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
@@ -107,7 +110,8 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
   const pending = new Set<Promise<void>>();
   return {
     vectors: sqliteVectorStore(config.sqlite, config.native?.vec0),
-    embeddingProvider: () => configuredEmbeddingProvider(db, wrappingKey, fetch),
+    embeddingProvider: () => configuredEmbeddingProvider(db, wrappingKey, fetch, BUN_EMBEDDING_PLATFORM),
+    embeddingPlatform: BUN_EMBEDDING_PLATFORM,
     afterResponse: (work) => {
       const tracked: Promise<void> = work().catch(() => undefined).finally(() => { pending.delete(tracked); });
       pending.add(tracked);

@@ -45,7 +45,7 @@
 import type { ServerEnv, OutboundFetch, RelationalStore } from './adapters.js';
 import type { SecretStore } from './secrets.js';
 import { deploymentSecretStore } from './secrets.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
 import { GITHUB_READ_TIMEOUT_MS, githubReads, isGithubRepo } from './github-refs.js';
 import {
@@ -592,12 +592,10 @@ async function classifyProject(
   return { failure, fingerprint };
 }
 
-/** The interval the Deployment's leaf names, in milliseconds. */
-async function intervalMs(db: RelationalStore): Promise<number> {
-  const raw = (await leafValues(db, [RECONCILE_INTERVAL_LEAF])).get(RECONCILE_INTERVAL_LEAF);
-  let minutes = DEFAULT_RECONCILE_INTERVAL_MINUTES;
-  try { if (raw !== undefined) minutes = Number(JSON.parse(raw)); } catch { /* the default stands */ }
-  return (Number.isFinite(minutes) && minutes >= 1 ? minutes : DEFAULT_RECONCILE_INTERVAL_MINUTES) * 60_000;
+/** The interval the Deployment's leaf names, in minutes, or the default where it names none. */
+export async function reconcileIntervalMinutes(db: RelationalStore): Promise<number> {
+  const raw = (await settingTexts(db, [RECONCILE_INTERVAL_LEAF])).get(RECONCILE_INTERVAL_LEAF);
+  return raw === undefined ? DEFAULT_RECONCILE_INTERVAL_MINUTES : JSON.parse(raw) as number;
 }
 
 /**
@@ -606,7 +604,7 @@ async function intervalMs(db: RelationalStore): Promise<number> {
  * whose check still holds its lease waits.
  */
 export async function reconcileReleaseProvenance(env: ServerEnv, now: number): Promise<number> {
-  const interval = await intervalMs(env.db);
+  const interval = (await reconcileIntervalMinutes(env.db)) * 60_000;
   const { results } = await env.db.prepare(`SELECT project_id AS projectId FROM project_release_provenance
     WHERE enabled = 1 AND github_repo IS NOT NULL AND (check_run_id IS NULL OR check_lease_until <= ?)
       AND (check_started_at IS NULL OR check_started_at <= ? OR check_requested_at > check_started_at)

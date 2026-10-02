@@ -25,7 +25,7 @@
 import type { RelationalStore } from './adapters.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
-import { leafValues } from './settings.js';
+import { leafOffChecks, settingTexts } from './settings.js';
 
 export const IMPORT_ENABLED_LEAF = 'import.enabled';
 export const IMPORT_WINDOW_DAYS_LEAF = 'import.window_days';
@@ -56,6 +56,9 @@ export interface ImportPolicyAsk {
   maxPerAgent?: number;
 }
 
+/** SQL over the import switch, for the admission an import-channel write carries: holds unless the switch is stored off. */
+export const importEnabledChecks = () => leafOffChecks(IMPORT_ENABLED_LEAF, LEAF_OFF);
+
 /** Whether a leaf's stored text is the off value. The one reader; `LEAF_OFF` is what the admission binds. */
 export const leafIsOff = (raw: string | undefined): boolean => raw === LEAF_OFF;
 
@@ -79,7 +82,7 @@ const clamp = (value: number, max: number): number => Math.min(max, Math.max(1, 
  * Deployment's bound.
  */
 export async function importPolicy(db: RelationalStore, ask: ImportPolicyAsk = {}): Promise<ImportPolicy> {
-  const values = await leafValues(db, IMPORT_LEAVES);
+  const values = await settingTexts(db, IMPORT_LEAVES);
   return {
     enabled: !leafIsOff(values.get(IMPORT_ENABLED_LEAF)),
     windowDays: clamp(ask.windowDays ?? storedInteger(values.get(IMPORT_WINDOW_DAYS_LEAF), IMPORT_WINDOW_DAYS_DEFAULT), IMPORT_WINDOW_DAYS_MAX),

@@ -19,7 +19,7 @@ import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 function rig(opts: Parameters<typeof settingsWriter>[1] = {}) {
   const sqlite = migrateAndSeed(new Database(':memory:'));
   const db = sqliteRelationalStore(sqlite);
-  return { sqlite, db, w: settingsWriter(db, opts) };
+  return { sqlite, db, w: settingsWriter(db, { target: 'bun', ...opts }) };
 }
 
 describe('deployment settings', () => {
@@ -55,20 +55,20 @@ describe('deployment settings', () => {
 
   it('keeps the last reset actor and time after the configured row is deleted', async () => {
     const r = rig();
-    await r.w.setLeaf('embedding.model', 'old-model', 'mem_writer', 1_000);
-    expect(await r.w.resetLeaf('embedding.model', 'mem_resetter', 2_000)).toEqual({ applied: true });
-    expect((await r.w.leaves())['embedding.model']).toBeUndefined();
-    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='embedding.model'`).get())
+    expect(await r.w.setLeaf('cortex.spores.max_per_prompt', 4, 'mem_writer', 1_000)).toEqual({ applied: true });
+    expect(await r.w.resetLeaf('cortex.spores.max_per_prompt', 'mem_resetter', 2_000)).toEqual({ applied: true });
+    expect((await r.w.leaves())['cortex.spores.max_per_prompt']).toBeUndefined();
+    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='cortex.spores.max_per_prompt'`).get())
       .toEqual({ reset_by: 'mem_resetter', reset_at: 2_000 });
-    expect(await r.w.resetLeaf('embedding.model', 'mem_other', 3_000)).toEqual({ applied: true });
-    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='embedding.model'`).get())
+    expect(await r.w.resetLeaf('cortex.spores.max_per_prompt', 'mem_other', 3_000)).toEqual({ applied: true });
+    expect(r.sqlite.query(`SELECT reset_by, reset_at FROM deployment_setting_resets WHERE leaf='cortex.spores.max_per_prompt'`).get())
       .toEqual({ reset_by: 'mem_other', reset_at: 3_000 });
   });
 
   it('sets a leaf, records who set it, and reads it back', async () => {
     const r = rig();
-    expect(await r.w.setLeaf('cortex.spores.max_per_prompt', 5000, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.leaves()).toEqual({ 'cortex.spores.max_per_prompt': { value: 5000, updatedAt: 1_000, updatedBy: 'mem_1' } });
+    expect(await r.w.setLeaf('cortex.spores.max_per_prompt', 5, 'mem_1', 1_000)).toEqual({ applied: true });
+    expect(await r.w.leaves()).toEqual({ 'cortex.spores.max_per_prompt': { value: 5, updatedAt: 1_000, updatedBy: 'mem_1' } });
     expect(r.sqlite.query(`SELECT updated_by, updated_at FROM deployment_settings WHERE leaf='cortex.spores.max_per_prompt'`).get())
       .toEqual({ updated_by: 'mem_1', updated_at: 1_000 });
   });
@@ -90,11 +90,11 @@ describe('deployment settings', () => {
 
   it('replaces a leaf in place and carries the new actor', async () => {
     const r = rig();
-    await r.w.setLeaf('embedding.model', 'bge-m3', 'mem_1', 1_000);
-    await r.w.setLeaf('embedding.model', 'other', 'mem_2', 2_000);
-    expect((await r.w.leaves())['embedding.model']?.value).toBe('other');
+    await r.w.setLeaf('instructions.template', 'first', 'mem_1', 1_000);
+    await r.w.setLeaf('instructions.template', 'other', 'mem_2', 2_000);
+    expect((await r.w.leaves())['instructions.template']?.value).toBe('other');
     expect((r.sqlite.query(`SELECT COUNT(*) c FROM deployment_settings`).get() as any).c).toBe(1);
-    expect(r.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf='embedding.model'`).get()).toEqual({ updated_by: 'mem_2' });
+    expect(r.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf='instructions.template'`).get()).toEqual({ updated_by: 'mem_2' });
   });
 
   it('does not persist or re-arm a write it refuses', async () => {
@@ -256,9 +256,11 @@ describe('the instructions template leaf', () => {
     expect(await instructionsTemplate(db)).toBe('');
   });
 
-  it('leaves untyped active leaves taking any JSON value', async () => {
+  it('refuses a value that breaks a live leaf\'s rule, storing nothing', async () => {
     const { w } = rig();
-    expect(await w.setLeaf('worker.harness', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
+    expect(await w.setLeaf('worker.harness', { anything: [1, 2] }, 'member_1', NOW))
+      .toEqual({ applied: false, refusal: { reason: 'invalid_value', leaf: 'worker.harness', detail: 'expected an agent a machine can run, or none' } });
+    expect(await w.leaves()).toEqual({});
   });
 });
 

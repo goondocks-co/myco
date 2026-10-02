@@ -8,13 +8,14 @@ import { configuredEmbeddingProvider } from '../../packages/myco-server/src/core
 import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '../../packages/myco-server/src/platform/cloudflare/embedding.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
+import { BUN_EMBEDDING_PLATFORM } from '../../packages/myco-server/src/platform/bun/env.js';
 
 const opened: ReturnType<typeof sqliteEnv>[] = [];
 afterEach(() => { for (const f of opened.splice(0)) f.sqlite.close(); });
 function fixture() {
   const f = sqliteEnv(); opened.push(f);
   const key = wrappingKeyFromText(async () => btoa('k'.repeat(32)), 'test');
-  const settings = settingsWriter(f.db);
+  const settings = settingsWriter(f.db, { target: 'bun' });
   const configure = async (provider: string, base?: string) => {
     expect(await settings.setLeaf('embedding.provider', provider, 'operator', 1)).toEqual({ applied: true });
     if (base) expect(await settings.setLeaf('embedding.base_url', base, 'operator', 1)).toEqual({ applied: true });
@@ -22,14 +23,17 @@ function fixture() {
   return { ...f, key, configure, secrets: deploymentSecretStore(f.db, key) };
 }
 
-test('Cloudflare always calls the bound bge-m3 model with bounded input', async () => {
+/** The hosted default selection, under the vector identity hosted Deployments already hold. */
+const BGE_M3 = { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) };
+
+test('Cloudflare calls the selected Workers AI model with bounded input', async () => {
   const calls: unknown[] = [];
-  const provider = cloudflareEmbeddingProvider({ run: async (...args) => { calls.push(args); return { data: [[1, 0]] }; } });
+  const provider = cloudflareEmbeddingProvider({ run: async (...args) => { calls.push(args); return { data: [[1, 0]] }; } }, BGE_M3);
   expect(await provider.embed('x'.repeat(EMBEDDING_TEXT_CHARS * 2))).toEqual([1, 0]);
   expect(calls).toEqual([[EMBEDDING_MODEL, { text: [expect.stringContaining('[content truncated]')] }, { signal: expect.any(AbortSignal) }]]);
   expect((calls[0] as [string, { text: string[] }])[1].text[0].length).toBeLessThanOrEqual(EMBEDDING_TEXT_CHARS);
-  await expect(cloudflareEmbeddingProvider({ run: async () => { throw new Error('provider details'); } }).embed('query')).rejects.toBeInstanceOf(EmbeddingUnavailable);
-  await expect(cloudflareEmbeddingProvider({ run: async () => ({ data: [[0, 0]] }) }).embed('query')).rejects.not.toBeInstanceOf(EmbeddingUnavailable);
+  await expect(cloudflareEmbeddingProvider({ run: async () => { throw new Error('provider details'); } }, BGE_M3).embed('query')).rejects.toBeInstanceOf(EmbeddingUnavailable);
+  await expect(cloudflareEmbeddingProvider({ run: async () => ({ data: [[0, 0]] }) }, BGE_M3).embed('query')).rejects.not.toBeInstanceOf(EmbeddingUnavailable);
 });
 
 test('self-hosted Ollama and OpenAI-compatible endpoints use their configured protocol without fixed-provider credentials', async () => {
@@ -42,7 +46,7 @@ test('self-hosted Ollama and OpenAI-compatible endpoints use their configured pr
     await f.secrets.put('openai', 'fixed-provider-credential', 'operator', 1);
     let request: Request | undefined;
     const outbound = ((url, init) => { request = new Request(url as string, init as RequestInit); return Promise.resolve(Response.json(response)); }) as OutboundFetch;
-    const client = (await configuredEmbeddingProvider(f.db, f.key, outbound))!;
+    const client = (await configuredEmbeddingProvider(f.db, f.key, outbound, BUN_EMBEDDING_PLATFORM))!;
     expect(await client.embed('project architecture')).toEqual([1, 0]);
     expect(request!.url).toBe(endpoint);
     expect(request!.headers.get('authorization')).toBeNull();
@@ -51,25 +55,24 @@ test('self-hosted Ollama and OpenAI-compatible endpoints use their configured pr
   }
 });
 
-test('a fixed provider requires its own sealed credential and does not send it to an overridden endpoint', async () => {
+test('a fixed provider requires its own sealed credential and refuses an endpoint of its own', async () => {
   const f = fixture();
   await f.configure('openai');
   let request: Request | undefined;
   const outbound = (async (url: string, init: RequestInit) => { request = new Request(url, init); return Response.json({ data: [{ embedding: [1, 0] }] }); }) as typeof fetch;
-  expect(await configuredEmbeddingProvider(f.db, f.key, outbound)).toBeNull();
+  expect(await configuredEmbeddingProvider(f.db, f.key, outbound, BUN_EMBEDDING_PLATFORM)).toBeNull();
   await f.secrets.put('openai', 'fixed-provider-credential', 'operator', 1);
-  await (await configuredEmbeddingProvider(f.db, f.key, outbound))!.embed('query');
+  await (await configuredEmbeddingProvider(f.db, f.key, outbound, BUN_EMBEDDING_PLATFORM))!.embed('query');
   expect(request!.url).toBe('https://api.openai.com/v1/embeddings');
   expect(request!.headers.get('authorization')).toBe('Bearer fixed-provider-credential');
-  await f.configure('openai', 'https://custom.example/v1');
-  await (await configuredEmbeddingProvider(f.db, f.key, outbound))!.embed('query');
-  expect(request!.headers.get('authorization')).toBeNull();
+  expect(await settingsWriter(f.db, { target: 'bun' }).setLeaf('embedding.base_url', 'https://custom.example/v1', 'operator', 2))
+    .toMatchObject({ applied: false, refusal: { reason: 'invalid_value', detail: expect.stringContaining('uses its own endpoint') } });
 });
 
 test('provider outages allow fallback while malformed successful replies remain errors', async () => {
   const f = fixture(); await f.configure('ollama');
   for (const response of [new Response(null, { status: 503 }), Response.json({ embeddings: [[NaN]] }), Response.json({ embeddings: [[0, 0]] })]) {
-    const client = (await configuredEmbeddingProvider(f.db, f.key, (async () => response) as OutboundFetch))!;
+    const client = (await configuredEmbeddingProvider(f.db, f.key, (async () => response) as OutboundFetch, BUN_EMBEDDING_PLATFORM))!;
     if (response.status === 503) await expect(client.embed('query')).rejects.toBeInstanceOf(EmbeddingUnavailable);
     else await expect(client.embed('query')).rejects.not.toBeInstanceOf(EmbeddingUnavailable);
   }
@@ -82,7 +85,7 @@ test('OpenRouter preserves its existing default model and opens only its own cre
   let request: Request | undefined;
   const provider = (await configuredEmbeddingProvider(f.db, f.key, (async (url: string, init: RequestInit) => {
     request = new Request(url, init); return Response.json({ data: [{ embedding: [1, 0] }] });
-  }) as typeof fetch))!;
+  }) as typeof fetch, BUN_EMBEDDING_PLATFORM))!;
   await provider.embed('query');
   expect(request!.url).toBe('https://openrouter.ai/api/v1/embeddings');
   expect(request!.headers.get('authorization')).toBe('Bearer router-credential');

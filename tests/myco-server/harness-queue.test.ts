@@ -17,7 +17,7 @@ import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
-import { cloudflareEmbeddingProvider } from '@myco-server-worker/platform/cloudflare/embedding.js';
+import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '@myco-server-worker/platform/cloudflare/embedding.js';
 import { prepared } from './helpers/prepared.js';
 
 const NOW = 1_800_000_000_000;
@@ -71,7 +71,7 @@ describe('what holds a dispatch', () => {
     f.setting('agent.limits.concurrent_runs', 3);
     f.setting('agent.limits.task_runs_per_hour', 0);
     f.setting('agent.limits.task_concurrent_runs', 2.9);
-    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
     expect(await readDispatchLimits({ ...f.env, fleet: 12 })).toMatchObject({ fleet: 12 });
     expect(await readDispatchLimits({ ...f.env, fleet: 0 })).toMatchObject({ fleet: null });
   });
@@ -808,7 +808,7 @@ describe('archived probe preferences', () => {
       if (provider !== null) f.setting('agent.provider.type', provider);
       if (embeddingOnly) f.setting('agent.provider.base_url', 'http://models.internal/v1');
       const env: ServerEnv = { ...f.env, ...(embeddingOnly ? { harnessTasks: ['embedding-reconcile'] } : {}), vectors: cloudflareVectorStore(indexFixture()),
-        embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }) };
+        embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) }) };
       for (const [id, task, at] of [['bad-probe', 'container-smoke', NOW], ['vectors-behind', 'embedding-reconcile', NOW + 1]] as const) {
         f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec)
           VALUES ('proj_1',?,'myco-agent',?,'queued',?,'runtime',?)`, [id, task, at, JSON.stringify({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 })]);

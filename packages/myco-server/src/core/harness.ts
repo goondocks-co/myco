@@ -36,7 +36,7 @@ export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { runtimeProbePreferences } from './runtime-probe.js';
-import { enabledCapabilities, leafValues, type ProjectCapability } from './settings.js';
+import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
@@ -91,7 +91,7 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   no_instruction: 'this server has no instructions for that task',
   not_landed: 'no machine can run that task yet',
   unknown_project: 'the project is not on this server',
-  probe_preferences_invalid: 'The retained probe cannot use its stored preferences or key.',
+  probe_preferences_invalid: 'The retained container check cannot use its stored preferences or key.',
   no_provider: 'search embeddings are unavailable; configure an embedding provider',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
 };
@@ -891,6 +891,20 @@ export function harnessPreference(byLeaf: ReadonlyMap<string, string>, task: str
   };
 }
 
+/** The leaves a claim resolves its worker, profile and credential through. */
+export const CLAIM_SETTING_LEAVES: readonly string[] = ['worker.harness', 'worker.harness_fallback', 'agent.tasks', ...PROFILE_SETTING_LEAVES];
+
+/** The leaves a claim resolves its worker, profile and credential through, as they stand now. */
+export function claimSettings(env: Pick<ServerEnv, 'db'>): Promise<Map<string, string>> {
+  return settingTexts(env.db, CLAIM_SETTING_LEAVES);
+}
+
+/** The worker preference every claim resolves, as the Deployment's leaves hold it now. */
+export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ preferred: string | null; fallback: string[] }> {
+  const { preferred, fallback } = harnessPreference(await settingTexts(env.db, ['worker.harness', 'worker.harness_fallback']), '');
+  return { preferred, fallback };
+}
+
 /**
  * The credential the chosen harness reads, or nothing.
  *
@@ -949,7 +963,7 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
 type SelectedExecution = { harness: string; profile: ExecutionProfile; credentialEnv: Record<string, string> };
 
 /** Resolve a task against one worker's offers in preference order. */
-async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
+export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
   const preference = harnessPreference(settings, task);
   let remaining = [...offers];
   let reason: string | null = null;
@@ -1009,7 +1023,7 @@ export async function claimNextRun(
   // A task is offered only to a worker that reports everything it needs.
   const reported = worker.capabilities ?? [];
   const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
-  const settings = await leafValues(env.db, ['worker.harness', 'worker.harness_fallback', 'agent.tasks', ...PROFILE_SETTING_LEAVES]);
+  const settings = await claimSettings(env);
   await recordCapabilityHolds(env, reported, unmet, worker.now, settings);
   const excluded = [...RUNTIME_SERVED_TASKS, ...unmet];
   await recordProfileHolds(env, worker, settings);

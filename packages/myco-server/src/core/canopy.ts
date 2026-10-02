@@ -5,16 +5,13 @@ import type { ReadScope } from '../read/scope.js';
 import { readCanopyMap } from '../read/canopy.js';
 import { sha256Hex } from '../hash.js';
 import { mapSourcePinOfRun, pinMapSourceForRun, repositoryPinOfRun, type RunLease, type RunRow } from './runs.js';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
 
 export async function readMapSettings(db: RelationalStore): Promise<MapSettings> {
   const customLeaf = 'cortex.canopy.exclude.patterns';
-  const leaves = await leafValues(db, [customLeaf]);
-  const raw = leaves.get(customLeaf);
-  const custom: unknown = raw === undefined ? [] : JSON.parse(raw);
-  if (!Array.isArray(custom) || !custom.every((pattern) => typeof pattern === 'string')) throw new Error('Canopy exclusion patterns must be an array of strings.');
-  return { defaultPatterns: [...CANOPY_DEFAULT_EXCLUDE_PATTERNS], userPatterns: custom };
+  const raw = (await settingTexts(db, [customLeaf])).get(customLeaf);
+  return { defaultPatterns: [...CANOPY_DEFAULT_EXCLUDE_PATTERNS], userPatterns: raw === undefined ? [] : JSON.parse(raw) as string[] };
 }
 
 /**

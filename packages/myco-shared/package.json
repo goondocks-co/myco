@@ -101,6 +101,10 @@
     "./call-words": {
       "import": "./dist/call-words.js",
       "types": "./dist/call-words.d.ts"
+    },
+    "./settings-contract": {
+      "import": "./dist/settings-contract.js",
+      "types": "./dist/settings-contract.d.ts"
     }
   },
   "files": [
