@@ -1,3 +1,4 @@
+import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
@@ -145,7 +146,7 @@ const POSITION_SQL = `(SELECT COUNT(*) FROM agent_runs q WHERE q.status = 'queue
   AND (q.queued_at < agent_runs.queued_at OR (q.queued_at = agent_runs.queued_at AND q.id < agent_runs.id)))`;
 
 
-const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data, started_at, resumed_at, completed_at,
+const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data, ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
   ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
@@ -183,7 +184,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     agentId: row.agent_id as string,
     task: text(row.task),
     status: row.status as string,
-    ...runAccounting(row.usage_data),
+    ...runAccounting(row.usage_data, row.cost_provenance),
     provider: text(row.provider),
     model: text(row.model),
     startedAt: num(row.started_at),

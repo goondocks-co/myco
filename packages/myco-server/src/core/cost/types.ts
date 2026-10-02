@@ -12,6 +12,8 @@ export interface RunUsage {
   totalTokens?: number;
   reasoningTokens?: number;
   cacheCreationTokens?: number;
+  cacheCreation5mTokens?: number;
+  cacheCreation1hTokens?: number;
   cachedTokens?: number;
   durationMs?: number;
   costUsd?: number | null;
@@ -28,6 +30,8 @@ export interface CostBreakdown {
   inputCostUsd?: number;
   cachedInputCostUsd?: number;
   outputCostUsd?: number;
+  cacheCreation5mCostUsd?: number;
+  cacheCreation1hCostUsd?: number;
   reasoningCostUsd?: number;
   requestCostUsd?: number;
   totalCostUsd?: number;
@@ -59,6 +63,7 @@ export interface CostResolutionInput {
   harness: string;
   model: string;
   usage: RunUsage;
+  context?: '1m';
   provider?: CostProvider;
 }
 

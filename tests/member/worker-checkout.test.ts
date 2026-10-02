@@ -98,7 +98,7 @@ describe('worker repository checkout over the Deployment wire', () => {
           expect(accounting).toMatchObject({ tokens_used: 38, cost_usd: 0.125, actual_cost_usd: null, estimated_cost_usd: 0.125, cost_source: 'estimated' });
           expect(JSON.parse(String(accounting.usage_data))).toEqual({
             inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: 0.125,
-            model: 'model', provider: 'anthropic', accountingVersion: 1, costProvenance: 'harness_estimate', identity: {
+            model: 'model', provider: 'anthropic', accountingVersion: 1, identity: {
               status: 'reported', source: 'result.modelUsage', primary: { model: 'model', provider: 'anthropic' },
               models: [{ model: 'model', provider: 'anthropic', source: 'result.modelUsage', usage: {
                 inputTokens: 35, outputTokens: 3, cachedTokens: 20, cacheCreationTokens: 5, costUsd: null, estimatedCostUsd: null,

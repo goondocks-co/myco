@@ -19,7 +19,7 @@ const COST_PROVIDERS: readonly CostProviderResolver[] = [
   {
     id: 'anthropic-harness',
     matches: (input) => input.provider?.type === 'anthropic',
-    resolve: async (input) => estimateAnthropicCost(input.model, input.usage),
+    resolve: async (input) => estimateAnthropicCost(input.model, input.usage, input.context),
   },
   {
     id: 'generic-configured',

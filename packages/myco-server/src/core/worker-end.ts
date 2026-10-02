@@ -40,7 +40,7 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const accounting: RunUpdate = attemptId === undefined ? {} : {
     ...(identity === undefined ? (usage?.model === undefined ? {} : { model: usage.model }) : { model: primary?.model ?? null }),
     ...(identity === undefined ? (usage?.provider === undefined ? {} : { provider: usage.provider }) : { provider: primary?.provider ?? null }),
-    usage_data: identity === undefined ? (usage === null ? null : JSON.stringify(usage)) : JSON.stringify({ ...usage, accountingVersion, identity, costProvenance: cost.provenance }),
+    usage_data: identity === undefined ? (usage === null ? null : JSON.stringify(usage)) : JSON.stringify({ ...usage, accountingVersion, identity }),
     tokens_used: usage?.tokenScope !== undefined || usage?.inputTokens == null || usage.outputTokens == null ? null : usage.inputTokens + usage.outputTokens,
     cost_usd: cost.costUsd, actual_cost_usd: cost.actualCostUsd,
     estimated_cost_usd: cost.estimatedCostUsd, cost_source: cost.source,

@@ -1,3 +1,4 @@
+import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -235,7 +236,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     db.prepare(`SELECT project_id, repository_branch, repository_commit, generated_at, source_run_id FROM canopy_maps WHERE ${maps.sql}`)
       .bind(...maps.params),
     db.prepare(
-      `SELECT r.project_id, r.id, r.task, r.status, ${RUN_AT} AS at, r.tokens_used, r.cost_usd, r.harness, r.model, r.provider, r.usage_data, ${PRODUCED_SQL} AS produced,
+      `SELECT r.project_id, r.id, r.task, r.status, ${RUN_AT} AS at, r.tokens_used, r.cost_usd, r.harness, r.model, r.provider, r.usage_data, ${costProvenanceValue('r.')} AS cost_provenance, ${PRODUCED_SQL} AS produced,
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(*) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spores,
               CASE WHEN r.task IN (${list(SPORE_TASKS)}) THEN (SELECT COUNT(DISTINCT sp.session_id) FROM spores sp WHERE sp.project_id = r.project_id AND sp.author = r.id) ELSE 0 END AS spore_sessions,
               CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
@@ -308,7 +309,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
     const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
     return {
-      ...runAccounting(row.usage_data),
+      ...runAccounting(row.usage_data, row.cost_provenance),
       harness: row.harness == null ? null : String(row.harness),
       model: row.model == null ? null : String(row.model),
       provider: row.provider == null ? null : String(row.provider),

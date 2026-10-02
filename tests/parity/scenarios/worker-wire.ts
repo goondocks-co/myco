@@ -167,7 +167,7 @@ export const workerWire: ParityScenario = {
       await waitFor(row, (r) => r?.status !== 'running', 20_000);
       expect(await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
         FROM agent_runs WHERE id = ${lit(runId)}`)).toEqual([{
-        tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: JSON.stringify({ accountingVersion: 1, identity: { status: 'unknown', reason: 'harness_did_not_report_model_and_launch_choice_unresolved' }, costProvenance: 'unavailable' }),
+        tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: JSON.stringify({ accountingVersion: 1, identity: { status: 'unknown', reason: 'harness_did_not_report_model_and_launch_choice_unresolved' } }),
       }]);
       const finalRow = await row();
       expect(`${target.name} ended: ${finalRow.status} — ${finalRow.error ?? 'no error'}`)

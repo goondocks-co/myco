@@ -39,7 +39,7 @@ describe('resolveCost', () => {
 
   it('answers the counts alone, with the reason, where nothing prices the model', async () => {
     const result = await resolveCost({ harness: 'claude-code', model: 'claude', provider: { type: 'anthropic' }, usage: { inputTokens: 10, outputTokens: 5 } });
-    expect(result).toMatchObject({ source: 'unavailable', costUsd: null, message: 'Exact model price or cache-write TTL accounting is unavailable' });
+    expect(result).toMatchObject({ source: 'unavailable', costUsd: null, message: 'Exact model price or complete cache accounting is unavailable' });
     expect(result.breakdown).toMatchObject({ inputTokens: 10, uncachedInputTokens: 10, outputTokens: 5, cachedInputTokens: 0 });
     expect((await resolveCost({ harness: 'x', model: 'm', usage: {} })).message).toBe('No provider cost resolver available');
   });

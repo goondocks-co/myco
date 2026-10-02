@@ -142,6 +142,21 @@ describe('model-specific execution accounting', () => {
       expect((await r.detail())?.run).toMatchObject({ status: 'failed', identity: { status: 'not_recorded' }, costUsd: 0.25 });
     } finally { r.e.sqlite.close(); }
   });
+  it('stores provenance once and reads canonical or legacy provenance through every run surface', async () => {
+    const r = await rig();
+    try {
+      expect(await r.end({ accountingVersion: 1, identity: identity('gpt-5.4-mini'), usage })).toMatchObject({ ended: true });
+      const row = r.e.sqlite.query('SELECT usage_data,cost_data FROM agent_runs WHERE id=?').get('run_usage') as { usage_data: string; cost_data: string };
+      expect(JSON.parse(row.usage_data)).not.toHaveProperty('costProvenance');
+      expect(JSON.parse(row.cost_data)).toHaveProperty('provenance', 'harness_estimate');
+      for (const legacy of [false, true]) {
+        if (legacy) r.e.sqlite.run('UPDATE agent_runs SET usage_data=?,cost_data=NULL WHERE id=?', [JSON.stringify({ ...JSON.parse(row.usage_data), costProvenance: 'harness_estimate' }), 'run_usage']);
+        expect((await r.detail())?.run.costProvenance).toBe('harness_estimate');
+        expect((await listRuns(r.e.db, scope, NOW, 'mem_viewer')).rows[0]?.costProvenance).toBe('harness_estimate');
+        expect((await readWork(r.e.db, { all: false, projectIds: ['proj_1'] }, NOW - 1, NOW + 1)).runs[0]?.costProvenance).toBe('harness_estimate');
+      }
+    } finally { r.e.sqlite.close(); }
+  });
   it('carries the Codex run-owned session model over end wire into DB and read APIs', async () => {
     const r = await rig('codex');
     try {
