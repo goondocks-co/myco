@@ -6,6 +6,8 @@ import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { ago } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords } from './words';
+import { useEmbeddingSwitch } from '../../../hooks/use-settings';
+import { EmbeddingSwitchPanel } from '../settings/EmbeddingSwitch';
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -18,6 +20,18 @@ function schemaLine(schema: StatusResponse['schema']): { tone: 'ok' | 'bad'; wor
   if (schema.matches) return { tone: 'ok', words: `The database is at the version this server expects (${schema.expected}).` };
   if (schema.found === null) return { tone: 'bad', words: 'The database could not be reached.' };
   return { tone: 'bad', words: `The database holds version ${schema.found}; this server expects ${schema.expected}. Some pages may fail until they match.` };
+}
+
+/** A switch of the embedding model under way: how far rebuilding search has come, and what search uses meanwhile. Nothing while none is. */
+function SearchRebuild({ now }: { now: number }) {
+  const sw = useEmbeddingSwitch().data;
+  if (sw === undefined || sw === null) return null;
+  return (
+    <div className="flex flex-col gap-s2" data-health-search-rebuild="">
+      <h3 className="t-h3 text-ink">Search by meaning</h3>
+      <Card><EmbeddingSwitchPanel sw={sw} now={now} /></Card>
+    </div>
+  );
 }
 
 /**
@@ -49,6 +63,8 @@ function StatusBody({ data, now, projectName }: { data: StatusResponse; now: num
         </p>
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
+
+      <SearchRebuild now={now} />
 
       <div className="flex flex-col gap-s2">
         <h3 className="t-h3 text-ink">What this server runs itself</h3>

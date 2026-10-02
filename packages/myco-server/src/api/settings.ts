@@ -13,6 +13,7 @@ import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/sett
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
+import { cancelEmbeddingSwitch, embeddingSwitchStatus, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
 
 /**
  * The Deployment Settings surface.
@@ -195,6 +196,38 @@ export async function handleSetEmbedding(env: ServerEnv, ctx: OwnerContext): Pro
   const choice = { provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) };
   const result = await writerFor(env).setEmbedding(choice, ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
+}
+
+/** A switch operation's answer: the switch as it now stands, or the refusal in this surface's shape. */
+const switchAnswer = (answer: SwitchAnswer): Response => answer.applied
+  ? ok({ applied: true, switch: answer.switch })
+  : Response.json({ applied: false, leaf: 'embedding.model', ...answer.refusal }, { status: answer.refusal.reason === 'conflict' ? 409 : 400 });
+
+/** `GET /api/embedding/switch`: the switch of the embedding model under way, or null. */
+export async function handleEmbeddingSwitch(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
+  return ok({ switch: await embeddingSwitchStatus(env) });
+}
+
+/**
+ * `POST /api/embedding/switch`: start switching search to the provider and model the body names. The body carries
+ * `confirm: true`, the answer to the confirmation the page asks for: the switch rebuilds search in the background.
+ */
+export async function handleStartEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const body = await readJsonObject(ctx.request);
+  if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
+  if (body.confirm !== true) return malformed('embedding.model', 'a switch of the embedding model must be confirmed');
+  const choice = { provider: body.provider, ...('model' in body && body.model !== null ? { model: body.model } : {}), ...('endpoint' in body && body.endpoint !== null ? { endpoint: body.endpoint } : {}) };
+  return switchAnswer(await startEmbeddingSwitch(env, choice, ctx.member.id, ctx.now));
+}
+
+/** `DELETE /api/embedding/switch/{switchId}`: cancel the switch; search keeps its current model. */
+export async function handleCancelEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return switchAnswer(await cancelEmbeddingSwitch(env, ctx.params.switchId));
+}
+
+/** `POST /api/embedding/switch/{switchId}/resume`: resume a paused switch once its model can be reached. */
+export async function handleResumeEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return switchAnswer(await resumeEmbeddingSwitch(env, ctx.params.switchId, ctx.now));
 }
 
 /** Clear one configured leaf so its built-in value applies. */

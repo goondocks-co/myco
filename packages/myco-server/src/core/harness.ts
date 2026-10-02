@@ -37,6 +37,7 @@ import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatch
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { runtimeProbePreferences } from './runtime-probe.js';
 import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
+import { embeddingWorkPlan } from './embedding/switch.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileCapability, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
@@ -548,9 +549,9 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
   if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'not_landed' };
   if (gate.kind === 'embedding') {
-    const embedding = await env.embeddingProvider?.();
-    if (env.vectors === undefined || embedding == null) return { ok: false, refusal: 'no_provider' };
-    return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.modelKey, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
+    const embedding = await embeddingWorkPlan(env);
+    if (embedding === null) return { ok: false, refusal: 'no_provider' };
+    return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.model, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
   }
 
   const archived = await runtimeProbePreferences(env.db, task);

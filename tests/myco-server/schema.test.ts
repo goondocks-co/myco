@@ -21,6 +21,24 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('adds the embedding switch, one at a time, without changing the settings or the vectors search holds', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter((step) => step.version < 64)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.model', '"kept"', 1, 'mem_writer')`);
+      sqlite.run(`INSERT INTO embedding_receipts (project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES ('proj_1', 'm', 'v1', 'spore', 's1', 'r1', 1, 1)`);
+      const before = [sqlite.query(`SELECT * FROM deployment_settings`).all(), sqlite.query(`SELECT * FROM embedding_receipts`).all()];
+      for (const sql of SCHEMA_STEPS.find((step) => step.version === 64)!.statements) sqlite.exec(sql);
+      expect([sqlite.query(`SELECT * FROM deployment_settings`).all(), sqlite.query(`SELECT * FROM embedding_receipts`).all()]).toEqual(before);
+      const insert = (id: string, slot = 'deployment') => sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, state, reason, started_at, started_by, updated_at)
+        VALUES (?, ?, 'workers-ai', 'm2', NULL, 'k2', 'k1', 0, 'building', NULL, 1, 'mem_writer', 1)`, [slot, id]);
+      insert('one');
+      expect(() => insert('two')).toThrow(/UNIQUE constraint failed/);
+      expect(() => insert('three', 'another')).toThrow(/CHECK constraint failed/);
+      expect(() => sqlite.run(`UPDATE embedding_switches SET state = 'done'`)).toThrow(/CHECK constraint failed/);
+    } finally { sqlite.close(); }
+  });
+
   it('adds a bounded reset audit without changing previously configured leaves', () => {
     const sqlite = new Database(':memory:');
     try {

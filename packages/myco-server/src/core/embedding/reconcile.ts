@@ -5,9 +5,22 @@ import type { EmbeddingSource } from '../../read/embedding.js';
 import { reconcileHubness } from './hubness.js';
 import { registeredObjectKeySql } from '../blob-objects.js';
 
-/** `vectorWriteTimeoutMs` bounds each vector write and delete; it defaults to `VECTOR_WRITE_TIMEOUT_MS`. */
-export interface EmbeddingContext { db: RelationalStore; blobs: BlobStore; vectors: VectorStore; provider: EmbeddingProvider; vectorWriteTimeoutMs?: number }
-export interface EmbeddingStep { phase: 'missing' | 'stale' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }
+/**
+ * `provider` writes every source and calibrates spores. While an embedding switch runs, `building` writes every source
+ * too, once `provider` has none left to write, and `retain` names every model whose vectors are kept: a receipt under any
+ * other model is retired. `vectorWriteTimeoutMs` bounds each vector write and delete; it defaults to
+ * `VECTOR_WRITE_TIMEOUT_MS`.
+ */
+export interface EmbeddingContext {
+  db: RelationalStore;
+  blobs: BlobStore;
+  vectors: VectorStore;
+  provider: EmbeddingProvider;
+  building?: EmbeddingProvider;
+  retain?: readonly string[];
+  vectorWriteTimeoutMs?: number;
+}
+export interface EmbeddingStep { phase: 'missing' | 'stale' | 'switch' | 'orphans' | 'hubness' | 'visibility' | 'settled'; processed: number }
 
 /** Requeue a project's embedding sources when its vector namespace is empty. Source revisions remain intact. */
 export async function resetEmbeddingIndex(db: RelationalStore, projectId: string): Promise<void> {
@@ -52,13 +65,17 @@ export const RECEIPT = { journaled: 0, ready: 1, deletionSent: -1, deletionFaile
  * A receipt claimed for deletion stays claimed until it is retired: it is due again `VECTOR_DELETE_CONFIRM_MS` after a
  * delete is sent and `VECTOR_DELETE_RETRY_MS` after a delete fails or its confirmation finds the vector still stored,
  * whether or not its source is current. An unclaimed receipt is due at once when its vector no longer belongs to a current
- * source. Binds: `deletionDueBinds(modelKey, now)`.
+ * source, or when it is under a model no longer retained. Binds: `deletionDueBinds(retained, now)`.
  */
-export const DELETION_DUE = `((r.ready >= ${RECEIPT.journaled} AND (r.model_key <> ? OR NOT EXISTS
+export const DELETION_DUE = `((r.ready >= ${RECEIPT.journaled} AND (r.model_key NOT IN (SELECT value FROM json_each(?)) OR NOT EXISTS
   (SELECT 1 FROM embedding_sources s WHERE s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision)))
   OR (r.ready = ${RECEIPT.deletionSent} AND r.updated_at <= ?) OR (r.ready = ${RECEIPT.deletionFailed} AND r.updated_at <= ?))`;
-export const deletionDueBinds = (modelKey: string, now: number): [string, number, number] =>
-  [modelKey, now - VECTOR_DELETE_CONFIRM_MS, now - VECTOR_DELETE_RETRY_MS];
+export const deletionDueBinds = (retained: string | readonly string[], now: number): [string, number, number] =>
+  [JSON.stringify(typeof retained === 'string' ? [retained] : [...new Set(retained)]), now - VECTOR_DELETE_CONFIRM_MS, now - VECTOR_DELETE_RETRY_MS];
+
+/** Every model whose vectors a step keeps. */
+export const retainedModels = (context: Pick<EmbeddingContext, 'provider' | 'building' | 'retain'>): string[] =>
+  [...new Set([context.provider.modelKey, ...(context.building === undefined ? [] : [context.building.modelKey]), ...(context.retain ?? [])])];
 
 /**
  * A source `s` needs no write while its revision's receipt under the model is indexed or claimed for deletion; a claimed
@@ -89,44 +106,13 @@ async function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T
  * A write that returns after its receipt is retired records a fresh claim, so its vector is deleted in turn.
  */
 export async function reconcileEmbedding(context: EmbeddingContext, projectId: string, now: number): Promise<EmbeddingStep> {
-  const { db, blobs, vectors, provider } = context;
+  const { db, vectors } = context;
   const limit = context.vectorWriteTimeoutMs ?? VECTOR_WRITE_TIMEOUT_MS;
-  const scope = { projectId, modelKey: provider.modelKey };
-  const cursor = await db.prepare('SELECT next_type FROM embedding_cursors WHERE project_id = ?').bind(projectId).first<{ next_type: number }>();
-  for (let offset = 0; offset < VECTOR_TYPES.length; offset++) {
-    const index = ((cursor?.next_type ?? 0) + offset) % VECTOR_TYPES.length;
-    const type = VECTOR_TYPES[index];
-    const source = await db.prepare(`SELECT s.*, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key, EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id) AS stale
-      FROM embedding_sources s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id
-      WHERE s.project_id = ? AND s.type = ? AND NOT ${SOURCE_HELD}
-      ORDER BY stale, v.attempted_at, s.record_id LIMIT 1`).bind(projectId, type, provider.modelKey).first<EmbeddingSource & { object_key: string | null; stale: number }>();
-    if (source === null) continue;
-    const id = await vectorId(scope, source.type, source.record_id, source.revision);
-    const receipt = [projectId, provider.modelKey, id] as const;
-    await db.batch([
-      db.prepare(`INSERT INTO embedding_cursors(project_id, next_type) VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET next_type = excluded.next_type`).bind(projectId, (index + 1) % VECTOR_TYPES.length),
-      db.prepare(`UPDATE embedding_versions SET attempted_at = ? WHERE project_id = ? AND type = ? AND record_id = ?`).bind(now, projectId, type, source.record_id),
-      db.prepare(`INSERT INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(project_id, model_key, id) DO UPDATE SET updated_at = excluded.updated_at`)
-        .bind(...receipt, type, source.record_id, source.revision, now),
-    ]);
-    const values = await provider.embed(await sourceText(blobs, source));
-    const phase = source.stale ? 'stale' : 'missing';
-    const rejournaled = await db.prepare(`UPDATE embedding_receipts SET updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled}`)
-      .bind(now, ...receipt).run();
-    if (rejournaled.meta.changes !== 1) return { phase, processed: 0 };
-    const landed = async () => {
-      await db.prepare(`UPDATE embedding_receipts SET ready = ${RECEIPT.ready} WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled}
-        AND EXISTS (SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND s.type = ? AND s.record_id = ? AND s.revision = ?)`)
-        .bind(...receipt, projectId, type, source.record_id, source.revision).run();
-      await db.prepare(`INSERT INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${RECEIPT.deletionSent}, ?)
-        ON CONFLICT(project_id, model_key, id) DO NOTHING`).bind(...receipt, type, source.record_id, source.revision, now).run();
-    };
-    await bounded(vectors.upsert(scope, [{ id, values, metadata: metadataOf(source) }]).then(landed), limit, 'vector write');
-    return { phase, processed: 1 };
-  }
+  const written = await writeSource(context, context.provider, projectId, now)
+    ?? (context.building === undefined ? null : await writeSource(context, context.building, projectId, now));
+  if (written !== null) return written;
   const orphan = await db.prepare(`SELECT r.* FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}
-    ORDER BY r.updated_at, r.id LIMIT 1`).bind(projectId, ...deletionDueBinds(provider.modelKey, now))
+    ORDER BY r.updated_at, r.id LIMIT 1`).bind(projectId, ...deletionDueBinds(retainedModels(context), now))
     .first<{ id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number }>();
   if (orphan !== null) {
     const partition = { projectId, modelKey: orphan.model_key };
@@ -149,4 +135,45 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
     return { phase: 'orphans', processed: 1 };
   }
   return reconcileHubness(context, projectId, now);
+}
+
+/** Write one source `provider` holds no vector for, or answer null when it holds one for every source. */
+async function writeSource(context: EmbeddingContext, provider: EmbeddingProvider, projectId: string, now: number): Promise<EmbeddingStep | null> {
+  const { db, blobs, vectors } = context;
+  const limit = context.vectorWriteTimeoutMs ?? VECTOR_WRITE_TIMEOUT_MS;
+  const scope = { projectId, modelKey: provider.modelKey };
+  const cursor = await db.prepare('SELECT next_type FROM embedding_cursors WHERE project_id = ?').bind(projectId).first<{ next_type: number }>();
+  for (let offset = 0; offset < VECTOR_TYPES.length; offset++) {
+    const index = ((cursor?.next_type ?? 0) + offset) % VECTOR_TYPES.length;
+    const type = VECTOR_TYPES[index];
+    const source = await db.prepare(`SELECT s.*, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key, EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id) AS stale
+      FROM embedding_sources s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id
+      WHERE s.project_id = ? AND s.type = ? AND NOT ${SOURCE_HELD}
+      ORDER BY stale, v.attempted_at, s.record_id LIMIT 1`).bind(projectId, type, provider.modelKey).first<EmbeddingSource & { object_key: string | null; stale: number }>();
+    if (source === null) continue;
+    const id = await vectorId(scope, source.type, source.record_id, source.revision);
+    const receipt = [projectId, provider.modelKey, id] as const;
+    await db.batch([
+      db.prepare(`INSERT INTO embedding_cursors(project_id, next_type) VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET next_type = excluded.next_type`).bind(projectId, (index + 1) % VECTOR_TYPES.length),
+      db.prepare(`UPDATE embedding_versions SET attempted_at = ? WHERE project_id = ? AND type = ? AND record_id = ?`).bind(now, projectId, type, source.record_id),
+      db.prepare(`INSERT INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, model_key, id) DO UPDATE SET updated_at = excluded.updated_at`)
+        .bind(...receipt, type, source.record_id, source.revision, now),
+    ]);
+    const values = await provider.embed(await sourceText(blobs, source));
+    const phase = provider === context.building ? 'switch' : source.stale ? 'stale' : 'missing';
+    const rejournaled = await db.prepare(`UPDATE embedding_receipts SET updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled}`)
+      .bind(now, ...receipt).run();
+    if (rejournaled.meta.changes !== 1) return { phase, processed: 0 };
+    const landed = async () => {
+      await db.prepare(`UPDATE embedding_receipts SET ready = ${RECEIPT.ready} WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled}
+        AND EXISTS (SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND s.type = ? AND s.record_id = ? AND s.revision = ?)`)
+        .bind(...receipt, projectId, type, source.record_id, source.revision).run();
+      await db.prepare(`INSERT INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, ready, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${RECEIPT.deletionSent}, ?)
+        ON CONFLICT(project_id, model_key, id) DO NOTHING`).bind(...receipt, type, source.record_id, source.revision, now).run();
+    };
+    await bounded(vectors.upsert(scope, [{ id, values, metadata: metadataOf(source) }]).then(landed), limit, 'vector write');
+    return { phase, processed: 1 };
+  }
+  return null;
 }

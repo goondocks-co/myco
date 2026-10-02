@@ -19,7 +19,7 @@ import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS } fr
 import type { ServerEnv } from './adapters.js';
 import {
   DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES, executionProfileLeafDefault, heldPartitions, leafRuleViolation,
-  leafResets, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, taskOverridesMetadata, type LeafRecord,
+  leafResets, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, switchUnderWay, taskOverridesMetadata, type LeafRecord,
 } from './settings.js';
 import { scheduleLeaves } from './scheduled-tasks.js';
 import { readDispatchLimits, LIMIT_LEAVES } from './limits.js';
@@ -37,7 +37,8 @@ import { transcriptRetentionFact } from '../ingest/retention.js';
 import { autoCreateProjects } from '../api/member-projects.js';
 import { keepsEmbeddingWhileIdle } from './embedding/jobs.js';
 import { embeddingResolution, type EmbeddingPlatform } from './embedding/configured-provider.js';
-import { resolveEmbedding, selectionChangeRefusal, tooLargeRefusal, type HeldPartition } from './embedding/policy.js';
+import { SWITCH_REFUSAL, resolveEmbedding, selectionChangeRefusal, tooLargeRefusal, type HeldPartition } from './embedding/policy.js';
+import { embeddingSwitchStatus } from './embedding/switch.js';
 import { VECTOR_DIMENSIONS } from './embedding/vectors.js';
 
 /** What a policy's consumer makes of one leaf now. Unset fields take the leaf's generic answer. */
@@ -228,7 +229,7 @@ const capture: SettingPolicy = {
 
 const embedding: SettingPolicy = {
   id: 'embedding',
-  owners: ['core/embedding/configured-provider.ts', 'core/embedding/jobs.ts'],
+  owners: ['core/embedding/configured-provider.ts', 'core/embedding/jobs.ts', 'core/embedding/switch.ts'],
   leaves: ['embedding.provider', 'embedding.model', 'embedding.base_url', 'embedding.prevent_deep_sleep'],
   selfJudged: true,
   async resolve(env) {
@@ -343,8 +344,8 @@ export async function effectiveSettings(env: ServerEnv): Promise<Map<string, Eff
 /** What the embedding picker offers on this server: each provider's models, and why one cannot be chosen now. */
 export async function embeddingChoices(env: ServerEnv): Promise<EmbeddingChoices> {
   const target = env.platform.name;
-  const [resolution, held, stored] = await Promise.all([
-    embeddingResolution(env.db, env.wrappingKey, embeddingPlatformOf(env)), heldPartitions(env.db), storedEmbedding(env.db),
+  const [resolution, held, stored, underWay] = await Promise.all([
+    embeddingResolution(env.db, env.wrappingKey, embeddingPlatformOf(env)), heldPartitions(env.db), storedEmbedding(env.db), embeddingSwitchStatus(env),
   ]);
   const current = resolveEmbedding(stored, target).selection;
   const providers = embeddingProvidersFor(target).map((id): EmbeddingProviderChoice => {
@@ -356,8 +357,9 @@ export async function embeddingChoices(env: ServerEnv): Promise<EmbeddingChoices
       endpoint: { editable: spec.endpoint.editable, url: spec.endpoint.url },
       models: spec.models.map((model) => {
         const candidate = resolveEmbedding({ 'embedding.provider': id, 'embedding.model': model.id, ...(spec.endpoint.editable && endpoint !== null ? { 'embedding.base_url': endpoint } : {}) }, target).selection;
-        const refusal = model.dimensions > VECTOR_DIMENSIONS ? tooLargeRefusal(model.id, model.dimensions) : selectionChangeRefusal(current, candidate, held);
-        return { id: model.id, dimensions: model.dimensions, refusal };
+        const change = model.dimensions > VECTOR_DIMENSIONS ? tooLargeRefusal(model.id, model.dimensions) : selectionChangeRefusal(current, candidate, held);
+        const refusal = underWay === null || candidate?.modelKey === current?.modelKey ? change : switchUnderWay(underWay.model);
+        return { id: model.id, dimensions: model.dimensions, refusal, rebuilds: underWay === null && change === SWITCH_REFUSAL };
       }),
     };
   });
@@ -373,7 +375,8 @@ export async function embeddingChoices(env: ServerEnv): Promise<EmbeddingChoices
     reason: resolution.reason,
     held: held.map((partition) => ({ model: partition.label, dimensions: partition.dimensions })),
     capacity: VECTOR_DIMENSIONS,
-    switchable: held.length === 0,
+    switchable: held.length === 0 && underWay === null,
+    switch: underWay,
   };
 }
 

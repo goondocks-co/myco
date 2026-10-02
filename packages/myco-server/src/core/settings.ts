@@ -8,8 +8,9 @@ import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import {
   EMBEDDING_SELECTION_LEAVES, embeddingEndpointRefusal, heldPartition, resolveEmbedding, selectionChangeRefusal,
-  type EmbeddingSelectionLeaf, type StoredEmbedding,
+  type EmbeddingSelection, type EmbeddingSelectionLeaf, type StoredEmbedding,
 } from './embedding/policy.js';
+import { SWITCH_STANDS_SQL, readSwitch } from './embedding/switch-store.js';
 
 /**
  * Deployment Settings: one operation every write goes through.
@@ -615,16 +616,57 @@ async function embeddingRows(db: RelationalStore): Promise<{ stored: StoredEmbed
 /** A stored leaf's stamp, or `absent`, in SQL. Bound as: the leaf. */
 const STAMP_SQL = `COALESCE((SELECT updated_at || ':' || updated_by FROM deployment_settings WHERE leaf = ?), 'absent')`;
 
+/** Why a candidate embedding selection, with `changes` the parts a write names, cannot be stored on the target; or what it resolves to. */
+function judgeEmbeddingCandidate(candidate: StoredEmbedding, changes: StoredEmbedding, target: DeploymentTarget, leaf: string): { refusal: SettingsRefusal } | { refusal: null; resolved: ReturnType<typeof resolveEmbedding> } {
+  const fixed = candidate['embedding.base_url'] !== undefined && changes['embedding.base_url'] !== undefined && isEmbeddingProvider(candidate['embedding.provider'])
+    && !EMBEDDING_CATALOGUE[candidate['embedding.provider']].endpoint.editable ? EMBEDDING_CATALOGUE[candidate['embedding.provider']] : null;
+  if (fixed !== null) {
+    return { refusal: { reason: 'invalid_value', leaf, detail: `${fixed.label} uses its own endpoint; choose ${EMBEDDING_CATALOGUE['openai-compatible'].label} to name an endpoint of your own` } };
+  }
+  const resolved = resolveEmbedding(candidate, target);
+  for (const [part, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
+    if (value === undefined) continue;
+    const { state, reason } = resolved.leaves[part];
+    if (state === 'invalid' || state === 'not-applicable') return { refusal: { reason: 'invalid_value', leaf, detail: reason ?? 'refused' } };
+  }
+  return { refusal: null, resolved };
+}
+
+/** The leaves a whole embedding choice writes: a provider, and its model and endpoint, each absent where the choice leaves it at its default. */
+export const embeddingChoiceLeaves = (choice: EmbeddingChoice): StoredEmbedding =>
+  ({ 'embedding.provider': choice.provider, 'embedding.model': choice.model, 'embedding.base_url': choice.endpoint });
+
+/**
+ * A whole embedding choice judged as `setEmbedding` judges it on the target, before the model change itself is: the
+ * selection it resolves to, or why it cannot be stored.
+ */
+export function judgeEmbeddingChoice(choice: EmbeddingChoice, target: DeploymentTarget): { refusal: SettingsRefusal } | { refusal: null; selection: EmbeddingSelection | null; stored: StoredEmbedding } {
+  const leaf = 'embedding.provider';
+  const changes = embeddingChoiceLeaves(choice);
+  for (const [part, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
+    const violation = value === undefined ? null : embeddingPartViolation(part, value);
+    if (violation !== null) return { refusal: { reason: 'invalid_value', leaf: part, detail: violation } };
+  }
+  const stored = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)) as StoredEmbedding;
+  const judged = judgeEmbeddingCandidate(stored, changes, target, leaf);
+  return judged.refusal !== null ? judged : { refusal: null, selection: judged.resolved.selection, stored };
+}
+
+/** Why the embedding selection cannot change while a switch stands. */
+export const switchUnderWay = (model: string): string => `A switch to ${model} is under way. Cancel it under Search embeddings to choose another model`;
+
 /**
  * Judge and write a change to the embedding selection on this target, as one compare-and-set. `changes` names each
  * leaf written, with undefined for one removed. A written part that is invalid or not offered here is refused; so is
- * any change of the model identity while search holds results (`selectionChangeRefusal`). Every statement of the
- * write carries the condition that the three leaves still stand as they were judged, or as this write left them, and
- * that search still holds nothing where it held nothing: a write that lost a race to another changes nothing and
- * answers a conflict.
+ * any change of the model identity while search holds results (`selectionChangeRefusal`), and any change while a
+ * switch of the model stands. Every statement of the write carries the condition that the three leaves still stand as
+ * they were judged, or as this write left them, that no switch stands, and that search still holds nothing where it
+ * held nothing: a write that lost a race to another changes nothing and answers a conflict.
  */
 async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | undefined, changes: StoredEmbedding, actor: string, nowMs: number, leaf: string): Promise<SettingsResult> {
   if (target === undefined) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'this write names no server type, so the embedding choice cannot be judged' } };
+  const underWay = await readSwitch(db);
+  if (underWay !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: switchUnderWay(underWay.model) } };
   const { stored: before, stamps } = await embeddingRows(db);
   const candidate: StoredEmbedding = { ...before };
   const parts = Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>;
@@ -632,17 +674,9 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
     if (value === undefined) delete candidate[part];
     else candidate[part] = value;
   }
-  const fixed = candidate['embedding.base_url'] !== undefined && changes['embedding.base_url'] !== undefined && isEmbeddingProvider(candidate['embedding.provider'])
-    && !EMBEDDING_CATALOGUE[candidate['embedding.provider']].endpoint.editable ? EMBEDDING_CATALOGUE[candidate['embedding.provider']] : null;
-  if (fixed !== null) {
-    return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: `${fixed.label} uses its own endpoint; choose ${EMBEDDING_CATALOGUE['openai-compatible'].label} to name an endpoint of your own` } };
-  }
-  const resolved = resolveEmbedding(candidate, target);
-  for (const [part, value] of parts) {
-    if (value === undefined) continue;
-    const { state, reason } = resolved.leaves[part];
-    if (state === 'invalid' || state === 'not-applicable') return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: reason ?? 'refused' } };
-  }
+  const judged = judgeEmbeddingCandidate(candidate, changes, target, leaf);
+  if (judged.refusal !== null) return { applied: false, refusal: judged.refusal };
+  const resolved = judged.resolved;
   const held = await heldPartitions(db);
   const refusal = selectionChangeRefusal(resolveEmbedding(before, target).selection, resolved.selection, held);
   if (refusal !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: refusal } };
@@ -650,6 +684,7 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
   const ours = `${nowMs}:${actor}`;
   const removed = new Set(parts.filter(([, value]) => value === undefined).map(([part]) => part));
   const unchanged = EMBEDDING_SELECTION_LEAVES.map((part) => `${STAMP_SQL} IN (?, ?${removed.has(part) ? ", 'absent'" : ''})`).join(' AND ')
+    + ` AND NOT ${SWITCH_STANDS_SQL}`
     + (held.length === 0 ? ' AND NOT EXISTS (SELECT 1 FROM embedding_receipts WHERE ready >= 0)' : '');
   const unchangedBinds = EMBEDDING_SELECTION_LEAVES.flatMap((part) => [part, stamps.get(part) ?? 'absent', ours]);
   const statements = parts.flatMap(([part, value]) => value !== undefined
@@ -665,6 +700,33 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
   const results = await db.batch(statements);
   if (results.some((result) => result.meta.changes === 0)) return { applied: false, refusal: { reason: 'conflict', leaf } };
   return { applied: true };
+}
+
+/**
+ * Write the embedding leaves to the choice a completed switch names, attributed to the member who started it, in one
+ * batch that ends with `end`. Every statement carries `condition`, so the leaves move only together with `end`: the
+ * answer is whether `end` changed its row.
+ */
+export async function writeSwitchedEmbedding(
+  db: RelationalStore, choice: StoredEmbedding, actor: string, nowMs: number,
+  condition: { sql: string; params: readonly string[] }, end: PreparedStatement,
+): Promise<boolean> {
+  const { stamps } = await embeddingRows(db);
+  const statements = EMBEDDING_SELECTION_LEAVES.flatMap((part) => {
+    const value = choice[part];
+    if (value !== undefined) {
+      return [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) SELECT ?, ?, ?, ? WHERE ${condition.sql}
+        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+        .bind(part, JSON.stringify(value), nowMs, actor, ...condition.params)];
+    }
+    return stamps.has(part) ? [
+      db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${condition.sql}`).bind(part, ...condition.params),
+      db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) SELECT ?, ?, ? WHERE ${condition.sql}
+        ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(part, nowMs, actor, ...condition.params),
+    ] : [];
+  });
+  const results = await db.batch([...statements, end]);
+  return results.at(-1)!.meta.changes === 1;
 }
 
 /**
@@ -737,7 +799,7 @@ export function settingsWriter(
     async setEmbedding(choice, actor, nowMs) {
       const leaf = 'embedding.provider';
       return withLeafWrite({ leaf, value: choice, actor }, async () => {
-        const changes: StoredEmbedding = { 'embedding.provider': choice.provider, 'embedding.model': choice.model, 'embedding.base_url': choice.endpoint };
+        const changes = embeddingChoiceLeaves(choice);
         for (const [part, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
           const violation = value === undefined ? null : embeddingPartViolation(part, value);
           if (violation !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf: part, detail: violation } };

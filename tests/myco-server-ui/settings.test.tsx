@@ -21,6 +21,7 @@ import { liftsAt, policyWords, progressWords, waitingWords } from '../../package
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
 import { OUTCOME_TASKS, TASK_TIERS } from '../../packages/myco-server/src/core/task-catalogue';
 import { rawIdsIn } from '../helpers/raw-ids';
+import type { EmbeddingSwitchStatus } from '../../packages/myco-shared/src/settings-contract';
 
 const ADA = 'mem_q3Vb8xRk2LmT7wYz';
 const LIN = 'mem_Hn5-pC0dJfA9sE_u';
@@ -51,25 +52,32 @@ const rowFor = (leaf: string) => ({
   appliesTo: leaf === 'embedding.base_url' ? ['bun'] : ['cloudflare', 'bun'], revision: '0',
 });
 /** The embedding picker's choices on a hosted server whose index holds bge-m3 vectors. */
-const SWITCH = 'Switching the embedding model rebuilds search for every source. Use Switch embedding model to build the new index alongside the current one';
+const SWITCH = 'Switching the embedding model rebuilds search for every source. Choose Switch to this model to rebuild it in the background while search keeps using the current one';
 const HOSTED_CHOICES = {
   target: 'cloudflare',
   providers: [
     { id: 'workers-ai', label: 'Cloudflare Workers AI', defaultModel: '@cf/baai/bge-m3', customModels: false, credential: null, endpoint: { editable: false, url: null },
-      models: [{ id: '@cf/baai/bge-m3', dimensions: 1024, refusal: null }, { id: '@cf/baai/bge-base-en-v1.5', dimensions: 768, refusal: SWITCH }] },
+      models: [{ id: '@cf/baai/bge-m3', dimensions: 1024, refusal: null, rebuilds: false }, { id: '@cf/baai/bge-base-en-v1.5', dimensions: 768, refusal: SWITCH, rebuilds: true }] },
     { id: 'openrouter', label: 'OpenRouter', defaultModel: 'openai/text-embedding-3-small', customModels: false, credential: 'openrouter', endpoint: { editable: false, url: 'https://openrouter.ai/api/v1' },
-      models: [{ id: 'openai/text-embedding-3-small', dimensions: 1536, refusal: SWITCH }, { id: 'baai/bge-m3', dimensions: 1024, refusal: SWITCH }] },
+      models: [{ id: 'openai/text-embedding-3-small', dimensions: 1536, refusal: SWITCH, rebuilds: true }, { id: 'baai/bge-m3', dimensions: 1024, refusal: SWITCH, rebuilds: true }] },
   ],
   selection: { provider: 'workers-ai', model: '@cf/baai/bge-m3', endpoint: null, dimensions: 1024 },
   reason: null,
   held: [{ model: '@cf/baai/bge-m3', dimensions: 1024 }],
   capacity: 1536,
   switchable: false,
+  switch: null as EmbeddingSwitchStatus | null,
+};
+/** A switch to bge-base under way on that server, 120 of 400 sources in. */
+const BUILDING: EmbeddingSwitchStatus = {
+  id: '6f1c2a90-3b7d-4e5f-8a1b-2c3d4e5f6a7b', provider: 'workers-ai', providerLabel: 'Cloudflare Workers AI', model: '@cf/baai/bge-base-en-v1.5', dimensions: 768,
+  from: { model: '@cf/baai/bge-m3', dimensions: 1024 }, state: 'building', reason: null, done: 120, total: 400, startedAt: NOW - 5 * 60_000,
+  estimatedTokens: 60_000, estimatedUsd: 0.004,
 };
 /** The same server before search has built anything: every model that fits may be chosen. */
 const UNBUILT_CHOICES = {
   ...HOSTED_CHOICES,
-  providers: HOSTED_CHOICES.providers.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m, refusal: null })) })),
+  providers: HOSTED_CHOICES.providers.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m, refusal: null, rebuilds: false })) })),
   held: [],
   switchable: true,
 };
@@ -119,6 +127,13 @@ const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => (
   '/api/titling-backfill': () => Response.json(TITLING),
   ...extra,
 });
+
+/** The element the selector names, or a throw that `waitFor` retries. */
+function found(selector: string): HTMLElement {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (element === null) throw new Error(`${selector} is not on the page`);
+  return element;
+}
 
 /** Opens a design-system select by its label and picks one option, the way a person does. */
 async function pick(label: string, option: string) {
@@ -385,14 +400,61 @@ describe('Settings, in five sections', () => {
     expect(Object.keys(sent[0]!.headers).some((h) => h.startsWith('x-myco-'))).toBe(false);
   });
 
-  it('holds a model change while search holds results, says why, and sends nothing', async () => {
-    const { sent } = server(base({ '/api/embedding': () => Response.json({ applied: true }) }));
+  it('offers to switch to a model that rebuilds search, explains it, and starts the switch only once confirmed', async () => {
+    const { sent } = server(base({
+      '/api/embedding': () => Response.json({ applied: true }),
+      '/api/embedding/switch': () => Response.json({ applied: true, switch: BUILDING }),
+    }));
     mount('/settings/models');
-    await waitFor(() => expect(statusOf('embedding.model')).toContain('Another model rebuilds search'));
+    await waitFor(() => expect(statusOf('embedding.model')).toContain('Choosing another model offers to switch search to it'));
     await pick('Embedding provider', 'OpenRouter');
     await pick('Embedding model', 'baai/bge-m3 · 1024 dimensions · rebuilds search');
-    await waitFor(() => expect(statusOf('embedding.model')).toBe(SWITCH));
+    const offer = await waitFor(() => found('[data-embedding-offer]'));
+    expect(offer.textContent).toContain('bge-m3 rebuilds search: every source is read again with it, in the background. Search keeps working with bge-m3 meanwhile');
     expect(sent).toEqual([]);
+    fireEvent.click(within(offer as HTMLElement).getByRole('button', { name: 'Switch to this model' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('OpenRouter charges $0.01 per million tokens');
+    expect(sent).toEqual([]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to this model' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'POST', path: '/api/embedding/switch', body: { provider: 'openrouter', model: 'baai/bge-m3', confirm: true } });
+  });
+
+  it('shows a switch under way with its progress, what search uses meanwhile, and cancels it only once confirmed', async () => {
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: BUILDING } }),
+      [`/api/embedding/switch/${BUILDING.id}`]: () => Response.json({ applied: true, switch: null }),
+    }));
+    mount('/settings/models');
+    const panel = await waitFor(() => found('[data-embedding-switch="building"]'));
+    expect(panel.textContent).toContain('Rebuilding search with bge-base-en-v1.5 (768 dimensions): 120 of 400 sources done (30%).');
+    expect(panel.textContent).toContain('Search keeps using bge-m3 until every source is done, then moves to bge-base-en-v1.5 on its own.');
+    expect(panel.textContent).toContain('Estimated cost: under $0.01');
+    expect((screen.getByLabelText('Embedding model') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(panel as HTMLElement).getByRole('button', { name: 'Cancel the switch' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('Search keeps using bge-m3. The bge-base-en-v1.5 results built so far are removed.');
+    expect(sent).toEqual([]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel the switch' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'DELETE', path: `/api/embedding/switch/${BUILDING.id}` });
+  });
+
+  it('shows a paused switch with its reason and resumes it', async () => {
+    const paused = { ...BUILDING, state: 'paused' as const, reason: 'The new model\'s provider is limiting requests (HTTP 429): its quota or rate limit is reached. Resume once it allows more.' };
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: paused } }),
+      [`/api/embedding/switch/${BUILDING.id}/resume`]: () => Response.json({ applied: true, switch: BUILDING }),
+    }));
+    mount('/settings/models');
+    const panel = await waitFor(() => found('[data-embedding-switch="paused"]'));
+    expect(panel.textContent).toContain('Rebuilding search with bge-base-en-v1.5 (768 dimensions) is paused at 120 of 400 sources done (30%).');
+    expect(panel.textContent).toContain('HTTP 429');
+    expect(panel.textContent).toContain('Search keeps using bge-m3 meanwhile.');
+    fireEvent.click(within(panel as HTMLElement).getByRole('button', { name: 'Resume' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'POST', path: `/api/embedding/switch/${BUILDING.id}/resume` });
   });
 
   it('shows a stored provider this server does not offer as not in use, with its remedy and a reset', async () => {
