@@ -26,6 +26,7 @@ import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 import { parseModelCatalog, parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { recordModelCatalog } from '../core/model-catalogs.js';
 import { parseStepPage, WorkerStepsError } from '@goondocks/myco-shared/worker-steps';
+import { MYCO_TOOL_OPS } from '../mcp/run-surface.js';
 import { storeStepPage } from '../core/run-steps.js';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -196,7 +197,7 @@ export async function handleWorkerSteps(env: ServerEnv, ctx: DeploymentContext):
   if (run === null) return ok({ persisted: false, code: 'parse', reason: 'a step page names a projectId and a runId' });
   const { projectId: _project, runId: _run, ...rest } = asked;
   try {
-    const page = parseStepPage(rest);
+    const page = parseStepPage(rest, MYCO_TOOL_OPS);
     const outcome = await storeStepPage(env.db, { projectId: run.projectId }, run.runId, page, { tokenId: ctx.tokenId, machineId: ctx.machineId }, ctx.now);
     return ok({ persisted: true, ...outcome });
   } catch (error) {

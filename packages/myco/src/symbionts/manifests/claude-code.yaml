@@ -447,8 +447,8 @@ runner:
       - { tool: Read, kind: read, target: [file_path] }
       - { tool: LS, kind: read, target: [path] }
       - { tool: NotebookRead, kind: read, target: [notebook_path] }
-      - { tool: Glob, kind: search, target: [pattern] }
-      - { tool: Grep, kind: search, target: [pattern] }
+      - { tool: Glob, kind: search, target: [path] }
+      - { tool: Grep, kind: search, target: [path] }
       - { tool: Write, kind: edit, target: [file_path] }
       - { tool: Edit, kind: edit, target: [file_path] }
       - { tool: MultiEdit, kind: edit, target: [file_path] }

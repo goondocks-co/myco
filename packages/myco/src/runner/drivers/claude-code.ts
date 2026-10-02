@@ -16,7 +16,7 @@ import { ClaudeAccounting } from './claude-accounting.js';
  * well-formed `result`; both are read.
  */
 import { harnessById } from '../harnesses.js';
-import { callFailureDetail, type Driver, type Launch, type LaunchSpec, type RunEvent, type RunSpec, type StopReason } from '../events.js';
+import { type Driver, type Launch, type LaunchSpec, type RunEvent, type RunSpec, type StopReason } from '../events.js';
 import { runGrant, grantsWhole } from './grant.js';
 import { jsonLines, launchEnvironment, recordOf, startHarness, stringOf } from './stream.js';
 
@@ -69,15 +69,11 @@ function resultText(content: unknown): string | null {
 
 /** A failed shell call's result opens with its exit code on a line of its own; what the command said follows it. */
 const EXIT_CODE_LINE = /^Exit code (\d+)\r?\n/;
+/** A shell call the harness stopped for running too long opens its result so. */
+const TIMED_OUT = /^Command timed out\b/;
 
-/** Why a call failed, from its result: what the command said, with its exit code, where the call was a shell command. */
-function failureDetail(content: unknown): string | undefined {
-  const said = resultText(content);
-  const exit = said === null ? null : EXIT_CODE_LINE.exec(said);
-  if (said === null || exit === null) return callFailureDetail(said);
-  const after = callFailureDetail(said.slice(exit[0].length));
-  return after === undefined ? callFailureDetail(said) : callFailureDetail(`${after} (exit code ${exit[1]})`);
-}
+/** Whether a failed call's result says the harness stopped it for running too long; nothing else of it is read. */
+const timedOutOf = (content: unknown): boolean => TIMED_OUT.test(resultText(content) ?? '');
 
 /** A failed shell call's exit code, from the line its result opens with; undefined for any other result. */
 function exitCodeOf(content: unknown): number | undefined {
@@ -183,9 +179,8 @@ export const claudeCodeDriver: Driver = {
           if (!firstReport(id)) continue;
           const name = (id === null ? undefined : calls.get(id)) ?? 'tool';
           if (block.is_error !== true) { yield { kind: 'tool_call', name, status: 'ok', ...callOf(id) }; continue; }
-          const detail = failureDetail(block.content);
           const exitCode = exitCodeOf(block.content);
-          yield { kind: 'tool_call', name, status: 'error', ...callOf(id), ...(detail === undefined ? {} : { detail }), ...(exitCode === undefined ? {} : { exitCode }) };
+          yield { kind: 'tool_call', name, status: 'error', ...callOf(id), ...(exitCode === undefined ? {} : { exitCode }), ...(timedOutOf(block.content) ? { timedOut: true as const } : {}) };
         }
       } else if (type === 'result') {
         yield* accounting.events(line);

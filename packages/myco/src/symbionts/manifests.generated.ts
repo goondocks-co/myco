@@ -183,19 +183,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "locations.0.path",
               "rawInput.path",
               "rawInput.filePath",
-              "rawInput.file_path",
-              "title"
+              "rawInput.file_path"
             ]
           },
           {
             "category": "search",
             "kind": "search",
             "target": [
-              "rawInput.pattern",
-              "rawInput.query",
-              "rawInput.glob",
               "locations.0.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -205,8 +201,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "locations.0.path",
               "rawInput.path",
               "rawInput.filePath",
-              "rawInput.file_path",
-              "title"
+              "rawInput.file_path"
             ]
           },
           {
@@ -214,8 +209,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "edit",
             "target": [
               "locations.0.path",
-              "rawInput.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -223,8 +217,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "edit",
             "target": [
               "locations.0.path",
-              "rawInput.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -232,8 +225,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "command",
             "target": [
               "rawInput.command",
-              "rawInput.cmd",
-              "title"
+              "rawInput.cmd"
             ]
           },
           {
@@ -241,8 +233,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "fetch",
             "target": [
               "rawInput.url",
-              "rawInput.query",
-              "title"
+              "rawInput.query"
             ]
           }
         ],
@@ -744,14 +735,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "tool": "Glob",
             "kind": "search",
             "target": [
-              "pattern"
+              "path"
             ]
           },
           {
             "tool": "Grep",
             "kind": "search",
             "target": [
-              "pattern"
+              "path"
             ]
           },
           {
@@ -1976,19 +1967,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "locations.0.path",
               "rawInput.path",
               "rawInput.filePath",
-              "rawInput.file_path",
-              "title"
+              "rawInput.file_path"
             ]
           },
           {
             "category": "search",
             "kind": "search",
             "target": [
-              "rawInput.pattern",
-              "rawInput.query",
-              "rawInput.glob",
               "locations.0.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -1998,8 +1985,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "locations.0.path",
               "rawInput.path",
               "rawInput.filePath",
-              "rawInput.file_path",
-              "title"
+              "rawInput.file_path"
             ]
           },
           {
@@ -2007,8 +1993,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "edit",
             "target": [
               "locations.0.path",
-              "rawInput.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -2016,8 +2001,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "edit",
             "target": [
               "locations.0.path",
-              "rawInput.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -2025,8 +2009,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "command",
             "target": [
               "rawInput.command",
-              "rawInput.cmd",
-              "title"
+              "rawInput.cmd"
             ]
           },
           {
@@ -2034,8 +2017,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "fetch",
             "target": [
               "rawInput.url",
-              "rawInput.query",
-              "title"
+              "rawInput.query"
             ]
           }
         ],
@@ -2268,19 +2250,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "locations.0.path",
               "rawInput.path",
               "rawInput.filePath",
-              "rawInput.file_path",
-              "title"
+              "rawInput.file_path"
             ]
           },
           {
             "category": "search",
             "kind": "search",
             "target": [
-              "rawInput.pattern",
-              "rawInput.query",
-              "rawInput.glob",
               "locations.0.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -2290,8 +2268,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
               "locations.0.path",
               "rawInput.path",
               "rawInput.filePath",
-              "rawInput.file_path",
-              "title"
+              "rawInput.file_path"
             ]
           },
           {
@@ -2299,8 +2276,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "edit",
             "target": [
               "locations.0.path",
-              "rawInput.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -2308,8 +2284,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "edit",
             "target": [
               "locations.0.path",
-              "rawInput.path",
-              "title"
+              "rawInput.path"
             ]
           },
           {
@@ -2317,8 +2292,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "command",
             "target": [
               "rawInput.command",
-              "rawInput.cmd",
-              "title"
+              "rawInput.cmd"
             ]
           },
           {
@@ -2326,8 +2300,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
             "kind": "fetch",
             "target": [
               "rawInput.url",
-              "rawInput.query",
-              "title"
+              "rawInput.query"
             ]
           }
         ],

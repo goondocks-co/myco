@@ -249,13 +249,13 @@ export async function* turnOver(
   let announced: AnnouncedOptions = { count: 0, options: null };
   const calls = new ToolCalls();
   /** What the agent said, in the order it said it: its notifications, and the calls refused to it. */
-  const said: Array<{ kind: 'update'; message: Record<string, unknown> } | { kind: 'refused'; toolCall: Record<string, unknown>; detail: string }> = [];
+  const said: Array<{ kind: 'update'; message: Record<string, unknown> } | { kind: 'refused'; toolCall: Record<string, unknown> }> = [];
   const connection = new Connection(channel, {
     request(method, params) {
       if (method !== REQUEST_PERMISSION) return methodNotFound(method);
       const toolCall = calls.merged(recordOf(params.toolCall) ?? {});
       const { outcome, refusal } = answerPermission(grant, tools, sessionId, params, toolCall);
-      if (refusal !== null && params.sessionId === sessionId) said.push({ kind: 'refused', toolCall, detail: refusal });
+      if (refusal !== null && params.sessionId === sessionId) said.push({ kind: 'refused', toolCall });
       return { result: { outcome } };
     },
     notify(message) {
@@ -270,7 +270,7 @@ export async function* turnOver(
   });
   function* updates(): Iterable<RunEvent> {
     if (events === undefined || sessionId === null) return;
-    for (const item of said.splice(0)) yield* item.kind === 'update' ? events.update(item.message, sessionId) : events.refused(item.toolCall, item.detail);
+    for (const item of said.splice(0)) yield* item.kind === 'update' ? events.update(item.message, sessionId) : events.refused(item.toolCall);
   }
   try {
     const initialized = await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });

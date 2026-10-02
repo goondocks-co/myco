@@ -146,16 +146,16 @@ runner:
       format: lines
       provider: id-prefix
     # How each call in its stream reads as a step of the run's step log: by the agent protocol's own kind of the
-    # call, its target read from the call's locations and raw input, its free-text title last. Contents and output are never read.
+    # call, its target read from the call's locations and raw input. Its free-text title, contents and output are never read.
     stepTool: category
     steps:
-      - { category: read, kind: read, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path, title] }
-      - { category: search, kind: search, target: [rawInput.pattern, rawInput.query, rawInput.glob, locations.0.path, title] }
-      - { category: edit, kind: edit, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path, title] }
-      - { category: delete, kind: edit, target: [locations.0.path, rawInput.path, title] }
-      - { category: move, kind: edit, target: [locations.0.path, rawInput.path, title] }
-      - { category: execute, kind: command, target: [rawInput.command, rawInput.cmd, title] }
-      - { category: fetch, kind: fetch, target: [rawInput.url, rawInput.query, title] }
+      - { category: read, kind: read, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path] }
+      - { category: search, kind: search, target: [locations.0.path, rawInput.path] }
+      - { category: edit, kind: edit, target: [locations.0.path, rawInput.path, rawInput.filePath, rawInput.file_path] }
+      - { category: delete, kind: edit, target: [locations.0.path, rawInput.path] }
+      - { category: move, kind: edit, target: [locations.0.path, rawInput.path] }
+      - { category: execute, kind: command, target: [rawInput.command, rawInput.cmd] }
+      - { category: fetch, kind: fetch, target: [rawInput.url, rawInput.query] }
     accounting:
       reported: acp-session
       zeroDollars: unavailable

@@ -1,5 +1,6 @@
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import { identifierShape } from '@goondocks/myco-shared/command-shape';
 
 /**
  * One run-event model, behind every driver.
@@ -21,13 +22,13 @@ export type RunEvent =
   | { kind: 'started'; harness: string; sessionId: string | null }
   | { kind: 'message'; role: 'assistant' | 'thought'; text: string }
   /**
-   * `detail` says why a call failed, where the driver refused it or the harness reported why. `callId` is the
-   * harness's own id for the call, `category` the harness's own classification of it where it gives one, `input` the
-   * arguments the call carries as the harness reported them, `exitCode` a command's exit status where the
-   * harness reports one, and `refused` marks a call the harness or the driver refused rather than one that ran and
-   * failed. `input` is read for a step's target alone (`steps.ts`) and goes nowhere else.
+   * `callId` is the harness's own id for the call, `category` the harness's own classification of it where it gives
+   * one, `input` the arguments the call carries as the harness reported them, `exitCode` a command's exit status where
+   * the harness reports one, `refused` marks a call the harness or the driver refused rather than one that ran and
+   * failed, and `timedOut` a call the harness stopped for running too long. A failed call carries no text of what it
+   * said or returned. `input` is read for a step's target alone (`steps.ts`) and goes nowhere else.
    */
-  | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; detail?: string; callId?: string; category?: string; input?: Record<string, unknown>; exitCode?: number; refused?: true }
+  | { kind: 'tool_call'; name: string; status: 'started' | 'ok' | 'error'; callId?: string; category?: string; input?: Record<string, unknown>; exitCode?: number; refused?: true; timedOut?: true }
   /** A record of the harness's stream the driver does not read, named by its shape (its type, and subtype where it has one). */
   | { kind: 'unrecognized'; shape: string }
   | { kind: 'identity'; identity: ExecutionIdentity; snapshot?: true }
@@ -97,13 +98,11 @@ export function reachedEnd(events: readonly RunEvent[]): boolean {
 }
 
 /** The longest account of why one call failed that a run's record keeps. */
-export const CALL_DETAIL_CHARS = 200;
-
-/** Why a call failed as the harness reported it, as one bounded line, or undefined where it said nothing. */
-export function callFailureDetail(said: string | null): string | undefined {
-  const line = said?.split('\n').map((part) => part.trim()).find((part) => part.length > 0);
-  if (line === undefined) return undefined;
-  return line.length > CALL_DETAIL_CHARS ? `${line.slice(0, CALL_DETAIL_CHARS - 1)}…` : line;
+/** A failed call's outcome as a code: refused, timed out, its exit code, or failed. Never what the call said. */
+export function callOutcome(event: Extract<RunEvent, { kind: 'tool_call' }>): string {
+  if (event.refused === true) return 'refused';
+  if (event.timedOut === true) return 'timed out';
+  return event.exitCode === undefined ? 'failed' : `exit code ${event.exitCode}`;
 }
 
 /** How many kinds of failed call a note names before it counts the rest. */
@@ -115,8 +114,9 @@ const NOTED_FAILURES = 5;
  *
  * A harness can end its turn cleanly right after a call fails or is refused,
  * with the rest of its work never done, and the stop reason alone reads as a
- * run that finished. So the calls are named, each with why where the driver
- * knows it and how many times it failed, and the note says so when the turn
+ * run that finished. So the calls are named, each by its tool's identifier (or
+ * `tool`) with its coded outcome (`callOutcome`) and how many times it failed,
+ * never with what the call said or returned, and the note says so when the turn
  * ended right after one: when the last thing the agent did before its turn
  * ended was a call that failed, with no message or successful call after it.
  */
@@ -125,7 +125,7 @@ export function failedCallsNote(events: readonly RunEvent[]): string | null {
   let endedOnFailure = false;
   for (const event of events) {
     if (event.kind === 'tool_call' && event.status === 'error') {
-      const named = event.detail === undefined ? event.name : `${event.name} (${event.detail})`;
+      const named = `${identifierShape(event.name, 64) ?? 'tool'} (${callOutcome(event)})`;
       failed.set(named, (failed.get(named) ?? 0) + 1);
       endedOnFailure = true;
     } else if ((event.kind === 'tool_call' && event.status === 'ok') || (event.kind === 'message' && event.role === 'assistant')) {
