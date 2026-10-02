@@ -2,7 +2,8 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { fetchJson, postJson } from '../lib/api';
 import type { TodaySporePage, WorkAnswer } from '../features/today/wire';
 import type { SessionResponse } from './use-sessions';
-import type { DispatchAnswer, RunCallPage, RunDetailAnswer, RunPage, RunPageRow } from '../features/work/wire';
+import type { DispatchAnswer, RunAttempt, RunCall, RunCallPage, RunDetailAnswer, RunPage, RunPageRow, RunStep, RunStepPage } from '../features/work/wire';
+import { MAX_RUN_STEPS } from '@goondocks/myco-shared/worker-steps';
 import { usePaged } from './use-paged';
 
 export type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../features/today/wire';
@@ -142,11 +143,74 @@ export function useAllTaskRuns(projectId: string, task: string, enabled: boolean
   return usePaged<RunPageRow>(['runs', projectId, 'all', task], path, { enabled, rowKey: (row) => row.id });
 }
 
-export const CALLS_PER_PAGE = 200;
+/** The most calls or steps one page reads: the server's page bound. */
+export const EVIDENCE_PAGE = 200;
 
-/** The next page of admitted calls, without reading the prompt or other run details again. */
-export function useRunCalls(projectId: string, runId: string) {
-  return useMutation({
-    mutationFn: (cursor: string) => fetchJson<RunCallPage>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(CALLS_PER_PAGE) })}`),
+/** The most pages of calls a run's panel reads; past them, the list says what it holds. */
+const MAX_CALL_PAGES = 50;
+
+/** The pages an attempt's step log can span: every step it keeps, and one more page that finds the end. */
+const MAX_STEP_PAGES = Math.ceil(MAX_RUN_STEPS / EVIDENCE_PAGE) + 1;
+
+/** Rows read so far, and whether they are every row the server holds. */
+export interface Loaded<T> {
+  rows: T[];
+  complete: boolean;
+  pending: boolean;
+  error: unknown;
+}
+
+/** Follow a cursor from a page in hand, one page at a time, up to `maxPages`. */
+async function follow<T>(
+  first: { rows: readonly T[]; cursor: string | null },
+  maxPages: number,
+  next: (cursor: string) => Promise<{ rows: readonly T[]; cursor: string | null }>,
+): Promise<{ rows: T[]; complete: boolean }> {
+  const rows = [...first.rows];
+  let cursor = first.cursor;
+  for (let pages = 1; cursor !== null && pages < maxPages; pages += 1) {
+    const page = await next(cursor);
+    rows.push(...page.rows);
+    cursor = page.cursor;
+  }
+  return { rows, complete: cursor === null };
+}
+
+/**
+ * Every call a run made back to Myco, a page at a time from the page its detail carried: the run's panel lists them
+ * all beside its steps, and checks the agent's account against them all.
+ */
+export function useAllRunCalls(projectId: string, runId: string, first: RunCallPage): Loaded<RunCall> {
+  const query = useQuery({
+    queryKey: ['run-calls', projectId, runId, first.total, first.rows.length],
+    enabled: first.cursor !== null,
+    queryFn: ({ signal }) => follow(first, MAX_CALL_PAGES, (cursor) => fetchJson<RunCallPage>(
+      `/api/projects/${seg(projectId)}/runs/${seg(runId)}/calls?${new URLSearchParams({ cursor, limit: String(EVIDENCE_PAGE) })}`, signal)),
   });
+  if (first.cursor === null) return { rows: [...first.rows], complete: true, pending: false, error: null };
+  return { rows: query.data?.rows ?? [...first.rows], complete: query.data?.complete ?? false, pending: query.isPending, error: query.error };
+}
+
+/**
+ * Every step of one attempt's log that Myco holds, a page at a time, from `first` where the run's detail carried the
+ * attempt's first page. Read only while `enabled`, and only once a page of the log has arrived.
+ */
+export function useAttemptSteps(
+  projectId: string, runId: string, attempt: RunAttempt | null, first: RunStepPage | null, enabled = true,
+): Loaded<RunStep> & { refetch: () => void } {
+  const has = attempt !== null && attempt.steps !== null && attempt.steps.received > 0;
+  const start = first !== null && attempt !== null && first.attemptId === attempt.attemptId ? first : null;
+  const query = useQuery({
+    queryKey: ['run-steps', projectId, runId, attempt?.attemptId ?? null, attempt?.steps?.received ?? null, start?.rows.length ?? null],
+    enabled: enabled && has,
+    queryFn: async ({ signal }) => {
+      const page = (cursor: string | null) => fetchJson<RunStepPage>(
+        `/api/projects/${seg(projectId)}/runs/${seg(runId)}/steps?${new URLSearchParams({ attempt: attempt!.attemptId, limit: String(EVIDENCE_PAGE), ...(cursor === null ? {} : { cursor }) })}`,
+        signal,
+      );
+      return follow(start ?? await page(null), MAX_STEP_PAGES, page);
+    },
+  });
+  if (!has) return { rows: [], complete: true, pending: false, error: null, refetch: () => undefined };
+  return { rows: query.data?.rows ?? [], complete: query.data?.complete ?? false, pending: query.isPending, error: query.error, refetch: () => void query.refetch() };
 }

@@ -612,6 +612,32 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
       sqlite.query(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at, duration_ms) VALUES (?, ?, 'run_tool', ?, ?, ?, ?, ?)`)
         .run(idOf('myco'), mapRun, call.tool, call.failure === undefined ? 'success' : 'failed', JSON.stringify({ op: call.op, duration_ms: call.ms, ...(call.failure === undefined ? {} : { failure: call.failure }) }), callStart + (offset + 1) * MINUTE, call.ms);
     }
+    // The map run's one attempt and the step log its worker kept: the files it read, a search, a command, and the
+    // Myco calls above, the first map write failing and the second landing. Its report carries the agent's account.
+    const attempt = 'fixture-map-attempt';
+    sqlite.query(`INSERT INTO agent_run_attempts (project_id, run_id, attempt_id, leased_by, machine_id, claimed_at, steps_total, steps_overflow, unrecognized) VALUES (?, ?, ?, ?, ?, ?, 8, 0, ?)`)
+      .run(idOf('myco'), mapRun, attempt, credentialOf('studio'), machineOf('studio').id, callStart, JSON.stringify({ total: 0, shapes: {} }));
+    for (const [seq, step] of [
+      { at: MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'get' },
+      { at: MINUTE + 5_000, kind: 'read', tool: 'Read', target: 'packages/myco/src/runner/loop.ts' },
+      { at: MINUTE + 9_000, kind: 'read', tool: 'Read', target: 'packages/myco-shared/src/command-shape.ts' },
+      { at: MINUTE + 14_000, kind: 'search', tool: 'Grep', target: 'packages/myco-server/src' },
+      { at: MINUTE + 20_000, kind: 'command', tool: 'Bash', target: 'git log --oneline' },
+      { at: 2 * MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write', outcome: 'error' },
+      { at: 3 * MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run_map', target: 'write' },
+      { at: 4 * MINUTE - 2_000, kind: 'myco', tool: 'mcp__myco__myco_run', target: 'report' },
+    ].entries()) {
+      sqlite.query(`INSERT INTO agent_run_steps (project_id, run_id, attempt_id, seq, call_id, kind, tool, target, outcome, exit_code, started_at, ended_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
+        .run(idOf('myco'), mapRun, attempt, seq, `call-${seq + 1}`, step.kind, step.tool, step.target, step.outcome ?? 'ok', callStart + step.at, callStart + step.at + 1_500, callStart + 5 * MINUTE);
+    }
+    sqlite.query('UPDATE agent_reports SET audit = ? WHERE project_id = ? AND run_id = ?').run(JSON.stringify({
+      steps: ['Read the current code map', 'Read the files changed since the map was made', 'Wrote the updated map', 'Corrected one entry the map refused and saved it again'],
+      examined: ['packages/myco/src/runner/loop.ts', 'packages/myco-shared/src'],
+      commands: ['git log --oneline'],
+      failures: [{ what: 'The first map write was refused: one entry was too long', recovery: 'Shortened the entry and saved the map again' }],
+      reasoning: 'The map now matches the pinned commit; only the runner and shared shaping changed.',
+      omitted: 0,
+    }), idOf('myco'), mapRun);
     // Each learning run's spores, by their place in SPORES: every one in the `myco` project, saved as the run ended.
     const authored: Record<string, number[]> = { run_4f1c9a2e7b: [0, 1], run_a2c4e6f801: [2, 5, 9, 10] };
     for (const [runId, indexes] of Object.entries(authored)) {
