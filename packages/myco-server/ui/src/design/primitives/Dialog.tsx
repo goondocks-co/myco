@@ -68,6 +68,8 @@ export interface ConfirmDialogProps {
   tone?: 'danger' | 'primary';
   onConfirm: () => void;
   pending?: boolean;
+  /** Holds the confirm button off while what the person must see before agreeing is not on the dialog yet. */
+  confirmDisabled?: boolean;
   /** Why the last attempt failed; the dialog stays open so the failure is seen. */
   error?: string | null;
   children?: ReactNode;
@@ -75,7 +77,7 @@ export interface ConfirmDialogProps {
 
 /** The confirmation every destructive or paid action passes through. */
 export function ConfirmDialog({
-  open, onOpenChange, title, description, confirmLabel, tone = 'danger', onConfirm, pending = false, error = null, children,
+  open, onOpenChange, title, description, confirmLabel, tone = 'danger', onConfirm, pending = false, confirmDisabled = false, error = null, children,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
@@ -84,7 +86,7 @@ export function ConfirmDialog({
         {error != null && error !== '' && <p role="alert" className="t-small text-bad">{error}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
-          <Button variant={tone} onClick={onConfirm} pending={pending}>{confirmLabel}</Button>
+          <Button variant={tone} onClick={onConfirm} pending={pending} disabled={confirmDisabled}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

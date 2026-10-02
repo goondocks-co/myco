@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, deleteJson, fetchJson, patchJson, putJson } from '../lib/api';
+import { ApiError, deleteJson, fetchJson, patchJson, postJson, putJson } from '../lib/api';
+import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus, PassedOverList } from '@goondocks/myco-shared/settings-contract';
 import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 
 import type { SecretRow, SettingsAnswer, SecretsAnswer, TitlingBackfillProgress } from '../features/admin/settings/wire';
@@ -7,8 +8,37 @@ import type { CapabilitiesAnswer, RepositoryAnswer } from '../features/admin/pro
 export type { LeafRow, SecretRow } from '../features/admin/settings/wire';
 export type { RepositoryRow } from '../features/admin/project/wire';
 
+/** How often Settings reads itself again: while an embedding model switch stands, as Health does, and otherwise never on its own. */
+export const settingsRefreshInterval = (answer: SettingsAnswer | undefined): number | false =>
+  answer?.embedding?.switch != null ? SWITCH_REFRESH_MS : false;
+
 export function useSettings() {
-  return useQuery({ queryKey: ['settings'], queryFn: ({ signal }) => fetchJson<SettingsAnswer>('/api/settings', signal) });
+  return useQuery({
+    queryKey: ['settings'],
+    queryFn: ({ signal }) => fetchJson<SettingsAnswer>('/api/settings', signal),
+    refetchInterval: (query) => settingsRefreshInterval(query.state.data),
+  });
+}
+
+/** A switch operation's answer: the switch as it now stands. */
+interface SwitchAnswer { applied: true; switch: EmbeddingSwitchStatus | null }
+
+const SWITCH_KEY = ['embedding-switch'] as const;
+/** How often a page showing a switch under way reads it again. */
+const SWITCH_REFRESH_MS = 10_000;
+
+/** The switch of the embedding model under way, or null: `GET /api/embedding/switch`, read again while one stands. */
+export function useEmbeddingSwitch() {
+  return useQuery({
+    queryKey: [...SWITCH_KEY],
+    queryFn: ({ signal }) => fetchJson<{ switch: EmbeddingSwitchStatus | null }>('/api/embedding/switch', signal).then((answer) => answer.switch),
+    refetchInterval: (query) => query.state.data != null ? SWITCH_REFRESH_MS : false,
+  });
+}
+
+/** The sources search by meaning passes over, each named with why: `GET /api/embedding/passed-over`. */
+export function usePassedOver() {
+  return useQuery({ queryKey: ['embedding-passed-over'], queryFn: ({ signal }) => fetchJson<PassedOverList>('/api/embedding/passed-over', signal) });
 }
 
 export function useSecrets() {
@@ -48,6 +78,15 @@ export function settingsRefusalText(err: unknown): string {
   return 'Could not reach the server.';
 }
 
+/** What the server said when it refused to start, resume or cancel a switch of the embedding model, in the person's words. */
+export function switchRefusalText(err: unknown): string {
+  if (err instanceof ApiError) {
+    const detail = (err.body as { detail?: unknown } | null)?.detail;
+    if (typeof detail === 'string' && detail !== '') return `${detail.replace(/\.$/, '')}.`;
+  }
+  return settingsRefusalText(err);
+}
+
 /** One mutation per settings act. A mutation that carries a secret keeps no copy once it has answered. */
 export function useSettingsActions() {
   const client = useQueryClient();
@@ -68,6 +107,26 @@ export function useSettingsActions() {
       gcTime: 0,
       mutationFn: (v: { provider: string; model?: string; endpoint?: string }) => putJson<{ applied: true }>('/api/embedding', v),
       onSuccess: () => refresh('settings'),
+    }),
+    estimateSwitch: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { provider: string; model: string; endpoint?: string }) =>
+        postJson<{ applied: true; estimate: EmbeddingSwitchEstimate }>('/api/embedding/switch/estimate', v).then((answer) => answer.estimate),
+    }),
+    startSwitch: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { provider: string; model: string; endpoint?: string }) => postJson<SwitchAnswer>('/api/embedding/switch', { ...v, confirm: true }),
+      onSuccess: () => refresh('settings', SWITCH_KEY[0]),
+    }),
+    cancelSwitch: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { id: string }) => deleteJson<SwitchAnswer>(`/api/embedding/switch/${encodeURIComponent(v.id)}`),
+      onSuccess: () => refresh('settings', SWITCH_KEY[0]),
+    }),
+    resumeSwitch: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { id: string }) => postJson<SwitchAnswer>(`/api/embedding/switch/${encodeURIComponent(v.id)}/resume`),
+      onSuccess: () => refresh('settings', SWITCH_KEY[0]),
     }),
     setTaskTier: useMutation({
       gcTime: 0,

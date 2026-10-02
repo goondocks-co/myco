@@ -23,7 +23,7 @@ import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
 import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';
 import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from './embedding-runtime.js';
 import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
-import { configuredEmbeddingProvider, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
+import { configuredEmbeddingProvider, embeddingProviderFor, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
 
 /** This Worker's embedding platform: the Cloudflare target, and Workers AI where the binding is declared. */
 export function embeddingPlatform(bindings: Pick<CloudflareBindings, 'AI'>): EmbeddingPlatform {
@@ -203,6 +203,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
   return {
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
     embeddingProvider: () => configuredEmbeddingProvider(bindings.MYCO_DB, wrappingKey, outbound, embeddingPlatform(bindings)),
+    embeddingProviderFor: (choice) => embeddingProviderFor(bindings.MYCO_DB, wrappingKey, outbound, embeddingPlatform(bindings), choice),
     embeddingPlatform: embeddingPlatform(bindings),
     ...(recoveryPort(bindings) === undefined ? {} : { recovery: recoveryPort(bindings) }),
     ...(bindings.MYCO_DB === undefined ? {} : { storeMaintenance: d1StoreMaintenance(bindings.MYCO_DB) }),

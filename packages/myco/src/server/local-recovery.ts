@@ -4,6 +4,7 @@ import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/core/embedding/reconcile.js';
+import { holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
@@ -70,6 +71,7 @@ export async function restoreLocalDeployment(options: {
       let rebuildEmbeddings: boolean;
       try {
         const store = sqliteRelationalStore(db);
+        await holdRecoveredSwitch(store, Date.now());
         const heldSecrets = await deploymentSecretStore(store, key).list();
         if (heldSecrets.some((secret) => !secret.readable)) throw new Error('recovery wrapping key cannot open all stored credentials');
         rebuildEmbeddings = manifest.source.target === 'cloudflare'

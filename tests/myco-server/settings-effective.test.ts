@@ -121,7 +121,7 @@ describe('embedding in effect', () => {
     ]) {
       const answer = await request();
       expect(answer.status).toBe(400);
-      expect(String((await json(answer)).detail)).toBe('Switching the embedding model rebuilds search for every source. Use Switch embedding model to build the new index alongside the current one');
+      expect(String((await json(answer)).detail)).toBe('Switching the embedding model rebuilds search for every source. Choose Switch to this model to rebuild it in the background while search keeps using the current one');
     }
     expect([stored(t, 'embedding.provider'), stored(t, 'embedding.model')]).toEqual([undefined, undefined]);
     expect(receipts()).toEqual(held);

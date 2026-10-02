@@ -117,6 +117,28 @@ describe('Health', () => {
     expect(jumps.map((a) => [a.getAttribute('href'), a.textContent])).toEqual(PARTS.map(([id, name]) => [`/status/health#${id}`, name]));
   });
 
+  it('names each source search by meaning passes over, with where it is and why, and shows nothing while there is none', async () => {
+    server(routes({
+      '/api/embedding/passed-over': () => Response.json({ count: 2, sources: [
+        { projectId: 'proj_x', projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true },
+        { projectId: 'proj_x', projectName: 'Project X', type: 'session', title: 'A very long session', reason: 'the model refused its text with HTTP 400 (“input is too long”)', anyModel: false },
+      ] }),
+    }));
+    mount();
+    const list = await waitFor(() => { const found = document.querySelector<HTMLElement>('[data-health-passed-over]'); if (found === null) throw new Error('not yet'); return found; });
+    expect(list.textContent).toContain('Search by meaning leaves out 2 sources. Search by words still finds them.');
+    expect([...list.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
+      'Plan “Release checklist” in Project X: its stored text is missing',
+      'Session “A very long session” in Project X: the model refused its text with HTTP 400 (“input is too long”)',
+    ]);
+    cleanup();
+    server(routes({ '/api/embedding/passed-over': () => Response.json({ count: 0, sources: [] }) }));
+    mount();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('[data-health-schema]')).toBeTruthy());
+    expect(document.querySelector('[data-health-passed-over]')).toBeNull();
+  });
+
   it('asks for its own reads at once, without waiting on the projects list', async () => {
     // The projects list never answers. Health's reads start beside it, so the page never waits a round trip on it.
     const { asked } = server(routes({ '/api/projects': () => new Promise<Response>(() => undefined) as unknown as Response }));
