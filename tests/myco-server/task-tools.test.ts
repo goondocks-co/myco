@@ -57,7 +57,7 @@ describe('the task tool table', () => {
     expect(files.size).toBeGreaterThan(10);
     const withFile = RETAINED_TASKS.filter((task) => files.has(task));
     // The two outcomes the catalogue alone defines have no file; the rest still do.
-    expect(withFile.sort()).toEqual(['canopy-map', 'container-smoke', 'title-summary', 'vault-seed'].sort());
+    expect(withFile.sort().map(String)).toEqual(['canopy-map', 'container-smoke', 'title-summary', 'vault-seed'].sort());
     for (const task of withFile) {
       if (task === 'vault-seed' || task === 'canopy-map') continue;
       expect({ task, tools: [...TASK_TOOLS[task]].sort() }).toEqual({ task, tools: declaredTools(files.get(task)!) });

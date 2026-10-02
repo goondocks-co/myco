@@ -9,6 +9,7 @@
       "@goondocks/myco-shared/repository": ["../myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/worker-usage": ["../myco-shared/src/worker-usage.ts"],
       "@goondocks/myco-shared/execution-profile": ["../myco-shared/src/execution-profile.ts"],
+      "@goondocks/myco-shared/call-words": ["../myco-shared/src/call-words.ts"],
       "@goondocks/myco-shared/redact-secrets": ["../myco-shared/src/redact-secrets.ts"],
       "@goondocks/myco-shared/canopy": ["../myco-shared/src/canopy.ts"],
       "@goondocks/myco-shared/skills": ["../myco-shared/src/skills.generated.ts"],

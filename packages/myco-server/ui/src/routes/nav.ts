@@ -27,6 +27,8 @@ export const SPORE_SUFFIX = '/spores';
 export const PLAN_SUFFIX = '/plans';
 /** Myco's work under a project: what its own runs came to. */
 export const WORK_SUFFIX = '/work';
+/** The descriptions of Myco’s tasks under its work. */
+export const TASKS_SUFFIX = '/work/tasks';
 /** One run of Myco's work under a project, as `/p/:project/work/runs/:runId`. */
 export const RUN_SUFFIX = '/work/runs';
 /** A project's settings: what Myco does there, its repository, its access keys and release tracking. */
@@ -45,7 +47,7 @@ export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX] },
-  { label: 'Myco’s work', icon: Bot, suffix: WORK_SUFFIX, also: [RUN_SUFFIX] },
+  { label: 'Myco’s work', icon: Bot, suffix: WORK_SUFFIX, also: [RUN_SUFFIX, TASKS_SUFFIX] },
   { label: 'Project settings', icon: SlidersHorizontal, suffix: PROJECT_SETTINGS_SUFFIX, admin: true },
 ];
 
@@ -149,6 +151,7 @@ export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {
   [KNOWLEDGE_SUFFIX]: KNOWLEDGE_SUFFIX,
   [PLANS_SUFFIX]: PLANS_SUFFIX,
   [WORK_SUFFIX]: WORK_SUFFIX,
+  [TASKS_SUFFIX]: TASKS_SUFFIX,
 };
 
 /** The suffix of the page whose all-projects form is at this path, or null when the path is no such form. */

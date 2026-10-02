@@ -1,3 +1,4 @@
+import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
  * One run of Myco's work in its panel, and starting a task by hand.
  *
@@ -23,6 +24,7 @@ import {
 } from '../helpers/work-fixture';
 import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/today/wire';
 import { ModelSummary } from '../../packages/myco-server/ui/src/features/work/ModelSummary';
+import { RunPanel } from '../../packages/myco-server/ui/src/features/work/RunPanel';
 import { RUN_TOOL_MAP } from '../../packages/myco-server/src/mcp/run-surface';
 import { MECHANISM_WORDS, RETIRED_VOCABULARY } from '../helpers/reader-vocabulary';
 
@@ -70,6 +72,8 @@ const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; 
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/attention': () => Response.json({ items: [], unavailable: [] }),
+  '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
+  '/api/tasks/names': () => Response.json({ tasks: TASK_DESCRIPTIONS.map(({ task, name }) => ({ task, name })) }),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
   '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),
   [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: TASK_RUNS[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),
@@ -273,11 +277,11 @@ describe('running a task by hand', () => {
     await waitFor(() => expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
       'Learn from new sessions nowLast ran today at 14:00',
       'Update the code map nowLast ran today at 12:30',
-      'Learn from the project’s codeReads the repository for what it holds',
+      `Learn from the project’s code${TASK_DESCRIPTIONS.find((task) => task.task === 'vault-seed')!.description}`,
     ]));
     fireEvent.click(within(menu).getByRole('menuitem', { name: /Update the code map now/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
-    expect(dialog.textContent).toContain('Myco will read Myco’s repository and update the code map to its latest commit.');
+    expect(dialog.textContent).toContain(TASK_DESCRIPTIONS.find((task) => task.task === 'canopy-map')!.description);
     expect(dialog.textContent).toContain('It runs on the first free machine that has an agent signed in. Recent ones took 4 to 10 minutes.');
     expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. This week’s updates each used 500K to 2 million tokens, about $1.00 to $2.30 by the agent’s estimate.');
     expect(within(dialog).queryByRole('switch', { name: 'Start fresh' })).toBeNull();
@@ -632,4 +636,23 @@ describe('reviewed run evidence', () => {
     expect(container.textContent).toContain('Ran a different model than requested');
     expect(container.textContent).not.toContain('Not recorded');
   });
+});
+
+it('links the registry task name in a run panel to its task card', async () => {
+  const { asked } = server({ ...routes(), '/api/tasks/names': () => Response.json({ tasks: [{ task: 'extract-curate', name: 'Learning from the task registry' }] }) });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  const open = await panel();
+  const link = await within(open).findByRole('link', { name: 'Learning from the task registry →' });
+  expect(link.getAttribute('href')).toBe(`/p/${P}/work/tasks#extract-curate`);
+  expect(asked.some((url) => url.pathname === '/api/tasks/names' && url.searchParams.get('project') === P)).toBe(true);
+  expect(asked.some((url) => url.pathname === '/api/tasks')).toBe(false);
+});
+
+it('uses the registry description when confirming a task', async () => {
+  const description = 'The server’s changed declaration is shown before starting this task.';
+  server({ ...routes(), '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'vault-seed' ? { ...task, description } : task) }) });
+  mount(`/p/${P}/work`);
+  const dialog = await startFromMenu(/Learn from the project’s code/);
+  await waitFor(() => expect(dialog.textContent).toContain(description));
 });

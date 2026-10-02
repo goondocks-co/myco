@@ -53,6 +53,8 @@ export const RUN_SKIP_ACTION = 'skip';
 export interface RunCloseRule {
   /** The report actions the run must have recorded one of. */
   reports: readonly string[];
+  /** The evidence this rule requires, in reader words. */
+  description: readonly string[];
   /** Whether the row this run owed exists. Absent for a task whose product is the report itself. */
   artifact?: (db: RelationalStore, scope: ReadScope, run: RunRow) => Promise<boolean>;
   /** Whether the server's own read agrees with a skip. Absent where a skip is not accepted. */
@@ -132,19 +134,19 @@ export async function titleStands(db: RelationalStore, scope: ReadScope, run: Ru
 
 /** What each task's run must have left behind, by task. Every retained task appears. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
-  [MAP_TASK]: { reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy },
-  'embedding-reconcile': { reports: ['embedding'] },
+  [MAP_TASK]: { description: ['A report and a code map written by this run, or a report that the map is unchanged.'], reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy },
+  'embedding-reconcile': { description: ['A report of the search index update.'], reports: ['embedding'] },
   // The whole product of a titling run is the title on the session its dispatch
   // named, which is why it names an artifact and not the report alone.
   // A write refused for a title already standing is a pass with nothing to do, and closes as one.
-  [TITLING_TASK]: { reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands },
+  [TITLING_TASK]: { description: ['A report and a title written by this run for its session, or a supported skip when a title already stands.'], reports: [TITLING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: titleWrittenBy, skipHolds: titleStands },
   // An extraction pass owes the cursor move: a prompt it read, marked read under
   // its own credential. The skip is a pass that found no unread prompt.
-  [EXTRACTION_TASK]: { reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope) },
+  [EXTRACTION_TASK]: { description: ['A report and at least one prompt marked as read by this run, or a supported skip when no unread prompts remain.'], reports: [EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION], artifact: promptsMarkedBy, skipHolds: (db, scope) => nothingUnread(db, scope) },
   // Seeding owes spores authored by the run, or a skip supported by the Project's active spores.
-  [SEEDING_TASK]: { reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
+  [SEEDING_TASK]: { description: ['A report and a spore written by this run, or a supported skip when the project already has enough active spores.'], reports: [SEEDING_REPORT_ACTION, RUN_SKIP_ACTION], artifact: sporesWrittenBy, skipHolds: (db, scope) => alreadySeeded(db, scope) },
   // The probe's product is the one report it files, which is what it proves.
-  'container-smoke': { reports: ['container-smoke'] },
+  'container-smoke': { description: ['A report of the health check.'], reports: ['container-smoke'] },
 };
 
 /** The rule this task's runs close under, or undefined for a name this Deployment does not serve. */

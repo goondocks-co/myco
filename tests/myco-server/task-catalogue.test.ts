@@ -61,7 +61,7 @@ describe('the task catalogue', () => {
   it('leaves every manual-only task without a schedule, so none of them reaches the clock', () => {
     const scheduled = MANUAL_ONLY_TASKS.filter((task) => TASK_SCHEDULE[task] !== null);
     expect(scheduled).toEqual([]);
-    for (const task of MANUAL_ONLY_TASKS) expect({ task, retained: RETAINED_TASKS.includes(task) }).toEqual({ task, retained: true });
+    for (const task of MANUAL_ONLY_TASKS) expect({ task, retained: RETAINED_TASKS.some((known) => known === task) }).toEqual({ task, retained: true });
   });
 });
 
@@ -129,7 +129,7 @@ describe('the four run outcomes', () => {
 
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
-    expect(workerServed).toEqual([...OUTCOME_TASKS].sort());
+    expect(workerServed.map(String)).toEqual([...OUTCOME_TASKS].sort());
     expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].sort());
     expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK].sort());
   });

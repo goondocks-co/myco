@@ -8,7 +8,7 @@ import { useNow } from '../../hooks/use-today';
 import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkWhileRunning, workHasLiveRun } from '../../hooks/use-work';
 import { sessionHeadingText } from '../../lib/session-text';
 import {
-  CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, WORK_SUFFIX,
+  CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX,
 } from '../../routes/nav';
 import { UpkeepLine } from '../today/Summary';
 import type { OutcomeKind, TodaySpore, WorkAnswer, WorkRun } from '../today/wire';
@@ -113,7 +113,10 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
             What Myco did in the background{name === null ? ', across every project' : ` in ${name}`}, grouped by what came of it.
           </p>
         </div>
-        {projectId !== null && <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />}
+        <div className="flex flex-wrap items-center gap-s3">
+          <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>Tasks</OnwardLink>
+          {projectId !== null && <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />}
+        </div>
       </header>
       {started !== null && projectId !== null && <StartedLine started={started} projectId={projectId} />}
       <FilterBar
@@ -521,12 +524,8 @@ function WhenCard({ projectId, name, admin }: { projectId: string | null; name: 
   return (
     <Card className="flex flex-col gap-s2" data-when="">
       <h2 className="t-h3 text-ink">When Myco runs</h2>
-      <ul className="flex list-disc flex-col gap-s1 pl-s5 t-small text-muted">
-        <li>Learning runs through the day, while there are prompts it hasn’t read, up to a daily limit.</li>
-        <li>A session is titled when it ends.</li>
-        <li>The code map updates when the repository moves.</li>
-        <li>Work runs on your machines, on an agent that is signed in there.</li>
-      </ul>
+      <p className="t-small text-muted">Work runs on your machines, on an agent that is signed in there.</p>
+      <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>See each task’s schedule and instructions</OnwardLink>
       {projectId === null
         ? <p className="t-small text-muted">To start a task by hand, pick a project in the nav.</p>
         : admin && <OnwardLink to={`${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`}>Change what Myco does in {name}</OnwardLink>}

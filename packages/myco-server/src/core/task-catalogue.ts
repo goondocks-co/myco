@@ -52,16 +52,17 @@ export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/
 export const UNLANDED_TASKS: readonly string[] = [];
 
 /** Every retained task, with the gate it runs behind. */
-export const TASK_ADMISSION: Readonly<Record<string, RunAdmissionGate>> = {
+export const TASK_ADMISSION = {
   [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
   'embedding-reconcile': { kind: 'embedding' },
   'container-smoke': { kind: 'capability', capability: 'cortex' },
   [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [TITLING_TASK]: { kind: 'capture' },
-};
+} satisfies Readonly<Record<string, RunAdmissionGate>>;
 
-export const RETAINED_TASKS = Object.keys(TASK_ADMISSION);
+export type RetainedTask = keyof typeof TASK_ADMISSION;
+export const RETAINED_TASKS = Object.keys(TASK_ADMISSION) as RetainedTask[];
 
 /**
  * The tools each retained task DECLARES, in the run-surface source vocabulary.
@@ -126,3 +127,13 @@ export const MANUAL_ONLY_TASKS: readonly string[] = [SEEDING_TASK];
 export function admissionForTask(taskName: string): RunAdmissionGate | null {
   return declared(TASK_ADMISSION, taskName) ?? null;
 }
+
+/** Reader descriptions owned by the task declarations. */
+export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; description: string }>> = {
+  [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Read new prompts, save durable knowledge as spores, and retire knowledge they replace.' },
+  [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },
+  [TITLING_TASK]: { name: 'Title and summarize sessions', description: 'Read a session’s prompts and write a title and summary of what was accomplished.' },
+  [MAP_TASK]: { name: 'Keep the code map', description: 'Read the connected code to keep a grounded guide to its directories and key files.' },
+  'embedding-reconcile': { name: 'Keep search current', description: 'Update the search index for project memory so similar knowledge can be found.' },
+  'container-smoke': { name: 'Check Myco can run', description: 'Check that Myco can start its work and record a report.' },
+};

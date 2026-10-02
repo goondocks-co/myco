@@ -28,7 +28,7 @@
  */
 
 import { expandHome } from '../paths/home.js';
-import { PROFILE_HARNESSES, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { PROFILE_HARNESSES, HARNESS_ASKING, canOfferHarness, type Asking, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 /** How a harness is started so it speaks the agent protocol, or that it does not speak it at all. */
 export type LaunchShape =
@@ -61,34 +61,7 @@ export type Isolation =
   | { kind: 'home'; env: string }
   | { kind: 'additive' };
 
-/**
- * How a harness comes to ask before a call, or what bounds a run on a harness
- * that never asks.
- *
- * - `native`: a native driver pins the run's grant as the harness's own
- *   permissions, and the harness refuses whatever it does not allow.
- * - `sandbox`: the harness asks nothing and the run's grant does not apply. Its
- *   driver pins an operating-system sandbox that is the run's whole bound: what
- *   its commands may read, write and reach.
- * - `run-agent`: the harness asks only where its configuration says to, so a
- *   run starts in an agent of its own, supplied as configuration content in the
- *   variable `env`, under which every call asks; the session must report that
- *   agent as its mode. `extensionsOff` is the environment that keeps the
- *   extensions the machine installed out of the run's harness process, since an
- *   extension can answer a permission request itself.
- * - `run-home`: the harness asks for any call its configuration has not
- *   approved in advance, so a run reads a configuration directory of its own,
- *   named in the variable `env`, in which nothing is approved in advance.
- * - `unheld`: the harness approves in advance whatever its user's configuration
- *   approves, and a run cannot be given a configuration of its own, so no call
- *   it approved that way would reach the run's grant. No worker offers it.
- */
-export type Asking =
-  | { kind: 'native' }
-  | { kind: 'sandbox' }
-  | { kind: 'run-agent'; env: string; extensionsOff: Readonly<Record<string, string>> }
-  | { kind: 'run-home'; env: string }
-  | { kind: 'unheld' };
+export type { Asking } from '@goondocks/myco-shared/execution-profile';
 
 /**
  * Whether a source run on this harness may read Git history. `shim`: the
@@ -133,7 +106,7 @@ export const HARNESSES: readonly Harness[] = [
     // the file answers where it exists and the binary answers where it does not.
     credential: { kind: 'file-or-command', path: '~/.claude/.credentials.json', requires: ['claudeAiOauth', 'accessToken'], args: ['auth', 'status'] },
     isolation: { kind: 'flag', args: ['--strict-mcp-config'] },
-    asking: { kind: 'native' },
+    asking: HARNESS_ASKING['claude-code']!,
     sourceGit: 'shim',
   },
   {
@@ -146,7 +119,7 @@ export const HARNESSES: readonly Harness[] = [
     credential: { kind: 'file', path: '~/.codex/auth.json', requires: ['OPENAI_API_KEY', 'tokens', 'personal_access_token'] },
     isolation: { kind: 'home', env: 'CODEX_HOME' },
     // It never asks: approvals would wait on a terminal nobody is at.
-    asking: { kind: 'sandbox' },
+    asking: HARNESS_ASKING.codex!,
     // Its driver holds a run to a sandbox rather than to the run's grant.
     sourceGit: 'none',
   },
@@ -160,7 +133,7 @@ export const HARNESSES: readonly Harness[] = [
     isolation: { kind: 'additive' },
     // Its default configuration allows every tool without asking, and a plugin
     // it loads can answer a permission request before the driver does.
-    asking: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT', extensionsOff: { OPENCODE_PURE: '1' } },
+    asking: HARNESS_ASKING.opencode!,
     sourceGit: 'shim',
   },
   {
@@ -173,7 +146,7 @@ export const HARNESSES: readonly Harness[] = [
     isolation: { kind: 'additive' },
     // Its allow list and Run Everything mode live in its configuration
     // directory; its login lives in the keychain, outside it.
-    asking: { kind: 'run-home', env: 'CURSOR_CONFIG_DIR' },
+    asking: HARNESS_ASKING.cursor!,
     // Its shell puts the system directories first on PATH before each command.
     sourceGit: 'none',
   },
@@ -188,7 +161,7 @@ export const HARNESSES: readonly Harness[] = [
     // It reads its allow list from `~/.gemini/antigravity-cli/settings.json`,
     // and neither its CLI nor its protocol server is known to take a variable
     // or flag that moves it.
-    asking: { kind: 'unheld' },
+    asking: HARNESS_ASKING.antigravity!,
     // Its shell has not been seen reaching the run's git.
     sourceGit: 'none',
   },
@@ -198,7 +171,7 @@ const BY_ID = new Map(HARNESSES.map((h) => [h.id, h]));
 
 /** Whether a run on this harness is held to its grant or its sandbox, and so whether a worker may offer it. */
 export function offerable(harness: Harness): boolean {
-  return harness.asking.kind !== 'unheld';
+  return canOfferHarness(harness.asking);
 }
 
 /** The harness this id names, or null when the worker serves none by that name. */

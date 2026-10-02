@@ -16,4 +16,3 @@ export async function runtimeProbePreferences(db: RelationalStore, task: string)
     baseUrl: text(stored['agent.provider.base_url']?.value),
   };
 }
-

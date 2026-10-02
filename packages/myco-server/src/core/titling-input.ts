@@ -26,11 +26,17 @@ const MODE_NOTE: Readonly<Record<TitlingMode, string>> = {
 export async function buildTitlingInput(params: Record<string, unknown>): Promise<TaskInput | null> {
   const titling = titlingParamsFrom(params);
   if (titling === null) return null;
-  const body = [
+  const body = titlingPrompt(titling.session_id, titling.mode);
+  return { instruction: body, inputHash: await sha256Hex(body), counts: { owner: titling.mode === 'owner' } };
+}
+
+/** The ask for a session and its request mode. */
+export function titlingPrompt(sessionId: string, mode: TitlingMode): string {
+  return [
     'Title and summarize one session of this project. Budget: a handful of turns.',
     '',
-    `Target session: ${titling.session_id}`,
-    MODE_NOTE[titling.mode],
+    `Target session: ${sessionId}`,
+    MODE_NOTE[mode],
     '',
     '## Steps',
     '',
@@ -57,9 +63,4 @@ export async function buildTitlingInput(params: Record<string, unknown>): Promis
     '',
     `2 to 4 sentences, under ${SUMMARY_MAX_CHARS} characters. Rich in detail: summaries are embedded and searched, so name what was built or fixed, the key files touched, the tools used and the outcome. Cover the FULL arc of the session, not one prompt.`,
   ].join('\n');
-  return {
-    instruction: body,
-    inputHash: await sha256Hex(body),
-    counts: { owner: titling.mode === 'owner' },
-  };
 }
