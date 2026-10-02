@@ -97,6 +97,10 @@
     "./execution-profile": {
       "import": "./dist/execution-profile.js",
       "types": "./dist/execution-profile.d.ts"
+    },
+    "./call-words": {
+      "import": "./dist/call-words.js",
+      "types": "./dist/call-words.d.ts"
     }
   },
   "files": [

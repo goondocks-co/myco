@@ -292,13 +292,18 @@ export async function hasUnprocessedPrompts(db: RelationalStore, projectId: stri
  * inherited member of `Object.prototype` is not a registration, and a schedule
  * naming one is refused like any other unknown name.
  */
-export const PRE_CONDITIONS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string; now: number }) => Promise<boolean>>> = {
-  'has-unprocessed-prompts': ({ db, projectId }) => hasUnprocessedPrompts(db, projectId),
-  'has-capture-since-map': ({ db, projectId }) => capturedSinceMap(db, { projectId }),
-  'has-recent-live-prompts': async ({ db, projectId, now }) => {
+type ScheduleCondition = (args: { db: RelationalStore; projectId: string; now: number }) => Promise<boolean>;
+
+/** A scheduling condition carries the reader wording of the check it runs. */
+const condition = (description: string, check: ScheduleCondition): ScheduleCondition & { description: string } => Object.assign(check, { description });
+
+export const PRE_CONDITIONS: Readonly<Record<string, ScheduleCondition & { description: string }>> = {
+  'has-unprocessed-prompts': condition('Only when unread prompts remain.', ({ db, projectId }) => hasUnprocessedPrompts(db, projectId)),
+  'has-capture-since-map': condition('Only after new session material arrives.', ({ db, projectId }) => capturedSinceMap(db, { projectId })),
+  'has-recent-live-prompts': condition('Only when recent live sessions have unread prompts.', async ({ db, projectId, now }) => {
     const session = await newestUnprocessedSession(db, { projectId });
     return session !== null && session.liveCapture === 1 && session.endedAt >= now - DAY_MS && session.endedAt <= now;
-  },
+  }),
 };
 
 /** Named accelerators: a count of pending work that shortens a task's interval, read over the same store and looked up the same way. */

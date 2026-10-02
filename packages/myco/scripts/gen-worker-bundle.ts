@@ -120,7 +120,7 @@ export function buildWorkerBundle(): string {
   const config = path.join(WORKER_DIR, BUNDLE_CONFIG_NAME);
   try {
     writeFileSync(config, bundleConfig(readFileSync(path.join(WORKER_DIR, 'wrangler.toml'), 'utf-8')), 'utf-8');
-    execFileSync('npx', ['--no-install', 'wrangler', 'deploy', '--dry-run', '--outdir', out, '-c', BUNDLE_CONFIG_NAME], {
+    execFileSync('npx', ['--no-install', 'wrangler', 'deploy', '--dry-run', '--minify', '--outdir', out, '-c', BUNDLE_CONFIG_NAME], {
       cwd: WORKER_DIR,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],

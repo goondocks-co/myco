@@ -17,11 +17,11 @@
  */
 import type { ServerEnv } from './adapters.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
-import { buildMapInput } from './canopy-input.js';
-import { buildExtractionInput } from './extraction-input.js';
-import { buildSeedingInput } from './seeding-input.js';
+import { buildMapInput, mapPrompt, MAP_RULES } from './canopy-input.js';
+import { buildExtractionInput, extractionPrompt, EXTRACTION_RULES } from './extraction-input.js';
+import { buildSeedingInput, seedingPrompt, SEEDING_RULES } from './seeding-input.js';
 import { EXTRACTION_TASK, MAP_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
-import { buildTitlingInput } from './titling-input.js';
+import { buildTitlingInput, titlingPrompt } from './titling-input.js';
 
 /** What one build answers: the run's prompt, the standing rules for its instructions file, the hash of the material behind it, and what that material counted. */
 export interface TaskInput {
@@ -41,8 +41,19 @@ export interface TaskInputOptions {
   params?: Record<string, unknown>;
 }
 
+/** The exact launch text with named placeholders for run-specific material. */
+export interface TaskTemplate {
+  promptTemplate: string | null;
+  standingRules: string | null;
+  templateVariants: readonly { name: string; prompt: string }[];
+}
+
+const TEMPLATE_REPOSITORY = { url: '{{repository.url}}', branch: '{{repository.branch}}' };
+
 /** Builds a task's prompt for one Project, and where the task is deduped, reads the hash the Project's current artifact carries. */
 export interface TaskInputBuilder {
+  /** The launch renderer with placeholders for material selected per run. */
+  template(patterns: readonly string[]): TaskTemplate;
   /** The instruction, or null when what the run carries is not enough to write one. */
   build(env: ServerEnv, projectId: string, now: number, options: TaskInputOptions): Promise<TaskInput | null>;
   /**
@@ -56,10 +67,16 @@ export interface TaskInputBuilder {
 }
 
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
-  [EXTRACTION_TASK]: { build: () => buildExtractionInput() },
-  [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId) },
-  [TITLING_TASK]: { build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}) },
-  [MAP_TASK]: { build: (env, projectId, _now, options) => buildMapInput(env, projectId, options) },
+  [EXTRACTION_TASK]: { build: () => buildExtractionInput(), template: () => ({ promptTemplate: extractionPrompt(), standingRules: EXTRACTION_RULES, templateVariants: [] }) },
+  [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId), template: () => ({ promptTemplate: seedingPrompt(TEMPLATE_REPOSITORY), standingRules: SEEDING_RULES, templateVariants: [] }) },
+  [TITLING_TASK]: {
+    build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}),
+    template: () => ({ promptTemplate: titlingPrompt('{{session.id}}', 'claim'), standingRules: null, templateVariants: [{ name: 'When a person asks for a fresh title', prompt: titlingPrompt('{{session.id}}', 'owner') }] }),
+  },
+  [MAP_TASK]: {
+    build: (env, projectId, _now, options) => buildMapInput(env, projectId, options),
+    template: (patterns) => ({ promptTemplate: mapPrompt(TEMPLATE_REPOSITORY, patterns, false), standingRules: MAP_RULES, templateVariants: [{ name: 'When a person asks to start fresh', prompt: mapPrompt(TEMPLATE_REPOSITORY, patterns, true) }] }),
+  },
 };
 
 /** The builder for this task, or null for a task the server builds no input for. */

@@ -453,6 +453,8 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/p/:projectId/knowledge/map` | NEW | UI, Core | Blk | A project's code map, as its last map run wrote it | #1378 |
 | `/p/:projectId/spores/:sporeId` | NEW | UI, Core | Blk | A spore's article: its line, body, history and session | #1518 |
 | `/p/:projectId/plans/:planKey` | NEW | UI, Core | Blk | A plan's page: its versions and status | #1162 |
+| `/work/tasks` | NEW | UI, Core | Blk | Every task’s server-built description, current model, exact rules and ask template | #1593 |
+| `/p/:projectId/work/tasks` | NEW | UI, Core | Blk | Task descriptions and recent runs for one project | #1593 |
 | `/work` | NEW | UI, Core | Blk | Myco's work across every project: each outcome's runs, spend and failures | #1518 |
 | `/p/:projectId/work` | NEW | UI, Core | Blk | Myco's work narrowed to one project | #1518 |
 | `/p/:projectId/work/runs/:runId` | NEW | UI, Core | Blk | One run in its panel over a project's work | #1518 |

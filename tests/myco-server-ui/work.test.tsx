@@ -1,3 +1,4 @@
+import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
  * Myco's work: what Myco's own runs came to, grouped by outcome, each failure
  * beside the outcome it belongs to, search upkeep as one line, the cost rail,
@@ -59,6 +60,7 @@ const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_R
   '/auth/me': () => Response.json(over.who ?? ADMIN),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
+  '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
   '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),
   [`/api/projects/${P}/runs`]: (url) => Response.json({ rows: (over.taskRuns ?? taskRunsFor(((over.who ?? ADMIN) as typeof ADMIN).member.id))[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),

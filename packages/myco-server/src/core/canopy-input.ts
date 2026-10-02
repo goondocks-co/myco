@@ -67,12 +67,18 @@ export async function buildMapInput(env: ServerEnv, projectId: string, options: 
   if (repository === null) return null;
   const settings = await readMapSettings(env.db);
   const fresh = options.fresh === true;
-  const body = [
+  const body = mapPrompt(repository, [...settings.defaultPatterns, ...settings.userPatterns], fresh);
+  return { instruction: body, instructions: MAP_RULES, inputHash: await sha256Hex(body), counts: { fresh }, repository: { ...repository, historyDepth: MAX_REPOSITORY_HISTORY_DEPTH } };
+}
+
+/** The ask for the connected repository and its excluded paths. */
+export function mapPrompt(repository: { url: string; branch: string }, patterns: readonly string[], fresh: boolean): string {
+  return [
     `Keep this project's repository map. The repository ${repository.url} (branch ${repository.branch}) is checked out, read-only, at ./${RUN_REPOSITORY_DIR} under your working directory; the digest of every committed file is in ./${RUN_REPOSITORY_DIGESTS_FILE}. One pass; budget: about forty tool calls.`,
     '',
     'The standing rules for what the map is and how it is grounded are in AGENTS.md in your working directory. Read them first.',
     '',
-    exclusionLine([...settings.defaultPatterns, ...settings.userPatterns]),
+    exclusionLine(patterns),
     '',
     '## Steps',
     '',
@@ -85,11 +91,4 @@ export async function buildMapInput(env: ServerEnv, projectId: string, options: 
     '3. Write the map by calling `myco_run_map` op "write" with `artifact` set to the JSON object. A refusal names what to fix; fix it and write again.',
     `4. Close by calling \`myco_run\` op "report": action "${MAP_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"domains\\":6,\\"directories\\":14,\\"revisited\\":3}". Stop after the report.`,
   ].join('\n');
-  return {
-    instruction: body,
-    instructions: MAP_RULES,
-    inputHash: await sha256Hex(body),
-    counts: { fresh },
-    repository: { ...repository, historyDepth: MAX_REPOSITORY_HISTORY_DEPTH },
-  };
 }

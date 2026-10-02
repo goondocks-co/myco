@@ -54,7 +54,13 @@ export const SEEDING_RULES = [
 export async function buildSeedingInput(env: ServerEnv, projectId: string): Promise<TaskInput | null> {
   const repository = await repositoryIdentity(env.db, { projectId });
   if (repository === null) return null;
-  const body = [
+  const body = seedingPrompt(repository);
+  return { instruction: body, instructions: SEEDING_RULES, inputHash: await sha256Hex(body), counts: { ceiling: SEEDING_SPORE_CEILING }, repository: { ...repository, historyDepth: MAX_REPOSITORY_HISTORY_DEPTH } };
+}
+
+/** The ask for the connected repository. */
+export function seedingPrompt(repository: { url: string; branch: string }): string {
+  return [
     `Seed this project's memory from its code and git history. The repository ${repository.url} (branch ${repository.branch}) is checked out, read-only, at ./${SEEDING_CHECKOUT_DIR} under your working directory. One pass; budget: about eighty turns.`,
     '',
     'The standing rules for what a spore is and what to skip are in AGENTS.md in your working directory. Read them first.',
@@ -69,11 +75,4 @@ export async function buildSeedingInput(env: ServerEnv, projectId: string): Prom
     '',
     'Partial work stands: every spore saved before you run out of budget is kept.',
   ].join('\n');
-  return {
-    instruction: body,
-    instructions: SEEDING_RULES,
-    inputHash: await sha256Hex(body),
-    counts: { ceiling: SEEDING_SPORE_CEILING },
-    repository: { ...repository, historyDepth: MAX_REPOSITORY_HISTORY_DEPTH },
-  };
 }

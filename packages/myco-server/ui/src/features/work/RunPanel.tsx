@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, ShowMore, TypeChip } from '../../design';
+import { useTaskDescriptions } from '../../hooks/use-tasks';
 import { useStarterNames } from './names';
 import { CALLS_PER_PAGE, useRunCalls, useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
-import { CODE_MAP_SUFFIX, projectPath } from '../../routes/nav';
+import { CODE_MAP_SUFFIX, projectPath, TASKS_SUFFIX } from '../../routes/nav';
 import { agentName, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
 import type { RunCallPage, RunDetailAnswer } from './wire';
 import { ModelSummary, costProvenanceWords } from './ModelSummary';
@@ -79,6 +80,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
           {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
+        {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
@@ -318,4 +320,13 @@ function Instruction({ answer }: { answer: RunDetailAnswer }) {
       </Disclosure>
     </section>
   );
+}
+
+function TaskName({ projectId, task }: { projectId: string; task: string }) {
+  const descriptions = useTaskDescriptions(projectId);
+  const description = descriptions.data?.tasks.find((entry) => entry.task === task);
+  return <div className="flex flex-col gap-s2" data-run-task="">
+    <OnwardLink to={`${projectPath(projectId, TASKS_SUFFIX)}#${encodeURIComponent(task)}`}>{description?.name ?? 'About this task'}</OnwardLink>
+    {descriptions.isError && <ErrorState error={descriptions.error} onRetry={() => void descriptions.refetch()} />}
+  </div>;
 }

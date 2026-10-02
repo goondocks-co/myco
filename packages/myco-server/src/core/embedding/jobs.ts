@@ -7,7 +7,7 @@ import { SPORE_VECTORS, hubnessPending } from './hubness.js';
 import { resolveSemanticSearch } from '../search.js';
 import { DELETION_DUE, SOURCE_HELD, deletionDueBinds } from './reconcile.js';
 
-const EMBEDDING_RETRY_MS = 60_000;
+export const EMBEDDING_RETRY_MS = 60_000;
 export const EMBEDDING_TASK = 'embedding-reconcile';
 
 /** The backlog includes sources awaiting a write, deletions that are due and pending spore calibration. */

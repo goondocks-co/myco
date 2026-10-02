@@ -57,7 +57,13 @@ export const EXTRACTION_RULES = [
 
 /** The one-pass ask. */
 export async function buildExtractionInput(): Promise<TaskInput> {
-  const body = [
+  const body = extractionPrompt();
+  return { instruction: body, instructions: EXTRACTION_RULES, inputHash: await sha256Hex(body), counts: { page: EXTRACTION_PAGE } };
+}
+
+/** The ask every extraction pass receives. */
+export function extractionPrompt(): string {
+  return [
     'Read the prompts nobody has read yet and record what they taught. One pass; budget: about thirty turns.',
     '',
     'The standing rules for what a spore is and how the vault stays sharp are in AGENTS.md in your working directory. Read them first.',
@@ -72,10 +78,4 @@ export async function buildExtractionInput(): Promise<TaskInput> {
     '',
     'Partial work stands: a spore saved and a prompt marked before you run out of budget are kept, and the next pass reads on from the prompts you did not mark.',
   ].join('\n');
-  return {
-    instruction: body,
-    instructions: EXTRACTION_RULES,
-    inputHash: await sha256Hex(body),
-    counts: { page: EXTRACTION_PAGE },
-  };
 }

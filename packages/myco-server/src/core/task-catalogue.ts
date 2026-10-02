@@ -128,3 +128,13 @@ export const MANUAL_ONLY_TASKS: readonly string[] = [SEEDING_TASK];
 export function admissionForTask(taskName: string): RunAdmissionGate | null {
   return declared(TASK_ADMISSION, taskName) ?? null;
 }
+
+/** Reader descriptions owned by the task declarations. */
+export const TASK_WORDS: Readonly<Record<string, { name: string; description: string }>> = {
+  [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Read new prompts, save durable knowledge as spores, and retire knowledge they replace.' },
+  [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },
+  [TITLING_TASK]: { name: 'Title and summarize sessions', description: 'Read a session’s prompts and write a title and summary of what was accomplished.' },
+  [MAP_TASK]: { name: 'Keep the code map', description: 'Read the connected code to keep a grounded guide to its directories and key files.' },
+  'embedding-reconcile': { name: 'Keep search current', description: 'Update the search index for project memory so similar knowledge can be found.' },
+  'container-smoke': { name: 'Check Myco can run', description: 'Check that Myco can start its work and record a report.' },
+};

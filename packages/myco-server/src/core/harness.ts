@@ -893,7 +893,7 @@ export function chooseHarness(preferred: string | null, fallback: readonly strin
   return null;
 }
 
-function harnessPreference(byLeaf: ReadonlyMap<string, string>, task: string): { preferred: string | null; fallback: string[]; override: string | null } {
+export function harnessPreference(byLeaf: ReadonlyMap<string, string>, task: string): { preferred: string | null; fallback: string[]; override: string | null } {
   const fallbackLeaf = parseLeaf(byLeaf.get('worker.harness_fallback'));
   return {
     preferred: str(parseLeaf(byLeaf.get('worker.harness'))),
