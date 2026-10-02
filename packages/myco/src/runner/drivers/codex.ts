@@ -1,3 +1,4 @@
+import { accountingEvents } from '../accounting.js';
 /**
  * Codex, driven natively.
  *
@@ -362,8 +363,12 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
   const harness = harnessById('codex')!;
   const home = runHome(spec, harness, probe, log);
   const configured = parse(readFileSync(join(home, 'config.toml'), 'utf8')) as Record<string, unknown>;
-  const launched = codexLaunchIdentity(harness, configured);
-  if (launched !== null) yield { kind: 'identity', identity: launched };
+  const launchEvents = accountingEvents(() => {
+    const identity = codexLaunchIdentity(harness, configured);
+    return identity === null ? [] : [{ kind: 'identity', identity }];
+  });
+  yield* launchEvents;
+  const launched = launchEvents.find((event) => event.kind === 'identity')?.identity ?? null;
   const env = { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) };
   const selection = launched === null || launched.status === 'unknown' ? [] : [
     '-c', `model=${JSON.stringify(launched.primary.model)}`,
@@ -400,8 +405,10 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
     }
   }
   const code = await started.exit;
-  const identity = codexSessionIdentity(harness, home, spec.scratchDir, threadId, accounting, launched);
-  if (identity !== null) yield { kind: 'identity', identity };
+  yield* accountingEvents(() => {
+    const identity = codexSessionIdentity(harness, home, spec.scratchDir, threadId, accounting, launched);
+    return identity === null ? [] : [{ kind: 'identity', identity }];
+  });
   if (accounting !== null) yield { kind: 'usage', ...accounting };
   yield terminal ?? { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText().slice(0, 2000)}` };
 }

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExecutionIdentity, WorkerUsage } from '@goondocks/myco-shared/worker-usage';
-import { modelSelection, reportedModel } from '../accounting.js';
+import { AccountingIssue, modelSelection, reportedModel } from '../accounting.js';
 import type { Harness } from '../harnesses.js';
 import { recordOf, stringOf, numberOf } from './stream.js';
 
@@ -30,7 +30,7 @@ export function codexSessionIdentity(harness: Harness, home: string, scratchDir:
   if (harness.accounting.reported !== 'codex-session' || threadId === null) return null;
   for (const file of sessionFiles(join(home, 'sessions'))) {
     const lines = readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '');
-    // Valid matching metadata admits the file; malformed records in an admitted file are errors.
+    // Matching metadata admits the session before any accounting diagnostic is attributed to it.
     const meta = lines.flatMap((line) => {
       try {
         const record = recordOf(JSON.parse(line));
@@ -39,7 +39,12 @@ export function codexSessionIdentity(harness: Harness, home: string, scratchDir:
     }).find((record) => recordOf(record.payload)?.id === threadId);
     const payload = recordOf(meta?.payload);
     if (payload?.id !== threadId || typeof payload.cwd !== 'string' || !existsSync(payload.cwd) || realpathSync(payload.cwd) !== realpathSync(scratchDir)) continue;
-    const records = lines.map((line) => recordOf(JSON.parse(line)));
+    let unreadable: string | null = null;
+    const records = lines.flatMap((line, index) => {
+      try { return [recordOf(JSON.parse(line))]; }
+      catch { unreadable = index === lines.length - 1 ? 'codex_session_torn_last_line' : 'codex_session_record_unreadable'; return []; }
+    });
+    if (unreadable !== null) throw new AccountingIssue(unreadable);
     const provider = stringOf(payload.model_provider) ?? (harness.accounting.launchFallback === 'resolved-config' && launched !== null && launched.status !== 'unknown' ? launched.primary.provider : undefined);
     const models = new Map<string, ReturnType<typeof reportedModel>>();
     let current: string | null = null;

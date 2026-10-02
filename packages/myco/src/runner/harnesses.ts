@@ -101,7 +101,10 @@ export interface HarnessAccounting {
   reported: 'claude-stream' | 'codex-session' | 'acp-session';
   modelSources: readonly string[];
   launchFallback: 'none' | 'resolved-config';
-  provider: { kind: 'fixed'; id: string } | { kind: 'session-config'; default: string } | { kind: 'model-prefix' } | { kind: 'unavailable' };
+  primarySources?: readonly string[];
+  modelVariants?: readonly { suffix: string; context: '1m' }[];
+  zeroDollars?: 'reported' | 'unavailable';
+  provider: { kind: 'environment'; default: string; selectors: readonly { variable: string; provider: string }[]; unknownIfSet: readonly string[] } | { kind: 'fixed'; id: string } | { kind: 'session-config'; default: string } | { kind: 'model-prefix' } | { kind: 'unavailable' };
   tokenScope: 'attempt' | 'unverified';
   lastResponseVersions?: readonly string[];
 }
@@ -120,7 +123,7 @@ export interface Harness {
 export const HARNESSES: readonly Harness[] = [
   {
     id: 'claude-code',
-    accounting: { reported: 'claude-stream', modelSources: ['system.init.model', 'assistant.message.model', 'result.model', 'result.modelUsage'], launchFallback: 'none', provider: { kind: 'fixed', id: 'anthropic' }, tokenScope: 'attempt' },
+    accounting: { reported: 'claude-stream', modelSources: ['system.init.model', 'assistant.message.model', 'result.modelUsage'], primarySources: ['system.init.model'], modelVariants: [{ suffix: '[1m]', context: '1m' }], zeroDollars: 'reported', launchFallback: 'none', provider: { kind: 'environment', default: 'anthropic', selectors: [{ variable: 'CLAUDE_CODE_USE_BEDROCK', provider: 'bedrock' }, { variable: 'CLAUDE_CODE_USE_VERTEX', provider: 'vertex' }, { variable: 'CLAUDE_CODE_USE_FOUNDRY', provider: 'foundry' }], unknownIfSet: ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL'] }, tokenScope: 'attempt' },
     binary: 'claude',
     launch: { kind: 'native' },
     // The value lives in the OS keyring on macOS and in the file elsewhere, so
@@ -145,7 +148,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'opencode',
-    accounting: { reported: 'acp-session', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'model-prefix' }, tokenScope: 'unverified', lastResponseVersions: ['1.18.21', '1.18.29'] },
+    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'model-prefix' }, tokenScope: 'unverified', lastResponseVersions: ['1.18.21', '1.18.29'] },
     binary: 'opencode',
     launch: { kind: 'subcommand', args: ['acp'] },
     credential: { kind: 'file', path: '~/.local/share/opencode/auth.json', requires: [] },
@@ -157,7 +160,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'cursor',
-    accounting: { reported: 'acp-session', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
+    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
     binary: 'cursor-agent',
     launch: { kind: 'subcommand', args: ['acp'] },
     credential: { kind: 'command', args: ['status'] },
@@ -170,7 +173,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'antigravity',
-    accounting: { reported: 'acp-session', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
+    accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
     binary: 'agy',
     launch: { kind: 'sidecar', binary: 'agy_acp_server.par' },
     credential: { kind: 'file', path: '~/.gemini/antigravity-cli/settings.json', requires: [] },

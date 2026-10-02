@@ -135,6 +135,13 @@ const identity = (model: string, reported: { inputTokens: number | null; outputT
   models: [{ provider: 'openai', model, source: 'fixture.result', usage: reported }] });
 
 describe('model-specific execution accounting', () => {
+  it('closes an opaque future accounting version and leaves identity not recorded', async () => {
+    const r = await rig();
+    try {
+      expect(await r.end({ status: 'failed', accountingVersion: 2, identity: { future: 'opaque' }, usage })).toMatchObject({ ended: true, status: 'failed' });
+      expect((await r.detail())?.run).toMatchObject({ status: 'failed', identity: { status: 'not_recorded' }, costUsd: 0.25 });
+    } finally { r.e.sqlite.close(); }
+  });
   it('carries the Codex run-owned session model over end wire into DB and read APIs', async () => {
     const r = await rig('codex');
     try {

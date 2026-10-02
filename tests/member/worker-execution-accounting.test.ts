@@ -63,7 +63,7 @@ describe('execution identity on every offered runner end', () => {
     });
   }
   it('requires a versioned identity and an attempt before accepting new accounting', () => {
-    for (const raw of [ { accountingVersion: 1, attemptId: 'a' }, { accountingVersion: 99, attemptId: 'a' },
+    for (const raw of [ { accountingVersion: 1, attemptId: 'a' },
       { accountingVersion: 1, identity: { status: 'unknown', reason: 'unresolved' } },
       { accountingVersion: 1, attemptId: 'a', identity: { status: 'reported', primary: { model: 'm' }, source: 's', models: [] } },
     ]) expect(() => parseWorkerAccounting(raw)).toThrow();
@@ -78,12 +78,12 @@ describe('execution identity on every offered runner end', () => {
       { model: 'haiku', provider: 'anthropic', usage: { inputTokens: 11, outputTokens: 6, cachedTokens: 7, cacheCreationTokens: 0, estimatedCostUsd: 0.1 } },
     ] });
   });
-  it('retains ACP model updates and an exact zero estimate', () => {
+  it('retains ACP model updates and treats a subscription zero as unavailable', () => {
     const events = new AcpEvents('opencode', '1.18.29', { configOptions: [{ id: 'model', currentValue: 'openai/first' }] });
     expect([...events.identity()]).toContainEqual(expect.objectContaining({ identity: expect.objectContaining({ source: 'session.configOptions' }) }));
     const updated = [...events.update({ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'current_model_update', currentModelId: 'openai/second' } } }, 's')];
     expect(updated).toContainEqual(expect.objectContaining({ kind: 'identity' }));
     [...events.update({ method: 'session/update', params: { sessionId: 's', update: { sessionUpdate: 'usage_update', cost: { currency: 'USD', amount: 0 } } } }, 's')];
-    expect(events.usage({})).toMatchObject({ model: 'second', estimatedCostUsd: 0 });
+    expect(events.usage({})).toMatchObject({ model: 'second', estimatedCostUsd: null });
   });
 });

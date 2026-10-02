@@ -1,5 +1,6 @@
+import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { ExecutionAccounting } from './accounting.js';
-import { parseWorkerUsage, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
+import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
  * The worker: claim one run, hold it on a lease, drive a harness, end it.
  *
@@ -115,7 +116,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown> }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -185,6 +186,7 @@ async function afterRefusal(options: Requester, refused: string): Promise<
 async function postAs(options: Requester, token: string, path: string, body: unknown): Promise<WorkerAnswer> {
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
+  let accounting = false;
   try {
     const res = await send(new URL(path, options.serverUrl).toString(), {
       method: 'POST',
@@ -192,6 +194,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
       body: JSON.stringify(body),
       signal: options.signal,
     });
+    accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
     raw = { kind: 'transport', detail: error instanceof Error ? error.message : String(error) };
@@ -199,7 +202,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body };
+      return { kind: 'answered', body: outcome.body, accounting };
     case 'protocol':
       return {
         kind: 'refused',
@@ -399,8 +402,7 @@ async function drive(
   const releaseAwake = options.keepAwake?.() ?? (() => {});
 
   const events: RunEvent[] = [];
-  let usage: WorkerUsage | null = null;
-  const accounting = new ExecutionAccounting();
+  const accounting = new ExecutionAccounting(named?.accounting.primarySources);
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
   let failure: string | null = null;
@@ -428,10 +430,7 @@ async function drive(
       if (step.value.kind === 'identity') accounting.observe(step.value.identity, step.value.snapshot);
       if (step.value.kind === 'usage') {
         const { kind: _kind, ...reported } = step.value;
-        const parsed = parseWorkerUsage(reported);
-        accounting.usage(parsed);
-        const { models: _models, ...totals } = parsed;
-        usage = Object.values(totals).every((value) => value == null) ? null : totals;
+        accounting.usage(reported);
       }
       if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status}${step.value.detail === undefined ? '' : ` (${step.value.detail})`}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
@@ -465,6 +464,10 @@ async function drive(
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
   const identity = accounting.identity;
+  const usage: WorkerUsage | null = identity.status === 'unknown' ? accounting.totals : {
+    ...(accounting.totals ?? { inputTokens: null, outputTokens: null, costUsd: null }),
+    model: identity.primary.model, ...(identity.primary.provider === undefined ? {} : { provider: identity.primary.provider }),
+  };
   if (overran) return { status: 'failed', identity, usage, error: `the run outlived its budget of ${run.timeoutSeconds}s` };
   if (failure !== null) return { status: 'failed', error: failure, identity, usage };
   const last = events.at(-1);
@@ -636,9 +639,10 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
     // another's run. The Deployment refuses such a write anyway; not making it
     // is what keeps the two accounts of a run from disagreeing.
     if (outcome.status !== 'lost') {
-      const accounting: WorkerExecutionAccounting | Record<string, never> = run.attemptId === undefined ? {} : {
+      const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
+      const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
         attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: outcome.identity,
-      };
+      } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
       const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
         ...accounting,
       }));

@@ -1,6 +1,6 @@
 import type { WorkerUsage, WorkerModelUsage } from '@goondocks/myco-shared/worker-usage';
-import { harnessById } from '../harnesses.js';
-import { modelSelection, reportedModel } from '../accounting.js';
+import { harnessById, type HarnessAccounting } from '../harnesses.js';
+import { accountingEvents, modelSelection, reportedDollars, reportedModel } from '../accounting.js';
 import type { RunEvent } from '../events.js';
 import { numberOf, recordOf, stringOf } from './stream.js';
 
@@ -34,7 +34,7 @@ export class AcpEvents {
   private selected: string | null = null;
   private estimatedCostUsd: number | null = null;
 
-  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>) {
+  constructor(private readonly harness: string, private readonly version: string | null, session: Record<string, unknown>, private readonly policy: HarnessAccounting = harnessById(harness)!.accounting) {
     const selected = modelOf(session);
     this.model = selected?.model ?? null;
     this.modelSource = selected?.source ?? 'session.models';
@@ -68,7 +68,7 @@ export class AcpEvents {
     } else if (type === 'usage_update') {
       const cost = recordOf(update.cost);
       const amount = numberOf(cost?.amount);
-      if (cost?.currency === 'USD' && amount !== null && amount >= 0) this.estimatedCostUsd = amount;
+      if (cost?.currency === 'USD' && amount !== null && amount >= 0) this.estimatedCostUsd = reportedDollars(this.policy, amount);
       if (this.selected !== null && ((cost?.currency === 'USD' && amount !== null && amount > 0) || (numberOf(update.used) ?? 0) > 0)) this.used.add(this.selected);
     }
   }
@@ -99,13 +99,15 @@ export class AcpEvents {
   }
 
   *identity(source = this.modelSource): Iterable<RunEvent> {
-    if (this.model === null) return;
-    const model = reportedModel(harnessById(this.harness)!, this.model, source);
-    const key = JSON.stringify([model.provider, model.model]);
-    if (this.selected !== null && !this.used.has(this.selected)) this.models.delete(this.selected);
-    this.models.set(key, model);
-    this.selected = key;
-    yield { kind: 'identity', snapshot: true, identity: { ...modelSelection(model), models: [...this.models.values()] } };
+    yield* accountingEvents(() => {
+      if (this.model === null) return [];
+      const model = reportedModel(harnessById(this.harness)!, this.model, source);
+      const key = JSON.stringify([model.provider, model.model]);
+      if (this.selected !== null && !this.used.has(this.selected)) this.models.delete(this.selected);
+      this.models.set(key, model);
+      this.selected = key;
+      return [{ kind: 'identity', snapshot: true, identity: { ...modelSelection(model), models: [...this.models.values()] } }];
+    });
   }
 
   usage(result: Record<string, unknown>): WorkerUsage {

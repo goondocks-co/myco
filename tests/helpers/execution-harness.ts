@@ -8,7 +8,7 @@ import { withRunMcp, listingOnly } from './run-mcp-fetch.ts';
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const model = 'gpt-5.4-mini';
 
-export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: string, end: (body: Record<string, unknown>) => Promise<Response> = async () => Response.json({ persisted: true, ended: true })) {
+export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: string, end: (body: Record<string, unknown>) => Promise<Response> = async () => Response.json({ persisted: true, ended: true }), options: { stream?: Record<string, unknown>[]; features?: string | null; credentialEnv?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'myco-accounting-'));
   const path = process.env.PATH;
   const home = process.env.HOME;
@@ -25,14 +25,15 @@ export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: s
     if (harness.id === 'claude-code') {
       const lines: Record<string, unknown>[] = [{ type: 'system', subtype: 'init', model: 'claude-sonnet-4-6', session_id: 'fixture' }];
       if (outcome === 'failed_call') lines.push({ type: 'system', subtype: 'permission_denied', tool_name: 'Read' });
-      if (outcome !== 'no_result') lines.push({ type: 'result', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', ...(outcome === 'no_usage' ? {} : { usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }) });
+      if (outcome !== 'no_result') lines.push({ type: 'result', stop_reason: 'end_turn', ...(outcome === 'no_usage' ? {} : { usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }) });
       if (outcome === 'unknown') for (const line of lines) delete line.model;
-      script = lines.map((line) => `printf '%s\\n' ${quote(JSON.stringify(line))}`).join('\n');
+      script = (options.stream ?? lines).map((line) => `printf '%s\\n' ${quote(JSON.stringify(line))}`).join('\n');
     } else if (harness.id === 'codex') {
       const records: Record<string, unknown>[] = [
         { type: 'session_meta', payload: { id: outcome === 'foreign_session' ? 'foreign-thread' : 'fixture-thread', cwd: '$PWD', model_provider: 'openai' } },
-        { type: 'turn_context', payload: { model, cwd: '$PWD' } },
+        { type: 'turn_context', payload: { model: outcome === 'spaced' ? ' gpt-x ' : outcome === 'oversized' ? 'x'.repeat(257) : model, cwd: '$PWD' } },
       ];
+      if (outcome === 'many_models') for (let n = 0; n < 65; n++) records.push({ type: 'turn_context', payload: { model: 'model-' + n, cwd: '$PWD' } });
       if (outcome === 'multi_model') records.push(
         { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, output_tokens: 20, cached_input_tokens: 40 } } } },
         { type: 'turn_context', payload: { model: 'gpt-5.4-nano', cwd: '$PWD' } },
@@ -40,6 +41,7 @@ export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: s
       );
       if (outcome === 'unknown' || outcome === 'launched') records.length = 0;
       script = `mkdir -p "$CODEX_HOME/sessions/2026/10/01"\n` + records.map((row) => `printf '%s\\n' ${quote(JSON.stringify(row)).replaceAll('$PWD', "'\"$PWD\"'")} >> "$CODEX_HOME/sessions/2026/10/01/run.jsonl"`).join('\n') + '\n';
+      if (outcome === 'truncated') script += `printf '%s' '{\"type\":' >> \"$CODEX_HOME/sessions/2026/10/01/run.jsonl\"\n`;
       if (outcome === 'foreign_noise') {
         script += `printf '%s\\n' '{broken' > "$CODEX_HOME/sessions/2026/10/01/aaa.jsonl"\n`;
         script += `printf '%s\\n' ${quote(JSON.stringify({ type: 'session_meta', payload: { id: 'fixture-thread', cwd: join(root, 'absent') } }))} > "$CODEX_HOME/sessions/2026/10/01/aab.jsonl"\n`;
@@ -77,7 +79,7 @@ done`;
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       if (String(_url).endsWith('/worker/end')) { report = body; return end(body); }
       return Response.json({ persisted: true, claimed: true, heartbeatMs: 30000, leaseMs: 60000,
-        run: { projectId: 'proj_1', id: 'run_usage', attemptId: 'attempt', task: 'extract-curate', instruction: 'do it', harness: harness.id, runToken: 'fixture', credentialEnv: {}, timeoutSeconds: 30 } });
+        run: { projectId: 'proj_1', id: 'run_usage', attemptId: 'attempt', task: 'extract-curate', instruction: 'do it', harness: harness.id, runToken: 'fixture', credentialEnv: options.credentialEnv ?? {}, timeoutSeconds: 30 } }, { headers: options.features === null ? {} : { 'x-myco-features': options.features ?? 'turn,worker-accounting-v1' } });
     }) as typeof fetch;
     await withRunMcp('https://fixture', listingOnly, () => runWorker({ serverUrl: 'https://fixture', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'), only: [harness.id], once: true, pollIdleMs: 1, log: () => {}, fetchImpl, signal: AbortSignal.timeout(5000) }));
     return report;

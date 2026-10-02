@@ -43,7 +43,7 @@ describe('native harness accounting', () => {
 
   it('bounds reported identity and refuses an unknown coverage claim', () => {
     const base = { inputTokens: 1, outputTokens: 1, costUsd: null };
-    for (const extra of [{ model: '' }, { provider: 'bad\nprovider' }, { model: 'x'.repeat(257) }, { tokenScope: 'total' }]) {
+    for (const extra of [{ model: '' }, { provider: 'bad\nprovider' }, { tokenScope: 'total' }]) {
       expect(() => parseWorkerUsage({ ...base, ...extra })).toThrow();
     }
     expect(parseWorkerUsage({ ...base, model: 'openai/model', tokenScope: 'unverified' }))
