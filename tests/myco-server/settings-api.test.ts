@@ -236,9 +236,9 @@ describe('settings API', () => {
 
   it('sets an ordinary leaf and reads it back', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await put('/api/settings/cortex.spores.max_per_prompt', { value: 5000 }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put('/api/settings/cortex.spores.max_per_prompt', { value: 5 }), e.all))).toEqual({ applied: true });
     const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
-    expect(leaves.find((l) => l.leaf === 'cortex.spores.max_per_prompt')).toMatchObject({ configured: true, value: 5000 });
+    expect(leaves.find((l) => l.leaf === 'cortex.spores.max_per_prompt')).toMatchObject({ configured: true, value: 5, effective: 5, source: 'configured', state: 'active' });
   });
 
   it('refuses a member-tier leaf through the surface, not only in the core', async () => {
@@ -280,12 +280,12 @@ describe('settings API', () => {
     expect({ status: broken.status, body: await broken.json() }).toEqual({ status: 400, body: { applied: false, reason: 'malformed', detail: 'value carries a line break or control character', leaf: 'secret.anthropic' } });
   });
 
-  it('applies an endpoint change on the member session alone, and records the actor', async () => {
+  it('applies a change on the member session alone, and records the actor', async () => {
     const e = env();
-    const allowed = await worker.fetch(await put('/api/settings/embedding.base_url', { value: 'https://ok.example' }), e.all);
+    const allowed = await worker.fetch(await put('/api/settings/embedding.model', { value: '@cf/baai/bge-large-en-v1.5' }), e.all);
     expect({ status: allowed.status, body: await allowed.json() }).toEqual({ status: 200, body: { applied: true } });
     const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
-    expect(leaves.find((l) => l.leaf === 'embedding.base_url')).toMatchObject({ configured: true, value: 'https://ok.example', updatedBy: 'mem_machine_1' });
+    expect(leaves.find((l) => l.leaf === 'embedding.model')).toMatchObject({ configured: true, value: '@cf/baai/bge-large-en-v1.5', updatedBy: 'mem_machine_1' });
   });
 });
 
@@ -381,6 +381,11 @@ function sampleFor(leaf: string): unknown {
     if (spec.type === 'profile-model') return spec.harness === 'opencode' ? 'openai/gpt-5' : spec.harness === 'claude-code' ? 'sonnet' : 'gpt-5';
     if (spec.type === 'profile-effort') return 'high';
     if (spec.type === 'credential-source') return 'deployment';
+    if (spec.type === 'boolean') return true;
+    if (spec.type === 'agent') return 'claude-code';
+    if (spec.type === 'agent-list') return ['codex'];
+    if (spec.type === 'pattern-list') return ['dist/**'];
+    if (spec.type === 'embedding') return spec.leaf === 'embedding.provider' ? 'workers-ai' : spec.leaf === 'embedding.model' ? '@cf/baai/bge-large-en-v1.5' : 'https://provider.example';
     return `# sample ${leaf}`;
   }
   if (/thinking_budget_map/.test(leaf)) return { adaptive: true };
@@ -392,18 +397,23 @@ function sampleFor(leaf: string): unknown {
   return 'sample';
 }
 
+/** Leaves a hosted Deployment does not offer under its default embedding provider, whose writes it refuses. */
+const NOT_HOSTED: ReadonlySet<string> = new Set(['embedding.base_url']);
+
 describe('every Deployment leaf, the way the dashboard writes it', () => {
   it('round-trips a kind-shaped value for every leaf on the member session alone, attributed to who wrote it', async () => {
     const e = env();
     for (const leaf of DEPLOYMENT_LEAVES) {
       const value = sampleFor(leaf);
       const answer = await json(await worker.fetch(await put(`/api/settings/${leaf}`, { value }), e.all));
-      expect({ leaf, answer }).toEqual({ leaf, answer: RETIRED_LEAVES.has(leaf) ? { applied: false, reason: 'retired', leaf } : { applied: true } });
+      expect({ leaf, answer }).toEqual({ leaf, answer: RETIRED_LEAVES.has(leaf) ? { applied: false, reason: 'retired', leaf }
+        : NOT_HOSTED.has(leaf) ? { applied: false, reason: 'invalid_value', leaf, detail: expect.stringContaining('not used') } : { applied: true } });
     }
     const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     for (const leaf of DEPLOYMENT_LEAVES) {
       const row = leaves.find((l) => l.leaf === leaf)!;
       if (RETIRED_LEAVES.has(leaf)) { expect(row).toMatchObject({ configured: false, retired: true }); continue; }
+      if (NOT_HOSTED.has(leaf)) { expect(row).toMatchObject({ configured: false }); continue; }
       expect({ leaf, value: row.value, updatedBy: row.updatedBy, updatedAt: typeof row.updatedAt }).toEqual({ leaf, value: sampleFor(leaf), updatedBy: 'mem_machine_1', updatedAt: 'number' });
     }
   });

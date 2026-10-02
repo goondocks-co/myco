@@ -18,7 +18,7 @@ import { HELD_STATES, type HeldState } from '@goondocks/myco-shared/member-proto
 import { createNamedProject } from '../ingest/projects.js';
 import { MAX_REMOTE_CHARS, normalizeRemote, resolveRepository } from '../core/remotes.js';
 import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
-import { leafValues, ROOT_KEY } from '../core/settings.js';
+import { settingTexts, ROOT_KEY } from '../core/settings.js';
 import { clearUncapturedStatement, heldUncapturedStatement, isUncapturedReason, recordUncapturedStatement, type UncapturedReason } from '../ingest/uncaptured.js';
 import { isLiveAdmin } from '../auth/members-admin.js';
 import { listVisibleProjects, ok, parseJsonObject } from './scope.js';
@@ -61,7 +61,7 @@ const LABEL = /^[^/\\\p{Cc}]{1,128}$/u;
 
 /** Whether this Deployment lets a member's machine create projects; on unless an admin turned it off. */
 export async function autoCreateProjects(db: RelationalStore): Promise<boolean> {
-  return (await leafValues(db, [AUTO_CREATE_LEAF])).get(AUTO_CREATE_LEAF) !== JSON.stringify(false);
+  return (await settingTexts(db, [AUTO_CREATE_LEAF])).get(AUTO_CREATE_LEAF) !== JSON.stringify(false);
 }
 
 /** Whether `memberId` may create a project from a machine: an admin always, any other member while the switch is on. */

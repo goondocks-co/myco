@@ -14,7 +14,7 @@ import type { RelationalStore } from './adapters.js';
 import { HELD_BY_WORDS, type CapabilityHold, type HeldBy } from '@goondocks/myco-shared/run-holds';
 
 export { HELD_BY_WORDS, heldByWords, type HeldBy } from '@goondocks/myco-shared/run-holds';
-import { leafValues } from './settings.js';
+import { settingTexts } from './settings.js';
 
 
 /** The holds that describe the Deployment rather than one task: a run behind any of them is behind every later run too. */
@@ -49,7 +49,7 @@ const positiveInt = (value: string | undefined): number | null => {
 
 /** The limits as set: the owner's three from their leaves, the fleet from what the operator deployed. */
 export async function readDispatchLimits(env: { db: RelationalStore; fleet?: number }): Promise<DispatchLimits> {
-  const byLeaf = await leafValues(env.db, Object.values(LIMIT_LEAVES));
+  const byLeaf = await settingTexts(env.db, Object.values(LIMIT_LEAVES));
   return {
     concurrent_runs: positiveInt(byLeaf.get(LIMIT_LEAVES.concurrent_runs)),
     task_concurrent_runs: positiveInt(byLeaf.get(LIMIT_LEAVES.task_concurrent_runs)),

@@ -129,6 +129,17 @@ describe('a joined member with no 1.4 vault', () => {
     expect(legacyArtifacts()).toEqual([]);
   });
 
+  it('config get says when a stored value is invalid, and what applies meanwhile', async () => {
+    const rig = await memberRig();
+    join(rig);
+    leaf(rig, 'agent.limits.concurrent_runs', 2.5);
+    const one = await verb('config', ['get', 'agent.limits.concurrent_runs'], rig.fetch);
+    expect(one.answered).toBe(true);
+    expect(one.stdout.split('\n')).toEqual(['2.5', '(invalid: Expected a whole number. No limit applies until it is corrected or reset.)']);
+    const all = await verb('config', ['get'], rig.fetch);
+    expect(all.stdout).toContain('agent.limits.concurrent_runs = 2.5  (invalid: Expected a whole number. No limit applies until it is corrected or reset.)');
+  });
+
   it('config refuses a Member leaf on get and set, and a Deployment write, and writes nothing', async () => {
     const rig = await memberRig();
     join(rig);

@@ -5,8 +5,7 @@ import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { latestMeasurements, type MeasurementName, type StoreMeasurement } from '../core/store-maintenance.js';
 import { storedBytes } from '../ingest/live-credential.js';
-import { transcriptRetentionDays } from '../ingest/retention.js';
-import { leafValues } from '../core/settings.js';
+import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention.js';
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
@@ -135,23 +134,7 @@ async function storageFacts(env: ServerEnv): Promise<StorageFact[]> {
   ];
 }
 
-/**
- * How long the Deployment keeps a transcript's raw bytes once they are processed, as `retention.transcripts` says:
- * `forever` when no window is set or it is set to 0, `days` for a window, `unavailable` when the stored value does not
- * read — the retention job then prunes nothing. `configured` says whether an owner wrote the leaf. Only processed raw
- * bytes are ever pruned; everything derived from them is kept.
- */
-export type RetentionFact =
-  | { state: 'forever'; configured: boolean }
-  | { state: 'days'; days: number; configured: true }
-  | { state: 'unavailable'; reason: string };
-
-async function transcriptRetentionFact(env: ServerEnv): Promise<RetentionFact> {
-  const raw = (await leafValues(env.db, ['retention.transcripts'])).get('retention.transcripts');
-  const window = transcriptRetentionDays(raw);
-  if (window === 'unreadable') return { state: 'unavailable', reason: 'the stored window does not read; nothing is pruned until it is set again' };
-  return window === null ? { state: 'forever', configured: raw !== undefined } : { state: 'days', days: window, configured: true };
-}
+export type { RetentionFact };
 
 /**
  * `POST /members/status`: the Deployment's health as a member credential reads it, over a body that is the empty
@@ -167,7 +150,7 @@ export const handleMemberStatus = emptyBodyRoute(async (env: ServerEnv, ctx: Cre
     target: deploymentTarget(env),
     schema: schemaCheck(await schemaVersion(env.db)),
     stored: stored === null ? { state: 'unavailable', reason: 'no saved access key matches this token' } satisfies ByteFact : bytes(stored),
-    retention: { transcripts: await transcriptRetentionFact(env) },
+    retention: { transcripts: await transcriptRetentionFact(env.db) },
     storage: await storageFacts(env),
   });
 });

@@ -17,15 +17,16 @@ import type { ProjectCapability } from '../../packages/myco-server/src/core/sett
 import type { TitlingBackfillProgress } from '../../packages/myco-server/src/core/titling.ts';
 import type { RepositoryConnection } from '../../packages/myco-server/src/core/repositories.ts';
 import type { ReleaseCheck, ReleaseProvenanceView } from '../../packages/myco-server/src/core/release-provenance.ts';
-import type { TaskTierRow } from '../../packages/myco-server/src/api/settings.ts';
+import type { SettingsLeafRow, TaskTierRow } from '../../packages/myco-server/src/api/settings.ts';
+import type { EmbeddingChoices } from '../../packages/myco-shared/src/settings-contract.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 /** True when what the server sends carries every field the dashboard reads, typed as it reads it. */
 type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 
-/** `GET /api/settings`: one leaf as `deploymentLeaves` builds it. */
-type ServerLeaf = { leaf: string; configured: boolean; value: unknown; updatedAt: number | null; updatedBy: string | null; retired: boolean };
+/** `GET /api/settings`: one leaf as `deploymentSettings` builds it. */
+type ServerLeaf = SettingsLeafRow;
 /** `GET /api/secrets`: each slot named and described, as `handleSecrets` answers. */
 type ServerSecret = { name: string; retired: boolean } & SecretDescription;
 
@@ -38,7 +39,7 @@ const SAME: [
 ] = [true, true, true, true, true];
 
 const READS: [
-  Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[] }, Settings.SettingsAnswer>,
+  Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices }, Settings.SettingsAnswer>,
   Reads<{ secrets: ServerSecret[] }, Settings.SecretsAnswer>,
   Reads<TitlingBackfillProgress, Settings.TitlingBackfillProgress>,
   Reads<{ capabilities: Record<ProjectCapability, boolean> }, Project.CapabilitiesAnswer>,

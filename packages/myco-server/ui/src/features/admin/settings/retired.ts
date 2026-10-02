@@ -8,7 +8,7 @@ import type { LeafRow } from './wire';
  * with Myco's own value) is shown whatever the leaf, since the page reads that
  * value from the shared constant, not from the leaf.
  */
-export function isRetired(field: LeafField, row: LeafRow | undefined): boolean {
+export function isRetired(field: LeafField, row: Pick<LeafRow, 'retired'> | undefined): boolean {
   const entry = LEAF_DEFAULTS[field.leaf];
   const keptByMyco = field.readOnly === true && entry !== undefined && 'value' in entry;
   return row?.retired === true && !keptByMyco;

@@ -57,7 +57,15 @@ export interface SettingsLeaf {
   value: unknown;
   updatedAt: number | null;
   updatedBy: string | null;
+  /** Where the leaf stands on the Deployment, and why, where the Deployment says. */
+  state?: string;
+  reason?: string | null;
+  retired?: boolean;
 }
+
+/** The words a stored value the Deployment does not use carries beside it, or nothing. */
+const standing = (l: SettingsLeaf): string =>
+  l.configured && l.retired !== true && (l.state === 'invalid' || l.state === 'not-applicable') ? `  (${l.state === 'invalid' ? 'invalid' : 'not used here'}: ${l.reason ?? 'the Deployment does not use it'})` : '';
 
 const notHonoured = (leaf: string): string =>
   `${leaf} is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE}); nothing is written for a joined project`;
@@ -127,11 +135,12 @@ export async function run(args: readonly string[], source: CredentialSource, dep
       return false;
     }
     out(found.configured ? render(found.value) : '(not set; the Deployment default applies)');
+    if (standing(found) !== '') out(standing(found).trim());
     return true;
   }
 
   out(`=== Deployment Settings (${deployment.serverUrl}) ===`);
-  for (const l of leaves) out(`${l.leaf} = ${l.configured ? JSON.stringify(l.value) : '(default)'}`);
+  for (const l of leaves) out(`${l.leaf} = ${l.configured ? JSON.stringify(l.value) : '(default)'}${standing(l)}`);
   out('');
   out(`=== Machine Settings (this machine; set in ${machineSettingsAt(deployment.serverUrl)}) ===`);
   for (const machineLeaf of MACHINE_SETTING_LEAVES) out(`  ${machineLeaf} = ${machine === null ? '(no machine of its own)' : JSON.stringify(machine.leaves[machineLeaf] ?? [])}`);

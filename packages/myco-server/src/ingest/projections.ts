@@ -4,8 +4,7 @@ import { blobFields, promptReferenceFields, type KindSpec, type Payload } from '
 import { emit, refusal, type Refusal } from '../telemetry.js';
 import { PROJECT_ARCHIVED } from './projects.js';
 import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
-import { IMPORT_DISABLED, IMPORT_ENABLED_LEAF, LEAF_OFF } from '../core/import-policy.js';
-import { leafOffChecks } from '../core/settings.js';
+import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 
@@ -149,7 +148,7 @@ const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
  * read one stored value differently.
  */
 const importEnabled = (): SharedCheck => ({
-  ...leafOffChecks(IMPORT_ENABLED_LEAF, LEAF_OFF),
+  ...importEnabledChecks(),
   refusal: (row) => (row === undefined ? null : IMPORT_DISABLED),
 });
 
