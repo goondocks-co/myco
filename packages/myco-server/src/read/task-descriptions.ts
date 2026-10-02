@@ -30,11 +30,16 @@ export interface TaskDescription {
   tier: ReasoningTier | null;
   profiles: readonly { harness: string; model: string | null; effort: string | null; note: string | null }[];
   availabilityNote: string | null;
+  /** A person may start it by hand from Run a task. */
+  startable: boolean;
   profileNote: string | null;
   promptTemplate: string | null;
   standingRules: string | null;
   templateVariants: readonly { name: string; prompt: string }[];
 }
+
+/** Whether a person may start the task by hand from Run a task: every worker-served task but titling, which a person asks for one session at a time. */
+export const startableByHand = (task: string): boolean => (RETAINED_TASKS as readonly string[]).includes(task) && !RUNTIME_SERVED_TASKS.includes(task) && task !== TITLING_TASK;
 
 /** The launch builder owns its template; runtime tasks carry no server-built prompt. */
 export function taskTemplate(task: string, patterns: readonly string[]): TaskTemplate {
@@ -131,7 +136,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
         ...(schedule.runWhenCold === true ? [] : [`Waits if the project has been quiet for more than ${leaves.coldThresholdDays} days.`])]),
     ];
     if (task === TITLING_TASK) triggers.push('After a session ends and its material is ready.', 'When a person asks for a fresh session title.', ...scheduleWords(scheduleFor(task, TITLING_BACKFILL_SCHEDULE, leaves.overrides), leaves.enabled).map((line) => `Untitled past sessions: ${line}`));
-    else if (!RUNTIME_SERVED_TASKS.includes(task)) triggers.push('When a person chooses Run a task.');
+    else if (startableByHand(task)) triggers.push('When a person chooses Run a task.');
     else if (task === 'embedding-reconcile') {
       const job = SERVER_JOBS.find((job) => job.name === task);
       if (job === undefined) throw new Error(`No upkeep job for ${task}`);
@@ -141,7 +146,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
     const allowlist = runAllowlist(TASK_TOOLS[task], { dryRun: false });
     const tools = runtimeServed ? [] : [...new Set([...allowlist].flatMap(([tool, ops]) => [...ops].map((op) => callWords(tool, op))))];
     return {
-      task, ...words, triggers, tools, done: close.description,
+      task, ...words, triggers, tools, done: close.description, startable: startableByHand(task),
       availabilityNote: availability.get(task) ?? null,
       budget: runtimeServed ? null : { timeoutSeconds: runTimeoutForTask(task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS, readWindow: readWindowFor(task) },
       ...descriptionProfile(task, settings), ...taskTemplate(task, [...mapSettings.defaultPatterns, ...mapSettings.userPatterns]),

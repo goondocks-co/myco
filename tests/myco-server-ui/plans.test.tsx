@@ -276,6 +276,13 @@ describe('a plan’s page', () => {
     server(base({ [PLAN]: () => onePlan(), [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer }));
     mount(`/p/${MYCO}/plans/${KEY}?session=s1`);
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Myco’s work as outcomes');
+    // The page names its project in the scope switcher beside its breadcrumbs, and offers no "All projects": it belongs to one.
+    const scope = screen.getByRole('button', { name: 'Showing: Myco' });
+    fireEvent.keyDown(scope, { key: 'Enter' });
+    const scopes = await screen.findByRole('menu', { name: /^Showing: / });
+    expect(scopes.querySelector('[data-scope-option="all"]')).toBeNull();
+    expect(scopes.querySelector('[data-scope-all-reason]')!.textContent).toBe('This page belongs to one project.');
+    fireEvent.keyDown(scopes, { key: 'Escape' });
   });
 
   it('says not found for a plan the project does not hold', async () => {

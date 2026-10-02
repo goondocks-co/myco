@@ -360,3 +360,43 @@ export function failureDetail(failure: WorkRun['failure'] | undefined): string |
   if (failure == null || (failure.source === 'report' && failure.code == null)) return null;
   return [failure.error, failure.cause].filter((text): text is string => typeof text === 'string' && text.trim() !== '').join('\n') || null;
 }
+
+/** What a task's own condition for running says about a run started now, met or not, by the condition's name. */
+const READINESS_WORDS: Readonly<Record<string, { met: string; unmet: string }>> = {
+  'has-unprocessed-prompts': {
+    met: 'There are new sessions to learn from.',
+    unmet: 'There are no new sessions to learn from, so it will likely find nothing new to keep.',
+  },
+  'has-capture-since-map': {
+    met: 'New sessions have arrived since the code map was last updated.',
+    unmet: 'The code map is current: no new sessions have arrived since it was last updated, so it will likely change nothing.',
+  },
+  'has-recent-live-prompts': {
+    met: 'A recent session has prompts nobody has learned from yet.',
+    unmet: 'No recent session has prompts left to learn from.',
+  },
+};
+
+/** A task's readiness in words, or null for a condition the page has no words for. */
+export function readinessWords(readiness: { condition: string; met: boolean }): string | null {
+  const words = READINESS_WORDS[readiness.condition];
+  return words === undefined ? null : readiness.met ? words.met : words.unmet;
+}
+
+/** "Claude Code with Sonnet at medium effort, its default tier." */
+export function executionWords(execution: { harness: string; tier: string; model: string; effort: string | null }, label: (harness: string) => string, model: (id: string) => string): string {
+  return `${label(execution.harness)} with ${model(execution.model)}${execution.effort === null ? '' : ` at ${execution.effort} effort`}, its ${execution.tier} tier`;
+}
+
+/** Why a run started now would wait for a worker, from what the server says would hold it and how many workers it has heard from lately. */
+export function waitWords(heldBy: string, workers: number): string {
+  if (workers === 0) return 'No machine running Myco’s worker has checked in lately, so it would wait until one does.';
+  return `It would wait: ${heldByWords(heldBy) ?? 'for a worker that can take it'}.`;
+}
+
+/** How many more runs of a task a member may start today, or null once they may start none. */
+export function allowanceWords(allowance: { perDay: number; used: number }): string | null {
+  const left = allowance.perDay - allowance.used;
+  if (allowance.perDay <= 0 || left <= 0) return null;
+  return `You can start it ${times(left)} more today.`;
+}

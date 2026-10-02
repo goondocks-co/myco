@@ -20,8 +20,10 @@ import {
 } from './OutcomeCard';
 import { ModelSummary } from './ModelSummary';
 import { RunPanel } from './RunPanel';
-import { RunTaskConfirm, RunTaskMenu, STARTABLE_TASKS } from './RunTask';
-import type { DispatchAnswer, RunPageRow } from './wire';
+import { RunTaskConfirm, RunTaskMenu, StartedLine, type StartedRun } from './RunTask';
+import type { RunPageRow } from './wire';
+import { workBounds } from './window';
+import { PageScope } from '../../routes/scope';
 import {
   atWords, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
@@ -46,23 +48,7 @@ const OUTCOME_FILTER: FilterDefinition = {
 const SHOWN = 3;
 const RUNS_SHOWN = 5;
 
-function startOfDay(at: number): number {
-  const date = new Date(at);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-}
-
-function addDays(at: number, days: number): number {
-  const date = new Date(at);
-  date.setDate(date.getDate() + days);
-  return date.getTime();
-}
-
-/** A window's bounds on day boundaries, so they hold still while the day lasts: today, or the past seven days with today. */
-export function workBounds(window: WorkWindow, now: number): { since: number; until: number } {
-  const today = startOfDay(now);
-  return { since: window === 'today' ? today : addDays(today, -6), until: addDays(today, 1) };
-}
+export { workBounds };
 
 export interface WorkPageProps {
   /** The project the page is narrowed to, or null for every project. */
@@ -93,7 +79,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const week = useWorkWhileRunning({ projectId, ...workBounds('week', now) }, { enabled: projectId !== null });
   const live = workHasLiveRun(work.data);
   const [asking, setAsking] = useState<string | null>(null);
-  const [started, setStarted] = useState<{ task: string; answer: DispatchAnswer } | null>(null);
+  const [started, setStarted] = useState<StartedRun | null>(null);
   const name = projectId === null ? null : projectName(projectId) ?? 'this project';
   const q = filters.query.trim().toLowerCase();
   const matches = (text: string) => q === '' || text.toLowerCase().includes(q);
@@ -108,17 +94,18 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
     <div className="flex w-full flex-col gap-s5" data-work="">
       <header className="flex flex-wrap items-start justify-between gap-x-s4 gap-y-s3">
         <div className="flex min-w-0 flex-col gap-s2">
-          <h1 className="t-display text-ink">Myco’s work</h1>
-          <p className="max-w-measure t-body text-muted">
-            What Myco did in the background{name === null ? ', across every project' : ` in ${name}`}, grouped by what came of it.
-          </p>
+          <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
+            <h1 className="t-display text-ink">Myco’s work</h1>
+            <PageScope />
+          </div>
+          <p className="max-w-measure t-body text-muted">What Myco did in the background, grouped by what came of it.</p>
         </div>
         <div className="flex flex-wrap items-center gap-s3">
           <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>Tasks</OnwardLink>
-          {projectId !== null && <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />}
+          <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />
         </div>
       </header>
-      {started !== null && projectId !== null && <StartedLine started={started} projectId={projectId} />}
+      {started !== null && <StartedLine started={started} />}
       <FilterBar
         searchLabel="Search what Myco did"
         placeholder="Search what’s on this page"
@@ -162,7 +149,6 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
                 now={now}
                 matches={matches}
                 searching={q !== ''}
-                onUpdateMap={projectId === null ? null : () => { setStarted(null); setAsking(KIND_TASKS.map); }}
               />
             ))
           )}
@@ -173,46 +159,18 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           <WhenCard projectId={projectId} name={name} admin={admin} />
         </aside>
       </div>
-      {projectId !== null && (
-        <RunTaskConfirm
-          projectId={projectId}
-          projectName={name ?? 'this project'}
-          task={asking}
-          onOpenChange={(open) => { if (!open) setAsking(null); }}
-          week={week.data?.outcomes}
-          admin={admin}
-          now={now}
-          onStarted={(task, answer) => setStarted({ task, answer })}
-        />
-      )}
+      <RunTaskConfirm
+        projectId={projectId}
+        task={asking}
+        onOpenChange={(open) => { if (!open) setAsking(null); }}
+        admin={admin}
+        now={now}
+        onStarted={setStarted}
+      />
       {projectId !== null && runId !== null && (
         <RunPanel projectId={projectId} runId={runId} projectName={name ?? 'this project'} now={now} onClose={closeRun} />
       )}
     </div>
-  );
-}
-
-const STARTED_NOUN: Readonly<Record<string, string>> = {
-  'extract-curate': 'Learning',
-  'canopy-map': 'The code map update',
-  'vault-seed': 'Learning from the code',
-};
-
-/** What happened to a task just started: queued, started, or not needed. */
-function StartedLine({ started, projectId }: { started: { task: string; answer: DispatchAnswer }; projectId: string }) {
-  const { answer } = started;
-  const noun = STARTED_NOUN[started.task] ?? STARTABLE_TASKS.find((entry) => entry.task === started.task)?.label ?? 'The task';
-  return (
-    <p role="status" className="flex flex-wrap items-baseline gap-x-s3 gap-y-s1 rounded-control border border-line bg-ok-bg px-s3 py-s2 t-small text-ink-2" data-started="">
-      {'outcome' in answer
-        ? <span>Nothing has changed since the last run, so Myco didn’t start one and spent nothing.</span>
-        : (
-          <>
-            <span>{answer.queued ? `${noun} is queued. It starts on the next free machine.` : `${noun} has started.`}</span>
-            <OnwardLink to={runPath(projectId, answer.runId)}>Open the run</OnwardLink>
-          </>
-        )}
-    </p>
   );
 }
 
@@ -261,11 +219,10 @@ interface KindCardProps {
   now: number;
   matches: (text: string) => boolean;
   searching: boolean;
-  onUpdateMap: (() => void) | null;
 }
 
 /** One kind of work: its outcome, its evidence, its latest runs, and any failure. */
-function KindCard({ summary, answer, projectId, projectName, window, bounds, live, now, matches, searching, onUpdateMap }: KindCardProps) {
+function KindCard({ summary, answer, projectId, projectName, window, bounds, live, now, matches, searching }: KindCardProps) {
   const location = useLocation();
   const [params] = useSearchParams();
   const name = useStarterNames();
@@ -298,7 +255,6 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
       headline={headline}
       failed={failed}
       meta={metaOf(summary, projectId === null, now)}
-      action={kind === 'map' && onUpdateMap !== null ? <Button size="sm" onClick={onUpdateMap}>Update now</Button> : undefined}
     >
       <Evidence summary={summary} answer={answer} projectId={projectId} bounds={bounds} window={window} now={now} matches={whole ? () => true : matches} />
       {(lines.length > 0 || loading || projectId !== null) && (
@@ -526,9 +482,7 @@ function WhenCard({ projectId, name, admin }: { projectId: string | null; name: 
       <h2 className="t-h3 text-ink">When Myco runs</h2>
       <p className="t-small text-muted">Work runs on your machines, on an agent that is signed in there.</p>
       <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>See each task’s schedule and instructions</OnwardLink>
-      {projectId === null
-        ? <p className="t-small text-muted">To start a task by hand, pick a project in the nav.</p>
-        : admin && <OnwardLink to={`${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`}>Change what Myco does in {name}</OnwardLink>}
+      {projectId !== null && admin && <OnwardLink to={`${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`}>Change what Myco does in {name}</OnwardLink>}
     </Card>
   );
 }

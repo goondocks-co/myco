@@ -360,7 +360,7 @@ test.describe('Today', () => {
       await expect(timeline(page).locator(':scope > li').first()).toBeInViewport();
       await expect(page.locator('[data-lede]')).toContainText('Myco learned 6 spores.');
       await expect(page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Today' })).toHaveAttribute('aria-current', 'page');
-      await expect(page.locator(`[data-project-filter-item][aria-current="true"]`)).toContainText(project.name);
+      await expect(page.locator('main [data-scope-current]')).toHaveText(project.name);
       await page.waitForLoadState('networkidle');
       await expectFits(page, 'desktop');
       await expectNoRawIds(page);

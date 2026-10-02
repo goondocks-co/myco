@@ -195,10 +195,14 @@ test.describe('Myco’s work', () => {
         await page.getByRole('button', { name: 'Run a task' }).click();
         const menu = page.getByRole('menu');
         await expect(menu.getByRole('menuitem')).toHaveCount(3);
+        // One way to start the map: the menu. The map's card carries no button of its own.
+        await expect(card(page, 'map').getByRole('button', { name: 'Update now' })).toHaveCount(0);
         await expectAxeClean(page, ['[role="menu"]']);
         await menu.getByRole('menuitem', { name: /Update the code map now/ }).click();
         const dialog = page.getByRole('dialog', { name: 'Update the code map now?' });
         await expect(dialog).toBeVisible();
+        // Where it would run, as the server resolves it now, or what it would wait for.
+        await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|It would wait: .+|No machine running Myco’s worker has checked in lately.+)$/);
         await expect(dialog.locator('[data-spend]')).toContainText('This spends model tokens.');
         if (onFixture()) await expect(dialog.locator('[data-spend]')).toContainText('This week’s updates each used 24K tokens, about $0.48 by the agent’s estimate.');
         // Only an admin may start a task fresh; a member never sees the choice.
@@ -222,10 +226,18 @@ test.describe('Myco’s work', () => {
       const { context, page, watch } = await openPage(browser, { path: '/work', viewport, mode, cookie: screensEnv('ownerCookie') });
       try {
         await expect(page.getByRole('heading', { level: 1, name: 'Myco’s work' })).toBeInViewport();
-        await expect(page.getByText('What Myco did in the background, across every project')).toBeVisible();
-        // A task is started in one project: across every project there is no menu, and the rail says how to pick one.
-        await expect(page.getByRole('button', { name: 'Run a task' })).toHaveCount(0);
-        await expect(page.locator('[data-when]')).toContainText('To start a task by hand, pick a project in the nav.');
+        await expect(page.getByText('What Myco did in the background, grouped by what came of it.')).toBeVisible();
+        await expect(page.locator('main [data-scope-current]')).toHaveText('All projects');
+        // The same menu as under a project: a task started here asks which project first.
+        await page.getByRole('button', { name: 'Run a task' }).click();
+        await page.getByRole('menu').getByRole('menuitem', { name: /Learn from new sessions now/ }).click();
+        const dialog = page.getByRole('dialog', { name: 'Learn from new sessions now?' });
+        await expect(dialog.locator('[data-run-task-project]')).toContainText('Which project?');
+        await expect(dialog.getByRole('button', { name: 'Learn now' })).toBeDisabled();
+        await expectAxeClean(page, ['[role="dialog"]']);
+        await shoot(page, 'work-all-run-a-task', viewport, mode);
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        await expect(dialog).toHaveCount(0);
         if (onFixture()) {
           await expect(page.locator('[data-lede]')).toContainText('This week, Myco learned 6 spores');
           await expect(card(page, 'learn').getByRole('list', { name: 'Latest learning runs' })).toContainText(fixtureProject().name);

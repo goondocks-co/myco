@@ -995,18 +995,64 @@ async function recordProfileHolds(env: ServerEnv, worker: { tokenId: string; har
       await recordTaskHolder(env.db, [task], ['worker', ...CAPABILITY_HOLDS], tierRefusal, true);
       continue;
     }
-    const required = capabilitiesRequiredBy(task);
-    const reasons: string[] = [];
-    let served = false;
-    for (const report of reports) {
-      if (!required.every((capability) => report.capabilities.includes(capability))) continue;
-      const result = await selectWorkerExecution(env, task, report.offers, settings);
-      if (result.selected !== null) { served = true; break; }
-      if (result.reason !== null) reasons.push(result.reason);
-    }
-    const holder = served ? 'worker' : reasons.sort()[0] ?? 'worker';
+    const { holder } = await fleetExecution(env, task, reports, settings);
     await recordTaskHolder(env.db, [task], ['worker'], holder, true);
   }
+}
+
+/** One worker's latest report: the agents it offers and the capabilities it carries. */
+export interface FleetReport { offers: readonly OfferedHarness[]; capabilities: readonly string[] }
+
+/**
+ * What `reports` would run `task` under at a claim now: the execution the first
+ * report able to take it resolves, else null with the holder a queued run of it
+ * waits under, the alphabetically first refusal among the reports that carry
+ * the task's capabilities, or the ordinary wait for a worker when none refused.
+ */
+export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; holder: string }> {
+  const tierRefusal = taskTierRefusal(task, settings);
+  if (tierRefusal !== null) return { selected: null, holder: tierRefusal };
+  const required = capabilitiesRequiredBy(task);
+  const reasons: string[] = [];
+  for (const report of reports) {
+    if (!required.every((capability) => report.capabilities.includes(capability))) continue;
+    const result = await selectWorkerExecution(env, task, report.offers, settings);
+    if (result.selected !== null) return { selected: result.selected, holder: 'worker' };
+    if (result.reason !== null) reasons.push(result.reason);
+  }
+  return { selected: null, holder: reasons.sort()[0] ?? 'worker' };
+}
+
+/** What a run of `task` started now would run under, or what it would wait for, judged by the workers heard from lately. */
+export interface ExecutionPreview {
+  /** The agent and profile the first able worker would run it with, or null when none could take it now. */
+  execution: { harness: string; profile: ExecutionProfile } | null;
+  /** What a queued run of it would wait under while no worker can take it, in the holder vocabulary of `run-holds`; null when one can. */
+  heldBy: string | null;
+  /** How many workers have been heard from lately. */
+  workers: number;
+}
+
+/**
+ * The execution a claim would resolve for `task` right now, through the same
+ * selection a claim and the profile holds run: the worker capability a
+ * repository task needs and no recent worker reports, then each recent report's
+ * agents in preference order under the current Settings.
+ */
+export async function previewExecution(env: ServerEnv, task: string, now: number): Promise<ExecutionPreview> {
+  const [settings, reports] = await Promise.all([claimSettings(env), recentWorkerReports(env.db, now)]);
+  const tierRefusal = taskTierRefusal(task, settings);
+  if (tierRefusal !== null) return { execution: null, heldBy: tierRefusal, workers: reports.length };
+  if (reports.length === 0) return { execution: null, heldBy: 'worker', workers: 0 };
+  const required = capabilitiesRequiredBy(task);
+  if (!reports.some((report) => required.every((capability) => report.capabilities.includes(capability)))) {
+    const missing = CAPABILITY_HOLDS.find((hold) => required.includes(hold) && !reports.some((report) => report.capabilities.includes(hold)));
+    return { execution: null, heldBy: missing ?? 'worker', workers: reports.length };
+  }
+  const { selected, holder } = await fleetExecution(env, task, reports, settings);
+  return selected === null
+    ? { execution: null, heldBy: holder, workers: reports.length }
+    : { execution: { harness: selected.harness, profile: selected.profile }, heldBy: null, workers: reports.length };
 }
 
 /**

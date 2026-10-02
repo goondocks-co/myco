@@ -48,6 +48,6 @@ export { AppShell, BottomBar, useShellMenu, COMPACT_QUERY, PHONE_QUERY, type App
 export {
   Sidebar, NavItem, NavGroup, NavSection, SearchTrigger, Brand, type SidebarProps, type NavItemProps, type NavGroupProps, type NavSectionProps,
 } from './shell/Sidebar';
-export { ProjectFilter, recencyOf, shownProjects, PROJECT_FILTER_LIMIT, type ProjectFilterItem, type ProjectFilterProps } from './shell/ProjectFilter';
+export { ScopeSwitcher, recencyOf, type ScopeSwitcherProps, type ScopeProject, type ScopeAll } from './shell/ScopeSwitcher';
 export { AccountMenu, type AccountMenuProps } from './shell/AccountMenu';
 export { SearchCommand, useSearchShortcut, type SearchCommandProps } from './shell/SearchCommand';

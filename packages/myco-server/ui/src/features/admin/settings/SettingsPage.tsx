@@ -51,6 +51,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
   return (
     <AdminPage
       name={`settings-${section}`}
+      scope="server"
       title="Settings"
       lede="What this server holds for every member. Each change saves as you make it and says who made it."
     >

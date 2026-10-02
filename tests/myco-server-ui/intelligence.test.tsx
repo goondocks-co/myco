@@ -24,6 +24,7 @@ import {
   ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, WEEK_SPORES, WEEK_WORK,
 } from '../helpers/work-fixture';
 import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/today/wire';
+import type { TaskStartPreview } from '../../packages/myco-server/ui/src/features/tasks/wire';
 import { ModelSummary } from '../../packages/myco-server/ui/src/features/work/ModelSummary';
 import { RunPanel } from '../../packages/myco-server/ui/src/features/work/RunPanel';
 import { RUN_TOOL_MAP } from '../../packages/myco-server/src/mcp/run-surface';
@@ -68,7 +69,14 @@ const READ_AND_WROTE = runDetail(learning[2]!, {
   reports: [{ action: 'summary', details: null, summary: 'Saved 4 spores from 1 session.', createdAt: NOW - 5 * HOUR }],
 });
 
-const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; work?: WorkAnswer; capabilities?: Record<string, boolean>; dispatch?: Endpoint } = {}): Record<string, Endpoint> => ({
+/** What the server previews for a task started now: Claude Code would take it, and a member has three of four runs left today. */
+const preview = (url: URL, over: Partial<TaskStartPreview> = {}): TaskStartPreview => ({
+  task: url.searchParams.get('task')!, projectId: url.searchParams.get('project')!,
+  execution: { harness: 'claude-code', tier: 'default', model: 'sonnet', effort: 'medium' }, heldBy: null, workers: 1,
+  readiness: null, live: false, capability: null, allowance: null, ...over,
+});
+
+const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; work?: WorkAnswer; capabilities?: Record<string, boolean>; dispatch?: Endpoint; start?: Partial<TaskStartPreview> } = {}): Record<string, Endpoint> => ({
   '/auth/me': () => Response.json(over.who ?? ADMIN),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
@@ -84,6 +92,7 @@ const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; 
   [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json(READ_AND_WROTE),
   ...Object.fromEntries(Object.entries(over.detail ?? {}).map(([path, answer]) => [path, () => answer()])),
   '/api/harness/dispatch': over.dispatch ?? (() => Response.json({ runId: 'run_new0000001', projectId: P, queued: true })),
+  '/api/tasks/start': (url) => Response.json(preview(url, { allowance: (over.who ?? ADMIN) === MEMBER ? { perDay: 4, used: 1, resetsAt: null } : null, ...over.start })),
 });
 
 function Location() {
@@ -283,14 +292,18 @@ describe('running a task by hand', () => {
     fireEvent.click(within(menu).getByRole('menuitem', { name: /Update the code map now/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
     expect(dialog.textContent).toContain(TASK_DESCRIPTIONS.find((task) => task.task === 'canopy-map')!.description);
-    expect(dialog.textContent).toContain('It runs on the first free machine that has an agent signed in. Recent ones took 4 to 10 minutes.');
+    // The agent and model come from the server's own resolution, never worked out on the page.
+    await waitFor(() => expect(dialog.querySelector('[data-run-on]')!.textContent).toBe('It will run on Claude Code with Sonnet at medium effort, its default tier, on the first free machine that has it signed in. Recent ones took 4 to 10 minutes.'));
+    expect(asked.some((url) => url.pathname === '/api/tasks/start' && url.searchParams.get('project') === P && url.searchParams.get('task') === 'canopy-map')).toBe(true);
+    expect(dialog.querySelector('[data-allowance]')!.textContent).toBe('You can start it 3 times more today.');
     expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. This week’s updates each used 500K to 2 million tokens, about $1.00 to $2.30 by the agent’s estimate.');
     expect(within(dialog).queryByRole('switch', { name: 'Start fresh' })).toBeNull();
     const reads = asked.filter((url) => url.pathname === '/api/work').length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
     await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'canopy-map' } }]));
     const started = await waitFor(() => { const line = document.querySelector('[data-started]'); if (line === null) throw new Error('not yet'); return line as HTMLElement; });
-    expect(started.textContent).toBe('The code map update is queued. It starts on the next free machine.Open the run →');
+    expect(started.textContent).toBe('The code map update is queued. It is waiting for a worker to claim it.Open the run →');
+    expect(started.getAttribute('data-started')).toBe('queued');
     expect(within(started).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_new0000001`);
     expect(screen.queryByRole('dialog')).toBeNull();
     // The page asks again, so the new run shows and the page follows it while it waits.
@@ -324,11 +337,13 @@ describe('running a task by hand', () => {
     await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'extract-curate', fresh: true } }]));
   });
 
-  it('starts from the code map card’s "Update now" too, and says when nothing had changed', async () => {
+  it('has one way to start the map: the menu, not a button on its card; and says when nothing had changed', async () => {
     server(routes({ dispatch: () => Response.json({ outcome: 'unchanged' }) }));
     mount(`/p/${P}/work`);
-    fireEvent.click(await screen.findByRole('button', { name: 'Update now' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
+    await waitFor(() => expect(document.querySelector('article[data-outcome="map"]')).not.toBeNull());
+    expect(screen.queryByRole('button', { name: 'Update now' })).toBeNull();
+    const dialog = await startFromMenu(/Update the code map now/);
+    expect(dialog.getAttribute('data-run-task-confirm')).toBe('canopy-map');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
     expect((await screen.findByText('Nothing has changed since the last run, so Myco didn’t start one and spent nothing.')).closest('[data-started]')).not.toBeNull();
     expect(screen.queryByRole('link', { name: 'Open the run →' })).toBeNull();
@@ -393,13 +408,87 @@ describe('running a task by hand', () => {
     expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. No runs over the code finished this week, so there’s no recent spend to go by.');
   });
 
-  it('never shows a menu when the page spans every project', async () => {
-    server(routes());
+  it('offers the same menu across every project, asking which project first, and starts it there', async () => {
+    const { sent, asked } = server(routes());
     mount('/work');
-    await screen.findByRole('heading', { level: 1, name: 'Myco’s work' });
     await waitFor(() => expect(document.querySelector('article[data-outcome]')).not.toBeNull());
-    expect(screen.queryByRole('button', { name: 'Run a task' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Update now' })).toBeNull();
+    const dialog = await startFromMenu(/Update the code map now/);
+    expect(dialog.querySelector('[data-run-task-project]')!.textContent).toContain('Which project?');
+    const confirm = within(dialog).getByRole('button', { name: 'Update the code map' });
+    expect(confirm.hasAttribute('disabled')).toBe(true);
+    expect(asked.some((url) => url.pathname === '/api/tasks/start')).toBe(false);
+    // The project is chosen from the same list the page's scope switcher shows.
+    fireEvent.keyDown(within(dialog).getByRole('button', { name: 'Project: Choose a project' }), { key: 'Enter' });
+    const list = await screen.findByRole('menu', { name: /^Project: / });
+    // Most recent first, then by name; never "All projects": a task runs in one project.
+    expect([...list.querySelectorAll('[data-scope-option]')].map((option) => option.textContent)).toEqual([expect.stringContaining('Atlas web'), expect.stringContaining('Myco')]);
+    expect(list.querySelector('[data-scope-option="all"]')).toBeNull();
+    fireEvent.click(within(list).getAllByRole('menuitem').find((item) => item.textContent!.startsWith('Myco'))!);
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Project: Myco' })).toBeTruthy());
+    await waitFor(() => expect(dialog.querySelector('[data-run-model]')!.textContent).toBe('Claude Code with Sonnet at medium effort, its default tier'));
+    expect(dialog.getAttribute('aria-describedby')).not.toBeNull();
+    expect(document.getElementById(dialog.getAttribute('aria-describedby')!)!.textContent).toContain('In Myco.');
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'canopy-map' } }]));
+    const started = await waitFor(() => { const line = document.querySelector('[data-started]'); if (line === null) throw new Error('not yet'); return line as HTMLElement; });
+    expect(within(started).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_new0000001`);
+  });
+
+  it('shows what the server says a run would wait for, whether there is anything to do, and one already under way', async () => {
+    server(routes({ start: { execution: null, heldBy: 'no_model_for_tier:claude-code:default', readiness: { condition: 'has-capture-since-map', met: false }, live: true } }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Update the code map now/);
+    const held = await waitFor(() => { const line = dialog.querySelector('[data-run-held]'); if (line === null) throw new Error('not yet'); return line as HTMLElement; });
+    expect(held.getAttribute('data-run-held')).toBe('no_model_for_tier:claude-code:default');
+    expect(held.textContent).toBe('It would wait: waiting for a model for claude-code\'s default tier in Settings. Recent ones took 4 to 10 minutes.');
+    expect(dialog.querySelector('[data-run-model]')).toBeNull();
+    expect(dialog.querySelector('[data-readiness]')!.textContent).toBe('The code map is current: no new sessions have arrived since it was last updated, so it will likely change nothing.');
+    expect(dialog.querySelector('[data-already-live]')!.textContent).toBe('One is already waiting or running in this project.');
+    // A run that would wait can still be started: it queues and says so once it has.
+    expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(false);
+    cleanup();
+    client.clear();
+    server(routes({ start: { execution: null, heldBy: 'worker', workers: 0, readiness: { condition: 'has-unprocessed-prompts', met: true } } }));
+    mount(`/p/${P}/work`);
+    const again = await startFromMenu(/Learn from new sessions now/);
+    await waitFor(() => expect(again.querySelector('[data-run-held]')!.textContent).toContain('No machine running Myco’s worker has checked in lately, so it would wait until one does.'));
+    expect(again.querySelector('[data-readiness]')!.textContent).toBe('There are new sessions to learn from.');
+  });
+
+  it('tells a member whose day of a task is spent, or who may not start it, why, and offers no start', async () => {
+    const resetsAt = NOW + 2.5 * HOUR;
+    const { sent } = server(routes({ who: MEMBER, start: { allowance: { perDay: 2, used: 2, resetsAt } } }));
+    mount(`/p/${P}/work`);
+    let dialog = await startFromMenu(/Learn from new sessions now/);
+    await waitFor(() => expect(dialog.querySelector('[data-allowance="spent"]')!.textContent).toBe('You’ve started this task twice today; you can again at 18:30.'));
+    expect(within(dialog).getByRole('button', { name: 'Learn now' }).hasAttribute('disabled')).toBe(true);
+    cleanup();
+    client.clear();
+    server(routes({ who: MEMBER, start: { allowance: { perDay: 0, used: 0, resetsAt: null } } }));
+    mount(`/p/${P}/work`);
+    dialog = await startFromMenu(/Learn from new sessions now/);
+    await waitFor(() => expect(dialog.querySelector('[data-allowance="spent"]')!.textContent).toBe('Only an admin can start this task on this server.'));
+    expect(within(dialog).getByRole('button', { name: 'Learn now' }).hasAttribute('disabled')).toBe(true);
+    expect(sent).toEqual([]);
+  });
+
+  it('follows a started run: queued says what it waits for, and the line opens its panel', async () => {
+    let status = 'queued';
+    const waiting = () => Response.json(runDetail({ ...mapRuns[0]!, id: 'run_new0000001', status, heldBy: status === 'queued' ? 'repository-checkout' : null, completedAt: null }));
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_new0000001`]: waiting } }));
+    mount(`/p/${P}/work`);
+    const dialog = await startFromMenu(/Update the code map now/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+    const started = await waitFor(() => { const line = document.querySelector('[data-started="queued"]'); if (line === null || !line.textContent!.includes('repository')) throw new Error('not yet'); return line as HTMLElement; });
+    expect(started.textContent).toBe('The code map update is queued. It is waiting for a worker that can read the repository; none heard from lately can.Open the run →');
+    status = 'running';
+    await client.invalidateQueries({ queryKey: ['run', P, 'run_new0000001'] });
+    await waitFor(() => expect(document.querySelector('[data-started]')!.textContent).toBe('The code map update has started.Open the run →'));
+    fireEvent.click(within(document.querySelector('[data-started]') as HTMLElement).getByRole('link', { name: 'Open the run →' }));
+    await waitFor(() => expect(location()).toBe(`/p/${P}/work/runs/run_new0000001`));
+    expect(await panel()).toBeTruthy();
   });
 });
 

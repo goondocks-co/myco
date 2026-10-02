@@ -68,6 +68,7 @@ export function PeoplePage() {
   return (
     <AdminPage
       name="people"
+      scope="server"
       title={INVITE_CONTROLS.page}
       lede="Who is a member of this server, and the machines that write to it. Every change names who made it."
       actions={(

@@ -45,8 +45,9 @@ export function useSecrets() {
   return useQuery({ queryKey: ['secrets'], queryFn: ({ signal }) => fetchJson<SecretsAnswer>('/api/secrets', signal) });
 }
 
-export function useCapabilities(projectId: string) {
+export function useCapabilities(projectId: string, options: { enabled?: boolean } = {}) {
   return useQuery({
+    enabled: options.enabled ?? true,
     queryKey: ['capabilities', projectId],
     queryFn: ({ signal }) => fetchJson<CapabilitiesAnswer>(`/api/projects/${encodeURIComponent(projectId)}/capabilities`, signal),
   });

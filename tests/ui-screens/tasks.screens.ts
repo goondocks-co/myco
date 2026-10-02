@@ -67,6 +67,69 @@ for (const { viewport, mode } of SHOT_MATRIX) {
   });
 }
 
+const ROLES = [
+  { role: 'admin', cookie: 'ownerCookie' },
+  { role: 'member', cookie: 'memberCookie' },
+] as const;
+
+for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATRIX) {
+  test(`Tasks Run now ${role} ${viewport} ${mode}`, async ({ browser }) => {
+    const { context, page, watch } = await openPage(browser, { path: tasksPath(), viewport, mode, cookie: screensEnv(cookie) });
+    const dispatched: string[] = [];
+    page.on('request', (request) => { if (request.url().includes('/api/harness/dispatch')) dispatched.push(request.url()); });
+    try {
+      const project = (JSON.parse(screensEnv('projects')) as Array<{ projectId: string; name: string }>)[0]!;
+      const registry = await page.evaluate(async (path) => (await (await fetch(path)).json()) as TasksAnswer, `/api/tasks?${new URLSearchParams({ project: project.projectId })}`);
+      await expect(page.locator('main [data-scope-current]')).toHaveText(project.name);
+      // Every task a person may start by hand has Run now, and no other task does.
+      for (const task of registry.tasks) {
+        await expect(page.locator(`article[data-task="${task.task}"] [data-run-now]`)).toHaveCount(task.startable ? 1 : 0);
+      }
+      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
+      const learning = registry.tasks.find((task) => task.task === 'extract-curate')!;
+      await page.getByRole('button', { name: `Run now: ${learning.name}` }).click();
+      const dialog = page.getByRole('dialog', { name: 'Learn from new sessions now?' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.locator('[data-run-task-project]')).toHaveCount(0);
+      await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|It would wait: .+|No machine running Myco’s worker has checked in lately.+)$/);
+      await expect(dialog.getByRole('switch', { name: 'Start fresh' })).toHaveCount(role === 'admin' ? 1 : 0);
+      if (role === 'member') await expect(dialog.locator('[data-allowance]')).toBeVisible();
+      await expectFits(page, viewport);
+      await expectNoRawIds(page, '[role="dialog"]');
+      await expectAxeClean(page, ['[role="dialog"]']);
+      await shoot(page, `tasks-run-now-${role}`, viewport, mode, process.env.MYCO_TASKS_SHOTS);
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(dispatched, 'the confirmation was cancelled, so nothing was started').toEqual([]);
+      expectQuiet(watch);
+    } finally { await context.close(); }
+  });
+}
+
+for (const { viewport, mode } of SHOT_MATRIX) {
+  test(`Tasks Run now across every project ${viewport} ${mode}`, async ({ browser }) => {
+    const { context, page, watch } = await openPage(browser, { path: '/work/tasks', viewport, mode, cookie: screensEnv('ownerCookie') });
+    try {
+      await expect(page.locator('main [data-scope-current]')).toHaveText('All projects');
+      await page.locator('article[data-task="canopy-map"] [data-run-now]').click();
+      const dialog = page.getByRole('dialog', { name: 'Update the code map now?' });
+      await expect(dialog.locator('[data-run-task-project]')).toContainText('Which project?');
+      await expect(dialog.getByRole('button', { name: 'Update the code map' })).toBeDisabled();
+      await expectFits(page, viewport);
+      await expectAxeClean(page, ['[role="dialog"]']);
+      await shoot(page, 'tasks-all-run-now', viewport, mode, process.env.MYCO_TASKS_SHOTS);
+      await dialog.getByRole('button', { name: 'Project: Choose a project' }).click();
+      const project = (JSON.parse(screensEnv('projects')) as Array<{ projectId: string; name: string }>)[0]!;
+      await page.getByRole('menu').getByRole('menuitem', { name: new RegExp(`^${project.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`) }).click();
+      await expect(dialog.getByRole('button', { name: `Project: ${project.name}` })).toBeVisible();
+      await expect(dialog.locator('[data-run-on]')).toBeVisible();
+      await shoot(page, 'tasks-all-run-now-picked', viewport, mode, process.env.MYCO_TASKS_SHOTS);
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      expectQuiet(watch);
+    } finally { await context.close(); }
+  });
+}
+
 test('run task names link to their task card', async ({ browser }) => {
   const { context, page, watch } = await openPage(browser, { path: tasksPath().replace('/tasks', '/runs/run_c19f7a0e55'), viewport: 'desktop', mode: 'light', cookie: screensEnv('ownerCookie') });
   try {
