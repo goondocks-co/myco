@@ -1,4 +1,5 @@
 import { resolveUnavailableCost } from './helpers.js';
+import { estimateAnthropicCost } from './anthropic.js';
 import { estimateOpenAICost } from './openai.js';
 import { estimateOpenRouterCost } from './openrouter.js';
 import type { CostProviderResolver, CostResolutionInput } from './types.js';
@@ -18,7 +19,7 @@ const COST_PROVIDERS: readonly CostProviderResolver[] = [
   {
     id: 'anthropic-harness',
     matches: (input) => input.provider?.type === 'anthropic',
-    resolve: async (input) => resolveUnavailableCost(input, 'The machine did not report an Anthropic cost for this run'),
+    resolve: async (input) => estimateAnthropicCost(input.model, input.usage, input.context),
   },
   {
     id: 'generic-configured',

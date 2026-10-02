@@ -70,9 +70,12 @@ export type TurnPhase = (typeof TURN_PHASES)[number];
 /** The features a Deployment's answer names; an absent or empty header names none, and an unknown name is ignored. */
 export function featuresNamed(header: string | null | undefined): MemberFeature[] {
   if (!header) return [];
-  const named = new Set(header.split(',').map((s) => s.trim()));
-  return MEMBER_FEATURES.filter((feature) => named.has(feature));
+  return MEMBER_FEATURES.filter((feature) => featureAdvertised(header, feature));
 }
+
+/** Whether a Deployment advertises a capability in its authenticated response header. */
+export const featureAdvertised = (header: string | null | undefined, feature: string): boolean =>
+  header?.split(',').some((name) => name.trim() === feature) === true;
 
 /** Whether a value names an event kind a member ships. */
 export const isMemberKind = (value: unknown): value is MemberKind =>

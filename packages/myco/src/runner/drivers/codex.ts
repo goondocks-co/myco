@@ -1,3 +1,4 @@
+import { accountingEvents } from '../accounting.js';
 /**
  * Codex, driven natively.
  *
@@ -16,6 +17,8 @@
  * the run's server is a run with no login, and the harness fails its turn on a
  * 401 from the model's API on a machine that is signed in.
  */
+import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
+import { codexLaunchIdentity, codexSessionIdentity } from './codex-session.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -298,6 +301,10 @@ function runConfig(spec: RunSpec, harness: Harness, home: string, probe: Develop
   const machine = (machinePath !== null && existsSync(machinePath)
     ? parse(readFileSync(machinePath, 'utf8'))
     : {}) as Record<string, unknown>;
+  const profile = typeof machine.profile === 'string' ? recordOf(recordOf(machine.profiles)?.[machine.profile]) : null;
+  for (const key of ['model', 'model_provider']) {
+    if (profile?.[key] !== undefined) machine[key] = profile[key];
+  }
   machine.approval_policy = 'never';
   // The run's permission profile is the run's whole sandbox, so the machine's
   // own sandbox settings are dropped rather than left beside it.
@@ -355,14 +362,28 @@ export const codexDriver: Driver = codexDriverWith(SYSTEM_DEVELOPER_DIR_PROBE);
 async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDirProbe, log: (line: string) => void): AsyncIterable<RunEvent> {
   const harness = harnessById('codex')!;
   const home = runHome(spec, harness, probe, log);
+  const configured = parse(readFileSync(join(home, 'config.toml'), 'utf8')) as Record<string, unknown>;
+  const launchEvents = accountingEvents(() => {
+    const identity = codexLaunchIdentity(harness, configured);
+    return identity === null ? [] : [{ kind: 'identity', identity }];
+  });
+  yield* launchEvents;
+  const launched = launchEvents.find((event) => event.kind === 'identity')?.identity ?? null;
   const env = { ...spec.credentialEnv, ...(harness.isolation.kind === 'home' ? { [harness.isolation.env]: home } : {}) };
-  const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', spec.prompt], { cwd: spec.scratchDir, env, signal });
+  const selection = launched === null || launched.status === 'unknown' ? [] : [
+    '-c', `model=${JSON.stringify(launched.primary.model)}`,
+    ...(launched.primary.provider === undefined ? [] : ['-c', `model_provider=${JSON.stringify(launched.primary.provider)}`]),
+  ];
+  const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', ...selection, spec.prompt], { cwd: spec.scratchDir, env, signal });
 
-  let ended = false;
+  let terminal: Extract<RunEvent, { kind: 'ended' }> | null = null;
+  let threadId: string | null = null;
+  let accounting: WorkerUsage | null = null;
   for await (const line of jsonLines(started.lines)) {
     const type = stringOf(line.type);
     if (type === 'thread.started') {
-      yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.thread_id) };
+      threadId = stringOf(line.thread_id);
+      yield { kind: 'started', harness: harness.id, sessionId: threadId };
     } else if (type === 'item.completed') {
       const item = recordOf(line.item);
       const itemType = item === null ? null : stringOf(item.type);
@@ -372,20 +393,22 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
       else if (itemType === 'mcp_tool_call') yield { kind: 'tool_call', name: stringOf(item?.tool) ?? 'mcp', status: toolStatus(stringOf(item?.status)) };
     } else if (type === 'turn.completed') {
       const usage = recordOf(line.usage);
-      yield {
-        kind: 'usage',
+      accounting = {
         inputTokens: usage === null ? null : numberOf(usage.input_tokens),
         outputTokens: usage === null ? null : numberOf(usage.output_tokens),
         cachedTokens: usage === null ? null : numberOf(usage.cached_input_tokens),
         costUsd: null,
       };
-      ended = true;
-      yield { kind: 'ended', stop: 'end_turn', detail: null };
+      terminal = { kind: 'ended', stop: 'end_turn', detail: null };
     } else if (type === 'turn.failed') {
-      ended = true;
-      yield { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
+      terminal = { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
     }
   }
   const code = await started.exit;
-  if (!ended) yield { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText().slice(0, 2000)}` };
+  yield* accountingEvents(() => {
+    const identity = codexSessionIdentity(harness, home, spec.scratchDir, threadId, accounting, launched);
+    return identity === null ? [] : [{ kind: 'identity', identity }];
+  });
+  if (accounting !== null) yield { kind: 'usage', ...accounting };
+  yield terminal ?? { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText().slice(0, 2000)}` };
 }

@@ -167,7 +167,7 @@ export const workerWire: ParityScenario = {
       await waitFor(row, (r) => r?.status !== 'running', 20_000);
       expect(await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
         FROM agent_runs WHERE id = ${lit(runId)}`)).toEqual([{
-        tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: null,
+        tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable', usage_data: JSON.stringify({ accountingVersion: 1, identity: { status: 'unknown', reason: 'harness_did_not_report_model_and_launch_choice_unresolved' } }),
       }]);
       const finalRow = await row();
       expect(`${target.name} ended: ${finalRow.status} — ${finalRow.error ?? 'no error'}`)
@@ -190,10 +190,11 @@ export const workerWire: ParityScenario = {
     const stopping = new AbortController();
     const bound = setTimeout(() => { stopping.abort(); }, ATTACH_BOUND_MS);
     let finished: WorkerOutcome | null = null;
+    const runRoot = mkdtempSync(join(tmpdir(), 'myco-parity-worker-'));
     const attached = runWorker({
       serverUrl: target.url,
       token: target.memberToken, lockDir: null,
-      runRoot: mkdtempSync(join(tmpdir(), 'myco-parity-worker-')),
+      runRoot,
       only: [STUB_HARNESS],
       once: true,
       pollIdleMs: 500,
@@ -214,8 +215,9 @@ export const workerWire: ParityScenario = {
       clearTimeout(bound);
       stopping.abort();
       await attached.catch(() => undefined);
-      await shiftParked(-PARK_MS);
+      rmSync(runRoot, { recursive: true, force: true });
       rmSync(scratch, { recursive: true, force: true });
+      await shiftParked(-PARK_MS);
     }
   },
 };
