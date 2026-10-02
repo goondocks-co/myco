@@ -438,9 +438,9 @@ function seedEmbeddingSwitch(databasePath: string, now: number): void {
       SELECT project_id, ?, lower(hex(randomblob(16))), type, record_id, revision, 1, ? FROM embedding_sources ORDER BY type, record_id LIMIT ?`).run(modelKey, now, count);
     receipts(OLLAMA_KEY('bge-m3'), total);
     receipts(OLLAMA_KEY('nomic-embed-text'), Math.floor(total / 3));
-    sqlite.query(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, state, reason, started_at, started_by, updated_at)
-      VALUES ('deployment', ?, 'ollama', 'nomic-embed-text', NULL, ?, ?, 48000, 'building', NULL, ?, ?, ?)`)
-      .run(crypto.randomUUID(), OLLAMA_KEY('nomic-embed-text'), OLLAMA_KEY('bge-m3'), now - 12 * MINUTE, OWNER.id, now - 12 * MINUTE);
+    sqlite.query(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, started_at, started_by, updated_at)
+      VALUES ('deployment', ?, 'ollama', 'nomic-embed-text', NULL, ?, ?, 48000, 30, ?, 'building', NULL, ?, ?, ?)`)
+      .run(crypto.randomUUID(), OLLAMA_KEY('nomic-embed-text'), OLLAMA_KEY('bge-m3'), now - 2 * MINUTE, now - 12 * MINUTE, OWNER.id, now - 12 * MINUTE);
   } finally {
     sqlite.close();
   }

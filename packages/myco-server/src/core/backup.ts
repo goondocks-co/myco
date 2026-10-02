@@ -63,12 +63,12 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * attached to the restored Deployment state again on their next claim. Settings (the Deployment's and each machine's), capability
  * admissions, repository connections, release provenance settings and sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore. Embedding state is rebuilt from the sources an
- * artifact carries; an embedding model switch, and the sources it skipped, are not carried, so a restored Deployment
+ * artifact carries; the sources embedding passes over are found again, and an embedding model switch is not carried, so a restored Deployment
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'search_blob_queue', 'search_blob_chunks',
-  'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_switch_skips', 'local_vectors',
+  'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',

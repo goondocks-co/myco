@@ -77,8 +77,8 @@ export interface EmbeddingSwitchStatus {
    */
   done: number;
   total: number;
-  /** Sources the new model could not read, which count as done, with each reason and how many it covers. */
-  skipped: { count: number; reasons: Array<{ reason: string; count: number }> };
+  /** Sources the new model passes over, which count as done and lose search by meaning once search moves: each named, with why. */
+  passedOver: PassedOverList;
   startedAt: number;
   /** The tokens the new model is estimated to read, and what that costs where the provider publishes a price. */
   estimatedTokens: number;
@@ -93,7 +93,24 @@ export interface EmbeddingSwitchEstimate {
   estimatedTokens: number;
   /** Null where the provider publishes no price. */
   estimatedUsd: number | null;
+  /** Sources known now to be passed over under the model, which have no search by meaning after the switch. */
+  passedOver: PassedOverList;
 }
+
+/** One source search by meaning passes over: which Project, what it is, and why, in the reader's words. */
+export interface PassedOverSourceView {
+  projectId: string;
+  projectName: string | null;
+  /** `session`, `spore`, `plan` or `skill`. */
+  type: string;
+  title: string;
+  reason: string;
+  /** Whether no model can read it, or only the model it was passed over under refused it. */
+  anyModel: boolean;
+}
+
+/** The sources search by meaning passes over, the newest first, and how many there are in all. */
+export interface PassedOverList { count: number; sources: PassedOverSourceView[] }
 
 /** A provider a target offers, with its models and endpoint. */
 export interface EmbeddingProviderChoice {

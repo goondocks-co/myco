@@ -709,7 +709,7 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
  */
 export async function writeSwitchedEmbedding(
   db: RelationalStore, choice: StoredEmbedding, actor: string, nowMs: number,
-  condition: { sql: string; params: readonly string[] }, end: readonly PreparedStatement[],
+  condition: { sql: string; params: ReadonlyArray<string | number> }, end: readonly PreparedStatement[],
 ): Promise<boolean> {
   const { stamps } = await embeddingRows(db);
   const statements = EMBEDDING_SELECTION_LEAVES.flatMap((part) => {

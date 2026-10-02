@@ -25,6 +25,7 @@ import { blobObjectKey, registeredObjectKeySql } from '../../packages/myco-serve
 import { migrateOnly, startDeployment } from '../../packages/myco-server/src/platform/bun/server-main.js';
 import { getBlob } from '../../packages/myco-server/src/read/blobs.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
+import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
 
 /** Where the fixture source holds the object an artifact key names. */
 async function sourceKeyOf(source: ReturnType<typeof sqliteEnv>, logical: string): Promise<string> {
@@ -110,6 +111,11 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy =
   const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
   await deploymentSecretStore(source.db, key).put('fixture', 'recovered-secret', 'fixture', 1);
   source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES ('proj_1','memory','user','A durable architecture decision','decision',1)");
+  // A switch building to a paid model, and a source embedding passes over, as the source Deployment held them.
+  source.sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, retry_at, failures, started_at, started_by, updated_at)
+    VALUES ('deployment', 'recovered-switch', 'workers-ai', '@cf/baai/bge-base-en-v1.5', NULL, 'k2', 'k1', 10, 1, 1, 'building', NULL, NULL, 0, 1, 'mem_machine_1', 1)`);
+  source.sqlite.run(`INSERT INTO embedding_source_failures (project_id, type, record_id, model_key, revision, reason, recorded_at)
+    VALUES ('proj_1', 'plan', 'gone', '', 'r1', 'its stored text is missing', 1)`);
   const provider = { modelKey: 'fixture-model', embed: async () => [1, 0] };
   await reconcileEmbedding({ db: source.db, blobs: source.bucket, provider,
     vectors: target === 'local' ? sqliteVectorStore(source.sqlite) : cloudflareVectorStore(indexFixture()) }, 'proj_1', 1000);
@@ -154,6 +160,9 @@ it('recovers hosted data, independently wrapped credentials and pinned artifacts
       expect(db.query('SELECT pinned FROM backups WHERE id=?').get(f.backup.id)).toEqual({ pinned: 1 });
       expect(fs.readFileSync(path.join(f.paths.blobDir, f.backup.key)))
         .toEqual(fs.readFileSync(path.join(f.artifact, 'blobs', f.backup.key)));
+      // The switch waits for an admin here, and what the rebuilt index passes over is found again.
+      expect(db.query('SELECT state, reason, retry_at FROM embedding_switches').all()).toEqual([{ state: 'paused', reason: RECOVERED_SWITCH, retry_at: null }]);
+      expect(db.query('SELECT COUNT(*) AS n FROM embedding_source_failures').get()).toEqual({ n: 0 });
       expect(await hasEmbeddingWork(store, 'proj_1', f.provider.modelKey, 2000)).toBe(true);
       const vectors = sqliteVectorStore(db);
       expect(await reconcileEmbedding({ db: store, blobs: diskBlobStore(f.paths.blobDir), provider: f.provider, vectors }, 'proj_1', 2000))
@@ -173,7 +182,12 @@ it('preserves a native snapshot and its vectors without resetting their ready re
     const original = fs.readFileSync(path.join(f.artifact, 'myco.sqlite'));
     expect(await f.restore()).toMatchObject({ rebuildEmbeddings: false });
     const db = new Database(f.paths.databasePath, { readonly: true });
-    try { expect(db.query('SELECT ready FROM embedding_receipts').all()).toEqual([{ ready: 1 }]); }
+    try {
+      expect(db.query('SELECT ready FROM embedding_receipts').all()).toEqual([{ ready: 1 }]);
+      // The kept index keeps what it passes over; the switch still waits for an admin here.
+      expect(db.query('SELECT COUNT(*) AS n FROM embedding_source_failures').get()).toEqual({ n: 1 });
+      expect(db.query('SELECT state, reason FROM embedding_switches').all()).toEqual([{ state: 'paused', reason: RECOVERED_SWITCH }]);
+    }
     finally { db.close(); }
     // No embedding rebuild is needed, and the object lifecycle is still reset and the objects named for this volume.
     await assertServedAfterStartup(f);

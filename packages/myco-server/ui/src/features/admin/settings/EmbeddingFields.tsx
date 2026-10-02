@@ -7,7 +7,7 @@ import { settingsRefusalText, switchRefusalText, useSettings, useSettingsActions
 import { useNow } from '../../../hooks/use-today';
 import { SettingRow } from '../AdminFrame';
 import type { LeafField } from './catalogue';
-import { EmbeddingSwitchPanel, estimateWords, shortModel } from './EmbeddingSwitch';
+import { EmbeddingSwitchPanel, PassedOverSources, estimateWords, shortModel } from './EmbeddingSwitch';
 import type { LeafRow } from './wire';
 
 export { shortModel } from './EmbeddingSwitch';
@@ -202,6 +202,10 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
                 {actions.estimateSwitch.data !== undefined ? estimateWords(actions.estimateSwitch.data)
                   : actions.estimateSwitch.isError ? 'Myco could not estimate what this switch reads and costs, so it cannot start.' : 'Estimating what this switch reads and costs…'}
               </p>
+              {actions.estimateSwitch.data !== undefined && (
+                <PassedOverSources list={actions.estimateSwitch.data.passedOver}
+                  lede={`${actions.estimateSwitch.data.passedOver.count === 1 ? 'This source has' : 'These sources have'} no search by meaning after the switch:`} />
+              )}
             </ConfirmDialog>
           </div>
         )}

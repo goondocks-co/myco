@@ -13,7 +13,7 @@ import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/sett
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
-import { cancelEmbeddingSwitch, embeddingSwitchStatus, estimateEmbeddingSwitch, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
+import { cancelEmbeddingSwitch, embeddingSwitchStatus, estimateEmbeddingSwitch, passedOverForHealth, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
 
 /**
  * The Deployment Settings surface.
@@ -207,6 +207,11 @@ const switchAnswer = (answer: SwitchAnswer): Response => answer.applied
   ? ok({ applied: true, switch: answer.switch })
   : Response.json({ applied: false, leaf: 'embedding.model', ...answer.refusal }, { status: answer.refusal.reason === 'conflict' ? 409 : 400 });
 
+/** `GET /api/embedding/passed-over`: the sources search by meaning passes over, each named with why, for Health. */
+export async function handlePassedOverSources(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return ok(await passedOverForHealth(env, ctx.now));
+}
+
 /** `GET /api/embedding/switch`: the switch of the embedding model under way, or null. */
 export async function handleEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   return ok({ switch: await embeddingSwitchStatus(env, ctx.now) });
@@ -231,7 +236,7 @@ export async function handleStartEmbeddingSwitch(env: ServerEnv, ctx: OwnerConte
 export async function handleEstimateEmbeddingSwitch(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   if (body === null || !('provider' in body)) return malformed('embedding.provider', 'body must be an object carrying a provider');
-  const answer = await estimateEmbeddingSwitch(env, choiceOf(body));
+  const answer = await estimateEmbeddingSwitch(env, choiceOf(body), ctx.now);
   return answer.applied ? ok({ applied: true, estimate: answer.estimate })
     : Response.json({ applied: false, leaf: 'embedding.model', ...answer.refusal }, { status: answer.refusal.reason === 'conflict' ? 409 : 400 });
 }

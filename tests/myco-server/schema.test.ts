@@ -30,8 +30,8 @@ describe('server schema', () => {
       const before = [sqlite.query(`SELECT * FROM deployment_settings`).all(), sqlite.query(`SELECT * FROM embedding_receipts`).all()];
       for (const sql of SCHEMA_STEPS.find((step) => step.version === 64)!.statements) sqlite.exec(sql);
       expect([sqlite.query(`SELECT * FROM deployment_settings`).all(), sqlite.query(`SELECT * FROM embedding_receipts`).all()]).toEqual(before);
-      const insert = (id: string, slot = 'deployment') => sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, state, reason, started_at, started_by, updated_at)
-        VALUES (?, ?, 'workers-ai', 'm2', NULL, 'k2', 'k1', 0, 'building', NULL, 1, 'mem_writer', 1)`, [slot, id]);
+      const insert = (id: string, slot = 'deployment') => sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, started_at, started_by, updated_at)
+        VALUES (?, ?, 'workers-ai', 'm2', NULL, 'k2', 'k1', 0, 0, 1, 'building', NULL, 1, 'mem_writer', 1)`, [slot, id]);
       insert('one');
       expect(() => insert('two')).toThrow(/UNIQUE constraint failed/);
       expect(() => insert('three', 'another')).toThrow(/CHECK constraint failed/);

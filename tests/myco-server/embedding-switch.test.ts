@@ -21,14 +21,14 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { advanceEmbedding } from '@myco-server-worker/core/embedding/step.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
-import { SWITCH_STALL_MS, completeEmbeddingSwitch, embeddingSwitchStatus, embeddingWorkPlan } from '@myco-server-worker/core/embedding/switch.js';
+import { SWITCH_STALL_MS, completeEmbeddingSwitch, embeddingSwitchStatus, embeddingWorkPlan, passedOverForHealth, switchFailureAction } from '@myco-server-worker/core/embedding/switch.js';
 import { RECOVERED_SWITCH, holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { searchProject } from '@myco-server-worker/read/search.js';
-import { VECTOR_DELETE_CONFIRM_MS } from '@myco-server-worker/core/embedding/provider.js';
+import { EmbeddingUnavailable, VECTOR_DELETE_CONFIRM_MS, workersAiFailure } from '@myco-server-worker/core/embedding/provider.js';
 import type { EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
 import { seededSqlite } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -53,7 +53,10 @@ function vectorFor(text: string, dimensions: number): number[] {
  * set for it, and a hosted model throws the words set for it, as the Workers AI binding does.
  */
 interface Failing { status: number; headers?: Record<string, string>; words: string }
-interface Models { failing: Map<string, Failing>; calls: Map<string, number> }
+interface Models { failing: Map<string, Failing>; refusing: Map<string, Failing>; calls: Map<string, number> }
+
+/** The word a source's text carries for a model in `refusing` to refuse that one text. */
+const REFUSED_TEXT = 'unembeddable';
 
 interface Target {
   name: 'hosted' | 'self-hosted';
@@ -77,7 +80,7 @@ const DIMENSIONS: Record<string, number> = {
 
 function hosted(): Target {
   const e = sqliteEnv();
-  const models: Models = { failing: new Map(), calls: new Map() };
+  const models: Models = { failing: new Map(), refusing: new Map(), calls: new Map() };
   const index = indexFixture();
   let broken = false;
   const vectorize = { ...index, upsert: async (vectors: Parameters<typeof index.upsert>[0]) => {
@@ -86,7 +89,7 @@ function hosted(): Target {
   } };
   const ai = { run: async (model: string, input: { text: string[] }) => {
     models.calls.set(model, (models.calls.get(model) ?? 0) + 1);
-    const failing = models.failing.get(model);
+    const failing = models.failing.get(model) ?? (input.text[0]!.includes(REFUSED_TEXT) ? models.refusing.get(model) : undefined);
     if (failing !== undefined) throw new Error(failing.words);
     return { data: [vectorFor(input.text[0]!, DIMENSIONS[model]!)] };
   } };
@@ -112,14 +115,14 @@ function selfHosted(): Target {
   const sqlite = seededSqlite();
   const dir = mkdtempSync(path.join(tmpdir(), 'myco-embedding-switch-'));
   temporary.push(dir);
-  const models: Models = { failing: new Map(), calls: new Map() };
+  const models: Models = { failing: new Map(), refusing: new Map(), calls: new Map() };
   const stub = Bun.serve({
     port: 0, hostname: '127.0.0.1',
     async fetch(request) {
       const body = await request.json() as { model: string; input: string[] };
       models.calls.set(body.model, (models.calls.get(body.model) ?? 0) + 1);
-      const failing = models.failing.get(body.model);
-      if (failing !== undefined) return new Response('refused', { status: failing.status, headers: failing.headers ?? {} });
+      const failing = models.failing.get(body.model) ?? (body.input[0]!.includes(REFUSED_TEXT) ? models.refusing.get(body.model) : undefined);
+      if (failing !== undefined) return new Response(failing.words === '' ? 'refused' : failing.words, { status: failing.status, headers: failing.headers ?? {} });
       return Response.json({ data: [{ embedding: vectorFor(body.input[0]!, DIMENSIONS[body.model]!) }] });
     },
   });
@@ -304,6 +307,16 @@ for (const make of [hosted, selfHosted]) {
   });
 }
 
+describe('what a failure of the new model does', () => {
+  it('passes one source over for a refusal of its text, waits out what may pass, and pauses for what needs an admin', () => {
+    const http = (status: number) => new EmbeddingUnavailable('x', { kind: 'http', status, retryAfterMs: null, detail: null });
+    const actions = Object.fromEntries([400, 401, 403, 404, 408, 413, 422, 429, 503].map((status) => [status, switchFailureAction(http(status), 0, 0).action]));
+    expect(actions).toEqual({ 400: 'skip', 401: 'pause', 403: 'pause', 404: 'pause', 408: 'wait', 413: 'skip', 422: 'skip', 429: 'wait', 503: 'wait' });
+    expect(switchFailureAction(new EmbeddingUnavailable('x', workersAiFailure(new Error('AiError: 3010: Invalid or incomplete input for the model'), false, 0)), 0, 0).action).toBe('skip');
+    expect(switchFailureAction(new EmbeddingUnavailable('x', workersAiFailure(new Error('AiError: 3001: Internal server error'), false, 0)), 0, 0)).toMatchObject({ action: 'wait', reason: expect.stringContaining('AiError: 3001: Internal server error') });
+  });
+});
+
 describe('a provider that turns the key down', () => {
   it('pauses the switch with the reason, asks nothing more, and resumes on request', async () => {
     const t = await built(selfHosted);
@@ -346,31 +359,81 @@ describe('what never holds a switch back', () => {
     expect(await hasEmbeddingWork(t.env().db, 'proj_2', plan.model, 5_000 + VECTOR_DELETE_CONFIRM_MS + 10, { ...plan, retireOnly: true })).toBe(false);
   });
 
-  it('records a source neither model can read as skipped with its reason, and completes', async () => {
+  it('passes over a source no model can read, names it, completes, and keeps the Project\'s embedding moving after the flip', async () => {
     const t = await built(selfHosted);
     await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
     t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
       VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
-    const reported: unknown[] = [];
+    let named = false;
+    let whole = false;
     for (let i = 0; i < 30 && (await status(t)) !== null; i++) {
       const sw = (await status(t))!;
-      expect(sw.total).toBe(4);
-      const answer = await t.step(2_000 + i);
-      if (answer.unreadable !== undefined) reported.push(answer.unreadable);
+      expect({ total: sw.total, listed: sw.passedOver.sources.length }).toEqual({ total: 4, listed: sw.passedOver.count });
+      whole ||= sw.done === sw.total;
+      if (sw.passedOver.count === 1) {
+        named = true;
+        expect(sw.passedOver.sources).toEqual([{ projectId: PROJECT, projectName: 'a', type: 'plan', title: 'A plan whose body is gone', reason: 'its stored text is missing', anyModel: true }]);
+      }
+      await t.step(2_000 + i);
     }
-    expect(await status(t)).toBeNull();
-    expect(JSON.parse(storedModel(t)!)).toBe(t.otherSize.model);
-    expect(reported[0]).toMatch(/plan unreadable: its stored text is missing/);
-    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_switch_skips`).get()).toEqual({ n: 0 });
+    expect({ named, whole, moved: await status(t) === null, model: JSON.parse(storedModel(t)!) }).toEqual({ named: true, whole: true, moved: true, model: t.otherSize.model });
+    // After the flip the Project's runs neither fail on the source nor stop: the replaced model's vectors are retired.
+    for (let i = 0; i < 12; i++) await t.step(10_000 + i);
+    for (let i = 0; i < 12; i++) await t.step(10_000 + VECTOR_DELETE_CONFIRM_MS + i);
+    expect(receipts(t, t.currentKey)).toEqual([]);
+    expect(await json(await t.fetch(await asOwner('/api/embedding/passed-over')))).toEqual({
+      count: 1, sources: [{ projectId: PROJECT, projectName: 'a', type: 'plan', title: 'A plan whose body is gone', reason: 'its stored text is missing', anyModel: true }],
+    });
   });
 
-  it('shows the skipped source while the switch stands', async () => {
+  it('passes over a source a provider refuses as input, under that model only, and completes', async () => {
+    for (const make of [hosted, selfHosted]) {
+      const t = await built(make);
+      t.models.refusing.set(t.otherSize.model, make === hosted ? { status: 0, words: 'AiError: 3010: Invalid or incomplete input for the model: input is too long' } : { status: 400, words: 'input is too long for this model' });
+      t.spore('long', `architecture ${REFUSED_TEXT} beyond the model's limit`);
+      for (let i = 0; i < 4; i++) await t.step(1_800 + i);
+      await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+      for (let i = 0; i < 30 && (await status(t)) !== null; i++) await t.step(2_000 + i);
+      expect({ target: t.name, moved: await status(t) === null }).toEqual({ target: t.name, moved: true });
+      const listed = await passedOverForHealth(t.env(), 2_100);
+      expect(listed).toMatchObject({ count: 1, sources: [{ title: 'decision', anyModel: false, reason: expect.stringMatching(make === hosted ? /the model refused its text \(“AiError: 3010/ : /the model refused its text with HTTP 400 \(“input is too long for this model”\)/) }] });
+      // Once the replaced model's vectors are retired, nothing is left: the refused source is not asked again within a day.
+      for (let i = 0; i < 12; i++) await t.step(2_200 + i);
+      for (let i = 0; i < 12; i++) await t.step(2_200 + VECTOR_DELETE_CONFIRM_MS + i);
+      const plan = (await embeddingWorkPlan(t.env(), 2_300 + VECTOR_DELETE_CONFIRM_MS))!;
+      expect(await hasEmbeddingWork(t.env().db, PROJECT, plan.model, 2_300 + VECTOR_DELETE_CONFIRM_MS, plan)).toBe(false);
+    }
+  });
+
+  it('without a switch, an unreadable source neither fails a run nor holds back calibration or retirement, and a new revision clears it', async () => {
     const t = await built(selfHosted);
-    await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
     t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
       VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
-    for (let i = 0; i < 10 && (await status(t))!.skipped.count === 0; i++) await t.step(2_000 + i);
-    expect((await status(t))!.skipped).toEqual({ count: 1, reasons: [{ reason: 'its stored text is missing', count: 1 }] });
+    t.sqlite.run(`DELETE FROM spores WHERE id = 'three'`);
+    expect(await t.step(3_000)).toMatchObject({ phase: 'passed-over', processed: 1 });
+    for (let i = 0; i < 6; i++) await t.step(3_001 + i);
+    for (let i = 0; i < 6; i++) await t.step(3_001 + VECTOR_DELETE_CONFIRM_MS + i);
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE record_id = 'three'`).get()).toEqual({ n: 0 });
+    const plan = (await embeddingWorkPlan(t.env(), 3_100 + VECTOR_DELETE_CONFIRM_MS))!;
+    expect(await hasEmbeddingWork(t.env().db, PROJECT, plan.model, 3_100 + VECTOR_DELETE_CONFIRM_MS, plan)).toBe(false);
+    // Its text stored again is a new revision: it is read, written, and no longer passed over.
+    t.sqlite.run(`UPDATE plans SET content = 'architecture restored', blob_key = NULL WHERE plan_key = 'unreadable'`);
+    for (let i = 0; i < 4; i++) await t.step(4_000 + VECTOR_DELETE_CONFIRM_MS + i);
+    expect(await json(await t.fetch(await asOwner('/api/embedding/passed-over')))).toEqual({ count: 0, sources: [] });
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_source_failures`).get()).toEqual({ n: 0 });
+  });
+
+  it('retries a body whose read fails, rather than passing it over', async () => {
+    const t = await built(selfHosted);
+    t.sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', 'flaky-key', 10, 'text/plain', 't', 1, '0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b')`);
+    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', 'flaky', 's', 'e', 'm', 'A plan on a flaky disk', NULL, 'flaky-key', 'h', 'active', 1, 1, 't', 1)`);
+    const env = t.env();
+    // The read fails with a TypeError, and releasing the reader succeeds, as a dropped connection leaves it.
+    const reader = { read: async () => { throw new TypeError('the read was cut off'); }, cancel: async () => undefined, releaseLock: () => undefined };
+    const failingRead = { ...env.blobs, get: async () => ({ body: { getReader: () => reader } }) } as unknown as typeof env.blobs;
+    await expect(reconcileEmbedding({ db: env.db, blobs: failingRead, vectors: env.vectors!, provider: (await env.embeddingProvider!())! }, PROJECT, 3_000)).rejects.toThrow('the read was cut off');
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_source_failures`).get()).toEqual({ n: 0 });
   });
 
   it('says why a building switch has not moved for a while', async () => {
@@ -379,6 +442,32 @@ describe('what never holds a switch back', () => {
     const at = (started.switch as EmbeddingSwitchStatus).startedAt;
     expect((await embeddingSwitchStatus(t.env(), at + SWITCH_STALL_MS - 1))!.stalled).toBeNull();
     expect((await embeddingSwitchStatus(t.env(), at + SWITCH_STALL_MS + 60_000))!.stalled).toBe('No embedding run has started in the last 31 minutes, so rebuilding search has not moved.');
+    // A model held off after failures says so too, wait or no wait.
+    t.models.failing.set(t.otherSize.model, { status: 503, words: '' });
+    await t.step(at + 1_000);
+    expect((await embeddingSwitchStatus(t.env(), at + SWITCH_STALL_MS + 60_000))!.stalled).toBe('Rebuilding search has not moved for 31 minutes: the new model has failed 1 time in a row.');
+  });
+
+  it('caps how long a provider\'s Retry-After holds a switch off, and Resume asks a held-off model at once', async () => {
+    const t = await built(selfHosted);
+    const started = await json(await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true })));
+    const id = (started.switch as EmbeddingSwitchStatus).id;
+    t.models.failing.set(t.otherSize.model, { status: 429, headers: { 'retry-after': String(30 * 24 * 3600) }, words: '' });
+    await t.step(2_000);
+    expect((await status(t))!.retryAt).toBe(2_000 + 6 * 60 * 60_000);
+    t.models.failing.delete(t.otherSize.model);
+    expect(await json(await t.fetch(await asOwnerPost(`/api/embedding/switch/${id}/resume`)))).toMatchObject({ applied: true, switch: { state: 'building', retryAt: null } });
+    const asked = t.models.calls.get(t.otherSize.model) ?? 0;
+    await t.step(2_100);
+    expect(t.models.calls.get(t.otherSize.model)).toBe(asked + 1);
+  });
+
+  it('grows its estimate as sources are added, from the tokens each read when it started', async () => {
+    const t = await built(selfHosted);
+    const started = (await json(await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true })))).switch as EmbeddingSwitchStatus;
+    t.spore('four', 'architecture added meanwhile');
+    t.spore('five', 'more architecture added meanwhile');
+    expect((await status(t))!.estimatedTokens).toBe(Math.ceil(started.estimatedTokens * 5 / 3));
   });
 });
 
@@ -388,6 +477,17 @@ describe('guards the completion and the settings writer carry', () => {
     let armed = true;
     return { ...db, prepare: db.prepare.bind(db), batch: async (statements) => { if (armed) { armed = false; before(); } return db.batch(statements); } } as RelationalStore;
   };
+
+  it('moves search and ends the switch together when a passed-over source is what completes it, and keeps the source recorded', async () => {
+    const t = await built(selfHosted);
+    await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+    for (let i = 0; i < 20 && (await status(t))!.done < 3; i++) await t.step(2_000 + i);
+    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+    for (let i = 0; i < 20 && (await status(t)) !== null; i++) await t.step(3_000 + i);
+    expect({ standing: await status(t), model: JSON.parse(storedModel(t)!), recorded: t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_source_failures`).get() })
+      .toEqual({ standing: null, model: t.otherSize.model, recorded: { n: 1 } });
+  });
 
   it('does not move search when a source arrives between the completion check and its batch', async () => {
     const t = await built(selfHosted);
@@ -405,8 +505,8 @@ describe('guards the completion and the settings writer carry', () => {
 
   it('refuses a settings write when a switch starts between its check and its batch', async () => {
     const t = hosted();
-    const db = racing(sqliteRelationalStore(t.sqlite), () => t.sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, state, reason, started_at, started_by, updated_at)
-      VALUES ('deployment', 'raced', 'workers-ai', '@cf/baai/bge-base-en-v1.5', NULL, 'k2', 'k1', 0, 'building', NULL, 1, 'mem_machine_1', 1)`));
+    const db = racing(sqliteRelationalStore(t.sqlite), () => t.sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, started_at, started_by, updated_at)
+      VALUES ('deployment', 'raced', 'workers-ai', '@cf/baai/bge-base-en-v1.5', NULL, 'k2', 'k1', 0, 0, 1, 'building', NULL, 1, 'mem_machine_1', 1)`));
     const written = await settingsWriter(db, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai', model: '@cf/baai/bge-large-en-v1.5' }, 'mem_machine_1', 5_000);
     expect(written).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider' } });
     expect(storedModel(t)).toBeUndefined();
@@ -439,6 +539,7 @@ describe('the estimate shown before a switch starts', () => {
     expect({ applied: answer.applied, sources: estimate.sources }).toEqual({ applied: true, sources: 3 });
     expect(estimate.estimatedTokens).toBeGreaterThan(0);
     expect(estimate.estimatedUsd).toBeCloseTo(estimate.estimatedTokens / 1_000_000 * 0.067, 12);
+    expect(answer.estimate).toMatchObject({ passedOver: { count: 0, sources: [] } });
     expect(await status(t)).toBeNull();
     const local = await built(selfHosted);
     expect(await json(await local.fetch(await asOwnerPost('/api/embedding/switch/estimate', local.otherSize)))).toMatchObject({ estimate: { sources: 3, estimatedUsd: null } });

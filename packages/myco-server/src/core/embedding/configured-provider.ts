@@ -49,8 +49,9 @@ function httpEmbeddingProvider(selection: EmbeddingSelection & { url: string }, 
         throw new EmbeddingUnavailable('embedding provider could not be reached', { kind: 'unreachable', detail: failureDetail(error) });
       }
       if (!response.ok) {
+        const said = await response.text().then(failureDetail, () => null);
         throw new EmbeddingUnavailable(`embedding provider returned HTTP ${response.status}`,
-          { kind: 'http', status: response.status, retryAfterMs: retryAfterMs(response.headers.get('retry-after'), Date.now()) });
+          { kind: 'http', status: response.status, retryAfterMs: retryAfterMs(response.headers.get('retry-after'), Date.now()), detail: said });
       }
       let body: { embeddings?: unknown[]; data?: Array<{ embedding?: unknown }> };
       try { body = await response.json(); }

@@ -23,7 +23,7 @@ import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-b
 import { handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleMemberSettings, handleResetSetting, handleSetEmbedding, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
+  handleMemberSettings, handleResetSetting, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
@@ -271,6 +271,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'PATCH', path: '/api/settings/agent.tasks', auth: 'session', authority: 'admin', handler: handleSetTaskTier },
   { method: 'PUT', path: '/api/embedding', auth: 'session', authority: 'admin', handler: handleSetEmbedding },
   { method: 'GET', path: '/api/embedding/switch', auth: 'session', authority: 'member', handler: handleEmbeddingSwitch },
+  { method: 'GET', path: '/api/embedding/passed-over', auth: 'session', authority: 'member', handler: handlePassedOverSources },
   { method: 'POST', path: '/api/embedding/switch', auth: 'session', authority: 'admin', handler: handleStartEmbeddingSwitch },
   { method: 'POST', path: '/api/embedding/switch/estimate', auth: 'session', authority: 'admin', handler: handleEstimateEmbeddingSwitch },
   { method: 'DELETE', path: '/api/embedding/switch/{switchId}', pattern: /^\/api\/embedding\/switch\/(?<switchId>[A-Za-z0-9_-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleCancelEmbeddingSwitch },

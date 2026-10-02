@@ -803,7 +803,7 @@ describe('gates', () => {
       project_capabilities: join('core', 'settings.ts'),
       deployment_secrets: join('core', 'secrets.ts'),
       embedding_switches: join('core', 'embedding', 'switch-store.ts'),
-      embedding_switch_skips: join('core', 'embedding', 'switch-store.ts'),
+      embedding_source_failures: join('core', 'embedding', 'reconcile.ts'),
     };
     const offenders: string[] = [];
     for (const file of files(SRC)) {
@@ -1327,6 +1327,7 @@ describe('gates', () => {
       'session:member GET /api/agents',
       'session:member GET /api/credentials',
       'session:member GET /api/credentials/{id}/activity',
+      'session:member GET /api/embedding/passed-over',
       'session:member GET /api/embedding/switch',
       'session:member GET /api/kpis',
       'session:member GET /api/machines',

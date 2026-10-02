@@ -5,8 +5,7 @@ import { settingTexts } from '../settings.js';
 import { listProjects } from '../../read/sessions.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel, completeEmbeddingSwitch, embeddingWorkPlan } from './switch.js';
-import { SKIPPED_SOURCE } from './switch-store.js';
-import { DELETION_DUE, SOURCE_HELD, deletionDueBinds } from './reconcile.js';
+import { DELETION_DUE, PASSED_OVER, SOURCE_HELD, deletionDueBinds, passedOverBinds } from './reconcile.js';
 
 export const EMBEDDING_RETRY_MS = 60_000;
 export { EMBEDDING_TASK } from './task.js';
@@ -26,16 +25,15 @@ export interface EmbeddingWorkScope {
 }
 
 /**
- * The backlog includes sources awaiting a write, under `model` or under a switch's `building` model, deletions that are
+ * The backlog includes sources awaiting a write, passed-over sources aside, under `model` or under a switch's `building` model, deletions that are
  * due and pending spore calibration, under a standing switch's model while it stands. An archived Project's backlog is
  * its due deletions alone.
  */
 export async function hasEmbeddingWork(db: RelationalStore, projectId: string, model: string, now: number, scope: EmbeddingWorkScope = {}): Promise<boolean> {
-  const writes: Array<{ key: string; held: string }> = scope.retireOnly === true ? []
-    : [{ key: model, held: '' }, ...(scope.building == null ? [] : [{ key: scope.building, held: ` AND NOT ${SKIPPED_SOURCE}` }])];
-  const unwritten = writes.map(({ held }) => `EXISTS(SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND NOT ${SOURCE_HELD}${held}) OR `).join('');
+  const writes = scope.retireOnly === true ? [] : [model, ...(scope.building == null ? [] : [scope.building])];
+  const unwritten = writes.map(() => `EXISTS(SELECT 1 FROM embedding_sources s WHERE s.project_id = ? AND NOT ${SOURCE_HELD} AND NOT ${PASSED_OVER}) OR `).join('');
   const row = await db.prepare(`SELECT ${unwritten}EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}) AS pending`)
-    .bind(...writes.flatMap(({ key }) => [projectId, key]), projectId, ...deletionDueBinds([model, ...writes.map(({ key }) => key), ...(scope.retain ?? [])], now)).first<{ pending: number }>();
+    .bind(...writes.flatMap((key) => [projectId, key, ...passedOverBinds(key, now)]), projectId, ...deletionDueBinds([model, ...writes, ...(scope.retain ?? [])], now)).first<{ pending: number }>();
   if (row?.pending === 1) return true;
   return scope.retireOnly !== true && calibrationPending(db, projectId, calibrationModel(model, scope.switching ?? null), now);
 }

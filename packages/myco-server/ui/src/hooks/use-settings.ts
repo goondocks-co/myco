@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, deleteJson, fetchJson, patchJson, postJson, putJson } from '../lib/api';
-import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
+import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus, PassedOverList } from '@goondocks/myco-shared/settings-contract';
 import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 
 import type { SecretRow, SettingsAnswer, SecretsAnswer, TitlingBackfillProgress } from '../features/admin/settings/wire';
@@ -34,6 +34,11 @@ export function useEmbeddingSwitch() {
     queryFn: ({ signal }) => fetchJson<{ switch: EmbeddingSwitchStatus | null }>('/api/embedding/switch', signal).then((answer) => answer.switch),
     refetchInterval: (query) => query.state.data != null ? SWITCH_REFRESH_MS : false,
   });
+}
+
+/** The sources search by meaning passes over, each named with why: `GET /api/embedding/passed-over`. */
+export function usePassedOver() {
+  return useQuery({ queryKey: ['embedding-passed-over'], queryFn: ({ signal }) => fetchJson<PassedOverList>('/api/embedding/passed-over', signal) });
 }
 
 export function useSecrets() {

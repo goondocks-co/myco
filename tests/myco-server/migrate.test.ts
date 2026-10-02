@@ -71,7 +71,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0061_v61.sql': '840277e73ce900814ed9cf1764f502586b8058c2f8fc3552a189cb6a9832b26b',
   '0062_v62.sql': 'e993cf1ec1a9cd1b1ad827f154b08cc7a82602daea80e752414e9c769e7afdab',
   '0063_v63.sql': 'fb950a25459f47537b9f02df3450855f6a57c1a94a7d2e235d6e3b15afff8510',
-  '0064_v64.sql': '7f5cef3131fca7a1f3265f0e73f4f6e38e7e8a7692bba5c34175cd7ca8e6e962',
+  '0064_v64.sql': '013cd169a7a602907ba968c7d85eb3afa2d373ad62f3150e75cbd4acfd1436a6',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -611,7 +611,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_events', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_switch_skips', 'embedding_versions', 'enrollment_authorities', 'external_grants',
+      'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'enrollment_authorities', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'projects',
       'prompt_batches', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'tags', 'tool_calls', 'transcript_segments', 'transcripts',

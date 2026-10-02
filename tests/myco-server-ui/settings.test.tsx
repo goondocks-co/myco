@@ -73,7 +73,7 @@ const HOSTED_CHOICES = {
 const BUILDING: EmbeddingSwitchStatus = {
   id: '6f1c2a90-3b7d-4e5f-8a1b-2c3d4e5f6a7b', provider: 'workers-ai', providerLabel: 'Cloudflare Workers AI', model: '@cf/baai/bge-base-en-v1.5', dimensions: 768,
   from: { model: '@cf/baai/bge-m3', dimensions: 1024 }, state: 'building', reason: null, done: 120, total: 400, startedAt: NOW - 5 * 60_000,
-  estimatedTokens: 60_000, estimatedUsd: 0.004, retryAt: null, stalled: null, skipped: { count: 0, reasons: [] },
+  estimatedTokens: 60_000, estimatedUsd: 0.004, retryAt: null, stalled: null, passedOver: { count: 0, sources: [] },
 };
 /** The same server before search has built anything: every model that fits may be chosen. */
 const UNBUILT_CHOICES = {
@@ -415,7 +415,8 @@ describe('Settings, in five sections', () => {
       if (new URL(href, 'https://s').pathname !== '/api/embedding/switch/estimate') return routed(input, init);
       await routed(input, init);
       await new Promise<void>((resolve) => { answerEstimate = resolve; held = true; });
-      return Response.json({ applied: true, estimate: { provider: 'openrouter', model: 'baai/bge-m3', sources: 4_812, estimatedTokens: 2_400_000, estimatedUsd: 0.024 } });
+      return Response.json({ applied: true, estimate: { provider: 'openrouter', model: 'baai/bge-m3', sources: 4_812, estimatedTokens: 2_400_000, estimatedUsd: 0.024,
+        passedOver: { count: 1, sources: [{ projectId: P_X, projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true }] } } });
     }) as typeof fetch;
     mount('/settings/models');
     await waitFor(() => expect(statusOf('embedding.model')).toContain('Choosing another model offers to switch search to it'));
@@ -434,6 +435,9 @@ describe('Settings, in five sections', () => {
     await waitFor(() => expect(held).toBe(true));
     answerEstimate();
     await waitFor(() => expect(found('[data-switch-estimate]').textContent).toBe('It reads about 4,812 sources, about 2,400,000 tokens in all. Estimated cost: about $0.02.'));
+    // The sources that will have no search by meaning are named before the switch can be agreed to.
+    expect(within(dialog).getByText('This source has no search by meaning after the switch:')).toBeTruthy();
+    expect(within(dialog).getByText('Plan “Release checklist” in Project X: its stored text is missing')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to this model' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'POST', path: '/api/embedding/switch', body: { provider: 'openrouter', model: 'baai/bge-m3', confirm: true } });
@@ -462,14 +466,18 @@ describe('Settings, in five sections', () => {
   it('shows a switch that waits for its provider, one that has not moved, and the sources it left out, each saying why', async () => {
     const waiting: EmbeddingSwitchStatus = { ...BUILDING, retryAt: NOW + 4 * 60_000, reason: 'The new model\'s provider had a problem (HTTP 503). Myco tries again shortly.',
       stalled: 'Rebuilding search has not moved for 42 minutes: the last embedding run failed (“the provider timed out”).',
-      skipped: { count: 2, reasons: [{ reason: 'its stored text is missing', count: 2 }] } };
+      passedOver: { count: 23, sources: [{ projectId: P_X, projectName: 'Project X', type: 'session', title: 'A very long session', reason: 'the model refused its text with HTTP 400', anyModel: false }] } };
     server(base({ '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: waiting } }) }));
     mount('/settings/models');
     const panel = await waitFor(() => found('[data-embedding-waiting]'));
     expect(panel.textContent).toContain('Waiting');
     expect(panel.textContent).toMatch(/had a problem \(HTTP 503\)\. Myco tries again shortly\. Next try at \d{2}:\d{2}\./);
     expect(panel.textContent).toContain('Rebuilding search has not moved for 42 minutes: the last embedding run failed');
-    expect(panel.textContent).toContain('2 sources could not be read and are left out: its stored text is missing (2).');
+    expect(panel.textContent).toContain('23 sources will have no search by meaning once search moves to bge-base-en-v1.5:');
+    expect(panel.textContent).toContain('Session “A very long session” in Project X: the model refused its text with HTTP 400');
+    expect(panel.textContent).toContain('And 22 more sources.');
+    // A model held off after a failure can be asked again at once.
+    expect(within(panel).getByRole('button', { name: 'Try now' })).toBeTruthy();
   });
 
   it('shows a switch under way with its progress, what search uses meanwhile, and cancels it only once confirmed', async () => {

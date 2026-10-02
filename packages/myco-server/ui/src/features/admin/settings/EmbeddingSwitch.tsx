@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
+import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus, PassedOverList, PassedOverSourceView } from '@goondocks/myco-shared/settings-contract';
 import { Button, ConfirmDialog, Progress, StatusChip } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { switchRefusalText, useSettingsActions } from '../../../hooks/use-settings';
@@ -17,6 +17,30 @@ const dollars = (usd: number): string => usd < 0.01 ? 'under $0.01' : `about $${
 /** What a switch is estimated to cost, where its provider publishes a price. */
 export function costWords(usd: number | null, tokens: number): string | null {
   return usd === null ? null : `Estimated cost: ${dollars(usd)}, for about ${formatCount(tokens, 'token')}.`;
+}
+
+const TYPE_WORDS: Readonly<Record<string, string>> = { session: 'Session', spore: 'Spore', plan: 'Plan', skill: 'Skill' };
+
+/** One passed-over source in the reader's words: what it is, where, and why. */
+export const passedOverWords = (source: PassedOverSourceView): string =>
+  `${TYPE_WORDS[source.type] ?? 'Source'} “${source.title}”${source.projectName === null ? '' : ` in ${source.projectName}`}: ${source.reason}`;
+
+/**
+ * The sources a list names, each on its own line, and how many more there are. Shown wherever search by meaning leaves
+ * sources out: the switch's confirmation and progress, and Health.
+ */
+export function PassedOverSources({ list, lede }: { list: PassedOverList; lede: string }) {
+  if (list.count === 0) return null;
+  const more = list.count - list.sources.length;
+  return (
+    <div className="flex flex-col gap-s1" data-passed-over="">
+      <p className="t-small text-ink-2">{lede}</p>
+      <ul className="flex list-disc flex-col gap-s1 pl-s5 t-small text-muted">
+        {list.sources.map((source) => <li key={`${source.projectId}:${source.type}:${source.title}:${source.reason}`}>{passedOverWords(source)}</li>)}
+      </ul>
+      {more > 0 && <p className="t-small text-muted">{`And ${formatCount(more, 'more source')}.`}</p>}
+    </div>
+  );
 }
 
 /** What a switch would read and cost, as the confirmation states it before it starts. */
@@ -39,16 +63,12 @@ export function switchWords(sw: EmbeddingSwitchStatus, now: number): { chip: str
   const count = `${sw.done.toLocaleString()} of ${formatCount(sw.total, 'source')} done (${share}%)`;
   const from = sw.from === null ? null : shortModel(sw.from.model);
   const muted = (text: string): SwitchLine => ({ text, tone: 'muted' });
-  const skipped: SwitchLine[] = sw.skipped.count === 0 ? [] : [{
-    tone: 'warn',
-    text: `${formatCount(sw.skipped.count, 'source')} could not be read and ${sw.skipped.count === 1 ? 'is' : 'are'} left out: ${sw.skipped.reasons.map((r) => `${r.reason} (${r.count})`).join('; ')}.`,
-  }];
   const started = muted(`Started ${ago(sw.startedAt, now)}.`);
   if (sw.state === 'paused') {
     return {
       chip: 'Paused',
       headline: `Rebuilding search with ${to} is paused at ${count}.`,
-      detail: [{ text: sw.reason ?? 'It waits for you to resume it.', tone: 'bad' }, ...skipped,
+      detail: [{ text: sw.reason ?? 'It waits for you to resume it.', tone: 'bad' },
         muted(from === null ? 'Search matches words only meanwhile.' : `Search keeps using ${from} meanwhile.`), started],
     };
   }
@@ -61,7 +81,7 @@ export function switchWords(sw: EmbeddingSwitchStatus, now: number): { chip: str
   return {
     chip: sw.retryAt === null ? 'Rebuilding' : 'Waiting',
     headline: `Rebuilding search with ${to}: ${count}.`,
-    detail: [...waiting, ...stalled, ...skipped, meanwhile, started, ...(cost === null ? [] : [muted(cost)])],
+    detail: [...waiting, ...stalled, meanwhile, started, ...(cost === null ? [] : [muted(cost)])],
   };
 }
 
@@ -86,14 +106,15 @@ export function EmbeddingSwitchPanel({ sw, now }: { sw: EmbeddingSwitchStatus; n
       </p>
       <Progress done={sw.done} total={Math.max(sw.total, 1)} label={`Sources rebuilt with ${shortModel(sw.model)}`} />
       {words.detail.map((line) => <p key={line.text} className={`t-small ${TONE[line.tone]}`}>{line.text}</p>)}
+      <PassedOverSources list={sw.passedOver} lede={`${formatCount(sw.passedOver.count, 'source')} will have no search by meaning once search moves to ${shortModel(sw.model)}:`} />
       {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
       {admin && (
         <div className="flex flex-wrap gap-s2">
-          {sw.state === 'paused' && (
+          {(sw.state === 'paused' || sw.retryAt !== null) && (
             <Button size="sm" variant="primary" pending={actions.resumeSwitch.isPending} onClick={() => {
               setError(null);
               actions.resumeSwitch.mutate({ id: sw.id }, { onError: (err) => setError(switchRefusalText(err)) });
-            }}>Resume</Button>
+            }}>{sw.state === 'paused' ? 'Resume' : 'Try now'}</Button>
           )}
           <Button size="sm" variant="ghost" onClick={() => { setError(null); setConfirming(true); }}>Cancel the switch</Button>
         </div>
