@@ -50,10 +50,17 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
   });
 
   it('match a dated model id to the alias of its family, as the prefix the manifest declares says', () => {
-    expect(profileModelMatches('claude-code', 'sonnet', 'claude-sonnet-4-5-20250929')).toBe(true);
-    expect(profileModelMatches('claude-code', 'sonnet', 'claude-opus-4-1')).toBe(false);
-    expect(profileModelMatches('claude-code', 'sonnet', 'sonnet-4')).toBe(false);
-    expect(profileModelMatches('codex', 'gpt-5', 'gpt-5')).toBe(true);
+    expect(profileModelMatches('claude-code', 'sonnet', { model: 'claude-sonnet-4-5-20250929', provider: 'anthropic' })).toBe(true);
+    expect(profileModelMatches('claude-code', 'sonnet', { model: 'claude-opus-4-1' })).toBe(false);
+    expect(profileModelMatches('claude-code', 'sonnet', { model: 'sonnet-4' })).toBe(false);
+    expect(profileModelMatches('codex', 'gpt-5', { model: 'gpt-5', provider: 'openai' })).toBe(true);
+  });
+
+  it('match a provider-qualified id to the same model from that provider, as an OpenCode run reports it (#1608)', () => {
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'gpt-5.5', provider: 'openai' })).toBe(true);
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'big-pickle', provider: 'opencode' })).toBe(false);
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'gpt-5.5', provider: 'openrouter' })).toBe(false);
+    expect(profileModelMatches('opencode', 'openai/gpt-5.5', { model: 'gpt-5.5' })).toBe(false);
   });
 
   it('are how a worker runs each harness: binary, launch, login, isolation, permissions, source git, model setting and accounting, in rank order', () => {

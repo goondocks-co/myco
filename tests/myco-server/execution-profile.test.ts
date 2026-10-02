@@ -121,6 +121,23 @@ describe('task execution profiles', () => {
     expect(JSON.stringify(await getRunDetail(r.db, { projectId: 'proj_1' }, claim.run.id, NOW + 2, 'mem_worker'))).not.toContain('sk-canary');
   });
 
+  it('records no mismatch for an OpenCode run that reports the claimed model from the claimed provider (#1608)', async () => {
+    for (const [reported, warned] of [[{ model: 'gpt-5.5', provider: 'openai' }, false], [{ model: 'big-pickle', provider: 'opencode' }, true]] as const) {
+      const r = await rig();
+      await r.writer.setLeaf('agent.reasoning_map.opencode.default', 'openai/gpt-5.5', 'mem_worker', NOW);
+      r.queue('opencode_run');
+      const claim = await r.claim([{ id: 'opencode', authenticated: true, profile: { model: 'config', efforts: ['medium'] } }]);
+      if (!claim.claimed) throw new Error('claim refused');
+      await endLeasedRun(r.serverEnv, { tokenId: r.token.tokenId, now: NOW + 1 }, {
+        projectId: 'proj_1', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', accountingVersion: 1,
+        identity: { status: 'reported', source: 'session.configOptions', primary: reported, models: [{ ...reported, source: 'session.configOptions', usage: null }] },
+      });
+      const detail = await getRunDetail(r.db, { projectId: 'proj_1' }, claim.run.id, NOW + 2, 'mem_worker');
+      expect({ requested: detail?.run.requested?.model, warned: (detail?.run.identity as { warnings?: string[] } | undefined)?.warnings?.includes('model_mismatch') === true })
+        .toEqual({ requested: 'openai/gpt-5.5', warned });
+    }
+  });
+
   it('declares exactly the worker outcomes and no high default', () => {
     const tiers = (catalogue as unknown as { TASK_TIERS?: Record<string, string> }).TASK_TIERS;
     expect(tiers).toEqual({ 'title-summary': 'low', 'extract-curate': 'default', 'canopy-map': 'default', 'vault-seed': 'default' });
