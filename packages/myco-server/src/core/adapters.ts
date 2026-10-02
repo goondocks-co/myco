@@ -245,6 +245,8 @@ export interface ServerEnv {
   vectors?: VectorStore;
   embeddingProvider?: () => Promise<EmbeddingProvider | null>;
   platform: PlatformDescriptor;
+  /** Built-in source for harness credentials, supplied by the deployment target. */
+  harnessCredentialSource: 'deployment' | 'worker-login';
   db: RelationalStore;
   blobs: BlobStore;
   sourceLimit: RateLimiter;

@@ -16,10 +16,21 @@ export interface LeafRow {
   updatedBy: string | null;
   /** Nothing on the server reads this leaf any more: the page shows it only where a value is stored, read-only. */
   retired: boolean;
+  /** Present for execution profile leaves: what the next claim uses. */
+  effectiveValue?: unknown;
+  source?: 'configured' | 'default' | 'unset';
 }
 
 export interface SettingsAnswer {
   leaves: LeafRow[];
+  taskTiers: TaskTierRow[];
+}
+
+/** One worker outcome's effective reasoning tier. */
+export interface TaskTierRow {
+  task: string;
+  tier: 'low' | 'default' | 'high';
+  source: 'task' | 'task-override';
 }
 
 /** `GET /api/secrets`: one provider key's slot, described and never shown. */

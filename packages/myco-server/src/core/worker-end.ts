@@ -4,6 +4,7 @@ import { resolveWorkerCost } from './cost/worker.js';
 import { runCloseRefusal } from './run-postconditions.js';
 import type { RunUpdate } from './runs.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
+import { requestedProfile, profileModelMatches, MODEL_MISMATCH } from '@goondocks/myco-shared/execution-profile';
 
 interface WorkerEnd extends WorkerRunIdentity {
   status: 'completed' | 'failed';
@@ -31,7 +32,12 @@ function runError(status: 'completed' | 'failed', unmet: string | null, reported
 
 /** Close evidence and accounting are prepared under the same dispatched attempt. */
 export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEnd, row) => {
-  const { usage = null, attemptId, identity, accountingVersion } = parseWorkerAccounting(run);
+  const { usage = null, attemptId, accountingVersion, identity: reportedIdentity } = parseWorkerAccounting(run);
+  const requested = requestedProfile(row.executionOverrides);
+  const mismatch = requested !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
+    && !profileModelMatches(row.harness ?? '', requested.model, reportedIdentity.primary.model);
+  const identity = mismatch && reportedIdentity !== undefined
+    ? { ...reportedIdentity, warnings: [...new Set([...(reportedIdentity.warnings ?? []), MODEL_MISMATCH])] } : reportedIdentity;
   const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, { projectId: run.projectId }, row) : null;
   const status = unmet === null ? run.status : 'failed';
   const error = runError(status, unmet, run.error ?? null);

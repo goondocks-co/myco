@@ -45,6 +45,7 @@ export const RUN_PERMISSIONS: readonly string[] = ['--permission-mode', 'manual'
  * PATH as that configuration does.
  */
 const SHELL_SETUP_VARIABLE = 'CLAUDE_ENV_FILE';
+const INHERITED_ANTHROPIC_OVERRIDES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL'] as const;
 
 /** A message's content blocks. */
 function blocksOf(message: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -88,17 +89,21 @@ export const claudeCodeDriver: Driver = {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
     const { rules: grant, env, shellSetup } = runGrant(spec, harness);
+    const omitInherited = Object.keys(spec.credentialEnv).length > 0 ? INHERITED_ANTHROPIC_OVERRIDES : [];
     const started = startHarness(harness.binary, [
       '-p', spec.prompt,
+      ...(spec.profile === undefined ? [] : ['--model', spec.profile.model, ...(spec.profile.effort === null ? [] : ['--effort', spec.profile.effort])]),
       '--output-format', 'stream-json',
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
-    ], { cwd: spec.scratchDir, env: { ...spec.credentialEnv, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal });
+    ], { cwd: spec.scratchDir, env: { ...spec.credentialEnv, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal, omitInherited });
 
-    const accounting = new ClaudeAccounting(harness, { ...process.env, ...spec.credentialEnv, ...env });
+    const accountingEnv = { ...process.env, ...spec.credentialEnv, ...env };
+    for (const key of omitInherited) if (!(key in spec.credentialEnv)) delete accountingEnv[key];
+    const accounting = new ClaudeAccounting(harness, accountingEnv);
     let ended = false;
     let failure: string | null = null;
     /** The tool each call id named, so a result can be read back as that call's outcome. */

@@ -369,9 +369,9 @@ describe('the imported-session backfill', () => {
       expect({ held, status: refused.status, stored: stored() }).toEqual({ held, status: 400, stored: held });
     }
     // Other tasks, the task's other fields and the block's other fields survive the switch.
-    r.setting('agent.tasks', { 'extract-curate': { schedule: { maxRunsPerDay: 3 } }, [TITLING_TASK]: { model: 'small', schedule: { maxRunsPerDay: 9 } } });
+    r.setting('agent.tasks', { 'extract-curate': { schedule: { maxRunsPerDay: 3 } }, [TITLING_TASK]: { model: 'haiku', harness: 'claude-code', schedule: { maxRunsPerDay: 9 } } });
     expect(await (await request('PUT', { enabled: true })).json()).toMatchObject({ enabled: true, backfillEnabled: true, runsPerDay: 9 });
-    expect(JSON.parse(stored()!)).toEqual({ 'extract-curate': { schedule: { maxRunsPerDay: 3 } }, [TITLING_TASK]: { model: 'small', schedule: { maxRunsPerDay: 9, enabled: true } } });
+    expect(JSON.parse(stored()!)).toEqual({ 'extract-curate': { schedule: { maxRunsPerDay: 3 } }, [TITLING_TASK]: { model: 'haiku', harness: 'claude-code', schedule: { maxRunsPerDay: 9, enabled: true } } });
     const tick = await runTick(r.env, NOW);
     expect(tick.jobs.find((j) => j.name === 'titling-backfill')).toEqual({ name: 'titling-backfill', changed: 1, failed: null, more: false });
     expect(await (await request('PUT', { enabled: false })).json()).toMatchObject({ enabled: false, backfillEnabled: false, inFlight: 1 });
@@ -578,7 +578,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
       const body: unknown = await res.json();
       expect({ count, status: res.status, body }).toEqual({ count, status: 400, body: { applied: false, reason: 'invalid_value', leaf: 'agent.tasks', detail: `${TITLING_TASK}.schedule.maxRunsPerDay: expected a whole number of 0 or more` } });
     }
-    const accepted: Array<Record<string, unknown>> = [{ [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } }, { [TITLING_TASK]: { model: 'small' } }, { 'extract-curate': { schedule: { intervalSeconds: 60 } } }];
+    const accepted: Array<Record<string, unknown>> = [{ [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } }, { [TITLING_TASK]: { model: 'haiku', harness: 'claude-code' } }, { 'extract-curate': { schedule: { intervalSeconds: 60 } } }];
     for (const value of accepted) {
       const answer: unknown = await (await request('PUT', '/api/settings/agent.tasks', { value })).json();
       expect(answer).toEqual({ applied: true });

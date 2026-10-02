@@ -25,6 +25,8 @@
  */
 import { REPOSITORY_COMMIT_PATTERN, parseRepositoryCheckoutSpec, type RepositoryCheckoutSpec, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/canopy';
+import { isExecutionProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
 import type { DispatchLimits } from './limits.js';
 import type { RunErrorCode } from './reader-codes.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
@@ -530,6 +532,7 @@ export type RunUpdate = Partial<Record<RunUpdateColumn, string | number | null>>
 
 export interface RunRow {
   harness: string | null;
+  executionOverrides: string | null;
   id: string;
   agentId: string;
   task: string | null;
@@ -550,7 +553,7 @@ export interface RunRow {
   leaseExpiresAt: number | null;
 }
 
-const RUN_COLUMNS = `id, harness, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
+const RUN_COLUMNS = `id, harness, execution_overrides AS executionOverrides, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
     resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
     resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
     dry_run AS dryRun, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;
@@ -1259,16 +1262,20 @@ export async function nextClaimable(db: RelationalStore, excluded: readonly stri
 export async function claimQueuedRun(
   db: RelationalStore,
   candidate: ClaimCandidate,
-  claim: { dispatchedBy: string; leasedBy: string; leaseExpiresAt: number; harness: string; now: number },
+  claim: { dispatchedBy: string; leasedBy: string; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile },
   admission: WriteAdmission,
 ): Promise<ClaimedRunRow | null> {
+  if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
   const { results } = await db.prepare(
     `UPDATE agent_runs
-        SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL
+        SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL,
+            reasoning_level = ?, model = ?, execution_overrides = ?
       WHERE project_id = ? AND id = ? AND status = 'queued' AND dispatched_by IS NULL${ADMISSION_WHERE}
       RETURNING project_id AS projectId, id, task, instruction, run_context AS runContext, dry_run AS dryRun`,
   ).bind(
     claim.now, claim.dispatchedBy, claim.leasedBy, claim.leaseExpiresAt, claim.harness,
+    claim.profile.tier, claim.profile.model,
+    JSON.stringify({ requested: claim.profile, harness: claim.harness }),
     candidate.projectId, candidate.id,
     ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission),
   ).all<ClaimedRunRow>();
@@ -1279,10 +1286,11 @@ export async function claimQueuedRun(
  * Name `holder` as what every queued run of `tasks` waits on, where it names one of `from` now. A run a limit holds
  * keeps that limit, and a run a worker has taken is not queued.
  */
-export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly string[], holder: string): Promise<void> {
+export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly string[], holder: string, includeProfileHolds = false): Promise<void> {
   if (tasks.length === 0 || from.length === 0) return;
   const list = (values: readonly string[]) => values.map(() => '?').join(', ');
-  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND held_by IN (${list(from)})`)
+  const profiles = includeProfileHolds ? PROFILE_HOLD_PREFIXES.map((prefix) => ` OR held_by LIKE '${prefix}%'`).join('') : '';
+  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND (held_by IN (${list(from)})${profiles})`)
     .bind(holder, ...tasks, ...from).run();
 }
 

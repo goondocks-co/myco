@@ -5,8 +5,9 @@ import { AcpEvents } from '@myco/runner/drivers/acp-events.js';
 import { parseWorkerAccounting } from '@goondocks/myco-shared/worker-usage';
 import { fixtureRun } from '../helpers/execution-harness.ts';
 
-describe('execution identity on every offered runner end', () => {
-  for (const harness of HARNESSES.filter(offerable)) {
+describe('execution identity on every profile-capable runner end', () => {
+  const runnable = HARNESSES.filter((harness) => offerable(harness) && harness.profile.model !== 'none');
+  for (const harness of runnable) {
     for (const outcome of ['success', 'failed_call', 'no_result', 'no_usage']) {
       it(`${harness.id} records identity on ${outcome}`, async () => {
         const report = await fixtureRun(harness, outcome);
@@ -21,7 +22,7 @@ describe('execution identity on every offered runner end', () => {
       });
     }
   }
-  for (const harness of HARNESSES.filter(offerable)) {
+  for (const harness of runnable.filter((harness) => harness.id !== 'codex')) {
     it(`${harness.id} explains an unresolved model even with no usable identity`, async () => {
       expect(await fixtureRun(harness, 'unknown')).toHaveProperty('identity', { status: 'unknown', reason: 'harness_did_not_report_model_and_launch_choice_unresolved' });
     });

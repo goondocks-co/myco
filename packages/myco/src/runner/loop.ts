@@ -1,4 +1,5 @@
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { profileSupported, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -50,6 +51,7 @@ interface ClaimedRun {
   runToken: string;
   attemptId?: string;
   credentialEnv: Record<string, string>;
+  profile?: ExecutionProfile;
   /** The run's own budget, as the Deployment decided it. The worker records it; the Deployment enforces it through the sweep. */
   timeoutSeconds: number;
 }
@@ -312,6 +314,9 @@ async function drive(
   if (named !== null && !offerable(named)) return failedBeforeStart(`this worker does not drive ${run.harness}: ${WITHHELD_REASON}`);
   const driver = driverFor(run.harness);
   if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
+  if (named === null || run.profile === undefined || !profileSupported(run.profile, named.profile)) {
+    return failedBeforeStart('profile_unapplied');
+  }
   // A harness given nothing to do ends its turn at once, and a worker that
   // launched it would then report a run that did nothing as one that finished.
   // The Deployment ends such a run at the claim; a Deployment that hands one
@@ -421,6 +426,7 @@ async function drive(
     stopping.signal.throwIfAborted();
     stream = driver.run({
       prompt: run.instruction, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
+      profile: run.profile,
       sourceReadOnly: checkout !== undefined,
     }, stopping.signal)[Symbol.asyncIterator]();
     for (;;) {

@@ -52,7 +52,7 @@ afterEach(() => {
 function sentinelLeaves(sqlite: { query: (sql: string) => { run: (...args: unknown[]) => unknown } }): number {
   DEPLOYMENT_LEAVES.forEach((leaf, i) => {
     sqlite.query('INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)')
-      .run(leaf, JSON.stringify(`${MARK}-${i}`), Date.now(), 'mem_machine_1');
+      .run(leaf, JSON.stringify(leaf === 'agent.tasks' ? { marker: `${MARK}-${i}` } : `${MARK}-${i}`), Date.now(), 'mem_machine_1');
   });
   return DEPLOYMENT_LEAVES.length;
 }

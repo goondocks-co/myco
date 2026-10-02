@@ -42,6 +42,14 @@ export { MAP_TASK };
 /** The four run outcomes: every worker-served task with a prompt of its own. */
 export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK];
 
+/** The reasoning tier each worker outcome declares. */
+export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/execution-profile').ReasoningTier>> = {
+  [TITLING_TASK]: 'low',
+  [EXTRACTION_TASK]: 'default',
+  [MAP_TASK]: 'default',
+  [SEEDING_TASK]: 'default',
+};
+
 /** Tasks whose required worker capability is not available for dispatch. */
 export const UNLANDED_TASKS: readonly string[] = [];
 

@@ -33,7 +33,7 @@ function valueWords(field: LeafField, value: unknown): string {
   }
   if (value === null || value === undefined || value === '') return 'none';
   if (typeof value === 'object') return Object.keys(value).length === 0 ? 'none' : 'set';
-  return `${String(value)}${field.unit !== undefined ? ` ${field.unit}` : ''}`;
+  return `${field.optionLabels?.[String(value)] ?? String(value)}${field.unit !== undefined ? ` ${field.unit}` : ''}`;
 }
 
 /** What the server applies while nothing is stored, in the words a row's status line uses. */
@@ -90,18 +90,26 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const entry = LEAF_DEFAULTS[field.leaf];
-  const fallback = entry !== undefined && 'value' in entry ? entry.value : null;
+  const fallback = row?.source === 'default' ? row.effectiveValue : entry !== undefined && 'value' in entry ? entry.value : null;
   // A setting kept by Myco shows Myco's own value; any other shows what is stored, else what the server applies.
   const value = field.readOnly === true && fallback !== null ? fallback : row?.configured ? row.value : fallback;
   // A field typed into shows only what is stored; with nothing stored it stays empty and shows the default as its hint.
   const shown = draft ?? textOf(field, row?.configured === true || field.readOnly === true ? value : null);
   const id = `leaf-${field.leaf}`;
-  const pending = actions.setLeaf.isPending;
+  const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending;
 
   const save = (next: unknown) => {
     setError(null);
     if (locked) return;
     actions.setLeaf.mutate({ leaf: field.leaf, value: next }, {
+      onError: (err) => setError(settingsRefusalText(err)),
+      onSuccess: () => setDraft(null),
+    });
+  };
+  const reset = () => {
+    setError(null);
+    if (locked) return;
+    actions.resetLeaf.mutate({ leaf: field.leaf }, {
       onError: (err) => setError(settingsRefusalText(err)),
       onSuccess: () => setDraft(null),
     });
@@ -137,7 +145,7 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
         value={value === null ? '' : String(value)}
         placeholder={placeholder}
         disabled={pending || locked}
-        options={(field.options ?? []).map((o) => ({ value: String(o), label: `${String(o)}${field.unit ? ` ${field.unit}` : ''}` }))}
+        options={(field.options ?? []).map((o) => ({ value: String(o), label: valueWords(field, o) }))}
         onValueChange={(raw) => { const option = (field.options ?? []).find((o) => String(o) === raw); save(option ?? raw); }}
       />
     );
@@ -224,11 +232,12 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
         // A setting Myco keeps shows its value in full; a status would only repeat it.
         : field.readOnly === true ? undefined
         // An empty field or select already shows the default in words, so the status names it only for a switch.
-        : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), field.kind === 'toggle' ? defaultWords(field) : null))}
+        : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), field.resettable && row?.source === 'default'
+          ? valueWords(field, row.effectiveValue) : field.kind === 'toggle' || field.resettable ? defaultWords(field) : null))}
       refused={error !== null}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}
-      control={control}
+      control={field.resettable ? <div className="flex w-full items-center gap-s2">{control}{row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}</div> : control}
     />
   );
 }

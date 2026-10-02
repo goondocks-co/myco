@@ -1,3 +1,4 @@
+import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * The claim queue and the lease a worker holds on what it took.
  *
@@ -18,13 +19,13 @@ import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
-const OFFERED = [{ id: 'claude-code', authenticated: true }];
+const OFFERED = [offeredHarness('claude-code')];
 
 /** A Deployment holding one queued run of a worker-served task. */
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
 function fixture(task = 'extract-curate') {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);

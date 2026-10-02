@@ -28,6 +28,7 @@
  */
 
 import { expandHome } from '../paths/home.js';
+import { PROFILE_HARNESSES, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 /** How a harness is started so it speaks the agent protocol, or that it does not speak it at all. */
 export type LaunchShape =
@@ -118,11 +119,13 @@ export interface Harness {
   asking: Asking;
   sourceGit: SourceGit;
   accounting: HarnessAccounting;
+  profile: ProfileCapability;
 }
 
 export const HARNESSES: readonly Harness[] = [
   {
     id: 'claude-code',
+    profile: { model: 'flag', efforts: PROFILE_HARNESSES['claude-code']!.allowedEfforts },
     accounting: { reported: 'claude-stream', modelSources: ['system.init.model', 'assistant.message.model', 'result.modelUsage'], primarySources: ['system.init.model'], modelVariants: [{ suffix: '[1m]', context: '1m' }], zeroDollars: 'reported', launchFallback: 'none', provider: { kind: 'environment', default: 'anthropic', selectors: [{ variable: 'CLAUDE_CODE_USE_BEDROCK', provider: 'bedrock' }, { variable: 'CLAUDE_CODE_USE_VERTEX', provider: 'vertex' }, { variable: 'CLAUDE_CODE_USE_FOUNDRY', provider: 'foundry' }], unknownIfSet: ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_CLIENT_DATA_URL'] }, tokenScope: 'attempt' },
     binary: 'claude',
     launch: { kind: 'native' },
@@ -135,6 +138,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'codex',
+    profile: { model: 'config', efforts: PROFILE_HARNESSES.codex!.allowedEfforts },
     accounting: { reported: 'codex-session', modelSources: ['session.turn_context.model'], launchFallback: 'resolved-config', provider: { kind: 'session-config', default: 'openai' }, tokenScope: 'attempt' },
     binary: 'codex',
     launch: { kind: 'native' },
@@ -148,6 +152,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'opencode',
+    profile: { model: 'config', efforts: PROFILE_HARNESSES.opencode!.allowedEfforts },
     accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'model-prefix' }, tokenScope: 'unverified', lastResponseVersions: ['1.18.21', '1.18.29'] },
     binary: 'opencode',
     launch: { kind: 'subcommand', args: ['acp'] },
@@ -160,6 +165,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'cursor',
+    profile: { model: 'none', efforts: PROFILE_HARNESSES.cursor!.allowedEfforts },
     accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
     binary: 'cursor-agent',
     launch: { kind: 'subcommand', args: ['acp'] },
@@ -173,6 +179,7 @@ export const HARNESSES: readonly Harness[] = [
   },
   {
     id: 'antigravity',
+    profile: { model: 'none', efforts: PROFILE_HARNESSES.antigravity!.allowedEfforts },
     accounting: { reported: 'acp-session', zeroDollars: 'unavailable', modelSources: ['session.models', 'session.configOptions', 'session.currentModelId'], launchFallback: 'none', provider: { kind: 'unavailable' }, tokenScope: 'unverified' },
     binary: 'agy',
     launch: { kind: 'sidecar', binary: 'agy_acp_server.par' },

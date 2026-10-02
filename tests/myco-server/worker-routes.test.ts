@@ -1,3 +1,4 @@
+import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * Who reaches the worker control plane, and what it answers.
  *
@@ -22,7 +23,7 @@ function post(token: string, path: string, body: unknown, extra: Record<string, 
 }
 
 async function rig() {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   const member = async (id: string, role: 'admin' | 'member') => {
@@ -107,7 +108,7 @@ describe('the worker control plane', () => {
        VALUES ('proj_1', 'run_c', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
       [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
-    const claimed = await r.json(post(admin, '/worker/claim', { harnesses: [{ id: 'claude-code', authenticated: true }] }));
+    const claimed = await r.json(post(admin, '/worker/claim', { harnesses: [offeredHarness('claude-code')] }));
     expect(claimed.body.claimed).toBe(true);
     expect(claimed.body.heartbeatMs).toEqual(expect.any(Number));
   });

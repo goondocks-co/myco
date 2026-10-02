@@ -18,6 +18,7 @@ import { RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
+import { OUTCOME_TASKS, TASK_TIERS } from '../../packages/myco-server/src/core/task-catalogue';
 import { rawIdsIn } from '../helpers/raw-ids';
 
 const ADA = 'mem_q3Vb8xRk2LmT7wYz';
@@ -44,6 +45,7 @@ const rowFor = (leaf: string) => ({ leaf, configured: false, value: null as unkn
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
 const RETIRED_FIELDS = LEAF_FIELDS.filter((f) => isRetired(f, rowFor(f.leaf)));
 const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string; updatedAt: number; retired: boolean }>> = {}) => ({
+  taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })),
   leaves: LEAF_FIELDS.map((f) => {
     const o = over[f.leaf];
     return { ...rowFor(f.leaf), configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
@@ -116,6 +118,89 @@ const statusOf = (leaf: string) => document.querySelector(`[data-setting-status=
 const SECTION_LABEL = Object.fromEntries(SETTINGS_SECTIONS.map((s) => [s.id, s.label])) as Record<string, string>;
 
 describe('Settings, in five sections', () => {
+  it('shows login choices in user words while saving their wire values', async () => {
+    const leaf = 'agent.harnesses.claude-code.credential';
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === leaf
+        ? { ...row, effectiveValue: 'deployment', source: 'default' } : row) }),
+      [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
+    }));
+    mount('/settings/models');
+    const claude = within(await group('Claude Code tiers'));
+    expect(claude.getByLabelText('Sign in with')).toBeTruthy();
+    expect(statusOf(leaf)).toBe('Server default: Server login');
+    fireEvent.click(claude.getByLabelText('Sign in with'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Worker login' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'worker-login' } });
+  });
+
+  it('patches and resets one task tier while keeping newer sibling fields', async () => {
+    const initial = {
+      'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 4 }, harness: 'claude-code', model: 'haiku' },
+      'canopy-map': { schedule: { intervalSeconds: 600 } },
+    };
+    let document: Record<string, unknown> = initial;
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({
+        ...leaves({ 'agent.tasks': { value: document } }),
+        taskTiers: OUTCOME_TASKS.map((task) => {
+          const override = document[task] as { reasoningLevel?: 'low' | 'default' | 'high' } | undefined;
+          return { task, tier: override?.reasoningLevel ?? TASK_TIERS[task], source: override?.reasoningLevel ? 'task-override' : 'task' };
+        }),
+      }),
+      '/api/settings/agent.tasks': (init) => {
+        const { task, tier } = JSON.parse(String(init?.body)) as { task: string; tier: string | null };
+        const entry = { ...(document[task] as Record<string, unknown> ?? {}) };
+        if (tier === null) delete entry.reasoningLevel;
+        else entry.reasoningLevel = tier;
+        document = { ...document, [task]: entry };
+        return Response.json({ applied: true });
+      },
+    }));
+    mount('/settings/models');
+    const editor = within(await group('Task tiers'));
+    expect(editor.getByText('Task override')).toBeTruthy();
+    document = {
+      'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+      'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
+    };
+    await pick('title-summary tier', 'High');
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: 'high' } });
+    expect(document).toEqual({
+      'title-summary': { reasoningLevel: 'high', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+      'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
+    });
+    fireEvent.click(editor.getByRole('button', { name: 'Reset title-summary tier' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: null } });
+    expect(document).toEqual({
+      'title-summary': { schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+      'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
+    });
+    await waitFor(() => expect(statusOf('task-tier-title-summary')).toBe('Task default'));
+  });
+
+  it('edits a tier model and resets that leaf alone', async () => {
+    const model = 'agent.reasoning_map.claude-code.low';
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves({ [model]: { value: 'sonnet', updatedBy: ADA, updatedAt: NOW } })),
+      [`/api/settings/${model}`]: () => Response.json({ applied: true }),
+    }));
+    mount('/settings/models');
+    const tiers = within(await group('Claude Code tiers'));
+    const input = tiers.getByLabelText('low tier model');
+    expect((input as HTMLInputElement).value).toBe('sonnet');
+    fireEvent.change(input, { target: { value: 'haiku' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${model}`, body: { value: 'haiku' } });
+    fireEvent.click(tiers.getByRole('button', { name: 'Reset low tier model' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ method: 'DELETE', path: `/api/settings/${model}` });
+  });
+
   it('lists the five sections as one strip of tabs, each at its own address, the first current on /settings', async () => {
     server(base());
     mount('/settings');

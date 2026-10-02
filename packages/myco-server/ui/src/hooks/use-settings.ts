@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, deleteJson, fetchJson, putJson } from '../lib/api';
+import { ApiError, deleteJson, fetchJson, patchJson, putJson } from '../lib/api';
+import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 
 import type { SecretRow, SettingsAnswer, SecretsAnswer, TitlingBackfillProgress } from '../features/admin/settings/wire';
 import type { CapabilitiesAnswer, RepositoryAnswer } from '../features/admin/project/wire';
@@ -32,6 +33,8 @@ export function settingsRefusalText(err: unknown): string {
         return 'That setting is not held by the server.';
       case 'malformed':
         return 'The server could not read that value.';
+      case 'retired':
+        return 'That setting is retired.';
       case 'invalid_value':
         return 'The server refused that value.';
       case 'unknown_capability':
@@ -52,6 +55,16 @@ export function useSettingsActions() {
       gcTime: 0,
       mutationFn: (v: { leaf: string; value: unknown }) => putJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`, { value: v.value }),
       // Where titling stands reads the scheduling switch and the task overrides, so it is read again with the settings.
+      onSuccess: () => refresh('settings', 'titling-backfill'),
+    }),
+    resetLeaf: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { leaf: string }) => deleteJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`),
+      onSuccess: () => refresh('settings', 'titling-backfill'),
+    }),
+    setTaskTier: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { task: string; tier: ReasoningTier | null }) => patchJson<{ applied: true }>('/api/settings/agent.tasks', v),
       onSuccess: () => refresh('settings', 'titling-backfill'),
     }),
     setSecret: useMutation({

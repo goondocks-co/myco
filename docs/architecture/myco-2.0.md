@@ -800,25 +800,46 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `release_provenance.github.max_lookups_per_run` | REPLACE | Project | Core | Per-repository API budget, counting every GitHub read of one check; held in `project_release_provenance` | #1274 |
 | `release_provenance.package_map` | REPLACE | Project | Core | Monorepo package to tag mapping for one repository; held in `project_release_provenance` | #1274 |
 | `agent.harness` | REPLACE | Deployment | Core | Which harness the Deployment runs tasks under. **Planned REPLACE by #1151** per plan §2.5: which harness a worker drives is resolved by detection against a Deployment-declared preference and fallback order. | #1151 |
-| `agent.model` | REPLACE | Deployment | Core | Model pin the Deployment applies when a task sets none | #919 |
-| `agent.reasoningLevel` | REPLACE | Deployment | Core | Default reasoning tier the Deployment resolves through the provider's map | #919 |
+| `agent.model` | DROP | — | — | Retained as a read-only older setting; replaced by harness-specific `agent.reasoning_map.*` and `agent.tasks.<task>.model` | execution profile |
+| `agent.reasoningLevel` | DROP | — | — | Retained as a read-only older setting; every task declares its tier, with `agent.tasks.<task>.reasoningLevel` as its override | execution profile |
 | `agent.provider.type` | REPLACE | Deployment | Core | Selects the provider, and with it which endpoint family the Deployment's credential is sent to | #915 |
 | `agent.provider.base_url` | REPLACE | Deployment | Core | A custom endpoint; no stored Deployment credential is sent to one | #915 |
 | `agent.provider.local_backend` | REPLACE | Deployment | Core | Which local runtime a local provider targets | #915 |
 | `agent.provider.model` | REPLACE | Deployment | Core | Model the provider is asked for | #915 |
 | `agent.provider.context_length` | REPLACE | Deployment | Core | Context window the Deployment requests of a local provider | #915 |
-| `agent.provider.reasoning_map.default` | REPLACE | Deployment | Core | Model this provider resolves the `default` reasoning tier to | #919 |
-| `agent.provider.effort_map.default.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `default` tier | #919 |
-| `agent.provider.effort_map.default.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `default` tier | #919 |
-| `agent.provider.thinking_budget_map.default` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `default` tier | #919 |
-| `agent.provider.reasoning_map.high` | REPLACE | Deployment | Core | Model this provider resolves the `high` reasoning tier to | #919 |
-| `agent.provider.effort_map.high.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `high` tier | #919 |
-| `agent.provider.effort_map.high.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `high` tier | #919 |
-| `agent.provider.thinking_budget_map.high` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `high` tier | #919 |
-| `agent.provider.reasoning_map.low` | REPLACE | Deployment | Core | Model this provider resolves the `low` reasoning tier to | #919 |
-| `agent.provider.effort_map.low.effort` | REPLACE | Deployment | Core | Effort this provider applies at the `low` tier | #919 |
-| `agent.provider.effort_map.low.verbosity` | REPLACE | Deployment | Core | Verbosity this provider applies at the `low` tier | #919 |
-| `agent.provider.thinking_budget_map.low` | REPLACE | Deployment | Core | Thinking budget this provider applies at the `low` tier | #919 |
+| `agent.provider.reasoning_map.default` | DROP | — | — | Older provider model map, replaced by `agent.reasoning_map.<harness>.default` | execution profile |
+| `agent.provider.effort_map.default.effort` | DROP | — | — | Older provider effort, replaced by `agent.effort_map.<harness>.default` | execution profile |
+| `agent.provider.effort_map.default.verbosity` | DROP | — | — | Older verbosity setting; harness execution profiles carry effort only | execution profile |
+| `agent.provider.thinking_budget_map.default` | DROP | — | — | Older thinking budget, replaced by `agent.effort_map.<harness>.default` | execution profile |
+| `agent.provider.reasoning_map.high` | DROP | — | — | Older provider model map, replaced by `agent.reasoning_map.<harness>.high` | execution profile |
+| `agent.provider.effort_map.high.effort` | DROP | — | — | Older provider effort, replaced by `agent.effort_map.<harness>.high` | execution profile |
+| `agent.provider.effort_map.high.verbosity` | DROP | — | — | Older verbosity setting; harness execution profiles carry effort only | execution profile |
+| `agent.provider.thinking_budget_map.high` | DROP | — | — | Older thinking budget, replaced by `agent.effort_map.<harness>.high` | execution profile |
+| `agent.provider.reasoning_map.low` | DROP | — | — | Older provider model map, replaced by `agent.reasoning_map.<harness>.low` | execution profile |
+| `agent.provider.effort_map.low.effort` | DROP | — | — | Older provider effort, replaced by `agent.effort_map.<harness>.low` | execution profile |
+| `agent.provider.effort_map.low.verbosity` | DROP | — | — | Older verbosity setting; harness execution profiles carry effort only | execution profile |
+| `agent.provider.thinking_budget_map.low` | DROP | — | — | Older thinking budget, replaced by `agent.effort_map.<harness>.low` | execution profile |
+| `agent.reasoning_map.claude-code.low` | NEW | Deployment | Core | Claude Code model for low-tier tasks; built-in `haiku` | execution profile |
+| `agent.reasoning_map.claude-code.default` | NEW | Deployment | Core | Claude Code model for default-tier tasks; built-in `sonnet` | execution profile |
+| `agent.reasoning_map.claude-code.high` | NEW | Deployment | Core | Claude Code model for high-tier tasks; built-in `opus` | execution profile |
+| `agent.effort_map.claude-code.low` | NEW | Deployment | Core | Claude Code effort at low tier; built-in `low` | execution profile |
+| `agent.effort_map.claude-code.default` | NEW | Deployment | Core | Claude Code effort at default tier; built-in `medium` | execution profile |
+| `agent.effort_map.claude-code.high` | NEW | Deployment | Core | Claude Code effort at high tier; built-in `high` | execution profile |
+| `agent.reasoning_map.codex.low` | NEW | Deployment | Core | Codex model for low-tier tasks; unset holds a run until configured | execution profile |
+| `agent.reasoning_map.codex.default` | NEW | Deployment | Core | Codex model for default-tier tasks; unset holds a run until configured | execution profile |
+| `agent.reasoning_map.codex.high` | NEW | Deployment | Core | Codex model for high-tier tasks; unset holds a run until configured | execution profile |
+| `agent.effort_map.codex.low` | NEW | Deployment | Core | Codex effort at low tier; built-in `low` | execution profile |
+| `agent.effort_map.codex.default` | NEW | Deployment | Core | Codex effort at default tier; built-in `medium` | execution profile |
+| `agent.effort_map.codex.high` | NEW | Deployment | Core | Codex effort at high tier; built-in `high` | execution profile |
+| `agent.reasoning_map.opencode.low` | NEW | Deployment | Core | OpenCode provider/model for low-tier tasks; unset holds a run until configured | execution profile |
+| `agent.reasoning_map.opencode.default` | NEW | Deployment | Core | OpenCode provider/model for default-tier tasks; unset holds a run until configured | execution profile |
+| `agent.reasoning_map.opencode.high` | NEW | Deployment | Core | OpenCode provider/model for high-tier tasks; unset holds a run until configured | execution profile |
+| `agent.effort_map.opencode.low` | NEW | Deployment | Core | OpenCode effort at low tier; built-in `low` | execution profile |
+| `agent.effort_map.opencode.default` | NEW | Deployment | Core | OpenCode effort at default tier; built-in `medium` | execution profile |
+| `agent.effort_map.opencode.high` | NEW | Deployment | Core | OpenCode effort at high tier; built-in `high` | execution profile |
+| `agent.harnesses.claude-code.credential` | NEW | Deployment | Core | Credential source for Claude Code; Deployment on hosted targets, worker login locally | execution profile |
+| `agent.harnesses.codex.credential` | NEW | Deployment | Core | Credential source for Codex; Deployment on hosted targets, worker login locally | execution profile |
+| `agent.harnesses.opencode.credential` | NEW | Deployment | Core | Credential source for OpenCode; Deployment on hosted targets, worker login locally | execution profile |
 | `embedding.base_url` | REPLACE | Deployment | Core | Self-hosted embedding endpoint; Cloudflare uses its Workers AI binding | #1124 |
 | `backup.dir` | DROP | — | — | A member-writable server-side filesystem path is the #907 H5 family, and has no meaning on a Worker. Where a self-hosted Deployment writes backups is operator configuration, not a member setting | #923 |
 | `agent.tasks` | REPLACE | Deployment | Core | Per-task overrides the Deployment applies to its own harness runs; the `title-summary` block's `maxRunsPerDay`, `intervalSeconds` and `runIn` bound the titling convergence, and its `enabled` admits wholly imported sessions (#1203, #1381) | #919 |
@@ -880,7 +901,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `appearance.font` | KEEP | Member | M | Per-viewer dashboard typography | #918 |
 | `appearance.density` | KEEP | Member | M | Per-viewer dashboard density | #918 |
 
-**Planned additions.** None: the leaf registry (`core/settings.ts`) and this table are held equal in both directions, so a leaf named here before it exists would refuse every write. `worker.harness` and `worker.harness_fallback` (**#1151**) and `import.enabled`, `import.window_days` and `import.max_sessions_per_harness` (**#1148**) have all landed and take their rows above.
+The leaf registry (`core/settings.ts`) and this table are held equal in both directions. Execution profile leaves replace the retired provider maps. A reset clears one configured leaf through the same writer and restores its built-in value; `GET /api/settings` reports the effective value and its source for these leaves. Its `taskTiers` table answers every outcome in `TASK_TIERS` with the effective tier and `task` or `task-override` source. The Settings task tier editor updates only `reasoningLevel` inside the existing `agent.tasks` document through the same writer, preserving each task's schedule, harness and model pin.
 
 **What the dashboard exposes, and how (#1162).** Every Deployment leaf above has a control on `/settings`, grouped by the catalogue in `packages/myco-server/ui/src/settings/catalogue.ts`, and a gate holds that catalogue equal to `DEPLOYMENT_LEAVES` so a leaf cannot exist on one side alone. The five the 2.0 dashboard is judged on (plan §2.8) sit on these tabs:
 

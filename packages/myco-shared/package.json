@@ -89,6 +89,10 @@
     "./secret-slots": {
       "import": "./dist/secret-slots.js",
       "types": "./dist/secret-slots.d.ts"
+    },
+    "./execution-profile": {
+      "import": "./dist/execution-profile.js",
+      "types": "./dist/execution-profile.d.ts"
     }
   },
   "files": [

@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
+import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '@myco-server-worker/constants.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -152,14 +152,19 @@ describe('the deployment leaf registry', () => {
     const fs = require('node:fs') as typeof import('node:fs');
     const ledger = fs.readFileSync('docs/architecture/myco-2.0.md', 'utf8');
     const deployment = new Set<string>();
+    const dropped = new Set<string>();
     for (const line of ledger.split('\n')) {
       const m = line.match(/^\| `([^`]+)` \| \w+ \| Deployment \|/);
       if (m) deployment.add(m[1]);
+      const d = line.match(/^\| `([^`]+)` \| DROP \| — \| — \|/);
+      if (d) dropped.add(d[1]);
     }
     expect(deployment.size).toBeGreaterThan(20);
     // Both directions: the runtime cannot accept a leaf the ledger did not assign
     // here, and cannot silently ignore one it did.
-    expect([...DEPLOYMENT_LEAVES].sort()).toEqual([...deployment].sort());
+    const historical = DEPLOYMENT_LEAVES.filter((leaf) => dropped.has(leaf));
+    expect(historical.every((leaf) => RETIRED_LEAVES.has(leaf))).toBe(true);
+    expect(DEPLOYMENT_LEAVES.filter((leaf) => !dropped.has(leaf)).sort()).toEqual([...deployment].sort());
   });
 });
 
@@ -209,8 +214,8 @@ describe('the instructions template leaf', () => {
     expect(await instructionsTemplate(db)).toBe('');
   });
 
-  it('leaves every other leaf taking any JSON value', async () => {
+  it('leaves untyped active leaves taking any JSON value', async () => {
     const { w } = rig();
-    expect(await w.setLeaf('agent.model', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
+    expect(await w.setLeaf('worker.harness', { anything: [1, 2] }, 'member_1', NOW)).toEqual({ applied: true });
   });
 });

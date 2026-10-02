@@ -15,7 +15,7 @@
  * a fraction of one. The Deployment's clock jumps with it (both machines'
  * clocks keep time through a sleep) and its lease sweep runs, as the hosted
  * clock does while the laptop is asleep. The harness is the stub on PATH from
- * `tests/helpers/stub-acp-harness.ts`, held open until the test releases it, so
+ * `tests/helpers/stub-profile-harness.ts`, held open until the test releases it, so
  * a run is in flight because it has not been released rather than because a
  * read arrived in time.
  */
@@ -30,7 +30,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
-import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
+import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS } from '../helpers/stub-profile-harness.ts';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
 
 const NOW = 1_800_000_000_000;
@@ -66,7 +66,7 @@ async function until(what: string, pred: () => boolean, ms = 10_000): Promise<vo
  * Deployment grants is its own and unchanged.
  */
 async function host(options: { heartbeatMs?: number } = {}) {
-  const e = sqliteEnv();
+  const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite, [PROJECT_ID]);
   let offset = 0;
   /** While set, a renewal reaches nothing and is answered never: a network still coming back after a wake. */
@@ -127,7 +127,7 @@ async function host(options: { heartbeatMs?: number } = {}) {
       token,
       lockDir: null,
       runRoot: mkdtempSync(join(tmpdir(), `myco-sleep-${name}-`)),
-      only: [STUB_HARNESS],
+      only: [PROFILE_STUB_HARNESS],
       pollIdleMs: POLL_MS,
       log: (line) => { lines.push(line); },
       fetchImpl,
@@ -175,7 +175,7 @@ function heldTurn() {
   const release = join(dir, 'release');
   const pidFile = join(dir, 'peer.pid');
   const spawnedFile = join(dir, 'spawned');
-  expect(stubAcpHarness({ holdUntil: release, pidFile, spawnedFile })).toEqual(STUB_DETECTED);
+  expect(stubProfileHarness({ holdUntil: release, pidFile, spawnedFile })).toEqual(PROFILE_STUB_DETECTED);
   return {
     /** How many harness processes a worker has started: each is a session spent. */
     spawned: (): number => (existsSync(spawnedFile) ? readFileSync(spawnedFile, 'utf8').trim().split('\n').length : 0),
