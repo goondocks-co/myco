@@ -11,8 +11,7 @@ import { readProvisionRecord, recordProvision, holdHookTrust, settleHookTrust, t
 import { provisionGlobally, registeredMemberHarnesses, memberHarnessCurrent, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
-import { readProjectContext } from '@myco/member/context-cache.js';
-import { spoolDirFor } from '@myco/member/spool.js';
+import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
 import { listRegistryEntries, deploymentUrl, type RegistryEntry } from '@myco/member/registry.js';
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
 import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
@@ -129,13 +128,25 @@ export async function reportHarnesses(result: KeepCurrentResult | null, mycoHome
   const entry = deps.entry ?? listRegistryEntries(mycoHome).find((candidate) => deploymentUrl(candidate.serverUrl) === deploymentUrl(result.serverUrl));
   if (entry === undefined || deploymentUrl(entry.serverUrl) !== deploymentUrl(result.serverUrl)) return;
   const budget = deadlineBudget(deadline);
-  if (!canStartRequest(budget, now()) || !readProjectContext(spoolDirFor(entry.projectId, mycoHome)).features.includes(HARNESS_HEALTH_FEATURE)) return;
+  if (!canStartRequest(budget, now())) return;
   const body = JSON.stringify({ harnesses: result.harnesses });
   const digest = crypto.createHash('sha256').update(body).digest('hex');
   const hashPath = path.join(mycoHome, 'member', `harness-report-${crypto.createHash('sha256').update(deploymentUrl(result.serverUrl)).digest('hex')}.sha256`);
   const acquired = LifecycleLock.acquire(`${hashPath}.lock`, { command: 'myco member harness report' });
   if (!acquired.acquired) return;
   try {
+    const advertised = readDeploymentFeaturesStrict(entry, mycoHome).includes(HARNESS_HEALTH_FEATURE);
+    const featureStatePath = `${hashPath}.feature`;
+    const state = advertised ? 'advertised' : 'missing';
+    let previous: string | undefined;
+    try { previous = fs.readFileSync(featureStatePath, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (previous !== state) {
+      atomicWriteFileSync(featureStatePath, state);
+      if (!advertised) process.stderr.write(`[myco] keep-current: harness report skipped for ${deploymentUrl(result.serverUrl)} (${HARNESS_HEALTH_FEATURE} not advertised)\n`);
+    }
+    if (!advertised) return;
     try { if (fs.readFileSync(hashPath, 'utf8') === digest) return; } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }

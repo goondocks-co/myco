@@ -94,6 +94,8 @@ export interface HookOutcome {
   response?: HookResponse;
   /** What the member helper is to fetch for the hooks after this one, recorded with the records. */
   ask?: ContextAsk;
+  /** Extra events derived after the hook's captured records and receipts are committed. */
+  optional?: (run: HookRun) => Promise<OptionalHookCapture> | OptionalHookCapture;
   /**
    * This hook ends a turn or the session: the kick dials past the offline latch, and a hook that cannot leave the
    * delivery to a helper runs the pass itself.
@@ -115,6 +117,12 @@ export interface HookOutcome {
    * Every hook that has one also prints the notice to stderr.
    */
   notice?: (text: string, response: HookResponse) => HookResponse;
+}
+
+export interface OptionalHookCapture {
+  events: OutboundEvent[];
+  /** Replaces the hook's fallback turn-end mark after a successful optional step. */
+  turnEnd?: HookOutcome['turnEnd'];
 }
 
 /** Whether the hook command asks its turn's and session's end to deliver in-process (`--ship inline`). */
@@ -248,21 +256,34 @@ export async function runMemberHook(
     // Capture held for a repository still joining lands under the repository's lock: in its pending spool, or in the
     // project's spool once the join has connected it. It is delivered once the repository is connected, by the helper
     // its next hook kicks; until then nothing is dialled and no helper is started.
-    if (hold !== null) {
-      try {
-        appendPending(hold.repo, sessionId, outcome.events, record, { mycoHome, now: now() });
-        if (outcome.turnEnd !== undefined) appendPendingTurnEnd(hold.repo, sessionId, outcome.turnEnd, undefined, { mycoHome, now: now() });
-      } finally {
-        joinSteps();
+    const append = (events: readonly OutboundEvent[], receipt?: (state: SessionState) => void): void => {
+      if (hold !== null) appendPending(hold.repo, sessionId, events, receipt, { mycoHome, now: now() });
+      else spool.appendAndRecord(sessionId, events, receipt, now());
+    };
+    let appendedEvents = outcome.events;
+    let turnEnd = outcome.turnEnd;
+    try {
+      append(outcome.events, record);
+      if (outcome.optional !== undefined) {
+        try {
+          const extra = await outcome.optional(run);
+          if (extra.events.length > 0) append(extra.events);
+          appendedEvents = [...outcome.events, ...extra.events];
+          turnEnd = extra.turnEnd;
+        } catch (error) {
+          process.stderr.write(`[myco] ${hookName} optional capture skipped: ${(error as Error).message}\n`);
+        }
       }
-    } else {
-      spool.appendAndRecord(sessionId, outcome.events, record, now());
-      if (outcome.turnEnd !== undefined) spool.appendTurnEnd(sessionId, outcome.turnEnd, undefined, now());
+      if (turnEnd !== undefined) {
+        if (hold !== null) appendPendingTurnEnd(hold.repo, sessionId, turnEnd, undefined, { mycoHome, now: now() });
+        else spool.appendTurnEnd(sessionId, turnEnd, undefined, now());
+      }
+    } finally {
+      joinSteps();
     }
-    joinSteps();
 
     // Work for the helper: records appended, context asked for, or a turn's or a session's end to deliver.
-    if (hold === null && (outcome.events.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
+    if (hold === null && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
       const reason: KickReason = outcome.ends ?? 'capture';
       const target = { projectId: credential.projectId, mycoHome, reason };
       // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a
@@ -271,8 +292,8 @@ export async function runMemberHook(
       // registry: what the command declares says where the hook runs, what it resolves only says what it holds.
       const detachable = source === 'registry';
       const appended: HookAppended = {
-        eventIds: outcome.events.map((event) => event.envelope.eventId),
-        ...(outcome.turnEnd !== undefined ? { turnEnd: turnEndIdentity(outcome.turnEnd) } : {}),
+        eventIds: appendedEvents.map((event) => event.envelope.eventId),
+        ...(turnEnd !== undefined ? { turnEnd: turnEndIdentity(turnEnd) } : {}),
         ...(outcome.transcriptAt !== undefined ? { transcriptTo: outcome.transcriptAt } : {}),
       };
       if (!detachable || (outcome.ends !== undefined && shipsInlineFlag(argv))) {

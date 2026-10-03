@@ -62,8 +62,6 @@ export async function main(opts: HookMainOptions = {}) {
     const events: OutboundEvent[] = transcriptWritesRows
       ? []
       : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
-    // The turn starts with the person's prompt: a Deployment that takes `turn` is told so, stamped now.
-    if (featureAdvertised(spool.dir, 'turn')) events.push(turnEvent(ctx, { phase: 'start', promptId }));
     // A plan a person pasted inside a tag envelope is captured with the prompt,
     // whichever side writes the turn: the Deployment's parse scans assistant
     // text for plans and a pasted one is the person's. It keys on the prompt
@@ -107,6 +105,11 @@ export async function main(opts: HookMainOptions = {}) {
         if (served.rendered !== undefined) state.renderedPrompt = served.rendered;
       },
       response: served.response,
+      optional: () => ({
+        events: featureAdvertised(run.credential, run.mycoHome, 'turn')
+          ? [turnEvent(ctx, { phase: 'start', promptId })]
+          : [],
+      }),
       // The helper asks the Deployment with this prompt's text; its answer is the next prompt's context.
       ask: { kind: 'prompt', promptId, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at: run.now() },
     };

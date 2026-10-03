@@ -160,6 +160,35 @@ it('reports repair status only after the Deployment advertises the feature', asy
   expect(await requests[0]!.json()).toEqual({ harnesses: report.harnesses });
 });
 
+it('reports from the newest project advertisement and logs a missing feature once per state change', async () => {
+  const entry = { version: REGISTRY_VERSION, projectId: 'proj_old', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 };
+  writeRegistryEntry(entry, { mycoHome: home });
+  writeRegistryEntry({ ...entry, projectId: 'proj_new', root: path.join(agentHome, 'other') }, { mycoHome: home });
+  updateProjectContext(spoolDirFor(entry.projectId, home), home, (cache) => { cache.features = ['turn']; cache.featuresAt = 1; });
+  const newest = spoolDirFor('proj_new', home);
+  updateProjectContext(newest, home, (cache) => { cache.features = ['turn', HARNESS_HEALTH_FEATURE]; cache.featuresAt = 2; });
+  const report = { serverUrl: SERVER, ready: [], harnesses: [] };
+  let sent = 0;
+  const fetch = async () => { sent++; return Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } }); };
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const pass = () => reportHarnesses(report, home, Date.now() + 10_000, { entry, fetch });
+  try {
+    await pass();
+    expect(sent).toBe(1);
+    expect(stderr).not.toHaveBeenCalled();
+    updateProjectContext(newest, home, (cache) => { cache.features = ['turn']; cache.featuresAt = 3; });
+    await pass(); await pass();
+    expect(sent).toBe(1);
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(String(stderr.mock.calls[0]?.[0])).toContain('harness-health-v1 not advertised');
+    updateProjectContext(newest, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; cache.featuresAt = 4; });
+    await pass();
+    updateProjectContext(newest, home, (cache) => { cache.features = []; cache.featuresAt = 5; });
+    await pass(); await pass();
+    expect(stderr).toHaveBeenCalledTimes(2);
+  } finally { stderr.mockRestore(); }
+});
+
 it('an unrepairable helper pass reaches Deployment Health through the real report route', async () => {
   const rig = await memberRig();
   rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)`, [Date.now()]);
