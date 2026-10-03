@@ -72,6 +72,11 @@ describe('myco login sets up the agents on this machine', () => {
   it('sets up the agents of a sign-in with no project, and provisions and refreshes them, where the home could be no project folder', async () => {
     // A home at the user's home directory, the way `/root/.myco` sits one below a home parent: no project root may be there.
     fs.mkdirSync(claudeDir, { recursive: true });
+    const priorPath = process.env.PATH;
+    const bin = path.join(home, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.cmd' : 'claude'), process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = `${bin}${path.delimiter}${priorPath ?? ''}`;
     const homedir = spyOn(os, 'homedir').mockReturnValue(home);
     try {
       const rig = unjoinedRig();
@@ -83,7 +88,10 @@ describe('myco login sets up the agents on this machine', () => {
       expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
       expect(out).toEqual(['Capture is set up for Claude Code.', 'Capture is set up for Claude Code.']);
       expect(err).toEqual([]);
-    } finally { homedir.mockRestore(); }
+    } finally {
+      homedir.mockRestore();
+      if (priorPath === undefined) delete process.env.PATH; else process.env.PATH = priorPath;
+    }
   });
 
   it('leaves an agent whose hooks belong to another installation byte for byte as it is, names it, and sets up the rest', async () => {

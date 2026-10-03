@@ -1,4 +1,5 @@
 import ts from 'typescript-v6';
+import { fileURLToPath } from 'node:url';
 import type { VisibleString } from './visible-strings.ts';
 
 const stringLike = (type: ts.Type): boolean => type.isUnion() ? type.types.some(stringLike) : (type.flags & ts.TypeFlags.StringLike) !== 0;
@@ -8,10 +9,16 @@ const READER_CALLS: Readonly<Record<string, readonly number[]>> = {
   badRequest: [0], malformed: [1], skipContext: [0], failStaleRun: [4], failQueuedRun: [4], endQueuedRun: [4],
 };
 
+const SHARED_SOURCE_PATHS = {
+  '@goondocks/myco-shared': [fileURLToPath(new URL('../../packages/myco-shared/src/index.ts', import.meta.url))],
+  '@goondocks/myco-shared/*': [fileURLToPath(new URL('../../packages/myco-shared/src/*.ts', import.meta.url))],
+  '@goondocks/myco-shared/skills': [fileURLToPath(new URL('../../packages/myco-shared/src/skills.generated.ts', import.meta.url))],
+};
+
 /** Literal flow into dashboard diagnostics, through constants, helper returns and helper parameters. */
 export function serverReaderStrings(files: readonly string[], renderedFields: ReadonlySet<string> = new Set()): Array<VisibleString & { file: string }> {
   const readerFields = new Set([...READER_FIELDS, ...renderedFields]);
-  const program = ts.createProgram([...files], { allowJs: false, noResolve: false, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
+  const program = ts.createProgram([...files], { allowJs: false, noResolve: false, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, paths: SHARED_SOURCE_PATHS });
   const checker = program.getTypeChecker();
   const sources = program.getSourceFiles().filter((file) => !file.isDeclarationFile && !file.fileName.includes('node_modules'));
   const parameterInputs = new Map<ts.Symbol, ts.Expression[]>();
@@ -117,7 +124,7 @@ export function serverReaderStrings(files: readonly string[], renderedFields: Re
 
 /** String-valued fields read by JSX expressions contribute reader roots to the server gate. */
 export function dashboardReaderFields(files: readonly string[]): ReadonlySet<string> {
-  const program = ts.createProgram([...files], { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext });
+  const program = ts.createProgram([...files], { jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, paths: SHARED_SOURCE_PATHS });
   const checker = program.getTypeChecker();
   const fields = new Set<string>();
   const rendered = (node: ts.Node): void => {
