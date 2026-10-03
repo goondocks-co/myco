@@ -11,7 +11,8 @@
  * extension the per-target entry embedded, and the dashboard travels as a
  * generated module. A Deployment started this way locates nothing on the host.
  */
-import { mkdirSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync } = nodeFs;
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import {
   DEFAULT_PORT,

@@ -532,7 +532,7 @@ describe('ClaudeSdkHarness.execute', () => {
     // re-introducing user plugins whose tool schemas Anthropic's API
     // rejects (top-level oneOf/allOf/anyOf). Writing an empty manifest
     // before the SDK starts short-circuits the sync.
-    const fs = await import('node:fs');
+    const { default: fs } = await import('../support/fenced-fs.mjs');
     const Runtime = await loadRuntime();
     const runtime = new Runtime();
 

@@ -6,15 +6,8 @@
  * additional per-run state.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } = nodeFs;
 import { join, resolve } from 'node:path';
 
 // ---------------------------------------------------------------------------

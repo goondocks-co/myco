@@ -1,4 +1,4 @@
-import './sandbox-environment.js';
+import './sandbox-preload.js';
 import { expect } from 'bun:test';
 
 // jest-dom calls `expect.extend(...)` against the global `expect`. bun:test

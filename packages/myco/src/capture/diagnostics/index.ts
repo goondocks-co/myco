@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } = nodeFs;
 import os from 'node:os';
 import path from 'node:path';
 import type { Database } from 'bun:sqlite';

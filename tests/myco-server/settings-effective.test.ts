@@ -5,7 +5,7 @@
  * vectors would not compare with the ones search holds.
  */
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import worker from '@myco-server-worker/index.js';

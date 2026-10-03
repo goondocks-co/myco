@@ -19,7 +19,8 @@
  * ask. The agent protocol carries user prompts alone, which is why the rules
  * travel as a file rather than as a second message.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { chmodSync, mkdtempSync, rmSync, writeFileSync } = nodeFs;
 import { join } from 'node:path';
 import { memberHeaders } from '../member/constants.js';
 

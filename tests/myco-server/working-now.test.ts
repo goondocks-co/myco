@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';

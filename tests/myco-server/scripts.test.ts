@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from "../support/fenced-fs.mjs";
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';

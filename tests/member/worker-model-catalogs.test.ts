@@ -10,7 +10,7 @@
  * one harness at a time, keeps a report the Deployment could not be reached for, and never holds up its caller.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MODEL_CATALOG_REFRESH_MS, PROFILE_HARNESSES, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';

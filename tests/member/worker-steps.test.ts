@@ -6,7 +6,7 @@
  * runs the shipped worker against the real server pipeline, as `worker-claim-wire.test.ts` does.
  */
 import { describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';

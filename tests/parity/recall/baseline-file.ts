@@ -5,7 +5,7 @@
  * release to. The record sits between fixed markers so the eval reads and
  * rewrites it as JSON without importing a module it is about to replace.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import path from 'node:path';
 import type { RecallBaseline } from './score.ts';
 

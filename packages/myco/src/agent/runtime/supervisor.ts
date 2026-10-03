@@ -39,7 +39,8 @@
  *
  * The decisions are `supervisor-policy.ts`; this file is mechanism.
  */
-import { chownSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { chownSync, mkdirSync, readFileSync, rmSync, statSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

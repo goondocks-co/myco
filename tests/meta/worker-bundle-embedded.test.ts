@@ -12,7 +12,7 @@
  * over-eager skip is how a fresh clone gets no module at all.
  */
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -1,13 +1,9 @@
 import { afterAll } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { sandboxPath } from '../../scripts/test-environment.mjs';
 
-// Node's account lookup does not follow HOME, including in standalone preloads.
-export const REAL_HOME = process.env.MYCO_TEST_REAL_HOME
-  ?? execFileSync('node', ['-e', 'process.stdout.write(require("node:os").userInfo().homedir)'], { encoding: 'utf8' });
 export const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
 const remove = fs.rmSync.bind(fs);
 const userInfo = os.userInfo.bind(os);

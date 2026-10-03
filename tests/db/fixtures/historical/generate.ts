@@ -12,7 +12,7 @@
  *   the era worktree root).
  */
 import { Database } from 'bun:sqlite';
-import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "../../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

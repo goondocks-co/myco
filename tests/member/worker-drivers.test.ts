@@ -11,7 +11,7 @@
  * the detector and `myco doctor` read, and the shape of the model they answer in.
  */
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HARNESSES, offerable } from '@myco/runner/harnesses.js';

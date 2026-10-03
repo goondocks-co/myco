@@ -9,7 +9,8 @@
  * lifecycle be tested by the argv it produces rather than by standing up a
  * container per assertion.
  */
-import { mkdirSync, existsSync, writeFileSync, readFileSync, rmSync, chmodSync, readdirSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, existsSync, writeFileSync, readFileSync, rmSync, chmodSync, readdirSync } = nodeFs;
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';

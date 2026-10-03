@@ -14,7 +14,8 @@
  * an entry beside the dashboard and the migrations would carry both into the
  * Worker script as modules.
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, rmSync, writeFileSync } = nodeFs;
 import path from 'node:path';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
