@@ -6,7 +6,7 @@
  * a worker keeps them only in its local diagnostics log, bounded and rotated.
  */
 import { describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyDiagnostic, harnessStoppedError, shapeRunError, type RunDiagnosticCode } from '@goondocks/myco-shared/run-text';

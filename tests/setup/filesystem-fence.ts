@@ -145,9 +145,7 @@ Bun.write = ((destination: Parameters<typeof Bun.write>[0], ...args: unknown[]) 
   return (originalBunWrite as unknown as AnyFn)(destination, ...args);
 }) as typeof Bun.write;
 
-const originalBunFile = Bun.file;
-Bun.file = ((...args: Parameters<typeof Bun.file>) => {
-  const file = originalBunFile(...args);
+function fenceBunFile(file: Bun.BunFile): Bun.BunFile {
   const methods = file as unknown as Record<string, AnyFn>;
   for (const name of ['writer', 'write', 'delete', 'unlink']) {
     const original = methods[name];
@@ -158,6 +156,10 @@ Bun.file = ((...args: Parameters<typeof Bun.file>) => {
       return original.apply(file, options);
     };
   }
+  const slice = methods.slice!;
+  methods.slice = (...options: unknown[]) => fenceBunFile(slice.apply(file, options) as Bun.BunFile);
   return file;
-}) as typeof Bun.file;
+}
+const originalBunFile = Bun.file;
+Bun.file = ((...args: Parameters<typeof Bun.file>) => fenceBunFile(originalBunFile(...args))) as typeof Bun.file;
 

@@ -104,6 +104,11 @@ describe('sandbox preload', () => {
     nativeFileDelete: () => Bun.file(target).delete(),
     nativeFileUnlink: () => Bun.file(target).unlink(),
     nativeWriter: () => Bun.file(target).writer(),
+    nativeSlicedWrite: () => Bun.file(target).slice().write('x'),
+    nativeSlicedDelete: () => Bun.file(target).slice().delete(),
+    nativeSlicedUnlink: () => Bun.file(target).slice().unlink(),
+    nativeSlicedWriter: () => Bun.file(target).slice().writer(),
+    nativeSlicedDestination: () => Bun.write(Bun.file(target).slice(), 'x'),
     nativeFileDestination: () => Bun.write(Bun.file(target), 'x'),
     hardlink: () => fs.linkSync(target, probe('alias')),
   };

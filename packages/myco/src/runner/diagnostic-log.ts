@@ -9,7 +9,8 @@
  * `.<MAX_BACKUPS>` before a write would take it past `MAX_LOG_BYTES`, the oldest dropped; a file whose newest entry is
  * older than `MAX_LOG_AGE_MS` is removed; and the file is written owner-only.
  */
-import { appendFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { appendFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync } = nodeFs;
 import { join } from 'node:path';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
