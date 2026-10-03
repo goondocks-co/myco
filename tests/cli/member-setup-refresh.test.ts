@@ -108,21 +108,21 @@ describe('a member\'s agent setup', () => {
   };
   const refresh = () => runProvision(['--refresh'], { mycoHome: home, cwd: agentHome, agents: () => ['claude-code', 'codex'], stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
 
-  it('records on a refresh exactly the agents it set up again, dropping one another installation took', () => {
+  it('keeps provisioned harnesses recorded when another installation refuses their repair', () => {
     recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['claude-code', 'codex'] });
     const foreign = foreignCodexHooks();
     expect(refresh()).toBe(true);
     expect(fs.readFileSync(path.join(agentHome, '.codex', 'hooks.json'), 'utf8')).toBe(foreign);
-    expect(out.join('\n')).toMatch(/Skipped Codex: .*another installation/);
-    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code'] });
+    expect(out.join('\n')).toContain('Run myco member provision codex to see what needs fixing');
+    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code', 'codex'] });
   });
 
-  it('records a refresh that set up no agent, so doctor stops naming the old build', () => {
+  it('keeps an entirely failed refresh recorded for its next repair', () => {
     recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['codex'] });
     foreignCodexHooks();
     expect(refresh()).toBe(true);
-    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: [] });
-    expect(setupChecks(home)[0].status).toBe('ok');
+    expect(readProvisionRecord(home)).toMatchObject({ version: '2.0.0-beta.0', agents: ['codex'] });
+    expect(setupChecks(home)[0].status).toBe('warn');
   });
 
   it('refreshes no agent the person left out, and sets up none on a home with no record', () => {

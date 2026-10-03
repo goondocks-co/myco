@@ -1,6 +1,9 @@
 name: antigravity
 displayName: Google Antigravity
 binary: antigravity
+health:
+  installLocations: ["~/.gemini", "/Applications/Antigravity.app", "~/Applications/Antigravity.app"]
+  activityLocations: ["~/.gemini/antigravity/brain", "~/.gemini/antigravity-cli/brain", "~/.gemini/antigravity-ide/brain"]
 configDir: .agents/plugins/myco
 # Antigravity uses the same ~/.gemini/ user-home directory as the retired
 # Gemini CLI — Google reused the dir under the new product. The detection

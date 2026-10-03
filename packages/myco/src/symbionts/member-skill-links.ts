@@ -93,3 +93,10 @@ export function linkMemberSkills(mycoHome: string, folder: string, replacing: re
   }
   return result;
 }
+
+/** Missing bundled skills at the member's source or the harness's link folder. */
+export function missingMemberSkills(mycoHome: string, target: string): string[] {
+  const source = managedSkillsDir(mycoHome);
+  const folder = skillsFolder(target);
+  return Object.keys(BUNDLED_SKILLS).filter((name) => !fs.existsSync(path.join(folder, name)) || !fs.existsSync(path.join(source, name)));
+}

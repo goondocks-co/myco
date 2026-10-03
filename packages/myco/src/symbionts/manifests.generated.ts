@@ -15,6 +15,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "antigravity",
     "configDir": ".agents/plugins/myco",
     "detectionDir": "~/.gemini",
+    "health": {
+      "installLocations": [
+        "~/.gemini",
+        "/Applications/Antigravity.app",
+        "~/Applications/Antigravity.app"
+      ],
+      "activityLocations": [
+        "~/.gemini/antigravity/brain",
+        "~/.gemini/antigravity-cli/brain",
+        "~/.gemini/antigravity-ide/brain"
+      ]
+    },
     "pluginRootEnvVar": "ANTIGRAVITY_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "conversationId",
@@ -316,6 +328,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "claude",
     "configDir": ".claude",
     "detectionDir": "~/.claude",
+    "health": {
+      "installLocations": [
+        "~/.claude",
+        "/Applications/Claude.app",
+        "~/Applications/Claude.app"
+      ],
+      "activityLocations": [
+        "~/.claude/projects"
+      ]
+    },
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
     "settingsPath": ".claude/settings.json",
     "hookFields": {
@@ -949,6 +971,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "cline",
     "configDir": ".cline",
     "detectionDir": "~/.cline",
+    "health": {
+      "installLocations": [
+        "~/.cline"
+      ],
+      "activityLocations": [
+        "~/.cline/data/tasks"
+      ]
+    },
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "conversationId",
@@ -1112,6 +1142,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "codex",
     "configDir": ".codex",
     "detectionDir": "~/.codex",
+    "health": {
+      "installLocations": [
+        "~/.codex",
+        "/Applications/Codex.app",
+        "~/Applications/Codex.app"
+      ],
+      "activityLocations": [
+        "~/.codex/sessions"
+      ]
+    },
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
     "settingsPath": ".codex/config.toml",
     "hookFields": {
@@ -1316,6 +1356,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".codex/hooks.json",
       "memberHooksTarget": ".codex/hooks.json",
+      "memberHookTrustAction": "Restart Codex and trust Myco's hooks",
       "globalHooksTarget": "~/.codex/hooks.json",
       "globalMcpTarget": [
         {
@@ -1578,6 +1619,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "copilot",
     "configDir": ".vscode",
     "detectionDir": "~/.copilot",
+    "health": {
+      "installLocations": [
+        "~/.copilot"
+      ],
+      "activityLocations": [
+        "~/.copilot/session-state"
+      ]
+    },
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "session_id",
@@ -1864,6 +1913,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "cursor",
     "configDir": ".cursor",
     "detectionDir": "~/.cursor",
+    "health": {
+      "installLocations": [
+        "~/.cursor",
+        "/Applications/Cursor.app",
+        "~/Applications/Cursor.app"
+      ],
+      "activityLocations": [
+        "~/.cursor/projects"
+      ]
+    },
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
     "settingsPath": ".cursor/mcp.json",
     "hookFields": {
@@ -2214,6 +2273,16 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "opencode",
     "configDir": ".opencode",
     "detectionDir": "~/.config/opencode",
+    "health": {
+      "installLocations": [
+        "~/.config/opencode"
+      ],
+      "activityLocations": [
+        "~/.local/share/opencode/storage/session",
+        "~/.local/share/opencode/opencode.db",
+        "~/.local/share/opencode/opencode.db-wal"
+      ]
+    },
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "session_id",
@@ -2556,6 +2625,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "pi",
     "configDir": ".pi",
     "detectionDir": "~/.pi",
+    "health": {
+      "installLocations": [
+        "~/.pi"
+      ],
+      "activityLocations": [
+        "~/.pi/agent/sessions"
+      ]
+    },
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "session_id",
@@ -2670,6 +2747,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "windsurf",
     "configDir": ".windsurf",
     "detectionDir": "~/.codeium/windsurf",
+    "health": {
+      "installLocations": [
+        "~/.codeium/windsurf",
+        "/Applications/Windsurf.app",
+        "~/Applications/Windsurf.app"
+      ],
+      "activityLocations": [
+        "~/.windsurf/transcripts",
+        "~/.codeium/windsurf/cascade"
+      ]
+    },
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
     "hookFields": {
       "sessionId": "trajectory_id",

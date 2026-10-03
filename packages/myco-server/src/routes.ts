@@ -15,6 +15,7 @@ import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
 import { handleMemberStatus, handleStatus } from './api/status.js';
 import { handleCreateMemberProject, handleMemberProjectList, handleReportUncaptured, handleUncapturedState, handleResolveMemberProject } from './api/member-projects.js';
+import { handleProvisionedHarnessReport } from './api/harness-health.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch, handleSearchAcross } from './api/search.js';
 import { handleWake } from './api/wake.js';
@@ -189,6 +190,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/members/projects/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleResolveMemberProject },
   { method: 'POST', path: '/members/uncaptured', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleReportUncaptured },
   { method: 'POST', path: '/members/uncaptured/state', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleUncapturedState },
+  { method: 'POST', path: '/members/harnesses/report', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleProvisionedHarnessReport },
   { method: 'POST', path: '/members/projects/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberProjectList },
   { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
   // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.

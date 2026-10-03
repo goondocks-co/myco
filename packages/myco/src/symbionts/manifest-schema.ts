@@ -306,6 +306,8 @@ const RegistrationSchema = z.object({
    * the project so the agent loads it).
    */
   memberProvisionNote: z.string().optional(),
+  /** The action a changed global hook file requires before this harness will run it. */
+  memberHookTrustAction: z.string().max(240).optional(),
   /**
    * Absolute path (with `~` expansion) where Myco writes hook config when
    * installing under global scope. May point at a file the agent shares with
@@ -949,6 +951,10 @@ export const SymbiontManifestSchema = z.object({
    * Antigravity should claim detection.
    */
   detectionDir: z.string().nullable().optional(),
+  health: z.object({
+    installLocations: z.array(z.string()),
+    activityLocations: z.array(z.string()),
+  }).optional(),
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),
   hookFields: z.object({

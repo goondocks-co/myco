@@ -16,9 +16,17 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { featuresNamed, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
+import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
+import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
 import { ensureMemberDir, readPrivateJson, writePrivateFileAtomic } from './store.js';
+
+type CachedFeature = MemberFeature | typeof HARNESS_HEALTH_FEATURE;
+
+/** Capture kinds and helper services this member knows how to use. */
+export function cachedDeploymentFeatures(header: string | null): CachedFeature[] {
+  return [...featuresNamed(header), ...(headerAdvertises(header, HARNESS_HEALTH_FEATURE) ? [HARNESS_HEALTH_FEATURE] as const : [])];
+}
 
 export const CONTEXT_DIRNAME = 'context';
 const PROJECT_FILE = 'project.json';
@@ -37,7 +45,7 @@ export type SessionBlockKind = 'start' | 'compact' | 'subagent';
 export interface ProjectContextCache {
   version: typeof CACHE_VERSION;
   /** The features the Deployment named on its last answer; none until one names any. */
-  features: MemberFeature[];
+  features: CachedFeature[];
   featuresAt?: number;
   blocks: Partial<Record<SessionBlockKind, CachedBlock>>;
 }
@@ -83,7 +91,7 @@ export function readProjectContext(spoolDir: string): ProjectContextCache {
   if (cached === null) return emptyProject();
   return {
     version: CACHE_VERSION,
-    features: featuresNamed(Array.isArray(cached.features) ? cached.features.join(',') : ''),
+    features: cachedDeploymentFeatures(Array.isArray(cached.features) ? cached.features.join(',') : ''),
     ...(typeof cached.featuresAt === 'number' ? { featuresAt: cached.featuresAt } : {}),
     blocks: cached.blocks !== null && typeof cached.blocks === 'object' ? cached.blocks : {},
   };

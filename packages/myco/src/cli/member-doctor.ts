@@ -23,10 +23,8 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
-import { BUNDLED_SKILLS } from '../symbionts/skills.generated.js';
-import { managedSkillsDir } from '../install/managed-binary.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
-import { skillsFolder } from '../symbionts/member-skill-links.js';
+import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
 import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
@@ -122,13 +120,18 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   if (record.version !== version) {
     return [row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. Run \`myco member provision --refresh\`.`)];
   }
-  const skills = managedSkillsDir(mycoHome);
   const missing: string[] = [];
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
+    try {
+      const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+        .withoutProjectRoot().forDeployment(record.serverUrl);
+      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco update\` to repair them now.`)];
+    } catch (error) {
+      return [row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`)];
+    }
     const target = manifest.registration?.globalSkillsTarget;
     if (!target) continue;
-    const folder = skillsFolder(target);
-    const absent = Object.keys(BUNDLED_SKILLS).filter((name) => !fs.existsSync(path.join(folder, name)) || !fs.existsSync(path.join(skills, name)));
+    const absent = missingMemberSkills(mycoHome, target);
     if (absent.length > 0) missing.push(`${manifest.displayName} (${absent.join(', ')})`);
   }
   if (missing.length > 0) return [row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. Run \`myco member provision --refresh\`.`)];

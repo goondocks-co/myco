@@ -19,6 +19,7 @@ import { run as runSettings } from '@myco/cli/settings.js';
 import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, hookNameInCommand } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
@@ -224,6 +225,7 @@ describe('myco member join / leave', () => {
     expect(readRegistryEntry(projectRoot, mycoHome)!.projectId).toBe(PROJECT);
     expect(out.join('\n')).toContain(`joined ${PROJECT} at https://server.example`);
     expect(out.join('\n')).toContain('provisioned Claude Code');
+    expect(readProvisionRecord(mycoHome)?.agents).toEqual(['claude-code']);
     expect(hookCommands(JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).hooks).length).toBeGreaterThan(0);
     // Nothing the join printed carries the token.
     expect(out.join('\n')).not.toContain(rig.token);

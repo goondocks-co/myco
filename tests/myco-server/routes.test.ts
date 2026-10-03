@@ -27,6 +27,7 @@ describe('route table', () => {
     '/members/projects/resolve', // which project a repository joins (#1547), not capture
     '/members/uncaptured',    // a repository the machine will not join on its own (#1547), not capture
     '/members/uncaptured/state', // what became of a repository the machine reported (#1547), not capture
+    '/members/harnesses/report', // provisioned harness health on the machine, not session capture
     '/members/settings',      // a read of Deployment Settings
     '/members/status',        // a read of Deployment health
     '/import/plan',           // advice on what to ship; stores nothing
@@ -49,7 +50,7 @@ describe('route table', () => {
         expect({ path: r.path, capture: r.capture }).toEqual({ path: r.path, capture: notCapture(r) ? false : undefined });
       }
     }
-    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /worker/steps', 'POST /worker/repository', 'POST /worker/models', 'POST /mcp', 'POST /members/link-github', 'POST /members/projects', 'POST /members/projects/resolve', 'POST /members/uncaptured', 'POST /members/uncaptured/state', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status']);
+    expect(ROUTES.filter((r) => r.auth === 'public' || r.auth === 'member').map((r) => `${r.method} ${r.path}`)).toEqual(['GET /health', 'POST /events', 'POST /blobs/{sha256}', 'POST /tokens/refresh', 'POST /import/plan', 'POST /runs/claim', 'POST /runs/get', 'POST /runs/update', 'POST /runs/failed', 'POST /runs/resume-admission', 'POST /runs/supersede', 'POST /runs/reports', 'POST /runs/report', 'POST /runs/events', 'POST /runs/embedding-step', 'POST /spores/save', 'POST /spores/list', 'POST /spores/get', 'POST /spores/resolve', 'POST /context/prompt', 'POST /context/session', 'POST /runs/repository', 'POST /runs/canopy-map', 'POST /worker/claim', 'POST /worker/lease', 'POST /worker/end', 'POST /worker/steps', 'POST /worker/repository', 'POST /worker/models', 'POST /mcp', 'POST /members/link-github', 'POST /members/projects', 'POST /members/projects/resolve', 'POST /members/uncaptured', 'POST /members/uncaptured/state', 'POST /members/harnesses/report', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status']);
   });
 
   it('admits a run credential as a member on the run-control plane alone: every /runs/ route is flagged legacy, no other route is, and /mcp is the one route that serves the run principal', () => {
@@ -63,7 +64,7 @@ describe('route table', () => {
   it('answers on the credential alone on the refresh, member-projects, repository, member-settings and member-status routes, and admits a credential past its expiry on the refresh route alone', () => {
     const scoped = ROUTES.filter((r) => 'scope' in r && r.scope === 'credential').map((r) => `${r.method} ${r.path}`);
     const lapsed = ROUTES.filter((r) => 'admitsLapsed' in r && r.admitsLapsed === true).map((r) => `${r.method} ${r.path}`);
-    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh', 'POST /members/projects', 'POST /members/projects/resolve', 'POST /members/uncaptured', 'POST /members/uncaptured/state', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status'], lapsed: ['POST /tokens/refresh'] });
+    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh', 'POST /members/projects', 'POST /members/projects/resolve', 'POST /members/uncaptured', 'POST /members/uncaptured/state', 'POST /members/harnesses/report', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status'], lapsed: ['POST /tokens/refresh'] });
   });
 
   it('routes exactly the child segments the handler serves', async () => {

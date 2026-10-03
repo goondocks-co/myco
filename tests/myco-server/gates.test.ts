@@ -749,6 +749,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'bogus' }) }),
         wellFormed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'connected' }) }),
       },
+      'POST /members/harnesses/report': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'binary_missing' }] }) }),
+        wellFormed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'ready' }] }) }),
+      },
       'POST /members/projects/list': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
@@ -1250,6 +1255,7 @@ describe('gates', () => {
       'member POST /events',
       'member POST /import/plan',
       'member POST /mcp',
+      'member POST /members/harnesses/report',
       'member POST /members/link-github',
       'member POST /members/projects',
       'member POST /members/projects/list',

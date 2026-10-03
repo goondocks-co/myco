@@ -71,8 +71,8 @@ export async function run(args: string[]): Promise<void> {
   // A member home's agents are the member's: this build refreshes the hooks, MCP entries and skill links its
   // provisioning set up, and none of 1.4's machine-wide passes runs over them (#1478, #1499).
   if (isMemberHome(memberHomeFor(process.cwd()).home)) {
-    const { runProvision } = await import('./member.js');
-    runProvision(['--refresh']);
+    const { run: runMember } = await import('./member.js');
+    await runMember(['provision', '--refresh']);
     return;
   }
 

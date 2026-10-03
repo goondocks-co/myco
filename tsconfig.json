@@ -22,6 +22,7 @@
       "@goondocks/myco-shared/repository": ["./packages/myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/worker-usage": ["./packages/myco-shared/src/worker-usage.ts"],
       "@goondocks/myco-shared/worker-steps": ["./packages/myco-shared/src/worker-steps.ts"],
+      "@goondocks/myco-shared/harness-health": ["./packages/myco-shared/src/harness-health.ts"],
       "@goondocks/myco-shared/command-shape": ["./packages/myco-shared/src/command-shape.ts"],
       "@goondocks/myco-shared/run-text": ["./packages/myco-shared/src/run-text.ts"],
       "@goondocks/myco-shared/worker-log": ["./packages/myco-shared/src/worker-log.ts"],

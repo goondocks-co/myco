@@ -1,6 +1,9 @@
 name: claude-code
 displayName: Claude Code
 binary: claude
+health:
+  installLocations: ["~/.claude", "/Applications/Claude.app", "~/Applications/Claude.app"]
+  activityLocations: ["~/.claude/projects"]
 configDir: .claude
 detectionDir: ~/.claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT

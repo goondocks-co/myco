@@ -1,6 +1,9 @@
 name: codex
 displayName: Codex
 binary: codex
+health:
+  installLocations: ["~/.codex", "/Applications/Codex.app", "~/Applications/Codex.app"]
+  activityLocations: ["~/.codex/sessions"]
 configDir: .codex
 detectionDir: ~/.codex
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
@@ -246,6 +249,7 @@ capture:
         changeOn: payload.turn_id
     interruptMarker: "<turn_aborted>"
 registration:
+  memberHookTrustAction: "Restart Codex and trust Myco's hooks"
   hooksTarget: .codex/hooks.json
   # The 2.0 member scope writes the project's own hooks file: Codex reads it
   # beside the global one, and no 1.4 project install owns it on a member.

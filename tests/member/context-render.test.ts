@@ -250,7 +250,7 @@ describe('the features a Deployment advertises', () => {
     const tx = transcript('sess-f');
     const turns = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind = 'turn'`).get() as { n: number }).n;
     await runHook('session-start', { session_id: 'sess-f', transcript_path: tx, cwd: process.cwd() }, { helpers: 'run', fetch });
-    expect(readProjectContext(spool().dir).features).toEqual(['turn']);
+    expect(readProjectContext(spool().dir).features).toEqual(['turn', 'harness-health-v1']);
     await runHook('user-prompt-submit', { session_id: 'sess-f', prompt: 'one', transcript_path: tx }, { helpers: 'run', fetch });
     await runHook('stop', { session_id: 'sess-f', last_assistant_message: 'done', transcript_path: tx }, { helpers: 'run', fetch });
     expect(turns()).toBe(2);

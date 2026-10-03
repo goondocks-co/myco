@@ -1,6 +1,9 @@
 name: pi
 displayName: Pi
 binary: pi
+health:
+  installLocations: ["~/.pi"]
+  activityLocations: ["~/.pi/agent/sessions"]
 configDir: .pi
 detectionDir: ~/.pi
 pluginRootEnvVar: PI_PLUGIN_ROOT
