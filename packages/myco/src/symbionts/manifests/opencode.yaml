@@ -130,6 +130,13 @@ runner:
           low: openrouter/~anthropic/claude-haiku-latest
           default: openrouter/~anthropic/claude-sonnet-latest
           high: openrouter/~anthropic/claude-opus-latest
+  # How a stop it explains in its own words reads as a coded reason: a protocol error's message and what it writes to
+  # stderr. The first pattern that matches decides; the words are read on the worker and never stored.
+  diagnostics:
+    - { code: login_missing, pattern: 'ProviderAuthError|LoadAPIKeyError|api key is missing|\bunauthorized\b|\b401\b|not authenticated|authentication required' }
+    - { code: rate_limited, pattern: '\b429\b|too many requests|rate[_ -]?limit|usage limit|\bquota\b' }
+    - { code: model_refused, pattern: 'ModelNotFound|\bmodel\b[^\n]{0,80}\b(?:not found|not supported|does not exist|not available)\b' }
+    - { code: timed_out, pattern: '\btimed? ?out\b|\bETIMEDOUT\b|\btimeout\b' }
   # How a worker runs it.
   worker:
     binary: opencode

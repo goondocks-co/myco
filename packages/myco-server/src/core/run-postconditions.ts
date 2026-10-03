@@ -34,6 +34,7 @@
  * catalogue's own. A task with no entry would close on the runtime's word while
  * reading as governed, so there is no entry that means "no rule".
  */
+import { agentProse } from '@goondocks/myco-shared/run-text';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
@@ -241,13 +242,18 @@ export type ReportOutcome =
 /** A report as either door offers it: the audit is the caller's raw argument, judged here. */
 export type ReportOffer = Omit<ReportInsert, 'audit'> & { audit: unknown };
 
+/** The most characters a report's summary and its details are stored with, on either door a run reports through. */
+export const MAX_REPORT_SUMMARY_CHARS = 4_096;
+export const MAX_REPORT_DETAILS_CHARS = 65_536;
+
 /**
  * Record a run's report: the one door every report lands through, on the MCP
  * surface and the container's route alike (`tests/meta/report-record-chokepoint.test.ts`).
  * An action the run's task cannot close under is refused here, naming what it
  * can, and leaves no row; a row the judgment would ignore is never written. The
- * audit is held to its shape here (`parseRunAudit`), so both doors store the same
- * thing for the same offer.
+ * audit is held to its shape here (`parseRunAudit`), and the summary and details
+ * are stored as agent prose (`agentProse`), so both doors store the same thing
+ * for the same offer.
  */
 export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportOffer): Promise<ReportOutcome> {
   const run = await getRun(db, scope, report.runId);
@@ -260,5 +266,8 @@ export async function recordReport(db: RelationalStore, scope: ReadScope, report
     ? (await owesAudit(db, scope, run) ? 'the report carries no audit' : null)
     : (offered.ok ? null : offered.error);
   const auditRepairs = offered?.ok === true ? offered.repairs : [];
-  return (await insertReport(db, scope, { ...report, audit })) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
+  // The agent's own words, bounded and masked (`agentProse`): stored with the run and kept as long as it is.
+  const summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
+  const details = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
+  return (await insertReport(db, scope, { ...report, summary, details, audit })) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }

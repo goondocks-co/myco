@@ -420,6 +420,14 @@ runner:
     modelHint: Use haiku, sonnet, opus, fable, or a claude-* model ID.
     modelFamilies: [haiku, sonnet, opus, fable]
     modelFamilyPrefix: claude-
+  # How a stop it explains in its own words reads as a coded reason: its in-band error codes (`authentication_failed`,
+  # `rate_limit`) and what it writes to stderr when it exits without a result. The first pattern that matches decides;
+  # the words are read on the worker and never stored.
+  diagnostics:
+    - { code: login_missing, pattern: '\bauthentication_(?:failed|error)\b|failed to authenticate|invalid api key|api key is invalid|please run /login|not logged in|oauth token (?:has )?expired|\b401\b' }
+    - { code: rate_limited, pattern: '\brate[_ -]?limit|\b429\b|usage limit|too many requests' }
+    - { code: model_refused, pattern: '\bmodel\b[^\n]{0,80}\b(?:not found|not available|does not exist|is not supported)\b|invalid model|\bmodel_not_found\b' }
+    - { code: timed_out, pattern: '\btimed? ?out\b|\bETIMEDOUT\b|\btimeout\b' }
   # How a worker runs it.
   worker:
     binary: claude

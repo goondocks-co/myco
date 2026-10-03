@@ -159,6 +159,24 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
         "modelHint": "Model selection is unavailable for this agent."
       },
+      "diagnostics": [
+        {
+          "code": "login_missing",
+          "pattern": "\\bunauthenticated\\b|\\bunauthorized\\b|\\b401\\b|not logged in|authentication required"
+        },
+        {
+          "code": "rate_limited",
+          "pattern": "\\b429\\b|resource_exhausted|too many requests|rate[_ -]?limit|\\bquota\\b"
+        },
+        {
+          "code": "model_refused",
+          "pattern": "\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available)\\b"
+        },
+        {
+          "code": "timed_out",
+          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|deadline exceeded|\\btimeout\\b"
+        }
+      ],
       "worker": {
         "binary": "agy",
         "launch": {
@@ -684,6 +702,24 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ],
         "modelFamilyPrefix": "claude-"
       },
+      "diagnostics": [
+        {
+          "code": "login_missing",
+          "pattern": "\\bauthentication_(?:failed|error)\\b|failed to authenticate|invalid api key|api key is invalid|please run /login|not logged in|oauth token (?:has )?expired|\\b401\\b"
+        },
+        {
+          "code": "rate_limited",
+          "pattern": "\\brate[_ -]?limit|\\b429\\b|usage limit|too many requests"
+        },
+        {
+          "code": "model_refused",
+          "pattern": "\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not available|does not exist|is not supported)\\b|invalid model|\\bmodel_not_found\\b"
+        },
+        {
+          "code": "timed_out",
+          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|\\btimeout\\b"
+        }
+      ],
       "worker": {
         "binary": "claude",
         "launch": {
@@ -1405,6 +1441,24 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
         "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
       },
+      "diagnostics": [
+        {
+          "code": "login_missing",
+          "pattern": "\\b401 Unauthorized\\b|\\bunauthorized\\b|not logged in|codex login|missing (?:openai )?api key|invalid_api_key|incorrect api key|\\btoken (?:is |has )?expired"
+        },
+        {
+          "code": "rate_limited",
+          "pattern": "\\b429\\b|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
+        },
+        {
+          "code": "model_refused",
+          "pattern": "\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available|unsupported)\\b|\\bmodel_not_found\\b|unsupported model"
+        },
+        {
+          "code": "timed_out",
+          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|deadline exceeded|\\btimeout\\b"
+        }
+      ],
       "worker": {
         "binary": "codex",
         "launch": {
@@ -2000,6 +2054,24 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
         "modelHint": "Model selection is unavailable for this agent."
       },
+      "diagnostics": [
+        {
+          "code": "login_missing",
+          "pattern": "authentication required|not logged in|\\blogin\\b[^\\n]{0,40}\\brequired\\b|agent login|\\bunauthorized\\b|\\b401\\b"
+        },
+        {
+          "code": "rate_limited",
+          "pattern": "\\b429\\b|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
+        },
+        {
+          "code": "model_refused",
+          "pattern": "cannot use this model|\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available)\\b"
+        },
+        {
+          "code": "timed_out",
+          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|\\btimeout\\b"
+        }
+      ],
       "worker": {
         "binary": "cursor-agent",
         "launch": {
@@ -2313,6 +2385,24 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         ]
       },
+      "diagnostics": [
+        {
+          "code": "login_missing",
+          "pattern": "ProviderAuthError|LoadAPIKeyError|api key is missing|\\bunauthorized\\b|\\b401\\b|not authenticated|authentication required"
+        },
+        {
+          "code": "rate_limited",
+          "pattern": "\\b429\\b|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
+        },
+        {
+          "code": "model_refused",
+          "pattern": "ModelNotFound|\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available)\\b"
+        },
+        {
+          "code": "timed_out",
+          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|\\btimeout\\b"
+        }
+      ],
       "worker": {
         "binary": "opencode",
         "launch": {

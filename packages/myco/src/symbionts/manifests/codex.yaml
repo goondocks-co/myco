@@ -369,6 +369,14 @@ runner:
     allowedEfforts: [minimal, low, medium, high, xhigh]
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
     modelHint: Use a Codex model ID. An unset model holds runs at this tier.
+  # How a stop it explains in its own words reads as a coded reason: a failed turn's message and what it writes to
+  # stderr when it exits without completing one. The first pattern that matches decides; the words are read on the
+  # worker and never stored.
+  diagnostics:
+    - { code: login_missing, pattern: '\b401 Unauthorized\b|\bunauthorized\b|not logged in|codex login|missing (?:openai )?api key|invalid_api_key|incorrect api key|\btoken (?:is |has )?expired' }
+    - { code: rate_limited, pattern: '\b429\b|too many requests|rate[_ -]?limit|usage limit|\bquota\b' }
+    - { code: model_refused, pattern: '\bmodel\b[^\n]{0,80}\b(?:not found|not supported|does not exist|not available|unsupported)\b|\bmodel_not_found\b|unsupported model' }
+    - { code: timed_out, pattern: '\btimed? ?out\b|\bETIMEDOUT\b|deadline exceeded|\btimeout\b' }
   # How a worker runs it.
   worker:
     binary: codex

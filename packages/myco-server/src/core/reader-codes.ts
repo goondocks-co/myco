@@ -1,3 +1,4 @@
+import { runErrorDiagnostic } from '@goondocks/myco-shared/run-text';
 export const STALE_RUN_ERROR = 'the machine running it stopped responding';
 export const STALE_PENDING_REASON = 'no machine started the task within a day';
 export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
@@ -5,7 +6,20 @@ export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
 /** How a run whose closing reports carry no audit is recorded (`core/run-postconditions.ts`). */
 export const RUN_CLOSE_AUDIT_ERROR = 'the run ended without its audit';
 
-export type RunErrorCode = 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit' | 'run_failed';
+export type RunErrorCode = 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit'
+  | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed' | 'run_failed';
+
+/** The reader code each harness diagnostic a reader can act on is recorded under; any other reads as `run_failed`. */
+const DIAGNOSTIC_ERROR_CODES: Readonly<Record<string, RunErrorCode>> = {
+  login_missing: 'agent_not_signed_in',
+  rate_limited: 'agent_rate_limited',
+  model_refused: 'agent_model_refused',
+  timed_out: 'agent_timed_out',
+  crashed: 'agent_crashed',
+};
+
+/** The code a run whose worker reported this error is recorded under: its diagnostic's reader code, or `run_failed`. */
+export const diagnosticErrorCode = (error: string | null): RunErrorCode => DIAGNOSTIC_ERROR_CODES[runErrorDiagnostic(error) ?? ''] ?? 'run_failed';
 
 /** The code a run that closed short of its task's rule is recorded under. */
 export const closeErrorCode = (unmet: string): RunErrorCode => (unmet === RUN_CLOSE_AUDIT_ERROR ? 'report_without_audit' : 'run_failed');
@@ -18,7 +32,7 @@ export function runErrorCode(error: string | null, storedCode: string | null = n
   if (error === STALE_RUN_ERROR || error === 'the runtime went away') return 'machine_unresponsive';
   if (error.startsWith(LAUNCH_REFUSED_ERROR) || error.startsWith('the runtime refused to start')) return 'task_start_failed';
   if (error.startsWith(RUN_CLOSE_AUDIT_ERROR)) return 'report_without_audit';
-  return 'run_failed';
+  return diagnosticErrorCode(error);
 }
 
 /** A skipped run's known classifier, or a named fallback for free text. */

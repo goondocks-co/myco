@@ -1,5 +1,6 @@
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import { budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
@@ -26,6 +27,7 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
+import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
 import { harnessById, offerable } from './harnesses.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
@@ -89,6 +91,8 @@ export interface WorkerOptions {
   runRoot: string;
   /** Where each attempt's step log waits until the Deployment holds it (`step-outbox.ts`). Defaults to `.steps` inside `runRoot`. */
   stepRoot?: string;
+  /** Where the words behind a failed run's coded reason are kept on this machine (`diagnostic-log.ts`). Defaults to `.diagnostics` inside `runRoot`. */
+  diagnosticRoot?: string;
   /** Only these harnesses are offered, where the caller names any. */
   only?: readonly string[];
   /** Stop after one run rather than polling forever. */
@@ -340,22 +344,23 @@ async function drive(
     return { status: 'lost', error: null };
   };
   // A run that fails before its harness starts has no event to log it by, so it is said here.
-  const failedBeforeStart = (error: string): { status: 'failed'; error: string; identity: ExecutionIdentity } => {
-    options.log(`run ${run.id} failed before its harness started: ${error}`);
-    return { status: 'failed', error, identity: { status: 'unknown', reason: 'harness_not_started' } };
+  // Its record carries the coded reason; the worker's log says it in words.
+  const failedBeforeStart = (code: WorkerStartCode, words: string, name?: string): { status: 'failed'; error: string; identity: ExecutionIdentity } => {
+    options.log(`run ${run.id} failed before its harness started: ${words}`);
+    return { status: 'failed', error: workerStartError(code, name), identity: { status: 'unknown', reason: 'harness_not_started' } };
   };
   const named = harnessById(run.harness);
-  if (named !== null && !offerable(named)) return failedBeforeStart(`this worker does not drive ${run.harness}: ${WITHHELD_REASON}`);
+  if (named !== null && !offerable(named)) return failedBeforeStart('harness_not_offered', `this worker does not drive ${run.harness}: ${WITHHELD_REASON}`, run.harness);
   const driver = driverFor(run.harness);
-  if (driver === null) return failedBeforeStart(`no driver serves the harness ${run.harness}`);
+  if (driver === null) return failedBeforeStart('no_driver', `no driver serves the harness ${run.harness}`, run.harness);
   if (named === null || run.profile === undefined || !profileSupported(run.profile, named.profile)) {
-    return { ...failedBeforeStart(PROFILE_UNAPPLIED), refusal: { code: PROFILE_UNAPPLIED, reason: null } };
+    return { ...failedBeforeStart('profile_unapplied', PROFILE_UNAPPLIED), refusal: { code: PROFILE_UNAPPLIED, reason: null } };
   }
   // A harness given nothing to do ends its turn at once, and a worker that
   // launched it would then report a run that did nothing as one that finished.
   // The Deployment ends such a run at the claim; a Deployment that hands one
   // out anyway is answered with the failure it would otherwise have hidden.
-  if (run.instruction === null || run.instruction.trim() === '') return failedBeforeStart(`the Deployment supplied no instruction for this ${run.task} run`);
+  if (run.instruction === null || run.instruction.trim() === '') return failedBeforeStart('no_instruction', `the Deployment supplied no instruction for this ${run.task} run`, run.task);
   const lapsed = lapsedBeforeStart();
   if (lapsed !== null) return lapsed;
 
@@ -446,9 +451,11 @@ async function drive(
   const stepLog = keepsSteps && run.attemptId !== undefined ? new StepLog(named, clock) : null;
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
-  let failure: string | null = null;
+  let failure: { code: WorkerFailureCode; words: string } | null = null;
+  let preparing = false;
   try {
     if (run.repository !== undefined) {
+      preparing = true;
       checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
         const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id });
         if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
@@ -457,6 +464,7 @@ async function drive(
         return answer.body;
       }, { gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task) });
       stepLog?.within(checkout.root, resolvedPath(checkout.root));
+      preparing = false;
     }
     stopping.signal.throwIfAborted();
     if (clock() >= deadline) losing(`the lease on ${run.id} lapsed before its harness started; leaving the run to the Deployment`);
@@ -481,7 +489,7 @@ async function drive(
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
     }
   } catch (error) {
-    failure = error instanceof Error ? error.message : String(error);
+    failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error) };
   } finally {
     clearInterval(heartbeat);
     renewals.abort();
@@ -515,13 +523,33 @@ async function drive(
     ...(accounting.totals ?? { inputTokens: null, outputTokens: null, costUsd: null }),
     model: identity.primary.model, ...(identity.primary.provider === undefined ? {} : { provider: identity.primary.provider }),
   };
-  if (overran) return { status: 'failed', identity, usage, error: `the run outlived its budget of ${run.timeoutSeconds}s` };
-  if (failure !== null) return { status: 'failed', error: failure, identity, usage };
+  if (overran) return { status: 'failed', identity, usage, error: budgetError(run.timeoutSeconds) };
+  if (failure !== null) {
+    const error = workerFailedError(failure.code);
+    keepRunDiagnostic(options, run, error, failure.words);
+    return { status: 'failed', error, identity, usage };
+  }
   const last = events.at(-1);
-  if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: 'the harness wrote no ending', identity, usage };
-  return last.stop === 'end_turn'
-    ? { status: 'completed', error: failedCallsNote(events), identity, usage }
-    : { status: 'failed', identity, usage, error: `the harness stopped: ${last.stop}${last.detail === null ? '' : ` (${last.detail})`}`, ...(last.refusal === undefined ? {} : { refusal: last.refusal }) };
+  if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: HARNESS_NO_ENDING_ERROR, identity, usage };
+  if (last.stop === 'end_turn') return { status: 'completed', error: failedCallsNote(events), identity, usage };
+  // The record carries the coded reason; the harness's own words stay in this machine's diagnostics log.
+  const error = harnessStoppedError(last.stop, last.stop === 'error' ? classifyDiagnostic(run.harness, last) : undefined);
+  if (last.detail !== null) keepRunDiagnostic(options, run, error, last.detail);
+  const refusal = last.refusal === undefined ? null : parseProfileRefusal(last.refusal);
+  return { status: 'failed', identity, usage, error, ...(refusal === null ? {} : { refusal }) };
+}
+
+/** Where this worker keeps the words behind its runs' coded reasons. */
+const diagnosticRootOf = (options: Pick<WorkerOptions, 'diagnosticRoot' | 'runRoot'>): string => options.diagnosticRoot ?? join(options.runRoot, '.diagnostics');
+
+/** Keep what a harness or this worker said about a failed run on this machine; a log that cannot be written is said in the worker's log. */
+function keepRunDiagnostic(options: WorkerOptions, run: ClaimedRun, error: string, detail: string): void {
+  options.log(`run ${run.id} failed: ${error}; what was said is kept in ${diagnosticRootOf(options)}`);
+  try {
+    keepDiagnostic(diagnosticRootOf(options), { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)());
+  } catch (error) {
+    options.log(`could not keep the diagnostics of ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** Where this worker's step logs wait for the Deployment. */

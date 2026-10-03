@@ -337,6 +337,11 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
     task_start_failed: 'The machine could not start the task.',
     model_not_applied: 'The agent couldn’t use the chosen model.',
     report_without_audit: 'The agent didn’t account for the steps it took, so its work couldn’t be checked.',
+    agent_not_signed_in: 'The agent isn’t signed in on the machine that ran it.',
+    agent_rate_limited: 'The agent’s provider limited how often it could ask, so it stopped.',
+    agent_model_refused: 'The agent’s model refused to carry on with the task.',
+    agent_timed_out: 'The agent ran out of time before it finished.',
+    agent_crashed: 'The agent quit unexpectedly before it finished.',
     run_failed: 'The task stopped before it could finish.',
   };
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;

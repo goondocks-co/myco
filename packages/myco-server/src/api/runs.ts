@@ -29,7 +29,8 @@ import { admitResume, classifyFailure, type FailureObservation } from '../core/r
 /** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
 const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
-import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { shapeRunError } from '@goondocks/myco-shared/run-text';
 import { closeErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
@@ -313,7 +314,6 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (rejected.length > 0) {
     return Response.json(refused(ctx, refusal(`update names columns it may not set: ${rejected.sort().join(', ')}`, 'refused')));
   }
-  const runUpdate = update as RunUpdate;
   const scope = { projectId: ctx.projectId };
   // On a run the server dispatched, the context and the dry-run flag are the
   // dispatcher's own record of what it decided, and the task routes read both
@@ -321,12 +321,15 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   // run into a writing one, each require moving a column that is not the
   // runtime's. The refusal names the columns rather than dropping them, so a
   // caller learns what it may not set instead of watching a write do less.
-  const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in runUpdate);
+  const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in update);
   if (claimed.length > 0 && (await getRun(env.db, scope, runId))?.dispatchedBy != null) {
     return Response.json(refused(ctx, refusal(`a dispatched run's ${claimed.join(' and ')} belong to the dispatcher and may not be updated`, 'refused')));
   }
-  const guarded = 'status' in runUpdate;
+  const guarded = 'status' in update;
   const before = guarded ? await getRun(env.db, scope, runId) : null;
+  // A caller's error is kept only as a coded reason (`shapeRunError`), never in the words it sent.
+  const offered = (update as RunUpdate).error;
+  const runUpdate = (typeof offered === 'string' ? { ...update, error: shapeRunError(offered, before?.harness ?? null) } : update) as RunUpdate;
   // Before anything else this route answers: a caller holding a credential the
   // row does not name learns that, rather than learning what the row ended as.
   const foreign = guarded ? foreignCredentialAnswer(ctx, before) : null;
@@ -374,8 +377,6 @@ const EVENT_TYPES = ['pre_tool_use', 'post_tool_use', 'phase_start', 'phase_end'
 const EVENT_OUTCOMES = ['success', 'error'] as const;
 /** The most events one request may carry; a burst larger than this is split by the caller. */
 export const MAX_EVENTS_PER_REQUEST = 32;
-const MAX_SUMMARY_CHARS = 4_096;
-const MAX_DETAILS_CHARS = 65_536;
 const MAX_PAYLOAD_CHARS = 16_384;
 
 /**
@@ -469,10 +470,13 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
     recordedAnyTurns: body.recordedAnyTurns === true,
     errorClass,
   });
+  const scope = { projectId: ctx.projectId };
+  const before = await getRun(env.db, scope, runId);
   const update: Record<string, unknown> = {
     status: 'failed',
     completed_at: ctx.now,
-    error: errorMessage,
+    // A caller's error is kept only as a coded reason (`shapeRunError`), never in the words it sent.
+    error: shapeRunError(errorMessage, before?.harness ?? null),
     resumable: decision.resumable ? 1 : 0,
     resume_status: decision.status,
   };
@@ -484,8 +488,6 @@ export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Pr
   // The write is guarded on the row not already being terminal, and a run that
   // ended under another status answers the same refusal the update route gives:
   // `changed: 0` alone reads exactly like a run in another Project.
-  const scope = { projectId: ctx.projectId };
-  const before = await getRun(env.db, scope, runId);
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return foreign;
   const ended = endedAnswer(before?.status, 'failed');
