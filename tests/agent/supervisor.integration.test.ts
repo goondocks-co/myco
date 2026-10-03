@@ -12,7 +12,7 @@
  * handed and then wait for the signal the supervisor forwards.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import { tmpdir } from 'node:os';

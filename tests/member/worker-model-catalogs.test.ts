@@ -10,7 +10,7 @@
  * one harness at a time, keeps a report the Deployment could not be reached for, and never holds up its caller.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MODEL_CATALOG_REFRESH_MS, PROFILE_HARNESSES, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
@@ -233,9 +233,11 @@ describe('a listing starts its harness as a run on the machine\'s own login star
     const bin = join(dir, 'bin');
     mkdirSync(bin);
     for (const [name, script] of Object.entries(binaries)) writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
-    const saved = Object.fromEntries(['PATH', 'HOME', ...Object.keys(set)].map((key) => [key, process.env[key]]));
+    const saved = Object.fromEntries(['PATH', 'HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', ...Object.keys(set)].map((key) => [key, process.env[key]]));
     process.env.PATH = `${bin}:${process.env.PATH ?? ''}`;
     process.env.HOME = join(dir, 'home');
+    process.env.CODEX_HOME = join(dir, 'home', '.codex');
+    process.env.CLAUDE_CONFIG_DIR = join(dir, 'home', '.claude');
     mkdirSync(join(dir, 'home', '.codex'), { recursive: true });
     writeFileSync(join(dir, 'home', '.codex', 'auth.json'), '{"tokens":{"fixture":true}}');
     Object.assign(process.env, set);

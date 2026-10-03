@@ -33,7 +33,7 @@ mock.module('node:child_process', () => ({
 }));
 
 const writtenFiles = new Map<string, string>();
-import * as fsActual from 'node:fs';
+import fsActual from 'node:fs';
 const fsStub = {
   ...fsActual,
   mkdirSync: vi.fn(() => undefined),

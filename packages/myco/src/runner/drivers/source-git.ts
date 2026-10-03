@@ -28,7 +28,8 @@
  * The run's `git` is a POSIX shell script. Where the worker runs on Windows no
  * Git command is granted, and a source run reads through its file tools.
  */
-import { accessSync, constants, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { accessSync, constants, mkdirSync, realpathSync, statSync, writeFileSync } = nodeFs;
 import { delimiter, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';

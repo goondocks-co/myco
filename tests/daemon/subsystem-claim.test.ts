@@ -143,8 +143,9 @@ describe('resolveClaimsHome — one claims area per machine', () => {
     });
   });
 
-  it('stays inside the sandboxed user home, never the real one', () => {
-    expect(resolveClaimsHome()).not.toBe(path.join(String((globalThis as Record<string, unknown>).__MYCO_TEST_REAL_HOME__), '.myco'));
+  it('stays inside the sandboxed user home', () => {
+    expect(resolveClaimsHome()).toBe(path.join(os.homedir(), '.myco'));
+    expect(process.env.HOME).toBe(os.homedir());
   });
 });
 

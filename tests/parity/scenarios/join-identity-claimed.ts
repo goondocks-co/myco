@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';

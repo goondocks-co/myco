@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { withDatabase, openDatabase, type Database } from '@myco/db/client.js';

@@ -6,7 +6,7 @@
  * sees — never on a live registration.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {

@@ -12,7 +12,8 @@
  * settings are carried, how its login reaches the run, and which settings are
  * the run's rather than the machine's.
  */
-import { mkdirSync, rmSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, rmSync } = nodeFs;
 import { join } from 'node:path';
 
 /** An empty directory named `name` inside the run's directory, replacing whatever an earlier attempt left there. */

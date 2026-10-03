@@ -11,7 +11,7 @@
  * what a local build happens to have produced.
  */
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, statSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, statSync, utimesSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';

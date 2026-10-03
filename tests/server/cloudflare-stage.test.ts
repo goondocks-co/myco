@@ -10,7 +10,7 @@
  * mean the failure needs two independent mistakes.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';

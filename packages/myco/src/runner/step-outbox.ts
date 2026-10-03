@@ -14,7 +14,8 @@
  * outbox holds more than `STEP_OUTBOX_MAX_BYTES` its oldest files are removed first.
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, rmdirSync, rmSync, statSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, readdirSync, rmdirSync, rmSync, statSync } = nodeFs;
 import { join } from 'node:path';
 import { stepPages, type UnrecognizedCount, type WorkerStep } from '@goondocks/myco-shared/worker-steps';
 import { readPrivateJson, writePrivateFileAtomic } from '../member/store.js';

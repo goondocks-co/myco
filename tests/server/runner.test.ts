@@ -5,7 +5,7 @@
  * stderr alone.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "../support/fenced-fs.mjs";
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {

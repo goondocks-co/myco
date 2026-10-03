@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';

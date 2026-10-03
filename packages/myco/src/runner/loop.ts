@@ -24,7 +24,8 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
  * (`keep-awake.ts`), and on waking from a sleep that outlasted its lease stops
  * the harness at once rather than spend a session on a run it no longer holds.
  */
-import { mkdirSync, realpathSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, realpathSync } = nodeFs;
 import { join } from 'node:path';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
 import { keepDiagnostic } from './diagnostic-log.js';
