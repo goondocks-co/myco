@@ -13,7 +13,7 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
     'taskkill', 'tasklist', 'cmd', 'powershell', 'pwsh', 'where',
     'perl', 'python', 'python3', 'ruby', 'file', 'stat', 'readlink', 'realpath', 'getconf',
     'cmp', 'diff', 'dd', 'mktemp', 'du', 'df',
-    'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'timeout',
+    'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'prlimit', 'timeout',
   ];
   const extensions = process.platform === 'win32'
     ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')]
