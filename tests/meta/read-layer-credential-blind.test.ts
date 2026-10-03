@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
@@ -37,11 +37,32 @@ function importSpecifiers(source: string): string[] {
 }
 
 /** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
-const CORE_MODULES = ['accounting.ts', 'activity.ts', 'canopy.ts', 'capture.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'plans.ts', 'prompts.ts', 'run-reads.ts', 'run-outcome.ts', 'runs.ts', 'scope.ts', 'search.ts', 'search-types.ts', 'credentials.ts', 'embedding.ts', 'kpis.ts', 'machines.ts', 'material-readiness.ts', 'sessions.ts', 'task-descriptions.ts', 'transcript.ts', 'turns.ts', 'uncaptured.ts', 'work.ts'] as const;
+const CORE_MODULES = ['accounting.ts', 'activity.ts', 'canopy.ts', 'capture.ts', 'blobs.ts', 'children.ts', 'cortex.ts', 'meta.ts', 'plans.ts', 'prompts.ts', 'run-reads.ts', 'run-outcome.ts', 'runs.ts', 'scope.ts', 'search.ts', 'search-types.ts', 'credentials.ts', 'embedding.ts', 'kpis.ts', 'machines.ts', 'material-readiness.ts', 'sessions.ts', 'task-descriptions.ts', 'task-start.ts', 'transcript.ts', 'turns.ts', 'uncaptured.ts', 'work.ts'] as const;
 
 const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//, /\/ingest\//];
 /** The one ingest module a read may name: the wire's kind catalogue, pure data — never the write path beside it. */
 const ADMITTED_IMPORT = [/\/ingest\/kinds\.js$/];
+
+/** The secret store, and the one thing a read may take from it: whether a slot holds a value, read without opening it. */
+const SECRET_STORE = join(SRC, 'core', 'secrets.ts');
+const SECRET_PRESENCE = new Set(['secretStored']);
+/** What opens a stored secret: a read reaching any of these could hand a decrypted login to a dashboard. */
+const OPENS_SECRET = /\b(?:openHarnessCredential|openProviderCredential|deploymentSecretStore)\s*\(|crypto\.subtle\.decrypt\b/;
+
+/** A module's value imports inside the server source: each target file and the names it takes. Type-only imports are erased and reach nothing. */
+function valueImports(file: string): Array<{ target: string; names: string[] | null }> {
+  const source = readFileSync(file, 'utf8');
+  const out: Array<{ target: string; names: string[] | null }> = [];
+  for (const m of source.matchAll(/^\s*(import|export)\s+(type\s+)?([\s\S]*?)\s+from\s+['"](\.[^'"]+)['"]/gm)) {
+    if (m[2] !== undefined) continue;
+    const target = resolve(dirname(file), m[4]!).replace(/\.js$/, '.ts');
+    const braces = /\{([\s\S]*)\}/.exec(m[3]!);
+    const names = braces === null ? null : braces[1]!.split(',').map((n) => n.trim()).filter((n) => n !== '' && !n.startsWith('type ')).map((n) => n.split(/\s+as\s+/)[0]!.trim());
+    out.push({ target, names });
+  }
+  for (const m of source.matchAll(/^\s*import\s+['"](\.[^'"]+)['"]/gm)) out.push({ target: resolve(dirname(file), m[1]!).replace(/\.js$/, '.ts'), names: null });
+  return out;
+}
 
 describe('read layer', () => {
   it('is made of exactly the named core modules, and says so when that changes', () => {
@@ -50,6 +71,30 @@ describe('read layer', () => {
     // in the run output instead of only in a diff.
     console.log(`[read-layer gate] core modules: ${present.join(', ')}`);
     expect(present).toEqual([...CORE_MODULES].sort());
+  });
+
+  it('never reaches an opened secret: the store is read only through its presence check, at any depth', () => {
+    const offenders: string[] = [];
+    for (const start of tsFiles(READ_DIR)) {
+      const via = new Map<string, string | null>([[start, null]]);
+      const queue = [start];
+      while (queue.length > 0) {
+        const file = queue.shift()!;
+        const chain = () => { const steps: string[] = []; for (let at: string | null = file; at !== null; at = via.get(at) ?? null) steps.unshift(relative(SRC, at)); return steps.join(' -> '); };
+        if (OPENS_SECRET.test(readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, ''))) offenders.push(`${chain()} opens a secret`);
+        for (const { target, names } of valueImports(file)) {
+          if (target === SECRET_STORE) {
+            const taken = names ?? ['*'];
+            if (taken.some((name) => !SECRET_PRESENCE.has(name))) offenders.push(`${chain()} takes ${taken.join(', ')} from core/secrets.ts`);
+            continue;
+          }
+          if (!target.startsWith(SRC) || via.has(target)) continue;
+          via.set(target, file);
+          queue.push(target);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it('imports no authenticator, cookie module, or request-handling module', () => {

@@ -6,6 +6,7 @@ import { ArchivedNotice } from '../features/today/ArchivedNotice';
 import { CapturePanel } from '../features/today/CapturePanel';
 import { NeedsYouPanel, NeedsYouSummary, type NeedsYouProps } from '../features/today/NeedsYou';
 import { Lede, ledeParts, UpkeepLine } from '../features/today/Summary';
+import { PageScope } from './scope';
 import { hasRunOutput, sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } from '../features/today/timeline';
 import { FailureNote, KickerProject, KickerSep, NestedLines, TimelineItem, TitleLink, type TimelineTone } from '../features/today/TimelineItem';
 import type { WorkAnswer } from '../features/today/wire';
@@ -77,7 +78,10 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
       {project !== undefined && isArchived(project) && <ArchivedNotice projectId={project.projectId} archivedAt={project.archivedAt} now={now} />}
       {phone && <NeedsYouSummary {...needsYou} />}
       <header className="flex flex-col gap-s2">
-        <h1 className="t-display text-ink">{dayHeading(window.start, now)}</h1>
+        <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
+          <h1 className="t-display text-ink">{dayHeading(window.start, now)}</h1>
+          <PageScope />
+        </div>
         {today.counts !== undefined && today.entries !== undefined && today.entries.length > 0
           ? <Lede parts={ledeParts(today.counts, { isToday: window.isToday, scoped, projectName })} />
           : today.isPending ? <Skeleton className="h-s5 w-3/5" /> : null}

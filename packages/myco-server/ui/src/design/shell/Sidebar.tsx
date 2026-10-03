@@ -101,9 +101,7 @@ export function SearchTrigger({ onOpen, label = 'Search' }: { onOpen: () => void
 export interface SidebarProps {
   /** The brand, the search field and the pages, top down. */
   top: ReactNode;
-  /** The project filter: the one part that scrolls when the column runs short. */
-  middle?: ReactNode;
-  /** The admin pages, pinned under the project filter; left out for a member. */
+  /** The admin pages, pinned at the foot; left out for a member. */
   foot?: ReactNode;
   /** The account menu, pinned to the bottom. */
   account: ReactNode;
@@ -111,16 +109,16 @@ export interface SidebarProps {
 }
 
 /**
- * The nav column: brand, search and pages at the top, the project filter, the
- * admin foot, and the account at the bottom. The pages, the foot and the
- * account stay in view on a laptop's screen; only the project list scrolls. On
- * a screen too short for even that, the whole column scrolls.
+ * The nav column: brand, search and pages at the top, the admin foot and the
+ * account at the bottom. It lists pages only; which projects a page shows is
+ * said in the page's own header. On a screen too short for it, the column
+ * scrolls.
  */
-export function Sidebar({ top, middle, foot, account, className }: SidebarProps) {
+export function Sidebar({ top, foot, account, className }: SidebarProps) {
   return (
     <div className={cn('flex h-full min-h-0 flex-col overflow-y-auto', className)}>
       <div className="flex shrink-0 flex-col gap-s3 px-s3 pb-s3 pt-s4">{top}</div>
-      <div className="flex min-h-[132px] flex-1 flex-col px-s3">{middle}</div>
+      <div className="flex-1" />
       {foot != null && <div className="shrink-0 border-t border-line px-s3 py-s2">{foot}</div>}
       <div className="shrink-0 border-t border-line px-s3 py-s2">{account}</div>
     </div>

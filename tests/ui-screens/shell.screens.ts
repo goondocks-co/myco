@@ -4,9 +4,9 @@
  *
  * The shell is the nav column on a desktop, and the header, bottom bar and nav
  * drawer on a phone. Each check opens a project's Sessions page inside it and
- * asserts the shell's key content (the pages, the project filter listing the
- * fixture's projects, the admin foot for the owner only, search and the
- * account), that nothing scrolls sideways, that no raw id reaches the shell's
+ * asserts the shell's key content (the pages and no list of projects, the
+ * admin foot for the owner only, search and the account), and the page's
+ * scope switcher beside its title, that nothing scrolls sideways, that no raw id reaches the shell's
  * text, and that axe-core finds nothing serious or critical in the shell. The
  * pages inside keep their own checks: they are rebuilt, and held to account,
  * in later phases.
@@ -33,10 +33,8 @@ const ROLES = [
 /** The admin foot. Health's name carries the count of what needs an admin, so it is matched by its start. */
 const ADMIN_PAGES = [INVITE_CONTROLS.page, 'Settings', /^Health/] as const;
 const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Myco’s work'];
-/** How many projects the filter lists before "N more". */
-const FILTER_LIMIT = 8;
 
-/** The project the checks open: the fixture's first, or on a real deployment the first the project filter lists. */
+/** The project the checks open: the fixture's first, or on a real deployment the first the Projects page lists. */
 function fixtureProject(): { projectId: string; name: string } | null {
   if (!onFixture()) return null;
   const projects = JSON.parse(screensEnv('projects')) as Array<{ projectId: string; name: string }>;
@@ -47,28 +45,25 @@ function fixtureProject(): { projectId: string; name: string } | null {
 async function sessionsPath(page: Page): Promise<string> {
   const project = fixtureProject();
   if (project !== null) return `/p/${encodeURIComponent(project.projectId)}/sessions`;
-  const first = page.locator('[data-project-filter-item]').first();
+  const first = page.getByRole('list', { name: 'Projects' }).getByRole('link').first();
   const href = await first.getAttribute('href');
-  if (href === null) throw new Error('the project filter lists no project');
+  if (href === null) throw new Error('the Projects page lists no project');
   return `${href}/sessions`;
 }
 
-/**
- * The project filter lists the most recent projects up to its limit, the rest
- * behind "N more", and every row it lists is on screen or one scroll of the
- * list away; the list itself starts on screen.
- */
-async function expectProjectsListed(page: Page, scope: ReturnType<Page['locator']>): Promise<void> {
-  const filter = scope.getByRole('navigation', { name: 'Projects' });
-  await expect(filter).toBeInViewport();
-  const rows = filter.locator('[data-project-filter-item]');
-  await expect(rows.first()).toBeInViewport();
-  if (!onFixture()) return;
-  const names = JSON.parse(screensEnv('projectNames')) as string[];
-  expect(names.length).toBeGreaterThan(FILTER_LIMIT);
-  await expect(rows).toHaveCount(FILTER_LIMIT);
-  const more = filter.getByRole('link', { name: `${names.length - FILTER_LIMIT} more` });
-  await expect(more).toBeInViewport();
+/** The nav lists pages only: no list of projects, in the column or the drawer. */
+async function expectNoProjectList(scope: ReturnType<Page['locator']>): Promise<void> {
+  await expect(scope.getByRole('navigation', { name: 'Projects' })).toHaveCount(0);
+  await expect(scope.locator('[data-scope-switcher]')).toHaveCount(0);
+}
+
+/** The page's header says which project it shows, beside the title, on screen at every width. */
+async function expectScopeInHeader(page: Page): Promise<void> {
+  const scope = page.locator('main [data-scope-switcher]');
+  await expect(scope).toBeInViewport();
+  await expect(scope).toHaveAttribute('data-scope-switcher', 'project');
+  const project = fixtureProject();
+  if (project !== null) await expect(scope.locator('[data-scope-current]')).toHaveText(project.name);
 }
 
 /** The pages, the admin foot (for an admin) and the account are all on screen, whatever the project list holds. */
@@ -96,8 +91,7 @@ test.describe('dashboard shell', () => {
           await expect(nav).toBeVisible();
           await expect(nav.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Sessions' })).toHaveAttribute('aria-current', 'page');
           await expectNavInView(nav, role);
-          await expectProjectsListed(page, nav);
-          await expect(nav.locator('[data-project-filter-item][aria-current="true"]')).toHaveCount(1);
+          await expectNoProjectList(nav);
           await expect(nav.getByRole('button', { name: /Search/ })).toBeInViewport();
           if (onFixture()) await expect(nav.getByRole('button', { name: `Account and appearance for ${name}` })).toBeInViewport();
         } else {
@@ -115,6 +109,7 @@ test.describe('dashboard shell', () => {
           }
         }
 
+        await expectScopeInHeader(page);
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
         await expectNoRawIds(page, SHELL);
@@ -132,12 +127,62 @@ test.describe('dashboard shell', () => {
           await expect(drawer.getByRole('link', { name: 'Myco’s work' })).toBeVisible();
           for (const label of ADMIN_PAGES) await expect(drawer.getByRole('link', { name: label, exact: typeof label === 'string' })).toHaveCount(role === 'admin' ? 1 : 0);
           await expectNavInView(drawer, role);
-          await expectProjectsListed(page, drawer);
+          await expectNoProjectList(drawer);
           await expectFits(page, viewport);
           await expectNoRawIds(page, SHELL);
           await expectAxeClean(page, [SHELL]);
           await shoot(page, `shell-${role}-drawer`, viewport, mode);
         }
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`scope switcher ${viewport} ${mode}`, async ({ browser }) => {
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        await expect(page.locator('main')).toHaveCount(1);
+        const sessions = await sessionsPath(page);
+        await page.goto(new URL(`${sessions}?state=ended`, page.url()).href);
+        await expectScopeInHeader(page);
+        const trigger = page.locator('main [data-scope-switcher]');
+        await trigger.click();
+        const list = page.getByRole('menu');
+        await expect(list).toBeVisible();
+        const options = list.locator('[data-scope-option]');
+        await expect(options.first()).toHaveText('All projects');
+        await expect(list.locator('[data-scope-option="project"][aria-checked="true"]')).toHaveCount(1);
+        await expect(list.getByRole('menuitem', { name: 'Every project, in detail' })).toBeVisible();
+        await expectFits(page, viewport);
+        await expectNoRawIds(page, '[role="menu"]');
+        await expectAxeClean(page, ['[role="menu"]']);
+        await shoot(page, 'scope-switcher', viewport, mode);
+        // A pick keeps the section and the list's filters; All projects leads to the section's form across every project.
+        const other = list.locator('[data-scope-option="project"]:not([aria-checked="true"])').first();
+        if (await other.count() > 0) {
+          await other.click();
+          await expect(page).toHaveURL(/\/p\/[^/]+\/sessions\?state=ended$/);
+          expect(new URL(page.url()).pathname).not.toBe(sessions);
+          await page.locator('main [data-scope-switcher]').click();
+        } else await trigger.click();
+        await page.getByRole('menu').locator('[data-scope-option="all"]').click();
+        await expect(page).toHaveURL(/\/sessions\?state=ended$/);
+        await expect(page.locator('main [data-scope-switcher]')).toHaveAttribute('data-scope-switcher', 'all');
+        await expect(page.locator('main [data-scope-current]')).toHaveText('All projects');
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+
+    test(`a page for the whole server names no project ${viewport} ${mode}`, async ({ browser }) => {
+      const { context, page, watch } = await openPage(browser, { path: '/settings', viewport, mode, cookie: screensEnv('ownerCookie') });
+      try {
+        await expect(page.locator('[data-scope-deployment]')).toHaveText('Applies to every project.');
+        await expect(page.locator('[data-scope-switcher]')).toHaveCount(0);
         expectQuiet(watch);
       } finally {
         await context.close();

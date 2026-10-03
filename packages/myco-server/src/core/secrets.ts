@@ -157,6 +157,15 @@ async function open(key: CryptoKey, row: SecretRow): Promise<string> {
   return checked.value;
 }
 
+/**
+ * Whether the store holds a value under `name`, read without opening it: no
+ * wrapping key is touched, so a preview can ask it where only the claim may
+ * open what it holds.
+ */
+export async function secretStored(db: RelationalStore, name: string): Promise<boolean> {
+  return (await db.prepare(`SELECT 1 AS one FROM deployment_secrets WHERE name = ?`).bind(name).first<{ one: number }>()) !== null;
+}
+
 /** The store, over a relational store and the deployment's wrapping key. */
 export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWrappingKey): SecretStore {
   // The imported key is cached for the lifetime of this store rather than per call:

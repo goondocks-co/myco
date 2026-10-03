@@ -2,30 +2,26 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import {
-  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, NavItem, NavSection, ProjectFilter, SearchTrigger,
-  Sidebar, StatusChip, useSearchShortcut, useShellMenu, type ProjectFilterItem,
+  AccountMenu, AppShell, BottomBar, Brand, ErrorState, IconButton, NavItem, NavSection, SearchTrigger,
+  Sidebar, StatusChip, useSearchShortcut, useShellMenu,
 } from '../design';
 import { Search as SearchPanel } from '../features/search/Search';
 import { useAttention } from '../hooks/use-attention';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
-import { isArchived, type ProjectSummary } from '../lib/api';
 import { readLastProject, rememberProject } from '../lib/project-memory';
 import { memberDisplayName } from '../lib/member-name';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, HEALTH_PATH, MY_MACHINES_PATH, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, PROJECTS_PATH, clearProjectHref, projectOf, switchProjectHref, titleOf,
+  ADMIN_PAGES, HEALTH_PATH, MY_MACHINES_PATH, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, projectOf, titleOf,
 } from './nav';
-
-/** Most recent activity first; a project with none sorts last, then by name. */
-function byRecency(a: ProjectSummary, b: ProjectSummary): number {
-  return (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1) || a.name.localeCompare(b.name);
-}
+import { scopeProjects } from './scope';
 
 /**
- * The signed-in dashboard: the shell around every page, with the nav, the
- * project filter, search and the account menu. The project a page is scoped
+ * The signed-in dashboard: the shell around every page, with the nav, search
+ * and the account menu. The nav lists pages only; which projects a page shows
+ * is said and changed in the page's own header. The project a page is scoped
  * to comes from its path; a page that spans the server keeps the project last
  * opened in the nav's links, so the way back is one click.
  */
@@ -46,21 +42,12 @@ export function Shell() {
 
   if (me.data && member === null) return <NotAMember login={me.data.login} />;
 
-  // An archived project leaves the nav, unless it is the one open.
-  const listed = all.filter((p) => !isArchived(p) || p.projectId === current?.projectId).sort(byRecency);
+  // An archived project is never the nav's fallback, unless it is the one open.
+  const listed = scopeProjects(all, current?.projectId ?? null);
   const remembered = readLastProject();
   const scope = current ?? listed.find((p) => p.projectId === remembered) ?? listed[0];
   const pages = PROJECT_PAGES.filter((page) => admin || page.admin !== true);
   const name = memberDisplayName(member, me.data?.login);
-
-  const filterItems: ProjectFilterItem[] = listed.map((p) => ({
-    projectId: p.projectId,
-    name: p.name,
-    sessionCount: p.sessionCount,
-    lastActivityAt: p.lastActivityAt,
-    href: switchProjectHref(location, p.projectId),
-    active: p.projectId === current?.projectId,
-  }));
 
   const account = (compact: boolean) => (
     <AccountMenu
@@ -77,8 +64,6 @@ export function Shell() {
   const sidebar = (
     <ShellSidebar
       pages={scope === undefined ? [] : pages.map((page) => ({ ...page, to: pageHref(page, location.pathname, scope.projectId), active: pageIsOpen(page, location.pathname) }))}
-      projects={projects.isSuccess ? filterItems : null}
-      clearHref={clearProjectHref(location)}
       admin={admin}
       account={account(false)}
       onSearch={() => setSearchOpen(true)}
@@ -120,16 +105,13 @@ export function Shell() {
 
 interface ShellSidebarProps {
   pages: ReadonlyArray<(typeof PROJECT_PAGES)[number] & { to: string; active: boolean }>;
-  /** The project filter's rows, or null while the list is unread. */
-  projects: ProjectFilterItem[] | null;
-  clearHref: string | null;
   admin: boolean;
   account: ReactNode;
   onSearch: () => void;
 }
 
 /** The nav column's contents, the same in the column and in the drawer. */
-function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: ShellSidebarProps) {
+function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
   const { closeMenu } = useShellMenu();
   return (
     <Sidebar
@@ -146,7 +128,6 @@ function ShellSidebar({ pages, projects, clearHref, admin, account, onSearch }: 
           )}
         </>
       )}
-      middle={projects === null ? undefined : <ProjectFilter items={projects} clearHref={clearHref} allHref={PROJECTS_PATH} onNavigate={closeMenu} />}
       foot={admin ? (
         <NavSection label="Admin">
           {ADMIN_PAGES.map((page) => (

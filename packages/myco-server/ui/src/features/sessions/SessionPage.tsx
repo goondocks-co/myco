@@ -15,6 +15,7 @@ import { memberLabel } from '../../lib/member-name';
 import { sessionHeading } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { projectPath } from '../../routes/nav';
+import { PageScope } from '../../routes/scope';
 import { isLive } from '../today/timeline';
 import { ago, dayHeading, workPlace } from '../today/words';
 import { Conversation, PERSON_ONLY } from './Conversation';
@@ -98,7 +99,10 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
 
   return (
     <article data-session-page="" className="flex w-full flex-col gap-s5">
-      <Breadcrumbs items={[{ label: 'Sessions', to: '/sessions' }, { label: name, to: projectPath(projectId, '/sessions') }]} />
+      <div className="flex flex-wrap items-center justify-between gap-s3">
+        <Breadcrumbs items={[{ label: 'Sessions', to: '/sessions' }, { label: name, to: projectPath(projectId, '/sessions') }]} />
+        <PageScope />
+      </div>
 
       <div className="grid items-start gap-s6 lg:grid-reading lg:grid-rows-lead lg:gap-x-s10">
         <header className="flex min-w-0 max-w-measure flex-col gap-s3 lg:col-start-1 lg:row-start-1">

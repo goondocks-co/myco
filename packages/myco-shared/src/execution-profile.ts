@@ -84,6 +84,14 @@ export const PROFILE_HARNESSES: Readonly<Record<string, HarnessProfileDefaults>>
   RUNNER_HARNESSES.map((harness) => [harness.id, harness.profile as HarnessProfileDefaults]),
 );
 
+/** The name a person reads for each agent a worker runs, as its manifest declares it. */
+export const HARNESS_NAMES: Readonly<Record<string, string>> = Object.fromEntries(RUNNER_HARNESSES.map((harness) => [harness.id, harness.name]));
+
+/** An agent's name, or "An agent" for an id this build has no name for, so a sentence never carries a raw id. */
+export function harnessName(id: string): string {
+  return Object.hasOwn(HARNESS_NAMES, id) ? HARNESS_NAMES[id]! : 'An agent';
+}
+
 export const CONFIGURABLE_PROFILE_HARNESSES = Object.keys(PROFILE_HARNESSES).filter((id) => PROFILE_HARNESSES[id]!.allowedEfforts.length > 0);
 
 export const isReasoningTier = (value: unknown): value is ReasoningTier => REASONING_TIERS.some((tier) => tier === value);

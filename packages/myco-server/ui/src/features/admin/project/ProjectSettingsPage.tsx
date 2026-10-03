@@ -19,6 +19,7 @@ export function ProjectSettingsPage({ projectId, projectName }: { projectId: str
   return (
     <AdminPage
       name="project-settings"
+      scope="project"
       title="Project settings"
       lede={`How Myco works in ${projectName ?? 'this project'}: what it does there, the repository it reads, who outside this server may read it, and whether its work has shipped.`}
     >

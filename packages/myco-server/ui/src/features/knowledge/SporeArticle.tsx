@@ -8,6 +8,7 @@ import { cn } from '../../lib/cn';
 import { sessionHeadingText } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, projectPath, runPath } from '../../routes/nav';
+import { PageScope } from '../../routes/scope';
 import { dateTime } from '../sessions/words';
 import type { SporeArticleAnswer } from './wire';
 import {
@@ -49,7 +50,10 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
   const current = spore.status === DEFAULT_SPORE_STATUS;
   return (
     <article data-spore-article="" className="flex w-full flex-col gap-s5">
-      <Breadcrumbs items={[{ label: 'Knowledge', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: 'Spores', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: projectName, to: projectPath(projectId) }]} />
+      <div className="flex flex-wrap items-center justify-between gap-s3">
+        <Breadcrumbs items={[{ label: 'Knowledge', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: 'Spores', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: projectName, to: projectPath(projectId) }]} />
+        <PageScope />
+      </div>
 
       <div className="grid items-start gap-s6 lg:grid-reading lg:gap-x-s10">
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">

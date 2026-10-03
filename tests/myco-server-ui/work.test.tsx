@@ -362,13 +362,13 @@ describe('Myco’s work', () => {
     for (const key of ['work', 'runs']) for (const option of intervals(key)) expect({ key, interval: option.interval }).toEqual({ key, interval: false });
   });
 
-  it('spans every project at /work: each run names its project, no project’s run list is read, and a task is started from a project', async () => {
+  it('spans every project at /work: each run names its project, no project’s run list is read, and Run a task is offered here too', async () => {
     const asked = server(week({
       work: { ...WEEK_WORK, outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'learn', task: 'extract-curate', outcome: { spores: 1, sessions: 1, maps: 0 } })] },
     }));
     mount('/work');
     await waitFor(() => expect(card('learn')).not.toBeNull());
-    expect(screen.getByText('What Myco did in the background, across every project, grouped by what came of it.')).toBeTruthy();
+    expect(screen.getByText('What Myco did in the background, grouped by what came of it.')).toBeTruthy();
     expect(asked.find((url) => url.pathname === '/api/work')!.searchParams.get('project')).toBeNull();
     expect(document.querySelector('[data-lede]')!.textContent).toContain('This week, Myco learned 7 spores from 5 sessions');
     expect(document.querySelector('[data-lede]')!.textContent).toContain('across 2 projects');
@@ -376,8 +376,9 @@ describe('Myco’s work', () => {
     const runs = within(card('learn')).getByRole('list', { name: 'Latest learning runs' });
     expect(runs.textContent).toContain('Myco');
     expect(asked.some((url) => url.pathname.endsWith('/runs'))).toBe(false);
-    expect(screen.queryByRole('button', { name: 'Run a task' })).toBeNull();
-    expect(document.querySelector('[data-when]')!.textContent).toContain('To start a task by hand, pick a project in the nav.');
+    expect(screen.getByRole('button', { name: 'Run a task' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Showing: All projects' })).toBeTruthy();
+    expect(document.querySelector('[data-when]')!.textContent).not.toContain('pick a project');
     expect(within(screen.getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Myco’s work' }).getAttribute('aria-current')).toBe('page');
     expect(rawIdsInPage()).toEqual([]);
   });

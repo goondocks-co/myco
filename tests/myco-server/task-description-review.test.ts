@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { scheduleWords, descriptionProfile } from '@myco-server-worker/read/task-descriptions.js';
 import { OFFERABLE_PROFILE_HARNESSES } from '@goondocks/myco-shared/execution-profile';
-import { heldByWords, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
+
 import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { PRE_CONDITIONS, ACCELERATORS } from '@myco-server-worker/core/scheduled-tasks.js';
@@ -58,10 +58,10 @@ it('resolves every offerable agent without a preference and preserves run hold r
   expect(profile.profiles.map((row) => row.harness)).toEqual(OFFERABLE_PROFILE_HARNESSES);
   expect(profile).toMatchObject({ profiles: expect.arrayContaining([
     { harness: 'claude-code', model: 'sonnet', effort: 'medium', note: null },
-    { harness: 'codex', model: null, effort: null, note: heldByWords(noModelForTier('codex', 'default')) },
-    expect.objectContaining({ harness: 'cursor', note: `${heldByWords(profileUnsupported('cursor'))} This agent does not support model choice.` }),
+    { harness: 'codex', model: null, effort: null, note: 'Codex has no model chosen for the default tier. Choose one in Settings.' },
+    expect.objectContaining({ harness: 'cursor', note: 'Cursor can’t use a chosen model, so it won’t run this task.' }),
   ]) });
-  expect(descriptionProfile('extract-curate', new Map([['worker.harness', '"claude-code"']]))).toMatchObject({ profiles: [{ harness: 'claude-code', model: 'sonnet', effort: 'medium', note: null }], profileNote: 'The worker may use a configured fallback at launch.' });
+  expect(descriptionProfile('extract-curate', new Map([['worker.harness', '"claude-code"']]))).toMatchObject({ profiles: [{ harness: 'claude-code', model: 'sonnet', effort: 'medium', note: null }], profileNote: 'A machine without this agent signed in may run it with the next agent in your fallback order.' });
 });
 
 it('uses the resolved project set to show a switched off capability', async () => {

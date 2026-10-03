@@ -142,8 +142,8 @@ export const MY_MACHINES_PATH = '/me/machines';
 
 /**
  * The pages that have an all-projects form, by the suffix of their per-project
- * one. The project filter can be cleared only on one of these: until a page
- * has a form that spans every project, there is nothing to clear it to.
+ * one. The scope switcher offers "All projects" only on one of these: until a page
+ * has a form that spans every project, there is nothing to lead it to.
  */
 export const ALL_PROJECTS_FORMS: Readonly<Record<string, string>> = {
   '': '/',
@@ -225,7 +225,7 @@ export function keptFilters(search: string): string {
 }
 
 /**
- * Where picking a project in the filter leads: the same page under that
+ * Where picking a project in the scope switcher leads: the same page under that
  * project, keeping the list's filters and dropping the record that was open.
  * From a page's all-projects form it leads to the same page under the project,
  * filters kept; from any other page that spans the server, to the project's
@@ -239,7 +239,7 @@ export function switchProjectHref(location: { pathname: string; search: string }
   return `${projectPath(projectId, listSuffix(location.pathname))}${keptFilters(location.search)}`;
 }
 
-/** Where clearing the project filter leads: the page's all-projects form, or null when the page has none yet. */
+/** Where "All projects" in the scope switcher leads: the page's all-projects form, or null when the page has none yet. */
 export function clearProjectHref(
   location: { pathname: string; search: string },
   forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS,

@@ -291,10 +291,10 @@ export async function recentWorkerCapabilities(db: RelationalStore, now: number)
 }
 
 /** Recent offers and repository capabilities describe a task's fleet profile gap. */
-export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; offers: ReportedHarness[]; capabilities: string[] }>> {
+export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[] }>> {
   const fleet = await readWorkerFleet(db, now);
   return fleet.filter((row) => row.recent && row.eligible)
-    .map((row) => ({ credentialId: row.credentialId, offers: row.offers ?? [], capabilities: row.capabilities ?? [] }));
+    .map((row) => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [] }));
 }
 
 /**

@@ -627,19 +627,22 @@ describe('Today', () => {
     expect([...pages.querySelectorAll('a[aria-current="page"]')].map((a) => a.textContent)).toEqual(['Today']);
   });
 
-  it('links Today in the nav to / on every project\'s Today form, and clearing the project filter leads back to it', async () => {
+  it('links Today in the nav to / on every project\'s Today form, and the scope switcher leads to a project and back', async () => {
     screenWidth(1280);
     server(day());
     mount('/');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
     expect(within(pages).getByRole('link', { name: 'Today' }).getAttribute('href')).toBe('/');
     expect(within(pages).getByRole('link', { name: 'Today' }).getAttribute('aria-current')).toBe('page');
-    const filter = screen.getByRole('navigation', { name: 'Projects' });
-    const myco = within(filter).getAllByRole('link').find((a) => a.textContent!.includes('Myco'))!;
-    expect(myco.getAttribute('href')).toBe(`/p/${P_MYCO}`);
+    const open = async () => {
+      fireEvent.keyDown(await screen.findByRole('button', { name: /^Showing: / }), { key: 'Enter' });
+      return screen.findByRole('menu', { name: /^Showing: / });
+    };
+    const myco = within(await open()).getAllByRole('menuitemradio').find((a) => a.textContent!.includes('Myco'))!;
+    expect(myco.getAttribute('aria-checked')).toBe('false');
     fireEvent.click(myco);
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(`/p/${P_MYCO}`));
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Projects' })).getAllByRole('link').find((a) => a.textContent!.includes('Myco'))!);
+    fireEvent.click(within(await open()).getByRole('menuitemradio', { name: 'All projects' }));
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/'));
   });
 

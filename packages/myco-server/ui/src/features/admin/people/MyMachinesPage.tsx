@@ -25,6 +25,7 @@ export function MyMachinesPage() {
   return (
     <AdminPage
       name="my-machines"
+      scope="server"
       title="My machines"
       lede="The machines you signed in to this server from, and whether each may write now."
       actions={admin && viewerId !== null

@@ -269,6 +269,14 @@ describe('a spore’s article', () => {
     mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     const title = await screen.findByRole('heading', { level: 1 });
     expect(title.textContent).toBe('The cache lies after a rebase; clear it on checkout.');
+    // The page names its project in the scope switcher beside its breadcrumbs.
+    const scope = screen.getByRole('button', { name: 'Showing: Myco' });
+    fireEvent.keyDown(scope, { key: 'Enter' });
+    const scopes = await screen.findByRole('menu', { name: /^Showing: / });
+    // "All projects" leads to the list across every project, and says it leaves this page.
+    expect(scopes.querySelector('[data-scope-option="all"]')!.textContent).toBe('All projectsLeaves this page for the list across every project.');
+    expect(scopes.querySelector('[data-scope-all-reason]')).toBeNull();
+    fireEvent.keyDown(scopes, { key: 'Escape' });
     const page = document.querySelector('[data-spore-article]')!;
     // The replacement leads, named by its line.
     const replaced = page.querySelector('[data-spore-replaced]') as HTMLElement;

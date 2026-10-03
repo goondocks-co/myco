@@ -1,11 +1,15 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
-import { Disclosure, EmptyState, ErrorState, LoadingState } from '../../design';
+import { Play } from 'lucide-react';
+import { Button, Disclosure, EmptyState, ErrorState, LoadingState } from '../../design';
+import { useIsAdmin } from '../../hooks/use-me';
 import { useTaskDescriptions } from '../../hooks/use-tasks';
 import { useTaskRuns } from '../../hooks/use-work';
 import { useNow } from '../../hooks/use-today';
 import { harnessLabel } from '../../lib/harness';
 import { projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX } from '../../routes/nav';
+import { PageScope } from '../../routes/scope';
+import { RunTaskConfirm, StartedLine, type StartedRun } from '../work/RunTask';
 import { ModelSummary, displayModel } from '../work/ModelSummary';
 import { OnwardLink } from '../work/OutcomeCard';
 import { kindOf, runLineWords, shortTime } from '../work/words';
@@ -13,10 +17,19 @@ import type { TaskDescription } from './wire';
 
 const LONG_TOOLS_THRESHOLD = 4;
 
-/** The server's descriptions of every task, with its exact instructions folded away. */
+/**
+ * The server's descriptions of every task, with its exact instructions folded
+ * away, and the place to start one: each task a person may start by hand has
+ * Run now, which confirms it in a project, asking which first when the page
+ * shows every project.
+ */
 export function TasksPage({ projectId }: { projectId: string | null }) {
   const tasks = useTaskDescriptions(projectId);
   const location = useLocation();
+  const admin = useIsAdmin();
+  const now = useNow();
+  const [asking, setAsking] = useState<string | null>(null);
+  const [started, setStarted] = useState<StartedRun | null>(null);
   useEffect(() => {
     if (location.hash !== '') document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView?.({ block: 'start' });
   }, [location.hash, tasks.data]);
@@ -24,8 +37,11 @@ export function TasksPage({ projectId }: { projectId: string | null }) {
     <div className="flex w-full min-w-0 flex-col gap-s5" data-tasks="">
       <header className="flex flex-wrap items-start justify-between gap-s3">
         <div className="flex min-w-0 flex-col gap-s2">
-          <h1 className="t-display text-ink">Tasks</h1>
-          <p className="max-w-measure t-body text-muted">What Myco does, when it runs, and what each task must leave behind.</p>
+          <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
+            <h1 className="t-display text-ink">Tasks</h1>
+            <PageScope />
+          </div>
+          <p className="max-w-measure t-body text-muted">What Myco does, when it runs, and what each task must leave behind. Start one by hand with Run now.</p>
         </div>
         <OnwardLink to={projectId === null ? WORK_SUFFIX : projectPath(projectId, WORK_SUFFIX)}>Myco’s work</OnwardLink>
       </header>
@@ -34,21 +50,34 @@ export function TasksPage({ projectId }: { projectId: string | null }) {
         : tasks.data === undefined
         ? tasks.isPending ? <LoadingState label="Loading tasks" count={4} /> : <ErrorState error={tasks.error} onRetry={() => void tasks.refetch()} />
         : <section aria-label="Myco’s tasks" className="grid min-w-0 items-start gap-s4 xl:grid-cols-2">
-          {tasks.data.tasks.map((task) => <TaskCard key={task.task} task={task} projectId={projectId} />)}
+          {tasks.data.tasks.map((task) => <TaskCard key={task.task} task={task} projectId={projectId} started={started?.task === task.task ? started : null} onRun={() => { setStarted(null); setAsking(task.task); }} />)}
         </section>}
+      <RunTaskConfirm
+        projectId={projectId}
+        task={asking}
+        onOpenChange={(open) => { if (!open) setAsking(null); }}
+        admin={admin}
+        now={now}
+        onStarted={setStarted}
+      />
     </div>
   );
 }
 
-function TaskCard({ task, projectId }: { task: TaskDescription; projectId: string | null }) {
+function TaskCard({ task, projectId, started, onRun }: { task: TaskDescription; projectId: string | null; started: StartedRun | null; onRun: () => void }) {
   const [params] = useSearchParams();
   const recent = params.get('task') === task.task && params.get('runs') === 'recent';
   const path = projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX);
   return (
     <article id={task.task} data-task={task.task} className="flex min-w-0 scroll-mt-s5 flex-col gap-s4 rounded-card border border-line bg-surface-1 p-s4">
       <header className="flex flex-col gap-s2">
-        <h2 className="t-h2 text-ink">{task.name}</h2>
+        <div className="flex flex-wrap items-start justify-between gap-s3">
+          <h2 className="t-h2 text-ink">{task.name}</h2>
+          {task.startable && <Button size="sm" icon={<Play aria-hidden className="size-s4" />} onClick={onRun} aria-label={`Run now: ${task.name}`} data-run-now="">Run now</Button>}
+        </div>
         <p className="max-w-measure t-body text-ink-2">{task.description}</p>
+        {/* The line after a start sits under the Run now that started it, where the reader is looking. */}
+        {started !== null && <StartedLine started={started} />}
       </header>
       <Facts label="When it runs" lines={task.triggers} />
       {task.tools.length > LONG_TOOLS_THRESHOLD ? <>
@@ -89,7 +118,7 @@ function TaskCard({ task, projectId }: { task: TaskDescription; projectId: strin
           {task.templateVariants.map((variant) => <ExactText key={variant.name} label={variant.name} text={variant.prompt} />)}
         </div>
       </Disclosure>}
-      {projectId === null ? <p className="t-small text-muted">Pick a project in the nav to see this task’s recent runs.</p> : <>
+      {projectId === null ? <p className="t-small text-muted">Pick a project beside the title to see this task’s recent runs.</p> : <>
         <OnwardLink to={`${path}?${new URLSearchParams({ task: task.task, runs: 'recent' })}#${encodeURIComponent(task.task)}`}>Recent runs</OnwardLink>
         {recent && <RecentRuns task={task} projectId={projectId} />}
       </>}

@@ -276,6 +276,14 @@ describe('a plan’s page', () => {
     server(base({ [PLAN]: () => onePlan(), [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer }));
     mount(`/p/${MYCO}/plans/${KEY}?session=s1`);
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Myco’s work as outcomes');
+    // The page names its project in the scope switcher beside its breadcrumbs.
+    const scope = screen.getByRole('button', { name: 'Showing: Myco' });
+    fireEvent.keyDown(scope, { key: 'Enter' });
+    const scopes = await screen.findByRole('menu', { name: /^Showing: / });
+    // "All projects" leads to the list across every project, and says it leaves this page.
+    expect(scopes.querySelector('[data-scope-option="all"]')!.textContent).toBe('All projectsLeaves this page for the list across every project.');
+    expect(scopes.querySelector('[data-scope-all-reason]')).toBeNull();
+    fireEvent.keyDown(scopes, { key: 'Escape' });
   });
 
   it('says not found for a plan the project does not hold', async () => {

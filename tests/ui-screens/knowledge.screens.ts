@@ -285,7 +285,7 @@ test.describe('Knowledge', () => {
       await expect(page).toHaveURL(new RegExp(`/p/${project.projectId}/knowledge\\?type=gotcha$`));
       await expect(page.getByRole('region', { name: 'Type' }).getByRole('button', { name: /^Gotchas/ })).toHaveAttribute('aria-pressed', 'true');
       await expect(cards(page).first()).toContainText('Gotcha');
-      await expect(page.locator(`[data-project-filter-item][aria-current="true"]`)).toContainText(project.name);
+      await expect(page.locator('main [data-scope-current]')).toHaveText(project.name);
       expectQuiet(watch);
     } finally {
       await context.close();

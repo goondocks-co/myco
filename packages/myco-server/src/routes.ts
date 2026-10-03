@@ -54,7 +54,7 @@ import { handleProjectRun, handleProjectRunCalls, handleProjectRunSteps, handleP
 import { handleProjectPlan, handleProjectPlans } from './api/plans.js';
 import { handleKpis } from './api/kpis.js';
 import { handlePlansAcross, handleSessionsAcross, handleSporesAcross } from './api/lists-all.js';
-import { handleTaskDescriptions, handleTaskNames } from './api/task-descriptions.js';
+import { handleTaskDescriptions, handleTaskNames, handleTaskStartPreview } from './api/task-descriptions.js';
 import { handleWork } from './api/work.js';
 import { handleAttention } from './api/attention.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
@@ -266,6 +266,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/plans', auth: 'session', authority: 'member', handler: handlePlansAcross },
   { method: 'GET', path: '/api/search', auth: 'session', authority: 'member', handler: handleSearchAcross },
   { method: 'GET', path: '/api/tasks/names', auth: 'session', authority: 'member', handler: handleTaskNames },
+  { method: 'GET', path: '/api/tasks/start', auth: 'session', authority: 'member', handler: handleTaskStartPreview },
   { method: 'GET', path: '/api/tasks', auth: 'session', authority: 'member', handler: handleTaskDescriptions },
   { method: 'GET', path: '/api/work', auth: 'session', authority: 'member', handler: handleWork },
   { method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },

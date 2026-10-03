@@ -32,10 +32,23 @@ async function memberCeiling(env: ServerEnv, ctx: OwnerContext, task: string): P
   return { actor: ctx.member.id, task, perDay: await memberRunsPerDay(env, task), sinceMs: ctx.now - DAY_MS };
 }
 
+/** A member's day of runs of a task: how many they may start, how many they have, and when the oldest leaves the window once it is full. */
+export interface MemberAllowance { perDay: number; used: number; resetsAt: number | null }
+
+async function allowanceOf(env: ServerEnv, ceiling: ActorCeiling): Promise<MemberAllowance> {
+  const window = await deploymentTaskCeilingWindow(env.db, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.perDay);
+  return { perDay: ceiling.perDay, used: window.used, resetsAt: window.pivotAt === null ? null : window.pivotAt + DAY_MS };
+}
+
+/** The caller's day of runs of `task`, as the dispatch would count it; null for an admin, who starts runs uncapped. */
+export async function memberAllowance(env: ServerEnv, ctx: OwnerContext, task: string): Promise<MemberAllowance | null> {
+  const ceiling = await memberCeiling(env, ctx, task);
+  return ceiling === undefined ? null : allowanceOf(env, ceiling);
+}
+
 /** A member's day of runs of the task is spent: 429 naming the ceiling and when the oldest run in it leaves the window. */
 async function dailyLimit(env: ServerEnv, ceiling: ActorCeiling, now: number): Promise<Response> {
-  const window = await deploymentTaskCeilingWindow(env.db, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.perDay);
-  const resetsAt = window.pivotAt === null ? null : window.pivotAt + DAY_MS;
+  const { resetsAt } = await allowanceOf(env, ceiling);
   return Response.json({ error: 'daily_limit', task: ceiling.task, perDay: ceiling.perDay, resetsAt }, {
     status: 429,
     ...(resetsAt === null ? {} : { headers: { 'retry-after': String(Math.max(1, Math.ceil((resetsAt - now) / 1000))) } }),

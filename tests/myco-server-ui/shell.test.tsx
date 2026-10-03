@@ -6,7 +6,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
-import { ProjectFilter, recencyOf, shownProjects } from '../../packages/myco-server/ui/src/design';
+import { recencyOf } from '../../packages/myco-server/ui/src/design';
+import { scopeAll } from '../../packages/myco-server/ui/src/routes/scope';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
   clearProjectHref, keptFilters, pageSuffix, projectOf, switchProjectHref, titleOf,
@@ -81,7 +82,14 @@ function screenWidth(width: number): void {
 const location = () => screen.getByTestId('location').textContent;
 /** An element in a few words, so a focus assertion that fails says where focus went. */
 const describeFocus = (el: Element | null) => (el === null ? 'nothing' : `${el.tagName.toLowerCase()} "${el.getAttribute('aria-label') ?? el.textContent?.trim().slice(0, 40)}"`);
-const filterItems = () => within(screen.getByRole('navigation', { name: 'Projects' })).getAllByRole('link').filter((a) => a.hasAttribute('data-project-filter-item'));
+/** The page's scope switcher, once it renders. */
+const findScope = () => screen.findByRole('button', { name: /^Showing: / });
+/** Opens the page's scope switcher and answers its list. */
+async function openScope(): Promise<HTMLElement> {
+  fireEvent.keyDown(await findScope(), { key: 'Enter' });
+  return screen.findByRole('menu', { name: /^Showing: / });
+}
+const scopeOptions = (menu: HTMLElement) => [...menu.querySelectorAll<HTMLElement>('[data-scope-option]')];
 
 describe('the dashboard shell', () => {
   it('hands a member with no projects to myco setup', async () => {
@@ -158,21 +166,20 @@ describe('the dashboard shell', () => {
 });
 
 describe('the nav', () => {
-  it('shows an admin the pages, the project filter with counts, the admin foot, search and the account', async () => {
+  it('shows an admin the pages, the admin foot, search and the account, and no list of projects', async () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
     expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work', 'Project settings']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
     expect(within(pages).getByRole('link', { name: 'Project settings' }).getAttribute('href')).toBe('/p/alpha/settings');
-    await waitFor(() => expect(filterItems()).toHaveLength(2));
-    expect(filterItems().map((a) => a.textContent)).toEqual([expect.stringContaining('Alpha'), expect.stringContaining('Beta')]);
-    expect(filterItems()[0]!.getAttribute('aria-current')).toBe('true');
-    expect(filterItems()[1]!.textContent).toContain('194');
-    expect(within(filterItems()[1]!).getByText('194 sessions').className).toContain('sr-only');
-    // The dot says recency in words, never by colour alone.
-    expect(within(filterItems()[0]!).getByRole('img', { name: 'Active in the last hour' })).toBeTruthy();
-    expect(within(filterItems()[1]!).getByRole('img', { name: 'No activity today' })).toBeTruthy();
+    await findScope();
+    // Which projects a page shows is said in its header; the nav lists pages only.
+    const nav = screen.getByRole('complementary', { name: 'Navigation' });
+    expect(within(nav).queryByRole('navigation', { name: 'Projects' })).toBeNull();
+    expect(nav.querySelector('[data-scope-switcher]')).toBeNull();
+    expect(nav.textContent).not.toContain('Beta');
+    expect(nav.textContent).not.toContain('All projects');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
     expect(within(admin).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       [INVITE_CONTROLS.page, '/people'], ['Settings', '/settings'], ['Health', '/status/health'],
@@ -225,13 +232,13 @@ describe('the nav', () => {
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
     expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work']);
-    await waitFor(() => expect(filterItems()).toHaveLength(2));
+    await findScope();
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
     for (const name of ['Project settings', INVITE_CONTROLS.page, 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
   });
 
-  it('keeps the last project in the page links on a page that spans the server, and marks none of the filter picked', async () => {
+  it('keeps the last project in the page links on a page that spans the server', async () => {
     server(signedIn());
     window.localStorage.setItem('myco-last-project', 'beta');
     mount('/settings');
@@ -241,41 +248,148 @@ describe('the nav', () => {
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('href')).toBe('/sessions');
     expect(within(pages).getByRole('link', { name: 'Knowledge' }).getAttribute('href')).toBe('/knowledge');
     expect([...pages.querySelectorAll('a[aria-current="page"]')]).toEqual([]);
-    await waitFor(() => expect(filterItems()).toHaveLength(2));
-    expect(filterItems().filter((a) => a.getAttribute('aria-current') === 'true')).toEqual([]);
-    expect(filterItems()[1]!.getAttribute('href')).toBe('/p/beta');
+    expect(within(pages).getByRole('link', { name: 'Today' }).getAttribute('href')).toBe('/');
   });
 });
 
-describe('the project filter', () => {
-  it('narrows the page to a picked project, keeping the list filters and dropping the open record', async () => {
-    server(signedIn());
-    mount('/p/alpha/sessions?q=fix&state=ended&tab=plans&offset=25');
-    await waitFor(() => expect(filterItems()).toHaveLength(2));
-    fireEvent.click(filterItems()[1]!);
-    await waitFor(() => expect(location()).toBe('/p/beta/sessions?q=fix&state=ended'));
-    expect(filterItems()[1]!.getAttribute('aria-current')).toBe('true');
-    await waitFor(() => expect(window.localStorage.getItem('myco-last-project')).toBe('beta'));
-    // Sessions has a form across every project, so picking the picked project again clears the filter to it, the list filters kept.
-    expect(filterItems()[1]!.querySelector('[data-clear-filter]')).not.toBeNull();
-    fireEvent.click(filterItems()[1]!);
-    await waitFor(() => expect(location()).toBe('/sessions?q=fix&state=ended'));
+describe('the scope switcher', () => {
+  /** The page header holding the title. */
+  const header = () => document.querySelector('main h1')!.parentElement!.parentElement as HTMLElement;
+  /** The header's own words, the switcher's left out. */
+  const headerWords = () => {
+    const copy = header().cloneNode(true) as HTMLElement;
+    copy.querySelectorAll('[data-scope-switcher]').forEach((node) => node.remove());
+    return copy.textContent ?? '';
+  };
+  const scoped: ReadonlyArray<readonly [string, string]> = [
+    ['/', 'All projects'], ['/p/alpha', 'Alpha'],
+    ['/sessions', 'All projects'], ['/p/alpha/sessions', 'Alpha'],
+    ['/knowledge', 'All projects'], ['/p/alpha/knowledge', 'Alpha'],
+    ['/knowledge/plans', 'All projects'], ['/p/beta/knowledge/plans', 'Beta'], ['/p/alpha/knowledge/map', 'Alpha'],
+    ['/work', 'All projects'], ['/p/alpha/work', 'Alpha'],
+    ['/work/tasks', 'All projects'], ['/p/beta/work/tasks', 'Beta'],
+    ['/p/alpha/settings', 'Alpha'],
+  ];
+
+  it('says the scope in plain words beside the title of every page that has one, and the subtitle never says another', async () => {
+    for (const [path, words] of scoped) {
+      server(signedIn());
+      mount(path);
+      const scope = await findScope();
+      await waitFor(() => expect({ path, words: scope.querySelector('[data-scope-current]')!.textContent }).toEqual({ path, words }));
+      expect(scope.getAttribute('data-scope-switcher')).toBe(words === 'All projects' ? 'all' : 'project');
+      // The switcher sits in the page's header, beside its title.
+      expect(scope.parentElement!.querySelector('h1')).not.toBeNull();
+      const said = headerWords();
+      if (words === 'All projects') for (const name of ['Alpha', 'Beta']) expect({ path, said: said.includes(name) }).toEqual({ path, said: false });
+      else {
+        expect({ path, said: /every project|all projects|across/i.test(said) }).toEqual({ path, said: false });
+        expect({ path, said: said.includes(words === 'Alpha' ? 'Beta' : 'Alpha') }).toEqual({ path, said: false });
+      }
+      cleanup();
+    }
   });
 
-  it('offers the clear on a page with an all-projects form, and leads it there with the list filters', () => {
-    const items = PROJECTS.map((p, i) => ({ ...p, href: `/p/${p.projectId}/sessions`, active: i === 0 }));
-    const clearTo = clearProjectHref({ pathname: '/p/alpha/sessions/s1', search: '?q=fix&tab=plans' }, { '/sessions': '/sessions' });
-    expect(clearTo).toBe('/sessions?q=fix');
-    render(<MemoryRouter><ProjectFilter items={items} clearHref={clearTo} allHref="/projects" now={NOW} /></MemoryRouter>);
-    const active = screen.getAllByRole('link').find((a) => a.getAttribute('aria-current') === 'true')!;
-    expect(active.getAttribute('href')).toBe('/sessions?q=fix');
-    expect(active.querySelector('[data-clear-filter]')).not.toBeNull();
-    expect(within(active).getByText('Clear the filter')).toBeTruthy();
-    cleanup();
-    render(<MemoryRouter><ProjectFilter items={items} clearHref={null} allHref="/projects" now={NOW} /></MemoryRouter>);
-    const kept = screen.getAllByRole('link').find((a) => a.getAttribute('aria-current') === 'true')!;
-    expect(kept.getAttribute('href')).toBe('/p/alpha/sessions');
-    expect(kept.querySelector('[data-clear-filter]')).toBeNull();
+  it('lists All projects first, then every project with its session count and recency, and a way to every project in detail', async () => {
+    server(signedIn());
+    mount('/p/alpha/sessions');
+    const menu = await openScope();
+    expect(scopeOptions(menu).map((option) => [option.getAttribute('data-scope-option'), option.textContent])).toEqual([
+      ['all', 'All projects'], ['project', expect.stringContaining('Alpha')], ['project', expect.stringContaining('Beta')],
+    ]);
+    const [, alpha, beta] = scopeOptions(menu);
+    // Each is a radio choice: the scope now is the checked one.
+    expect(scopeOptions(menu).map((option) => [option.getAttribute('role'), option.getAttribute('aria-checked')])).toEqual([['menuitemradio', 'false'], ['menuitemradio', 'true'], ['menuitemradio', 'false']]);
+    expect(alpha!.getAttribute('aria-checked')).toBe('true');
+    expect(beta!.textContent).toContain('194');
+    // Each row reads as its name, its session count and its recency in words: the dot is never the only telling.
+    expect(within(beta!).getByText(', 194 sessions, no activity today').className).toContain('sr-only');
+    expect(within(alpha!).getByText(', 681 sessions, active in the last hour').className).toContain('sr-only');
+    // Nothing in the list is a scroll region Tab would have to reach, which a menu never moves to: arrow keys reach every row.
+    expect(menu.querySelector('[data-scope-projects]')).toBeNull();
+    expect([menu, ...menu.querySelectorAll<HTMLElement>('*')].some((node) => /overflow-y-(auto|scroll)/.test(node.className))).toBe(false);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Every project, in detail' }));
+    await waitFor(() => expect(location()).toBe('/projects'));
+  });
+
+  it('keeps the section and the list filters when it switches, between projects and to All projects', async () => {
+    server(signedIn());
+    mount('/p/alpha/sessions?q=fix&state=ended&tab=plans&offset=25');
+    fireEvent.click(scopeOptions(await openScope())[2]!);
+    await waitFor(() => expect(location()).toBe('/p/beta/sessions?q=fix&state=ended'));
+    await waitFor(() => expect(window.localStorage.getItem('myco-last-project')).toBe('beta'));
+    await waitFor(() => expect((document.querySelector('[data-scope-current]') as HTMLElement).textContent).toBe('Beta'));
+    fireEvent.click(scopeOptions(await openScope())[0]!);
+    await waitFor(() => expect(location()).toBe('/sessions?q=fix&state=ended'));
+    for (const [from, pick, to] of [
+      ['/work/tasks', 1, '/p/alpha/work/tasks'], ['/knowledge/plans?q=cache', 2, '/p/beta/knowledge/plans?q=cache'], ['/', 1, '/p/alpha'], ['/p/alpha/work', 0, '/work'],
+    ] as const) {
+      cleanup();
+      server(signedIn());
+      mount(from);
+      fireEvent.click(scopeOptions(await openScope())[pick]!);
+      await waitFor(() => expect({ from, at: location() }).toEqual({ from, at: to }));
+    }
+  });
+
+  it('offers only projects on a page drawn per project, and says why', async () => {
+    server(signedIn());
+    mount('/p/alpha/knowledge/map');
+    const menu = await openScope();
+    expect(scopeOptions(menu).map((option) => option.getAttribute('data-scope-option'))).toEqual(['project', 'project']);
+    const reason = menu.querySelector('[data-scope-all-reason]')!;
+    expect(reason.textContent).toBe('The code map is drawn for one project at a time.');
+    // The reason is the list's description, so it is announced with it.
+    expect(menu.getAttribute('aria-describedby')).toBe(reason.id);
+    expect(scopeAll({ pathname: '/p/alpha/settings', search: '' })).toEqual({ reason: 'These settings belong to one project.' });
+    // From a record, "All projects" leads to its list across every project, and says it leaves the record.
+    for (const [pathname, href] of [['/p/alpha/sessions/s1', '/sessions'], ['/p/alpha/spores/sp1', '/knowledge'], ['/p/alpha/plans/k1', '/knowledge/plans'], ['/p/alpha/work/runs/r1', '/work']] as const) {
+      expect({ pathname, all: scopeAll({ pathname, search: '' }) }).toEqual({ pathname, all: { href, active: false, leaves: 'Leaves this page for the list across every project.' } });
+    }
+    expect(scopeAll({ pathname: '/p/alpha/sessions', search: '?q=fix&tab=x' })).toEqual({ href: '/sessions?q=fix', active: false });
+    expect(scopeAll({ pathname: '/work/tasks', search: '' })).toEqual({ href: '/work/tasks', active: true });
+    expect(scopeAll({ pathname: '/settings', search: '' })).toBeNull();
+  });
+
+  it('shows six projects at a time, the scope kept on the first page, and every other a page away, never a scroll', async () => {
+    const many = Array.from({ length: 14 }, (_, i) => project(`p${i}`, `Project ${String(i).padStart(2, '0')}`, i, NOW - i * 60_000));
+    server({ ...signedIn(), '/api/projects': () => Response.json({ projects: many }) });
+    mount('/p/p11/sessions');
+    let menu = await openScope();
+    const names = () => scopeOptions(menu).filter((option) => option.getAttribute('data-scope-option') === 'project').map((option) => option.textContent!.slice(0, 10));
+    expect(names()).toEqual(['Project 00', 'Project 01', 'Project 02', 'Project 03', 'Project 04', 'Project 11']);
+    const more = within(menu).getByRole('menuitem', { name: 'More projects (8 more)' });
+    fireEvent.click(more);
+    menu = await screen.findByRole('menu', { name: /^Showing: / });
+    await waitFor(() => expect(names()).toEqual(['Project 05', 'Project 06', 'Project 07', 'Project 08', 'Project 09', 'Project 10']));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'More projects (2 more)' }));
+    await waitFor(() => expect(names()).toEqual(['Project 12', 'Project 13']));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Back to the most recent' }));
+    await waitFor(() => expect(names()[0]).toBe('Project 00'));
+    fireEvent.click(scopeOptions(menu).find((option) => option.textContent!.startsWith('Project 02'))!);
+    await waitFor(() => expect(location()).toBe('/p/p2/sessions'));
+  });
+
+  it('shows no switcher on a page for the whole server, and says it applies to every project', async () => {
+    for (const path of ['/settings', '/status/health', '/people', '/me/machines']) {
+      server({ ...signedIn(), '/api/credentials': () => Response.json({ rows: [], cursor: null }) });
+      mount(path);
+      await waitFor(() => expect({ path, line: document.querySelector('[data-scope-deployment]')?.textContent }).toEqual({ path, line: 'Applies to every project.' }));
+      expect(document.querySelector('[data-scope-switcher]')).toBeNull();
+      cleanup();
+    }
+  });
+
+  it('resolves every deep link under a project, saying its project in the switcher', async () => {
+    for (const path of ['/p/beta', '/p/beta/sessions', '/p/beta/knowledge/map', '/p/beta/work/tasks', '/p/beta/work/runs/run_1']) {
+      server(signedIn());
+      mount(path);
+      // A run's panel hides the page behind it from assistive technology, so the switcher is found by its mark.
+      await waitFor(() => expect({ path, words: document.querySelector('[data-scope-current]')?.textContent }).toEqual({ path, words: 'Beta' }));
+      expect(location()).toBe(path);
+      expect(screen.queryByRole('heading', { level: 1, name: 'Not found' })).toBeNull();
+      cleanup();
+    }
   });
 
   it('works out every link from the path and the query string', () => {
@@ -299,21 +413,9 @@ describe('the project filter', () => {
     expect(clearProjectHref({ pathname: '/settings', search: '' }, { '/sessions': '/sessions' })).toBeNull();
   });
 
-  it('lists the eight most recent and keeps the picked one among them', () => {
-    const items = Array.from({ length: 11 }, (_, i) => ({ id: i, active: i === 9 }));
-    expect(shownProjects(items).map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 9]);
-    expect(shownProjects(items.map((item) => ({ ...item, active: item.id === 2 }))).map((item) => item.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  it('says recency in words', () => {
     expect([recencyOf(null, NOW).label, recencyOf(NOW - 1000, NOW).label, recencyOf(NOW - 3 * 3_600_000, NOW).label, recencyOf(NOW - 30 * 3_600_000, NOW).label])
       .toEqual(['No sessions yet', 'Active in the last hour', 'Active today', 'No activity today']);
-  });
-
-  it('says "N more" past eight projects and links to the list of every project', async () => {
-    const many = Array.from({ length: 11 }, (_, i) => project(`p${i}`, `Project ${String(i).padStart(2, '0')}`, i, NOW - i * 60_000));
-    server({ '/auth/me': me(), '/api/projects': () => Response.json({ projects: many }) });
-    mount('/settings');
-    await waitFor(() => expect(filterItems()).toHaveLength(8));
-    const more = within(screen.getByRole('navigation', { name: 'Projects' })).getByRole('link', { name: '3 more' });
-    expect(more.getAttribute('href')).toBe('/projects');
   });
 });
 
@@ -352,7 +454,7 @@ describe('on a phone', () => {
     fireEvent.click(within(bar).getByRole('button', { name: 'More' }));
     const drawer = await screen.findByRole('dialog', { name: 'Navigation' });
     expect(within(drawer).getByRole('navigation', { name: 'Admin' })).toBeTruthy();
-    expect(within(drawer).getByRole('navigation', { name: 'Projects' })).toBeTruthy();
+    expect(within(drawer).queryByRole('navigation', { name: 'Projects' })).toBeNull();
     // Following a link closes the drawer.
     fireEvent.click(within(within(drawer).getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull());
@@ -371,7 +473,7 @@ describe('on a phone', () => {
     const drawer = await screen.findByRole('dialog', { name: 'Navigation' });
     await waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
     expect(more.getAttribute('aria-expanded')).toBe('true');
-    await waitFor(() => expect(filterItems().length).toBeGreaterThan(0));
+    await within(drawer).findByRole('navigation', { name: 'Pages' });
     const tabbable = [...drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')];
     const first = tabbable[0]!;
     const last = tabbable.at(-1)!;

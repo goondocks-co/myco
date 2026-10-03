@@ -96,25 +96,27 @@ describe('Projects', () => {
 });
 
 describe('an archived project\'s home and navigation', () => {
-  it('shows the archived banner with Unarchive, and keeps the open archived project in the project filter', async () => {
+  it('shows the archived banner with Unarchive, and keeps the open archived project in the scope switcher', async () => {
     server(base([LIVE, ARCH]));
     mount('/p/arch');
     expect(await screen.findByTestId('archived-banner')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Unarchive' })).toBeTruthy();
-    const filter = screen.getByRole('navigation', { name: 'Projects' });
-    const items = within(filter).getAllByRole('link').filter((a) => a.hasAttribute('data-project-filter-item'));
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'Showing: Arch' }), { key: 'Enter' });
+    const menu = await screen.findByRole('menu', { name: /^Showing: / });
+    const items = [...menu.querySelectorAll('[data-scope-option="project"]')];
     expect(items.map((a) => a.textContent)).toEqual([expect.stringContaining('Live'), expect.stringContaining('Arch')]);
-    expect(items[1]!.getAttribute('aria-current')).toBe('true');
+    expect(items[1]!.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('keeps an archived project out of the filter on a live project\'s pages, and picking another project keeps the page and remembers the pick', async () => {
+  it('keeps an archived project out of the scope switcher on a live project\'s pages, and picking another project keeps the page and remembers the pick', async () => {
     const OTHER = { projectId: 'other', name: 'Other', createdAt: 0, sessionCount: 0, lastActivityAt: NOW - 5000, archivedAt: null, archivedBy: null };
     server(base([LIVE, ARCH, OTHER], {
       '/api/sessions': () => Response.json({ rows: [], cursor: null }),
     }));
     mount('/p/live/sessions');
-    const filter = await screen.findByRole('navigation', { name: 'Projects' });
-    const items = within(filter).getAllByRole('link').filter((a) => a.hasAttribute('data-project-filter-item'));
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'Showing: Live' }), { key: 'Enter' });
+    const menu = await screen.findByRole('menu', { name: /^Showing: / });
+    const items = [...menu.querySelectorAll<HTMLElement>('[data-scope-option="project"]')];
     expect(items.map((a) => a.textContent)).toEqual([expect.stringContaining('Live'), expect.stringContaining('Other')]);
     expect(screen.queryByTestId('archived-banner')).toBeNull();
     fireEvent.click(items[1]!);

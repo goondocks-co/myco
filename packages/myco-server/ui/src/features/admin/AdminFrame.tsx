@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Card } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { cn } from '../../lib/cn';
+import { PageScope, ServerScope } from '../../routes/scope';
 
 export interface AdminPageProps {
   title: ReactNode;
@@ -12,6 +13,8 @@ export interface AdminPageProps {
   actions?: ReactNode;
   /** Names the page for the screen checks, as `data-admin-page`. */
   name: string;
+  /** Which projects the page covers: one, changed beside its title, or every one, said under its lede. */
+  scope?: 'project' | 'server';
   children: ReactNode;
 }
 
@@ -19,13 +22,17 @@ export interface AdminPageProps {
  * An admin page's frame: the title, one line on what the page is for, the
  * page's actions, then its sections one under another.
  */
-export function AdminPage({ title, lede, actions, name, children }: AdminPageProps) {
+export function AdminPage({ title, lede, actions, name, scope, children }: AdminPageProps) {
   return (
     <div className="flex w-full flex-col gap-s8" data-admin-page={name}>
       <header className="flex flex-col gap-s4 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex min-w-0 flex-col gap-s2">
-          <h1 className="t-display text-ink">{title}</h1>
+          <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
+            <h1 className="t-display text-ink">{title}</h1>
+            {scope === 'project' && <PageScope />}
+          </div>
           {lede != null && <p className="max-w-measure t-body text-muted">{lede}</p>}
+          {scope === 'server' && <ServerScope />}
         </div>
         {actions != null && <div className="flex shrink-0 flex-wrap gap-s2">{actions}</div>}
       </header>
