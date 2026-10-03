@@ -1,3 +1,4 @@
+import { keyLike } from './command-shape.js';
 import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 
 /** The server resolves and records every claimed run's execution profile. */
@@ -31,13 +32,38 @@ export const MAX_REFUSAL_REASON_CHARS = 500;
  */
 export interface ProfileRefusal { code: typeof PROFILE_UNAPPLIED; reason: string | null }
 
-/** A worker's profile refusal as its end report carries it, or null for anything else. */
+/** A model or effort value a refusal's reason names: an identifier with no whitespace, not key-like taken whole. */
+const REFUSED_VALUE = '([A-Za-z0-9._:/@+()\\[\\]-]{1,256})';
+/** The sentences a worker gives a refusal's reason in (`acp-profile.ts`), each value an identifier. */
+const REFUSAL_REASONS: readonly RegExp[] = [
+  /^it reported no (?:model|effort) for the session$/,
+  new RegExp(`^it offers no (?:model|effort) ${REFUSED_VALUE}(?: for this model)?$`),
+  new RegExp(`^it refused the (?:model|effort) ${REFUSED_VALUE}$`),
+  new RegExp(`^it reported no (?:model|effort) after being set to ${REFUSED_VALUE}$`),
+  new RegExp(`^it kept the (?:model|effort) ${REFUSED_VALUE} after being set to ${REFUSED_VALUE}$`),
+];
+
+/**
+ * A refusal's reason as the Deployment keeps it: one of the sentences a worker writes, naming only identifiers; null
+ * for anything else, so the run's page says the sentence alone and never a harness's own words.
+ */
+export function profileRefusalReason(reason: unknown): string | null {
+  if (typeof reason !== 'string') return null;
+  const trimmed = reason.trim();
+  if (trimmed === '' || trimmed.length > MAX_REFUSAL_REASON_CHARS) return null;
+  for (const sentence of REFUSAL_REASONS) {
+    const matched = sentence.exec(trimmed);
+    if (matched !== null) return matched.slice(1).every((value) => value === undefined || !keyLike(value)) ? trimmed : null;
+  }
+  return null;
+}
+
+/** A worker's profile refusal as its end report carries it, its reason kept only as `profileRefusalReason` keeps it; null for anything else. */
 export function parseProfileRefusal(value: unknown): ProfileRefusal | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as { code?: unknown; reason?: unknown };
   if (raw.code !== PROFILE_UNAPPLIED) return null;
-  const reason = typeof raw.reason === 'string' && raw.reason.trim() !== '' ? raw.reason.trim().slice(0, MAX_REFUSAL_REASON_CHARS) : null;
-  return { code: PROFILE_UNAPPLIED, reason };
+  return { code: PROFILE_UNAPPLIED, reason: profileRefusalReason(raw.reason) };
 }
 
 export interface ExecutionProfile {

@@ -12,7 +12,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, runErrorWords, deployWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, runErrorWords, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -65,6 +65,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const startedBy = startedByWords(run.startedBy, name);
   const spores = produced.spores;
   const cause = failed ? causeOf(answer) : null;
+  const fullError = failed ? fullErrorWords(run.errorCode, ranOn(run.worker, name)?.machine ?? null) : null;
   const deploy = deployWords(run);
   const kept = run.result === 'failed_with_output';
   const calls = useRunCallsOf(projectId, answer);
@@ -91,6 +92,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
       {cause !== null && (
         <div className="flex flex-col gap-s1 rounded-control border border-line bg-bad-bg px-s3 py-s2 t-small text-ink-2" data-run-failure="">
           <p><span className="font-medium text-bad">Run failure: </span>{cause}</p>
+          {fullError !== null && <p className="break-words" data-run-full-error="">{fullError}</p>}
           <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>
         </div>
       )}

@@ -43,6 +43,7 @@ import { createHttpRunStore, NoProviderConfiguredError, postRunControl, ProjectN
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 import { onStopSignals, type ProcessEvents } from './process-signals.js';
 import { EMBEDDING_TASK, embeddingTask, executeEmbeddingRun } from './server-embedding.js';
+import { RUN_DEADLINE_ERROR, RUN_RECLAIMED_ERROR } from '@goondocks/myco-shared/run-text';
 
 export { RUNTIME_STOP_SIGNALS, type ProcessEvents } from './process-signals.js';
 
@@ -51,10 +52,8 @@ export { materializedReportTool } from './server-tools.js';
 /** The admission a dispatch names: a capability the Project must hold, or `captureDriven` for a task gated on a provider alone. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
-/** How a run that ran past its own bound is recorded. */
-export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
-/** How a run the platform took the runtime away from, before the run reached its own end, is recorded. */
-export const RUN_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
+/** How a run that ran past its own bound, or that the platform took the runtime away from, is recorded (`run-text.ts`). */
+export { RUN_DEADLINE_ERROR, RUN_RECLAIMED_ERROR };
 /** How many times a terminal status is offered to the Deployment before the run is left to the stale sweep. */
 export const TERMINAL_UPDATE_ATTEMPTS = 2;
 /**

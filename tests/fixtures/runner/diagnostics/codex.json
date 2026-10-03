@@ -1,0 +1,41 @@
+{
+  "login_missing": {
+    "recorded": true,
+    "stdout": [
+      "{\"type\":\"thread.started\",\"thread_id\":\"01a0ff5f-d403-7ca2-85b3-4a15b3d22fab\"}",
+      "{\"type\":\"turn.started\"}",
+      "{\"type\":\"error\",\"message\":\"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a4482af0efcd6196-ORD, request id: req_d4e3716e568c4542ad872b8688747043 {{SECRET}}\"}",
+      "{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a4482af0efcd6196-ORD, request id: req_d4e3716e568c4542ad872b8688747043 {{SECRET}}\"}}"
+    ],
+    "stderr": "Reading additional input from stdin...\n2026-10-03T01:27:45.809762Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses\n",
+    "exit": 1
+  },
+  "rate_limited": {
+    "recorded": false,
+    "stdout": [
+      "{\"type\":\"thread.started\",\"thread_id\":\"t_rate\"}",
+      "{\"type\":\"turn.started\"}",
+      "{\"type\":\"turn.failed\",\"error\":{\"message\":\"exceeded retry limit, last status: 429 Too Many Requests, request id: {{SECRET}}\"}}"
+    ],
+    "stderr": "",
+    "exit": 1
+  },
+  "timed_out": {
+    "recorded": false,
+    "stdout": [
+      "{\"type\":\"thread.started\",\"thread_id\":\"t_timeout\"}",
+      "{\"type\":\"turn.started\"}",
+      "{\"type\":\"turn.failed\",\"error\":{\"message\":\"stream disconnected before completion: idle timeout waiting for SSE {{SECRET}}\"}}"
+    ],
+    "stderr": "",
+    "exit": 1
+  },
+  "crashed": {
+    "recorded": false,
+    "stdout": [
+      "{\"type\":\"thread.started\",\"thread_id\":\"t_crash\"}"
+    ],
+    "stderr": "thread 'main' panicked at core/src/exec.rs:1:1:\n{{SECRET}}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "exit": 101
+  }
+}

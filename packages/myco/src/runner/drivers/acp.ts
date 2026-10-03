@@ -31,7 +31,7 @@ import { answerPermission, ToolCalls } from './acp-permission.js';
 import { runGrant, type RunGrant } from './grant.js';
 import { listRunTools, type RunServer, type RunTools } from './run-tools.js';
 import { freshRunHome } from './run-home.js';
-import { launchEnvironment, recordOf, stringOf } from './stream.js';
+import { heldStderr, launchEnvironment, recordOf, stringOf } from './stream.js';
 
 const STOP: readonly StopReason[] = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'];
 
@@ -276,15 +276,20 @@ export async function* turnOver(
     const initialized = await connection.call('initialize', { protocolVersion: 1, clientCapabilities: {} });
     const listed = await listTools(server, AbortSignal.any([signal, AbortSignal.timeout(RUN_TOOLS_TIMEOUT_MS)]));
     if (!listed.ok) {
-      yield { kind: 'ended', stop: 'error', detail: `the run's tools could not be listed: ${listed.reason}` };
+      yield { kind: 'ended', stop: 'error', detail: `the run's tools could not be listed: ${listed.reason}`, code: 'tools_unlisted' };
       return;
     }
     tools = listed.names;
     const session = await connection.call('session/new', { cwd: spec.scratchDir, mcpServers: [acpServerOf(server)] });
+    const refusedSession = recordOf(session.error);
+    if (refusedSession !== null) {
+      yield { kind: 'ended', stop: 'error', detail: `the harness refused the session: ${stringOf(refusedSession.message) ?? 'no reason given'} ${detailOnFailure()}`.trim() };
+      return;
+    }
     const info = recordOf(session.result) ?? {};
     const mode = sessionModeOf(info);
     if (asking.mode !== null && mode !== asking.mode) {
-      yield { kind: 'ended', stop: 'error', detail: `the harness opened the session in mode ${mode ?? '(none)'} rather than the run's agent ${asking.mode}, so its calls would not be asked` };
+      yield { kind: 'ended', stop: 'error', detail: `the harness opened the session in mode ${mode ?? '(none)'} rather than the run's agent ${asking.mode}, so its calls would not be asked`, code: 'session_unasked' };
       return;
     }
     sessionId = stringOf(info.sessionId);
@@ -294,7 +299,7 @@ export async function* turnOver(
     if (spec.profile !== undefined) {
       const applied = await applyProfile((method, params) => connection.call(method, params), sessionId ?? '', info.configOptions, spec.profile, () => announced);
       if (!applied.ok) {
-        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}`, refusal: { code: PROFILE_UNAPPLIED, reason: applied.reason } };
+        yield { kind: 'ended', stop: 'error', detail: `${PROFILE_UNAPPLIED}: ${applied.detail}`, code: 'profile_unapplied', refusal: { code: PROFILE_UNAPPLIED, reason: applied.reason } };
         await connection.call('session/close', { sessionId }).catch(() => undefined);
         return;
       }
@@ -311,14 +316,19 @@ export async function* turnOver(
     yield* accountingEvents(() => [{ kind: 'usage', ...events!.usage(result) }]);
     const reason = typeof result.stopReason === 'string' ? result.stopReason : '';
     const known = STOP.find((s) => s === reason) ?? null;
-    yield known === null
-      ? { kind: 'ended', stop: 'error', detail: `the harness answered no stop reason: ${detailOnFailure()}` }
-      : { kind: 'ended', stop: known, detail: null };
+    const answeredError = recordOf(answered.error);
+    yield known !== null
+      ? { kind: 'ended', stop: known, detail: null }
+      : answeredError !== null
+        ? { kind: 'ended', stop: 'error', detail: `the harness answered an error: ${stringOf(answeredError.message) ?? 'no reason given'} ${detailOnFailure()}`.trim() }
+        : { kind: 'ended', stop: 'error', detail: `the harness answered no stop reason: ${detailOnFailure()}`, code: 'protocol_error' };
     await connection.call('session/close', { sessionId }).catch(() => undefined);
   } catch (error) {
     yield* updates();
     if (events !== undefined) yield* accountingEvents(() => [{ kind: 'usage', ...events!.usage({}) }]);
-    yield { kind: 'ended', stop: 'error', detail: error instanceof PeerClosed ? `${error.message} ${detailOnFailure()}`.trim() : String(error) };
+    yield error instanceof PeerClosed
+      ? { kind: 'ended', stop: 'error', detail: `${error.message} ${detailOnFailure()}`.trim(), code: 'crashed' }
+      : { kind: 'ended', stop: 'error', detail: String(error) };
   }
 }
 
@@ -375,7 +385,7 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
       const grant = runGrant(spec, harness);
       let launched: { launch: Launch; asking: RunAsking };
       try { launched = acpLaunch(harness, spec, writeHome); } catch (error) {
-        yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error) };
+        yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error), code: 'launch_failed' };
         return;
       }
       const { launch, asking } = launched;
@@ -385,13 +395,15 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let errors = '';
+      const exited: { status: { exitCode: number | null; signal: string | null } | null } = { status: null };
+      child.once('close', (code, signal) => { exited.status = { exitCode: code, signal }; });
       child.stderr?.setEncoding('utf8');
-      child.stderr?.on('data', (chunk: string) => { errors += chunk; });
+      child.stderr?.on('data', (chunk: string) => { errors = heldStderr(errors, chunk); });
       const stop = (): void => { void stopGroup(child); };
       signal.addEventListener('abort', stop, { once: true });
       // A write to a harness that has exited fails on its stdin; the exit itself
       // closes the connection, and the failed write is kept with its diagnostics.
-      child.stdin?.on('error', (error) => { errors += `\nwriting to the harness failed: ${error.message}`; });
+      child.stdin?.on('error', (error) => { errors = heldStderr(errors, `\nwriting to the harness failed: ${error.message}`); });
       child.stdout?.setEncoding('utf8');
       const channel: Channel = {
         write: (line) => { child.stdin?.write(line); },
@@ -399,7 +411,10 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
         onClose: (closed) => { child.once('close', closed); child.once('error', closed); },
       };
       try {
-        yield* turnOver(channel, id, spec, () => errors.slice(0, 2000), listRunTools, { grant, signal, asking });
+        // A harness that went away mid-turn ends with the status its process exited with.
+        for await (const event of turnOver(channel, id, spec, () => errors, listRunTools, { grant, signal, asking })) {
+          yield event.kind === 'ended' && event.code === 'crashed' && exited.status !== null ? { ...event, ...exited.status } : event;
+        }
       } finally {
         signal.removeEventListener('abort', stop);
         void stopGroup(child);

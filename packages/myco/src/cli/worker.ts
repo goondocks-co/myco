@@ -31,6 +31,7 @@ import { workerServiceSpec, workerServiceUnit } from '../runner/service.js';
 import { reloadServiceDetached, type ServiceSpec } from '../server/service.js';
 import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 import { parseFlags } from './flags.js';
+import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 
 export const WORKER_HELP = `myco worker — run tasks for a Deployment on this machine's harnesses
 
@@ -237,7 +238,7 @@ export async function endReplacedWorker(serverUrl: string, mycoHome: string, sto
 
 /** Where a worker attached from this terminal or a login service claims from, and how it knows it is alone. */
 /** `program` is the file this process runs, whose replacement ends the worker once the new one runs. */
-export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'stepRoot' | 'onAttached' | 'stillCurrent' | 'keepAwake' | 'log'> {
+export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: typeof fetch, program: string = process.execPath): Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'lockDir' | 'runRoot' | 'stepRoot' | 'diagnosticRoot' | 'onAttached' | 'stillCurrent' | 'keepAwake' | 'log'> {
   const log = (line: string): void => { console.log(workerLogLine(line)); };
   return {
     serverUrl,
@@ -247,6 +248,7 @@ export function attachOptions(serverUrl: string, mycoHome: string, fetchImpl?: t
     lockDir: workerLockDir(),
     runRoot: path.join(mycoHome, 'worker', 'runs'),
     stepRoot: path.join(mycoHome, 'worker', 'steps'),
+    diagnosticRoot: path.join(mycoHome, path.dirname(WORKER_DIAGNOSTIC_LOG)),
     onAttached: () => { clearWorkerRefusal(mycoHome, serverUrl); },
     stillCurrent: sameProgram(program, executableIdentity, programRuns, log),
     keepAwake: keepMachineAwake,

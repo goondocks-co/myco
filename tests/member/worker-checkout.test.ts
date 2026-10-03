@@ -115,8 +115,7 @@ describe('worker repository checkout over the Deployment wire', () => {
         }
         if (access === 'invalid') {
           expect(row.status).toBe('failed');
-          expect(row.error).toContain('Git operation failed');
-          expect(row.error).not.toContain('revoked-fixture-read-token');
+          expect(row.error).toBe('the worker failed while driving the run (repository_unprepared)');
           expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 0 });
           expect(await readdir(runRoot)).toEqual([]);
           expect(await readdir(source.home)).not.toContain('observed.json');

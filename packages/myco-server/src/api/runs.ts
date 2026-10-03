@@ -21,15 +21,12 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
-import { DISPATCHER_OWNED_COLUMNS, RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, getState, isTerminalRunStatus, listAgents, listReports, markRunReplaced, mutateState, projectAdmission, recordRunEvents, supersedeEquivalentResumableRuns, type RunEventRowInsert, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
+import { RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStatus, listAgents, markRunReplaced, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
-import { admitResume, classifyFailure, type FailureObservation } from '../core/resume.js';
-
-/** The failure classes a harness may report; anything else is refused rather than mapped to a default. */
-const ERROR_CLASSES = ['session-expired', 'postcondition-unsatisfiable', 'other'] as const;
 import { releaseRun } from '../core/release.js';
-import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { recordShape, shapeRunError, strictId, strictName, strictRunId } from '@goondocks/myco-shared/run-text';
 import { closeErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
@@ -49,6 +46,10 @@ const str = (v: unknown, max = MAX_ID_CHARS): string | null =>
 const strOrNull = (v: unknown, max = MAX_ID_CHARS): string | null | undefined =>
   v === undefined || v === null ? null : str(v, max) ?? undefined;
 const int = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null);
+/** An identifier, null where none is given, or undefined where what is given is not one. */
+const idOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictId(v) ?? undefined);
+/** A name, null where none is given, or undefined where what is given is not one. */
+const nameOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictName(v) ?? undefined);
 
 function parseBody(body: string): Record<string, unknown> | null {
   try {
@@ -70,9 +71,9 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));
 
-  const id = str(body.id);
-  const agentId = str(body.agentId);
-  const task = str(body.task);
+  const id = strictRunId(body.id);
+  const agentId = strictName(body.agentId);
+  const task = strictName(body.task);
   // The claim guards the run id alone; a field that once named an age floor is refused rather than ignored.
   if (body.maxAgeSeconds !== undefined) return Response.json(refused(ctx, refusal('claim takes no maxAgeSeconds', 'parse')));
   // A claim names the capability its task needs or declares capture-driven work.
@@ -83,20 +84,20 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
       : (PROJECT_CAPABILITIES as readonly string[]).includes(body.capability as string)
         ? { kind: 'capability', capability: body.capability as ProjectCapability }
         : null;
+  // An instruction is the Deployment's own, written at dispatch; no runtime sends one.
+  if (body.instruction != null) return Response.json(refused(ctx, refusal('a claim carries no instruction: the Deployment writes a run\'s instruction when it dispatches it', 'field_retired')));
   const startedAt = int(body.startedAt) ?? ctx.now;
-  const instruction = strOrNull(body.instruction, MAX_STATE_BYTES);
-  const harness = strOrNull(body.harness);
-  const provider = strOrNull(body.provider);
-  const model = strOrNull(body.model);
-  const runContext = strOrNull(body.runContext, MAX_STATE_BYTES);
+  const harness = nameOrNull(body.harness);
+  const provider = nameOrNull(body.provider);
+  const model = idOrNull(body.model);
+  const runContext = body.runContext == null ? null : typeof body.runContext === 'string' && body.runContext.length <= MAX_STATE_BYTES ? recordShape(body.runContext, MAX_STATE_BYTES) ?? undefined : undefined;
   if (id === null || agentId === null || task === null || admission === null
-    || instruction === undefined || harness === undefined || provider === undefined
-    || model === undefined || runContext === undefined) {
-    return Response.json(refused(ctx, refusal('claim requires id, agentId, task, and either a known capability or captureDriven', 'parse')));
+    || harness === undefined || provider === undefined || model === undefined || runContext === undefined) {
+    return Response.json(refused(ctx, refusal('claim requires an id, agentId and task each an identifier, either a known capability or captureDriven, and a runContext that is a JSON object', 'parse')));
   }
 
   const row: RunInsert = {
-    id, agentId, task, instruction, harness, provider, model,
+    id, agentId, task, instruction: null, harness, provider, model,
     dryRun: body.dryRun === true, startedAt, runContext, dispatchedBy: ctx.tokenId,
   };
   // The runtime member claims only a run the server dispatched under this credential.
@@ -160,15 +161,6 @@ export async function handleRegisterAgent(env: ServerEnv, ctx: OwnerContext): Pr
 /** Every agent identity this Deployment holds. */
 export async function handleAgents(env: ServerEnv, _ctx: OwnerContext): Promise<Response> {
   return ok({ agents: await listAgents(env.db) });
-}
-
-/** Read one run. */
-export async function handleGetRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('get requires runId', 'parse')));
-  return Response.json({ persisted: true, run: await getRun(env.db, { projectId: ctx.projectId }, runId) });
 }
 
 /**
@@ -281,6 +273,45 @@ async function endRunAsCaller(
 }
 
 /**
+ * The columns a run's own update may set: those the in-process runtime writes when a run ends
+ * (`packages/myco/src/agent/runtime/server-runner.ts`, its terminal status with `buildRunUsageUpdate`'s accounting, and
+ * `recordRunFailure`) and the embedding run writes (`core/embedding/run.ts`). Every other column of the store is retired
+ * on this route and refused by name.
+ */
+export const ROUTE_UPDATE_COLUMNS = [
+  'status', 'completed_at', 'tokens_used', 'error', 'usage_data', 'cost_usd', 'actual_cost_usd', 'estimated_cost_usd', 'cost_source', 'cost_data',
+] as const;
+const NUMERIC_COLUMNS: ReadonlySet<string> = new Set(['completed_at', 'tokens_used', 'cost_usd', 'actual_cost_usd', 'estimated_cost_usd']);
+
+/**
+ * An update as this route stores it, or null where a value is outside its column's shape: an error kept as a coded
+ * reason (`shapeRunError`), usage and cost data as structured records (`recordShape`), a cost source as an identifier,
+ * a number as a number. Never the words a caller sent.
+ */
+function routeUpdate(update: Record<string, unknown>, harness: string | null): RunUpdate | null {
+  const out: Record<string, unknown> = {};
+  for (const [column, value] of Object.entries(update)) {
+    if (value === null || column === 'status') { out[column] = value; continue; }
+    if (NUMERIC_COLUMNS.has(column)) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+      out[column] = value;
+    } else if (column === 'error') {
+      if (typeof value !== 'string') return null;
+      out[column] = shapeRunError(value, harness);
+    } else if (column === 'cost_source') {
+      const source = strictName(value);
+      if (source === null) return null;
+      out[column] = source;
+    } else {
+      const record = typeof value === 'string' && value.length <= MAX_STATE_BYTES ? recordShape(value, MAX_STATE_BYTES) : null;
+      if (record === null) return null;
+      out[column] = record;
+    }
+  }
+  return out as RunUpdate;
+}
+
+/**
  * Apply a partial update to one run.
  *
  * A column outside `RUN_UPDATE_COLUMNS` is a refusal rather than a silent
@@ -313,20 +344,18 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (rejected.length > 0) {
     return Response.json(refused(ctx, refusal(`update names columns it may not set: ${rejected.sort().join(', ')}`, 'refused')));
   }
-  const runUpdate = update as RunUpdate;
-  const scope = { projectId: ctx.projectId };
-  // On a run the server dispatched, the context and the dry-run flag are the
-  // dispatcher's own record of what it decided, and the task routes read both
-  // off the row: filing a hash as the Project's current one, and turning a dry
-  // run into a writing one, each require moving a column that is not the
-  // runtime's. The refusal names the columns rather than dropping them, so a
-  // caller learns what it may not set instead of watching a write do less.
-  const claimed = DISPATCHER_OWNED_COLUMNS.filter((c) => c in runUpdate);
-  if (claimed.length > 0 && (await getRun(env.db, scope, runId))?.dispatchedBy != null) {
-    return Response.json(refused(ctx, refusal(`a dispatched run's ${claimed.join(' and ')} belong to the dispatcher and may not be updated`, 'refused')));
+  const retired = Object.keys(update).filter((k) => !(ROUTE_UPDATE_COLUMNS as readonly string[]).includes(k));
+  if (retired.length > 0) {
+    return Response.json(refused(ctx, refusal(`update names columns no runtime sets in 2.0: ${retired.sort().join(', ')}`, 'field_retired')));
   }
-  const guarded = 'status' in runUpdate;
-  const before = guarded ? await getRun(env.db, scope, runId) : null;
+  const scope = { projectId: ctx.projectId };
+  const guarded = 'status' in update;
+  const row = await getRun(env.db, scope, runId);
+  const before = guarded ? row : null;
+  const runUpdate = routeUpdate(update as Record<string, unknown>, row?.harness ?? null);
+  if (runUpdate === null) {
+    return Response.json(refused(ctx, refusal('update holds a value outside its column\'s shape: an error is text, usage and cost data are JSON objects, a cost source an identifier, and the rest numbers', 'invalid_field')));
+  }
   // Before anything else this route answers: a caller holding a credential the
   // row does not name learns that, rather than learning what the row ended as.
   const foreign = guarded ? foreignCredentialAnswer(ctx, before) : null;
@@ -354,30 +383,6 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   return Response.json({ persisted: true, changed, applied: false });
 }
 
-/** Retire the resumability of failed runs equivalent to this one. */
-export async function handleSupersedeRuns(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const excludeRunId = str(body.excludeRunId);
-  const agentId = str(body.agentId);
-  const taskName = str(body.taskName);
-  if (excludeRunId === null || agentId === null || taskName === null || typeof body.dryRun !== 'boolean') {
-    return Response.json(refused(ctx, refusal('supersede requires excludeRunId, agentId, taskName and dryRun', 'parse')));
-  }
-  const superseded = await supersedeEquivalentResumableRuns(
-    env.db, { projectId: ctx.projectId }, excludeRunId, { agentId, taskName, dryRun: body.dryRun });
-  return Response.json({ persisted: true, superseded });
-}
-
-/** Every report a run recorded, in the order they were written. */
-const EVENT_TYPES = ['pre_tool_use', 'post_tool_use', 'phase_start', 'phase_end'] as const;
-const EVENT_OUTCOMES = ['success', 'error'] as const;
-/** The most events one request may carry; a burst larger than this is split by the caller. */
-export const MAX_EVENTS_PER_REQUEST = 32;
-const MAX_SUMMARY_CHARS = 4_096;
-const MAX_DETAILS_CHARS = 65_536;
-const MAX_PAYLOAD_CHARS = 16_384;
-
 /**
  * Record one report against a run. The run row is the tenancy anchor;
  * `agentId` is the reporter's label and is not held to the run's own agent —
@@ -386,13 +391,13 @@ const MAX_PAYLOAD_CHARS = 16_384;
 export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  const agentId = str(body.agentId);
-  const action = str(body.action);
+  const runId = strictId(body.runId);
+  const agentId = strictName(body.agentId);
+  const action = strictName(body.action);
   const summary = str(body.summary, MAX_SUMMARY_CHARS);
   const details = strOrNull(body.details, MAX_DETAILS_CHARS);
   if (runId === null || agentId === null || action === null || summary === null || details === undefined) {
-    return Response.json(refused(ctx, refusal('a report requires runId, agentId, action and summary within bounds', 'parse')));
+    return Response.json(refused(ctx, refusal('a report requires a runId, agentId and action each an identifier, and a summary within bounds', 'parse')));
   }
   const recorded = await recordReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, audit: body.audit, createdAt: ctx.now });
   if (!recorded.recorded) {
@@ -401,120 +406,22 @@ export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Prom
   return Response.json({ persisted: true, recorded: true, ...(recorded.auditError === null ? {} : { auditError: recorded.auditError }) });
 }
 
-/** Record a burst of run events. Rows are validated one by one; a burst with any malformed row is refused whole. */
-export async function handleRecordRunEvents(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const raw = body.events;
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_EVENTS_PER_REQUEST) {
-    return Response.json(refused(ctx, refusal(`events must be 1..${MAX_EVENTS_PER_REQUEST} entries`, 'parse')));
-  }
-  const events: RunEventRowInsert[] = [];
-  for (const entry of raw) {
-    if (!isRecord(entry)) return Response.json(refused(ctx, BAD_BODY));
-    const runId = str(entry.runId);
-    const eventType = (EVENT_TYPES as readonly string[]).includes(entry.eventType as string) ? (entry.eventType as string) : null;
-    const outcome = entry.outcome === undefined || entry.outcome === null ? null
-      : (EVENT_OUTCOMES as readonly string[]).includes(entry.outcome as string) ? (entry.outcome as string) : undefined;
-    const phaseName = strOrNull(entry.phaseName);
-    const toolName = strOrNull(entry.toolName);
-    // Truncated, never refused: the largest tool payloads are exactly the
-    // events an audit log most needs, and the sender's catch swallows a refusal.
-    const payload = entry.payload === undefined || entry.payload === null ? null
-      : typeof entry.payload === 'string' ? entry.payload.slice(0, MAX_PAYLOAD_CHARS) : undefined;
-    const durationMs = entry.durationMs === undefined || entry.durationMs === null ? null : int(entry.durationMs);
-    // Epoch milliseconds, like every server timestamp; a malformed value is a
-    // refusal, not a silent substitution.
-    const recordedAt = entry.recordedAt === undefined ? ctx.now : int(entry.recordedAt);
-    if (runId === null || eventType === null || outcome === undefined || phaseName === undefined || toolName === undefined || payload === undefined || durationMs === undefined || recordedAt === null) {
-      return Response.json(refused(ctx, refusal('an event requires runId and a known eventType, with bounded optional fields', 'parse')));
-    }
-    events.push({ runId, phaseName, eventType, toolName, outcome, durationMs, payload, recordedAt });
-  }
-  const recorded = await recordRunEvents(env.db, { projectId: ctx.projectId }, events);
-  return Response.json({ persisted: true, recorded });
-}
-
-export async function handleRunReports(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('reports requires runId', 'parse')));
-  return Response.json({ persisted: true, reports: await listReports(env.db, { projectId: ctx.projectId }, runId) });
-}
-
 /**
- * Record how a run failed, and what that means for resuming it.
- *
- * The caller reports what it OBSERVED — whether this attempt is a resume,
- * whether a checkpoint carried a session reference, whether any turn ran, and
- * how the harness classified the error — and the server decides the class. A caller that sent its own verdict
- * could mark a poisoned session resumable and re-enter the loop the guard
- * exists to close.
+ * The run routes no 2.0 path sends, each refused with `route_retired` and what replaced it. The in-process runtime
+ * claims, ends and reports a run (`server-runner.ts`: `/runs/claim`, `/runs/update`, `/runs/report`) and nothing else
+ * over these; the routes below served the 1.4 executor's own store.
  */
-export async function handleRecordFailure(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  const errorMessage = strOrNull(body.error, MAX_STATE_BYTES);
-  const errorClass = ERROR_CLASSES.includes(body.errorClass as (typeof ERROR_CLASSES)[number])
-    ? (body.errorClass as FailureObservation['errorClass']) : null;
-  if (runId === null || errorClass === null || errorMessage === undefined) {
-    return Response.json(refused(ctx, refusal('a failure requires runId and a known errorClass', 'parse')));
-  }
+export const RETIRED_RUN_ROUTES: Readonly<Record<string, string>> = {
+  '/runs/get': 'a run is read on the dashboard and by `myco_agent`',
+  '/runs/failed': 'a run ends through /runs/update',
+  '/runs/resume-admission': 'a failed run is never resumed in 2.0; a fresh run is dispatched',
+  '/runs/supersede': 'a failed run is never resumed in 2.0, so none is superseded',
+  '/runs/reports': 'a run\'s reports are read on the dashboard and by `myco_agent`',
+  '/runs/events': 'a run\'s calls are recorded by the Deployment as the run makes them',
+};
 
-  const decision = classifyFailure({
-    wasResume: body.wasResume === true,
-    hadPriorSession: body.hadPriorSession === true,
-    recordedAnyTurns: body.recordedAnyTurns === true,
-    errorClass,
-  });
-  const update: Record<string, unknown> = {
-    status: 'failed',
-    completed_at: ctx.now,
-    error: errorMessage,
-    resumable: decision.resumable ? 1 : 0,
-    resume_status: decision.status,
-  };
-  // A poisoned session id is discarded with the same write that records the
-  // failure: leaving it for a follow-up call is a window where a wake could
-  // reuse it.
-  if (decision.clearCheckpoints) update.checkpoints = null;
-
-  // The write is guarded on the row not already being terminal, and a run that
-  // ended under another status answers the same refusal the update route gives:
-  // `changed: 0` alone reads exactly like a run in another Project.
-  const scope = { projectId: ctx.projectId };
-  const before = await getRun(env.db, scope, runId);
-  const foreign = foreignCredentialAnswer(ctx, before);
-  if (foreign !== null) return foreign;
-  const ended = endedAnswer(before?.status, 'failed');
-  if (ended !== null) return ended;
-  const written = await endRunAsCaller(env, ctx, runId, before, update as RunUpdate, { replaced: body.replaced === true });
-  if ('refused' in written) return written.refused;
-  const changed = written.changed;
-  const raced = changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
-  if (raced !== null) return raced;
-  return Response.json({ persisted: true, changed, ...decision });
-}
-
-/** Whether a failed run may be resumed now, consuming a retry when it may. */
-export async function handleAdmitResume(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
-  if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
-  if (runId === null) return Response.json(refused(ctx, refusal('resume admission requires runId', 'parse')));
-
-  const scope = { projectId: ctx.projectId };
-  const run = await getRun(env.db, scope, runId);
-  if (run === null) return Response.json({ persisted: true, admit: false, status: 'absent' });
-  if (run.resumable !== 1) {
-    return Response.json({ persisted: true, admit: false, status: run.resumeStatus ?? 'not_resumable' });
-  }
-
-  const outcome = await admitResume(env.db, scope, {
-    id: run.id, agentId: run.agentId, task: run.task ?? '', dryRun: run.dryRun === 1,
-    startedAt: run.startedAt, resumeAttempts: run.resumeAttempts,
-  });
-  return Response.json({ persisted: true, ...outcome });
+/** A run route no 2.0 path sends, refused with what replaced it. */
+export function retiredRunRoute(path: keyof typeof RETIRED_RUN_ROUTES & string): (env: ServerEnv, ctx: RouteContext) => Promise<Response> {
+  const why = RETIRED_RUN_ROUTES[path]!;
+  return async (_env, ctx) => Response.json(refused(ctx, refusal(`${path} is retired: ${why}`, 'route_retired')));
 }

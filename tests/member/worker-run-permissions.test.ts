@@ -616,7 +616,7 @@ describe('the environment a harness is started in', () => {
     process.env.PATH = `${stub.dir}:${process.env.PATH ?? ''}`;
     const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
     const events = await collect(acpDriver('cursor').run({ ...run, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
-    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: 'no run configuration is written for cursor, so its own would decide the run\'s calls' }]);
+    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: 'no run configuration is written for cursor, so its own would decide the run\'s calls', code: 'launch_failed' }]);
     expect(existsSync(stub.env)).toBe(false);
   });
 
@@ -661,7 +661,7 @@ describe('a run on a harness that asks only under the run\'s agent', () => {
     const other = peerInMode('build');
     const events = await collect(turnOver(other.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed, { asking }));
     expect(other.asked).toEqual(['initialize', 'session/new']);
-    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: `the harness opened the session in mode build rather than the run's agent ${asking.mode!}, so its calls would not be asked` }]);
+    expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: `the harness opened the session in mode build rather than the run's agent ${asking.mode!}, so its calls would not be asked`, code: 'session_unasked' }]);
 
     // An agent a configuration defines under the fixed part of the name is not the run's.
     const prefixed = peerInMode(RUN_AGENT_PREFIX);
@@ -695,7 +695,7 @@ describe('listing the run\'s tools', () => {
     const events = await collect(turnOver(peer.channel, 'cursor', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', waiting, { signal: stopping.signal }));
     // Stopped by the run, well before the listing's own timeout would end it.
     expect({ events, stoppedByRun: Date.now() - started < RUN_TOOLS_TIMEOUT_MS / 2 }).toEqual({
-      events: [{ kind: 'ended', stop: 'error', detail: 'the run\'s tools could not be listed: the listing was stopped' }],
+      events: [{ kind: 'ended', stop: 'error', detail: 'the run\'s tools could not be listed: the listing was stopped', code: 'tools_unlisted' }],
       stoppedByRun: true,
     });
   });

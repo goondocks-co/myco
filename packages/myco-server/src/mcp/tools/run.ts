@@ -20,14 +20,12 @@
  */
 import { sha256Hex } from '../../hash.js';
 import { getState, mutateState } from '../../core/runs.js';
-import { recordReport } from '../../core/run-postconditions.js';
+import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport } from '../../core/run-postconditions.js';
 import { RUN_AUDIT_SHAPE } from '../../core/run-audit.js';
 import { failure, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const MAX_ACTION_CHARS = 192;
-const MAX_SUMMARY_CHARS = 4_096;
-const MAX_DETAILS_CHARS = 65_536;
 const MAX_KEY_CHARS = 192;
 /**
  * The largest state value this surface accepts, bounding one row against a

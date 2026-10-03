@@ -1,0 +1,42 @@
+{
+  "login_missing": {
+    "recorded": true,
+    "stdout": [
+      "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"f736e480-9433-4bf8-804d-4d99c28ff629\",\"model\":\"claude-opus-5-5\",\"permissionMode\":\"default\",\"apiKeySource\":\"ANTHROPIC_API_KEY\",\"claude_code_version\":\"2.1.285\"}",
+      "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":10,\"max_retries\":10,\"retry_delay_ms\":35751,\"error_status\":401,\"error\":\"authentication_failed\",\"session_id\":\"f736e480-9433-4bf8-804d-4d99c28ff629\"}",
+      "{\"type\":\"assistant\",\"message\":{\"id\":\"c58c1e16-d5e1-4cd3-9d40-80de4e16776d\",\"model\":\"<synthetic>\",\"role\":\"assistant\",\"type\":\"message\",\"stop_reason\":\"stop_sequence\",\"content\":[{\"type\":\"text\",\"text\":\"Failed to authenticate. API Error: 401 API key is invalid. {{SECRET}}\"}]},\"session_id\":\"f736e480-9433-4bf8-804d-4d99c28ff629\",\"error\":\"authentication_failed\",\"is_api_error_message\":true}",
+      "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"stop_reason\":\"stop_sequence\",\"terminal_reason\":\"api_error\",\"api_error_status\":401,\"result\":\"Failed to authenticate. API Error: 401 API key is invalid. {{SECRET}}\",\"num_turns\":1,\"duration_ms\":182916,\"total_cost_usd\":0,\"modelUsage\":{},\"permission_denials\":[],\"session_id\":\"f736e480-9433-4bf8-804d-4d99c28ff629\"}"
+    ],
+    "stderr": "",
+    "exit": 1
+  },
+  "rate_limited": {
+    "recorded": false,
+    "stdout": [
+      "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess_rate\",\"model\":\"claude-sonnet-5-5\"}",
+      "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":10,\"max_retries\":10,\"retry_delay_ms\":32000,\"error_status\":429,\"error\":\"rate_limit\",\"session_id\":\"sess_rate\"}",
+      "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: Request rejected (429) {{SECRET}}\"}]},\"session_id\":\"sess_rate\",\"error\":\"rate_limit\",\"is_api_error_message\":true}",
+      "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"stop_reason\":\"stop_sequence\",\"terminal_reason\":\"api_error\",\"api_error_status\":429,\"result\":\"API Error: Request rejected (429) {{SECRET}}\",\"num_turns\":1,\"total_cost_usd\":0,\"modelUsage\":{},\"permission_denials\":[],\"session_id\":\"sess_rate\"}"
+    ],
+    "stderr": "",
+    "exit": 1
+  },
+  "timed_out": {
+    "recorded": false,
+    "stdout": [
+      "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess_timeout\",\"model\":\"claude-sonnet-5-5\"}",
+      "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: Request timed out. {{SECRET}}\"}]},\"session_id\":\"sess_timeout\",\"error\":\"unknown\",\"is_api_error_message\":true}",
+      "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"stop_reason\":\"stop_sequence\",\"terminal_reason\":\"api_error\",\"result\":\"API Error: Request timed out. {{SECRET}}\",\"num_turns\":1,\"total_cost_usd\":0,\"modelUsage\":{},\"permission_denials\":[],\"session_id\":\"sess_timeout\"}"
+    ],
+    "stderr": "",
+    "exit": 1
+  },
+  "crashed": {
+    "recorded": false,
+    "stdout": [
+      "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess_crash\",\"model\":\"claude-sonnet-5-5\"}"
+    ],
+    "stderr": "TypeError: Cannot read properties of undefined (reading '{{SECRET}}')\n    at file:///usr/local/lib/claude/cli.js:1:1\n",
+    "exit": 1
+  }
+}

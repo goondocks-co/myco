@@ -14,6 +14,7 @@ import { EFFORT_UNAPPLIED, MAX_REFUSAL_REASON_CHARS, PROFILE_OUTCOME_FEATURE, PR
 import { readWork } from '@myco-server-worker/read/work.js';
 import { listRuns } from '@myco-server-worker/read/runs.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { BASE64_SECRET, OPENAI_KEY } from '../helpers/secret-corpus.ts';
 
 const NOW = 1_800_000_000_000;
 const scope = { projectId: 'proj_1' };
@@ -173,7 +174,8 @@ describe('model-specific execution accounting', () => {
       try {
         await fixtureRun(opencode, 'unoffered', async (body) => Response.json(await r.end({ ...body, attemptId: r.claimed.run.attemptId })), { features: NEW_DEPLOYMENT });
         expect((await r.detail())?.run).toMatchObject({ status: 'failed', errorCode: 'model_not_applied', errorReason: 'it offers no model openai/gpt-5.4-mini' });
-        expect((await r.detail())?.run.error).toContain('(it offers opencode/big-pickle)');
+        // The worker's words for what the harness offered stay on the worker: the record carries the code alone.
+        expect((await r.detail())?.run.error).toBe('the harness stopped: error (profile_unapplied)');
         expect((await work(r))?.failure).toMatchObject({ code: 'model_not_applied', reason: 'it offers no model openai/gpt-5.4-mini' });
       } finally { r.e.sqlite.close(); }
     });
@@ -188,9 +190,12 @@ describe('model-specific execution accounting', () => {
     });
     it('stores a refusal of any other code, or with no reason, as no more than it says', async () => {
       for (const [refusal, code, reason] of [
-        [{ code: 'something_else', reason: 'it offers no model x' }, 'run_failed', null],
+        [{ code: 'something_else', reason: 'it offers no model x' }, 'agent_failed', null],
         [{ code: PROFILE_UNAPPLIED, reason: '   ' }, 'model_not_applied', null],
-        [{ code: PROFILE_UNAPPLIED, reason: 'r'.repeat(MAX_REFUSAL_REASON_CHARS + 50) }, 'model_not_applied', 'r'.repeat(MAX_REFUSAL_REASON_CHARS)],
+        [{ code: PROFILE_UNAPPLIED, reason: 'it offers no model x'.padEnd(MAX_REFUSAL_REASON_CHARS + 50, 'x') }, 'model_not_applied', null],
+        // A reason in any words but a worker's own sentence, naming a value no model has, is never kept.
+        [{ code: PROFILE_UNAPPLIED, reason: `Invalid API key ${OPENAI_KEY}` }, 'model_not_applied', null],
+        [{ code: PROFILE_UNAPPLIED, reason: `it refused the model ${BASE64_SECRET}` }, 'model_not_applied', null],
       ] as const) {
         const r = await rig('opencode');
         try {

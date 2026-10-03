@@ -300,7 +300,7 @@ describe('the Claude Code driver', () => {
     ]);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
-    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for mcp__myco__myco_run_sessions, mcp__myco__myco_run' });
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for mcp__myco__myco_run_sessions, mcp__myco__myco_run', code: 'permission_refused', names: ['mcp__myco__myco_run_sessions', 'mcp__myco__myco_run'] });
   });
 
   it('reads a refusal of a tool outside the run\'s grant as that call failing, and the turn\'s own end as the run\'s', async () => {
@@ -337,7 +337,7 @@ describe('the Claude Code driver', () => {
 
     process.env.PATH = `${stubHarness('claude', [result(`${shell},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"repo/README.md"}}`)])}:${process.env.PATH ?? ''}`;
     const granted = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
-    expect(granted.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for Read' });
+    expect(granted.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for Read', code: 'permission_refused', names: ['Read'] });
   });
 
   it('reads a refusal of a tool that only shares the run server\'s prefix as outside the grant', async () => {
@@ -386,7 +386,7 @@ describe('the Claude Code driver', () => {
     ], 1);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
-    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'authentication_failed' });
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'authentication_failed', exitCode: 1 });
   });
 
   it('keeps terminal usage after an in-band failure', async () => {
@@ -1631,6 +1631,7 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     expect(events).toEqual([{
       kind: 'ended', stop: 'error',
       detail: 'the run\'s tools could not be listed: unauthorized: The upstream refused the credential (HTTP 401).',
+      code: 'tools_unlisted',
     }]);
   });
 });
@@ -1971,7 +1972,7 @@ describe('a harness no worker offers', () => {
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
         once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
       });
-      expect({ status: end.body?.status, error: end.body?.error }).toEqual({ status: 'failed', error: `this worker does not drive antigravity: ${WITHHELD_REASON}` });
+      expect({ status: end.body?.status, error: end.body?.error }).toEqual({ status: 'failed', error: 'the worker could not start the run (harness_not_offered: antigravity)' });
       expect(existsSync(agy.started)).toBe(false);
     } finally { agy.remove(); }
   }, 15_000);

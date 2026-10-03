@@ -1,0 +1,22 @@
+{
+  "login_missing": {
+    "recorded": false,
+    "prompt": { "error": { "code": -32000, "message": "ProviderAuthError: the provider refused the credential {{SECRET}}" } },
+    "stderr": ""
+  },
+  "rate_limited": {
+    "recorded": false,
+    "prompt": { "error": { "code": -32000, "message": "AI_APICallError: Too Many Requests (429) {{SECRET}}" } },
+    "stderr": ""
+  },
+  "timed_out": {
+    "recorded": false,
+    "prompt": { "error": { "code": -32000, "message": "The operation timed out. {{SECRET}}" } },
+    "stderr": ""
+  },
+  "crashed": {
+    "recorded": false,
+    "prompt": "close",
+    "stderr": "panic: runtime error: invalid memory address {{SECRET}}\n"
+  }
+}
