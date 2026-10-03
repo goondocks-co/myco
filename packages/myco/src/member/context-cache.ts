@@ -4,7 +4,8 @@
  * The member helper fills the cache from the Deployment's answers, and a hook renders from it:
  * - `context/project.json` holds the Project's blocks, as the Deployment last composed them: the session start's,
  *   a compaction's and a delegated agent's, plus the features the Deployment advertised on its last answer
- *   (`x-myco-features`). A hook emits a feature's records only while the cache names it.
+ *   (`x-myco-features`). The Deployment-wide snapshot is authoritative for feature gates; project advertisements
+ *   supply the upgrade fallback until a protocol-bearing answer writes that snapshot.
  * - `context/<session>.json` holds what was served for the session's latest prompt, rendered on its next one: the
  *   context a prompt gets is the previous prompt's, until a local re-rank can do better.
  *
@@ -19,7 +20,9 @@ import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
 import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
-import { ensureMemberDir, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
+import { spoolDirFor } from './spool.js';
+import { ensureMemberDir, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 type CachedFeature = MemberFeature | typeof HARNESS_HEALTH_FEATURE;
 
@@ -139,9 +142,34 @@ export function renderedBlock(spoolDir: string, projectId: string, kind: Session
 /** What a session's delivered list records when it was served the Project line of `delivered` alone. */
 export const projectLineOnly = (delivered: string): string => `${delivered}:project-line`;
 
-/** Whether the Deployment named `feature` on its last answer this machine holds. */
-export function featureAdvertised(spoolDir: string, feature: MemberFeature): boolean {
-  return readProjectContext(spoolDir).features.includes(feature);
+/** Replace the Deployment's feature snapshot with the protocol-bearing answer just received. */
+export function cacheDeploymentFeatures(serverUrl: string, features: CachedFeature[], mycoHome: string): void {
+  ensureMemberDir(deploymentsDir(mycoHome), mycoHome);
+  writePrivateFileAtomic(deploymentFeaturesPath(serverUrl, mycoHome), `${JSON.stringify({ version: CACHE_VERSION, features })}\n`);
+}
+
+/** The last Deployment advertisement, or the newest bound project advertisement before a snapshot exists. */
+export function readDeploymentFeatures(deployment: Pick<RegistryEntry, 'serverUrl' | 'projectId'>, mycoHome: string): CachedFeature[] {
+  const snapshotPath = deploymentFeaturesPath(deployment.serverUrl, mycoHome);
+  const snapshot = readCache<Pick<ProjectContextCache, 'version' | 'features'>>(snapshotPath);
+  if (snapshot !== null && Array.isArray(snapshot.features)) return cachedDeploymentFeatures(snapshot.features.join(','));
+  if (!pathIsAbsent(snapshotPath)) throw new Error('Cannot read the Deployment feature snapshot');
+  const registry = listRegistryEntriesResult(mycoHome);
+  if (!registry.readable) throw new Error('Cannot read the member registry for Deployment features');
+  const projects = new Set([...(deployment.projectId.length > 0 ? [deployment.projectId] : []), ...registry.entries
+    .filter((entry) => deploymentUrl(entry.serverUrl) === deploymentUrl(deployment.serverUrl))
+    .map((entry) => entry.projectId)]);
+  let newest: ProjectContextCache | undefined;
+  for (const projectId of projects) {
+    const cache = readProjectContext(spoolDirFor(projectId, mycoHome));
+    if (newest === undefined || (cache.featuresAt ?? 0) > (newest.featuresAt ?? 0)) newest = cache;
+  }
+  return newest?.features ?? [];
+}
+
+/** Whether the Deployment named `feature` on its newest answer this machine holds. */
+export function featureAdvertised(deployment: Pick<RegistryEntry, 'serverUrl' | 'projectId'>, mycoHome: string, feature: CachedFeature): boolean {
+  return readDeploymentFeatures(deployment, mycoHome).includes(feature);
 }
 
 /**

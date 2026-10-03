@@ -82,8 +82,8 @@ export const TAIL_IDLE_MS = 15 * 60_000;
  * transcript alone (it does not take `turn`), and the session is live, so the bytes past its last mark belong to a
  * turn under way. Once the session has ended, or its hooks have gone quiet, every byte ships.
  */
-export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number): boolean {
-  if (featureAdvertised(spool.dir, 'turn')) return false;
+export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number, serverUrl: string): boolean {
+  if (featureAdvertised({ serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn')) return false;
   if (state.endedAt !== undefined || state.hookAt === undefined) return false;
   return now - state.hookAt < TAIL_IDLE_MS;
 }
@@ -276,7 +276,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now };
     // A turn end the Deployment is told of by the transcript lane rides the segment that ends where it does.
     const turnEnds = marks.filter((p) => p.mark.slot === 'primary').map((p) => ({ transcriptId: p.mark.transcriptId, atSize: p.mark.atSize, at: p.mark.at }));
-    const holdTail = holdsTranscriptTail(spool, state, now());
+    const holdTail = holdsTranscriptTail(spool, state, now(), client.serverUrl);
     const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds, holdTail }));
     consumeSatisfiedTurnEnds(spool, sessionId, marks);
     session.transcripts = shipped ?? 'lease';

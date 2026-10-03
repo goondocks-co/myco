@@ -17,7 +17,7 @@
 import { cacheMachineSettings } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
+import { cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
 import { refusalPermanent } from './constants.js';
 import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
@@ -136,23 +136,21 @@ export async function prefetchContext(opts: {
 
 /**
  * A fetch that reads the features every Deployment answer advertises (`x-myco-features`) and keeps the Project's
- * cache current: a feature named is cached, and one no longer named is dropped at once, so a hook stops emitting its
- * records against a Deployment rolled back to before it. Only an answer from the Deployment's own member pipeline
+ * cache and the Deployment's feature snapshot current: a feature named is cached, and one no longer named is
+ * dropped at once, so a hook stops emitting its records against a Deployment rolled back to before it. Only an answer from the Deployment's own member pipeline
  * (one carrying its protocol header) speaks for it; anything else (an edge's error page, a network failure) says
  * nothing about its features.
  */
-export function watchingFeatures(fetchImpl: FetchLike, opts: { spoolDir: string; mycoHome: string; now: () => number }): FetchLike {
-  let known = readProjectContext(opts.spoolDir).features.join(',');
+export function watchingFeatures(fetchImpl: FetchLike, opts: { serverUrl: string; spoolDir: string; mycoHome: string; now: () => number }): FetchLike {
   return async (input, init) => {
     const res = await fetchImpl(input, init);
     if (res.headers.get(PROTOCOL_HEADER) !== null) {
       const features = cachedDeploymentFeatures(res.headers.get(FEATURES_HEADER));
-      const named = features.join(',');
-      if (named !== known) {
-        known = named;
-        try {
-          updateProjectContext(opts.spoolDir, opts.mycoHome, (cache) => { cache.features = features; cache.featuresAt = opts.now(); });
-        } catch { /* the next answer tries again */ }
+      try {
+        cacheDeploymentFeatures(opts.serverUrl, features, opts.mycoHome);
+        updateProjectContext(opts.spoolDir, opts.mycoHome, (cache) => { cache.features = features; cache.featuresAt = opts.now(); });
+      } catch (error) {
+        process.stderr.write(`[myco] feature cache write failed: ${error instanceof Error ? error.message : String(error)}\n`);
       }
     }
     return res;
@@ -176,7 +174,7 @@ export async function warmProjectContext(
   const now = opts.now ?? Date.now;
   const spoolDir = spoolDirFor(membership.projectId, opts.mycoHome);
   const budget = opts.budget ?? deadlineBudget(now() + WARMED.length * CONTEXT_CAP_MS);
-  const fetchImpl = watchingFeatures(opts.fetch ?? globalThis.fetch, { spoolDir, mycoHome: opts.mycoHome, now });
+  const fetchImpl = watchingFeatures(opts.fetch ?? globalThis.fetch, { serverUrl: membership.serverUrl, spoolDir, mycoHome: opts.mycoHome, now });
   const client = new ServerClient(membership, fetchImpl);
   let cached = 0;
   for (const kind of WARMED) {

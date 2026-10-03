@@ -9,16 +9,19 @@
  * - The features the Deployment advertises are read from every answer: a hook emits `turn` events while they are
  *   named, and stops the moment an answer no longer names them; the session's transcripts keep shipping.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { readProjectContext } from '@myco/member/context-cache.js';
+import { cacheDeploymentFeatures, readDeploymentFeatures, readProjectContext, updateProjectContext } from '@myco/member/context-cache.js';
 import { projectLine } from '@goondocks/myco-shared/recall';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
+import { deploymentFeaturesPath } from '@myco/member/registry.js';
+import { watchingFeatures } from '@myco/member/prefetch.js';
+import { holdsTranscriptTail } from '@myco/member/backlog.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { readSessionState } from '@myco/member/session-state.js';
@@ -265,6 +268,106 @@ describe('the features a Deployment advertises', () => {
     // The prompt above spooled one turn start (it ran before its own helper's answer); the Stop after emits none.
     expect(turns()).toBe(3);
     expect(rig.rows('transcript_segments')).toBeGreaterThan(segmentsBefore);
+  });
+});
+
+describe('Deployment feature scope', () => {
+  const serverUrl = 'https://member-test.invalid';
+  function advertise(projectId: string, features: Array<'turn'>, at: number, url = serverUrl) {
+    registerTestMember({ mycoHome, token: rig.token, projectId, serverUrl: url, root: path.join(mycoHome, projectId) });
+    const project = new MemberSpool(projectId, { mycoHome });
+    updateProjectContext(project.dir, mycoHome, (cache) => { cache.features = features; cache.featuresAt = at; });
+  }
+  it('uses the newest advertisement, isolates Deployments, and honors feature withdrawal', () => {
+    advertise('proj_old', ['turn'], 1);
+    advertise('proj_new', [], 2);
+    advertise('proj_foreign', ['turn'], 3, 'https://other.invalid');
+    const deployment = { serverUrl: `${serverUrl}/`, projectId: 'proj_1' };
+    expect(readDeploymentFeatures(deployment, mycoHome)).toEqual([]);
+    advertise('proj_new', ['turn'], 4);
+    expect(readDeploymentFeatures(deployment, mycoHome)).toEqual(['turn']);
+  });
+  it('reads Deployment features for a pending join without deriving a spool from an empty project id', () => {
+    const deployment = { serverUrl, projectId: '' };
+    expect(readDeploymentFeatures(deployment, mycoHome)).toEqual([]);
+    advertise('proj_new', ['turn'], 2);
+    expect(readDeploymentFeatures(deployment, mycoHome)).toEqual(['turn']);
+  });
+  it('follows response order despite equal or backwards clocks and later context block writes', async () => {
+    advertise('proj_1', [], 1);
+    advertise('proj_new', ['turn'], 1);
+    const other = new MemberSpool('proj_new', { mycoHome });
+    let at = 1;
+    const answer = (features: string, spoolDir: string) => watchingFeatures(async () => Response.json({}, {
+      headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features },
+    }), { serverUrl, spoolDir, mycoHome, now: () => at })(`${serverUrl}/context/session`);
+    await answer('turn', spool().dir);
+    await answer('', other.dir);
+    updateProjectContext(spool().dir, mycoHome, (cache) => { cache.blocks.start = { context: 'block', at }; });
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual([]);
+    at = 0;
+    await answer('turn', other.dir);
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+    const unrelated = watchingFeatures(async () => Response.json({}, { headers: { [FEATURES_HEADER]: '' } }), { serverUrl, spoolDir: other.dir, mycoHome, now: () => at });
+    await unrelated(`${serverUrl}/context/session`);
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+    expect(readDeploymentFeatures({ serverUrl: 'https://other.invalid', projectId: 'proj_foreign' }, mycoHome)).toEqual([]);
+  });
+  it('surfaces an invalid snapshot instead of reviving stale project advertisements', () => {
+    advertise('proj_1', ['turn'], 1);
+    cacheDeploymentFeatures(serverUrl, [], mycoHome);
+    const deployment = { serverUrl, projectId: 'proj_1' };
+    expect(readDeploymentFeatures(deployment, mycoHome)).toEqual([]);
+    fs.writeFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'invalid');
+    expect(() => readDeploymentFeatures(deployment, mycoHome)).toThrow('Cannot read the Deployment feature snapshot');
+    if (process.platform !== 'win32') {
+      cacheDeploymentFeatures(serverUrl, [], mycoHome);
+      fs.chmodSync(deploymentFeaturesPath(serverUrl, mycoHome), 0o644);
+      expect(() => readDeploymentFeatures(deployment, mycoHome)).toThrow('Cannot read the Deployment feature snapshot');
+    }
+  });
+  it('surfaces cache write failure while preserving the Deployment response', async () => {
+    advertise('proj_1', [], 1);
+    fs.mkdirSync(deploymentFeaturesPath(serverUrl, mycoHome));
+    const response = Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } });
+    const fetch = watchingFeatures(async () => response, { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await fetch(`${serverUrl}/events`)).toBe(response);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(String(stderr.mock.calls[0]?.[0])).toContain('feature cache write failed');
+    } finally { stderr.mockRestore(); }
+  });
+  it('refreshes the advertisement time even when the feature list is unchanged', async () => {
+    advertise('proj_1', [], 1);
+    advertise('proj_old', ['turn'], 2);
+    const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 3 });
+    await fetch(`${serverUrl}/context/session`);
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual([]);
+    expect(readProjectContext(spool().dir).featuresAt).toBe(3);
+  });
+  for (const hook of ['user-prompt-submit', 'stop'] as const) {
+    it(`${hook} emits turn events using another project's newest advertisement`, async () => {
+      advertise('proj_old', [], 1);
+      advertise('proj_new', ['turn'], 2);
+      const sessionId = `sess-scope-${hook}`;
+      const tx = transcript(sessionId);
+      await runHook(hook, { session_id: sessionId, prompt: 'one', last_assistant_message: 'done', transcript_path: tx, cwd: process.cwd() }, { fetch: rig.fetch });
+      const events = spool().readRecords(sessionId);
+      expect(events.some((event) => event?.kind === 'turn')).toBe(true);
+      advertise('proj_new', [], 3);
+      const withdrawn = `${sessionId}-withdrawn`;
+      await runHook(hook, { session_id: withdrawn, prompt: 'two', last_assistant_message: 'done', transcript_path: tx, cwd: process.cwd() }, { fetch: rig.fetch });
+      expect(spool().readRecords(withdrawn).some((event) => event?.kind === 'turn')).toBe(false);
+    });
+  }
+  it('releases transcript tails using another project and holds them after withdrawal', () => {
+    advertise('proj_new', ['turn'], 2);
+    const state = readSessionState(spool().dir, 'sess-tail');
+    state.hookAt = 100;
+    expect(holdsTranscriptTail(spool(), state, 101, serverUrl)).toBe(false);
+    advertise('proj_new', [], 3);
+    expect(holdsTranscriptTail(spool(), state, 101, serverUrl)).toBe(true);
   });
 });
 

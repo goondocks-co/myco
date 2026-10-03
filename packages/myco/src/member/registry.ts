@@ -127,6 +127,11 @@ export function deploymentPath(serverUrl: string, mycoHome: string = resolveMyco
   return path.join(deploymentsDir(mycoHome), `${deploymentKeyFor(serverUrl)}.json`);
 }
 
+/** Feature advertisements are separate from the registry's membership JSON files. */
+export function deploymentFeaturesPath(serverUrl: string, mycoHome: string = resolveMycoHome()): string {
+  return path.join(deploymentsDir(mycoHome), `${deploymentKeyFor(serverUrl)}.features`);
+}
+
 /**
  * Where this machine keeps the settings a Deployment holds for it (`machine-settings.ts`), beside that Deployment's
  * membership. Named apart from `.json` so no reader of memberships ever takes it for one.

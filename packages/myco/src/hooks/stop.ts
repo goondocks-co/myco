@@ -150,7 +150,7 @@ function transcriptSize(file: string): number {
  * stamped with the mark's time.
  */
 export function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined): { events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] } {
-  if (featureAdvertised(run.spool.dir, 'turn')) {
+  if (featureAdvertised(run.credential, run.mycoHome, 'turn')) {
     const promptId = readSessionState(run.spool.dir, run.sessionId).promptId;
     return { events: [turnEvent(run.ctx, { phase: 'end', promptId })] };
   }

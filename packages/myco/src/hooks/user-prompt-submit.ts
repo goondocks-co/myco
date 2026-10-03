@@ -63,7 +63,7 @@ export async function main(opts: HookMainOptions = {}) {
       ? []
       : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
     // The turn starts with the person's prompt: a Deployment that takes `turn` is told so, stamped now.
-    if (featureAdvertised(spool.dir, 'turn')) events.push(turnEvent(ctx, { phase: 'start', promptId }));
+    if (featureAdvertised(run.credential, run.mycoHome, 'turn')) events.push(turnEvent(ctx, { phase: 'start', promptId }));
     // A plan a person pasted inside a tag envelope is captured with the prompt,
     // whichever side writes the turn: the Deployment's parse scans assistant
     // text for plans and a pasted one is the person's. It keys on the prompt
