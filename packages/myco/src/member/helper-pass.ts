@@ -36,7 +36,7 @@ export function helperPass(projectId: string, mycoHome: string, deps: {
     const spool = new MemberSpool(projectId, { mycoHome });
     const budget = deadlineBudget(deadline);
     // Every answer the Deployment gives this pass keeps the features the hooks emit by current.
-    const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { spoolDir: spool.dir, mycoHome, now });
+    const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now });
     const prefetch = async () => spool.shouldDial(now(), force)
       ? prefetchContext({ spool, client: new ServerClient(await liveEntry(entry, mycoHome, fetchImpl, now, budget), fetchImpl), serverUrl: entry.serverUrl, mycoHome, budget, now })
       : null;

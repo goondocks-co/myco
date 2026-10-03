@@ -150,7 +150,7 @@ function transcriptSize(file: string): number {
  * stamped with the mark's time.
  */
 export function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined): { events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] } {
-  if (featureAdvertised(run.spool.dir, 'turn')) {
+  if (featureAdvertised(run.credential, run.mycoHome, 'turn')) {
     const promptId = readSessionState(run.spool.dir, run.sessionId).promptId;
     return { events: [turnEvent(run.ctx, { phase: 'end', promptId })] };
   }
@@ -173,12 +173,11 @@ export async function main(opts: HookMainOptions = {}) {
       }
     }
     if (transcript) events.push(...transcript.events);
-    const ended = turnEnded(run, transcript);
-    events.push(...ended.events);
     return {
       events,
       record: transcript?.record,
-      turnEnd: ended.turnEnd,
+      turnEnd: transcript?.stoodAt,
+      optional: () => turnEnded(run, transcript),
       transcriptAt: transcript?.stoodAt,
       ends: 'turn-end',
     };

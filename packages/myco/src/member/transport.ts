@@ -151,6 +151,10 @@ export class ServerClient {
     this.protocol = opts.protocol ?? MEMBER_PROTOCOL;
   }
 
+  get serverUrl(): string {
+    return this.base;
+  }
+
   get projectId(): string | undefined {
     return this.record.projectId;
   }
