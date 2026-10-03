@@ -10,14 +10,23 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
     'ls', 'ps', 'lsof', 'sample', 'kill', 'sleep', 'printf', 'chmod', 'mkdir', 'rm', 'cp', 'mv', 'ln',
     'touch', 'head', 'tail', 'sed', 'awk', 'grep', 'rg', 'wc', 'sort', 'uniq',
     'find', 'xargs', 'dirname', 'basename', 'codesign', 'xattr', 'launchctl', 'plutil', 'cut', 'tr', 'date', 'uname', 'id', 'whoami', 'which',
+    'taskkill', 'tasklist', 'cmd', 'powershell', 'pwsh', 'where',
     'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'timeout',
   ];
+  const extensions = process.platform === 'win32'
+    ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')]
+    : [''];
   for (const name of tools) {
-    const executable = incomingPath.split(path.delimiter).map((dir) => path.join(dir, name)).find((candidate) => {
+    const executable = incomingPath.split(path.delimiter)
+      .flatMap((dir) => extensions.map((extension) => path.join(dir, name + extension)))
+      .find((candidate) => {
       try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
       catch { return false; }
     });
-    if (executable) fs.symlinkSync(executable, path.join(bin, name));
+    if (executable) {
+      const suffix = process.platform === 'win32' ? path.extname(executable) : '';
+      fs.symlinkSync(executable, path.join(bin, name + suffix), 'file');
+    }
   }
   return bin;
 }

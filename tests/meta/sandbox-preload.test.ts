@@ -92,6 +92,10 @@ describe('sandbox preload — agent configuration', () => {
       expect(() => fs.promises.open(target, 'w')).toThrow(/TEST SAFETY/);
       expect(() => Bun.write(target, 'x')).toThrow(/TEST SAFETY/);
       expect(() => Bun.write(Bun.file(target), 'x')).toThrow(/TEST SAFETY/);
+      expect(() => Bun.file(target).writer()).toThrow(/TEST SAFETY/);
+      expect(() => fs.linkSync(target, path.join(os.homedir(), 'hard-alias'))).toThrow(/TEST SAFETY/);
+      expect(() => fs.link(target, path.join(os.homedir(), 'hard-alias'), () => {})).toThrow(/TEST SAFETY/);
+      expect(() => fs.promises.link(target, path.join(os.homedir(), 'hard-alias'))).toThrow(/TEST SAFETY/);
     });
   }
 

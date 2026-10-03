@@ -79,7 +79,7 @@ function offending(p: unknown, includesParents = false): string | null {
   for (const target of [s, resolvedTarget(s)]) {
     for (const pre of protectedTargets) {
       if (target === pre || target.startsWith(pre + path.sep)
-        || (includesParents && pre.startsWith(target + path.sep))) return s;
+        || (includesParents && pre.startsWith(target.endsWith(path.sep) ? target : target + path.sep))) return s;
     }
   }
   return null;
@@ -106,7 +106,7 @@ for (const n of ['writeFileSync','appendFileSync','mkdirSync','rmSync','rmdirSyn
 wrap(FS, 'copyFileSync', [1]);
 wrap(FS, 'cpSync', [1]);
 wrap(FS, 'symlinkSync', [1]);   // symlinkSync(target, path) — guard the link path
-wrap(FS, 'linkSync', [1]);
+wrap(FS, 'linkSync', [0, 1]);
 wrap(FS, 'renameSync', [0, 1]); // moving a protected path away is also a mutation
 // openSync with a write/create flag → guard arg0
 {
@@ -127,7 +127,7 @@ for (const n of ['writeFile','appendFile','mkdir','rm','rmdir','unlink','chmod',
 wrap(FS, 'copyFile', [1]);
 wrap(FS, 'cp', [1]);
 wrap(FS, 'symlink', [1]);
-wrap(FS, 'link', [1]);
+wrap(FS, 'link', [0, 1]);
 wrap(FS, 'rename', [0, 1]);
 // callback-form open: guard arg0 only when flags indicate a write
 {
@@ -147,7 +147,7 @@ for (const n of ['writeFile','appendFile','mkdir','rm','rmdir','unlink','chmod',
 wrap(FSP, 'copyFile', [1]);
 wrap(FSP, 'cp', [1]);
 wrap(FSP, 'symlink', [1]);
-wrap(FSP, 'link', [1]);
+wrap(FSP, 'link', [0, 1]);
 wrap(FSP, 'rename', [0, 1]);
 
 // Promise-form open can create or truncate files too.
@@ -172,6 +172,18 @@ Bun.write = ((destination: Parameters<typeof Bun.write>[0], ...args: unknown[]) 
   if (hit) deny('Bun.write', hit);
   return (originalBunWrite as unknown as AnyFn)(destination, ...args);
 }) as typeof Bun.write;
+
+const originalBunFile = Bun.file;
+Bun.file = ((...args: Parameters<typeof Bun.file>) => {
+  const file = originalBunFile(...args);
+  const writer = file.writer.bind(file);
+  file.writer = (...options: Parameters<typeof file.writer>) => {
+    const hit = offending(file.name);
+    if (hit) deny('Bun.file.writer', hit);
+    return writer(...options);
+  };
+  return file;
+}) as typeof Bun.file;
 
 // Remove registered fixtures and process-owned locks through the captured original. Bun's test runner runs a preload's
 // `afterAll` after every file's own hooks (once per file under --isolate, where this
