@@ -173,12 +173,11 @@ export async function main(opts: HookMainOptions = {}) {
       }
     }
     if (transcript) events.push(...transcript.events);
-    const ended = turnEnded(run, transcript);
-    events.push(...ended.events);
     return {
       events,
       record: transcript?.record,
-      turnEnd: ended.turnEnd,
+      turnEnd: transcript?.stoodAt,
+      optional: () => turnEnded(run, transcript),
       transcriptAt: transcript?.stoodAt,
       ends: 'turn-end',
     };

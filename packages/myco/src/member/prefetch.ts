@@ -17,7 +17,7 @@
 import { cacheMachineSettings } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
+import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
 import { refusalPermanent } from './constants.js';
 import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
@@ -143,14 +143,18 @@ export async function prefetchContext(opts: {
  */
 export function watchingFeatures(fetchImpl: FetchLike, opts: { serverUrl: string; spoolDir: string; mycoHome: string; now: () => number }): FetchLike {
   return async (input, init) => {
+    let receivedAt: number | undefined;
+    try { receivedAt = beginFeatureRequest(opts.serverUrl, opts.mycoHome); }
+    catch (error) { featureCacheDiagnostic(opts.serverUrl, opts.mycoHome, 'write', error); }
     const res = await fetchImpl(input, init);
-    if (res.headers.get(PROTOCOL_HEADER) !== null) {
+    if (receivedAt !== undefined && res.headers.get(PROTOCOL_HEADER) !== null) {
       const features = cachedDeploymentFeatures(res.headers.get(FEATURES_HEADER));
       try {
-        cacheDeploymentFeatures(opts.serverUrl, features, opts.mycoHome);
-        updateProjectContext(opts.spoolDir, opts.mycoHome, (cache) => { cache.features = features; cache.featuresAt = opts.now(); });
+        if (cacheDeploymentFeatures(opts.serverUrl, features, opts.mycoHome, receivedAt, { spoolDir: opts.spoolDir, at: opts.now() })) {
+          featureCacheDiagnostic(opts.serverUrl, opts.mycoHome, 'write');
+        }
       } catch (error) {
-        process.stderr.write(`[myco] feature cache write failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        featureCacheDiagnostic(opts.serverUrl, opts.mycoHome, 'write', error);
       }
     }
     return res;

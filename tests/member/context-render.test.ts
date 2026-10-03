@@ -19,13 +19,19 @@ import { resetMachineIdCache } from '@myco/machine-id.js';
 import { cacheDeploymentFeatures, readDeploymentFeatures, readProjectContext, updateProjectContext } from '@myco/member/context-cache.js';
 import { projectLine } from '@goondocks/myco-shared/recall';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
+import * as registry from '@myco/member/registry.js';
+import * as contextCache from '@myco/member/context-cache.js';
+import * as store from '@myco/member/store.js';
 import { deploymentFeaturesPath } from '@myco/member/registry.js';
 import { watchingFeatures } from '@myco/member/prefetch.js';
-import { holdsTranscriptTail } from '@myco/member/backlog.js';
+import { drainBacklog, holdsTranscriptTail } from '@myco/member/backlog.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { readSessionState } from '@myco/member/session-state.js';
+import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { deadlineBudget } from '@myco/member/budget.js';
 import type { FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
@@ -313,38 +319,176 @@ describe('Deployment feature scope', () => {
     expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
     expect(readDeploymentFeatures({ serverUrl: 'https://other.invalid', projectId: 'proj_foreign' }, mycoHome)).toEqual([]);
   });
-  it('surfaces an invalid snapshot instead of reviving stale project advertisements', () => {
-    advertise('proj_1', ['turn'], 1);
-    cacheDeploymentFeatures(serverUrl, [], mycoHome);
-    const deployment = { serverUrl, projectId: 'proj_1' };
-    expect(readDeploymentFeatures(deployment, mycoHome)).toEqual([]);
-    fs.writeFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'invalid');
-    expect(() => readDeploymentFeatures(deployment, mycoHome)).toThrow('Cannot read the Deployment feature snapshot');
-    if (process.platform !== 'win32') {
-      cacheDeploymentFeatures(serverUrl, [], mycoHome);
-      fs.chmodSync(deploymentFeaturesPath(serverUrl, mycoHome), 0o644);
-      expect(() => readDeploymentFeatures(deployment, mycoHome)).toThrow('Cannot read the Deployment feature snapshot');
+  for (const damage of ['corrupt', 'version mismatch', 'unreadable path', 'unreadable registry'] as const) {
+    for (const hook of ['user-prompt-submit', 'stop'] as const) {
+      it(`${hook} spools its captured record with ${damage}`, async () => {
+        advertise('proj_1', ['turn'], 1);
+        advertise('proj_new', [], 2);
+        const file = deploymentFeaturesPath(serverUrl, mycoHome);
+        let scan: ReturnType<typeof spyOn> | undefined;
+        if (damage === 'unreadable registry') scan = spyOn(registry, 'listRegistryEntriesResult').mockReturnValue({ entries: [], readable: false, unavailableEntries: 0 });
+        else if (damage === 'unreadable path') fs.mkdirSync(file);
+        else fs.writeFileSync(file, damage === 'corrupt' ? 'invalid' : JSON.stringify({ version: 0, features: [] }), { mode: 0o600 });
+        try {
+          const sessionId = `sess-${hook}-${damage}`;
+          const result = await runHook(hook, { session_id: sessionId, prompt: 'save prompt', last_assistant_message: 'save response', transcript_path: transcript(sessionId), cwd: process.cwd() }, { fetch: rig.fetch, symbiont: 'copilot' });
+          expect(spool().readRecords(sessionId).some((event) => event?.kind === (hook === 'stop' ? 'response' : 'prompt'))).toBe(true);
+          expect(result.stderr).toContain('feature cache read failed');
+          expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+        } finally { scan?.mockRestore(); }
+      });
     }
-  });
-  it('surfaces cache write failure while preserving the Deployment response', async () => {
-    advertise('proj_1', [], 1);
-    fs.mkdirSync(deploymentFeaturesPath(serverUrl, mycoHome));
-    const response = Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } });
-    const fetch = watchingFeatures(async () => response, { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
+  }
+  it('logs a read failure once and falls back through the newest project to no features', () => {
+    advertise('proj_new', ['turn'], 2);
+    fs.writeFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'invalid', { mode: 0o600 });
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(await fetch(`${serverUrl}/events`)).toBe(response);
+      const deployment = { serverUrl, projectId: 'proj_1' };
+      expect(readDeploymentFeatures(deployment, mycoHome)).toEqual(['turn']);
+      expect(readDeploymentFeatures(deployment, mycoHome)).toEqual(['turn']);
       expect(stderr).toHaveBeenCalledTimes(1);
-      expect(String(stderr.mock.calls[0]?.[0])).toContain('feature cache write failed');
+      expect(readDeploymentFeatures({ serverUrl: 'https://absent.invalid', projectId: '' }, mycoHome)).toEqual([]);
     } finally { stderr.mockRestore(); }
   });
-  it('refreshes the advertisement time even when the feature list is unchanged', async () => {
-    advertise('proj_1', [], 1);
-    advertise('proj_old', ['turn'], 2);
-    const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 3 });
-    await fetch(`${serverUrl}/context/session`);
+  it('scans fallback projects once across repeated hooks and answers without a protocol header', async () => {
+    advertise('proj_new', ['turn'], 2);
+    const scan = spyOn(registry, 'listRegistryEntriesResult');
+    try {
+      const fetch = watchingFeatures(async () => Response.json({}), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
+      for (let i = 0; i < 3; i++) {
+        await fetch(serverUrl);
+        expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+      }
+      expect(scan).toHaveBeenCalledTimes(1);
+    } finally { scan.mockRestore(); }
+  });
+  it('prefers its own legacy advertisement over another project with no timestamp', () => {
+    advertise('proj_1', ['turn'], 0);
+    updateProjectContext(spool().dir, mycoHome, (cache) => { delete cache.featuresAt; });
+    advertise('proj_new', [], 0);
+    updateProjectContext(new MemberSpool('proj_new', { mycoHome }).dir, mycoHome, (cache) => { delete cache.featuresAt; });
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+  });
+  it('rejects a delayed older answer even when the newer answer leaves features unchanged', async () => {
+    cacheDeploymentFeatures(serverUrl, [], mycoHome);
+    let finishOld!: (response: Response) => void;
+    const delayed = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 10 });
+    const old = delayed(serverUrl);
+    const newer = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => -1 });
+    await newer(serverUrl);
+    finishOld(Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }));
+    await old;
     expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual([]);
-    expect(readProjectContext(spool().dir).featuresAt).toBe(3);
+    expect(readProjectContext(spool().dir).features).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'utf8')).receivedAt).toBeGreaterThan(0);
+  });
+  it('publishes no feature files when the accepted ordering stamp cannot be persisted', async () => {
+    cacheDeploymentFeatures(serverUrl, [], mycoHome);
+    const write = store.writePrivateFileAtomic;
+    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
+      if (file === `${deploymentFeaturesPath(serverUrl, mycoHome)}.order` && JSON.parse(body).receivedAt > 1) throw new Error('ordering state unavailable');
+      write(file, body);
+    });
+    try {
+      const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
+      expect((await fetch(serverUrl)).status).toBe(200);
+      expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual([]);
+      expect(readProjectContext(spool().dir).features).toEqual([]);
+    } finally { fail.mockRestore(); }
+  });
+  it('keeps the accepted answer stamp when its project cache write fails', async () => {
+    advertise('proj_1', [], 1);
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual([]);
+    let finishOld!: (response: Response) => void;
+    const delayed = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
+    const old = delayed(serverUrl);
+    const write = store.writePrivateFileAtomic;
+    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
+      if (file === contextCache.projectContextPath(spool().dir)) throw new Error('project cache unavailable');
+      write(file, body);
+    });
+    try {
+      const newer = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
+      await newer(serverUrl);
+    } finally { fail.mockRestore(); }
+    finishOld(Response.json({}, { headers: { [PROTOCOL_HEADER]: '1' } }));
+    await old;
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+  });
+  it('does not clear a cache failure when it ignores an older delayed answer', async () => {
+    cacheDeploymentFeatures(serverUrl, [], mycoHome);
+    let finishOld!: (response: Response) => void;
+    const opts = { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 };
+    const delayed = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), opts);
+    const old = delayed(serverUrl);
+    const write = store.writePrivateFileAtomic;
+    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
+      if (file === deploymentFeaturesPath(serverUrl, mycoHome)) throw new Error('snapshot unavailable');
+      write(file, body);
+    });
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const newer = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), opts);
+    try {
+      await newer(serverUrl);
+      finishOld(Response.json({}, { headers: { [PROTOCOL_HEADER]: '1' } }));
+      await old;
+      await newer(serverUrl);
+      expect(stderr).toHaveBeenCalledTimes(1);
+    } finally { fail.mockRestore(); stderr.mockRestore(); }
+  });
+  it('writes feature files only on changes and logs write failure once until recovery', async () => {
+    advertise('proj_1', [], 1);
+    let features = 'turn';
+    const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
+    const writes = spyOn(store, 'writePrivateFileAtomic');
+    try {
+      await fetch(serverUrl);
+      await fetch(serverUrl);
+      expect(writes.mock.calls.filter(([file]) => file === deploymentFeaturesPath(serverUrl, mycoHome))).toHaveLength(1);
+      expect(writes.mock.calls.filter(([file]) => file === contextCache.projectContextPath(spool().dir))).toHaveLength(1);
+    } finally { writes.mockRestore(); }
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const write = store.writePrivateFileAtomic;
+    let fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
+      if (file === deploymentFeaturesPath(serverUrl, mycoHome)) throw new Error('cache is unavailable');
+      write(file, body);
+    });
+    features = '';
+    try {
+      expect((await fetch(serverUrl)).status).toBe(200); await fetch(serverUrl);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      fail.mockRestore();
+      await fetch(serverUrl);
+      fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation(() => { throw new Error('cache is unavailable'); });
+      await fetch(serverUrl);
+      expect(stderr).toHaveBeenCalledTimes(2);
+    } finally { fail.mockRestore(); stderr.mockRestore(); }
+  });
+  it('deduplicates filesystem failures despite changing temporary filenames', () => {
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.first.tmp failed'), { code: 'EACCES' }));
+      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.second.tmp failed'), { code: 'EACCES' }));
+      expect(stderr).toHaveBeenCalledTimes(1);
+      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('volume full'), { code: 'ENOSPC' }));
+      expect(stderr).toHaveBeenCalledTimes(2);
+      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write');
+      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.third.tmp failed'), { code: 'EACCES' }));
+      expect(stderr).toHaveBeenCalledTimes(3);
+    } finally { stderr.mockRestore(); }
+  });
+  it('resolves transcript-tail features once per backlog drain across sessions', async () => {
+    for (const sessionId of ['sess-drain-a', 'sess-drain-b']) {
+      const file = transcript(sessionId);
+      spool().appendAndRecord(sessionId, [], (state) => { state.hookAt = 100; state.agent = 'claude-code'; state.transcript = transcriptPointerFor(file, 'machine_1')!; }, 100);
+    }
+    const gate = spyOn(contextCache, 'featureAdvertised').mockReturnValue(false);
+    try {
+      const report = await drainBacklog(spool(), new ServerClient({ serverUrl, projectId: 'proj_1', token: rig.token }, rig.fetch), deadlineBudget(Date.now() + 10_000), { machineId: 'machine_1' });
+      expect(report.sessions.filter((session) => session.transcripts !== undefined)).toHaveLength(2);
+      expect(gate).toHaveBeenCalledTimes(1);
+    } finally { gate.mockRestore(); }
   });
   for (const hook of ['user-prompt-submit', 'stop'] as const) {
     it(`${hook} emits turn events using another project's newest advertisement`, async () => {

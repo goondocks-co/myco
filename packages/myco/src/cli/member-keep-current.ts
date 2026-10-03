@@ -11,7 +11,7 @@ import { readProvisionRecord, recordProvision, holdHookTrust, settleHookTrust, t
 import { provisionGlobally, registeredMemberHarnesses, memberHarnessCurrent, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
-import { featureAdvertised } from '@myco/member/context-cache.js';
+import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
 import { listRegistryEntries, deploymentUrl, type RegistryEntry } from '@myco/member/registry.js';
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
 import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
@@ -135,7 +135,7 @@ export async function reportHarnesses(result: KeepCurrentResult | null, mycoHome
   const acquired = LifecycleLock.acquire(`${hashPath}.lock`, { command: 'myco member harness report' });
   if (!acquired.acquired) return;
   try {
-    const advertised = featureAdvertised(entry, mycoHome, HARNESS_HEALTH_FEATURE);
+    const advertised = readDeploymentFeaturesStrict(entry, mycoHome).includes(HARNESS_HEALTH_FEATURE);
     const featureStatePath = `${hashPath}.feature`;
     const state = advertised ? 'advertised' : 'missing';
     let previous: string | undefined;

@@ -82,8 +82,8 @@ export const TAIL_IDLE_MS = 15 * 60_000;
  * transcript alone (it does not take `turn`), and the session is live, so the bytes past its last mark belong to a
  * turn under way. Once the session has ended, or its hooks have gone quiet, every byte ships.
  */
-export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number, serverUrl: string): boolean {
-  if (featureAdvertised({ serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn')) return false;
+export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number, serverUrl: string, takesTurns = featureAdvertised({ serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn')): boolean {
+  if (takesTurns) return false;
   if (state.endedAt !== undefined || state.hookAt === undefined) return false;
   return now - state.hookAt < TAIL_IDLE_MS;
 }
@@ -236,6 +236,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
   }
   const spooled = new Set(spool.sessionIds());
   const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude), opts.newestFirst === true);
+  let takesTurns: boolean | undefined;
   let skipped = false;
   for (const sessionId of ids) {
     if (!canStartRequest(budget, now())) { report.endedBy = 'budget'; break; }
@@ -276,7 +277,8 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now };
     // A turn end the Deployment is told of by the transcript lane rides the segment that ends where it does.
     const turnEnds = marks.filter((p) => p.mark.slot === 'primary').map((p) => ({ transcriptId: p.mark.transcriptId, atSize: p.mark.atSize, at: p.mark.at }));
-    const holdTail = holdsTranscriptTail(spool, state, now(), client.serverUrl);
+    takesTurns ??= featureAdvertised({ serverUrl: client.serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn');
+    const holdTail = holdsTranscriptTail(spool, state, now(), client.serverUrl, takesTurns);
     const shipped = await spool.withSessionLease(sessionId, () => shipSessionTranscripts(ctx, spool, client, budget, { now, machineId: opts.machineId, turnEnds, holdTail }));
     consumeSatisfiedTurnEnds(spool, sessionId, marks);
     session.transcripts = shipped ?? 'lease';
