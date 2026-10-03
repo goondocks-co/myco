@@ -13,6 +13,7 @@ import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run } from '@myco/cli/login.js';
 import { runProvision } from '@myco/cli/member.js';
+import { isBinaryOnPath } from '@myco/symbionts/detect.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
@@ -79,6 +80,7 @@ describe('myco login sets up the agents on this machine', () => {
     process.env.PATH = `${bin}${path.delimiter}${priorPath ?? ''}`;
     const homedir = spyOn(os, 'homedir').mockReturnValue(home);
     try {
+      expect(isBinaryOnPath('claude')).toBe(true);
       const rig = unjoinedRig();
       expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
       expect(read(path.join(claudeDir, 'settings.json')) ?? '').toContain('--credential registry');
