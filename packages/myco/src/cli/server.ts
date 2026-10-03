@@ -1,3 +1,4 @@
+import nodeFs from 'node:fs';
 /**
  * `myco server <create|status|destroy>` — argv and human output over
  * `../server/deployment.js`.
@@ -750,8 +751,7 @@ export async function run(args: string[]): Promise<void> {
       if (out === undefined || out === '' || out === 'true') {
         process.stdout.write(rendered);
       } else {
-        const { writeFileSync } = await import('node:fs');
-        writeFileSync(out, rendered, { mode: 0o600 });
+        nodeFs.writeFileSync(out, rendered, { mode: 0o600 });
         console.log(`Deploy config written to ${out}`);
       }
       return;

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
+import { sandboxPath } from './test-environment.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
@@ -122,6 +123,18 @@ function reportParentTmpdirLeftovers() {
   const sample = left.slice(0, 10).join(', ');
   console.log(`[run-bun-tests] temp entries left in ${PARENT_TMPDIR}: ${left.length}${left.length > 0 ? ` (${sample}${left.length > 10 ? ', ...' : ''})` : ''}`);
 }
+
+// Node reads the account home independently of HOME; Bun's userInfo follows HOME.
+process.env.MYCO_TEST_REAL_HOME = os.userInfo().homedir;
+
+// Child runtimes receive home and PATH isolation before any preload executes.
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
+process.env.HOME = TEST_HOME;
+process.env.USERPROFILE = TEST_HOME;
+process.env.CODEX_HOME = path.join(TEST_HOME, '.codex');
+process.env.CLAUDE_CONFIG_DIR = path.join(TEST_HOME, '.claude');
+process.env.MYCO_TEST_RUN_HOME = TEST_HOME;
+process.env.PATH = sandboxPath(TEST_HOME);
 
 // ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME

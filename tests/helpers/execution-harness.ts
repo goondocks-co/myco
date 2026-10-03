@@ -1,5 +1,5 @@
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HARNESSES } from '@myco/runner/harnesses.js';

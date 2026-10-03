@@ -10,7 +10,8 @@
  * against the operator's own login. The Worker holds bindings, not an API
  * token that could re-provision the account it runs in.
  */
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, readFileSync, mkdirSync } = nodeFs;
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveMycoHome } from '../paths/home.js';

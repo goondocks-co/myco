@@ -9,7 +9,7 @@ import { profileWorkerServer } from '../helpers/profile-worker-server.js';
  * are separate, and a sleep moves both, as it does between two real machines.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';

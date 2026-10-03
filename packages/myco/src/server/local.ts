@@ -15,7 +15,8 @@
  * (`myco-2.0.md` §3.3.1), and a single-user machine's own file is the idiom
  * this project already holds machine secrets under.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, mkdirSync, readFileSync, rmSync } = nodeFs;
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';

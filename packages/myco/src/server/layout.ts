@@ -12,7 +12,8 @@
  * file already present at the destination, the source stays in place for the
  * operator to reconcile.
  */
-import { existsSync, mkdirSync, renameSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, mkdirSync, renameSync } = nodeFs;
 import path from 'node:path';
 
 function moveIfAbsent(from: string, to: string): void {

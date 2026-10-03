@@ -9,7 +9,7 @@
  * a half-provisioned account is not.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {

@@ -9,7 +9,7 @@
  * an unscoped `down`, a secret written world-readable.
  */
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, existsSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

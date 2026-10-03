@@ -5,7 +5,7 @@
  */
 import { afterAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';

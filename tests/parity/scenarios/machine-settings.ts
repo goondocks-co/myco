@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import fs, { mkdtempSync, rmSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';

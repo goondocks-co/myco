@@ -6,7 +6,7 @@
  * content assembly.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, mock } from 'bun:test';

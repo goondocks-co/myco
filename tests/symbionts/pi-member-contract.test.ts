@@ -27,6 +27,7 @@ let root: string;
 let home: string;
 let log: string;
 let savedHome: string | undefined;
+let savedCwd: string;
 beforeEach(() => {
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pi-contract-')));
   root = path.join(dir, 'proj');
@@ -43,10 +44,13 @@ beforeEach(() => {
     `if [ "$1 $2 $3" = "tool call myco_fail" ]; then printf '{"ok":false,"error":{"message":"refused"}}'; fi`,
     `printf '\\n' >> '${log}'`,
   ].join('\n'), { mode: 0o755 });
+  savedCwd = process.cwd();
+  process.chdir(root);
   savedHome = process.env.MYCO_HOME;
   process.env.MYCO_HOME = home;
 });
 afterEach(() => {
+  process.chdir(savedCwd);
   if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
   delete (globalThis as Record<symbol, unknown>)[MEMBER_FLAG];
   fs.rmSync(dir, { recursive: true, force: true });

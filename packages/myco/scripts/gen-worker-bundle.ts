@@ -12,7 +12,8 @@
  * makes those hooks free on an unchanged tree.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

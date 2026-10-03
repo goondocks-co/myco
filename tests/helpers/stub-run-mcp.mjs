@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync } from "../support/fenced-fs.mjs";
 
 /** Read a run's session material through the MCP connection the stub received. */
 export async function writeRunMaterial(url, headers, receipt) {

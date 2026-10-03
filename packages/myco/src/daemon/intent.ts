@@ -33,7 +33,8 @@
  * Any future writer of these files must preserve the chmod 0o600 gate.
  */
 
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, readFileSync, unlinkSync } = nodeFs;
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';

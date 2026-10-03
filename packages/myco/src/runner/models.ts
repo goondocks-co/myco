@@ -11,7 +11,8 @@
  * What a listing answers is normalized by the same rule the Deployment applies to a stored catalog
  * (`parseModelCatalog`): a model the harness's settings would refuse is not offered, and a list past the bound is cut.
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdirSync, mkdtempSync, rmSync } = nodeFs;
 import { join } from 'node:path';
 import { parseModelCatalog, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { harnessById, type ModelListing } from './harnesses.js';

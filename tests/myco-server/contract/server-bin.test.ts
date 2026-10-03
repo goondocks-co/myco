@@ -16,7 +16,7 @@
  */
 import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exitFailureLine, LIVE_RUNS_QUERY, main, migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';

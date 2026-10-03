@@ -20,7 +20,8 @@
  * Cursor: it writes its default, and that default allows `ls`. So the file is
  * always written.
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { existsSync, readFileSync, writeFileSync } = nodeFs;
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { recordOf } from './stream.js';

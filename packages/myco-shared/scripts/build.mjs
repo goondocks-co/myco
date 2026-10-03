@@ -6,7 +6,8 @@
 // everywhere, is simply absent from `dist/`, and first shows up as a bundled
 // consumer failing to resolve it at runtime. Reading the contract removes the
 // site rather than guarding it.
-import { readFileSync, rmSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { readFileSync, rmSync } = nodeFs;
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 

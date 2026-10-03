@@ -17,7 +17,8 @@
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 // myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
 import { spawnSync } from "node:child_process";
-import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import nodeFs from 'node:fs';
+const { accessSync, appendFileSync, closeSync, constants: fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } = nodeFs;
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 

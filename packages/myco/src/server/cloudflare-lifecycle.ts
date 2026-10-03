@@ -11,7 +11,8 @@
  * prerequisites, and only on the operator's own machine.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {

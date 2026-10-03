@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configureLocalSignIn, ensureLocalSecrets, readLocalSecrets, resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';

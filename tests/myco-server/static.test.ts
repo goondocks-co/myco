@@ -5,7 +5,7 @@
  * reach the server untouched; every other GET answers a file or the shell.
  */
 import { describe, it, expect, afterAll } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 

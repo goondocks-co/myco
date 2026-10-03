@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdtempSync, mkdirSync, rmSync, unlinkSync } from "../support/fenced-fs.mjs";
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DaemonClient } from '@myco/daemon/client';

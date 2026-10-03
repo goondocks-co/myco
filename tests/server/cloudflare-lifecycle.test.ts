@@ -4,7 +4,7 @@
  * real infrastructure.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

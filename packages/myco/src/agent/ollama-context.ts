@@ -3,7 +3,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { writeFileSync, unlinkSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderConfig } from './types.js';

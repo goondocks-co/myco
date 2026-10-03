@@ -8,7 +8,7 @@
  * refused where it is written, rather than at the first request.
  */
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 

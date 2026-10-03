@@ -24,7 +24,8 @@
  * exercise install and uninstall without handing a unit to the real platform.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } = nodeFs;
 import path from 'node:path';
 import { homedir } from 'node:os';
 

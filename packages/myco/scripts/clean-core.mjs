@@ -1,7 +1,8 @@
 // Narrow pre-build clean for `build:core`. Removes the files tsup produces
 // (dist/*.js, dist/*.js.map, dist/src/**) and leaves the rest of dist/ as it
 // is; tsup's own `clean: true` would wipe the entire outDir.
-import { readdirSync, rmSync, existsSync } from 'node:fs';
+import nodeFs from 'node:fs';
+const { readdirSync, rmSync, existsSync } = nodeFs;
 import path from 'node:path';
 
 const dist = path.resolve('dist');

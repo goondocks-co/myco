@@ -13,7 +13,7 @@ import { diskBlobStore, sweepPartialObjects, DIGEST_MISMATCH_MESSAGE } from '@my
 import { classifyR2BlobFailure } from '@myco-server-worker/platform/cloudflare/env.js';
 import { classifyBlobFailureOf } from '@myco-server-worker/platform/bun/env.js';
 import { classifyBlobStore } from '@myco-server-worker/telemetry.js';
-import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
