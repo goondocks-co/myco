@@ -36,7 +36,7 @@ import { scheduledIntervalHours } from './recovery-schedule.js';
 import { within } from './recovery-inventory.js';
 import { RUNTIME_SERVED_TASKS } from './harness.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
-import { provisionedHarnessAttention } from './harness-health.js';
+import { provisionedHarnessAttention, type HarnessAttentionFact } from './harness-health.js';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -80,7 +80,7 @@ export interface AttentionAnswer {
   unavailable: AttentionKind[];
 }
 
-type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number) => Promise<AttentionItem[]> };
+type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number, harnessFacts: () => Promise<HarnessAttentionFact[]>) => Promise<AttentionItem[]> };
 
 /** The instant of the last backup, from the backup index and from the recovery producer's last complete attempt. */
 async function lastBackup(env: ServerEnv): Promise<number | null> {
@@ -163,13 +163,13 @@ const RULES: readonly Rule[] = [
   },
   {
     kind: 'harness_needs_repair',
-    read: async (env, now) => (await provisionedHarnessAttention(env.db, now))
+    read: async (_env, _now, harnessFacts) => (await harnessFacts())
       .filter((fact) => fact.kind === 'harness_needs_repair')
       .map((fact) => ({ ...fact, tone: 'bad' })),
   },
   {
     kind: 'harness_capture_silent',
-    read: async (env, now) => (await provisionedHarnessAttention(env.db, now))
+    read: async (_env, _now, harnessFacts) => (await harnessFacts())
       .filter((fact) => fact.kind === 'harness_capture_silent')
       .map((fact) => ({ ...fact, tone: 'warn' })),
   },
@@ -183,7 +183,9 @@ const RULES: readonly Rule[] = [
 
 /** Every rule, each read on its own so one that fails is named and the rest still answer. */
 export async function readAttention(env: ServerEnv, now: number): Promise<AttentionAnswer> {
-  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now)));
+  let pendingHarnessFacts: Promise<HarnessAttentionFact[]> | undefined;
+  const harnessFacts = () => pendingHarnessFacts ??= provisionedHarnessAttention(env.db, now);
+  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts)));
   const items: AttentionItem[] = [];
   const unavailable: AttentionKind[] = [];
   settled.forEach((outcome, i) => {

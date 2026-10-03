@@ -1,6 +1,9 @@
 name: codex
 displayName: Codex
 binary: codex
+health:
+  installLocations: ["~/.codex", "/Applications/Codex.app", "~/Applications/Codex.app"]
+  activityLocations: ["~/.codex/sessions"]
 configDir: .codex
 detectionDir: ~/.codex
 pluginRootEnvVar: CODEX_PLUGIN_ROOT

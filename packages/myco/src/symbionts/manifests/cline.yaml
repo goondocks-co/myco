@@ -1,6 +1,9 @@
 name: cline
 displayName: Cline
 binary: cline
+health:
+  installLocations: ["~/.cline"]
+  activityLocations: ["~/.cline/data/tasks"]
 configDir: .cline
 detectionDir: ~/.cline
 pluginRootEnvVar: CLINE_PLUGIN_ROOT

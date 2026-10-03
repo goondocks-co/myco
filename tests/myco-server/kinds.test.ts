@@ -77,7 +77,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 56;
+const PLANNED_STATEMENTS = 57;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 10, group: 1 };
@@ -1025,7 +1025,7 @@ describe('kind catalogue', () => {
     ];
     for (const ev of events) expect((await json(await worker.fetch(memberPost(t.token, ev), e.env))).persisted).toBe(true);
     const snapshot = (env: ReturnType<typeof sqliteEnv>) =>
-      ['sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'tags', 'transcripts', 'transcript_segments'].map((table) => env.sqlite.query(`SELECT * FROM ${table}`).all().map((r: any) => { const { received_at, token_id, event_id, first_received_at, last_received_at, created_by_token_id, ...rest } = r; return rest; }));
+      ['sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'tags', 'transcripts', 'transcript_segments'].map((table) => env.sqlite.query(`SELECT * FROM ${table}`).all().map((r: any) => { const { received_at, token_id, event_id, first_received_at, last_received_at, last_live_received_at, created_by_token_id, ...rest } = r; return rest; }));
     expect(e.sqlite.query(`SELECT created_at, updated_at, prompt_kind FROM prompt_batches`).get()).toEqual({ created_at: 1_100, updated_at: 1_150, prompt_kind: 'user' });
     expect(e.sqlite.query(`SELECT created_at, updated_at, content FROM plans`).get()).toEqual({ created_at: 1_400, updated_at: 1_450, content: 'p2' });
     const forward = snapshot(e);

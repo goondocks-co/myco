@@ -951,6 +951,10 @@ export const SymbiontManifestSchema = z.object({
    * Antigravity should claim detection.
    */
   detectionDir: z.string().nullable().optional(),
+  health: z.object({
+    installLocations: z.array(z.string()),
+    activityLocations: z.array(z.string()),
+  }).optional(),
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),
   hookFields: z.object({

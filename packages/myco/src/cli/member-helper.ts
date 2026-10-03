@@ -30,6 +30,7 @@ export interface HelperVerbDeps {
   spawn?: DetachedSpawn;
   /** The pass the helper runs (tests); the project's backlog delivery otherwise. */
   pass?: HelperPass;
+  keepCurrent?: typeof keepCurrent;
 }
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -76,9 +77,14 @@ async function helperPasses(projectId: string, mycoHome: string, afterFailure: b
       spawn: deps.spawn,
       afterFailure,
       pass: async (deadline, options) => {
-        const repaired = keepCurrent(mycoHome);
+        let repaired: ReturnType<typeof keepCurrent> = null;
+        try { repaired = (deps.keepCurrent ?? keepCurrent)(mycoHome); } catch (error) {
+          process.stderr.write(`[myco] keep-current failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
         const delivered = await pass(deadline, options);
-        await reportHarnesses(repaired, mycoHome, deadline, deps);
+        try { await reportHarnesses(repaired, mycoHome, deadline, deps); } catch (error) {
+          process.stderr.write(`[myco] harness report failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
         return delivered;
       },
     });

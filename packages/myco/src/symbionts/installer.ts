@@ -53,6 +53,12 @@ export {
   type RemoveProjectLaunchersOptions,
 } from './installer/project-files.js';
 
+/** Myco's commands in a shared hook group, with the group's matcher fields. */
+function managedHookGroup(group: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(group.hooks)) return group;
+  return { ...group, hooks: group.hooks.filter((hook: { command?: string }) => typeof hook.command === 'string' && isMycoHookCommand(hook.command)) };
+}
+
 /** Current comment header for Myco-managed .gitignore block. */
 const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
 
@@ -1829,12 +1835,21 @@ export class SymbiontInstaller {
     const settings = readJsonFile(targetPath);
     const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
     const mergedHooks: Record<string, unknown[]> = {};
-    for (const [event, groups] of Object.entries(existingHooks)) {
-      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>);
-      if (foreign.length > 0) mergedHooks[event] = foreign;
-    }
-    for (const [event, groups] of Object.entries(block)) {
-      mergedHooks[event] = [...(mergedHooks[event] ?? []), ...(groups as unknown[])];
+    for (const event of new Set([...Object.keys(existingHooks), ...Object.keys(block)])) {
+      const wanted = [...((block[event] ?? []) as Record<string, unknown>[])];
+      const merged: unknown[] = [];
+      for (const group of (existingHooks[event] ?? []) as Record<string, unknown>[]) {
+        if (!isMycoHookGroup(group)) { merged.push(group); continue; }
+        const match = wanted.findIndex((candidate) => isDeepStrictEqual(candidate, managedHookGroup(group)));
+        if (match >= 0) { wanted.splice(match, 1); merged.push(group); }
+        else {
+          const foreign = withoutMycoHooks([group]);
+          if (foreign.length > 0) merged.push(...foreign);
+          else if (wanted.length > 0) merged.push(wanted.shift());
+        }
+      }
+      merged.push(...wanted);
+      if (merged.length > 0) mergedHooks[event] = merged;
     }
     settings.hooks = mergedHooks;
     const reg = this.manifest.registration;
@@ -2344,6 +2359,8 @@ export class SymbiontInstaller {
 
   /** Whether the member's managed hooks and MCP fields equal this build's declarations, preserving foreign fields. */
   memberRegistrationCurrent(): boolean {
+    this.assertGlobalMemberOwnership();
+    if (!this.memberSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || !fs.existsSync(target)) return false;
     if (this.isMemberPluginFile()) {
@@ -2351,10 +2368,20 @@ export class SymbiontInstaller {
     } else {
       const hooks = this.readMcpFile(target, false)?.hooks;
       const managed = Object.fromEntries(Object.entries((hooks ?? {}) as Record<string, Record<string, unknown>[]>).flatMap(([event, groups]) => {
-        const owned = groups.filter(isMycoHookGroup);
+        const owned = groups.filter(isMycoHookGroup).map(managedHookGroup);
         return owned.length === 0 ? [] : [[event, owned]];
       }));
-      if (!isDeepStrictEqual(managed, this.renderMemberHooks('registry'))) return false;
+      const expectedHooks = this.renderMemberHooks('registry') ?? {};
+      const sameGroups = (groups: unknown[], expected: unknown[]) => {
+        const remaining = [...expected];
+        return groups.length === expected.length && groups.every((group) => {
+          const index = remaining.findIndex((candidate) => isDeepStrictEqual(group, candidate));
+          if (index < 0) return false;
+          remaining.splice(index, 1);
+          return true;
+        });
+      };
+      if (Object.keys(managed).length !== Object.keys(expectedHooks).length || Object.entries(expectedHooks).some(([event, groups]) => !sameGroups(managed[event] ?? [], groups as unknown[]))) return false;
     }
     const targetMcp = this.memberMcpTargetPath();
     const desired = this.renderMemberMcp('registry');
@@ -2363,6 +2390,15 @@ export class SymbiontInstaller {
     const expected = (toml ? tomlMemberServers(desired, this.projectRoot) : desired)[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
     const existing = this.mycoServerIn(targetMcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));
     return existing !== null && Object.entries(expected).every(([key, value]) => isDeepStrictEqual(existing[key], value));
+  }
+
+  /** Settings template leaves must match; other harness settings remain outside Myco's ownership. */
+  private memberSettingsCurrent(): boolean {
+    const target = this.resolveAbsoluteTarget('settings');
+    const template = this.loadTemplate('settings');
+    if (target === null || template === null) return true;
+    const existing = this.readMcpFile(target, this.manifest.registration?.settingsFormat === 'toml') ?? {};
+    return isDeepStrictEqual(existing, deepMergeSettingsWithAudit(existing, template, emptyJsonAudit()));
   }
 
   /**
@@ -2527,6 +2563,13 @@ export class SymbiontInstaller {
     throw new MemberPluginConflictError(
       `${globalPath} is a Myco plugin that does not step aside for a project's member plugin, so ${this.manifest.displayName} would load both and capture every session twice; nothing was written. Update the Myco install that owns ${globalPath}, then run \`myco member provision ${this.manifest.name}\`.`,
     );
+  }
+
+  /** Remove this home's global member registration under the ownership guard. */
+  uninstallMemberRegistration(): void {
+    this.assertGlobalMemberOwnership();
+    this.uninstallMemberHooks();
+    this.uninstallMemberMcp();
   }
 
   /**
@@ -3020,7 +3063,7 @@ export class SymbiontInstaller {
     // Idempotency (mirrors installMcpJson): skip the write when the upsert
     // produced no change, so the detection tick doesn't churn a config.toml the
     // agent owns on every pass.
-    if (raw === original) return false;
+    if (isDeepStrictEqual(parseToml(raw), parseToml(original))) return false;
 
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     atomicWriteFileSync(targetPath, raw);
@@ -3199,7 +3242,7 @@ export class SymbiontInstaller {
   private writeSettingsAudit(wroteKeys: string[]): void {
     const auditPath = this.getSettingsAuditPath();
     fs.mkdirSync(path.dirname(auditPath), { recursive: true });
-    atomicWriteFileSync(auditPath, JSON.stringify({ schema: 1, wroteKeys }, null, 2) + '\n');
+    writeJsonFile(auditPath, { schema: 1, wroteKeys });
   }
 
   /**
@@ -3259,6 +3302,7 @@ export class SymbiontInstaller {
   private installSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
     let raw = '';
     try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
+    const original = raw;
 
     const audit = new Set(this.readSettingsAudit());
     const templateKeys = new Set<string>();
@@ -3308,10 +3352,13 @@ export class SymbiontInstaller {
       for (const entry of staleEntries) audit.delete(entry);
     }
 
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    atomicWriteFileSync(targetPath, raw);
+    const changed = !isDeepStrictEqual(parseToml(original), parseToml(raw));
+    if (changed) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      atomicWriteFileSync(targetPath, raw);
+    }
     this.writeSettingsAudit(Array.from(audit).sort());
-    return true;
+    return changed;
   }
 
   /**

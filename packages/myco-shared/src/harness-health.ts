@@ -8,6 +8,10 @@ export interface ProvisionedHarnessFact {
   id: string;
   provisioned: true;
   state: HarnessHealthState;
+  /** Last known local use of this installed harness, in epoch milliseconds. */
+  ranAt?: number;
+  /** Identifies the local hook repair awaiting trust confirmation. */
+  hookRepairAt?: number;
   /** One plain action the administrator can take when the state needs repair. */
   action?: string;
 }

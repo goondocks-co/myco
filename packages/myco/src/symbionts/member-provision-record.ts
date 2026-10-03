@@ -43,7 +43,7 @@ export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
   }
 }
 
-/** Record `agents` as provisioned for `serverUrl` by `version`, beside any agent recorded before for the same Deployment. */
+/** Record `agents` as provisioned for `serverUrl` by `version`, beside every harness recorded before. */
 export function recordProvision(mycoHome: string, record: Omit<ProvisionRecord, 'at'> & { at?: number }, opts: { replace?: boolean } = {}): ProvisionRecord {
   return withProvisionLock(mycoHome, () => writeProvisionRecord(mycoHome, record, opts));
 }
@@ -55,9 +55,9 @@ function withProvisionLock<T>(mycoHome: string, fn: () => T): T {
 
 function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'at'> & { at?: number }, opts: { replace?: boolean } = {}): ProvisionRecord {
   const before = readProvisionRecord(mycoHome);
-  const kept = !opts.replace && before !== null && before.serverUrl === record.serverUrl ? before.agents : [];
-  const binaries = { ...(!opts.replace && before?.serverUrl === record.serverUrl ? before.binaries : {}), ...record.binaries };
-  const pendingTrust = record.pendingTrust ?? (!opts.replace && before?.serverUrl === record.serverUrl ? before.pendingTrust : undefined);
+  const kept = !opts.replace && before !== null ? before.agents : [];
+  const binaries = { ...(!opts.replace && before !== null ? before.binaries : {}), ...record.binaries };
+  const pendingTrust = record.pendingTrust ?? (!opts.replace && before !== null ? before.pendingTrust : undefined);
   const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), at: record.at ?? Date.now() };
   if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
@@ -81,5 +81,18 @@ export function settleHookTrust(mycoHome: string, reported: ProvisionRecord['pen
     if (record === null || reported === undefined || record.pendingTrust === undefined) return;
     const pendingTrust = Object.fromEntries(Object.entries(record.pendingTrust).filter(([id, trust]) => reported[id]?.at !== trust.at));
     if (Object.keys(pendingTrust).length !== Object.keys(record.pendingTrust).length) writeProvisionRecord(mycoHome, { ...record, pendingTrust });
+  });
+}
+
+/** Remove an opted-out harness and its registration metadata under the record lease. */
+export function forgetProvision(mycoHome: string, agent: string): void {
+  withProvisionLock(mycoHome, () => {
+    const record = readProvisionRecord(mycoHome);
+    if (record === null) return;
+    const binaries = { ...record.binaries };
+    const pendingTrust = { ...record.pendingTrust };
+    delete binaries[agent];
+    delete pendingTrust[agent];
+    writeProvisionRecord(mycoHome, { ...record, agents: record.agents.filter((id) => id !== agent), binaries, pendingTrust }, { replace: true });
   });
 }

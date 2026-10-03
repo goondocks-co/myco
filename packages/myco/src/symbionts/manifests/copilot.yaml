@@ -4,6 +4,9 @@ displayName: GitHub Copilot
 # the VS Code Copilot extension via the Copilot SDK. One symbiont covers
 # both surfaces because they share hooks, skills, and instructions.
 binary: copilot
+health:
+  installLocations: ["~/.copilot"]
+  activityLocations: ["~/.copilot/session-state"]
 configDir: .vscode
 # Copilot detection key: ~/.copilot/ is the user-home location both the
 # terminal CLI and the VS Code Copilot extension read hooks and skills

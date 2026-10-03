@@ -1,3 +1,4 @@
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 /**
  * `myco member <op>` — the member's own CLI: `join`/`leave` record and forget
  * this machine's membership of a project (the token never reaches argv);
@@ -39,9 +40,9 @@ import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
-import { linkMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
-import { readProvisionRecord, recordProvision } from '../symbionts/member-provision-record.js';
-import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
+import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
+import { readProvisionRecord, recordProvision, forgetProvision } from '../symbionts/member-provision-record.js';
+import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -83,6 +84,7 @@ Ops:
   refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
                      working until the successor is first used; an env-sourced token is never rotated.
   provision [<agent>] [--root <dir>] [--server <url>]
+  provision --remove <agent>
                      Install the agent's hooks and MCP entry globally using the recorded membership, or
                      every agent installed on this machine when none is named. An agent whose entries
                      belong to another installation is left alone and named. --root selects the
@@ -511,8 +513,8 @@ function globalInstaller(
 }
 
 /** Manifest-backed evidence of prior provisioning in this home's global registrations. */
-export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): string[] {
-  return loadManifests().flatMap((manifest) => {
+export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[] } = {}): string[] {
+  return loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
     try {
       return globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).memberRegistrationPresent() ? [manifest.name] : [];
     } catch (error) {
@@ -520,6 +522,14 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
       return [];
     }
   });
+}
+
+/** Read-only registration and settings currency through the installer. */
+export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): boolean {
+  const manifest = loadManifests().find((candidate) => candidate.name === agent);
+  if (manifest === undefined || !globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).memberRegistrationCurrent()) return false;
+  const target = manifest.registration?.globalSkillsTarget;
+  return target == null || missingMemberSkills(mycoHome, target).length === 0;
 }
 
 export function provisionGlobally(
@@ -628,8 +638,14 @@ export function provisionAgents(
 }
 
 /** Where one provisioning keeps copies of the agent files it changes: `<home>/backups/member-provision-<instant>/`. */
-function provisionBackup(mycoHome: string): CutoverBackup {
-  return new CutoverBackup(path.join(mycoHome, 'backups', `member-provision-${new Date().toISOString().replace(/[:.]/g, '-')}`), 'provision');
+export function provisionBackup(mycoHome: string): CutoverBackup {
+  const root = path.join(mycoHome, 'backups');
+  const limit = 10;
+  if (fs.existsSync(root)) {
+    const folders = fs.readdirSync(root).filter((name) => name.startsWith('member-provision-')).sort();
+    for (const name of folders.slice(0, Math.max(0, folders.length - limit + 1))) fs.rmSync(path.join(root, name), { recursive: true, force: true });
+  }
+  return new CutoverBackup(path.join(root, `member-provision-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`), 'provision');
 }
 
 /**
@@ -665,9 +681,11 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   let rootArg: string | undefined;
   let serverArg: string | undefined;
   let refresh = false;
+  let remove = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--refresh') refresh = true;
+    else if (arg === '--remove') remove = true;
     else if (arg === '--root' || arg === '--server') {
       const value = args[++i];
       if (value === undefined || value.startsWith('--')) return fail(`${arg} needs a value`);
@@ -680,6 +698,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   const chosen = homeChoiceFor(deps, root);
   const mycoHome = chosen.home;
   if (refresh) {
+    if (remove) return fail('--refresh and --remove cannot be combined');
     if (agent !== undefined) return fail('--refresh sets up again the agents set up before; it takes no agent');
     // Refresh recorded harnesses and existing owned registrations for their recorded Deployment.
     const record = readProvisionRecord(mycoHome);
@@ -697,6 +716,23 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
       if (repaired.ready.length > 0) out(`Capture is set up for ${repaired.ready.join(', ')}.`);
       for (const harness of repaired.harnesses) if (harness.action !== undefined) out(harness.action);
     }
+    return true;
+  }
+  if (remove) {
+    if (agent === undefined) return fail('--remove needs a harness');
+    const manifest = loadManifests().find((candidate) => candidate.name === agent);
+    if (manifest === undefined) return fail(`unknown agent "${agent}"`);
+    const installer = globalInstaller(manifest, null, mycoHome, deps);
+    const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? listDeploymentMemberships(mycoHome)[0]?.serverUrl;
+    if (recordedServer !== undefined) installer.forDeployment(recordedServer);
+    const lease = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member provision --remove' });
+    if (!lease.acquired) return fail('a helper is provisioning agents; retry when it finishes');
+    try {
+      installer.uninstallMemberRegistration();
+      forgetProvision(mycoHome, agent);
+    } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+    finally { lease.lock.release(); }
+    out(`Removed Myco's hooks and MCP entry for ${manifest.displayName}.`);
     return true;
   }
   const binding = isSafeProjectRoot(root) ? readRegistryEntry(root, mycoHome) : null;

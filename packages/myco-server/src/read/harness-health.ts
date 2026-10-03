@@ -28,13 +28,23 @@ export async function provisionedHarnessReportRows(db: RelationalStore): Promise
   return rows.results;
 }
 
-/** Session capture within the silence lookback, excluding imported history. */
-export async function recentHarnessCapture(db: RelationalStore, since: number): Promise<HarnessCaptureRow[]> {
-  const rows = await db.prepare(`SELECT s.machine_id, s.agent, MAX(e.received_at) AS at FROM sessions s
-      JOIN events e ON e.project_id = s.project_id AND e.session_id = s.session_id
-      WHERE s.machine_id IS NOT NULL AND s.agent IS NOT NULL AND s.last_received_at >= ?
-        AND e.received_at >= ? AND e.channel <> 'import'
-      GROUP BY s.machine_id, s.agent`).bind(since, since).all<HarnessCaptureRow>();
+/** Each provisioned machine/harness pair's latest live receipt, sought through the covering sessions index. */
+export async function latestHarnessCapture(db: RelationalStore): Promise<HarnessCaptureRow[]> {
+  const rows = await db.prepare(`SELECT r.machine_id, json_extract(j.value, '$.id') AS agent,
+      (SELECT s.last_live_received_at FROM sessions s
+       WHERE s.machine_id = r.machine_id AND s.agent = json_extract(j.value, '$.id')
+         AND s.last_live_received_at IS NOT NULL ORDER BY s.last_live_received_at DESC LIMIT 1) AS at
+      FROM machine_harness_reports r
+      JOIN machine_claims mc ON mc.machine_id = r.machine_id
+      JOIN members m ON m.id = mc.member_id
+      JOIN json_each(r.harnesses) j WHERE m.revoked_at IS NULL`).all<HarnessCaptureRow & { at: number | null }>();
+  return rows.results.filter((row): row is HarnessCaptureRow => row.at !== null);
+}
+
+/** Recent live receipts from any harness establish machine activity through the time-range index. */
+export async function recentMachineCapture(db: RelationalStore, since: number): Promise<MachineActivityRow[]> {
+  const rows = await db.prepare(`SELECT machine_id, MAX(last_live_received_at) AS at FROM sessions
+    WHERE last_live_received_at >= ? AND machine_id IS NOT NULL GROUP BY machine_id`).bind(since).all<MachineActivityRow>();
   return rows.results;
 }
 

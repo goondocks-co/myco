@@ -28,6 +28,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_spores_created_deployment', 'the spores list spans every Project, newest first'],
   ['idx_plans_updated_deployment', 'the plans list spans every Project, most recently updated first'],
   ['idx_sessions_capture', 'capture recency is read per machine and agent across every Project, over a recent window of receipts'],
+  ['idx_sessions_harness_live', 'Health seeks the latest live capture of a provisioned machine and harness across every Project'],
+  ['idx_sessions_machine_live', 'Health reads recent live machine activity across every Project, including an unprovisioned harness'],
   ['idx_sessions_working', 'the sessions working now are read across every Project, the open turns alone'],
   ['idx_agent_runs_actor_entry', 'an actor\'s daily ceiling is counted across every Project, by task, actor and instant'],
   ['idx_uncaptured_roots_member', 'a repository a machine could not capture belongs to a machine and its member, not a Project: a member\'s own are read by member, most recently missed first'],

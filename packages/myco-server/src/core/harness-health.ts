@@ -5,7 +5,7 @@ import {
 } from '@goondocks/myco-shared/harness-health';
 import {
   claimedMachineNames, machineHarnessCaptureSince, machineHarnessReport, provisionedHarnessReportRows,
-  recentHarnessCapture, trustConfirmationCapture, workerMachineActivity,
+  latestHarnessCapture, recentMachineCapture, trustConfirmationCapture, workerMachineActivity,
 } from '../read/harness-health.js';
 
 type StoredHarnessFact = ProvisionedHarnessFact & { sinceAt: number };
@@ -20,14 +20,17 @@ export function parseProvisionedHarnessReport(value: unknown): ProvisionedHarnes
   const harnesses: ProvisionedHarnessFact[] = [];
   const ids = new Set<string>();
   for (const item of value.harnesses) {
-    if (!isObject(item) || !knownFields(item, ['id', 'provisioned', 'state', 'action'])
+    if (!isObject(item) || !knownFields(item, ['id', 'provisioned', 'state', 'action', 'ranAt', 'hookRepairAt'])
       || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > MAX_HARNESS_ID_CHARS
       || !/^[A-Za-z0-9._-]+$/.test(item.id) || ids.has(item.id)
-      || item.provisioned !== true || !HARNESS_HEALTH_STATES.includes(item.state as typeof HARNESS_HEALTH_STATES[number])) return null;
+      || item.provisioned !== true || !HARNESS_HEALTH_STATES.includes(item.state as typeof HARNESS_HEALTH_STATES[number])
+      || (item.ranAt !== undefined && (!Number.isSafeInteger(item.ranAt) || (item.ranAt as number) < 0))
+      || (item.hookRepairAt !== undefined && (item.state !== 'trust_required' || !Number.isSafeInteger(item.hookRepairAt) || (item.hookRepairAt as number) < 0))) return null;
     const action = item.action;
     if (item.state === 'ready' ? action !== undefined : typeof action !== 'string' || action.length === 0 || action.length > MAX_HARNESS_ACTION_CHARS || /[\x00-\x1f\x7f]/.test(action) || action.trim() !== action) return null;
     ids.add(item.id);
-    harnesses.push({ id: item.id, provisioned: true, state: item.state as ProvisionedHarnessFact['state'], ...(typeof action === 'string' ? { action } : {}) });
+    harnesses.push({ id: item.id, provisioned: true, state: item.state as ProvisionedHarnessFact['state'],
+      ...(typeof item.ranAt === 'number' ? { ranAt: item.ranAt } : {}), ...(typeof item.hookRepairAt === 'number' ? { hookRepairAt: item.hookRepairAt } : {}), ...(typeof action === 'string' ? { action } : {}) });
   }
   return { harnesses };
 }
@@ -59,7 +62,10 @@ export async function recordProvisionedHarnessReport(db: RelationalStore, machin
   }
   const harnesses = report.harnesses.map((fact): StoredHarnessFact => {
     const previous = prior.get(fact.id);
-    if (previous?.state === 'trust_required' && fact.state === 'ready' && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) return previous;
+    if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now };
+    if (previous?.state === 'trust_required' && fact.state === 'ready' && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
+      return { ...previous, ranAt: fact.ranAt };
+    }
     if (previous?.state === 'trust_required' && fact.state === 'trust_required' && (lastCapture.get(fact.id) ?? 0) > previous.sinceAt) return { ...fact, sinceAt: now };
     return { ...fact, sinceAt: previous?.state === fact.state ? previous.sinceAt : now };
   });
@@ -80,8 +86,8 @@ const DAY_MS = 24 * HOUR_MS;
 export const HARNESS_SILENT_MS = DAY_MS;
 /** Machine activity must be recent enough to distinguish a quiet harness from an idle machine. */
 export const MACHINE_ACTIVE_MS = HOUR_MS;
-/** Older capture does not establish a current expectation that the harness still runs. */
-export const HARNESS_CAPTURE_LOOKBACK_MS = 30 * DAY_MS;
+/** Allow small clock differences between local harness use and Deployment receipt. */
+export const HARNESS_RUN_CAPTURE_MARGIN_MS = 5 * 60_000;
 
 export type HarnessAttentionFact =
   | { kind: 'harness_needs_repair'; machineId: string; machineName: string | null; harness: string; state: Exclude<ProvisionedHarnessFact['state'], 'ready'>; action: string; since: number }
@@ -89,9 +95,10 @@ export type HarnessAttentionFact =
 
 /** Combine the member's current provisioned state with Deployment-owned capture and contact times. */
 export async function provisionedHarnessAttention(db: RelationalStore, now: number): Promise<HarnessAttentionFact[]> {
-  const [reports, sessions, contacts, claims] = await Promise.all([
+  const [reports, sessions, machineSessions, contacts, claims] = await Promise.all([
     readProvisionedHarnessReports(db),
-    recentHarnessCapture(db, now - HARNESS_CAPTURE_LOOKBACK_MS),
+    latestHarnessCapture(db),
+    recentMachineCapture(db, now - MACHINE_ACTIVE_MS),
     workerMachineActivity(db),
     claimedMachineNames(db),
   ]);
@@ -102,8 +109,13 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
   const trustCaptures = trustSince.length === 0 ? [] : await trustConfirmationCapture(db, oldestTrust);
   const confirmedTrust = new Map(trustCaptures.map((row) => [`${row.machine_id}\0${row.agent}`, row.at]));
   const machineActivity = new Map<string, number>();
-  for (const row of sessions) machineActivity.set(row.machine_id, Math.max(machineActivity.get(row.machine_id) ?? 0, row.at));
+  for (const row of machineSessions) machineActivity.set(row.machine_id, Math.max(machineActivity.get(row.machine_id) ?? 0, row.at));
   for (const row of contacts) machineActivity.set(row.machine_id, Math.max(machineActivity.get(row.machine_id) ?? 0, row.at));
+  for (const report of reports) {
+    for (const harness of report.harnesses) {
+      if (harness.ranAt !== undefined) machineActivity.set(report.machineId, Math.max(machineActivity.get(report.machineId) ?? 0, harness.ranAt));
+    }
+  }
   const facts: HarnessAttentionFact[] = [];
   for (const report of reports) {
     for (const harness of report.harnesses) {
@@ -115,9 +127,9 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
         continue;
       }
       const lastMachineActivityAt = machineActivity.get(report.machineId) ?? null;
-      if (lastCapturedAt !== null && lastMachineActivityAt !== null
+      if (harness.ranAt !== undefined && lastCapturedAt !== null && lastMachineActivityAt !== null
         && now - lastCapturedAt > HARNESS_SILENT_MS && now - lastMachineActivityAt <= MACHINE_ACTIVE_MS
-        && lastMachineActivityAt > lastCapturedAt) {
+        && harness.ranAt > lastCapturedAt + HARNESS_RUN_CAPTURE_MARGIN_MS) {
         facts.push({ ...base, kind: 'harness_capture_silent', lastCapturedAt, lastMachineActivityAt });
       }
     }

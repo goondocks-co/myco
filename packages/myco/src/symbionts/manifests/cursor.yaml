@@ -1,6 +1,9 @@
 name: cursor
 displayName: Cursor
 binary: cursor
+health:
+  installLocations: ["~/.cursor", "/Applications/Cursor.app", "~/Applications/Cursor.app"]
+  activityLocations: ["~/.cursor/projects"]
 configDir: .cursor
 detectionDir: ~/.cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT
