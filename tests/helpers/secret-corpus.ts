@@ -163,6 +163,7 @@ export const PROSE: readonly Leak[] = [
   { name: 'a Google key by its prefix', command: `called with ${GOOGLE_KEY}`, secrets: [GOOGLE_KEY] },
   { name: 'an OpenAI key of letters', command: `called with ${OPENAI_LETTERS}`, secrets: [OPENAI_LETTERS] },
   { name: 'a key echoed with its middle masked', command: 'the key sk-proj-abc****wxyz worked', secrets: ['abc****', '****wxyz'] },
+  { name: 'a value echoed with its middle masked and no prefix', command: 'the log printed AbCd****WxYz back', secrets: ['AbCd', 'WxYz'] },
   { name: 'a passwd record', command: 'found it:\nroot:x:0:0:root:/root:/bin/bash\nin the image', secrets: ['root:x:0', '/bin/bash'] },
   { name: 'a shadow line', command: 'deploy:$6$saltsalt$hashhashhash:19000:0:99999:7:::', secrets: ['saltsalt', 'hashhash'] },
   { name: 'a label broken by a zero-width space', command: 'pass​word: hunter22', secrets: ['hunter22'] },

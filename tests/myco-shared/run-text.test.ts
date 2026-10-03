@@ -165,6 +165,9 @@ describe('a harness diagnostic, never mislabelled', () => {
     'Error: unexpected token at line 401',
     'Error: 429 files changed, nothing staged',
     'Error: --timeout must be a number',
+    // A status code in its context, but in a stack frame or in the middle of what it wrote, never on its error line.
+    'Error: could not open the config\n    at retry (file:///http.js:3:1) status 401 Unauthorized',
+    'Error: the build failed\nwarning: HTTP 429 from the mirror, retried\nstep 2\nstep 3\nstep 4\nstep 5',
   ];
 
   it('reads a crash as a crash, whatever code or limit its words mention', () => {
