@@ -1,6 +1,9 @@
 name: opencode
 displayName: OpenCode
 binary: opencode
+health:
+  installLocations: ["~/.config/opencode"]
+  activityLocations: ["~/.local/share/opencode/storage/session", "~/.local/share/opencode/opencode.db", "~/.local/share/opencode/opencode.db-wal"]
 configDir: .opencode
 detectionDir: ~/.config/opencode
 pluginRootEnvVar: OPENCODE_PLUGIN_ROOT

@@ -70,6 +70,10 @@
       "import": "./dist/worker-steps.js",
       "types": "./dist/worker-steps.d.ts"
     },
+    "./harness-health": {
+      "import": "./dist/harness-health.js",
+      "types": "./dist/harness-health.d.ts"
+    },
     "./capture-rule-schema": {
       "import": "./dist/capture-rule-schema.js",
       "types": "./dist/capture-rule-schema.d.ts"

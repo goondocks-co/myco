@@ -170,7 +170,12 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const turnStart = startedAt === null
     ? []
     : [startTurnFromEventStatement(db, { projectId: ctx.projectId, sessionId: e.sessionId, machineId: ctx.machineId, at: startedAt, eventId: e.eventId, nonce: write.nonce })];
-  const incidental = [...(plan.incidental ?? []), ...turnEnd, ...turnStart];
+  const liveCapture = e.channel === 'import' ? [] : [db.prepare(`UPDATE sessions
+      SET last_live_received_at = MAX(COALESCE(last_live_received_at, 0), ?)
+      WHERE project_id = ? AND session_id = ?
+        AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`)
+    .bind(ctx.now, ctx.projectId, e.sessionId, ctx.projectId, e.eventId, write.nonce)];
+  const incidental = [...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture];
   const statements: PreparedStatement[] = [raw, counted, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {

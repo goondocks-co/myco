@@ -192,3 +192,7 @@ The uninstaller only removes entries Myco installed — pre-existing user keys i
 ## Platform support
 
 macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only x64 is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
+
+To stop Myco capture for one harness on this machine, run `myco member provision --remove <harness>` (for example,
+`myco member provision --remove codex`). This removes Myco's hooks and MCP entry and forgets the harness's provisioning;
+helper passes and updates leave it alone. Run `myco member provision <harness>` to opt back in. Other harness settings stay in place.

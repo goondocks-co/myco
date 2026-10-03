@@ -295,8 +295,27 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
           : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match.`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
+    case 'harness_needs_repair':
+      return {
+        title: HARNESS_REPAIR_TITLE[item.state](harnessLabel(item.harness), item.machineName ?? 'a machine'),
+        detail: item.action,
+        action: null,
+      };
+    case 'harness_capture_silent':
+      return {
+        title: `${harnessLabel(item.harness)} stopped appearing on ${item.machineName ?? 'a machine'}`,
+        detail: `Its last session arrived ${ago(item.lastCapturedAt, now)}, although the machine was active ${ago(item.lastMachineActivityAt, now)}. Open ${harnessLabel(item.harness)} there and check its Myco hooks.`,
+        action: null,
+      };
   }
 }
+
+const HARNESS_REPAIR_TITLE: Readonly<Record<Extract<AttentionItem, { kind: 'harness_needs_repair' }>['state'], (harness: string, machine: string) => string>> = {
+  binary_missing: (harness, machine) => `Myco’s ${harness} command is missing on ${machine}`,
+  unwritable: (harness, machine) => `Myco can’t update ${harness} on ${machine}`,
+  trust_required: (harness, machine) => `${harness} needs approval on ${machine}`,
+  repair_failed: (harness, machine) => `Myco couldn’t repair ${harness} on ${machine}`,
+};
 
 
 /** The machine a repository sits on, as the viewer reads it: theirs by its name, anyone else's by its member. */
@@ -354,6 +373,8 @@ export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   no_worker: 'machines',
   access_key_expiring: 'access keys',
   schema_mismatch: 'the database',
+  harness_needs_repair: 'installed agents',
+  harness_capture_silent: 'agent capture',
 };
 
 const OUTCOME_NOUN: Readonly<Record<OutcomeKind, string>> = {

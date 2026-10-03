@@ -832,6 +832,17 @@ describe('Today', () => {
 });
 
 describe('Today\'s words', () => {
+  it('names a broken or silent provisioned harness with one plain next action', () => {
+    const repair: AttentionItem = { kind: 'harness_needs_repair', tone: 'bad', machineId: 'machine_q3Vb8xRk2LmT7wYz', machineName: 'Ada laptop', harness: 'codex', state: 'trust_required', action: 'Approve Codex in system settings.', since: NOW - HOUR };
+    expect(attentionWords(repair, NOW, () => null)).toEqual({ title: 'Codex needs approval on Ada laptop', detail: 'Approve Codex in system settings.', action: null });
+    const silent: AttentionItem = { kind: 'harness_capture_silent', tone: 'warn', machineId: repair.machineId, machineName: 'Ada laptop', harness: 'codex', lastCapturedAt: NOW - 2 * HOUR, lastMachineActivityAt: NOW - HOUR };
+    const words = attentionWords(silent, NOW, () => null);
+    expect(words.title).toBe('Codex stopped appearing on Ada laptop');
+    expect(words.detail).toContain('Open Codex there and check its Myco hooks.');
+    expect(`${words.title} ${words.detail}`).not.toContain(repair.machineId);
+    expect(words.action).toBeNull();
+  });
+
   it('reads a day parameter, and falls back to today for nothing, garbage or a day to come', () => {
     expect(dayWindow(null, NOW)).toMatchObject({ start: DAY_START, isToday: true, param: '2026-09-29', previous: YESTERDAY });
     expect(dayWindow(YESTERDAY, NOW)).toMatchObject({ start: new Date(2026, 8, 28).getTime(), end: DAY_START, isToday: false });

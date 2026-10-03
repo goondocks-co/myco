@@ -36,6 +36,7 @@ import { scheduledIntervalHours } from './recovery-schedule.js';
 import { within } from './recovery-inventory.js';
 import { RUNTIME_SERVED_TASKS } from './harness.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
+import { provisionedHarnessAttention, type HarnessAttentionFact } from './harness-health.js';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -67,7 +68,9 @@ export type AttentionItem =
   | { kind: 'runs_held_for_capability'; tone: 'warn'; capability: string; runs: number; since: number }
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }
   | { kind: 'access_key_expiring'; tone: 'warn'; grantId: string; projectId: string; label: string | null; expiresAt: number }
-  | { kind: 'schema_mismatch'; tone: 'bad'; expected: number; found: number | null };
+  | { kind: 'schema_mismatch'; tone: 'bad'; expected: number; found: number | null }
+  | { kind: 'harness_needs_repair'; tone: 'bad'; machineId: string; machineName: string | null; harness: string; state: 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed'; action: string; since: number }
+  | { kind: 'harness_capture_silent'; tone: 'warn'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
 
 export type AttentionKind = AttentionItem['kind'];
 
@@ -77,7 +80,7 @@ export interface AttentionAnswer {
   unavailable: AttentionKind[];
 }
 
-type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number) => Promise<AttentionItem[]> };
+type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number, harnessFacts: () => Promise<HarnessAttentionFact[]>) => Promise<AttentionItem[]> };
 
 /** The instant of the last backup, from the backup index and from the recovery producer's last complete attempt. */
 async function lastBackup(env: ServerEnv): Promise<number | null> {
@@ -159,6 +162,18 @@ const RULES: readonly Rule[] = [
     },
   },
   {
+    kind: 'harness_needs_repair',
+    read: async (_env, _now, harnessFacts) => (await harnessFacts())
+      .filter((fact) => fact.kind === 'harness_needs_repair')
+      .map((fact) => ({ ...fact, tone: 'bad' })),
+  },
+  {
+    kind: 'harness_capture_silent',
+    read: async (_env, _now, harnessFacts) => (await harnessFacts())
+      .filter((fact) => fact.kind === 'harness_capture_silent')
+      .map((fact) => ({ ...fact, tone: 'warn' })),
+  },
+  {
     kind: 'access_key_expiring',
     read: async (env, now) => (await grantsExpiringBy(env.db, now, now + ACCESS_KEY_NOTICE_MS)).map((g) => ({
       kind: 'access_key_expiring', tone: 'warn', grantId: g.id, projectId: g.projectId, label: g.label, expiresAt: g.expiresAt,
@@ -168,7 +183,9 @@ const RULES: readonly Rule[] = [
 
 /** Every rule, each read on its own so one that fails is named and the rest still answer. */
 export async function readAttention(env: ServerEnv, now: number): Promise<AttentionAnswer> {
-  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now)));
+  let pendingHarnessFacts: Promise<HarnessAttentionFact[]> | undefined;
+  const harnessFacts = () => pendingHarnessFacts ??= provisionedHarnessAttention(env.db, now);
+  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts)));
   const items: AttentionItem[] = [];
   const unavailable: AttentionKind[] = [];
   settled.forEach((outcome, i) => {
