@@ -190,7 +190,7 @@ describe('model-specific execution accounting', () => {
     });
     it('stores a refusal of any other code, or with no reason, as no more than it says', async () => {
       for (const [refusal, code, reason] of [
-        [{ code: 'something_else', reason: 'it offers no model x' }, 'run_failed', null],
+        [{ code: 'something_else', reason: 'it offers no model x' }, 'agent_failed', null],
         [{ code: PROFILE_UNAPPLIED, reason: '   ' }, 'model_not_applied', null],
         [{ code: PROFILE_UNAPPLIED, reason: 'it offers no model x'.padEnd(MAX_REFUSAL_REASON_CHARS + 50, 'x') }, 'model_not_applied', null],
         // A reason in any words but a worker's own sentence, naming a value no model has, is never kept.

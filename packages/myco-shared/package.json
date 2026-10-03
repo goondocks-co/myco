@@ -58,6 +58,10 @@
       "import": "./dist/run-text.js",
       "types": "./dist/run-text.d.ts"
     },
+    "./worker-log": {
+      "import": "./dist/worker-log.js",
+      "types": "./dist/worker-log.d.ts"
+    },
     "./runner-step-words.generated": {
       "import": "./dist/runner-step-words.generated.js",
       "types": "./dist/runner-step-words.generated.d.ts"

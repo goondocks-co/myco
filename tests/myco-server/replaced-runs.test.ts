@@ -192,7 +192,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
   it('may not move the hash the dispatcher filed, with or without the word it may add', async () => {
     const { post, contextOf } = await runtime();
     expect(await post('/runs/update', { runId: 'run_live', replaced: true, update: { status: 'failed', run_context: '{"input_hash":"mine"}' } }))
-      .toMatchObject({ persisted: false, code: 'refused' });
+      .toMatchObject({ persisted: false, code: 'field_retired' });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
   });
 

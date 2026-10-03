@@ -545,7 +545,7 @@ function keepRunDiagnostic(options: WorkerOptions, run: ClaimedRun, error: strin
   options.log(`run ${run.id} failed: ${error}${root === undefined ? '' : `; what was said is kept in ${root}`}`);
   if (root === undefined) return;
   try {
-    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)());
+    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)(), { secrets: Object.values(run.credentialEnv) });
   } catch (error) {
     options.log(`could not keep the diagnostics of ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
   }

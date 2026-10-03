@@ -144,10 +144,10 @@ runner:
   # How a stop it explains in its own words reads as a coded reason: a protocol error's message and what it writes to
   # stderr. The first pattern that matches decides; the words are read on the worker and never stored.
   diagnostics:
-    - { code: login_missing, pattern: 'authentication required|not logged in|\blogin\b[^\n]{0,40}\brequired\b|agent login|\bunauthorized\b|\b401\b' }
-    - { code: rate_limited, pattern: '\b429\b|too many requests|rate[_ -]?limit|usage limit|\bquota\b' }
+    - { code: login_missing, pattern: 'authentication required|not logged in|\blogin\b[^\n]{0,40}\brequired\b|agent login|\bunauthorized\b|(?:HTTP|status|status code|error_status)[ :="]*401\b|\b401 Unauthorized\b|\(401\)' }
+    - { code: rate_limited, pattern: '(?:HTTP|status|status code|error_status)[ :="]*429\b|\b429 Too Many\b|\(429\)|too many requests|rate[_ -]?limit|usage limit|\bquota\b' }
     - { code: model_refused, pattern: 'cannot use this model|\bmodel\b[^\n]{0,80}\b(?:not found|not supported|does not exist|not available)\b' }
-    - { code: timed_out, pattern: '\btimed? ?out\b|\bETIMEDOUT\b|\btimeout\b' }
+    - { code: timed_out, pattern: '\btimed[ -]?out\b|\bETIMEDOUT\b|idle timeout|request timeout' }
   # How a worker runs it.
   worker:
     binary: cursor-agent

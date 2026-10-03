@@ -24,6 +24,7 @@
       "@goondocks/myco-shared/worker-steps": ["./packages/myco-shared/src/worker-steps.ts"],
       "@goondocks/myco-shared/command-shape": ["./packages/myco-shared/src/command-shape.ts"],
       "@goondocks/myco-shared/run-text": ["./packages/myco-shared/src/run-text.ts"],
+      "@goondocks/myco-shared/worker-log": ["./packages/myco-shared/src/worker-log.ts"],
       "@goondocks/myco-shared/runner-step-words.generated": ["./packages/myco-shared/src/runner-step-words.generated.ts"],
       "@goondocks/myco-shared/execution-profile": ["./packages/myco-shared/src/execution-profile.ts"],
       "@goondocks/myco-shared/call-words": ["./packages/myco-shared/src/call-words.ts"],

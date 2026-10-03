@@ -19,7 +19,7 @@
  *   stored with the run and kept as long as the run is.
  */
 
-import { commandShape, identifierShape, keyLike, urlShape } from './command-shape.js';
+import { commandShape, identifierShape, keyLike, urlShape, ZERO_WIDTH } from './command-shape.js';
 import { redactSecrets } from './redact-secrets.js';
 import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 
@@ -92,11 +92,34 @@ function patterns(): Patterns {
   return compiled;
 }
 
-/** The reason a harness's words are read as by its manifest's patterns; null where none matches or the harness is unknown. */
+/**
+ * Words that say a process crashed — a fault, a panic, an unhandled exception, memory gone — read before any
+ * harness's own patterns, so a crash whose words happen to hold `401` or `timeout` is never read as anything else.
+ */
+const CRASHED = /\bsegfault\b|segmentation fault|\bpanicked at\b|^panic:|core dumped|\bSIG(?:SEGV|ABRT|BUS|ILL|FPE)\b|index out of (?:range|bounds)|Traceback \(most recent call last\)|\bUnhandled(?:Promise)?Rejection\b|uncaught exception|^fatal error\b|out of memory/im;
+/** How many of the last lines after a harness's first line of words its error is read from. */
+const ERROR_TAIL_LINES = 3;
+const MAX_LINE_CHARS = 512;
+/** A stack frame or a traceback's file line, never the error itself. */
+const STACK_FRAME = /^(?:at\s|File\s"|\.\.\.|note:|stack backtrace)/;
+
+/**
+ * The lines a harness's error is read from: the first line of its words (its own error, or the driver's sentence and
+ * the first line of what it wrote to stderr), and the last few lines after it that are not stack frames. A pattern is
+ * never matched against the whole of what it wrote.
+ */
+export function errorLines(words: string): string {
+  const lines = words.slice(0, MAX_READ_CHARS).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  if (lines.length === 0) return '';
+  const tail = lines.slice(1).filter((line) => !STACK_FRAME.test(line)).slice(-ERROR_TAIL_LINES);
+  return [lines[0]!, ...tail].map((line) => line.slice(0, MAX_LINE_CHARS)).join('\n');
+}
+
+/** The reason a harness's error lines are read as by its manifest's patterns; null where none matches or the harness is unknown. */
 export function patternedDiagnostic(harnessId: string | null, words: string): PatternedDiagnosticCode | null {
   const declared = harnessId === null ? undefined : patterns().get(harnessId);
   if (declared === undefined) return null;
-  const read = words.slice(0, MAX_READ_CHARS);
+  const read = errorLines(words);
   return declared.find(({ pattern }) => pattern.test(read))?.code ?? null;
 }
 
@@ -107,9 +130,10 @@ function namesOf(names: readonly string[] | undefined): string[] {
 }
 
 /**
- * A harness's error as a code: the code its driver read from the stream's structure; else a code its words open with
- * (`profile_unapplied: …`); else the first of its manifest's patterns its words match; else `crashed` for a process
- * that exited non-zero or on a signal; else `harness_error`. Its words are never part of what this answers.
+ * A harness's error as a code, read in this order: the code its driver read from the stream's structure; a code its
+ * words open with (`profile_unapplied: …`); `crashed` for a process ended by a signal or whose words say it crashed
+ * (`CRASHED`); the first of its manifest's patterns its error lines match (`errorLines`); `crashed` for a process that
+ * exited non-zero; else `harness_error`. Its words are never part of what this answers.
  */
 export function classifyDiagnostic(harnessId: string | null, ending: HarnessEnding): RunDiagnostic {
   const words = ending.detail ?? '';
@@ -118,6 +142,7 @@ export function classifyDiagnostic(harnessId: string | null, ending: HarnessEndi
   const signal = ending.signal != null && SIGNAL.test(ending.signal) ? ending.signal : undefined;
   const code: RunDiagnosticCode = ending.code
     ?? (opening !== undefined && isCode(RUN_DIAGNOSTIC_CODES, opening) ? opening : null)
+    ?? (signal !== undefined || CRASHED.test(words.slice(0, MAX_READ_CHARS)) ? 'crashed' : null)
     ?? patternedDiagnostic(harnessId, words)
     ?? (exitCode !== undefined || signal !== undefined ? 'crashed' : 'harness_error');
   const names = code === 'permission_refused' ? namesOf(ending.names) : [];
@@ -265,6 +290,64 @@ export function runErrorDiagnostic(text: string | null): RunDiagnosticCode | nul
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Identifiers and structured records: what a run route names things by, and the accounting it is sent.
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * An identifier a run route names something by — a run, an agent, a task, a harness, a provider, a model or a report's
+ * action: letters, digits and `. _ : / @ + [ ] -`, opening with a letter or a digit, at most 192 characters.
+ */
+export const RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@+[\]-]{0,191}$/;
+
+/** A value as a run route's identifier, or null where it is not one. */
+export function strictId(value: unknown): string | null {
+  return typeof value === 'string' && RUN_IDENTIFIER.test(value) ? value : null;
+}
+
+const UUIDS = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** A run's id, or null: an identifier that is not key-like once the UUIDs a run's id is minted with are set aside. */
+export function strictRunId(value: unknown): string | null {
+  const id = strictId(value);
+  return id === null || keyLike(id.replace(UUIDS, '')) ? null : id;
+}
+
+/** A name a run route is sent — an agent, a task, a harness, a provider, an action, a cost source — or null: an identifier that is not key-like. */
+export function strictName(value: unknown): string | null {
+  const id = strictId(value);
+  return id === null || keyLike(id) ? null : id;
+}
+
+const RECORD_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+const MAX_RECORD_DEPTH = 6;
+const MAX_RECORD_ITEMS = 100;
+
+/** One value of a structured record as stored: numbers, booleans and identifiers kept; any other text `…`. */
+function recordValue(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') return value === '' ? '' : identifierShape(value, 256) ?? ELIDED;
+  if (typeof value !== 'object' || depth >= MAX_RECORD_DEPTH) return ELIDED;
+  if (Array.isArray(value)) return value.slice(0, MAX_RECORD_ITEMS).map((item) => recordValue(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).filter(([key]) => RECORD_KEY.test(key)).slice(0, MAX_RECORD_ITEMS)
+    .map(([key, item]) => [key, recordValue(item, depth + 1)]));
+}
+
+/**
+ * A structured record a run route is sent — a run's usage, its cost, a claim's context — as the Deployment stores it:
+ * a JSON object whose keys are names, whose numbers and booleans stand, and whose text is kept only where it is an
+ * identifier (`identifierShape`), any other text reading `…`. Null where the text is no JSON object or its shape runs
+ * past `max` characters.
+ */
+export function recordShape(text: string, max = 64 * 1024): string | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return null; }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const shaped = JSON.stringify(recordValue(parsed, 0));
+  return shaped.length > max ? null : shaped;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Agent prose: the agent's own words, bounded and masked.
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -282,8 +365,17 @@ const FLAG_ASSIGNMENT = /^(--?[A-Za-z][A-Za-z0-9-]{0,40})=/;
 /** A flag whose name says the word after it carries a secret. */
 const SECRET_FLAG = /^--?[A-Za-z0-9-]*(?:token|secret|pass|key|auth|credential)[A-Za-z0-9-]*$/i;
 /** A label whose name says the word after it, past `is`, `was`, `=` or `:`, carries a secret. */
-const SECRET_LABEL = /^(?:[A-Za-z0-9]+[_-])*(?:password|passwd|passphrase|secret|token|api[_-]?key|credentials?)$/i;
-const CONNECTORS: ReadonlySet<string> = new Set(['is', 'was', 'were', 'are', '=', ':', 'of', 'as', 'to']);
+const SECRET_LABEL = /^(?:[A-Za-z0-9]+[_-])*(?:password|passwd|passphrase|passcode|secret|token|api[_-]?key|credentials?|creds)$/i;
+/**
+ * A label naming a secret, with what joins it to its value (`is`, `was`, `are`, `=`, `:` or a table's `|`), and the
+ * value: a quoted span to its closing quote, or everything to the next table cell or the end of the line.
+ */
+const LABELED_VALUE = /(\b(?:[A-Za-z0-9]+[_-])*(?:password|passwd|passphrase|passcode|pass|pwd|pw|pin|secret|token|api[_-]?key|credentials?|creds)\b["']?)([ \t]*(?:\b(?:is|was|are)\b|=|:|\|)[ \t]*)("[^"\n]*"?|'[^'\n]*'?|[^|\n]*)/gi;
+/** A line shaped like a record of `/etc/passwd` or `/etc/shadow`: a user name and six or more `:`-separated fields. */
+const ACCOUNT_LINE = /^[ \t]*[A-Za-z_][A-Za-z0-9._-]*(?::[^:\n]*){6,}[ \t]*$/gm;
+/** Three or more `*` in a row: a key echoed with its middle masked. */
+const MASKED_ECHO = /\*{3,}/;
+const CONNECTORS: ReadonlySet<string> = new Set(['is', 'was', 'were', 'are', '=', ':', '|', 'of', 'as', 'to']);
 const LEADING = /^[("'`<[{*_]+/;
 const TRAILING = /[)"'`>\]}.,;:!?*_]+$/;
 
@@ -319,11 +411,14 @@ function elided(word: string): string {
 
 /** One word in its stored shape: a URL as its scheme and host, anything key-like, an assignment or a credential `…`. */
 function maskWord(word: string): string {
+  if (MASKED_ECHO.test(word) && /[A-Za-z0-9]/.test(word)) return elided(word.replace(/\*/g, 'x'));
   const lead = LEADING.exec(word)?.[0] ?? '';
   const rest = word.slice(lead.length);
   const trail = TRAILING.exec(rest)?.[0] ?? '';
   const core = rest.slice(0, rest.length - trail.length);
   if (core === '' || core === ELIDED || core === '[REDACTED]') return word;
+  // A word of six or more `:`-separated fields is a password-file record, wherever it stands.
+  if ((word.match(/:/g)?.length ?? 0) >= 6) return ELIDED;
   if (URL_START.test(core)) return `${lead}${urlShape(core) ?? ELIDED}${trail}`;
   const flag = FLAG_ASSIGNMENT.exec(core);
   if (flag !== null) return `${lead}${keyLike(flag[1]!) ? ELIDED : `${flag[1]}=${ELIDED}`}${trail}`;
@@ -365,6 +460,16 @@ function maskWords(text: string): string {
   return parts.join('');
 }
 
+/** A labeled secret's whole value read as `…`: a quoted value keeps its quotes, a table cell its closing space. */
+function maskLabeledValues(text: string): string {
+  return text.replace(LABELED_VALUE, (_match, label: string, joint: string, value: string) => {
+    if (value.trim() === '' || value.trim() === ELIDED) return `${label}${joint}${value}`;
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
+    if (quote !== '') return `${label}${joint}${quote}${ELIDED}${value.length > 1 && value.endsWith(quote) ? quote : ''}`;
+    return `${label}${joint}${ELIDED}${/\s$/.test(value) ? ' ' : ''}`;
+  });
+}
+
 /** An inline code span: a command shaped as one (`commandShape`), a single word masked as a word is. */
 function inlineCode(_span: string, body: string): string {
   const shaped = /\s/.test(body.trim()) ? commandShape(body) ?? ELIDED : maskWord(body);
@@ -372,20 +477,23 @@ function inlineCode(_span: string, body: string): string {
 }
 
 /**
- * Agent prose as a run stores it: line breaks made `\n` (or a space where `singleLine`), other control characters a
- * space; code-fence bodies `…`; an inline code span holding a command in the allowed shape of a command; here-document
+ * Agent prose as a run stores it: zero-width characters dropped, line breaks made `\n` (or a space where `singleLine`),
+ * other control characters a space; code-fence bodies `…`; a line shaped like a password-file record `…`; an inline code span holding a command in the allowed shape of a command; here-document
  * bodies `…`; a here-string's word `…`; every other word masked (`maskWord`), with the word after a secret-named flag or
- * label `…`; known access-key shapes masked (`redactSecrets`); and the whole cut to `max` characters. Null where
+ * label `…`; a secret label's whole value `…` (to its closing quote, the next table cell or the end of the line); a
+ * word holding a masked echo (`***`) `…`; known access-key shapes masked (`redactSecrets`); and the whole cut to `max` characters. Null where
  * nothing is left.
  */
 export function agentProse(value: string, max: number, options: { singleLine?: boolean } = {}): string | null {
-  let text = value.replace(LINE_BREAKS, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f\t]+/g, ' ');
+  let text = value.replace(ZERO_WIDTH, '').replace(LINE_BREAKS, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f\t]+/g, ' ');
   text = text.replace(FENCE, ELIDED);
+  text = text.replace(ACCOUNT_LINE, ELIDED);
   // Inline code is shaped before here-documents are read, so a here-document quoted inline never runs past its span.
   text = text.replace(INLINE_CODE, inlineCode);
   text = collapseHeredocs(text);
   text = text.replace(HERESTRING, `<<< ${ELIDED}`);
   text = maskWords(text);
+  text = maskLabeledValues(text);
   text = redactSecrets(text);
   if (options.singleLine === true) text = text.replace(/ *\n[\n ]*/g, ' ');
   text = text.trim();

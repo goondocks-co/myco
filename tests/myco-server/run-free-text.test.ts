@@ -1,7 +1,7 @@
 /**
  * Every free-text field a worker, a harness or an agent supplies to a run, judged by the adversarial secret corpus on
  * the Deployment that stores it: a worker's error (`/worker/end`) and a caller's error on the run routes
- * (`/runs/update`, `/runs/failed`) are kept as a coded reason alone; a report's summary and details and its audit's
+ * (`/runs/update`) are kept as a coded reason alone; a report's summary and details and its audit's
  * steps, reasoning and failures, on the run's own tool and on the run route alike, are agent prose — a command quoted
  * in a code fence, a here-document or inline code keeps none of its secrets, and no key-shaped value survives at all.
  */
@@ -20,6 +20,7 @@ import { OWNER_ENV } from './helpers/owner.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import {
   AWS_KEY_ID, AWS_SECRET, BARE_JWT, BASE64_SECRET, CORPUS, FREE_TEXT, GITHUB_PAT, GITLAB_PAT, OPENAI_KEY, SLACK_BOT, STRIPE_LIVE, UUID_KEY, type Leak,
+  PROSE,
 } from '../helpers/secret-corpus.ts';
 
 const NOW = 1_800_000_000_000;
@@ -86,8 +87,8 @@ async function claimedRun() {
 describe('a worker\'s error, on the Deployment that stores it', () => {
   it('keeps no word a harness or a worker said, and records the coded reason a reader acts on', async () => {
     for (const [error, kept, code] of [
-      [`the harness stopped: error (${SAID})`, 'the harness stopped: error (harness_error)', 'run_failed'],
-      [SAID, 'the worker reported a failure (harness_error)', 'run_failed'],
+      [`the harness stopped: error (${SAID})`, 'the harness stopped: error (harness_error)', 'agent_failed'],
+      [SAID, 'the worker reported a failure (harness_error)', 'agent_failed'],
       [`the harness stopped: error (authentication_failed: ${SAID})`, 'the harness stopped: error (login_missing)', 'agent_not_signed_in'],
       ['the harness stopped: error (rate_limited; exit code 1)', 'the harness stopped: error (rate_limited; exit code 1)', 'agent_rate_limited'],
       ['the harness stopped: error (crashed; exit code 137; signal SIGKILL)', 'the harness stopped: error (crashed; exit code 137; signal SIGKILL)', 'agent_crashed'],
@@ -107,15 +108,68 @@ describe('a worker\'s error, on the Deployment that stores it', () => {
 describe('a caller\'s error on the run routes', () => {
   it('is kept as a coded reason alone, through an update and a recorded failure alike', async () => {
     const { post, sqlite } = await routes();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    await post('/runs/claim', { id: 'r3', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
     expect(await post('/runs/update', { runId: 'r1', update: { status: 'failed', completed_at: 50, error: SAID } })).toMatchObject({ applied: true });
     expect(await post('/runs/update', { runId: 'r2', update: { error: SAID } })).toMatchObject({ applied: true });
-    expect(await post('/runs/failed', { runId: 'r3', errorClass: 'other', error: SAID })).toMatchObject({ changed: 1 });
-    const rows = sqlite.query(`SELECT id, error FROM agent_runs WHERE id IN ('r1', 'r2', 'r3') ORDER BY id`).all() as Array<{ id: string; error: string }>;
-    expect(rows.map((row) => row.error)).toEqual(Array(3).fill('the worker reported a failure (harness_error)'));
+    const rows = sqlite.query(`SELECT id, error FROM agent_runs WHERE id IN ('r1', 'r2') ORDER BY id`).all() as Array<{ id: string; error: string }>;
+    expect(rows.map((row) => row.error)).toEqual(Array(2).fill('the worker reported a failure (harness_error)'));
     expect(leaked(ALL, JSON.stringify(rows))).toEqual([]);
+  });
+});
+
+describe('every text field the run routes still take', () => {
+  const NAMES = [...CORPUS, ...KEY_LEAKS];
+
+  it('refuses a claim naming anything but an identifier, and keeps a claim\'s context as a structured record', async () => {
+    const { post, sqlite } = await routes();
+    let seq = 0;
+    for (const leak of NAMES) {
+      for (const field of ['id', 'agentId', 'task', 'harness', 'provider', 'model'] as const) {
+        const claim = { id: `r_${seq += 1}`, agentId: AGENT, task: 'container-smoke', capability: 'cortex', [field]: leak.command };
+        // A model is named by the Deployment's own configuration, so it is held to the identifier shape alone.
+        if (field === 'model' && /^[A-Za-z0-9][A-Za-z0-9._:/@+[\]-]*$/.test(leak.command)) continue;
+        // A run's id is minted as a UUID, which is the one key shape it may hold.
+        if (field === 'id' && leak.command === UUID_KEY) continue;
+        expect({ field, leak: leak.name, persisted: (await post('/runs/claim', claim)).persisted }).toEqual({ field, leak: leak.name, persisted: false });
+      }
+      expect(await post('/runs/claim', { id: `r_${seq += 1}`, agentId: AGENT, task: 'container-smoke', capability: 'cortex', runContext: JSON.stringify({ note: leak.command, nested: { key: leak.command, list: [leak.command] } }) })).toMatchObject({ claimed: true });
+    }
+    expect(leaked(NAMES, JSON.stringify(sqlite.query('SELECT id, agent_id, task, harness, provider, model, run_context FROM agent_runs').all()))).toEqual([]);
+  });
+
+  it('keeps an update\'s usage and cost data as structured records and its cost source as a name, never as sent', async () => {
+    const { post, sqlite } = await routes();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    for (const leak of [...NAMES, ...PROSE]) {
+      const record = JSON.stringify({ model: leak.command, message: leak.command, breakdown: [{ note: leak.command }], [leak.command.slice(0, 20)]: 1 });
+      expect(await post('/runs/update', { runId: 'r1', update: { usage_data: record, cost_data: record, tokens_used: 1 } })).toMatchObject({ applied: true });
+      const source = await post('/runs/update', { runId: 'r1', update: { cost_source: leak.command } });
+      expect({ leak: leak.name, refused: source.persisted === false || leak.command === 'actual' }).toEqual({ leak: leak.name, refused: true });
+    }
+    expect(leaked([...NAMES, ...PROSE], JSON.stringify(sqlite.query(`SELECT usage_data, cost_data, cost_source FROM agent_runs WHERE id = 'r1'`).all()))).toEqual([]);
+  });
+
+  it('refuses a report naming its agent or its action by anything but a name', async () => {
+    const { post, sqlite } = await routes();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    for (const leak of NAMES) {
+      expect(await post('/runs/report', { runId: 'r1', agentId: leak.command, action: 'container-smoke', summary: 's' })).toMatchObject({ persisted: false });
+      expect(await post('/runs/report', { runId: 'r1', agentId: AGENT, action: leak.command, summary: 's' })).toMatchObject({ persisted: false });
+    }
+    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_reports`).get()).toEqual({ c: 0 });
+  });
+
+  it('keeps no secret of the prose corpus in a report or its audit, on the run\'s own tool', async () => {
+    const r = await claimedRun();
+    try {
+      for (const leak of PROSE) {
+        await r.report({ action: TITLING_REPORT_ACTION, summary: leak.command, details: `Notes:\n${leak.command}\nDone.`, audit: { ...RUN_AUDIT, steps: [leak.command], reasoning: leak.command, failures: [{ what: leak.command, recovery: leak.command }] } });
+      }
+      const rows = r.e.sqlite.query('SELECT summary, details, audit FROM agent_reports WHERE run_id = ? ORDER BY id').all(r.run.id) as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(PROSE.length);
+      expect(rows.flatMap((row, i) => leaked([PROSE[i]!], JSON.stringify(row)))).toEqual([]);
+    } finally { r.e.sqlite.close(); }
   });
 });
 
@@ -149,9 +203,9 @@ describe('a report and its audit, as agent prose', () => {
 
   it('keeps no secret of a quoted command, and no key at all, on the run route', async () => {
     const { post, sqlite } = await routes();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
     for (const { prose, command } of reports) {
-      expect(await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'summary', summary: prose, details: prose, audit: audit(prose, command) })).toMatchObject({ recorded: true });
+      expect(await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'container-smoke', summary: prose, details: prose, audit: audit(prose, command) })).toMatchObject({ recorded: true });
     }
     expect(judged(sqlite.query(`SELECT summary, details, audit FROM agent_reports WHERE run_id = 'r1' ORDER BY id`).all() as Array<Record<string, unknown>>)).toEqual([]);
   });

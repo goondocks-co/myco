@@ -357,7 +357,7 @@ describe('what a worker reporting `completed` actually closes', () => {
   it('keeps a worker\'s own failure as the coded failure it reported, and codes a worker\'s words again', async () => {
     for (const [error, kept] of [
       ['the harness stopped: error (login_missing; exit code 1)', 'the harness stopped: error (login_missing; exit code 1)'],
-      ['the harness answered 401', 'the worker reported a failure (login_missing)'],
+      ['the harness answered 401 Unauthorized', 'the worker reported a failure (login_missing)'],
     ] as const) {
       const r = await rig();
       const run = await r.claimedTitling(NOW + 1);

@@ -162,11 +162,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "diagnostics": [
         {
           "code": "login_missing",
-          "pattern": "\\bunauthenticated\\b|\\bunauthorized\\b|\\b401\\b|not logged in|authentication required"
+          "pattern": "\\bunauthenticated\\b|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)|not logged in|authentication required"
         },
         {
           "code": "rate_limited",
-          "pattern": "\\b429\\b|resource_exhausted|too many requests|rate[_ -]?limit|\\bquota\\b"
+          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|resource_exhausted|too many requests|rate[_ -]?limit|\\bquota\\b"
         },
         {
           "code": "model_refused",
@@ -174,7 +174,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "code": "timed_out",
-          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|deadline exceeded|\\btimeout\\b"
+          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|deadline exceeded|idle timeout|request timeout"
         }
       ],
       "worker": {
@@ -705,11 +705,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "diagnostics": [
         {
           "code": "login_missing",
-          "pattern": "\\bauthentication_(?:failed|error)\\b|failed to authenticate|invalid api key|api key is invalid|please run /login|not logged in|oauth token (?:has )?expired|\\b401\\b"
+          "pattern": "\\bauthentication_(?:failed|error)\\b|failed to authenticate|invalid api key|api key is invalid|please run /login|not logged in|oauth token (?:has )?expired|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"
         },
         {
           "code": "rate_limited",
-          "pattern": "\\brate[_ -]?limit|\\b429\\b|usage limit|too many requests"
+          "pattern": "\\brate[_ -]?limit|(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|usage limit|too many requests"
         },
         {
           "code": "model_refused",
@@ -717,7 +717,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "code": "timed_out",
-          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|\\btimeout\\b"
+          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|idle timeout|request timeout"
         }
       ],
       "worker": {
@@ -1448,7 +1448,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "code": "rate_limited",
-          "pattern": "\\b429\\b|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
+          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
         },
         {
           "code": "model_refused",
@@ -1456,7 +1456,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "code": "timed_out",
-          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|deadline exceeded|\\btimeout\\b"
+          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|deadline exceeded|idle timeout|request timeout"
         }
       ],
       "worker": {
@@ -2057,11 +2057,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "diagnostics": [
         {
           "code": "login_missing",
-          "pattern": "authentication required|not logged in|\\blogin\\b[^\\n]{0,40}\\brequired\\b|agent login|\\bunauthorized\\b|\\b401\\b"
+          "pattern": "authentication required|not logged in|\\blogin\\b[^\\n]{0,40}\\brequired\\b|agent login|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"
         },
         {
           "code": "rate_limited",
-          "pattern": "\\b429\\b|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
+          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
         },
         {
           "code": "model_refused",
@@ -2069,7 +2069,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "code": "timed_out",
-          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|\\btimeout\\b"
+          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|idle timeout|request timeout"
         }
       ],
       "worker": {
@@ -2388,11 +2388,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "diagnostics": [
         {
           "code": "login_missing",
-          "pattern": "ProviderAuthError|LoadAPIKeyError|api key is missing|\\bunauthorized\\b|\\b401\\b|not authenticated|authentication required"
+          "pattern": "ProviderAuthError|LoadAPIKeyError|api key is missing|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)|not authenticated|authentication required"
         },
         {
           "code": "rate_limited",
-          "pattern": "\\b429\\b|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
+          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
         },
         {
           "code": "model_refused",
@@ -2400,7 +2400,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "code": "timed_out",
-          "pattern": "\\btimed? ?out\\b|\\bETIMEDOUT\\b|\\btimeout\\b"
+          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|idle timeout|request timeout"
         }
       ],
       "worker": {

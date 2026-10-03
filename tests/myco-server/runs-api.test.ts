@@ -131,21 +131,10 @@ describe('run lifecycle over HTTP', () => {
   });
 
   it('applies an update of settable columns and reports rows moved', async () => {
-    const { post } = await harness();
+    const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } })).toEqual({ persisted: true, changed: 1, applied: true });
-    const got = await post('/runs/get', { runId: 'r1' });
-    expect((got.run as { status: string; completedAt: number }).status).toBe('completed');
-  });
-
-  it('keeps private execution overrides out of a member run read', async () => {
-    const { post, sqlite } = await harness();
-    await post('/runs/claim', { id: 'private_profile', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    sqlite.run(`UPDATE agent_runs SET execution_overrides=? WHERE id='private_profile'`, [JSON.stringify({ requested: { model: 'fixture' }, provider: { apiKey: 'sk-private-canary' } })]);
-    const answer = await post('/runs/get', { runId: 'private_profile' });
-    expect(answer.persisted).toBe(true);
-    expect(JSON.stringify(answer)).not.toContain('sk-private-canary');
-    expect((answer.run as Record<string, unknown>).executionOverrides).toBeUndefined();
+    expect((sqlite.query(`SELECT status FROM agent_runs WHERE id = 'r1'`).get() as { status: string }).status).toBe('completed');
   });
 
   it('keeps the ending a run already carries, whichever ending landed first', async () => {
@@ -182,14 +171,6 @@ describe('run lifecycle over HTTP', () => {
     expect(sqlite.query(`SELECT status, tokens_used t FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', t: 99 });
   });
 
-  it('reads a run in another Project as absent rather than refusing, so existence is not confirmed', async () => {
-    const { post, sqlite, env, token } = await harness();
-    sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    const other = await (await worker.fetch(memberPost(token.token, { runId: 'r1' }, '/runs/get', { 'x-myco-project': 'proj_2' }), env)).json() as Record<string, unknown>;
-    expect(other).toEqual({ persisted: true, run: null });
-  });
-
   it('serves no route a plain member could write instructions through: the artifact is the dispatched run\'s to file', async () => {
     const { env, token, sqlite } = await harness();
     const res = await worker.fetch(memberPost(token.token, { agentId: AGENT, content: 'first', inputHash: 'h1' }, '/runs/cortex-instructions'), env);
@@ -198,135 +179,52 @@ describe('run lifecycle over HTTP', () => {
   });
 });
 
-describe('failure and resume admission over HTTP', () => {
-  const claim = (id: string, task = 'digest') =>
-    ({ id, agentId: AGENT, task, capability: 'cortex' });
-
-  it('classifies an ordinary failure as resumable and keeps its checkpoint', async () => {
+describe('POST /runs/report', () => {
+  it('writes a report against a claimed run; a run this Project does not hold, an agent it does not know and a task held to no rule are refused', async () => {
     const { post, sqlite } = await harness();
-    await post('/runs/claim', claim('r1'));
-    sqlite.query(`UPDATE agent_runs SET checkpoints = '{"phase":1}' WHERE id='r1'`).run();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    const written = await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'container-smoke', summary: 'the finding', details: '{"n":1}' });
+    expect(written).toEqual({ persisted: true, recorded: true });
+    expect(sqlite.query(`SELECT action, summary, details FROM agent_reports WHERE run_id = 'r1'`).all()).toEqual([{ action: 'container-smoke', summary: 'the finding', details: '{"n":1}' }]);
 
-    const res = await post('/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' });
-    expect({ resumable: res.resumable, status: res.status, cleared: res.clearCheckpoints })
-      .toEqual({ resumable: true, status: 'ready', cleared: false });
-    const row = sqlite.query(`SELECT resumable, resume_status s, checkpoints c FROM agent_runs WHERE id='r1'`).get() as { resumable: number; s: string; c: string };
-    expect(row).toEqual({ resumable: 0 + 1, s: 'ready', c: '{"phase":1}' });
-  });
-
-  it('discards the poisoned checkpoint with the same write that records the failure', async () => {
-    const { post, sqlite } = await harness();
-    await post('/runs/claim', claim('r1'));
-    sqlite.query(`UPDATE agent_runs SET checkpoints = '{"ref":"dead"}' WHERE id='r1'`).run();
-
-    await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'session gone', wasResume: true, hadPriorSession: true });
-    const row = sqlite.query(`SELECT resumable, resume_status s, checkpoints c FROM agent_runs WHERE id='r1'`).get() as { resumable: number; s: string; c: string | null };
-    expect(row).toEqual({ resumable: 0, s: 'session_expired', c: null });
-  });
-
-  it('decides the class from what was observed, never from a class the caller asserts', async () => {
-    const { post, sqlite } = await harness();
-    await post('/runs/claim', claim('r1'));
-    // A caller claiming session-expired without having been a resume gets the
-    // ordinary answer: the guard needs all three observations.
-    const res = await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'x', resumable: 0, status: 'exhausted' });
-    expect(res.status).toBe('ready');
-    expect((sqlite.query(`SELECT resume_status s FROM agent_runs WHERE id='r1'`).get() as { s: string }).s).toBe('ready');
-  });
-
-  it('refuses to record a failure on a run that ended under another status, and repeats one it already carries', async () => {
-    const { post, sqlite } = await harness();
-    await post('/runs/claim', claim('r1'));
-    await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } });
-    expect(await post('/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' }))
-      .toEqual({ persisted: true, changed: 0, applied: false, reason: 'terminal' });
-    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', error: null });
-
-    await post('/runs/claim', claim('r2'));
-    expect((await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'the harness stopped: error (login_missing)' })).changed).toBe(1);
-    expect(await post('/runs/failed', { runId: 'r2', errorClass: 'other', error: 'the harness stopped: error (rate_limited)' })).toEqual({ persisted: true, changed: 0, applied: true });
-    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ status: 'failed', error: 'the harness stopped: error (login_missing)' });
-  });
-
-  it('refuses an error class it does not know rather than mapping it to a default', async () => {
-    const { post } = await harness();
-    await post('/runs/claim', claim('r1'));
-    const res = await post('/runs/failed', { runId: 'r1', errorClass: 'invented', error: 'x' });
-    expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
-  });
-
-  it('admits a resume and consumes an attempt, then exhausts at the cap', async () => {
-    const { post, sqlite } = await harness();
-    await post('/runs/claim', claim('r1'));
-    await post('/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' });
-
-    for (let i = 1; i <= 3; i += 1) {
-      expect(await post('/runs/resume-admission', { runId: 'r1' })).toEqual({ persisted: true, admit: true, attempt: i });
-    }
-    expect(await post('/runs/resume-admission', { runId: 'r1' })).toEqual({ persisted: true, admit: false, status: 'exhausted' });
-    expect((sqlite.query(`SELECT resumable, resume_status s FROM agent_runs WHERE id='r1'`).get() as { resumable: number; s: string }))
-      .toEqual({ resumable: 0, s: 'exhausted' });
-  });
-
-  it('refuses to resume a run already retired, reporting why it was retired', async () => {
-    const { post } = await harness();
-    await post('/runs/claim', claim('r1'));
-    await post('/runs/failed', { runId: 'r1', errorClass: 'session-expired', error: 'x', wasResume: true, hadPriorSession: true });
-    expect(await post('/runs/resume-admission', { runId: 'r1' }))
-      .toEqual({ persisted: true, admit: false, status: 'session_expired' });
-  });
-
-  it('answers absent for a run this Project does not hold', async () => {
-    const { post } = await harness();
-    expect(await post('/runs/resume-admission', { runId: 'nope' }))
-      .toEqual({ persisted: true, admit: false, status: 'absent' });
+    const foreign = await post('/runs/report', { runId: 'r_unknown', agentId: AGENT, action: 'container-smoke', summary: 's' });
+    expect(foreign.persisted).toBe(false);
+    const ghost = await post('/runs/report', { runId: 'r1', agentId: 'agent_nobody_knows', action: 'container-smoke', summary: 's' });
+    expect(ghost.persisted).toBe(false);
+    await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' });
+    expect(await post('/runs/report', { runId: 'r2', agentId: AGENT, action: 'summary', summary: 's' })).toMatchObject({ persisted: false, reason: 'a digest run closes under no rule, so it takes no report' });
   });
 });
 
-describe('POST /runs/report and /runs/events', () => {
-  it('writes a report against a claimed run and reads it back; a run this Project does not hold is refused', async () => {
-    const { post } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    const written = await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'summary', summary: 'the finding', details: '{"n":1}' });
-    expect(written).toEqual({ persisted: true, recorded: true });
-    const read = await post('/runs/reports', { runId: 'r1' });
-    expect((read.reports as Array<{ action: string; summary: string }>).map((r) => [r.action, r.summary])).toEqual([['summary', 'the finding']]);
-
-    const foreign = await post('/runs/report', { runId: 'r_unknown', agentId: AGENT, action: 'a', summary: 's' });
-    expect(foreign.persisted).toBe(false);
-
-    const ghost = await post('/runs/report', { runId: 'r1', agentId: 'agent_nobody_knows', action: 'a', summary: 's' });
-    expect(ghost.persisted).toBe(false);
+describe('the run routes no 2.0 path sends', () => {
+  it('refuses each with route_retired and what replaced it, and stores nothing', async () => {
+    const { post, sqlite } = await harness();
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    for (const [path, body] of [
+      ['/runs/get', { runId: 'r1' }],
+      ['/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' }],
+      ['/runs/resume-admission', { runId: 'r1' }],
+      ['/runs/supersede', { excludeRunId: 'r1', agentId: AGENT, taskName: 'container-smoke', dryRun: false }],
+      ['/runs/reports', { runId: 'r1' }],
+      ['/runs/events', { events: [{ runId: 'r1', eventType: 'post_tool_use', toolName: 'Bash', payload: '{"toolInput":{"command":"cat .env"}}' }] }],
+    ] as const) {
+      const answered = await post(path, body);
+      expect({ path, persisted: answered.persisted, code: answered.code, retired: String(answered.reason).startsWith(`${path} is retired: `) })
+        .toEqual({ path, persisted: false, code: 'route_retired', retired: true });
+    }
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_run_events`).get() as { c: number }).c).toBe(0);
+    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'running', error: null });
   });
 
-  it('records an event burst with tenancy anchored on the run, refuses an unknown eventType, and bounds the burst', async () => {
+  it('refuses every update column no runtime sets, and a claim that carries an instruction, with field_retired', async () => {
     const { post, sqlite } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    const burst = await post('/runs/events', { events: [
-      { runId: 'r1', eventType: 'phase_start', phaseName: 'p1' },
-      { runId: 'r1', eventType: 'post_tool_use', toolName: 'vault_report', outcome: 'success', durationMs: 12, payload: '{}' },
-      { runId: 'r_unknown', eventType: 'phase_end' },
-    ] });
-    expect(burst).toEqual({ persisted: true, recorded: 2 });
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_run_events WHERE run_id = 'r1'`).get() as { c: number }).c).toBe(2);
-
-    const bad = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'not_a_kind' }] });
-    expect(bad.persisted).toBe(false);
-    const over = await post('/runs/events', { events: Array.from({ length: 33 }, () => ({ runId: 'r1', eventType: 'phase_start' })) });
-    expect(over.persisted).toBe(false);
-    const clock = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'phase_start', recordedAt: 'yesterday' }] });
-    expect(clock.persisted).toBe(false);
-  });
-
-  it('truncates an oversized payload rather than dropping the event, and takes a full 32-event burst', async () => {
-    const { post, sqlite } = await harness();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    const big = await post('/runs/events', { events: [{ runId: 'r1', eventType: 'post_tool_use', payload: 'x'.repeat(20_000) }] });
-    expect(big).toEqual({ persisted: true, recorded: 1 });
-    const row = sqlite.query(`SELECT LENGTH(payload) l FROM agent_run_events WHERE run_id = 'r1'`).get() as { l: number };
-    expect(row.l).toBe(16_384);
-    const full = await post('/runs/events', { events: Array.from({ length: 32 }, () => ({ runId: 'r1', eventType: 'phase_start' })) });
-    expect(full).toEqual({ persisted: true, recorded: 32 });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    for (const column of ['actions_taken', 'run_context', 'checkpoints', 'session_ref', 'instruction', 'execution_overrides', 'task', 'harness', 'provider', 'model', 'resumable', 'resume_status', 'resume_mode', 'resumed_at', 'resume_attempts', 'dry_run', 'reasoning_level']) {
+      const answered = await post('/runs/update', { runId: 'r1', update: { [column]: 'x' } });
+      expect({ column, code: answered.code }).toEqual({ column, code: 'field_retired' });
+    }
+    expect(await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'container-smoke', capability: 'cortex', instruction: 'do it' })).toMatchObject({ persisted: false, code: 'field_retired' });
+    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ c: 0 });
   });
 });
 
@@ -388,14 +286,8 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect((await post(sibling.token, '/runs/update', { runId: 'run_t7', update: { status: 'completed', completed_at: Date.now() } })).applied).toBe(true);
     expect(run('run_t7')?.status).toBe('completed');
 
-    for (const path of ['/runs/update', '/runs/failed']) {
-      const body = path === '/runs/update'
-        ? { runId: 'run_t7', update: { status: 'failed', completed_at: Date.now() } }
-        : { runId: 'run_t7', errorClass: 'other', error: 'stale' };
-      const answered = await post(minted.token, path, body);
-      expect({ path, persisted: answered.persisted, reason: answered.reason })
-        .toEqual({ path, persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
-    }
+    const answered = await post(minted.token, '/runs/update', { runId: 'run_t7', update: { status: 'failed', completed_at: Date.now() } });
+    expect({ persisted: answered.persisted, reason: answered.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
   });
 
   it('refuses a failure recorded under a credential the row does not name, and queues no successor for it', async () => {
@@ -404,9 +296,8 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     await dispatch('run_t6', sibling);
     expect((await post(sibling.token, '/runs/claim', { id: 'run_t6', agentId: AGENT, task: 'digest', capability: 'cortex' })).claimed).toBe(true);
 
-    // `/runs/failed` writes a terminal status and can ask for a successor; it
-    // is keyed on the row's credential exactly as the update route is.
-    const failed = await post(minted.token, '/runs/failed', { runId: 'run_t6', errorClass: 'other', error: 'stale', replaced: true });
+    // A failure can ask for a successor; it is keyed on the row's credential.
+    const failed = await post(minted.token, '/runs/update', { runId: 'run_t6', update: { status: 'failed', completed_at: Date.now(), error: 'stale' }, replaced: true });
     expect({ persisted: failed.persisted, reason: failed.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
     expect(run('run_t6')?.status).toBe('running');
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
@@ -441,16 +332,6 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     const terminal = await post(member.token, '/runs/update', { runId: 'run_t4', update: { status: 'failed', completed_at: Date.now() } });
     expect({ persisted: terminal.persisted, changed: terminal.changed }).toEqual({ persisted: true, changed: 1 });
     expect(credRevokedAt(member.tokenId)).toBe(null);
-  });
-
-  it('revokes through /runs/failed by the same rule: the classified failure is a terminal write too', async () => {
-    const { minted, post, credRevokedAt, dispatch } = await dispatchedRun();
-    await dispatch('run_t5', minted);
-    const claim = await post(minted.token, '/runs/claim', { id: 'run_t5', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(claim.claimed).toBe(true);
-    const failed = await post(minted.token, '/runs/failed', { runId: 'run_t5', error: 'provider unreachable', errorClass: 'other' });
-    expect({ persisted: failed.persisted, changed: failed.changed }).toEqual({ persisted: true, changed: 1 });
-    expect(typeof credRevokedAt(minted.tokenId)).toBe('number');
   });
 
   it('holds the release until an update actually lands: a terminal status for a run outside the Project changes nothing', async () => {

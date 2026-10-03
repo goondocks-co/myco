@@ -34,7 +34,7 @@
  * catalogue's own. A task with no entry would close on the runtime's word while
  * reading as governed, so there is no entry that means "no rule".
  */
-import { agentProse } from '@goondocks/myco-shared/run-text';
+import { agentProse, strictName } from '@goondocks/myco-shared/run-text';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
@@ -258,8 +258,11 @@ export const MAX_REPORT_DETAILS_CHARS = 65_536;
 export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportOffer): Promise<ReportOutcome> {
   const run = await getRun(db, scope, report.runId);
   if (run === null) return { recorded: false, reason: 'unheld' };
+  // A report names its agent by an identifier, and its action from the task's own list; a task held to no rule takes none.
+  if (strictName(report.agentId) === null) return { recorded: false, reason: 'unaccepted', error: 'a report names its agent by an identifier' };
   const accepted = acceptedActions(run.task);
-  if (accepted !== null && !accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
+  if (accepted === null) return { recorded: false, reason: 'unaccepted', error: `a ${run.task ?? 'run'} run closes under no rule, so it takes no report` };
+  if (!accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
   const offered = report.audit === undefined || report.audit === null ? null : parseRunAudit(report.audit);
   const audit = offered?.ok === true ? JSON.stringify(offered.audit) : null;
   const auditError = offered === null

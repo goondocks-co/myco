@@ -75,6 +75,8 @@ export const CLASSIFIERS = [
   'import_disabled',
   // a field outside its declared shape or bound
   'invalid_field',
+  // #1615 — a run route, or a field of one, no 2.0 path sends
+  'route_retired', 'field_retired',
 ] as const;
 export type Classifier = (typeof CLASSIFIERS)[number];
 

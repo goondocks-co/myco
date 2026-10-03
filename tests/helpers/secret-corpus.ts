@@ -129,3 +129,42 @@ export const FREE_TEXT: readonly Leak[] = [
   { name: 'a search for a key', command: `where is ${AWS_KEY_ID} used`, secrets: [AWS_KEY_ID] },
   { name: 'a grep pattern', command: 'hunter22', secrets: ['hunter22'] },
 ];
+
+/** Key-shaped values whose provider prefix alone says they are keys: short, or all letters, so no other shape catches them. */
+export const STRIPE_SHORT = ['sk', 'live', 'abcdefghijkl'].join('_');
+export const SLACK_USER = ['xoxp', 'abcdefghij'].join('-');
+export const GITLAB_SHORT = ['glpat', 'abcdefghijkl'].join('-');
+export const GITHUB_SHORT = ['ghp', 'abcdefghijklmnop'].join('_');
+export const GITHUB_FINE = ['github', 'pat', 'abcdefghijklmnop'].join('_');
+export const GOOGLE_KEY = ['AIza', 'SyAbcdefghijklmnop'].join('');
+export const OPENAI_LETTERS = ['sk', 'abcdefghijklmnop'].join('-');
+
+/**
+ * Prose an agent writes around a secret: a labeled value over several words, in quotes or a table; a label of any
+ * secret's name; a key known only by its provider's prefix; a key echoed with its middle masked; a credential pair;
+ * a password-file record; and a key or a label broken by zero-width characters. Agent prose keeps none of them.
+ */
+export const PROSE: readonly Leak[] = [
+  { name: 'a quoted secret of several words', command: 'The secret is "alpha beta gamma" for now.', secrets: ['alpha', 'beta', 'gamma'] },
+  { name: 'a passphrase of several words', command: 'passphrase: my dog spot', secrets: ['my dog spot', 'dog', 'spot'] },
+  { name: 'a password in a table cell', command: '| name | value |\n| DB_PASSWORD | p@ss w0rd |\n| HOST | db |', secrets: ['p@ss', 'w0rd'] },
+  { name: 'a pw label', command: 'pw: hunter22', secrets: ['hunter22'] },
+  { name: 'a pwd label', command: 'set pwd = hunter22 then', secrets: ['hunter22'] },
+  { name: 'a pass label', command: 'pass: hunter22 for the vault', secrets: ['hunter22'] },
+  { name: 'a pin', command: 'the pin is 4417', secrets: ['4417'] },
+  { name: 'a passcode', command: 'passcode: 991122', secrets: ['991122'] },
+  { name: 'a credential pair after a slash', command: 'creds: admin / hunter22', secrets: ['admin', 'hunter22'] },
+  { name: 'a credential pair after a colon', command: 'credentials: admin:hunter22', secrets: ['admin', 'hunter22'] },
+  { name: 'a Stripe key by its prefix', command: `uses ${STRIPE_SHORT} in test`, secrets: [STRIPE_SHORT] },
+  { name: 'a Slack token by its prefix', command: `posted with ${SLACK_USER}`, secrets: [SLACK_USER] },
+  { name: 'a GitLab token by its prefix', command: `cloned with ${GITLAB_SHORT}`, secrets: [GITLAB_SHORT] },
+  { name: 'a GitHub token by its prefix', command: `pushed with ${GITHUB_SHORT}`, secrets: [GITHUB_SHORT] },
+  { name: 'a fine-grained GitHub token by its prefix', command: `pushed with ${GITHUB_FINE}`, secrets: [GITHUB_FINE] },
+  { name: 'a Google key by its prefix', command: `called with ${GOOGLE_KEY}`, secrets: [GOOGLE_KEY] },
+  { name: 'an OpenAI key of letters', command: `called with ${OPENAI_LETTERS}`, secrets: [OPENAI_LETTERS] },
+  { name: 'a key echoed with its middle masked', command: 'the key sk-proj-abc****wxyz worked', secrets: ['abc****', '****wxyz'] },
+  { name: 'a passwd record', command: 'found it:\nroot:x:0:0:root:/root:/bin/bash\nin the image', secrets: ['root:x:0', '/bin/bash'] },
+  { name: 'a shadow line', command: 'deploy:$6$saltsalt$hashhashhash:19000:0:99999:7:::', secrets: ['saltsalt', 'hashhash'] },
+  { name: 'a label broken by a zero-width space', command: 'pass​word: hunter22', secrets: ['hunter22'] },
+  { name: 'a key broken by a zero-width joiner', command: `the key was ${OPENAI_KEY.slice(0, 10)}‍${OPENAI_KEY.slice(10)}`, secrets: [OPENAI_KEY.slice(10), OPENAI_KEY.slice(0, 10)] },
+];

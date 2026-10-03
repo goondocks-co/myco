@@ -5,6 +5,7 @@
  * schedule". Nothing here names a mechanism or shows an id.
  */
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
+import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import type { OutcomeKind, Range, WorkRun } from '../today/wire';
 import { causeSentence, clockTime, count, when } from '../today/words';
 import { memberLabel } from '../../lib/member-name';
@@ -342,10 +343,31 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
     agent_model_refused: 'The agent’s model refused to carry on with the task.',
     agent_timed_out: 'The agent ran out of time before it finished.',
     agent_crashed: 'The agent quit unexpectedly before it finished.',
+    agent_failed: 'The agent reported an error and stopped.',
+    agent_launch_failed: 'The agent couldn’t be started on the machine that ran it.',
+    agent_protocol_error: 'The agent answered in a way the machine couldn’t read, so the task stopped.',
+    agent_permission_refused: 'The agent was refused a tool the task needs.',
+    agent_tools_unlisted: 'The machine couldn’t list the task’s tools for the agent.',
     run_failed: 'The task stopped before it could finish.',
   };
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
   return words[code ?? ''] ?? words.run_failed!;
+}
+
+/** The failures a machine's agent explained in its own words, which the machine keeps in its worker log. */
+const DIAGNOSED_RUN_CODES: ReadonlySet<string> = new Set([
+  'agent_not_signed_in', 'agent_rate_limited', 'agent_model_refused', 'agent_timed_out', 'agent_crashed',
+  'agent_failed', 'agent_launch_failed', 'agent_protocol_error', 'agent_permission_refused', 'agent_tools_unlisted',
+]);
+
+/**
+ * Where a failure's full error is kept, for a failure the machine's agent explained: the worker log on the machine
+ * that ran it, by the path under that machine's Myco home. Nothing where the failure is not one, or where the page may
+ * not name the machine (`ranOn`).
+ */
+export function fullErrorWords(code: string | null | undefined, machine: string | null): string | null {
+  if (code == null || !DIAGNOSED_RUN_CODES.has(code) || machine === null) return null;
+  return `The full error is in the worker log on ${machine === 'Your machine' ? 'your machine' : machine}: ${WORKER_DIAGNOSTIC_LOG}`;
 }
 
 /** A coded failure uses the dashboard's sentence; an uncoded report retains its own words. */

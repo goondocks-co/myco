@@ -574,6 +574,7 @@ describe('gates', () => {
         // One run the write fixtures may report against: a report on an unknown run
     // is refused, and a fixture must be a single accepted request.
     sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate', 'user', 'gate', 'running', 1)`).run();
+    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate_report', 'user', 'container-smoke', 'running', 1)`).run();
 
     const FIXTURES: Record<string, { shape: Shape; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
       'POST /events': {
@@ -636,7 +637,7 @@ describe('gates', () => {
       'POST /runs/report': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate', agentId: 'user', action: 'gate', summary: 's' }) }),
+        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate_report', agentId: 'user', action: 'container-smoke', summary: 's' }) }),
       },
       'POST /runs/events': {
         shape: 'persisted',
@@ -791,9 +792,12 @@ describe('gates', () => {
     expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => ({ route: route.slice('POST '.length), status: SHAPES[f.shape].refusedStatus, refused: true, code: 'no_machine_identity', reason: 'token has no machine identity' })));
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
+    // A retired route refuses even a well-formed request, naming that it is retired (`RETIRED_RUN_ROUTES`).
+    const retired = new Set(ROUTES.filter((r) => 'retired' in r && r.retired === true).map((r) => `${r.method} ${r.path}`));
     for (const [route, fixture] of Object.entries(FIXTURES)) {
-      const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json();
-      expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
+      const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
+      if (retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'route_retired', persisted: false });
+      else expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
     }
   });
 

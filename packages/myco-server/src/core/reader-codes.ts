@@ -7,7 +7,8 @@ export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
 export const RUN_CLOSE_AUDIT_ERROR = 'the run ended without its audit';
 
 export type RunErrorCode = 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit'
-  | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed' | 'run_failed';
+  | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed'
+  | 'agent_failed' | 'agent_launch_failed' | 'agent_protocol_error' | 'agent_permission_refused' | 'agent_tools_unlisted' | 'run_failed';
 
 /** The reader code each harness diagnostic a reader can act on is recorded under; any other reads as `run_failed`. */
 const DIAGNOSTIC_ERROR_CODES: Readonly<Record<string, RunErrorCode>> = {
@@ -16,6 +17,11 @@ const DIAGNOSTIC_ERROR_CODES: Readonly<Record<string, RunErrorCode>> = {
   model_refused: 'agent_model_refused',
   timed_out: 'agent_timed_out',
   crashed: 'agent_crashed',
+  harness_error: 'agent_failed',
+  launch_failed: 'agent_launch_failed',
+  protocol_error: 'agent_protocol_error',
+  permission_refused: 'agent_permission_refused',
+  tools_unlisted: 'agent_tools_unlisted',
 };
 
 /** The code a run whose worker reported this error is recorded under: its diagnostic's reader code, or `run_failed`. */

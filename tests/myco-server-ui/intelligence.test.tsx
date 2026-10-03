@@ -17,7 +17,8 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
-import { dailyLimitWords, failureWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { dailyLimitWords, failureWords, fullErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { rawIdsIn } from '../helpers/raw-ids';
 import {
@@ -540,6 +541,11 @@ for (const [code, sentence] of [
   ['agent_model_refused', 'The agent’s model refused to carry on with the task.'],
   ['agent_timed_out', 'The agent ran out of time before it finished.'],
   ['agent_crashed', 'The agent quit unexpectedly before it finished.'],
+  ['agent_failed', 'The agent reported an error and stopped.'],
+  ['agent_launch_failed', 'The agent couldn’t be started on the machine that ran it.'],
+  ['agent_protocol_error', 'The agent answered in a way the machine couldn’t read, so the task stopped.'],
+  ['agent_permission_refused', 'The agent was refused a tool the task needs.'],
+  ['agent_tools_unlisted', 'The machine couldn’t list the task’s tools for the agent.'],
   ['run_failed', 'The task stopped before it could finish.'],
   [undefined, 'The task stopped before it could finish.'],
   ['unknown_code', 'The task stopped before it could finish.'],
@@ -559,6 +565,30 @@ for (const [code, sentence] of [
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain(prose);
   });
 }
+
+for (const [worker, place] of [
+  [{ credentialId: 'mt_studio', machineId: 'machine_studio', machineName: 'Ada’s studio Mac', member: { id: 'mem_ada', label: 'Ada' } }, 'Ada’s studio Mac'],
+  [{ credentialId: 'mt_box', machineId: 'machine_box', machineName: null, member: { id: 'mem_lin', label: 'Lin' } }, 'Lin’s machine'],
+  [null, null],
+] as const) {
+  it(`names where a diagnosed failure's full error is kept ${place === null ? 'nowhere where the page may not name the machine' : `on ${place}`}`, async () => {
+    server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+      reports: [], run: { errorCode: 'agent_not_signed_in', error: 'the harness stopped: error (login_missing; exit code 1)', worker },
+    })) } }));
+    mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+    const open = await panel();
+    await waitFor(() => expect(open.querySelector('[data-run-failure]')?.textContent).toContain('The agent isn’t signed in on the machine that ran it.'));
+    const full = open.querySelector('[data-run-full-error]')?.textContent ?? null;
+    expect(full).toBe(place === null ? null : `The full error is in the worker log on ${place}: ${WORKER_DIAGNOSTIC_LOG}`);
+    expect(MECHANISM_WORDS.test(full ?? '')).toBe(false);
+    expect(open.textContent).not.toContain('machine_studio');
+  });
+}
+it('names the worker log only for a failure the machine\'s agent explained, and says your machine as a reader would', () => {
+  expect(fullErrorWords('run_failed', 'Ada’s studio Mac')).toBeNull();
+  expect(fullErrorWords('agent_crashed', null)).toBeNull();
+  expect(fullErrorWords('agent_crashed', 'Your machine')).toBe(`The full error is in the worker log on your machine: ${WORKER_DIAGNOSTIC_LOG}`);
+});
 
 it('words a run whose agent could not use the chosen model from the reason it recorded, and keeps the worker\'s record in details', async () => {
   const raw = 'the harness stopped: error (profile_unapplied: it kept the effort (none) after being set to high (Invalid (params)))';
