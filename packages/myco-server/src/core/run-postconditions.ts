@@ -34,6 +34,7 @@
  * catalogue's own. A task with no entry would close on the runtime's word while
  * reading as governed, so there is no entry that means "no rule".
  */
+import { agentProse, strictName } from '@goondocks/myco-shared/run-text';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
@@ -241,24 +242,35 @@ export type ReportOutcome =
 /** A report as either door offers it: the audit is the caller's raw argument, judged here. */
 export type ReportOffer = Omit<ReportInsert, 'audit'> & { audit: unknown };
 
+/** The most characters a report's summary and its details are stored with, on either door a run reports through. */
+export const MAX_REPORT_SUMMARY_CHARS = 4_096;
+export const MAX_REPORT_DETAILS_CHARS = 65_536;
+
 /**
  * Record a run's report: the one door every report lands through, on the MCP
  * surface and the container's route alike (`tests/meta/report-record-chokepoint.test.ts`).
  * An action the run's task cannot close under is refused here, naming what it
  * can, and leaves no row; a row the judgment would ignore is never written. The
- * audit is held to its shape here (`parseRunAudit`), so both doors store the same
- * thing for the same offer.
+ * audit is held to its shape here (`parseRunAudit`), and the summary and details
+ * are stored as agent prose (`agentProse`), so both doors store the same thing
+ * for the same offer.
  */
 export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportOffer): Promise<ReportOutcome> {
   const run = await getRun(db, scope, report.runId);
   if (run === null) return { recorded: false, reason: 'unheld' };
+  // A report names its agent by an identifier, and its action from the task's own list; a task held to no rule takes none.
+  if (strictName(report.agentId) === null) return { recorded: false, reason: 'unaccepted', error: 'a report names its agent by an identifier' };
   const accepted = acceptedActions(run.task);
-  if (accepted !== null && !accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
+  if (accepted === null) return { recorded: false, reason: 'unaccepted', error: `a ${run.task ?? 'run'} run closes under no rule, so it takes no report` };
+  if (!accepted.includes(report.action)) return { recorded: false, reason: 'unaccepted', error: unacceptedActionError(run.task, accepted) };
   const offered = report.audit === undefined || report.audit === null ? null : parseRunAudit(report.audit);
   const audit = offered?.ok === true ? JSON.stringify(offered.audit) : null;
   const auditError = offered === null
     ? (await owesAudit(db, scope, run) ? 'the report carries no audit' : null)
     : (offered.ok ? null : offered.error);
   const auditRepairs = offered?.ok === true ? offered.repairs : [];
-  return (await insertReport(db, scope, { ...report, audit })) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
+  // The agent's own words, bounded and masked (`agentProse`): stored with the run and kept as long as it is.
+  const summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
+  const details = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
+  return (await insertReport(db, scope, { ...report, summary, details, audit })) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }

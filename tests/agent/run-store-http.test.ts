@@ -81,11 +81,12 @@ describe('HTTP RunStore — claim', () => {
 
 
 describe('HTTP RunStore — lifecycle', () => {
-  it('updates a run and reads it back', async () => {
-    const { store } = await harness();
+  it('updates a run; a read of it over the retired run read is refused by name', async () => {
+    const { store, sqlite } = await harness();
     await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
     await store.updateRunStatus('r1', 'completed', { completed_at: 42 });
-    expect((await store.getRun('r1'))?.status).toBe('completed');
+    expect((sqlite.query(`SELECT status FROM agent_runs WHERE id = 'r1'`).get() as { status: string }).status).toBe('completed');
+    await expect(store.getRun('r1')).rejects.toBeInstanceOf(RunControlError);
   });
 
   it('refuses an update that would reattribute a run, and says so', async () => {
@@ -97,12 +98,10 @@ describe('HTTP RunStore — lifecycle', () => {
     expect(row).toEqual({ d: token.tokenId, status: 'running' });
   });
 
-  it('records a run event against a claimed run, and an unknown run records nothing without failing the run', async () => {
+  it('records no run event: the route is retired, and says so by name', async () => {
     const { store, sqlite } = await harness();
     await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
-    await store.recordRunEvent({ runId: 'r1', eventType: 'phase_start', phaseName: 'p1' });
-    await store.recordRunEvent({ runId: 'r_unknown', eventType: 'phase_end' });
-    const rows = sqlite.query(`SELECT run_id AS r, event_type AS e FROM agent_run_events ORDER BY id`).all() as Array<{ r: string; e: string }>;
-    expect(rows).toEqual([{ r: 'r1', e: 'phase_start' }]);
+    await expect(store.recordRunEvent({ runId: 'r1', eventType: 'post_tool_use', toolName: 'Bash', payload: '{"toolInput":{"command":"cat .env"}}' })).rejects.toBeInstanceOf(RunControlError);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_run_events`).get()).toEqual({ c: 0 });
   });
 });

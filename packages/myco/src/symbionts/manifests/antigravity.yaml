@@ -153,6 +153,13 @@ runner:
     allowedEfforts: []
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
     modelHint: Model selection is unavailable for this agent.
+  # How a stop it explains in its own words reads as a coded reason: a protocol error's message and what it writes to
+  # stderr. The first pattern that matches decides; the words are read on the worker and never stored.
+  diagnostics:
+    - { code: login_missing, pattern: '\bunauthenticated\b|\bunauthorized\b|(?:HTTP|status|status code|error_status)[ :="]*401\b|\b401 Unauthorized\b|\(401\)|not logged in|authentication required' }
+    - { code: rate_limited, pattern: '(?:HTTP|status|status code|error_status)[ :="]*429\b|\b429 Too Many\b|\(429\)|resource_exhausted|too many requests|rate[_ -]?limit|\bquota\b' }
+    - { code: model_refused, pattern: '\bmodel\b[^\n]{0,80}\b(?:not found|not supported|does not exist|not available)\b' }
+    - { code: timed_out, pattern: '\btimed[ -]?out\b|\bETIMEDOUT\b|deadline exceeded|idle timeout|request timeout' }
   # How a worker runs it.
   worker:
     binary: agy

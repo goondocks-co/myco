@@ -8,11 +8,13 @@
  * string is cut, a list past its bound is cut with the entries cut counted in `omitted`, and a failure given as text
  * reads as one with no recovery. The commands are kept in the allowed shape of a command (`commandShape`), and each
  * file examined only where it is a path (`pathShape`), anything else reading `…`, so neither ever holds a body, a
- * flag's value, prose or a credential; every string is stored with known
- * access-key shapes masked. The stored audit holds the six declared fields and nothing else.
+ * flag's value, prose or a credential. Steps, reasoning and each failure's what and recovery are the agent's own
+ * words, stored as agent prose (`agentProse`): one line, code-fence and here-document bodies `…`, URLs as their scheme
+ * and host, key-like words, assignments and the word after a secret-named flag or label `…`, known access-key shapes
+ * masked; they are kept with the run as long as it is. The stored audit holds the six declared fields and nothing else.
  */
 import { commandShape, pathShape } from '@goondocks/myco-shared/command-shape';
-import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
+import { agentProse } from '@goondocks/myco-shared/run-text';
 
 export interface RunAuditFailure {
   what: string;
@@ -47,12 +49,9 @@ export type AuditParse = { ok: true; audit: RunAudit; repairs: string[] } | { ok
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** One line of prose, cut to `max`, with known access-key shapes masked; null for an empty one. */
+/** One line of agent prose, masked and cut to `max` (`agentProse`); null for an empty one. */
 function prose(value: unknown, max: number): string | null {
-  if (typeof value !== 'string') return null;
-  const folded = redactSecrets(value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim());
-  if (folded === '') return null;
-  return folded.length > max ? `${folded.slice(0, max - 1)}…` : folded;
+  return typeof value === 'string' ? agentProse(value, max, { singleLine: true }) : null;
 }
 
 /** A file examined as a path, or `…` where the entry is anything else; null for none. */

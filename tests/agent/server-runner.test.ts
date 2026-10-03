@@ -102,7 +102,7 @@ describe('runServerTask', () => {
     const result = await runServerTask({ client, budget, runId: 'run_metered_failure', taskName: 'container-smoke', harness: failing });
     expect(result.status).toBe('failed');
     expect(sqlite.query(`SELECT tokens_used,cost_usd,actual_cost_usd,cost_source,error FROM agent_runs WHERE id='run_metered_failure'`).get())
-      .toEqual({ tokens_used: 123, cost_usd: 0.1, actual_cost_usd: 0.1, cost_source: 'actual', error: 'turn limit reached' });
+      .toEqual({ tokens_used: 123, cost_usd: 0.1, actual_cost_usd: 0.1, cost_source: 'actual', error: 'the worker reported a failure (harness_error)' });
     sqlite.close();
   });
 
@@ -110,7 +110,7 @@ describe('runServerTask', () => {
     const { client, sqlite } = await harness();
     const failed = await runServerTask({ client, budget, runId: 'run_smoke_2', taskName: 'container-smoke', harness: fakeHarness('throws') });
     expect({ status: failed.status, error: failed.error }).toEqual({ status: 'failed', error: 'provider unreachable' });
-    expect((sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_smoke_2'`).get() as { status: string; error: string })).toEqual({ status: 'failed', error: 'provider unreachable' });
+    expect((sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_smoke_2'`).get() as { status: string; error: string })).toEqual({ status: 'failed', error: 'the worker reported a failure (harness_error)' });
 
     await runServerTask({ client, budget, runId: 'run_smoke_3', taskName: 'container-smoke', harness: fakeHarness('silent') });
     // run_smoke_3 completed; a fresh claim within the window is refused → skipped
@@ -180,8 +180,9 @@ describe('a run that dies names itself', () => {
     } as unknown as AgentHarness;
     const result = await runServerTask({ client, budget, runId: 'run_late', taskName: 'container-smoke', harness: late });
     expect({ status: result.status, error: result.error }).toEqual({ status: 'failed', error: 'the provider closed the stream' });
+    // The record keeps the coded reason; the runtime's words stay with the runtime.
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_late'`).get())
-      .toEqual({ status: 'failed', error: 'the provider closed the stream' });
+      .toEqual({ status: 'failed', error: 'the worker reported a failure (harness_error)' });
   });
 
   it('lets a run in flight finish under a stop signal: nothing is posted, the run\'s own ending lands, and the drain then ends clean', async () => {
