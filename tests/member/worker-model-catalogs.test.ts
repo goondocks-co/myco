@@ -233,9 +233,11 @@ describe('a listing starts its harness as a run on the machine\'s own login star
     const bin = join(dir, 'bin');
     mkdirSync(bin);
     for (const [name, script] of Object.entries(binaries)) writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
-    const saved = Object.fromEntries(['PATH', 'HOME', ...Object.keys(set)].map((key) => [key, process.env[key]]));
+    const saved = Object.fromEntries(['PATH', 'HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', ...Object.keys(set)].map((key) => [key, process.env[key]]));
     process.env.PATH = `${bin}:${process.env.PATH ?? ''}`;
     process.env.HOME = join(dir, 'home');
+    process.env.CODEX_HOME = join(dir, 'home', '.codex');
+    process.env.CLAUDE_CONFIG_DIR = join(dir, 'home', '.claude');
     mkdirSync(join(dir, 'home', '.codex'), { recursive: true });
     writeFileSync(join(dir, 'home', '.codex', 'auth.json'), '{"tokens":{"fixture":true}}');
     Object.assign(process.env, set);

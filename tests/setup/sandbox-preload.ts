@@ -4,20 +4,18 @@
 // if something slips, loud:
 //   1. Redirect os.homedir()/userInfo()/HOME to a throwaway per-process sandbox,
 //      so home-derived paths resolve INSIDE the sandbox (current + future subsystems).
-//   2. Fence fs mutations whose resolved target is under the REAL ~/.myco* — throw.
+//   2. Fence fs mutations under real Myco and manifest-declared agent homes.
 import { afterAll } from 'bun:test';
 import os from 'node:os';
+import { REAL_HOME } from './sandbox-environment.js';
+import { protectedAgentPaths } from './protected-agent-paths.js';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { removeRegisteredTestPaths } from '../support/remove-when-tests-end.js';
 
 configureSqliteLibrary();
-
-const REAL_HOME = os.homedir();
-// A short name: socket paths derived from the home (an external-MCP listener
-// binds `<home>/.myco-emcp/<tag>.sock`) must stay under the 104-byte limit.
-const SANDBOX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
 
 // The per-user lock root tests use (tests/helpers/per-user-lock-namespace.ts).
 // The runner hands every test process one; a run outside the runner gets one
@@ -35,29 +33,61 @@ if (OWN_LOCKS_ROOT !== null) process.env[LOCKS_ROOT_ENV] = OWN_LOCKS_ROOT;
 // Capture originals BEFORE wrapping (cleanup + delegation must bypass the fence).
 const origRmSync = fs.rmSync.bind(fs);
 
-// ---- Chokepoint 2 first (so REAL_HOME, captured above, is the guard) ----
+// Fence mutations to the operating-system account home.
 const PROTECTED = [
+  ...protectedAgentPaths(REAL_HOME),
   path.join(REAL_HOME, '.myco'),
   path.join(REAL_HOME, '.myco-team'),
   path.join(REAL_HOME, '.myco-dev'),
   path.join(REAL_HOME, '.myco-collective'),
   path.join(REAL_HOME, 'myco_backups'),
 ];
-function offending(p: unknown): string | null {
+const originalRealpath = fs.realpathSync.bind(fs);
+const originalReadlink = fs.readlinkSync.bind(fs);
+function resolvedTarget(target: string): string {
+  let ancestor = target;
+  const suffix: string[] = [];
+  while (true) {
+    try { return path.join(originalRealpath(ancestor), ...suffix); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') return target;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      try {
+        const link = originalReadlink(ancestor);
+        return resolvedTarget(path.resolve(path.dirname(ancestor), link, ...suffix));
+      } catch (linkError) {
+        const linkCode = (linkError as NodeJS.ErrnoException).code;
+        if (!['ENOENT', 'ENOTDIR', 'EINVAL', 'EACCES', 'EPERM'].includes(linkCode ?? '')) throw linkError;
+      }
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return target;
+      suffix.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+const protectedTargets = [...new Set(PROTECTED.flatMap((root) => [root, resolvedTarget(root)]))];
+function offending(p: unknown, includesParents = false): string | null {
   let raw: string;
   if (typeof p === 'string') raw = p;
-  else if (p instanceof URL) raw = p.pathname;
+  else if (p instanceof URL) raw = fileURLToPath(p);
   else if (Buffer.isBuffer(p)) raw = p.toString();
   else return null;
   let s: string;
   try { s = path.resolve(raw); } catch { return null; }
-  for (const pre of PROTECTED) if (s === pre || s.startsWith(pre + path.sep)) return s;
+  for (const target of [s, resolvedTarget(s)]) {
+    for (const pre of protectedTargets) {
+      if (target === pre || target.startsWith(pre + path.sep)
+        || (includesParents && pre.startsWith(target + path.sep))) return s;
+    }
+  }
   return null;
 }
 function deny(fnName: string, hit: string): never {
   throw new Error(
     `TEST SAFETY: fs.${fnName} to live config path "${hit}" was blocked. Tests must ` +
-    `not touch the real ~/.myco*. Use a temp MYCO_HOME/MYCO_TEAM_HOME or explicit sandbox paths.`,
+    `not touch real home configuration. Use sandbox HOME/MYCO_HOME or explicit sandbox paths.`,
   );
 }
 type AnyFn = (...a: unknown[]) => unknown;
@@ -65,7 +95,7 @@ function wrap(mod: Record<string, AnyFn>, name: string, argIdxs: number[]) {
   const orig = mod[name];
   if (typeof orig !== 'function') return;
   mod[name] = function (this: unknown, ...args: unknown[]) {
-    for (const i of argIdxs) { const hit = offending(args[i]); if (hit) deny(name, hit); }
+    for (const i of argIdxs) { const hit = offending(args[i], /^(rename|rm|rmdir)/.test(name)); if (hit) deny(name, hit); }
     return orig.apply(this, args);
   } as AnyFn;
 }
@@ -120,29 +150,35 @@ wrap(FSP, 'symlink', [1]);
 wrap(FSP, 'link', [1]);
 wrap(FSP, 'rename', [0, 1]);
 
-// ---- Chokepoint 1: redirect the home (after the fence is installed) ----
-function setHomedir(v: () => string) {
-  try { (os as { homedir: () => string }).homedir = v; }
-  catch { Object.defineProperty(os, 'homedir', { value: v, configurable: true }); }
+// Promise-form open can create or truncate files too.
+{
+  const original = FSP.open!;
+  FSP.open = function (this: unknown, ...args: unknown[]) {
+    const flags = args[1];
+    if (typeof flags === 'number' || (typeof flags === 'string' && /[wa+]/.test(flags))) {
+      const hit = offending(args[0]);
+      if (hit) deny('open', hit);
+    }
+    return original.apply(this, args);
+  };
 }
-setHomedir(() => SANDBOX_HOME);
-const origUserInfo = os.userInfo.bind(os) as unknown as (opts?: unknown) => Record<string, unknown>;
-function setUserInfo(v: (opts?: unknown) => Record<string, unknown>) {
-  try { (os as unknown as { userInfo: unknown }).userInfo = v; }
-  catch { Object.defineProperty(os, 'userInfo', { value: v, configurable: true }); }
-}
-setUserInfo((opts?: unknown) => ({ ...origUserInfo(opts), homedir: SANDBOX_HOME }));
-process.env.HOME = SANDBOX_HOME;
-process.env.USERPROFILE = SANDBOX_HOME;
 
-// Remove the throwaway sandbox when the test process is done with it, through the
-// captured original so the fence never sees it. Bun's test runner runs a preload's
+// Bun's native writer does not delegate to node:fs.
+const originalBunWrite = Bun.write;
+Bun.write = ((destination: Parameters<typeof Bun.write>[0], ...args: unknown[]) => {
+  const target = typeof destination === 'object' && !(destination instanceof URL)
+    && 'name' in destination ? destination.name : destination;
+  const hit = offending(target);
+  if (hit) deny('Bun.write', hit);
+  return (originalBunWrite as unknown as AnyFn)(destination, ...args);
+}) as typeof Bun.write;
+
+// Remove registered fixtures and process-owned locks through the captured original. Bun's test runner runs a preload's
 // `afterAll` after every file's own hooks (once per file under --isolate, where this
 // preload also runs once per file) and does not emit process 'exit'; the 'exit'
 // listener covers any other host.
 function removeSandboxHome(): void {
   removeRegisteredTestPaths(origRmSync);
-  try { origRmSync(SANDBOX_HOME, { recursive: true, force: true }); } catch { /* ignore */ }
   if (OWN_LOCKS_ROOT !== null) {
     try { origRmSync(OWN_LOCKS_ROOT, { recursive: true, force: true }); } catch { /* ignore */ }
   }
