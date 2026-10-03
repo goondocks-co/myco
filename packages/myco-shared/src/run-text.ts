@@ -163,6 +163,13 @@ export function budgetError(seconds: number): string {
 /** A harness whose stream ended without an ending. */
 export const HARNESS_NO_ENDING_ERROR = NO_ENDING;
 
+/** How the in-process runtime records a run that ran past its own bound. */
+export const RUN_DEADLINE_ERROR = 'the run reached its deadline';
+/** How the in-process runtime records a run the platform took the runtime away from before the run reached its end. */
+export const RUN_RECLAIMED_ERROR = 'the platform reclaimed the runtime before the run ended';
+/** The in-process runtime's own sentences, each with the reason it is read as. */
+const RUNTIME_ERRORS: Readonly<Record<string, RunDiagnosticCode>> = { [RUN_DEADLINE_ERROR]: 'timed_out', [RUN_RECLAIMED_ERROR]: 'crashed' };
+
 /** One kind of call that failed or was refused: the tool's identifier (or `tool`), its coded outcome, and how many times. */
 export interface FailedCalls { name: string; outcome: string; count: number }
 
@@ -225,6 +232,7 @@ export function parseRunError(text: string): ParsedRunError {
     return null;
   }
   if (/^the run outlived its budget of \d{1,9}s$/.test(text)) return { code: 'timed_out', stop: null };
+  if (Object.hasOwn(RUNTIME_ERRORS, text)) return { code: RUNTIME_ERRORS[text]!, stop: null };
   if (text === NO_ENDING) return { code: null, stop: null };
   return failedCallsParse(text) ? { code: null, stop: null } : null;
 }

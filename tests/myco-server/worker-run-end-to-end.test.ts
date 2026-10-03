@@ -176,7 +176,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
     await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'could not read the session' });
-    const note = '2 calls failed or were refused: myco_run_sessions ×2; the turn ended right after the last of them';
+    const note = '2 calls failed or were refused: myco_run_sessions (failed) ×2; the turn ended right after the last of them';
     expect(await r.workerEnds(run.id, 'completed', NOW + 3, note)).toEqual({ ended: true, status: 'failed' });
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: `${RUN_CLOSE_ARTIFACT_ERROR}: ${note}` });
   });
@@ -354,12 +354,17 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(r.outcome(second.run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });
 
-  it('keeps a worker\'s own failure as the failure it reported', async () => {
-    const r = await rig();
-    const run = await r.claimedTitling(NOW + 1);
-    expect(await endLeasedRun(r.e.serverEnv, { tokenId: r.workerToken, now: NOW + 3 }, { projectId: 'proj_1', runId: run.id, status: 'failed', error: 'the harness answered 401' }))
-      .toEqual({ ended: true, status: 'failed' });
-    expect(r.outcome(run.id)).toEqual({ status: 'failed', error: 'the harness answered 401' });
+  it('keeps a worker\'s own failure as the coded failure it reported, and codes a worker\'s words again', async () => {
+    for (const [error, kept] of [
+      ['the harness stopped: error (login_missing; exit code 1)', 'the harness stopped: error (login_missing; exit code 1)'],
+      ['the harness answered 401', 'the worker reported a failure (login_missing)'],
+    ] as const) {
+      const r = await rig();
+      const run = await r.claimedTitling(NOW + 1);
+      expect(await endLeasedRun(r.e.serverEnv, { tokenId: r.workerToken, now: NOW + 3 }, { projectId: 'proj_1', runId: run.id, status: 'failed', error }))
+        .toEqual({ ended: true, status: 'failed' });
+      expect(r.outcome(run.id)).toEqual({ status: 'failed', error: kept });
+    }
   });
 });
 

@@ -28,7 +28,7 @@ const AGENT = 'agent_1';
 const KEYS: readonly string[] = [STRIPE_LIVE, OPENAI_KEY, GITHUB_PAT, SLACK_BOT, GITLAB_PAT, AWS_KEY_ID, AWS_SECRET, BARE_JWT, BASE64_SECRET, UUID_KEY];
 const KEY_LEAKS: readonly Leak[] = KEYS.map((key) => ({ name: `the key ${key.slice(0, 4)}…`, command: key, secrets: [key, key.slice(0, 12), key.slice(-12)] }));
 
-/** Every leak's secrets found in what was stored. */
+/** Every leak's secrets found in what is stored. */
 const leaked = (leaks: readonly Leak[], stored: string): string[] =>
   leaks.flatMap((leak) => leak.secrets.filter((secret) => stored.includes(secret)).map((secret) => `${leak.name}: ${secret}`));
 

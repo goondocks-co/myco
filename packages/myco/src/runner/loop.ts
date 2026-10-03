@@ -91,7 +91,7 @@ export interface WorkerOptions {
   runRoot: string;
   /** Where each attempt's step log waits until the Deployment holds it (`step-outbox.ts`). Defaults to `.steps` inside `runRoot`. */
   stepRoot?: string;
-  /** Where the words behind a failed run's coded reason are kept on this machine (`diagnostic-log.ts`). Defaults to `.diagnostics` inside `runRoot`. */
+  /** Where the words behind a failed run's coded reason are kept on this machine (`diagnostic-log.ts`); where none is named, they are kept nowhere. */
   diagnosticRoot?: string;
   /** Only these harnesses are offered, where the caller names any. */
   only?: readonly string[];
@@ -539,14 +539,13 @@ async function drive(
   return { status: 'failed', identity, usage, error, ...(refusal === null ? {} : { refusal }) };
 }
 
-/** Where this worker keeps the words behind its runs' coded reasons. */
-const diagnosticRootOf = (options: Pick<WorkerOptions, 'diagnosticRoot' | 'runRoot'>): string => options.diagnosticRoot ?? join(options.runRoot, '.diagnostics');
-
 /** Keep what a harness or this worker said about a failed run on this machine; a log that cannot be written is said in the worker's log. */
 function keepRunDiagnostic(options: WorkerOptions, run: ClaimedRun, error: string, detail: string): void {
-  options.log(`run ${run.id} failed: ${error}; what was said is kept in ${diagnosticRootOf(options)}`);
+  const root = options.diagnosticRoot;
+  options.log(`run ${run.id} failed: ${error}${root === undefined ? '' : `; what was said is kept in ${root}`}`);
+  if (root === undefined) return;
   try {
-    keepDiagnostic(diagnosticRootOf(options), { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)());
+    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)());
   } catch (error) {
     options.log(`could not keep the diagnostics of ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
   }
