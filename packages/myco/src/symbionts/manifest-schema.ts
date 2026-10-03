@@ -306,6 +306,8 @@ const RegistrationSchema = z.object({
    * the project so the agent loads it).
    */
   memberProvisionNote: z.string().optional(),
+  /** The action a changed global hook file requires before this harness will run it. */
+  memberHookTrustAction: z.string().max(240).optional(),
   /**
    * Absolute path (with `~` expansion) where Myco writes hook config when
    * installing under global scope. May point at a file the agent shares with

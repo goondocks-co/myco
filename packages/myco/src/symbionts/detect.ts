@@ -136,7 +136,7 @@ export function pathLookupProgram(platform: NodeJS.Platform = process.platform):
 }
 
 /** Check if a binary is available on PATH. */
-function isBinaryOnPath(binary: string): boolean {
+export function isBinaryOnPath(binary: string): boolean {
   try {
     execFileSync(pathLookupProgram(), [binary], { stdio: 'pipe' });
     return true;

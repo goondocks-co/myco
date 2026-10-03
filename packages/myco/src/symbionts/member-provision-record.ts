@@ -1,13 +1,11 @@
 /**
- * What a member's provisioning set up, and with which build (#1499).
- *
- * 2.0 has no updater that runs on its own, so a member's agent hooks, MCP entries and skill links are refreshed when
- * the binary changes: `myco upgrade` and `myco update` re-run the provisioning this record names, and `myco doctor`
- * reports a record written by another build, or none, as setup to refresh.
+ * The member's provisioned harnesses, their registered binaries, and pending hook trust actions.
+ * Helper passes and updates reconcile the harnesses this record names through the installer.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 
 /** The record, under the member home. */
 export const PROVISION_RECORD = path.join('member', 'provisioned.json');
@@ -19,6 +17,10 @@ export interface ProvisionRecord {
   serverUrl: string;
   /** The agents provisioning set up, by manifest name. */
   agents: string[];
+  /** The binary each harness's last successful registration names. */
+  binaries?: Record<string, string>;
+  /** Hook trust actions waiting to reach the Deployment. */
+  pendingTrust?: Record<string, { action: string; at: number }>;
   at: number;
 }
 
@@ -31,7 +33,11 @@ export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
   try {
     const value = JSON.parse(fs.readFileSync(provisionRecordPath(mycoHome), 'utf8')) as Partial<ProvisionRecord>;
     if (typeof value.version !== 'string' || typeof value.serverUrl !== 'string' || !Array.isArray(value.agents)) return null;
-    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), at: Number(value.at ?? 0) };
+    const binaries = value.binaries !== null && typeof value.binaries === 'object' && !Array.isArray(value.binaries)
+      ? Object.fromEntries(Object.entries(value.binaries).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
+    const pendingTrust = value.pendingTrust !== null && typeof value.pendingTrust === 'object' && !Array.isArray(value.pendingTrust)
+      ? Object.fromEntries(Object.entries(value.pendingTrust).filter(([, trust]) => trust !== null && typeof trust === 'object' && typeof trust.action === 'string' && Number.isFinite(trust.at))) : undefined;
+    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), at: Number(value.at ?? 0) };
   } catch {
     return null;
   }
@@ -39,10 +45,41 @@ export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
 
 /** Record `agents` as provisioned for `serverUrl` by `version`, beside any agent recorded before for the same Deployment. */
 export function recordProvision(mycoHome: string, record: Omit<ProvisionRecord, 'at'> & { at?: number }, opts: { replace?: boolean } = {}): ProvisionRecord {
+  return withProvisionLock(mycoHome, () => writeProvisionRecord(mycoHome, record, opts));
+}
+
+function withProvisionLock<T>(mycoHome: string, fn: () => T): T {
+  fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
+  return withFileLockSync(`${provisionRecordPath(mycoHome)}.lock`, fn);
+}
+
+function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'at'> & { at?: number }, opts: { replace?: boolean } = {}): ProvisionRecord {
   const before = readProvisionRecord(mycoHome);
   const kept = !opts.replace && before !== null && before.serverUrl === record.serverUrl ? before.agents : [];
-  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), at: record.at ?? Date.now() };
+  const binaries = { ...(!opts.replace && before?.serverUrl === record.serverUrl ? before.binaries : {}), ...record.binaries };
+  const pendingTrust = record.pendingTrust ?? (!opts.replace && before?.serverUrl === record.serverUrl ? before.pendingTrust : undefined);
+  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), at: record.at ?? Date.now() };
+  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
   atomicWriteFileSync(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
   return next;
+}
+
+/** Hold a hook trust action until its report is accepted. */
+export function holdHookTrust(mycoHome: string, agent: string, action: string): void {
+  withProvisionLock(mycoHome, () => {
+    const record = readProvisionRecord(mycoHome);
+    if (record === null) throw new Error('Hook repair has no provisioned record');
+    writeProvisionRecord(mycoHome, { ...record, pendingTrust: { ...record.pendingTrust, [agent]: { action, at: Math.max(Date.now(), (record.pendingTrust?.[agent]?.at ?? 0) + 1) } } });
+  });
+}
+
+/** Accept only the trust actions this report carried; actions from a later repair remain pending. */
+export function settleHookTrust(mycoHome: string, reported: ProvisionRecord['pendingTrust']): void {
+  withProvisionLock(mycoHome, () => {
+    const record = readProvisionRecord(mycoHome);
+    if (record === null || reported === undefined || record.pendingTrust === undefined) return;
+    const pendingTrust = Object.fromEntries(Object.entries(record.pendingTrust).filter(([id, trust]) => reported[id]?.at !== trust.at));
+    if (Object.keys(pendingTrust).length !== Object.keys(record.pendingTrust).length) writeProvisionRecord(mycoHome, { ...record, pendingTrust });
+  });
 }

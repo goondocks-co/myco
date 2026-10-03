@@ -8,6 +8,8 @@ import { expandHome, resolveMycoHome } from '../grove/paths.js';
 import { isClaimedByPeer, readClaim, resolveClaimsHome, shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { commandVerdict, mcpVerdict, MEMBER_PLUGIN_MARKER, MYCO_PLUGIN_FILE_MARKER, pluginFileVerdict } from './legacy-verdict.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
+import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
 import {
@@ -99,8 +101,8 @@ export class MemberProvisionConflictError extends Error {}
  * whose own remedy differs from the one the message carries.
  */
 export class MemberMcpConflictError extends MemberProvisionConflictError {
-  constructor(message: string, readonly problem: string = message) {
-    super(message);
+  constructor(message: string, readonly problem: string = message, cause?: unknown) {
+    super(message, { cause });
   }
 }
 
@@ -1908,10 +1910,11 @@ export class SymbiontInstaller {
   }
 
   /** Refuses a member MCP write, naming what was found, that nothing was written, and the command to run once it is fixed. */
-  private memberMcpConflict(problem: string, remedy: string): MemberMcpConflictError {
+  private memberMcpConflict(problem: string, remedy: string, cause?: unknown): MemberMcpConflictError {
     return new MemberMcpConflictError(
       `${problem}, so nothing was written. ${remedy}, then run \`myco member provision ${this.manifest.name}\`.`,
       problem,
+      cause,
     );
   }
 
@@ -2018,7 +2021,7 @@ export class SymbiontInstaller {
       raw = fs.readFileSync(filePath, 'utf-8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file');
+      throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file', error);
     }
     try {
       const parsed: unknown = toml ? parseToml(raw) : JSON.parse(raw);
@@ -2240,9 +2243,12 @@ export class SymbiontInstaller {
     if (this.installScope === 'member-global') this.assertGlobalMemberOwnership();
   }
 
-  /** Retire this project's member registrations after their global replacements are written. */
+  /** Record global provisioning and retire this project's replaced member registrations. */
   private finishMemberInstall(result: InstallResult): InstallResult {
-    if (this.installScope !== 'member-global' || this.noProjectRoot) return result;
+    if (this.installScope !== 'member-global') return result;
+    const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.deploymentUrl;
+    if (serverUrl !== undefined) recordProvision(this.memberHomeDir(), { version: getPluginVersion(), serverUrl, agents: [this.manifest.name], binaries: { [this.manifest.name]: this.binaryPath() } });
+    if (this.noProjectRoot) return result;
     const local = this.projectMemberInstaller();
     const hooks = local.uninstallMemberHooks();
     const mcp = local.uninstallMemberMcp();
@@ -2320,6 +2326,45 @@ export class SymbiontInstaller {
     return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null))] };
   }
 
+  /** Existing global member registration evidence, admitted through the ownership guard. */
+  memberRegistrationPresent(): boolean {
+    this.assertGlobalMemberOwnership();
+    const target = this.resolveAbsoluteTarget('hooks');
+    if (target !== null && fs.existsSync(target)) {
+      if (this.isMemberPluginFile()) {
+        if (fs.readFileSync(target, 'utf8').includes(MEMBER_PLUGIN_MARKER)) return true;
+      } else if (hookCommands(this.readMcpFile(target, false)?.hooks).some((command) => rawHasMycoOwnershipSignal(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
+    }
+    const mcp = this.memberMcpTargetPath();
+    if (mcp === null) return false;
+    const toml = this.manifest.registration?.mcpFormat === 'toml';
+    const existing = this.mycoServerIn(mcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));
+    return existing !== null && this.isMemberMcpServer(existing);
+  }
+
+  /** Whether the member's managed hooks and MCP fields equal this build's declarations, preserving foreign fields. */
+  memberRegistrationCurrent(): boolean {
+    const target = this.resolveAbsoluteTarget('hooks');
+    if (target === null || !fs.existsSync(target)) return false;
+    if (this.isMemberPluginFile()) {
+      if (fs.readFileSync(target, 'utf8') !== this.renderMemberPlugin('registry')) return false;
+    } else {
+      const hooks = this.readMcpFile(target, false)?.hooks;
+      const managed = Object.fromEntries(Object.entries((hooks ?? {}) as Record<string, Record<string, unknown>[]>).flatMap(([event, groups]) => {
+        const owned = groups.filter(isMycoHookGroup);
+        return owned.length === 0 ? [] : [[event, owned]];
+      }));
+      if (!isDeepStrictEqual(managed, this.renderMemberHooks('registry'))) return false;
+    }
+    const targetMcp = this.memberMcpTargetPath();
+    const desired = this.renderMemberMcp('registry');
+    if (targetMcp === null || desired === null) return true;
+    const toml = this.manifest.registration?.mcpFormat === 'toml';
+    const expected = (toml ? tomlMemberServers(desired, this.projectRoot) : desired)[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
+    const existing = this.mycoServerIn(targetMcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));
+    return existing !== null && Object.entries(expected).every(([key, value]) => isDeepStrictEqual(existing[key], value));
+  }
+
   /**
    * What global provisioning would find, without writing: the refusal it would
    * raise, else the 1.4 homes whose registrations it would replace. The MCP
@@ -2344,6 +2389,8 @@ export class SymbiontInstaller {
   /** Global member provisioning cannot take another installation's capture or Deployment. */
   private assertGlobalMemberOwnership(): void {
     const memberHome = this.memberHomeDir();
+    const record = readProvisionRecord(memberHome);
+    const ownBinaries = [this.binaryPath(), managedBinaryPath(memberHome, process.platform), ...(record?.binaries?.[this.manifest.name] ? [record.binaries[this.manifest.name]] : [])];
     if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome() }) && !this.claimHeldByLegacyHome()) {
       throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation. Release its symbiont-config claim before provisioning globally.');
     }
@@ -2371,7 +2418,7 @@ export class SymbiontInstaller {
         const settings = this.readMcpFile(target, false);
         const commands = hookCommands(settings?.hooks)
           .filter((command) => rawHasMycoOwnershipSignal(command) && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
-        const foreign = commands.find((command) => !command.includes(CREDENTIAL_FLAG) || !command.includes(this.binaryPath()));
+        const foreign = commands.find((command) => parseCredentialFlag(command.split(/\s+/)) !== 'registry' || !ownBinaries.some((binary) => command.startsWith(`${binary} `)));
         if (foreign !== undefined) {
           throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). Complete its capture cutover before provisioning globally.`);
         }
@@ -2384,9 +2431,11 @@ export class SymbiontInstaller {
     if (existing === null) return;
     const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
     const helperKey = reg?.memberMcpHeadersHelperKey;
-    const sameCredentialSource = helperKey
-      ? existing[helperKey] === desired?.[helperKey]
-      : isDeepStrictEqual(existing.command, desired?.command) && isDeepStrictEqual(existing.args, desired?.args);
+    const helper = helperKey && typeof existing[helperKey] === 'string' ? existing[helperKey] as string : null;
+    const argv = Array.isArray(existing.command) ? existing.command : [existing.command, ...(Array.isArray(existing.args) ? existing.args : [])];
+    const sameCredentialSource = helper !== null
+      ? ownBinaries.some((binary) => helper.startsWith(`${binary} member mcp-headers `)) && parseCredentialFlag(helper.split(/\s+/)) === 'registry'
+      : argv.every((arg): arg is string => typeof arg === 'string') && ownBinaries.includes(argv[0]) && parseCredentialFlag(argv) === 'registry';
     const legacy = this.legacyHomes.length > 0 && mcpVerdict(existing, this.legacyHomes) === 'legacy';
     if (!legacy && (!this.isMemberMcpServer(existing) || existing.url !== desired?.url || !sameCredentialSource)) {
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Complete its capture cutover before replacing the global entry');

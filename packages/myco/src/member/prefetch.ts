@@ -16,8 +16,8 @@
  */
 import { cacheMachineSettings } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
-import { FEATURES_HEADER, featuresNamed, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
+import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
 import { refusalPermanent } from './constants.js';
 import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
@@ -146,7 +146,7 @@ export function watchingFeatures(fetchImpl: FetchLike, opts: { spoolDir: string;
   return async (input, init) => {
     const res = await fetchImpl(input, init);
     if (res.headers.get(PROTOCOL_HEADER) !== null) {
-      const features = featuresNamed(res.headers.get(FEATURES_HEADER));
+      const features = cachedDeploymentFeatures(res.headers.get(FEATURES_HEADER));
       const named = features.join(',');
       if (named !== known) {
         known = named;

@@ -14,6 +14,7 @@ import { helperPass } from '../member/helper-pass.js';
 import { kickWaitingProjects } from '../member/sweep.js';
 import { recordStartingJob, type DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { FetchLike } from '../member/transport.js';
+import { keepCurrent, reportHarnesses } from '@myco/cli/member-keep-current.js';
 
 export { helperPass } from '../member/helper-pass.js';
 
@@ -62,6 +63,7 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
 async function helperPasses(projectId: string, mycoHome: string, afterFailure: boolean, deps: HelperVerbDeps): Promise<HelperRunResult> {
   const now = deps.now ?? Date.now;
   const started = now();
+  const pass = deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass(projectId, mycoHome, deps));
   let result: HelperRunResult;
   try {
     result = await runHelper({
@@ -73,7 +75,12 @@ async function helperPasses(projectId: string, mycoHome: string, afterFailure: b
       deadlineMs: deps.deadlineMs,
       spawn: deps.spawn,
       afterFailure,
-      pass: deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass(projectId, mycoHome, deps)),
+      pass: async (deadline, options) => {
+        const repaired = keepCurrent(mycoHome);
+        const delivered = await pass(deadline, options);
+        await reportHarnesses(repaired, mycoHome, deadline, deps);
+        return delivered;
+      },
     });
   } catch (err) {
     // Written while stderr is still the helper's log: a detached helper has nowhere else to say why it stopped.

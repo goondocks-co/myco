@@ -125,6 +125,13 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   const skills = managedSkillsDir(mycoHome);
   const missing: string[] = [];
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
+    try {
+      const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+        .withoutProjectRoot().forDeployment(record.serverUrl);
+      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco update\` to repair them now.`)];
+    } catch (error) {
+      return [row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`)];
+    }
     const target = manifest.registration?.globalSkillsTarget;
     if (!target) continue;
     const folder = skillsFolder(target);

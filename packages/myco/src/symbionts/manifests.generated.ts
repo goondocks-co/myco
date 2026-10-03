@@ -1316,6 +1316,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".codex/hooks.json",
       "memberHooksTarget": ".codex/hooks.json",
+      "memberHookTrustAction": "Restart Codex and trust Myco's hooks",
       "globalHooksTarget": "~/.codex/hooks.json",
       "globalMcpTarget": [
         {

@@ -13,6 +13,7 @@ const SRC = path.join(ROOT, 'packages/myco-server/src');
 /** Exact diagnostic text allowed at a non-dashboard seam, with its purpose. */
 const ALLOWED: Readonly<Record<string, string>> = {
   'core/settings.ts:deployment': 'Settings wire enum; the editor supplies a user-facing label.',
+  'core/recovery-hold.ts:producer': 'Operator recovery hold wire state; never a dashboard diagnostic.',
   'core/settings.ts:agent.harnesses. … .credential': 'Settings leaf address; the editor supplies a user-facing label.',
   'core/settings.ts:credential-source': 'Validation descriptor tag; the editor supplies a user-facing label.',
   'core/worker-selection.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
