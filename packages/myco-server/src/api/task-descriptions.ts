@@ -34,7 +34,7 @@ export async function handleTaskStartPreview(env: ServerEnv, ctx: OwnerContext):
   if (!startableByHand(task)) return badRequest('This task is not started by hand.');
   if (await resolveProjectSet(env.db, ctx.member, named) === null) return notFound();
   const [preview, allowance] = await Promise.all([
-    readTaskStartPreview(env, named[0]!, task, ctx.now),
+    readTaskStartPreview(env, named[0]!, task, ctx.member.id, ctx.now),
     memberAllowance(env, ctx, task),
   ]);
   return ok({ ...preview, allowance });

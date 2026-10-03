@@ -7,7 +7,7 @@
  * a source the model cannot read never holds the switch back, the new model is calibrated before search moves to it,
  * and a model larger than search stores stays refused.
  */
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, setSystemTime } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -298,7 +298,9 @@ for (const make of [hosted, selfHosted]) {
       t.models.failing.set(t.otherSize.model, t.name === 'hosted'
         ? { status: 0, words: 'AiError: 4006: you have used up your daily free allocation of 10,000 neurons, please upgrade' }
         : { status: 429, headers: { 'retry-after': '600' }, words: '' });
-      await t.step(now);
+      // The provider reads the wall clock for when a daily allowance renews; it is held at the step's instant.
+      setSystemTime(new Date(now));
+      try { await t.step(now); } finally { setSystemTime(); }
       const waiting = (await status(t))!;
       expect(waiting.state).toBe('building');
       expect(waiting.retryAt).toBe(t.name === 'hosted' ? Date.UTC(2026, 9, 3) : now + 600_000);

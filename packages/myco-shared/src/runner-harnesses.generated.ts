@@ -4,6 +4,7 @@
 export const RUNNER_HARNESSES = [
   {
     "id": "claude-code",
+    "name": "Claude Code",
     "asking": {
       "kind": "native"
     },
@@ -49,6 +50,7 @@ export const RUNNER_HARNESSES = [
   },
   {
     "id": "codex",
+    "name": "Codex",
     "asking": {
       "kind": "sandbox"
     },
@@ -83,6 +85,7 @@ export const RUNNER_HARNESSES = [
   },
   {
     "id": "opencode",
+    "name": "OpenCode",
     "asking": {
       "kind": "run-agent",
       "env": "OPENCODE_CONFIG_CONTENT",
@@ -136,6 +139,7 @@ export const RUNNER_HARNESSES = [
   },
   {
     "id": "cursor",
+    "name": "Cursor",
     "asking": {
       "kind": "run-home",
       "env": "CURSOR_CONFIG_DIR"
@@ -165,6 +169,7 @@ export const RUNNER_HARNESSES = [
   },
   {
     "id": "antigravity",
+    "name": "Google Antigravity",
     "asking": {
       "kind": "unheld"
     },

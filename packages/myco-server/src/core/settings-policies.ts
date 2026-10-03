@@ -69,7 +69,7 @@ export const embeddingPlatformOf = (env: ServerEnv): EmbeddingPlatform => env.em
 
 const scheduling: SettingPolicy = {
   id: 'scheduling',
-  owners: ['core/scheduled-tasks.ts'],
+  owners: ['core/schedule-rules.ts'],
   leaves: ['agent.scheduled_tasks_enabled', 'agent.scheduled_tasks_active_window_days', 'agent.cold_project_threshold_days',
     'cortex.canopy.refresh.background_enabled', 'cortex.canopy.refresh.background_period_minutes'],
   async resolve(env) {
@@ -109,7 +109,7 @@ const limits: SettingPolicy = {
 
 const workers: SettingPolicy = {
   id: 'workers',
-  owners: ['core/harness.ts'],
+  owners: ['core/worker-selection.ts'],
   leaves: ['worker.harness', 'worker.harness_fallback'],
   async resolve(env) {
     const { preferred, fallback } = await workerPreference(env);
@@ -252,7 +252,7 @@ const embedding: SettingPolicy = {
 /** Execution profiles hold the task they name while a stored value is unusable, so they report it as nothing in effect. */
 const executionProfiles: SettingPolicy = {
   id: 'execution-profiles',
-  owners: ['core/harness.ts'],
+  owners: ['core/worker-selection.ts'],
   leaves: CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.flatMap((tier) => [`agent.reasoning_map.${harness}.${tier}`, `agent.effort_map.${harness}.${tier}`]),
     `agent.harnesses.${harness}.credential`,
@@ -276,7 +276,7 @@ const executionProfiles: SettingPolicy = {
 /** Task overrides apply entry by entry; a malformed entry holds its own task, as `taskTiers` reports. */
 const taskOverrides: SettingPolicy = {
   id: 'task-overrides',
-  owners: ['core/harness.ts', 'core/scheduled-tasks.ts'],
+  owners: ['core/worker-selection.ts', 'core/schedule-rules.ts'],
   leaves: ['agent.tasks'],
   selfJudged: true,
   async resolve(env) {

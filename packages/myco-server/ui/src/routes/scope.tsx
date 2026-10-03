@@ -22,6 +22,7 @@ const ONE_PROJECT_REASONS: Readonly<Record<string, string>> = {
   [PROJECT_SETTINGS_SUFFIX]: 'These settings belong to one project.',
 };
 const RECORD_REASON = 'This page belongs to one project.';
+const LEAVES_RECORD = 'Leaves this page for the list across every project.';
 
 /** The path under `/p/:project` with no trailing slash, or null for a path under no project. */
 function underProject(pathname: string): string | null {
@@ -32,7 +33,8 @@ function underProject(pathname: string): string | null {
 /**
  * The "All projects" row for a path: on a page's all-projects form it is the
  * scope now; under a project it leads to that form, keeping the list's
- * filters; a record, or a page drawn per project, says why it has none.
+ * filters, and from a record to its list's form, saying it leaves the record;
+ * a page drawn per project says why it has none.
  */
 export function scopeAll(location: { pathname: string; search: string }): ScopeAll | null {
   const rest = underProject(location.pathname);
@@ -40,9 +42,10 @@ export function scopeAll(location: { pathname: string; search: string }): ScopeA
     return allProjectsSuffix(location.pathname) === null ? null : { href: `${location.pathname}${keptFilters(location.search)}`, active: true };
   }
   const suffix = pageSuffix(location.pathname);
-  if (rest !== suffix) return { reason: RECORD_REASON };
   const clear = clearProjectHref(location);
-  return clear === null ? { reason: ONE_PROJECT_REASONS[suffix] ?? RECORD_REASON } : { href: clear, active: false };
+  if (clear === null) return { reason: ONE_PROJECT_REASONS[suffix] ?? RECORD_REASON };
+  // From a record, every project's form is its list's: taking it leaves the record, and the row says so.
+  return rest === suffix ? { href: clear, active: false } : { href: clear, active: false, leaves: LEAVES_RECORD };
 }
 
 /** The scope this path shows, in the words its switcher says it: "All projects" or the project's name. */

@@ -298,13 +298,18 @@ describe('the scope switcher', () => {
       ['all', 'All projects'], ['project', expect.stringContaining('Alpha')], ['project', expect.stringContaining('Beta')],
     ]);
     const [, alpha, beta] = scopeOptions(menu);
-    expect(alpha!.getAttribute('aria-current')).toBe('true');
+    // Each is a radio choice: the scope now is the checked one.
+    expect(scopeOptions(menu).map((option) => [option.getAttribute('role'), option.getAttribute('aria-checked')])).toEqual([['menuitemradio', 'false'], ['menuitemradio', 'true'], ['menuitemradio', 'false']]);
+    expect(alpha!.getAttribute('aria-checked')).toBe('true');
     expect(beta!.textContent).toContain('194');
     // Each row reads as its name, its session count and its recency in words: the dot is never the only telling.
     expect(within(beta!).getByText(', 194 sessions, no activity today').className).toContain('sr-only');
     expect(within(alpha!).getByText(', 681 sessions, active in the last hour').className).toContain('sr-only');
-    expect(within(menu).getByRole('group', { name: 'Projects' }).getAttribute('tabindex')).toBe('0');
-    expect(within(menu).getByRole('menuitem', { name: 'Every project, in detail' }).getAttribute('href')).toBe('/projects');
+    // Nothing in the list is a scroll region Tab would have to reach, which a menu never moves to: arrow keys reach every row.
+    expect(menu.querySelector('[data-scope-projects]')).toBeNull();
+    expect([menu, ...menu.querySelectorAll<HTMLElement>('*')].some((node) => /overflow-y-(auto|scroll)/.test(node.className))).toBe(false);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Every project, in detail' }));
+    await waitFor(() => expect(location()).toBe('/projects'));
   });
 
   it('keeps the section and the list filters when it switches, between projects and to All projects', async () => {
@@ -332,14 +337,37 @@ describe('the scope switcher', () => {
     mount('/p/alpha/knowledge/map');
     const menu = await openScope();
     expect(scopeOptions(menu).map((option) => option.getAttribute('data-scope-option'))).toEqual(['project', 'project']);
-    expect(menu.querySelector('[data-scope-all-reason]')!.textContent).toBe('The code map is drawn for one project at a time.');
+    const reason = menu.querySelector('[data-scope-all-reason]')!;
+    expect(reason.textContent).toBe('The code map is drawn for one project at a time.');
+    // The reason is the list's description, so it is announced with it.
+    expect(menu.getAttribute('aria-describedby')).toBe(reason.id);
     expect(scopeAll({ pathname: '/p/alpha/settings', search: '' })).toEqual({ reason: 'These settings belong to one project.' });
-    for (const pathname of ['/p/alpha/sessions/s1', '/p/alpha/spores/sp1', '/p/alpha/plans/k1', '/p/alpha/work/runs/r1']) {
-      expect({ pathname, all: scopeAll({ pathname, search: '' }) }).toEqual({ pathname, all: { reason: 'This page belongs to one project.' } });
+    // From a record, "All projects" leads to its list across every project, and says it leaves the record.
+    for (const [pathname, href] of [['/p/alpha/sessions/s1', '/sessions'], ['/p/alpha/spores/sp1', '/knowledge'], ['/p/alpha/plans/k1', '/knowledge/plans'], ['/p/alpha/work/runs/r1', '/work']] as const) {
+      expect({ pathname, all: scopeAll({ pathname, search: '' }) }).toEqual({ pathname, all: { href, active: false, leaves: 'Leaves this page for the list across every project.' } });
     }
     expect(scopeAll({ pathname: '/p/alpha/sessions', search: '?q=fix&tab=x' })).toEqual({ href: '/sessions?q=fix', active: false });
     expect(scopeAll({ pathname: '/work/tasks', search: '' })).toEqual({ href: '/work/tasks', active: true });
     expect(scopeAll({ pathname: '/settings', search: '' })).toBeNull();
+  });
+
+  it('shows six projects at a time, the scope kept on the first page, and every other a page away, never a scroll', async () => {
+    const many = Array.from({ length: 14 }, (_, i) => project(`p${i}`, `Project ${String(i).padStart(2, '0')}`, i, NOW - i * 60_000));
+    server({ ...signedIn(), '/api/projects': () => Response.json({ projects: many }) });
+    mount('/p/p11/sessions');
+    let menu = await openScope();
+    const names = () => scopeOptions(menu).filter((option) => option.getAttribute('data-scope-option') === 'project').map((option) => option.textContent!.slice(0, 10));
+    expect(names()).toEqual(['Project 00', 'Project 01', 'Project 02', 'Project 03', 'Project 04', 'Project 11']);
+    const more = within(menu).getByRole('menuitem', { name: 'More projects (8 more)' });
+    fireEvent.click(more);
+    menu = await screen.findByRole('menu', { name: /^Showing: / });
+    await waitFor(() => expect(names()).toEqual(['Project 05', 'Project 06', 'Project 07', 'Project 08', 'Project 09', 'Project 10']));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'More projects (2 more)' }));
+    await waitFor(() => expect(names()).toEqual(['Project 12', 'Project 13']));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Back to the most recent' }));
+    await waitFor(() => expect(names()[0]).toBe('Project 00'));
+    fireEvent.click(scopeOptions(menu).find((option) => option.textContent!.startsWith('Project 02'))!);
+    await waitFor(() => expect(location()).toBe('/p/p2/sessions'));
   });
 
   it('shows no switcher on a page for the whole server, and says it applies to every project', async () => {

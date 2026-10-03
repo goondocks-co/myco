@@ -105,7 +105,7 @@ describe('an archived project\'s home and navigation', () => {
     const menu = await screen.findByRole('menu', { name: /^Showing: / });
     const items = [...menu.querySelectorAll('[data-scope-option="project"]')];
     expect(items.map((a) => a.textContent)).toEqual([expect.stringContaining('Live'), expect.stringContaining('Arch')]);
-    expect(items[1]!.getAttribute('aria-current')).toBe('true');
+    expect(items[1]!.getAttribute('aria-checked')).toBe('true');
   });
 
   it('keeps an archived project out of the scope switcher on a live project\'s pages, and picking another project keeps the page and remembers the pick', async () => {

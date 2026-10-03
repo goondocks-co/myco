@@ -91,7 +91,7 @@ for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATR
       const dialog = page.getByRole('dialog', { name: 'Learn from new sessions now?' });
       await expect(dialog).toBeVisible();
       await expect(dialog.locator('[data-run-task-project]')).toHaveCount(0);
-      await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|It would wait: .+|No machine running Myco’s worker has checked in lately.+)$/);
+      await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|At its \w+ tier, it will run on whichever machine is free first: .+|No machine that runs Myco’s tasks has checked in lately.+|[A-Z].+\.)$/);
       await expect(dialog.getByRole('switch', { name: 'Start fresh' })).toHaveCount(role === 'admin' ? 1 : 0);
       if (role === 'member') await expect(dialog.locator('[data-allowance]')).toBeVisible();
       await expectFits(page, viewport);
@@ -120,7 +120,7 @@ for (const { viewport, mode } of SHOT_MATRIX) {
       await shoot(page, 'tasks-all-run-now', viewport, mode, process.env.MYCO_TASKS_SHOTS);
       await dialog.getByRole('button', { name: 'Project: Choose a project' }).click();
       const project = (JSON.parse(screensEnv('projects')) as Array<{ projectId: string; name: string }>)[0]!;
-      await page.getByRole('menu').getByRole('menuitem', { name: new RegExp(`^${project.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`) }).click();
+      await page.getByRole('menu').getByRole('menuitemradio', { name: new RegExp(`^${project.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`) }).click();
       await expect(dialog.getByRole('button', { name: `Project: ${project.name}` })).toBeVisible();
       await expect(dialog.locator('[data-run-on]')).toBeVisible();
       await shoot(page, 'tasks-all-run-now-picked', viewport, mode, process.env.MYCO_TASKS_SHOTS);

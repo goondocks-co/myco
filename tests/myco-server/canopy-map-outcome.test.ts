@@ -29,7 +29,7 @@ import { MAP_SOURCE_UNPINNED } from '@myco-server-worker/mcp/tools/run-map.js';
 import { NO_MAP_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
-import { heldByWords } from '@goondocks/myco-shared/run-holds';
+import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
@@ -127,7 +127,7 @@ describe('a map run a worker claimed', () => {
 
     // A worker built before the listing asks, and no worker that writes one has been heard from.
     expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ claimed: false, reason: 'no_work' });
-    expect({ holder: holder(), words: heldByWords(holder()) }).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, words: expect.stringContaining('too old to run it') });
+    expect({ holder: holder(), words: holdSentence(holder()) }).toEqual({ holder: REPOSITORY_DIGESTS_CAPABILITY, words: expect.stringContaining('too old to run it') });
     // A worker that checks nothing out waits on the checkout first.
     expect(await claim([])).toEqual({ claimed: false, reason: 'no_work' });
     expect(holder()).toBe(REPOSITORY_CHECKOUT_CAPABILITY);

@@ -202,7 +202,7 @@ test.describe('Myco’s work', () => {
         const dialog = page.getByRole('dialog', { name: 'Update the code map now?' });
         await expect(dialog).toBeVisible();
         // Where it would run, as the server resolves it now, or what it would wait for.
-        await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|It would wait: .+|No machine running Myco’s worker has checked in lately.+)$/);
+        await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|At its \w+ tier, it will run on whichever machine is free first: .+|No machine that runs Myco’s tasks has checked in lately.+|[A-Z].+\.)$/);
         await expect(dialog.locator('[data-spend]')).toContainText('This spends model tokens.');
         if (onFixture()) await expect(dialog.locator('[data-spend]')).toContainText('This week’s updates each used 24K tokens, about $0.48 by the agent’s estimate.');
         // Only an admin may start a task fresh; a member never sees the choice.

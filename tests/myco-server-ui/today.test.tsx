@@ -638,11 +638,11 @@ describe('Today', () => {
       fireEvent.keyDown(await screen.findByRole('button', { name: /^Showing: / }), { key: 'Enter' });
       return screen.findByRole('menu', { name: /^Showing: / });
     };
-    const myco = within(await open()).getAllByRole('menuitem').find((a) => a.textContent!.includes('Myco'))!;
-    expect(myco.getAttribute('href')).toBe(`/p/${P_MYCO}`);
+    const myco = within(await open()).getAllByRole('menuitemradio').find((a) => a.textContent!.includes('Myco'))!;
+    expect(myco.getAttribute('aria-checked')).toBe('false');
     fireEvent.click(myco);
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe(`/p/${P_MYCO}`));
-    fireEvent.click(within(await open()).getByRole('menuitem', { name: 'All projects' }));
+    fireEvent.click(within(await open()).getByRole('menuitemradio', { name: 'All projects' }));
     await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/'));
   });
 

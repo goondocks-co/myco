@@ -1,4 +1,5 @@
 import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
+import type { RunWorker } from '../work/wire';
 
 /** The task catalogue answered by the server. */
 export interface TaskDescription {
@@ -28,6 +29,8 @@ export interface TaskDescription {
   availabilityNote: string | null;
   /** A person may start it by hand from Run a task. */
   startable: boolean;
+  /** The capability a project turns on for it to run there, or null for a task no capability gates. */
+  capability: string | null;
   promptTemplate: string | null;
   standingRules: string | null;
   templateVariants: readonly { name: string; prompt: string }[];
@@ -40,8 +43,11 @@ export interface TaskNamesAnswer { tasks: { task: string; name: string }[] }
 export interface TaskStartPreview {
   task: string;
   projectId: string;
-  /** The agent, tier, model and effort the first able worker would run it with; null when none could take it now. */
-  execution: { harness: string; tier: ReasoningTier; model: string; effort: string | null } | null;
+  /**
+   * Each distinct agent, tier, model and effort the machines that checked in lately would run it with, and which
+   * machines would; whichever asks next takes it. Empty when none could take it now.
+   */
+  executions: Array<{ harness: string; tier: ReasoningTier; model: string; effort: string | null; workers: RunWorker[] }>;
   /** What a queued run would wait under while no worker can take it, in the holder vocabulary of `run-holds`; null when one can. */
   heldBy: string | null;
   /** How many workers have been heard from lately. */

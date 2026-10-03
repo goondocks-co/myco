@@ -388,12 +388,13 @@ describe('the session reading page', () => {
     mount('/p/x/sessions/s1');
     const title = await screen.findByRole('heading', { level: 1 });
     expect(title.textContent).toBe('Flaky test port collision fixed');
-    // The page names its project in the scope switcher beside its breadcrumbs, and offers no "All projects": it belongs to one.
+    // The page names its project in the scope switcher beside its breadcrumbs.
     const scope = screen.getByRole('button', { name: 'Showing: Project X' });
     fireEvent.keyDown(scope, { key: 'Enter' });
     const scopes = await screen.findByRole('menu', { name: /^Showing: / });
-    expect(scopes.querySelector('[data-scope-option="all"]')).toBeNull();
-    expect(scopes.querySelector('[data-scope-all-reason]')!.textContent).toBe('This page belongs to one project.');
+    // "All projects" leads to the list across every project, and says it leaves this page.
+    expect(scopes.querySelector('[data-scope-option="all"]')!.textContent).toBe('All projectsLeaves this page for the list across every project.');
+    expect(scopes.querySelector('[data-scope-all-reason]')).toBeNull();
     fireEvent.keyDown(scopes, { key: 'Escape' });
     const page = document.querySelector('[data-session-page]')!;
     const summary = page.querySelector('[data-summary]')!;

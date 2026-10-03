@@ -154,14 +154,14 @@ test.describe('dashboard shell', () => {
         await expect(list).toBeVisible();
         const options = list.locator('[data-scope-option]');
         await expect(options.first()).toHaveText('All projects');
-        await expect(list.locator('[data-scope-option="project"][aria-current="true"]')).toHaveCount(1);
-        await expect(list.getByRole('menuitem', { name: 'Every project, in detail' })).toHaveAttribute('href', '/projects');
+        await expect(list.locator('[data-scope-option="project"][aria-checked="true"]')).toHaveCount(1);
+        await expect(list.getByRole('menuitem', { name: 'Every project, in detail' })).toBeVisible();
         await expectFits(page, viewport);
         await expectNoRawIds(page, '[role="menu"]');
         await expectAxeClean(page, ['[role="menu"]']);
         await shoot(page, 'scope-switcher', viewport, mode);
         // A pick keeps the section and the list's filters; All projects leads to the section's form across every project.
-        const other = list.locator('[data-scope-option="project"]:not([aria-current="true"])').first();
+        const other = list.locator('[data-scope-option="project"]:not([aria-checked="true"])').first();
         if (await other.count() > 0) {
           await other.click();
           await expect(page).toHaveURL(/\/p\/[^/]+\/sessions\?state=ended$/);

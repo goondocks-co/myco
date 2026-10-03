@@ -4,7 +4,7 @@
  * machine by its name, a member by theirs, and Myco's own schedule as "its
  * schedule". Nothing here names a mechanism or shows an id.
  */
-import { heldByWords } from '@goondocks/myco-shared/run-holds';
+import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import type { OutcomeKind, Range, WorkRun } from '../today/wire';
 import { causeSentence, clockTime, count, when } from '../today/words';
 import { memberLabel } from '../../lib/member-name';
@@ -205,13 +205,6 @@ export const CAPABILITY_NAMES: Readonly<Record<string, string>> = {
   cortex: 'Context for sessions',
 };
 
-/** The capability each task needs switched on. */
-export const TASK_CAPABILITY: Readonly<Record<string, string>> = {
-  'extract-curate': 'vault_evolution',
-  'vault-seed': 'vault_evolution',
-  'canopy-map': 'canopy',
-};
-
 /** "Learning is switched off for this project." */
 export function capabilityOffWords(capability: string): string {
   return `${CAPABILITY_NAMES[capability] ?? 'This task'} is switched off for this project.`;
@@ -291,12 +284,12 @@ export function spendWords(spend: { tokens: Range; costUsd: Range; durationMs: R
   };
 }
 
-/** A queued run's line: its place in the queue and what holds it. */
+/** A queued run's line, without its last stop: its place in the queue, then what holds it, in the holder's own sentence. */
 export function queuedWords(run: { position: number | null; heldBy: string | null }): string {
   const ahead = run.position ?? 0;
   const turn = ahead === 0 ? 'next in line' : `${ahead} ahead of it`;
-  const holder = run.heldBy === null ? 'a limit' : (heldByWords(run.heldBy) ?? run.heldBy);
-  return `waiting — ${turn} · held by ${holder}`;
+  const held = run.heldBy === null ? 'A limit on runs is holding it.' : holdSentence(run.heldBy) ?? 'A limit on runs is holding it.';
+  return `${turn}. ${held.replace(/\.$/, '')}`;
 }
 
 /** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */
@@ -383,15 +376,20 @@ export function readinessWords(readiness: { condition: string; met: boolean }): 
   return words === undefined ? null : readiness.met ? words.met : words.unmet;
 }
 
-/** "Claude Code with Sonnet at medium effort, its default tier." */
-export function executionWords(execution: { harness: string; tier: string; model: string; effort: string | null }, label: (harness: string) => string, model: (id: string) => string): string {
-  return `${label(execution.harness)} with ${model(execution.model)}${execution.effort === null ? '' : ` at ${execution.effort} effort`}, its ${execution.tier} tier`;
+/** "Claude Code with Sonnet at medium effort". */
+export function agentWords(execution: { harness: string; model: string; effort: string | null }, label: (harness: string) => string, model: (id: string) => string): string {
+  return `${label(execution.harness)} with ${model(execution.model)}${execution.effort === null ? '' : ` at ${execution.effort} effort`}`;
 }
 
-/** Why a run started now would wait for a worker, from what the server says would hold it and how many workers it has heard from lately. */
+/** "Claude Code with Sonnet at medium effort, its default tier". */
+export function executionWords(execution: { harness: string; tier: string; model: string; effort: string | null }, label: (harness: string) => string, model: (id: string) => string): string {
+  return `${agentWords(execution, label, model)}, its ${execution.tier} tier`;
+}
+
+/** Why a run started now would wait, from what the server says would hold it and how many machines have checked in lately. */
 export function waitWords(heldBy: string, workers: number): string {
-  if (workers === 0) return 'No machine running Myco’s worker has checked in lately, so it would wait until one does.';
-  return `It would wait: ${heldByWords(heldBy) ?? 'for a worker that can take it'}.`;
+  if (workers === 0) return 'No machine that runs Myco’s tasks has checked in lately, so it would wait until one does.';
+  return holdSentence(heldBy) ?? 'Waiting for a machine to pick it up.';
 }
 
 /** How many more runs of a task a member may start today, or null once they may start none. */

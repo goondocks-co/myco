@@ -14,7 +14,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import type { TaskStartPreview } from '@myco-server-worker/read/task-start.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
-import { noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
+import { credentialUnavailable, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
@@ -48,12 +48,13 @@ async function rig(settings: Record<string, unknown> = {}) {
   };
   await ensureMember(f.db, 'mem_worker', 0, 'admin', 'worker');
   const token = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'fixture' }, Date.now());
+  const second = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'fixture-2' }, Date.now());
   /** A worker heard from now, offering `harnesses` and reporting `capabilities`. */
-  const heard = (harnesses: string[], capabilities: string[] = []) => recordWorkerContact(f.db, {
-    credentialId: token.tokenId, machineId: 'fixture', offers: harnesses.map(offeredHarness), capabilities, reason: 'no_work', now: Date.now(),
+  const heard = (harnesses: string[], capabilities: string[] = [], credential = token) => recordWorkerContact(f.db, {
+    credentialId: credential.tokenId, machineId: credential === token ? 'fixture' : 'fixture-2', offers: harnesses.map(offeredHarness), capabilities, reason: 'no_work', now: Date.now(),
   });
   const claim = (harnesses: string[], capabilities: string[] = []) => claimNextRun(f.serverEnv, { tokenId: token.tokenId, machineId: 'fixture', harnesses: harnesses.map(offeredHarness), capabilities, now: Date.now() });
-  return { f, send, preview, heard, claim };
+  return { f, env, send, preview, heard, claim, second };
 }
 
 describe('previewing a task started by hand', () => {
@@ -63,7 +64,7 @@ describe('previewing a task started by hand', () => {
     const before = await r.preview('extract-curate');
     expect(before).toMatchObject({
       task: 'extract-curate', projectId: 'proj_1', heldBy: null, workers: 1, live: false, allowance: null,
-      execution: { harness: 'claude-code', tier: 'default', model: 'sonnet', effort: 'medium' },
+      executions: [{ harness: 'claude-code', tier: 'default', model: 'sonnet', effort: 'medium' }],
       capability: { name: 'vault_evolution', on: true },
       readiness: { condition: 'has-unprocessed-prompts', met: false },
     });
@@ -71,24 +72,57 @@ describe('previewing a task started by hand', () => {
     expect((await r.preview('extract-curate')).live).toBe(true);
     const claimed = await r.claim(['claude-code']);
     if (!claimed.claimed) throw new Error(`not claimed: ${claimed.reason}`);
-    expect({ harness: claimed.run.harness, tier: claimed.run.profile.tier, model: claimed.run.profile.model, effort: claimed.run.profile.effort }).toEqual(before.execution!);
+    const { workers: _workers, ...execution } = before.executions[0]!;
+    expect({ harness: claimed.run.harness, tier: claimed.run.profile.tier, model: claimed.run.profile.model, effort: claimed.run.profile.effort }).toEqual(execution);
   });
 
   it('follows a Settings change to the task’s tier', async () => {
     const r = await rig({ 'worker.harness': 'claude-code', 'agent.tasks': { 'extract-curate': { reasoningLevel: 'high' } } });
     await r.heard(['claude-code']);
-    expect((await r.preview('extract-curate')).execution).toEqual({ harness: 'claude-code', tier: 'high', model: 'opus', effort: 'high' });
+    expect((await r.preview('extract-curate')).executions).toMatchObject([{ harness: 'claude-code', tier: 'high', model: 'opus', effort: 'high' }]);
+  });
+
+  it('names every way the machines heard from lately would run it, with each machine, when they disagree', async () => {
+    const r = await rig({ 'agent.reasoning_map.codex.default': 'gpt-6-sol' });
+    await r.heard(['claude-code']);
+    await r.heard(['codex'], [], r.second);
+    const both = await r.preview('extract-curate');
+    expect(both.heldBy).toBeNull();
+    expect(both.executions.map(({ harness, model, effort, workers }) => ({ harness, model, effort, machines: workers.map((worker) => worker.machineId) })).sort((a, b) => a.harness.localeCompare(b.harness))).toEqual([
+      { harness: 'claude-code', model: 'sonnet', effort: 'medium', machines: ['fixture'] },
+      { harness: 'codex', model: 'gpt-6-sol', effort: 'medium', machines: ['fixture-2'] },
+    ]);
+    // A machine is named only to the member it belongs to; to anyone else it reads as that member's.
+    for (const execution of both.executions) for (const worker of execution.workers) expect(worker).toMatchObject({ machineName: null, member: { id: 'mem_worker' } });
+    // Machines that agree are one way of running it, naming both.
+    await r.heard(['claude-code'], [], r.second);
+    const agree = await r.preview('extract-curate');
+    expect(agree.executions).toHaveLength(1);
+    expect(agree.executions[0]!.workers.map((worker) => worker.machineId).sort()).toEqual(['fixture', 'fixture-2']);
+  });
+
+  it('counts a stored server login as usable without opening it, so a broken wrapping key never fails the preview', async () => {
+    const r = await rig({ 'worker.harness': 'codex', 'agent.reasoning_map.codex.default': 'gpt-6-sol', 'agent.harnesses.codex.credential': 'deployment' });
+    await r.heard(['codex']);
+    expect(await r.preview('extract-curate')).toMatchObject({ executions: [], heldBy: credentialUnavailable('codex') });
+    r.f.sqlite.query(`INSERT INTO deployment_secrets (name, ciphertext, iv, key_version, updated_at, updated_by) VALUES ('codex', 'not-a-ciphertext', 'not-an-iv', 1, 1, 'test')`).run();
+    const broken = { ...r.env, SECRET_WRAP_KEY: { get: async () => { throw new Error('the wrapping key is unavailable'); } } };
+    const response = await worker.fetch(new Request(`https://s/api/tasks/start?${new URLSearchParams({ project: 'proj_1', task: 'extract-curate' })}`, {
+      headers: { cookie: await ownerCookie(Date.now()), 'cf-connecting-ip': '1.2.3.4' },
+    }), broken);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ heldBy: null, executions: [{ harness: 'codex', model: 'gpt-6-sol' }] });
   });
 
   it('names what a queued run would wait for while no worker could take it', async () => {
     const r = await rig({ 'worker.harness': 'claude-code' });
-    expect(await r.preview('extract-curate')).toMatchObject({ execution: null, heldBy: 'worker', workers: 0 });
+    expect(await r.preview('extract-curate')).toMatchObject({ executions: [], heldBy: 'worker', workers: 0 });
     await r.heard(['claude-code']);
-    expect(await r.preview('canopy-map')).toMatchObject({ execution: null, heldBy: REPOSITORY_CHECKOUT_CAPABILITY, workers: 1 });
+    expect(await r.preview('canopy-map')).toMatchObject({ executions: [], heldBy: REPOSITORY_CHECKOUT_CAPABILITY, workers: 1 });
     r.f.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.reasoning_map.claude-code.default', 'null', 2, 'test')`).run();
-    expect(await r.preview('extract-curate')).toMatchObject({ execution: null, heldBy: noModelForTier('claude-code', 'default') });
+    expect(await r.preview('extract-curate')).toMatchObject({ executions: [], heldBy: noModelForTier('claude-code', 'default') });
     await recordWorkerContact(r.f.db, { credentialId: (r.f.sqlite.query(`SELECT credential_id AS id FROM worker_contacts`).get() as { id: string }).id, machineId: 'fixture', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], reason: 'no_work', now: Date.now() });
-    expect(await r.preview('vault-seed')).toMatchObject({ execution: null });
+    expect(await r.preview('vault-seed')).toMatchObject({ executions: [] });
     expect((await r.preview('extract-curate')).heldBy).toBe(profileUnsupported('claude-code'));
   });
 
@@ -125,6 +159,13 @@ describe('previewing a task started by hand', () => {
       ['/api/tasks/start?project=missing&task=extract-curate', 404],
     ] as const) expect({ path, status: (await r.send('GET', path, MEMBER_SUB)).status }).toEqual({ path, status });
     expect(r.f.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get()).toEqual({ n: 0 });
+  });
+
+  it('says a task switched off in every project is switched off for every project', async () => {
+    const r = await rig();
+    r.f.sqlite.run(`UPDATE project_capabilities SET enabled = 0 WHERE capability = 'canopy'`);
+    const tasks = (await r.send('GET', '/api/tasks')).body as { tasks: Array<{ task: string; availabilityNote: string | null; capability: string | null }> };
+    expect(tasks.tasks.find((task) => task.task === 'canopy-map')).toMatchObject({ availabilityNote: 'Switched off for every project', capability: 'canopy' });
   });
 
   it('marks exactly the tasks a person starts by hand in the task descriptions', async () => {
