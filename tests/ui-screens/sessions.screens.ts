@@ -201,9 +201,9 @@ test.describe('Sessions', () => {
     const project = fixtureProject();
     const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(project.projectId)}/sessions`, viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
     try {
-      await expect(page.getByText(`Every session your agents ran in ${project.name}.`)).toBeInViewport();
+      await expect(page.getByText('Every session your agents ran.')).toBeInViewport();
       await expect(page.getByRole('table', { name: 'Sessions' }).locator('thead th')).toHaveText(['Session', 'Agent', 'Size', 'Started']);
-      await expect(page.locator(`[data-project-filter-item][aria-current="true"]`)).toContainText(project.name);
+      await expect(page.locator('main [data-scope-current]')).toHaveText(project.name);
       // Filtering is the server's: an agent the project has no sessions from empties the table, and Clear brings it back.
       await page.getByRole('button', { name: /^Agent: / }).click();
       await page.getByRole('combobox', { name: 'Search agent' }).fill('Cursor');

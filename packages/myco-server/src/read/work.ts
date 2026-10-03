@@ -27,7 +27,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../core/task-catalogue.js';
 import { TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from '../core/runs.js';
-import { EMBEDDING_TASK } from '../core/embedding/jobs.js';
+import { EMBEDDING_TASK } from '../core/embedding/task.js';
 import { projectsDriving, projectsFiltering, type ProjectSet } from './scope.js';
 
 /** What an outcome task produces, in the words the dashboard groups work by. */

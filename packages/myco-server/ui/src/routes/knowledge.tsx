@@ -31,7 +31,7 @@ function KnowledgeRoute({ section }: { section: KnowledgeSection }) {
   if (standIn !== null) return standIn;
   if (section === 'map' && projectId === null) return <NotFound />;
   return (
-    <KnowledgeFrame projectId={projectId} projectName={projectId === null ? null : projectName(projectId)} section={section}>
+    <KnowledgeFrame projectId={projectId} section={section}>
       {section === 'spores' && <SporeStream key={projectId ?? ''} projectId={projectId} projectName={projectName} />}
       {section === 'plans' && <PlansBoard key={projectId ?? ''} projectId={projectId} projectName={projectName} />}
       {section === 'map' && projectId !== null && <CodeMap projectId={projectId} />}

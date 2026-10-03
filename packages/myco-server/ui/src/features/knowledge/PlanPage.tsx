@@ -10,6 +10,7 @@ import { cn } from '../../lib/cn';
 import { sessionHeadingText } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, projectPath } from '../../routes/nav';
+import { PageScope } from '../../routes/scope';
 import { TextOrBlob } from '../sessions/StoredText';
 import { dateTime } from '../sessions/words';
 import type { PlanFields } from './wire';
@@ -45,7 +46,10 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
   const setBy = plan.updatedBy === null ? null : authorName(plan.updatedBy, members.data?.members);
   return (
     <article data-plan-page="" className="flex w-full flex-col gap-s5">
-      <Breadcrumbs items={[{ label: 'Knowledge', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: 'Plans', to: projectPath(projectId, PLANS_SUFFIX) }, { label: projectName, to: projectPath(projectId) }]} />
+      <div className="flex flex-wrap items-center justify-between gap-s3">
+        <Breadcrumbs items={[{ label: 'Knowledge', to: projectPath(projectId, KNOWLEDGE_SUFFIX) }, { label: 'Plans', to: projectPath(projectId, PLANS_SUFFIX) }, { label: projectName, to: projectPath(projectId) }]} />
+        <PageScope />
+      </div>
 
       <div className="grid items-start gap-s6 lg:grid-reading lg:gap-x-s10">
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">

@@ -37,19 +37,25 @@ export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { runtimeProbePreferences } from './runtime-probe.js';
-import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
-import { HARNESS_CREDENTIALS, credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
-import type { ExecutionProfile, ProfileCapability, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
-import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
+import { credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
+import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import { taskTierRefusal } from './execution-profile.js';
+import {
+  capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, fleetSelection, harnessPreference, RUNTIME_SERVED_TASKS, selectExecution, workerPreference,
+  type FleetReport, type LoginStep, type OfferedHarness,
+} from './worker-selection.js';
+
+export {
+  capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS, workerPreference,
+  type FleetReport, type OfferedHarness,
+};
 import { admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
 /** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
 export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
-/** How long a run may take when its caller names no bound. */
-export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 /** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
 export const RUN_OVERRUN_MARGIN_MS = 120_000;
 export { MAX_RUN_ERROR_CHARS } from '../constants.js';
@@ -58,18 +64,6 @@ export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 /** The admission a capture-driven task carries into its container, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
-/**
- * The tasks the launch seam serves, which a worker cannot.
- *
- * One declares no tool: its whole surface is a server-side step loop over a
- * run route — `/runs/embedding-step` — rather than the MCP surface a worker's
- * harness speaks. The other is the containerized runtime's own end-to-end
- * proof, so serving it anywhere else would leave the path it exists to
- * exercise untested.
- *
- * These two are why the seam survives, and both retire with it.
- */
-export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', 'container-smoke'];
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
 export const REPLACED_REQUEUES_PER_DAY = 2;
 /** The window the per-day caps are counted over. */
@@ -100,18 +94,6 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
 
 /** Why a queued run is skipped rather than handed to a worker when its Project has turned its task's capability off. */
 export const CAPABILITY_OFF = 'capability_off';
-
-/** The capability a task needs turned on in a Project, or null for a task no capability gates. */
-export function capabilityOf(task: string): ProjectCapability | null {
-  const gate = admissionForTask(task);
-  return gate?.kind === 'capability' ? gate.capability as ProjectCapability : null;
-}
-
-/** Whether a Project has turned a capability on. */
-export async function capabilityOn(db: ServerEnv['db'], projectId: string, capability: ProjectCapability): Promise<boolean> {
-  const read = enabledCapabilities(db, [capability], projectId);
-  return read.read((await read.statement.all<Record<string, unknown>>()).results).length > 0;
-}
 
 /** A dispatch this Deployment can run: everything the launch needs, resolved and nothing yet written. */
 export interface PreparedDispatch {
@@ -502,11 +484,6 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
 }
 
 
-const parseLeaf = (value: string | undefined): unknown => {
-  if (value === undefined) return undefined;
-  try { return JSON.parse(value); } catch { return undefined; }
-};
-const str = (value: unknown): string | null => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
 const record = (value: unknown): Record<string, unknown> => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {});
 
 /** Whether the bound runtime accepts this task. */
@@ -834,13 +811,6 @@ export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now
 // Worker mode: the claim queue, the lease, and what returns a run to it (#1151)
 // ---------------------------------------------------------------------------
 
-/** A harness a worker has, and whether it is logged in. A worker offers these; the Deployment chooses among them. */
-export interface OfferedHarness {
-  id: string;
-  authenticated: boolean;
-  profile?: ProfileCapability;
-}
-
 /** What a claim answers a worker: the run, the harness chosen for it, the credentials it runs under, and what the worker lays out in the run's directory. */
 export interface ClaimedRun extends ClaimedRunRow {
   repository?: RepositoryCheckoutSpec;
@@ -860,78 +830,16 @@ export type ClaimOutcome =
   | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' | 'at_limit' };
 
 /**
- * Which harness runs this task: the Deployment's preference and fallback order,
- * intersected with what the worker actually has logged in. A per-task override
- * is read out of the `agent.tasks` document, the same way a provider override
- * is; there is no dotted-path leaf for it.
- *
- * A Deployment that names nothing takes whatever the worker offers. Settings
- * narrow the choice; their absence is not a refusal, so a machine with a
- * logged-in harness runs work the moment it attaches and an operator configures
- * a preference only to override that.
- *
- * Ids are matched against what the worker offers. A matching harness must also
- * carry a profile this Deployment can resolve and the worker can apply.
- * A preference nobody offers yields no run rather than a substitute, so an operator who
- * misspells a preference reads an unrun queue instead of work quietly sent to
- * another vendor on another vendor's key.
+ * The key a chosen agent's run is handed: nothing for a worker's own sign-in,
+ * else its one slot in this server's store, opened here and nowhere else, or
+ * the holder when the slot holds nothing the agent can use.
  */
-export function chooseHarness(preferred: string | null, fallback: readonly string[], override: string | null, offered: readonly OfferedHarness[]): string | null {
-  const ready = offered.filter((h) => h.authenticated).map((h) => h.id);
-  const wanted = [override ?? preferred, ...fallback].filter((id): id is string => typeof id === 'string' && id.length > 0);
-  if (wanted.length === 0) return ready[0] ?? null;
-  for (const id of wanted) if (ready.includes(id)) return id;
-  return null;
-}
-
-export function harnessPreference(byLeaf: ReadonlyMap<string, string>, task: string): { preferred: string | null; fallback: string[]; override: string | null } {
-  const fallbackLeaf = parseLeaf(byLeaf.get('worker.harness_fallback'));
-  return {
-    preferred: str(parseLeaf(byLeaf.get('worker.harness'))),
-    fallback: Array.isArray(fallbackLeaf) ? fallbackLeaf.filter((v): v is string => typeof v === 'string' && v.trim() !== '') : [],
-    override: str(taskOverride(byLeaf, task).harness),
-  };
-}
-
-/** The leaves a claim resolves its worker, profile and credential through. */
-export const CLAIM_SETTING_LEAVES: readonly string[] = ['worker.harness', 'worker.harness_fallback', 'agent.tasks', ...PROFILE_SETTING_LEAVES];
-
-/** The leaves a claim resolves its worker, profile and credential through, as they stand now. */
-export function claimSettings(env: Pick<ServerEnv, 'db'>): Promise<Map<string, string>> {
-  return settingTexts(env.db, CLAIM_SETTING_LEAVES);
-}
-
-/** The worker preference every claim resolves, as the Deployment's leaves hold it now. */
-export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ preferred: string | null; fallback: string[] }> {
-  const { preferred, fallback } = harnessPreference(await settingTexts(env.db, ['worker.harness', 'worker.harness_fallback']), '');
-  return { preferred, fallback };
-}
-
-/**
- * The credential the chosen harness reads, or nothing.
- *
- * Worker login leaves the environment unchanged. Server login opens only the
- * selected agent's slot and refuses a missing or unsupported credential.
- */
-async function harnessCredentialEnv(env: ServerEnv, harness: string, settings: ReadonlyMap<string, string>): Promise<{ credentialEnv: Record<string, string> } | { reason: string }> {
-  const configured = profileSetting(settings.get(`agent.harnesses.${harness}.credential`));
-  const source = configured === undefined ? env.harnessCredentialSource : configured;
-  const unavailable = { reason: credentialUnavailable(harness) };
-  const empty = { credentialEnv: {} };
-  if (source === 'worker-login') return empty;
-  if (source !== 'deployment') return unavailable;
-  const declared = HARNESS_CREDENTIALS[harness];
-  if (declared === undefined) return unavailable;
-  // Only the chosen harness's own slot is opened. A claim answering every
-  // key the Deployment holds would widen what one answer discloses to every
-  // provider at once, for keys the run cannot use; and a slot another use reads
-  // (the embedding provider's) is never a run's login.
-  if (declared.slot === null) return unavailable;
-  const key = await openHarnessCredential(env.db, env.wrappingKey, declared.slot);
-  if (key === null) return unavailable;
-  const credentialEnv = credentialEnvFor(harness, key);
-  return Object.keys(credentialEnv).length === 0 ? unavailable : { credentialEnv };
-}
+const claimLogin = (env: ServerEnv): LoginStep<Record<string, string>> => async (harness, plan) => {
+  if (plan.kind === 'worker-login') return { login: {} };
+  const key = await openHarnessCredential(env.db, env.wrappingKey, plan.slot);
+  const credentialEnv = key === null ? {} : credentialEnvFor(harness, key);
+  return Object.keys(credentialEnv).length === 0 ? { reason: credentialUnavailable(harness) } : { login: credentialEnv };
+};
 
 /**
  * Name on each queued repository run the worker capability it waits for, while no worker heard from lately
@@ -964,23 +872,10 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
 
 type SelectedExecution = { harness: string; profile: ExecutionProfile; credentialEnv: Record<string, string> };
 
-/** Resolve a task against one worker's offers in preference order. */
+/** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
-  const preference = harnessPreference(settings, task);
-  let remaining = [...offers];
-  let reason: string | null = null;
-  for (;;) {
-    const harness = chooseHarness(preference.preferred, preference.fallback, preference.override, remaining);
-    if (harness === null) return { selected: null, reason };
-    const offer = remaining.find((entry) => entry.id === harness)!;
-    const resolved = resolveExecutionProfile(task, harness, offer.profile, settings);
-    if ('profile' in resolved) {
-      const credential = await harnessCredentialEnv(env, harness, settings);
-      if ('credentialEnv' in credential) return { selected: { harness, profile: resolved.profile, credentialEnv: credential.credentialEnv }, reason: null };
-      reason ??= credential.reason;
-    } else reason ??= resolved.reason;
-    remaining = remaining.filter((entry) => entry.id !== harness);
-  }
+  const { selected, reason } = await selectExecution(env, task, offers, settings, claimLogin(env));
+  return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
 }
 
 /** Keep profile holders based on the recent fleet's offers and current Settings. */
@@ -995,18 +890,15 @@ async function recordProfileHolds(env: ServerEnv, worker: { tokenId: string; har
       await recordTaskHolder(env.db, [task], ['worker', ...CAPABILITY_HOLDS], tierRefusal, true);
       continue;
     }
-    const required = capabilitiesRequiredBy(task);
-    const reasons: string[] = [];
-    let served = false;
-    for (const report of reports) {
-      if (!required.every((capability) => report.capabilities.includes(capability))) continue;
-      const result = await selectWorkerExecution(env, task, report.offers, settings);
-      if (result.selected !== null) { served = true; break; }
-      if (result.reason !== null) reasons.push(result.reason);
-    }
-    const holder = served ? 'worker' : reasons.sort()[0] ?? 'worker';
+    const { holder } = await fleetExecution(env, task, reports, settings);
     await recordTaskHolder(env.db, [task], ['worker'], holder, true);
   }
+}
+
+/** What `reports` would run `task` under at a claim now, or the holder a queued run of it waits under (`fleetSelection`). */
+export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; holder: string }> {
+  const { selected, holder } = await fleetSelection(env, task, reports, settings, claimLogin(env));
+  return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, holder };
 }
 
 /**

@@ -9,6 +9,7 @@ import { useLiveSessions, useSessionList } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { cleanSessionText, sessionHeading } from '../../lib/session-text';
 import { projectPath } from '../../routes/nav';
+import { PageScope } from '../../routes/scope';
 import { sessionAt } from '../today/timeline';
 import type { SessionListRow } from './wire';
 import { agentFilter, agentName, count, memberFilter, SESSION_FILTER_KEYS, startedWords, STATE_FILTER, WINDOW_FILTER, windowBounds } from './words';
@@ -80,16 +81,16 @@ export function SessionsPage({ projectId, projectName }: SessionsPageProps) {
   ];
   const liveKeys = useMemo(() => new Set(liveRows.map(rowKey)), [liveRows]);
   const groups = useMemo(() => grouped(liveRows, list.rows.filter((row) => !liveKeys.has(rowKey(row))), now), [liveRows, list.rows, liveKeys, now]);
-  const scopedName = projectId === null ? null : projectName(projectId) ?? 'this project';
   const shown = liveRows.length + list.rows.filter((row) => !liveKeys.has(rowKey(row))).length;
 
   return (
     <div className="flex w-full flex-col gap-s5" data-sessions-page="">
       <div className="flex flex-col gap-s2">
-        <h1 className="t-display text-ink">Sessions</h1>
-        <p className="t-body text-muted">
-          {scopedName === null ? 'Every session your agents ran, across all projects.' : `Every session your agents ran in ${scopedName}.`}
-        </p>
+        <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
+          <h1 className="t-display text-ink">Sessions</h1>
+          <PageScope />
+        </div>
+        <p className="t-body text-muted">Every session your agents ran.</p>
       </div>
       <FilterBar
         searchLabel="Filter sessions"

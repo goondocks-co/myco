@@ -46,6 +46,7 @@ export function HealthPage() {
   return (
     <AdminPage
       name="health"
+      scope="server"
       title="Health"
       lede="Whether this server is well, what it does on its own, and anything that needs you."
     >

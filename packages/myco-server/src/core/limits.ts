@@ -13,7 +13,7 @@
 import type { RelationalStore } from './adapters.js';
 import { HELD_BY_WORDS, type CapabilityHold, type HeldBy } from '@goondocks/myco-shared/run-holds';
 
-export { HELD_BY_WORDS, heldByWords, type HeldBy } from '@goondocks/myco-shared/run-holds';
+export { HELD_BY_WORDS, holdSentence, type HeldBy } from '@goondocks/myco-shared/run-holds';
 import { settingTexts } from './settings.js';
 
 

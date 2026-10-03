@@ -7,9 +7,8 @@ import { calibrationPending } from './hubness.js';
 import { calibrationModel, completeEmbeddingSwitch, embeddingWorkPlan } from './switch.js';
 import { DELETION_DUE, PASSED_OVER, SOURCE_HELD, deletionDueBinds, passedOverBinds } from './reconcile.js';
 
-export const EMBEDDING_RETRY_MS = 60_000;
-export { EMBEDDING_TASK } from './task.js';
-import { EMBEDDING_TASK } from './task.js';
+export { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
+import { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
 export const PREVENT_DEEP_SLEEP_LEAF = 'embedding.prevent_deep_sleep';
 
 /** What a Project's embedding work covers while a switch stands, and whether the Project is archived. */

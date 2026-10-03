@@ -15,8 +15,10 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'core/settings.ts:deployment': 'Settings wire enum; the editor supplies a user-facing label.',
   'core/settings.ts:agent.harnesses. … .credential': 'Settings leaf address; the editor supplies a user-facing label.',
   'core/settings.ts:credential-source': 'Validation descriptor tag; the editor supplies a user-facing label.',
-  'core/harness.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
-  'core/harness.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
+  'core/worker-selection.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
+  'core/worker-selection.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
+  'core/settings-policies.ts:agent.harnesses. … .credential': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
+  'core/settings-policies.ts:worker.harness': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
   'core/execution-profile.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the execution profile.',
 
   'core/jobs.ts:worker-lease-sweep': 'Scheduled job identifier; housekeeping renders its outcome in its own words.',

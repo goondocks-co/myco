@@ -9,7 +9,7 @@ import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { recordTaskHolder } from '@myco-server-worker/core/runs.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
-import { PROFILE_HOLD_PREFIXES, credentialUnavailable, heldByWords, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
+import { PROFILE_HOLD_PREFIXES, credentialUnavailable, holdSentence, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { MODEL_CATALOG_FRESH_MS, PROFILE_HARNESSES, REASONING_TIERS, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
@@ -39,16 +39,16 @@ describe('task execution profiles', () => {
   it('renders and clears every registered execution-profile hold', async () => {
     const r = await rig();
     const cases = [
-      ['unsupported', profileUnsupported('claude-code'), "waiting for a worker that can apply the execution profile for claude-code; update this machine's Myco worker if it is older"],
-      ['invalid_tier', invalidTaskTier('extract-curate'), "this task's tier setting is invalid for extract-curate; correct it in Settings or reset the task tier"],
-      ['missing_model', noModelForTier('opencode', 'high'), "waiting for a model for opencode's high tier in Settings"],
-      ['missing_credential', credentialUnavailable('claude-code'), 'waiting for a usable server login for claude-code'],
+      ['unsupported', profileUnsupported('claude-code'), 'That machine’s Myco is too old to use the chosen model with Claude Code. Update it.'],
+      ['invalid_tier', invalidTaskTier('extract-curate'), 'This task’s tier setting isn’t valid. Correct it in Settings, or reset the task’s tier.'],
+      ['missing_model', noModelForTier('opencode', 'high'), 'OpenCode has no model chosen for the high tier. Choose one in Settings.'],
+      ['missing_credential', credentialUnavailable('claude-code'), 'Claude Code has no sign-in this server can use. Add one in Settings.'],
     ] as const;
     expect(PROFILE_HOLD_PREFIXES).toHaveLength(cases.length);
     for (const [id, holder, words] of cases) {
       r.queue(id);
       r.sqlite.run('UPDATE agent_runs SET held_by=? WHERE id=?', [holder, id]);
-      expect(heldByWords(holder)).toBe(words);
+      expect(holdSentence(holder)).toBe(words);
       expect(PROFILE_HOLD_PREFIXES.some((prefix) => holder.startsWith(prefix))).toBe(true);
     }
     await recordTaskHolder(r.db, ['extract-curate'], ['worker'], 'worker', true);
@@ -286,7 +286,7 @@ describe('task execution profiles', () => {
     expect(await r.claim()).toEqual({ claimed: false, reason: 'no_harness' });
     const held = (r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='bad_tier'`).get() as { held_by: string }).held_by;
     expect(held).toBe('invalid_task_tier:extract-curate');
-    expect(heldByWords(held)).toContain('extract-curate');
+    expect(holdSentence(held)).toBe('This task’s tier setting isn’t valid. Correct it in Settings, or reset the task’s tier.');
   });
 
   it('keeps malformed task Settings ahead of repository capability holds across repeat polls', async () => {

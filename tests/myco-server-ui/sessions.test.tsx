@@ -150,7 +150,8 @@ describe('the sessions table', () => {
     mount('/sessions');
     const table = await screen.findByRole('table', { name: 'Sessions' });
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Sessions');
-    expect(screen.getByText('Every session your agents ran, across all projects.')).toBeTruthy();
+    expect(screen.getByText('Every session your agents ran.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Showing: All projects' })).toBeTruthy();
     expect(columnHeadings(table)).toEqual(['Session', 'Project', 'Agent', 'Size', 'Started']);
     await waitFor(() => expect(within(table).getAllByRole('rowgroup').slice(1).map((g) => within(g).getAllByRole('row')[0]!.textContent)).toEqual(['Live now', 'Today', 'Yesterday']));
     const groups = within(table).getAllByRole('rowgroup').slice(1);
@@ -182,7 +183,8 @@ describe('the sessions table', () => {
     mount('/p/x/sessions');
     const table = await screen.findByRole('table', { name: 'Sessions' });
     expect(columnHeadings(table)).toEqual(['Session', 'Agent', 'Size', 'Started']);
-    expect(screen.getByText('Every session your agents ran in Project X.')).toBeTruthy();
+    expect(screen.getByText('Every session your agents ran.')).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Showing: Project X' })).toBeTruthy());
     expect(requested).toContain('/api/sessions?limit=50&project=x');
     expect(requested).toContain(livePath({ projectId: 'x' }));
   });
@@ -386,6 +388,14 @@ describe('the session reading page', () => {
     mount('/p/x/sessions/s1');
     const title = await screen.findByRole('heading', { level: 1 });
     expect(title.textContent).toBe('Flaky test port collision fixed');
+    // The page names its project in the scope switcher beside its breadcrumbs.
+    const scope = screen.getByRole('button', { name: 'Showing: Project X' });
+    fireEvent.keyDown(scope, { key: 'Enter' });
+    const scopes = await screen.findByRole('menu', { name: /^Showing: / });
+    // "All projects" leads to the list across every project, and says it leaves this page.
+    expect(scopes.querySelector('[data-scope-option="all"]')!.textContent).toBe('All projectsLeaves this page for the list across every project.');
+    expect(scopes.querySelector('[data-scope-all-reason]')).toBeNull();
+    fireEvent.keyDown(scopes, { key: 'Escape' });
     const page = document.querySelector('[data-session-page]')!;
     const summary = page.querySelector('[data-summary]')!;
     expect(summary.textContent).toBe('The test reserved a fixed port.\nIt now asks the kernel for one.');
