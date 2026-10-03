@@ -6,7 +6,8 @@ import { getRequestedWorkerProfile, type RunUpdate } from './runs.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
 import { profileModelVerdict, MODEL_MISMATCH, MODEL_UNCONFIRMED, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { FAILURE_REASON_KEY } from '../db/run-context.js';
-import { closeErrorCode, type RunErrorCode } from './reader-codes.js';
+import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from './reader-codes.js';
+import { shapeRunError } from '@goondocks/myco-shared/run-text';
 
 interface WorkerEnd extends WorkerRunIdentity {
   status: 'completed' | 'failed';
@@ -25,7 +26,8 @@ interface WorkerEnd extends WorkerRunIdentity {
  * as calls that failed or were refused before the harness ended its turn. That
  * is kept only where the run then fails to close, beside why it failed, so a
  * run that ended without its artifact says what cut it short. A run that
- * closed keeps no error.
+ * closed keeps no error. What the worker reported is kept only in a shape
+ * `shapeRunError` writes: a coded reason, never a harness's or a worker's words.
  */
 function runError(status: 'completed' | 'failed', unmet: string | null, reported: string | null): string | null {
   const error = unmet === null
@@ -45,7 +47,8 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
     ? { ...reportedIdentity, warnings: [...new Set([...(reportedIdentity.warnings ?? []), warning])] } : reportedIdentity;
   const unmet = run.status === 'completed' ? await runCloseRefusal(env.db, { projectId: run.projectId }, row) : null;
   const status = unmet === null ? run.status : 'failed';
-  const error = runError(status, unmet, run.error ?? null);
+  const reported = shapeRunError(run.error ?? null, row.harness ?? null);
+  const error = runError(status, unmet, reported);
   const cost = await resolveWorkerCost(row.harness ?? '', usage, identity);
   const primary = identity === undefined || identity.status === 'unknown' ? null : identity.primary;
   const accounting: RunUpdate = attemptId === undefined ? {} : {
@@ -60,7 +63,7 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const update: RunUpdate = { status, ...(error === null ? {} : { error }), ...accounting };
   // A worker's profile refusal is a failure the Deployment did not overrule: its code, and its reason for the run's page.
   const refused = run.refusal != null && run.status === 'failed' && unmet === null;
-  const errorCode: RunErrorCode = refused ? 'model_not_applied' : unmet === null ? 'run_failed' : closeErrorCode(unmet);
+  const errorCode: RunErrorCode = refused ? 'model_not_applied' : unmet === null ? diagnosticErrorCode(reported) : closeErrorCode(unmet);
   const context = refused && run.refusal!.reason !== null ? { [FAILURE_REASON_KEY]: run.refusal!.reason } : undefined;
   return { row, unmet, status, update, errorCode, context };
 });

@@ -30,8 +30,7 @@ describe('execution identity on every profile-capable runner end', () => {
   }
   it('ends an OpenCode run whose claimed model the harness does not offer as unapplied, never on the harness\'s default (#1608)', async () => {
     const report = await fixtureRun(HARNESSES.find((h) => h.id === 'opencode')!, 'unoffered');
-    expect({ status: report?.status, unapplied: String(report?.error).includes('profile_unapplied: it offers no model openai/gpt-5.4-mini (it offers opencode/big-pickle)') })
-      .toEqual({ status: 'failed', unapplied: true });
+    expect({ status: report?.status, error: report?.error }).toEqual({ status: 'failed', error: 'the harness stopped: error (profile_unapplied)' });
     expect(report).toHaveProperty('identity.status', 'unknown');
   });
   describe('what a worker tells a Deployment about how a profile was applied, by what the Deployment advertises (#1608)', () => {
@@ -46,7 +45,7 @@ describe('execution identity on every profile-capable runner end', () => {
     it('sends an older Deployment neither, so it prices the run and reads the failure as before', async () => {
       const refused = await fixtureRun(opencode, 'unoffered');
       expect(refused).not.toHaveProperty('refusal');
-      expect(String(refused?.error)).toContain('profile_unapplied: it offers no model openai/gpt-5.4-mini');
+      expect(refused?.error).toBe('the harness stopped: error (profile_unapplied)');
       const skipped = await fixtureRun(opencode, 'no_effort');
       expect({ status: skipped?.status, identity: skipped?.identity && (skipped.identity as { status: string }).status, warnings: skipped?.identity && (skipped.identity as { warnings?: string[] }).warnings })
         .toEqual({ status: 'completed', identity: 'reported', warnings: undefined });

@@ -39,6 +39,8 @@ export const MEMBER_CODES = [
   'import_disabled',
   // a field outside its declared shape or bound
   'invalid_field',
+  // #1615 — a run route, or a field of one, no 2.0 path sends
+  'route_retired', 'field_retired',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];
@@ -76,7 +78,7 @@ export const REFUSAL_SUBJECT: Readonly<Record<MemberCode, RefusalSubject>> = {
   identity_claimed: 'credential', enrollment_no_project: 'credential', run_scope: 'credential', no_run: 'credential',
   project_mismatch: 'credential', not_admin: 'credential',
   clock_skew: 'clock',
-  unknown_kind: 'server-version', unknown_field: 'server-version',
+  unknown_kind: 'server-version', unknown_field: 'server-version', route_retired: 'server-version', field_retired: 'server-version',
   refused: 'unclassified',
 };
 

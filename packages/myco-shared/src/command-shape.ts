@@ -27,6 +27,7 @@
  */
 
 import { EXTENSION_TABLE, PROGRAM_TABLE, SUBCOMMAND_TABLE } from './command-tables.js';
+import { PROVIDER_KEY_PREFIXES } from './redact-secrets.js';
 
 /** The programs whose first positional word is a subcommand a reader needs, each with the subcommands it is read as. */
 export const SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(
@@ -76,13 +77,18 @@ const isDigit = (c: string): boolean => c >= '0' && c <= '9';
 const isLower = (c: string): boolean => c >= 'a' && c <= 'z';
 const isUpper = (c: string): boolean => c >= 'A' && c <= 'Z';
 
+/** A word, or a segment of one after punctuation, that opens with a provider key's prefix (`PROVIDER_KEY_PREFIXES`). */
+const PROVIDER_PREFIXED = new RegExp(`(?:^|[^A-Za-z0-9_])(?:${PROVIDER_KEY_PREFIXES.map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')).join('|')})[A-Za-z0-9_-]{6}`);
+/** Characters no word a person types holds: zero-width spaces and joiners, and the byte-order mark. */
+export const ZERO_WIDTH = /[\u200B\u200C\u200D\uFEFF]/g;
+
 /**
- * Whether a word is key-like, judged over the whole word and not one segment at a time: it holds a UUID or a long hex
- * run, a run of more than four letters and digits that interleaves them (`S3cret`), digits glued to letters in three
+ * Whether a word is key-like, judged over the whole word and not one segment at a time: it opens with a provider key's
+ * prefix, holds a UUID or a long hex run, a run of more than four letters and digits that interleaves them (`S3cret`), digits glued to letters in three
  * or more of its segments, a case pattern no name has (`rXUtnFEMI`, `bPxR`), or a long run carrying digits.
  */
 export function keyLike(word: string): boolean {
-  if (UUID.test(word)) return true;
+  if (PROVIDER_PREFIXED.test(word) || UUID.test(word)) return true;
   for (const [hex] of word.matchAll(HEX_RUN)) if (/\d/.test(hex) && /[a-f]/i.test(hex)) return true;
   if (/[a-z][A-Z][a-z][A-Z]/.test(word) || (word.match(/[a-z][A-Z]{2,}/g)?.length ?? 0) >= 2) return true;
   let interleaved = 0;
@@ -275,7 +281,7 @@ function shapeLine(line: string, depth: number): string | null {
 
 /** A command-shaped string in its allowed shape, or null where nothing of it is kept. */
 export function commandShape(raw: string): string | null {
-  const lines = raw.split(LINE_BREAK);
+  const lines = raw.replace(ZERO_WIDTH, '').split(LINE_BREAK);
   const first = lines.findIndex((part) => part.trim() !== '');
   const shaped = shapeLine(first < 0 ? '' : lines[first]!, 0);
   if (shaped === null || shaped.endsWith(ELIDED) || !lines.slice(first + 1).some((part) => part.trim() !== '')) return shaped;

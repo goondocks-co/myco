@@ -1,6 +1,7 @@
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { identifierShape } from '@goondocks/myco-shared/command-shape';
+import { failedCallsError, type HarnessEnding, type RunStopReason } from '@goondocks/myco-shared/run-text';
 
 /**
  * One run-event model, behind every driver.
@@ -16,7 +17,7 @@ import { identifierShape } from '@goondocks/myco-shared/command-shape';
  * stop reason and not what it answers.
  */
 
-export type StopReason = 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'cancelled' | 'error';
+export type StopReason = RunStopReason;
 
 export type RunEvent =
   | { kind: 'started'; harness: string; sessionId: string | null }
@@ -33,8 +34,13 @@ export type RunEvent =
   | { kind: 'unrecognized'; shape: string }
   | { kind: 'identity'; identity: ExecutionIdentity; snapshot?: true }
   | ({ kind: 'usage' } & WorkerUsage)
-  /** `refusal` is set where the driver ended the run on the harness's refusal of the claimed profile. */
-  | { kind: 'ended'; stop: StopReason; detail: string | null; refusal?: ProfileRefusal };
+  /**
+   * `detail` is the harness's own account of how it ended, kept only in the worker's local diagnostics log; `code`,
+   * `names`, `exitCode` and `signal` are what its driver read from the stream's structure and the process's exit, from
+   * which the run's coded reason is read (`classifyDiagnostic`). `refusal` is set where the driver ended the run on the
+   * harness's refusal of the claimed profile.
+   */
+  | ({ kind: 'ended'; stop: StopReason; detail: string | null; refusal?: ProfileRefusal } & Omit<HarnessEnding, 'detail'>);
 
 /** What every driver is given, and the only thing it needs to start a harness. */
 export interface RunSpec {
@@ -97,7 +103,6 @@ export function reachedEnd(events: readonly RunEvent[]): boolean {
   return last !== undefined && last.kind === 'ended' && last.stop === 'end_turn';
 }
 
-/** The longest account of why one call failed that a run's record keeps. */
 /** A failed call's outcome as a code: refused, timed out, its exit code, or failed. Never what the call said. */
 export function callOutcome(event: Extract<RunEvent, { kind: 'tool_call' }>): string {
   if (event.refused === true) return 'refused';
@@ -125,7 +130,7 @@ export function failedCallsNote(events: readonly RunEvent[]): string | null {
   let endedOnFailure = false;
   for (const event of events) {
     if (event.kind === 'tool_call' && event.status === 'error') {
-      const named = `${identifierShape(event.name, 64) ?? 'tool'} (${callOutcome(event)})`;
+      const named = JSON.stringify({ name: identifierShape(event.name, 64) ?? 'tool', outcome: callOutcome(event) });
       failed.set(named, (failed.get(named) ?? 0) + 1);
       endedOnFailure = true;
     } else if ((event.kind === 'tool_call' && event.status === 'ok') || (event.kind === 'message' && event.role === 'assistant')) {
@@ -134,8 +139,6 @@ export function failedCallsNote(events: readonly RunEvent[]): string | null {
   }
   if (failed.size === 0) return null;
   const total = [...failed.values()].reduce((sum, count) => sum + count, 0);
-  const named = [...failed].slice(0, NOTED_FAILURES).map(([call, count]) => (count === 1 ? call : `${call} ×${count}`));
-  const rest = failed.size > NOTED_FAILURES ? `, and ${failed.size - NOTED_FAILURES} more` : '';
-  const calls = total === 1 ? 'a call failed or was refused' : `${total} calls failed or were refused`;
-  return `${calls}: ${named.join('; ')}${rest}${endedOnFailure ? '; the turn ended right after the last of them' : ''}`;
+  const calls = [...failed].slice(0, NOTED_FAILURES).map(([key, count]) => ({ ...JSON.parse(key) as { name: string; outcome: string }, count }));
+  return failedCallsError(calls, total, Math.max(0, failed.size - NOTED_FAILURES), endedOnFailure);
 }

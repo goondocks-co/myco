@@ -39,9 +39,7 @@ import {
   handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
 } from './api/intelligence.js';
 import {
-  handleAdmitResume, handleAgents, handleClaimRun, handleGetRun, handleRecordFailure,
-  handleRegisterAgent,
-  handleRunReports, handleWriteReport, handleRecordRunEvents, handleSupersedeRuns, handleUpdateRun,
+  handleAgents, handleClaimRun, handleRegisterAgent, handleWriteReport, handleUpdateRun, retiredRunRoute,
 } from './api/runs.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
@@ -98,7 +96,7 @@ export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 /** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored (#1416). `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the one place a credential past its own expiry still authenticates — the refresh, which decides against the lineage ceiling instead; every other route refuses an expired credential. `mintsAuthority: true` marks a member route whose answer is an authority that can outlive the presented credential — a successor token, a key that links a GitHub account and so opens the dashboard's session routes, where invitations, runtimes and grants are minted, a claimed run's credential and the provider key its harness reads, or a leased run's repository credential; a credential its issuer minted not to rotate is refused on every such route. */
 export type Route =
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
+  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true; retired?: true }
     & ({ unbound?: never } | { shape: 'answered'; capture: false; unbound: UnboundMemberHandler }))
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; mintsAuthority?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
@@ -141,21 +139,22 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, mintsAuthority: true, credential: handleRefresh },
   // #1148 — bounded import and backfill
   { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleImportPlan },
-  // The run's own channel. `legacyRunRoute: true` admits the harness credential as a
+  // The run's own channel. A route no 2.0 path sends answers `route_retired` with what replaced it
+  // (`RETIRED_RUN_ROUTES` in api/runs.ts). `legacyRunRoute: true` admits the harness credential as a
   // member here alone, with whatever admission each handler performs itself —
   // `heldRun` on the task surfaces, none on the run-row handlers. The model's tool
   // surface is `/mcp`; these are the worker's and the push-launch seam's, and go
   // with the seam. `capture: false`: a run is the Deployment's own scheduled
   // intelligence, not a member's capture.
   { method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleClaimRun },
-  { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleGetRun },
+  { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/get') },
   { method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleUpdateRun },
-  { method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRecordFailure },
-  { method: 'POST', path: '/runs/resume-admission', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleAdmitResume },
-  { method: 'POST', path: '/runs/supersede', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSupersedeRuns },
-  { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunReports },
+  { method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/failed') },
+  { method: 'POST', path: '/runs/resume-admission', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/resume-admission') },
+  { method: 'POST', path: '/runs/supersede', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/supersede') },
+  { method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/reports') },
   { method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleWriteReport },
-  { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRecordRunEvents },
+  { method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/events') },
   { method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleEmbeddingStep },
   { method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSaveSpore },
   { method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleListSpores },

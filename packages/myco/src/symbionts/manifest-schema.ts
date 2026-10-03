@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
 import { STEP_KINDS } from '@goondocks/myco-shared/worker-steps';
+import { PATTERNED_DIAGNOSTIC_CODES } from '@goondocks/myco-shared/run-text';
 export type { CaptureRule } from '@goondocks/myco-shared/capture-rule-schema';
 
 /** Schema describing where user prompts live in an agent's transcript. */
@@ -892,6 +893,15 @@ const RunnerManifestSchema = z.object({
       models: ReasoningTiersOf(z.string().min(1)),
     }).strict()).optional(),
   }).strict(),
+  /**
+   * How a stop the harness explains in its own words is read as a coded reason (`run-text.ts` in myco-shared): each
+   * pattern is a regular expression read without regard to case, and the first that matches the harness's error, its
+   * in-band error code or what it wrote to stderr names the reason. The words are read on the worker and never stored.
+   */
+  diagnostics: z.array(z.object({
+    code: z.enum(PATTERNED_DIAGNOSTIC_CODES),
+    pattern: z.string().min(1).refine((pattern) => { try { new RegExp(pattern, 'i'); return true; } catch { return false; } }, 'pattern is not a regular expression'),
+  }).strict()).min(1),
   worker: RunnerWorkerSchema,
 }).strict().refine((r) => (r.credential.slot === 'own') === (r.credential.ownSlotLabel !== undefined), {
   message: 'credential.ownSlotLabel is required for, and only for, credential.slot: own',

@@ -464,5 +464,6 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
     return identity === null ? [] : [{ kind: 'identity', identity }];
   });
   if (accounting !== null) yield { kind: 'usage', ...accounting };
-  yield terminal ?? { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText().slice(0, 2000)}` };
+  const exitSignal = started.signal();
+  yield terminal ?? { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
 }

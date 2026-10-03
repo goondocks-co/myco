@@ -137,6 +137,8 @@ export const claudeCodeDriver: Driver = {
     const accounting = new ClaudeAccounting(harness, accountingEnv);
     let ended = false;
     let failure: string | null = null;
+    /** The error code of the last request the harness retried, which is what its exit says nothing else about. */
+    let retried: string | null = null;
     /** The tool each call id named, so a result can be read back as that call's outcome. */
     const calls = new Map<string, string>();
     /** Calls whose outcome has been reported: the harness reports a refusal on a system line, on the call's result and on the turn's result. */
@@ -157,7 +159,9 @@ export const claudeCodeDriver: Driver = {
         const id = stringOf(line.tool_use_id);
         if (firstReport(id)) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error', refused: true, ...callOf(id) };
       } else if (type === 'assistant') {
-        failure ??= stringOf(line.error);
+        // An in-band error carries its code, and on a request the harness gave up on, the harness's own words for it.
+        const failed = stringOf(line.error);
+        if (failed !== null) failure ??= line.is_api_error_message === true ? [failed, ...blocksOf(recordOf(line.message)).map((block) => stringOf(block.text)).filter((text): text is string => text !== null)].join(': ') : failed;
         yield* accounting.events(line);
         for (const block of blocksOf(recordOf(line.message))) {
           const kind = stringOf(block.type);
@@ -196,14 +200,23 @@ export const claudeCodeDriver: Driver = {
           if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error', refused: true, ...callOf(id) };
         }
         const refused = refusals.filter(({ tool }) => grantsWhole(grant, tool)).map(({ tool }) => tool);
-        if (refused.length > 0) { yield { kind: 'ended', stop: 'error', detail: `permission refused for ${[...new Set(refused)].join(', ')}` }; break; }
+        if (refused.length > 0) {
+          const names = [...new Set(refused)];
+          yield { kind: 'ended', stop: 'error', detail: `permission refused for ${names.join(', ')}`, code: 'permission_refused', names };
+          break;
+        }
         const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
         yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
       } else {
+        if (type === 'system' && stringOf(line.subtype) === 'api_retry') retried = stringOf(line.error) ?? retried;
         yield { kind: 'unrecognized', shape: shapeOf(line) };
       }
     }
     const code = await started.exit;
-    if (!ended) yield { kind: 'ended', stop: 'error', detail: failure ?? `the harness wrote no result and exited ${code}: ${started.errorText().slice(0, 2000)}` };
+    if (!ended) {
+      const retrying = retried === null ? '' : ` after retrying on ${retried}`;
+      const exitSignal = started.signal();
+      yield { kind: 'ended', stop: 'error', detail: failure ?? `the harness wrote no result and exited ${code}${retrying}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
+    }
   },
 };
