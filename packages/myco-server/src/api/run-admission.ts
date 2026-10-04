@@ -10,9 +10,13 @@ import { strictName } from '@goondocks/myco-shared/run-text';
 import { decodeRunUpdate, endedAnswer, RUN_UPDATE_FIELDS } from './run-fields.js';
 
 /** The retained protocol's capabilities; an undeclared route admits no run. */
-export const CONTROL_TASKS: Readonly<Record<string, readonly string[] | null>> = {
-  '/runs/claim': null, '/runs/update': null, '/runs/report': null,
-  '/runs/embedding-step': ['embedding-reconcile'], '/runs/repository': REPOSITORY_TASKS, '/runs/canopy-map': [MAP_TASK],
+export const CONTROL_CAPABILITIES: Readonly<Record<string, { tasks: readonly string[] | null; unleased: boolean }>> = {
+  '/runs/claim': { tasks: null, unleased: false },
+  '/runs/update': { tasks: null, unleased: false },
+  '/runs/report': { tasks: null, unleased: false },
+  '/runs/embedding-step': { tasks: ['embedding-reconcile'], unleased: false },
+  '/runs/repository': { tasks: REPOSITORY_TASKS, unleased: true },
+  '/runs/canopy-map': { tasks: [MAP_TASK], unleased: true },
 };
 
 export type RunControlAdmission = { held: true; run: HeldRun; settled?: Response } | { held: false };
@@ -21,7 +25,7 @@ export type RunControlAdmission = { held: true; run: HeldRun; settled?: Response
 export async function admitRunControl(
   env: ServerEnv, auth: { memberId: string; tokenId: string }, projectId: string, path: string, body: string, now: number,
 ): Promise<RunControlAdmission> {
-  if (auth.memberId !== HARNESS_MEMBER_ID || !Object.hasOwn(CONTROL_TASKS, path)) return { held: false };
+  if (auth.memberId !== HARNESS_MEMBER_ID || !Object.hasOwn(CONTROL_CAPABILITIES, path)) return { held: false };
   const rows = await runsOfCredential(env.db, auth.tokenId);
   if (rows.length !== 1) return { held: false };
   const run = rows[0]!;
@@ -33,14 +37,15 @@ export async function admitRunControl(
     offer = parsed as Record<string, unknown>;
   } catch { return { held: false }; }
   if ((path === '/runs/claim' ? offer.id : offer.runId) !== run.id) return { held: false };
-  const tasks = CONTROL_TASKS[path];
+  const capability = CONTROL_CAPABILITIES[path]!;
+  const tasks = capability.tasks;
   if (tasks !== null && (run.task === null || !tasks?.includes(run.task))) return { held: false };
   if (isTerminalRunStatus(run.status)) {
     const settled = closeRetry(run, path, offer);
     return settled === null ? { held: false } : { held: true, run, settled };
   }
   const pending = run.status === 'pending' || (run.status === 'queued' && path === '/runs/claim');
-  if (tasks !== null && run.leaseExpiresAt !== null) return { held: false };
+  if (capability.unleased && run.leaseExpiresAt !== null) return { held: false };
   if (pending && path !== '/runs/claim' && path !== '/runs/update') return { held: false };
   if (!isLiveRun(pending ? { ...run, status: 'running' } : run, now)) return { held: false };
   if (path === '/runs/claim' && strictName(offer.task) !== null && offer.task !== run.task) return { held: false };

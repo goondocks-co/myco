@@ -96,13 +96,20 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
       expect(f.snapshot()).toEqual(before);
     } finally { f.sqlite.close(); }
   });
-  for (const path of Object.keys(TASKS)) it(`${path} refuses a leased worker even with its rightful credential`, async () => {
+  for (const path of ['/runs/repository', '/runs/canopy-map']) it(`${path} refuses a leased worker even with its rightful credential`, async () => {
     const f = await fixture(target, path);
     try {
       f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10_000]);
       const before = f.snapshot();
       expect((await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS])).body.persisted).toBe(false);
       expect(f.snapshot()).toEqual(before);
+    } finally { f.sqlite.close(); }
+  });
+  it('admits an embedding step while its rightful dispatch lease is live', async () => {
+    const f = await fixture(target, '/runs/embedding-step');
+    try {
+      f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10_000]);
+      expect((await f.post(f.holder.token, OFFERS['/runs/embedding-step'])).body).toMatchObject({ persisted: true, held: true });
     } finally { f.sqlite.close(); }
   });
   it('allows a late child to claim the queued dispatch that still names its credential', async () => {
