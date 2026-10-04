@@ -1711,7 +1711,7 @@ describe('the run credential a driver launches under', () => {
 /** A stub `claude` that writes a result after a delay, so a run lasts long enough to be renewed. */
 function slowHarness(ms: number): string {
   const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
-  writeFileSync(join(dir, 'claude'), `#!/bin/sh\nsleep ${(ms / 1000).toFixed(2)}\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}'\n`, { mode: 0o755 });
+  writeFileSync(join(dir, 'claude'), `#!/bin/sh\nsleep ${(ms / 1000).toFixed(2)}\nprintf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__myco__myco_run"}]}}'\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn"}'\n`, { mode: 0o755 });
   chmodSync(join(dir, 'claude'), 0o755);
   return dir;
 }
@@ -1871,7 +1871,7 @@ describe('the budget a run is held to', () => {
 });
 
 describe('what a worker reports of a turn a failed call cut short', () => {
-  it('reports a completed turn with the calls that failed, and that the turn ended right after one', async () => {
+  it('reports an unused-tools failure when a refused alternate route cuts the turn short', async () => {
     // The harness refuses one call and ends its turn at once, as OpenCode does
     // after a `reject_once`: the stop reason alone reads as a clean finish.
     process.env.PATH = `${stubHarness('claude', [
@@ -1898,8 +1898,8 @@ describe('what a worker reports of a turn a failed call cut short', () => {
       once: true, pollIdleMs: 3_000, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
     });
     expect({ status: end.body?.status, error: end.body?.error }).toEqual({
-      status: 'completed',
-      error: 'a call failed or was refused: Bash (refused); the turn ended right after the last of them',
+      status: 'failed',
+      error: 'the harness stopped: error (tools_unused)',
     });
   }, 15_000);
 });

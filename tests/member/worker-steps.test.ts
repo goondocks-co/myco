@@ -23,7 +23,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
-import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
+import { harnessStoppedError } from '@goondocks/myco-shared/run-text';
 import { MAX_RUN_STEPS, WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
@@ -473,8 +473,8 @@ describe('a step log on its way to the Deployment', () => {
     expect((await w.attach(true)).driven).toBe(1);
     expect(w.sent.map((s) => s.path)).toEqual(['/members/status', '/worker/claim', '/worker/end']);
     expect(existsSync(w.stepRoot)).toBe(false);
-    // Its outcome is judged by the task's rule alone: the stub filed no report.
-    expect(w.e.sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_steps'`).get()).toEqual({ status: 'failed', error: RUN_CLOSE_ERROR });
+    // A turn with no Myco call fails at the worker.
+    expect(w.e.sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_steps'`).get()).toEqual({ status: 'failed', error: harnessStoppedError('error', { code: 'tools_unused' }) });
     const detail = await getRunDetail(w.e.db, { projectId: 'proj_1' }, 'run_steps', Date.now(), 'mem_admin');
     expect(detail?.attempts.map((attempt) => attempt.steps)).toEqual([null]);
     rmSync(w.stepRoot, { recursive: true, force: true });

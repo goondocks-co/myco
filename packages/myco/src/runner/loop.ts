@@ -45,6 +45,7 @@ import { modelCatalogs, type ListModels } from './catalogs.js';
 import { listModels } from './models.js';
 import type { KeepAwake } from './keep-awake.js';
 import { StepLog } from './steps.js';
+import { runToolUse } from './tool-use.js';
 import { deliverStepOutbox, pendingStepOutboxes, removeEmptyOutbox, STEP_OUTBOX_DIRNAME, sweepStepOutbox, writeStepOutbox, type PageDelivery } from './step-outbox.js';
 
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
@@ -470,6 +471,7 @@ async function drive(
     stopping.signal.throwIfAborted();
     if (clock() >= deadline) losing(`the lease on ${run.id} lapsed before its harness started; leaving the run to the Deployment`);
     stopping.signal.throwIfAborted();
+    const toolUse = runToolUse(named.steps, checkout !== undefined);
     stream = driver.run({
       prompt: run.instruction, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
       profile: run.profile,
@@ -488,6 +490,13 @@ async function drive(
       }
       if (step.value.kind === 'tool_call') options.log(`run ${run.id} called ${step.value.name}: ${step.value.status === 'error' ? callOutcome(step.value) : step.value.status}`);
       if (step.value.kind === 'ended') options.log(`run ${run.id} ended ${step.value.stop}`);
+      const unused = toolUse(step.value);
+      if (unused !== null) {
+        events.push(unused);
+        options.log(`run ${run.id} stopped before using Myco’s tools`);
+        stopping.abort();
+        break;
+      }
     }
   } catch (error) {
     failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error) };

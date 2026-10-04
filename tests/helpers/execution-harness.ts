@@ -6,6 +6,8 @@ import type { HARNESSES } from '@myco/runner/harnesses.js';
 import { runWorker } from '@myco/runner/loop.js';
 import { withRunMcp, listingOnly } from './run-mcp-fetch.ts';
 
+const MYCO_CALL = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'accounting_myco', name: 'mcp__myco__myco_run', input: { op: 'report' } }] } };
+
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 const model = 'gpt-5.4-mini';
 const PROFILE_MODELS: Readonly<Record<string, string>> = {
@@ -31,7 +33,7 @@ export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: s
       if (outcome === 'failed_call') lines.push({ type: 'system', subtype: 'permission_denied', tool_name: 'Read' });
       if (outcome !== 'no_result') lines.push({ type: 'result', stop_reason: 'end_turn', ...(outcome === 'no_usage' ? {} : { usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }) });
       if (outcome === 'unknown') for (const line of lines) delete line.model;
-      script = (options.stream ?? lines).map((line) => `printf '%s\\n' ${quote(JSON.stringify(line))}`).join('\n');
+      script = [MYCO_CALL, ...(options.stream ?? lines)].map((line) => `printf '%s\\n' ${quote(JSON.stringify(line))}`).join('\n');
     } else if (harness.id === 'codex') {
       const records: Record<string, unknown>[] = [
         { type: 'session_meta', payload: { id: outcome === 'foreign_session' ? 'foreign-thread' : 'fixture-thread', cwd: '$PWD', model_provider: 'openai' } },
@@ -51,6 +53,7 @@ export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: s
         script += `printf '%s\\n' ${quote(JSON.stringify({ type: 'session_meta', payload: { id: 'fixture-thread', cwd: join(root, 'absent') } }))} > "$CODEX_HOME/sessions/2026/10/01/aab.jsonl"\n`;
       }
       script += `printf '%s\\n' '{"type":"thread.started","thread_id":"fixture-thread"}'\n`;
+      script += `printf '%s\\n' '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"myco","tool":"myco_run","status":"completed"}}'\n`;
       if (outcome === 'failed_call') script += `printf '%s\\n' '{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"fixture","status":"failed"}}'\n`;
       if (outcome !== 'no_result') script += `printf '%s\\n' '{"type":"turn.completed"${outcome === 'no_usage' ? '' : outcome === 'multi_model' ? ',"usage":{"input_tokens":300,"output_tokens":40,"cached_input_tokens":80}' : ',"usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":40}'}}'\n`;
     } else {
@@ -63,6 +66,7 @@ export async function fixtureRun(harness: (typeof HARNESSES)[number], outcome: s
         { sessionUpdate: 'usage_update', ...(outcome === 'acp_usage_spend' ? { cost: { currency: 'USD', amount: 0.2 } } : { used: 10 }) },
         { sessionUpdate: 'current_model_update', currentModelId: 'openai/gpt-5.4-nano' },
       ] : [];
+      updates.push({ sessionUpdate: 'tool_call', toolCallId: 'accounting_myco', title: 'mcp__myco__myco_run', kind: 'other', status: 'completed', rawInput: { op: 'report' } });
       const notifications = updates.map((update) => `printf '%s\\n' ${quote(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'fixture', update } }))};`).join(' ');
       script = `if [ "$1" = "status" ]; then exit 0; fi
 while IFS= read -r line; do
@@ -88,7 +92,7 @@ done`;
         run: { projectId: 'proj_1', id: 'run_usage', attemptId: 'attempt', task: 'extract-curate', instruction: 'do it', harness: harness.id, runToken: 'fixture', credentialEnv: options.credentialEnv ?? {}, timeoutSeconds: 30,
           profile: { tier: 'default', model: PROFILE_MODELS[harness.id] ?? 'unsupported', effort: 'medium', sources: { tier: 'task', model: 'configured' } } } }, { headers: { 'x-myco-features': features } });
     }) as typeof fetch;
-    await withRunMcp('https://fixture', listingOnly, () => runWorker({ serverUrl: 'https://fixture', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'), only: [harness.id], once: true, pollIdleMs: 1, log: () => {}, fetchImpl, signal: AbortSignal.timeout(5000) }));
+    await withRunMcp('https://fixture', (request) => listingOnly(request, ['myco_run']), () => runWorker({ serverUrl: 'https://fixture', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'), only: [harness.id], once: true, pollIdleMs: 1, log: () => {}, fetchImpl, signal: AbortSignal.timeout(5000) }));
     return report;
   } finally {
     process.env.PATH = path;

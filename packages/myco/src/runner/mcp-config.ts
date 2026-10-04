@@ -42,6 +42,7 @@ export function mcpConfigOf(connection: RunConnection): Record<string, unknown> 
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'http',
+        alwaysLoad: true,
         url: new URL('/mcp', connection.serverUrl).toString(),
         headers: memberHeaders({ token: connection.runToken, projectId: connection.projectId }),
       },
