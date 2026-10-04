@@ -17,13 +17,14 @@ import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { redactSecrets } from '../../scripts/redact-secrets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HANG_FIXTURE = 'tests/fixtures/runner/budget_hang_test.ts';
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
 const TEMP_LEAK_FIXTURE = 'tests/fixtures/runner/temp_leak_test.ts';
+const TEMP_BOUNDARY_FIXTURE = 'tests/fixtures/runner/temp_boundary_test.ts';
 const STREAM_FAULT_FIXTURE = 'tests/fixtures/runner/stream_fault_test.tsx';
 const BUDGET_MS = 3000;
 // Sampling takes a few seconds per process; anything near this bound means a guard did not fire.
@@ -71,11 +72,27 @@ function processGroupMembers(pgid: number): number[] {
 }
 
 function withReportDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-guards-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-reports-'));
   return fn(dir).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
 }
 
 describe('run-bun-tests guards', () => {
+  test.skipIf(process.platform === 'win32')('ends fixture children when writing their PID receipt fails', () => withReportDir(async (reports) => {
+    let pids: number[] = [];
+    try {
+      const { status, output } = await runRunner(HANG_FIXTURE, {
+        MYCO_RUNNER_HANG_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports,
+        MYCO_RUNNER_HANG_PIDS_FILE: path.join(reports, 'missing', 'children.pids'),
+      }, ['-t', 'blocks']);
+      pids = output.match(/FIXTURE_CHILD_PIDS (\d+) (\d+)/)!.slice(1).map(Number);
+      expect(status).toBe(1);
+      expect(output).toContain('ENOENT');
+      await waitFor(() => pids.every((pid) => !alive(pid)), 5000, 'the failed fixture children to exit');
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }), RUN_BOUND_MS + 10_000);
+
   test('a test group reads EOF on stdin even when the runner\'s stdin stays open', () => withReportDir(async (reports) => {
     const { status, output } = await runRunner(STDIN_FIXTURE, {
       MYCO_RUNNER_STDIN_FIXTURE: '1',
@@ -161,13 +178,72 @@ async function waitFor(condition: () => boolean, boundMs: number, what: string):
 }
 
 describe('run-bun-tests temp containment', () => {
+  test.skipIf(process.platform === 'win32')('stops an unrefed child after a passing phase before removing its root', () => withRunDirs(async ({ reports, tempDir }) => {
+    const ready = path.join(path.dirname(tempDir), 'settled-child.pid');
+    let pid: number | undefined;
+    try {
+      const result = await runRunner('tests/fixtures/runner/settled_child_test.ts', {
+        MYCO_RUNNER_SETTLED_CHILD_FILE: ready, MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+      });
+      pid = Number(fs.readFileSync(ready, 'utf8'));
+      expect({ status: result.status, output: result.output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
+      await waitFor(() => !alive(pid!), 5000, 'the settled phase child to exit');
+      expect(entries(tempDir)).toEqual([]);
+    } finally {
+      if (pid && alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }), RUN_BOUND_MS + 10_000);
+  test('surfaces a process-tree cleanup error after a passing Bun phase', () => withRunDirs(async ({ reports, tempDir }) => {
+    const preload = path.join(path.dirname(tempDir), 'windows-cleanup-fault.mjs');
+    fs.writeFileSync(preload, `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const original = cp.spawnSync;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.kill = () => true;
+      cp.spawnSync = (command, args, options) => {
+        if (args.includes('-NonInteractive')) return args.at(-1).includes('.Kill(')
+          ? { status: 5, stdout: '', stderr: 'fixture Bun cleanup refused' }
+          : { status: 0, stdout: '123456', stderr: '' };
+        return original(command, args, options);
+      };
+      syncBuiltinESMExports();
+    `);
+    const result = spawnSync('node', ['--import', pathToFileURL(preload).href, 'scripts/run-bun-tests.mjs', STDIN_FIXTURE], {
+      env: { ...process.env, ...tempDirEnv(tempDir), MYCO_RUNNER_REPORT_DIR: reports, MYCO_TEST_SHARD: '1/1', MYCO_TEST_KIND: 'all' }, encoding: 'utf8',
+    });
+    expect({ status: result.status, output: result.stderr }).toEqual({ status: 1, output: expect.stringContaining('fixture Bun cleanup refused') });
+    expect(result.stderr).toContain(' 0 fail');
+    expect(entries(tempDir)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
+  for (const target of [TEMP_BOUNDARY_FIXTURE, 'tests/fixtures/runner/temp_dom_boundary_test.tsx']) {
+    test(`contains module-load and subprocess temp paths through ${target}`, () => withRunDirs(async ({ reports, tempDir }) => {
+      const result = await runRunner(target, {
+        MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+      });
+      expect({ status: result.status, output: result.output }).toEqual({ status: 0, output: expect.stringContaining(' 0 fail') });
+      expect(entries(tempDir)).toEqual([]);
+    }), RUN_BOUND_MS + 10_000);
+  }
+
+  test('fails a passing test phase when new myco-* or mt-* entries escape, preserving old and escaped entries', () => withRunDirs(async ({ reports, tempDir }) => {
+    fs.writeFileSync(path.join(tempDir, 'myco-preexisting'), 'retain');
+    const result = await runRunner(TEMP_BOUNDARY_FIXTURE, {
+      MYCO_TEST_STRICT_TEMP: '1', MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1', MYCO_RUNNER_ESCAPE_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+    });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('FAIL: new test temp entries outside');
+    expect(result.output).toContain(' 0 fail');
+    expect(result.output).toContain(`temp entries left in ${tempDir}: 2`);
+    expect(entries(tempDir).sort()).toEqual([expect.stringMatching(/^mt-escaped-/), expect.stringMatching(/^myco-escaped-/), 'myco-preexisting']);
+  }), RUN_BOUND_MS + 10_000);
+
   test('a run leaves nothing in the temp directory, and sweeps only the roots of runners that are gone', () => withRunDirs(async ({ reports, tempDir }) => {
     const exited = spawnSync(process.execPath, ['-e', '0']);
     expect(alive(exited.pid)).toBe(false);
     seedRunRoot(tempDir, 'mt-gone00', exited.pid);
     seedRunRoot(tempDir, 'mt-live00', process.pid);
-    // A root another runner has just made and not yet written its owner into is kept;
-    // one that has gone without an owner for over an hour is swept.
+    // Roots with no owner record have unknown ownership at any age.
     seedRunRoot(tempDir, 'mt-fresh0', null);
     const hoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     fs.utimesSync(seedRunRoot(tempDir, 'mt-stale0', null), hoursAgo, hoursAgo);
@@ -179,7 +255,7 @@ describe('run-bun-tests temp containment', () => {
     });
 
     expect({ status, output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
-    expect(entries(tempDir)).toEqual(['mt-fresh0', 'mt-live00']);
+    expect(entries(tempDir)).toEqual(['mt-fresh0', 'mt-live00', 'mt-stale0']);
     expect(output).toContain(`temp entries left in ${tempDir}: 0`);
   }), RUN_BOUND_MS + 10_000);
 
@@ -261,10 +337,10 @@ describe('run-bun-tests temp containment', () => {
   test('a raw bun test run outside the runner removes the sandbox home its preload made and the homes test helpers made', () => withRunDirs(async ({ tempDir }) => {
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
     // tempMycoHome() and tempStager() (tests/member/helpers/server.ts) from a beforeAll, a beforeEach and a test body.
-    const files = [`./${STDIN_FIXTURE}`, './tests/member/envelope.test.ts', './tests/member/machine-settings.test.ts', './tests/member/diagnostic-private-link.test.ts'];
+    const files = [`./${STDIN_FIXTURE}`, `./${TEMP_BOUNDARY_FIXTURE}`, './tests/member/envelope.test.ts', './tests/member/machine-settings.test.ts', './tests/member/diagnostic-private-link.test.ts'];
     for (const isolation of [[], ['--isolate']]) {
       const run = spawnSync('bun', ['test', ...isolation, ...files], {
-        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir) }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir), MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
       });
       expect({ isolation, status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ isolation, status: 0, output: expect.stringMatching(/ 0 fail/) });
       expect({ isolation, left: entries(tempDir) }).toEqual({ isolation, left: [] });

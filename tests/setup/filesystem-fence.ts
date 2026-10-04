@@ -2,13 +2,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { protectedAgentPaths } from './protected-agent-paths.js';
+import { systemTempDirectories } from '../../scripts/test-temp-root.mjs';
 
 // Fence mutations to the operating-system account home.
 const scopes = new Set<string[]>();
-export function installFilesystemFence(home: string) {
+const tempScopes = new Set<{ root: string; directories: string[] }>();
+const TEST_TEMP_NAME = /^(?:myco-|mt-)/;
+export function installTestTempFence(root: string, directories: string[] = process.env.MYCO_TEST_SYSTEM_TEMP_DIRS
+  ? JSON.parse(process.env.MYCO_TEST_SYSTEM_TEMP_DIRS) as string[] : systemTempDirectories()) {
+  const scope = { root: resolvedTarget(path.resolve(root)), directories: directories.map((dir) => resolvedTarget(path.resolve(dir))) };
+  tempScopes.add(scope);
+  return { dispose: () => { tempScopes.delete(scope); } };
+}
+export function installFilesystemFence(home: string, additionalRoots: string[] = []) {
   const protectedRoots = [
     ...protectedAgentPaths(home),
     ...['.myco', '.myco-team', '.myco-dev', '.myco-collective', 'myco_backups'].map((name) => path.join(home, name)),
+    ...additionalRoots,
   ];
   const targets = [...new Set(protectedRoots.flatMap((root) => [root, resolvedTarget(root)]))];
   scopes.add(targets);
@@ -16,6 +26,7 @@ export function installFilesystemFence(home: string) {
 }
 const originalRealpath = fs.realpathSync.bind(fs);
 const originalReadlink = fs.readlinkSync.bind(fs);
+const originalExists = fs.existsSync.bind(fs);
 function resolvedTarget(target: string): string {
   let ancestor = target;
   const suffix: string[] = [];
@@ -40,7 +51,12 @@ function resolvedTarget(target: string): string {
   }
 }
 
-function offending(p: unknown, includesParents = false): string | null {
+type FenceHit = { path: string; boundary: 'home' | 'temp' };
+function within(target: string, root: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+function offending(p: unknown, includesParents = false): FenceHit | null {
   let raw: string;
   if (typeof p === 'string') raw = p;
   else if (p instanceof URL) raw = fileURLToPath(p);
@@ -51,15 +67,30 @@ function offending(p: unknown, includesParents = false): string | null {
   for (const target of [s, resolvedTarget(s)]) {
     for (const pre of [...scopes].flat()) {
       if (target === pre || target.startsWith(pre + path.sep)
-        || (includesParents && pre.startsWith(target.endsWith(path.sep) ? target : target + path.sep))) return s;
+        || (includesParents && pre.startsWith(target.endsWith(path.sep) ? target : target + path.sep))) return { path: s, boundary: 'home' };
+    }
+    for (const scope of tempScopes) {
+      if (within(target, scope.root)) continue;
+      for (const dir of scope.directories) {
+        if (!within(target, dir)) continue;
+        const names = path.relative(dir, target).split(path.sep);
+        for (const [index, name] of names.entries()) {
+          if (TEST_TEMP_NAME.test(name) && (index === names.length - 1
+            || !originalExists(path.join(dir, ...names.slice(0, index + 1))))) {
+            return { path: s, boundary: 'temp' };
+          }
+        }
+      }
     }
   }
   return null;
 }
-function deny(fnName: string, hit: string): never {
+function deny(fnName: string, hit: FenceHit): never {
   throw new Error(
-    `TEST SAFETY: fs.${fnName} to live config path "${hit}" was blocked. Tests must ` +
-    `not touch real home configuration. Use sandbox HOME/MYCO_HOME or explicit sandbox paths.`,
+    hit.boundary === 'temp'
+      ? `TEST SAFETY: fs.${fnName} to temp path "${hit.path}" outside the run root was blocked. Use the test run's TMPDIR.`
+      : `TEST SAFETY: fs.${fnName} to live config path "${hit.path}" was blocked. Tests must `
+        + `not touch real home configuration. Use sandbox HOME/MYCO_HOME or explicit sandbox paths.`,
   );
 }
 type AnyFn = (...a: unknown[]) => unknown;
@@ -162,4 +193,3 @@ function fenceBunFile(file: Bun.BunFile): Bun.BunFile {
 }
 const originalBunFile = Bun.file;
 Bun.file = ((...args: Parameters<typeof Bun.file>) => fenceBunFile(originalBunFile(...args))) as typeof Bun.file;
-

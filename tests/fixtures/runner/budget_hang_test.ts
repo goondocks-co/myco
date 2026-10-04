@@ -18,7 +18,13 @@ import { expect, it } from 'bun:test';
 it.skipIf(process.env.MYCO_RUNNER_HANG_FIXTURE !== '1')('blocks synchronously, beyond the reach of a per-test timeout', () => {
   const inGroup = spawn('sleep', ['600'], { stdio: 'ignore' });
   const ownSession = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1 << 30);"], { stdio: 'ignore', detached: true });
-  fs.writeFileSync(process.env.MYCO_RUNNER_HANG_PIDS_FILE!, `${inGroup.pid} ${ownSession.pid}\n`);
+  try {
+    console.log(`FIXTURE_CHILD_PIDS ${inGroup.pid} ${ownSession.pid}`);
+    fs.writeFileSync(process.env.MYCO_RUNNER_HANG_PIDS_FILE!, `${inGroup.pid} ${ownSession.pid}\n`);
+  } catch (error) {
+    for (const child of [inGroup, ownSession]) child.kill('SIGKILL');
+    throw error;
+  }
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   expect.unreachable();
 });

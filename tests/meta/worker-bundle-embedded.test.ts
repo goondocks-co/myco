@@ -70,13 +70,12 @@ describe('the Worker a compiled binary carries', () => {
 
 describe('the hooks that give a fresh clone the module before anything reads it', () => {
   it('GATE: lint and test both build it first', () => {
-    // Nothing else does. `codegen` produces it, but a fresh clone's first
-    // command is usually one of these two, and the typechecker reads the module
-    // the staging path imports.
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf-8')) as { scripts: Record<string, string> };
-    for (const hook of ['prelint', 'pretest']) {
-      expect({ hook, builds: (manifest.scripts[hook] ?? '').includes('gen-worker-bundle') }).toEqual({ hook, builds: true });
-    }
+    expect(manifest.scripts.prelint).toContain('gen-worker-bundle');
+    expect(manifest.scripts.test).toContain('scripts/run-bun-tests.mjs');
+    const runner = readFileSync(path.join(REPO_ROOT, 'scripts/run-bun-tests.mjs'), 'utf8');
+    expect(runner.indexOf('gen-worker-bundle.ts')).toBeGreaterThan(runner.indexOf('createTestTempRun();'));
+    expect(runner.indexOf('gen-worker-bundle.ts')).toBeLessThan(runner.indexOf('const built = buildArgs();'));
   });
 });
 

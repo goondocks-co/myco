@@ -22,6 +22,7 @@ import {
   type PerUserLockNamespace,
 } from '@myco/utils/per-user-lock-namespace.js';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import { withSandboxedNativeLockRoot } from '../helpers/sandbox-native-lock-root.js';
 import {
   TEST_PER_USER_LOCKS_ROOT_ENV,
   testPerUserLockNamespace,
@@ -84,8 +85,10 @@ describe('per-user lock namespace', () => {
     const previous = process.env.MYCO_LOCK_ROOT;
     process.env.MYCO_LOCK_ROOT = path.resolve('/fixture/untrusted-lock-root');
     try {
-      expect(nativePerUserLockNamespace.resolve('secrets'))
-        .toBe(path.join(resolvePerUserLocksDir(), 'secrets'));
+      withSandboxedNativeLockRoot(testPerUserLocksRoot, () => {
+        expect(nativePerUserLockNamespace.resolve('secrets'))
+          .toBe(path.join(resolvePerUserLocksDir(), 'secrets'));
+      });
     } finally {
       if (previous === undefined) delete process.env.MYCO_LOCK_ROOT;
       else process.env.MYCO_LOCK_ROOT = previous;
