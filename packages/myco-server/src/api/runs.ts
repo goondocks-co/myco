@@ -25,49 +25,15 @@ import { RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStat
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { releaseRun } from '../core/release.js';
-import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport, runCloseRefusal } from '../core/run-postconditions.js';
-import { recordShape, shapeRunError, strictId, strictName, strictRunId } from '@goondocks/myco-shared/run-text';
+import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { shapeRunError } from '@goondocks/myco-shared/run-text';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
-import { refusal, type Refusal } from '../telemetry.js';
+import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
 
-/** The longest a task name or state key may be, matching the identifier bound the ingest envelope applies. */
-const MAX_ID_CHARS = 192;
-/** The largest state value this surface accepts, bounding one row against a caller that would grow it without limit. */
-export const MAX_STATE_BYTES = 256 * 1024;
-
-const BAD_BODY: Refusal = refusal('body is not an object', 'parse');
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const str = (v: unknown, max = MAX_ID_CHARS): string | null =>
-  typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
-const strOrNull = (v: unknown, max = MAX_ID_CHARS): string | null | undefined =>
-  v === undefined || v === null ? null : str(v, max) ?? undefined;
-const int = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null);
-/** An identifier, null where none is given, or undefined where what is given is not one. */
-const idOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictId(v) ?? undefined);
-/** The longest model text an embedding claim may carry. */
-const MAX_MODEL_CHARS = 1024;
-/** An embedding claim names the server's stored model; its text stays bounded and contains no controls. */
-const modelOrNull = (v: unknown, embedding: boolean): string | null | undefined => {
-  if (v === undefined || v === null) return null;
-  if (embedding) return typeof v === 'string' && v.length > 0 && v.length <= MAX_MODEL_CHARS
-    && !/[\u0000-\u001f\u007f-\u009f]/.test(v) ? v : undefined;
-  return strictId(v) ?? undefined;
-};
-/** A name, null where none is given, or undefined where what is given is not one. */
-const nameOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictName(v) ?? undefined);
-
-function parseBody(body: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
+import { BAD_BODY, RUN_UPDATE_FIELDS, decodeRunFields, readRunFields } from './run-fields.js';
 
 /**
  * Claim a run of a task: one row per run id, exactly once.
@@ -77,12 +43,12 @@ function parseBody(body: string): Record<string, unknown> | null {
  * another member.
  */
 export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
+  const body = readRunFields(ctx.body, '/runs/claim');
   if (!body) return Response.json(refused(ctx, BAD_BODY));
 
-  const id = strictRunId(body.id);
-  const agentId = strictName(body.agentId);
-  const task = strictName(body.task);
+  const id = body.id;
+  const agentId = body.agentId;
+  const task = body.task;
   // The claim guards the run id alone; a field that once named an age floor is refused rather than ignored.
   if (body.maxAgeSeconds !== undefined) return Response.json(refused(ctx, refusal('claim takes no maxAgeSeconds', 'parse')));
   // A claim names the capability its task needs or declares capture-driven work.
@@ -95,11 +61,11 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
         : null;
   // An instruction is the Deployment's own, written at dispatch; no runtime sends one.
   if (body.instruction != null) return Response.json(refused(ctx, refusal('a claim carries no instruction: the Deployment writes a run\'s instruction when it dispatches it', 'field_retired')));
-  const startedAt = int(body.startedAt) ?? ctx.now;
-  const harness = nameOrNull(body.harness);
-  const provider = nameOrNull(body.provider);
-  const model = modelOrNull(body.model, task === 'embedding-reconcile');
-  const runContext = body.runContext == null ? null : typeof body.runContext === 'string' && body.runContext.length <= MAX_STATE_BYTES ? recordShape(body.runContext, MAX_STATE_BYTES) ?? undefined : undefined;
+  const startedAt = body.startedAt ?? ctx.now;
+  const harness = body.harness;
+  const provider = body.provider;
+  const model = body.model;
+  const runContext = body.runContext;
   if (id === null || agentId === null || task === null || admission === null
     || harness === undefined || provider === undefined || model === undefined || runContext === undefined) {
     return Response.json(refused(ctx, refusal('claim requires an id, agentId and task each an identifier, either a known capability or captureDriven, and a runContext that is a JSON object', 'parse')));
@@ -237,7 +203,7 @@ function endedAnswer(status: string | undefined, posted: unknown): Response | nu
 }
 
 /**
- * What a terminal write answers when the caller is not the credential the run
+ * What a write answers when the caller is not the credential the run
  * is running under, or nothing when it is.
  *
  * Ending a run requires holding the credential its row names, exactly as
@@ -268,12 +234,14 @@ type RunWrite = { refused: Response } | { changed: number };
  */
 async function endRunAsCaller(
   env: ServerEnv, ctx: RouteContext, runId: string, before: RunRow | null,
-  update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode } = {},
+  update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode; refusalId?: string | null } = {},
 ): Promise<RunWrite> {
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return { refused: foreign };
   const scope = { projectId: ctx.projectId };
-  const changed = await applyRunUpdate(env.db, scope, runId, update, undefined, options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null));
+  const changed = await applyRunUpdate(env.db, scope, runId, update, undefined,
+    options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null), undefined,
+    ctx.memberId === HARNESS_MEMBER_ID ? { tokenId: ctx.tokenId, ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) } : undefined);
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, update.status);
     if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
@@ -287,37 +255,12 @@ async function endRunAsCaller(
  * `recordRunFailure`) and the embedding run writes (`core/embedding/run.ts`). Every other column of the store is retired
  * on this route and refused by name.
  */
-export const ROUTE_UPDATE_COLUMNS = [
-  'status', 'completed_at', 'tokens_used', 'error', 'usage_data', 'cost_usd', 'actual_cost_usd', 'estimated_cost_usd', 'cost_source', 'cost_data',
-] as const;
-const NUMERIC_COLUMNS: ReadonlySet<string> = new Set(['completed_at', 'tokens_used', 'cost_usd', 'actual_cost_usd', 'estimated_cost_usd']);
+export const ROUTE_UPDATE_COLUMNS = Object.keys(RUN_UPDATE_FIELDS);
 
-/**
- * An update as this route stores it, or null where a value is outside its column's shape: an error kept as a coded
- * reason (`shapeRunError`), usage and cost data as structured records (`recordShape`), a cost source as an identifier,
- * a number as a number. Never the words a caller sent.
- */
 function routeUpdate(update: Record<string, unknown>, harness: string | null): RunUpdate | null {
-  const out: Record<string, unknown> = {};
-  for (const [column, value] of Object.entries(update)) {
-    if (value === null || column === 'status') { out[column] = value; continue; }
-    if (NUMERIC_COLUMNS.has(column)) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-      out[column] = value;
-    } else if (column === 'error') {
-      if (typeof value !== 'string') return null;
-      out[column] = shapeRunError(value, harness);
-    } else if (column === 'cost_source') {
-      const source = strictName(value);
-      if (source === null) return null;
-      out[column] = source;
-    } else {
-      const record = typeof value === 'string' && value.length <= MAX_STATE_BYTES ? recordShape(value, MAX_STATE_BYTES) : null;
-      if (record === null) return null;
-      out[column] = record;
-    }
-  }
-  return out as RunUpdate;
+  const decoded = decodeRunFields(update, RUN_UPDATE_FIELDS, true);
+  if (Object.values(decoded).some((value) => value === undefined)) return null;
+  return { ...decoded, ...('error' in update ? { error: shapeRunError(decoded.error ?? null, harness) } : {}) } as RunUpdate;
 }
 
 /**
@@ -341,11 +284,11 @@ function routeUpdate(update: Record<string, unknown>, harness: string | null): R
  * applies to a terminal row.
  */
 export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
+  const body = readRunFields(ctx.body, '/runs/update');
   if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = str(body.runId);
+  const runId = body.runId;
   const update = body.update;
-  if (runId === null || typeof update !== 'object' || update === null || Array.isArray(update)) {
+  if (body.refusalId === undefined || runId === null || typeof update !== 'object' || update === null || Array.isArray(update)) {
     return Response.json(refused(ctx, refusal('update requires runId and an update object', 'parse')));
   }
   const settable = new Set<string>(RUN_UPDATE_COLUMNS);
@@ -360,16 +303,16 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   const scope = { projectId: ctx.projectId };
   const guarded = 'status' in update;
   const row = await getRun(env.db, scope, runId);
-  const before = guarded ? row : null;
+  const before = row;
   const runUpdate = routeUpdate(update as Record<string, unknown>, row?.harness ?? null);
   if (runUpdate === null) {
     return Response.json(refused(ctx, refusal('update holds a value outside its column\'s shape: an error is text, usage and cost data are JSON objects, a cost source an identifier, and the rest numbers', 'invalid_field')));
   }
   // Before anything else this route answers: a caller holding a credential the
   // row does not name learns that, rather than learning what the row ended as.
-  const foreign = guarded ? foreignCredentialAnswer(ctx, before) : null;
+  const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return foreign;
-  const settled = endedAnswer(before?.status, runUpdate.status);
+  const settled = guarded ? endedAnswer(before?.status, runUpdate.status) : null;
   if (settled !== null) return settled;
   if (runUpdate.status === 'completed') {
     const missing = before === null ? null : await runCloseRefusal(env.db, scope, before);
@@ -381,7 +324,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
       return Response.json({ persisted: true, changed: written.changed, applied: false, reason: 'postcondition' });
     }
   }
-  const written = await endRunAsCaller(env, ctx, runId, guarded ? before : null, runUpdate, { replaced: asksReplaced(body, runUpdate.status) });
+  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { replaced: asksReplaced(body, runUpdate.status), refusalId: body.refusalId });
   if ('refused' in written) return written.refused;
   const changed = written.changed;
   if (changed === 1) return Response.json({ persisted: true, changed, applied: true });
@@ -398,13 +341,13 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
  * attribution of the WRITE stays with the authenticated credential.
  */
 export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseBody(ctx.body);
+  const body = readRunFields(ctx.body, '/runs/report');
   if (!body) return Response.json(refused(ctx, BAD_BODY));
-  const runId = strictId(body.runId);
-  const agentId = strictName(body.agentId);
-  const action = strictName(body.action);
-  const summary = str(body.summary, MAX_SUMMARY_CHARS);
-  const details = strOrNull(body.details, MAX_DETAILS_CHARS);
+  const runId = body.runId;
+  const agentId = body.agentId;
+  const action = body.action;
+  const summary = body.summary;
+  const details = body.details;
   if (runId === null || agentId === null || action === null || summary === null || details === undefined) {
     return Response.json(refused(ctx, refusal('a report requires a runId, agentId and action each an identifier, and a summary within bounds', 'parse')));
   }

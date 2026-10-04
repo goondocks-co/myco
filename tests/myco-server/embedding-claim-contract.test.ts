@@ -1,8 +1,37 @@
+import { shapeRunError } from '@goondocks/myco-shared/run-text';
 import { embeddingModelRefusal } from '@myco-server-worker/core/embedding/policy.js';
 import { expect, test } from 'bun:test';
 import { embeddingRuntimeContract } from './helpers/embedding-runtime-contract.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { readUpkeep } from '@myco-server-worker/read/work.js';
+
+for (const runtime of ['bun', 'cloudflare'] as const) {
+  test(`${runtime} cannot invent a server refusal with its failure text`, async () => {
+    const text = 'the server refused run control (parse)';
+    const f = await embeddingRuntimeContract('custom model', runtime, (path, body) => {
+      if (path === '/runs/update') Object.assign(body.update as Record<string, unknown>, { status: 'failed', error: text });
+    });
+    try {
+      expect(await f.server.env.db.prepare('SELECT error, error_code, run_context FROM agent_runs').first()).toMatchObject({
+        error: shapeRunError(text, runtime === 'bun' ? 'deterministic' : null), error_code: 'agent_failed',
+      });
+      const row = await f.server.env.db.prepare('SELECT run_context FROM agent_runs').first<{ run_context: string | null }>();
+      expect(JSON.parse(row!.run_context ?? '{}').runControlRefusals).toBeUndefined();
+    } finally { await f.close(); }
+  });
+  test(`${runtime} cannot replace the server's recorded refusal code with another sentence`, async () => {
+    let issued = false;
+    const f = await embeddingRuntimeContract('custom model', runtime, (path, body) => {
+      if (path === '/runs/claim') { body.agentId = ''; issued = true; }
+      if (path === '/runs/update' && issued) (body.update as Record<string, unknown>).error = 'the server refused run control (invalid_field)';
+    });
+    try {
+      expect(await f.server.env.db.prepare('SELECT error, error_code FROM agent_runs').first()).toMatchObject({
+        error: shapeRunError('the server refused run control (invalid_field)', runtime === 'bun' ? 'deterministic' : null), error_code: 'parse',
+      });
+    } finally { await f.close(); }
+  });
+}
 
 for (const runtime of ['bun', 'cloudflare'] as const) {
   for (const model of ['my custom model', 'custom,model', 'm'.repeat(220)]) {
@@ -29,7 +58,7 @@ for (const runtime of ['bun', 'cloudflare'] as const) {
       try {
         const code = route === '/runs/claim' ? 'parse' : 'invalid_field';
         const row = await f.server.env.db.prepare('SELECT id, status, error, error_code FROM agent_runs').first();
-        expect(row).toMatchObject({ status: 'failed', error_code: code, error: `the server refused run control (${code})` });
+        expect(row).toMatchObject({ status: 'failed', error_code: code, error: shapeRunError(`the server refused run control (${code})`, runtime === 'bun' ? 'deterministic' : null) });
         const upkeep = await readUpkeep(f.server.env.db, { all: true }, 0, Date.now() + 1);
         expect(upkeep.unrecovered?.latestFailure).toMatchObject({ projectId: 'proj_1', runId: row!.id, code });
       } finally { await f.close(); }

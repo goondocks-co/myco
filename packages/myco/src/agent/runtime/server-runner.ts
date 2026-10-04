@@ -156,11 +156,11 @@ export function claimAdmission(admission: string | undefined): RunClaimAdmission
  * failure may be retried.
  */
 async function recordTerminal(
-  store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>, attempts = TERMINAL_UPDATE_ATTEMPTS,
+  store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>, attempts = TERMINAL_UPDATE_ATTEMPTS, refusalId?: string,
 ): Promise<RunStatusOutcome> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await store.updateRunStatus(runId, status, completion as never);
+      return await store.updateRunStatus(runId, status, completion as never, refusalId);
     } catch (error) {
       if (error instanceof RunControlError && error.code !== null || attempt >= attempts) throw error;
     }
@@ -475,7 +475,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     try {
       options.onClosing?.();
       refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message,
-        ...(costInput === undefined ? {} : { tokens_used: costInput.usage.totalTokens ?? null }), ...accounting }));
+        ...(costInput === undefined ? {} : { tokens_used: costInput.usage.totalTokens ?? null }), ...accounting }, TERMINAL_UPDATE_ATTEMPTS, error instanceof RunControlError ? error.refusalId ?? undefined : undefined));
       if (refused === undefined) ending = 'posted';
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row

@@ -154,8 +154,8 @@ export function createHttpRunStore(opts: HttpRunStoreOptions): RunStore {
       throw new RunControlError('/runs/claim', `no running-run read is served over the run-control surface (asked for ${task})`);
     },
 
-    async updateRunStatus(runId, status, completion) {
-      const answered = await post('/runs/update', { runId, update: { status, ...toColumns(completion) } });
+    async updateRunStatus(runId, status, completion, refusalId) {
+      const answered = await post('/runs/update', { runId, update: { status, ...toColumns(completion) }, ...(refusalId === undefined ? {} : { refusalId }) });
       // Applied is said, never assumed: reporting a run as ended requires the
       // Deployment to say the write landed, and a write that moved nothing
       // answers without saying it.

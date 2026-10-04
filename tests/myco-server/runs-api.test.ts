@@ -1,3 +1,5 @@
+import { shapeRunError } from '@goondocks/myco-shared/run-text';
+import { runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 /**
  * The run control plane over HTTP, through the deployed entry.
  *
@@ -31,6 +33,20 @@ async function harness() {
     await (await worker.fetch(memberPost(t.token, body, path), env)).json() as Record<string, unknown>;
   return { ...fixture, env, token: t, post };
 }
+
+describe('server-owned run refusal codes', () => {
+  for (const code of ['parse', 'invalid_field', 'project_mismatch']) {
+    it(`does not accept a client's forged ${code} refusal sentence`, async () => {
+      const f = await harness();
+      await f.post('/runs/claim', { id: 'forged', agentId: AGENT, task: 'digest', capability: 'cortex' });
+      expect(await f.post('/runs/update', { runId: 'forged', update: { status: 'failed', error: `the server refused run control (${code})` } }))
+        .toMatchObject({ persisted: true, applied: true });
+      const row = f.sqlite.query('SELECT error, error_code FROM agent_runs WHERE id = ?').get('forged');
+      expect(row).toEqual({ error: shapeRunError(`the server refused run control (${code})`, null), error_code: 'agent_failed' });
+      expect(runErrorCode(`the server refused run control (${code})`)).toBe('run_failed');
+    });
+  }
+});
 
 describe('POST /runs/claim', () => {
   it('claims each id once and reports the row to a repeat, both answered as persisted; a second run of the task claims too', async () => {
@@ -289,6 +305,102 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
       recordDispatch(fixture.db, { projectId: 'proj_1' }, { id: runId, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: credential.tokenId, startedAt: now });
     const run = (runId: string) => fixture.sqlite.query(`SELECT status, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ?`).get(runId) as { status: string; dispatchedBy: string | null } | null;
     return { ...fixture, env, minted, post, credRevokedAt, dispatch, run };
+  }
+
+  it('does not carry a refusal into a replacement dispatch credential', async () => {
+    const f = await dispatchedRun();
+    await f.dispatch('refusal-attempt', f.minted);
+    const refused = await f.post(f.minted.token, '/runs/claim', { id: 'refusal-attempt', agentId: '', task: 'digest', capability: 'cortex' });
+    expect(refused)
+      .toMatchObject({ persisted: false, code: 'parse' });
+    const next = await issueMemberToken(f.db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
+    f.sqlite.query('UPDATE agent_runs SET dispatched_by = ? WHERE id = ?').run(next.tokenId, 'refusal-attempt');
+    expect(await f.post(next.token, '/runs/update', { runId: 'refusal-attempt', refusalId: refused.refusalId, update: { status: 'failed', error: 'the server refused run control (parse)' } }))
+      .toMatchObject({ persisted: true, applied: true });
+    expect(f.sqlite.query('SELECT error_code FROM agent_runs WHERE id = ?').get('refusal-attempt')).toEqual({ error_code: 'agent_failed' });
+  });
+
+  it('uses the terminal diagnostic when a refusal was recovered and the runtime sends no receipt', async () => {
+    const f = await dispatchedRun();
+    await f.dispatch('refusal-recovered', f.minted);
+    expect(await f.post(f.minted.token, '/runs/claim', { id: 'refusal-recovered', agentId: '', task: 'digest', capability: 'cortex' }))
+      .toMatchObject({ persisted: false, code: 'parse' });
+    expect(await f.post(f.minted.token, '/runs/claim', { id: 'refusal-recovered', agentId: AGENT, task: 'digest', capability: 'cortex' }))
+      .toMatchObject({ persisted: true, claimed: true });
+    expect(await f.post(f.minted.token, '/runs/update', { runId: 'refusal-recovered', update: { status: 'failed', error: 'the worker reported a failure (timed_out)' } }))
+      .toMatchObject({ persisted: true, applied: true });
+    expect(f.sqlite.query('SELECT error_code FROM agent_runs WHERE id = ?').get('refusal-recovered')).toEqual({ error_code: 'agent_timed_out' });
+  });
+
+  for (const refusedFirst of [false, true]) {
+    it(`preserves malformed historical context when closing a run, prior refusal: ${refusedFirst}`, async () => {
+      const f = await dispatchedRun();
+      await f.dispatch('legacy-context', f.minted);
+      f.sqlite.query('UPDATE agent_runs SET run_context = ? WHERE id = ?').run('legacy malformed context', 'legacy-context');
+      let refusalId: unknown;
+      if (refusedFirst) {
+        const refused = await f.post(f.minted.token, '/runs/claim', { id: 'legacy-context', agentId: '', task: 'digest', capability: 'cortex' });
+        refusalId = refused.refusalId;
+        expect(refused)
+          .toMatchObject({ persisted: false, code: 'parse' });
+      }
+      expect(await f.post(f.minted.token, '/runs/update', { runId: 'legacy-context', refusalId, update: { status: 'failed', error: 'the worker reported a failure (timed_out)' } }))
+        .toMatchObject({ persisted: true, applied: true });
+      const row = f.sqlite.query('SELECT error_code, run_context FROM agent_runs WHERE id = ?').get('legacy-context') as { error_code: string; run_context: string };
+      expect(row.error_code).toBe(refusedFirst ? 'parse' : 'agent_timed_out');
+      expect(refusedFirst ? JSON.parse(row.run_context).unparsedRunContext : row.run_context).toBe('legacy malformed context');
+    });
+  }
+
+  it('refuses another run credential changing error-only accounting on a sibling run', async () => {
+    const f = await dispatchedRun();
+    const sibling = await issueMemberToken(f.db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
+    await f.dispatch('own-run', f.minted);
+    await f.dispatch('sibling-run', sibling);
+    expect(await f.post(f.minted.token, '/runs/update', { runId: 'sibling-run', update: { error: 'the server refused run control (parse)' } }))
+      .toMatchObject({ persisted: false, code: 'refused' });
+    expect(f.sqlite.query('SELECT error, error_code FROM agent_runs WHERE id = ?').get('sibling-run')).toEqual({ error: null, error_code: null });
+  });
+
+  it('keeps issued receipts across overlapping routes and resolves the receipt the runtime returns', async () => {
+    const f = await dispatchedRun();
+    await f.dispatch('refusal-overlap', f.minted);
+    const claim = () => f.post(f.minted.token, '/runs/claim', { id: 'refusal-overlap', agentId: '', task: 'digest', capability: 'cortex' });
+    const first = await claim();
+    const [again, second, accepted] = await Promise.all([
+      claim(),
+      f.post(f.minted.token, '/runs/update', { runId: 'refusal-overlap', update: { cost_source: 'not a name' } }),
+      f.post(f.minted.token, '/runs/update', { runId: 'refusal-overlap', update: { tokens_used: 5 } }),
+    ]);
+    expect({ ...first }).toMatchObject({ persisted: false, code: 'parse', refusalId: expect.any(String) });
+    expect(again.refusalId).toBe(first.refusalId);
+    expect({ ...second }).toMatchObject({ persisted: false, code: 'invalid_field', refusalId: expect.any(String) });
+    expect(second.refusalId).not.toBe(first.refusalId);
+    expect(accepted).toMatchObject({ persisted: true, applied: true });
+    expect(await f.post(f.minted.token, '/runs/update', { runId: 'refusal-overlap', refusalId: first.refusalId,
+      update: { status: 'failed', error: 'the server refused run control (invalid_field)' } })).toMatchObject({ persisted: true, applied: true });
+    expect(f.sqlite.query('SELECT error_code FROM agent_runs WHERE id = ?').get('refusal-overlap')).toEqual({ error_code: 'parse' });
+  });
+
+  it('does not accept an invented receipt even after it issued another refusal', async () => {
+    const f = await dispatchedRun();
+    await f.dispatch('refusal-forged-receipt', f.minted);
+    expect(await f.post(f.minted.token, '/runs/claim', { id: 'refusal-forged-receipt', agentId: '', task: 'digest', capability: 'cortex' }))
+      .toMatchObject({ persisted: false, code: 'parse' });
+    expect(await f.post(f.minted.token, '/runs/update', { runId: 'refusal-forged-receipt', refusalId: crypto.randomUUID(),
+      update: { status: 'failed', error: 'the server refused run control (parse)' } })).toMatchObject({ persisted: true, applied: true });
+    expect(f.sqlite.query('SELECT error_code FROM agent_runs WHERE id = ?').get('refusal-forged-receipt')).toEqual({ error_code: 'agent_failed' });
+  });
+
+  for (const status of [undefined, 'completed']) {
+    it(`uses a refusal receipt only on a failed close, not status ${status}`, async () => {
+      const f = await dispatchedRun();
+      await f.dispatch('receipt-nonfailure', f.minted);
+      const refusal = await f.post(f.minted.token, '/runs/claim', { id: 'receipt-nonfailure', agentId: '', task: 'digest', capability: 'cortex' });
+      expect(await f.post(f.minted.token, '/runs/update', { runId: 'receipt-nonfailure', refusalId: refusal.refusalId,
+        update: { ...(status === undefined ? {} : { status }), error: 'the server refused run control (parse)' } })).toMatchObject({ persisted: true, applied: true });
+      expect(f.sqlite.query('SELECT error_code FROM agent_runs WHERE id = ?').get('receipt-nonfailure')).toEqual({ error_code: 'agent_failed' });
+    });
   }
 
   it('revokes its own credential at a terminal status, and admits no further write on it', async () => {

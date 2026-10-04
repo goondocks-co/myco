@@ -25,13 +25,8 @@ export function runControlRefusalCode(value: unknown): RunControlRefusalCode | n
 /** A server refusal recorded without the request's text. */
 export const runControlRefusedError = (code: RunControlRefusalCode): string => `the server refused run control (${code})`;
 
-/** The refusal code carried by a stored server-refusal sentence. */
-export function storedRunControlRefusal(text: string | null): RunControlRefusalCode | null {
-  return runControlRefusalCode(text === null ? null : /^the server refused run control \(([a-z_]+)\)$/.exec(text)?.[1]);
-}
-
 export class RunControlError extends Error {
-  constructor(readonly path: string, detail: string, readonly code: RunControlRefusalCode | null = null) {
+  constructor(readonly path: string, detail: string, readonly code: RunControlRefusalCode | null = null, readonly refusalId: string | null = null) {
     super(code === null ? `run control ${path}: ${detail}` : runControlRefusedError(code));
     this.name = 'RunControlError';
   }
@@ -44,7 +39,8 @@ export function runControlResult(status: number, body: unknown, path: string): R
   }
   const result = body as Record<string, unknown>;
   if (result.persisted === false) {
-    throw new RunControlError(path, 'request refused', runControlRefusalCode(result.code) ?? 'refused');
+    throw new RunControlError(path, 'request refused', runControlRefusalCode(result.code) ?? 'refused',
+      typeof result.refusalId === 'string' && /^[a-f0-9-]{36}$/.test(result.refusalId) ? result.refusalId : null);
   }
   return result;
 }
