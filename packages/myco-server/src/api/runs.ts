@@ -30,6 +30,7 @@ import { recordShape, shapeRunError, strictId, strictName, strictRunId } from '@
 import { closeErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
+import { partitionModel } from '../core/embedding/policy.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
 
@@ -48,6 +49,19 @@ const strOrNull = (v: unknown, max = MAX_ID_CHARS): string | null | undefined =>
 const int = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null);
 /** An identifier, null where none is given, or undefined where what is given is not one. */
 const idOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictId(v) ?? undefined);
+/** The longest model a claim names: an identifier, or an embedding partition identity carrying an endpoint. */
+const MAX_MODEL_CHARS = 1024;
+/**
+ * A claim's model, null where none is given, or undefined where it is neither a model identifier nor the embedding
+ * partition identity a dispatched embedding run names its model by, whose model is itself an identifier.
+ */
+const modelOrNull = (v: unknown): string | null | undefined => {
+  if (v === undefined || v === null) return null;
+  if (strictId(v) !== null) return v as string;
+  if (typeof v !== 'string' || v.length > MAX_MODEL_CHARS) return undefined;
+  const partition = partitionModel(v);
+  return partition !== null && strictId(partition.model) !== null ? v : undefined;
+};
 /** A name, null where none is given, or undefined where what is given is not one. */
 const nameOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictName(v) ?? undefined);
 
@@ -89,7 +103,7 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const startedAt = int(body.startedAt) ?? ctx.now;
   const harness = nameOrNull(body.harness);
   const provider = nameOrNull(body.provider);
-  const model = idOrNull(body.model);
+  const model = modelOrNull(body.model);
   const runContext = body.runContext == null ? null : typeof body.runContext === 'string' && body.runContext.length <= MAX_STATE_BYTES ? recordShape(body.runContext, MAX_STATE_BYTES) ?? undefined : undefined;
   if (id === null || agentId === null || task === null || admission === null
     || harness === undefined || provider === undefined || model === undefined || runContext === undefined) {

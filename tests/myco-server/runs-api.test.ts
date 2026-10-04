@@ -15,6 +15,7 @@ import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { EMBEDDING_CATALOGUE } from '@goondocks/myco-shared/settings-contract';
+import { EMBEDDING_MODEL_LEAF, EMBEDDING_PROVIDER_LEAF, resolveEmbedding, type StoredEmbedding } from '@myco-server-worker/core/embedding/policy.js';
 
 const AGENT = 'agent_1';
 
@@ -78,6 +79,24 @@ describe('POST /runs/claim', () => {
       const answer = await post('/runs/claim', { id, agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, startedAt: Date.now(), provider: 'embedding', model });
       expect({ model, persisted: answer.persisted, code: answer.code }).toEqual({ model, persisted: true, code: undefined });
     }
+  });
+
+  it('reads the claim an embedding run sends with the partition identity its dispatch names as the model', async () => {
+    const { post } = await harness();
+    const stored: StoredEmbedding[] = [
+      {},
+      { [EMBEDDING_PROVIDER_LEAF]: 'ollama', [EMBEDDING_MODEL_LEAF]: '' },
+      ...EMBEDDING_CATALOGUE['workers-ai'].models.map((option): StoredEmbedding => ({ [EMBEDDING_PROVIDER_LEAF]: 'workers-ai', [EMBEDDING_MODEL_LEAF]: option.id })),
+    ];
+    for (const [index, settings] of stored.entries()) {
+      const modelKey = resolveEmbedding(settings, 'cloudflare').selection?.modelKey;
+      expect({ settings, resolved: typeof modelKey }).toEqual({ settings, resolved: 'string' });
+      const id = `embed_key_${index}`;
+      const answer = await post('/runs/claim', { id, agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, startedAt: Date.now(), provider: 'embedding', model: modelKey });
+      expect({ modelKey, persisted: answer.persisted, code: answer.code }).toEqual({ modelKey, persisted: true, code: undefined });
+    }
+    expect(await post('/runs/claim', { id: 'embed_key_bad', agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, provider: 'embedding', model: '["cloudflare","sk-live key"]' }))
+      .toMatchObject({ persisted: false, code: 'parse' });
   });
 
   it('admits a capture-driven claim without archived provider configuration', async () => {
