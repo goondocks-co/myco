@@ -145,6 +145,7 @@ describe('the run credential', () => {
       mcpServers: {
         [MCP_SERVER_NAME]: {
           type: 'http',
+          alwaysLoad: true,
           url: 'https://deployment.example/mcp',
           headers: {
             authorization: `Bearer ${CONNECTION.runToken}`,
