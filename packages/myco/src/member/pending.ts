@@ -16,7 +16,8 @@ import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, toWire, type TurnEndMark } from './spool.js';
 import { readRegistryEntry } from './registry.js';
-import { readSessionState, type SessionState } from './session-state.js';
+import { readSessionState, readSessionStateResult, type SessionState } from './session-state.js';
+import { readStagedBlob } from './staged-blobs.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -129,15 +130,21 @@ export function withPendingLock<T>(rootKey: string, mycoHome: string, fn: () => 
   return withFileLockSync(path.join(pendingRoot(mycoHome), `.${rootKey}.lock`), fn);
 }
 
-/** `events` with each blob staged again under `into`; an event whose blob is gone is left out, as the drain would. */
+class PendingPayloadUnavailable extends Error {
+  constructor(event: OutboundEvent, status: string) {
+    super(`pending capture ${event.envelope.eventId}: staged payload ${status} — kept with its receipts for retry`);
+  }
+}
+
+/** Restage a complete batch, retaining its source and receipts whenever a payload cannot be verified. */
 function restaged(events: readonly OutboundEvent[], into: MemberSpool, sessionId: string): OutboundEvent[] {
   const stage = into.stagerFor(sessionId);
   const kept: OutboundEvent[] = [];
   for (const event of events) {
     if (event.blobSource === undefined) { kept.push(event); continue; }
-    let bytes: Buffer;
-    try { bytes = fs.readFileSync(event.blobSource.path); } catch { continue; }
-    kept.push({ envelope: event.envelope, blobSource: stage(new Uint8Array(bytes), event.blobSource.mediaType) });
+    const read = readStagedBlob(event.blobSource);
+    if (read.status !== 'ready') throw new PendingPayloadUnavailable(event, read.status);
+    kept.push({ envelope: event.envelope, blobSource: stage(read.bytes, event.blobSource.mediaType) });
   }
   return kept;
 }
@@ -157,8 +164,13 @@ export function appendPending(
       // Connected while this hook ran, and perhaps not yet settled: the held capture goes first, so this lands after it.
       const project = new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
       moveHeld(repo.rootKey, project, opts);
-      project.appendAndRecord(sessionId, restaged(events, project, sessionId), record, opts.now);
-      return 'project';
+      try {
+        project.appendAndRecord(sessionId, restaged(events, project, sessionId), record, opts.now);
+        return 'project';
+      } catch (err) {
+        if (!(err instanceof PendingPayloadUnavailable)) throw err;
+        process.stderr.write(`[myco] member: ${err.message}\n`);
+      }
     }
     const dir = pendingDir(repo.rootKey, opts.mycoHome);
     ensureMemberDir(dir, opts.mycoHome);
@@ -261,8 +273,8 @@ export function listPending(opts: { mycoHome: string; now: number }): PendingSum
 /**
  * Move a repository's held capture into the spool of the project it joined, under the repository's lock, and discard
  * what was held. Each record keeps its envelope; its blob, where it carries one, is staged again under the project's
- * spool, so the drain reads it from there. A blob the pending spool no longer holds leaves its record out, as the drain
- * would. How many records moved.
+ * spool, so the drain reads it from there. Unavailable payloads keep the source journal and receipts for retry.
+ * How many records moved.
  */
 export function flushPending(rootKey: string, into: MemberSpool, opts: { mycoHome: string; now: number }): number {
   return withPendingLock(rootKey, opts.mycoHome, () => moveHeld(rootKey, into, opts));
@@ -273,20 +285,41 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
   const dir = pendingDir(rootKey, opts.mycoHome);
   if (readMeta(dir) === null) return 0;
   const held = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir, initialize: false });
-  let moved = 0;
+  const prepared: Array<{ sessionId: string; events: OutboundEvent[]; state: SessionState }> = [];
   for (const sessionId of new Set([...held.sessionIds(), ...held.stateSessionIds()])) {
     // The journal moves in its order, then the turn-end marks no pass has consumed, each with the time its turn ended.
     const run: OutboundEvent[] = [];
-    for (const line of held.readRecords(sessionId)) {
-      if (line !== null) run.push({ envelope: toWire(line), ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
+    const journal = held.sessionIds().includes(sessionId) ? held.readRecordsOrNull(sessionId) : { readable: true as const, records: [] };
+    if (!journal.readable) {
+      process.stderr.write(`[myco] member: pending journal ${sessionId} unreadable — kept with its receipts for retry\n`);
+      return 0;
     }
-    const kept = restaged(run, into, sessionId);
-    into.appendAndRecord(sessionId, kept, undefined, opts.now);
-    moved += kept.length;
+    for (const line of journal.records) {
+      if (line === null) {
+        process.stderr.write(`[myco] member: pending journal ${sessionId} contains a damaged record — kept for recovery\n`);
+        return 0;
+      }
+      run.push({ envelope: toWire(line), ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
+    }
+    const state = readSessionStateResult(dir, sessionId);
+    if (!state.ok && state.reason !== 'missing') {
+      process.stderr.write(`[myco] member: pending receipts ${sessionId} ${state.reason} — kept with their journal for retry\n`);
+      return 0;
+    }
+    try { prepared.push({ sessionId, events: restaged(run, into, sessionId), state: state.ok ? state.state : readSessionState(dir, sessionId) }); }
+    catch (err) {
+      if (!(err instanceof PendingPayloadUnavailable)) throw err;
+      process.stderr.write(`[myco] member: ${err.message}\n`);
+      return 0;
+    }
+  }
+  let moved = 0;
+  for (const { sessionId, events, state } of prepared) {
+    into.appendAndRecord(sessionId, events, undefined, opts.now, true);
+    moved += events.length;
     into.appendMovedTurnEnds(sessionId, held.pendingTurnEnds(sessionId).map((pending) => pending.mark), opts.now);
     // The session's state moves with its journal, under the session's lock in the project's spool: its transcript
     // pointers, so the transcript ships; and its prompt map and prompt id, so nothing is minted twice.
-    const state = readSessionState(dir, sessionId);
     into.appendAndRecord(sessionId, [], (target) => mergeHeldState(target, state), opts.now);
   }
   clearHeldEnd(rootKey, opts.mycoHome);

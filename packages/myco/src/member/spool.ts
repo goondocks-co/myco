@@ -29,6 +29,7 @@ import {
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
+import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
 
 export const SPOOL_DIRNAME = 'spool';
 export const BLOBS_DIRNAME = 'blobs';
@@ -338,17 +339,9 @@ export class MemberSpool {
       ensureMemberDir(dir, this.mycoHome);
       const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
       const file = path.join(dir, sha256);
-      if (fs.existsSync(file)) {
-        // Content-addressed, so the bytes are already right — but the mtime is
-        // what says "a hook may still name this", and reclaiming reads it. A
-        // second staging of the same sha restarts that clock, or the grace
-        // could expire while the hook that just staged it is still running.
-        const now = new Date();
-        try { fs.utimesSync(file, now, now); } catch { /* vanished under us; the write below is not worth racing */ }
-      } else {
-        fs.writeFileSync(file, bytes, { mode: MEMBER_FILE_MODE });
-      }
-      return { path: file, sha256, mediaType, size: bytes.byteLength };
+      const source = { path: file, sha256, mediaType, size: bytes.byteLength };
+      publishStagedBlob(source, bytes);
+      return source;
     };
   }
 
@@ -392,7 +385,7 @@ export class MemberSpool {
    * and the event exists nowhere. Appending first and recording in the same
    * locked section makes the durable copy the thing that cannot be missing.
    */
-  appendAndRecord(sessionId: string, events: readonly OutboundEvent[], record?: (state: SessionState) => void, now: number = Date.now()): void {
+  appendAndRecord(sessionId: string, events: readonly OutboundEvent[], record?: (state: SessionState) => void, now: number = Date.now(), deduplicate = false): void {
     const stamp = new Date(now).toISOString();
     this.appendLines(sessionId, this.spoolFile(sessionId), events.map((out) => ({
       ...out.envelope,
@@ -400,7 +393,15 @@ export class MemberSpool {
       _journal: JOURNAL_VERSION,
       ...(out.blobSource ? { _blobSource: out.blobSource } : {}),
       timestamp: stamp,
-    })), record, now);
+    })), record, now, undefined, deduplicate ? (existing, moving) => {
+      const ids = new Set(existing.flatMap((line) => typeof line === 'object' && line !== null && 'eventId' in line ? [line.eventId] : []));
+      return moving.filter((line) => {
+        const id = (line as SpoolRecord).eventId;
+        if (ids.has(id)) return false;
+        ids.add(id);
+        return true;
+      });
+    } : undefined);
   }
 
   /**
@@ -453,7 +454,8 @@ export class MemberSpool {
     // A receipt with nothing to append leaves no spool file behind: an empty file would read as a session with records to drain.
     if (lines.length > 0) ensurePrivateFile(file);
     withFileLockSync(lock, () => {
-      const existing = lines.length === 0 || header === undefined || fs.statSync(file).size === 0 ? null : readTurnLines(file);
+      const existing = lines.length === 0 || (header === undefined && fresh === undefined) || fs.statSync(file).size === 0 ? null
+        : header === undefined ? parseSpoolLines(fs.readFileSync(file, 'utf8')) : readTurnLines(file);
       // What the file already holds is read under the lock this append holds, so no other append slips between.
       const appending = fresh === undefined || lines.length === 0 ? lines : fresh(existing ?? [], lines);
       if (appending.length > 0) {
@@ -863,13 +865,9 @@ export class MemberSpool {
    */
   private async uploadBlob(client: ServerClient, source: BlobSource, budget: HookBudget, now: () => number, uploaded: Set<string>): Promise<Outcome | 'gone' | 'unreadable'> {
     if (uploaded.has(source.sha256)) return { class: 'acked', body: {} };
-    let bytes: Buffer;
-    try {
-      bytes = fs.readFileSync(source.path);
-    } catch {
-      return pathIsAbsent(source.path) ? 'gone' : 'unreadable';
-    }
-    const outcome = await client.postBlob(bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
+    const read = readStagedBlob(source);
+    if (read.status !== 'ready') return read.status === 'missing' ? 'gone' : 'unreadable';
+    const outcome = await client.postBlob(read.bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
     if (outcome.class === 'acked') uploaded.add(source.sha256);
     return outcome;
   }

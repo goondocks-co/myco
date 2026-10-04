@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { appendPending, flushPending, pendingDir, pendingSpool } from '@myco/member/pending.js';
@@ -64,6 +65,69 @@ describe('staged capture durability', () => {
     expect(await spool.drainSession('corrupt', client, unboundedBudget())).toMatchObject({ acked: 1, remaining: 0 });
   });
 
+  it('publishes new complete objects through rename without writing the final name', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const bytes = Buffer.from(LARGE);
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+    const final = path.join(spool.blobsDirFor('publication'), digest);
+    const write = fs.writeFileSync.bind(fs);
+    const publications: string[] = [];
+    const observing = spyOn(fs, 'writeFileSync').mockImplementation((file, data, options) => {
+      if (String(file) === final) publications.push('final-write');
+      return write(file, data, options);
+    });
+    try {
+      expect(spool.stagerFor('publication')(bytes, 'text/plain').path).toBe(final);
+      expect(publications).toEqual([]);
+      expect(fs.readFileSync(final)).toEqual(bytes);
+    } finally { observing.mockRestore(); }
+  });
+
+  it('concurrent identical stagers and readers observe only complete final objects', async () => {
+    const mycoHome = tempMycoHome();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const bytes = Buffer.from(LARGE);
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+    const file = path.join(spool.blobsDirFor('race'), digest);
+    const modulePath = path.resolve('packages/myco/src/member/spool.ts');
+    const script = `import {MemberSpool} from ${JSON.stringify(modulePath)}; const stage = new MemberSpool('proj_1',{mycoHome:process.argv[1]}).stagerFor('race'); for(let i=0;i<15;i++) stage(Buffer.from('capture'.repeat(50000)),'text/plain');`;
+    const observed: string[] = [];
+    const reader = setInterval(() => {
+      try { observed.push(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')); }
+      catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') observed.push('read-error'); }
+    }, 1);
+    try {
+      await Promise.all(Array.from({ length: 4 }, () => new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ['--no-env-file', '-e', script, mycoHome], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.on('error', reject);
+        child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr)));
+      })));
+    } finally { clearInterval(reader); }
+    expect(fs.readFileSync(file)).toEqual(bytes);
+    expect(observed.length).toBeGreaterThan(0);
+    expect(new Set(observed)).toEqual(new Set([digest]));
+  });
+
+  it('an interrupted pending move can replay the same envelopes without duplicating the target journal', () => {
+    const mycoHome = tempMycoHome();
+    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'c'.repeat(32) };
+    const opts = { mycoHome, now: Date.now() };
+    const source = pendingSpool(repo, opts)!;
+    const event = promptEvent(context(source, 'replay'), { promptId: mintId(), text: LARGE });
+    appendPending(repo, 'replay', [event], (state) => { state.prompts.receipt = 'id'; }, opts);
+    const target = new MemberSpool('proj_1', { mycoHome });
+    const interrupt = spyOn(target, 'appendMovedTurnEnds').mockImplementation(() => { throw new Error('interrupted move'); });
+    try { expect(() => flushPending(repo.rootKey, target, opts)).toThrow('interrupted move'); }
+    finally { interrupt.mockRestore(); }
+    expect(source.readRecords('replay')).toHaveLength(1);
+    expect(target.readRecords('replay')).toHaveLength(1);
+    expect(flushPending(repo.rootKey, target, opts)).toBe(1);
+    expect(target.readRecords('replay')).toHaveLength(1);
+    expect(readSessionState(target.dir, 'replay').prompts.receipt).toBe('id');
+  });
+
   for (const code of ['EACCES', 'EIO', 'ENOENT']) {
     it(`pending migration retains capture and receipts on ${code}, then retries without new input`, async () => {
       const mycoHome = tempMycoHome();
@@ -74,10 +138,10 @@ describe('staged capture durability', () => {
       appendPending(repo, 'pending', [event], (state) => { state.prompts.receipt = 'prompt-id'; }, opts);
       const target = new MemberSpool('proj_1', { mycoHome });
       const read = fs.readFileSync.bind(fs);
-      const fault = spyOn(fs, 'readFileSync').mockImplementation((file, options) => {
-        if (String(file) === event.blobSource!.path) throw Object.assign(new Error('injected read failure'), { code });
-        return read(file, options);
-      });
+      const fault = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+        if (String(args[0]) === event.blobSource!.path) throw Object.assign(new Error('injected read failure'), { code });
+        return Reflect.apply(read, fs, args);
+      }) as typeof fs.readFileSync);
       try {
         expect(flushPending(repo.rootKey, target, opts)).toBe(0);
         expect(source.readRecords('pending')).toHaveLength(1);

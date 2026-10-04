@@ -80,8 +80,15 @@ export interface SessionState {
   /** sha256(content) → planKey for every plan this session has emitted. */
   planHashes: Record<string, string>;
   planTagCount: number;
-  /** normalized path → the key and the content hash last shipped for every plan file this session has captured; Stop re-reads them. */
-  planPaths: Record<string, { planKey: string; hash: string }>;
+  /** Normalized path → the key, captured content hash and any outstanding read for each tracked plan; Stop re-reads them. */
+  planPaths: Record<string, {
+    planKey: string;
+    hash: string;
+    /** A file read still owed, even when no version of the plan has shipped. */
+    pendingRead?: 'absent' | 'unreadable' | 'not-file';
+    /** The producing prompt, retained until a first successful read. */
+    promptId?: string;
+  }>;
   /** Blob keys of attachments already emitted. */
   attachmentKeys: string[];
   /**
@@ -221,7 +228,7 @@ function trimTracked(state: SessionState): void {
   if (planKeys.length > MAX_TRACKED) {
     for (const key of planKeys.slice(0, planKeys.length - MAX_TRACKED)) delete state.planHashes[key];
   }
-  const pathKeys = Object.keys(state.planPaths);
+  const pathKeys = Object.keys(state.planPaths).filter((key) => state.planPaths[key].pendingRead === undefined);
   if (pathKeys.length > MAX_TRACKED) {
     for (const key of pathKeys.slice(0, pathKeys.length - MAX_TRACKED)) delete state.planPaths[key];
   }

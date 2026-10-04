@@ -88,16 +88,26 @@ export function __resetGitBinaryCacheForTest(): void {
   cachedGitBinary = undefined;
 }
 
-/**
- * Run `git <args>` in `cwd` and return trimmed stdout. Throws on non-zero exit
- * or a missing git (callers already wrap in try/catch and fall back). Uses the
- * resolved binary so a stripped PATH doesn't ENOENT.
- */
-export function runGit(args: string[], cwd: string): string {
+/** A Git query's maximum runtime, including queries made during hook discovery. */
+export const GIT_QUERY_TIMEOUT_MS = 1_000;
+
+export interface GitQueryBudget {
+  /** The absolute deadline shared by a group of Git queries. */
+  deadline?: number;
+}
+
+const gitTimeout = (budget: GitQueryBudget): number => Math.min(GIT_QUERY_TIMEOUT_MS, Math.max(0, (budget.deadline ?? Number.POSITIVE_INFINITY) - Date.now()));
+
+/** Run Git with a bounded lifetime and return trimmed stdout; failure or expiry throws. */
+export function runGit(args: string[], cwd: string, budget: GitQueryBudget = {}): string {
+  const timeout = gitTimeout(budget);
+  if (timeout <= 0) throw new Error('Git query budget exhausted');
   return execFileSync(resolveGitBinary(), args, {
     cwd,
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    timeout,
+    killSignal: 'SIGKILL',
   }).trim();
 }
 
@@ -131,14 +141,18 @@ export function runGitAnswer(args: string[], cwd: string, run: (args: string[], 
  * the status survives what drops a child's stdout (see `runGitAnswer`). Null
  * when git could not be run or ended on a signal.
  */
-export function gitExitStatus(args: string[], cwd: string): number | null {
-  const result = spawnSync(resolveGitBinary(), args, { cwd, stdio: 'ignore' });
+export function gitExitStatus(args: string[], cwd: string, budget: GitQueryBudget = {}): number | null {
+  const timeout = gitTimeout(budget);
+  if (timeout <= 0) return null;
+  const result = spawnSync(resolveGitBinary(), args, { cwd, stdio: 'ignore', timeout, killSignal: 'SIGKILL' });
   return result.error === undefined ? result.status : null;
 }
 
 /** `gitExitStatus` without blocking: several can be asked at once. */
-export function gitExitStatusAsync(args: string[], cwd: string): Promise<number | null> {
+export function gitExitStatusAsync(args: string[], cwd: string, budget: GitQueryBudget = {}): Promise<number | null> {
   return new Promise((resolve) => {
+    const timeout = gitTimeout(budget);
+    if (timeout <= 0) { resolve(null); return; }
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(resolveGitBinary(), args, { cwd, stdio: 'ignore' });
@@ -146,7 +160,11 @@ export function gitExitStatusAsync(args: string[], cwd: string): Promise<number 
       resolve(null);
       return;
     }
-    child.on('error', () => resolve(null));
-    child.on('close', (code, signal) => resolve(signal !== null ? null : code));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      resolve(null);
+    }, timeout);
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve(signal !== null ? null : code); });
   });
 }
