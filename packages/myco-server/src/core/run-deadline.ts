@@ -1,5 +1,9 @@
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import type { RunRow } from './runs.js';
+
+/** The dispatch bound when its caller supplies none. */
+export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
+/** The Deployment margin between a run's dispatch bound and terminal runtime expiry. */
+export const RUN_OVERRUN_MARGIN_MS = 120_000;
 
 /** The bound a dispatched run carries, or the dispatcher's default when it carries none. */
 export function timeoutSecondsOf(runContext: string | null): number {

@@ -57,8 +57,7 @@ import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, u
 /** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
 export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
-/** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
-export const RUN_OVERRUN_MARGIN_MS = 120_000;
+export { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
 export { MAX_RUN_ERROR_CHARS } from '../constants.js';
 /** What a run whose runtime would not start carries, before the refusal's own word. */
 export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
