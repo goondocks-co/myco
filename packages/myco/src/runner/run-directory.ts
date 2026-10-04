@@ -4,9 +4,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { getMachineId } from '@myco/machine-id.js';
 
 export const RUN_DIRECTORY_MANIFEST = '.myco-run.json';
-const MANIFEST_VERSION = 1;
+const MANIFEST_VERSION = 2;
+const LEGACY_MANIFEST_VERSION = 1;
 const PROCESS_NONCE = randomUUID();
-/** Minimum age of an unmanifested allocation eligible for the startup credential sweep. */
+/** Minimum age of an allocation without stable machine identity eligible for the startup credential sweep. */
 export const LEGACY_RUN_DIRECTORY_AGE_MS = 24 * 60 * 60 * 1_000;
 /** Configuration files that can carry a run or provider credential. */
 const CREDENTIAL_FILES = ['mcp.json', 'codex-home/auth.json', 'codex-home/config.toml',
@@ -22,9 +23,10 @@ type RecordedIdentity =
   | { purpose: 'model-listing'; harnessId: string };
 
 type RunDirectoryManifest = RecordedIdentity & {
-  version: typeof MANIFEST_VERSION;
+  version: typeof MANIFEST_VERSION | typeof LEGACY_MANIFEST_VERSION;
   directory: string;
-  machineId: string;
+  machineId?: string;
+  hostname?: string;
   platform: NodeJS.Platform;
   pid: number;
   nonce: string;
@@ -66,8 +68,12 @@ function manifestAt(path: string): RunDirectoryManifest | null {
       && typeof manifest.projectId === 'string' && typeof manifest.deploymentKey === 'string'
       && (manifest.attemptId === null || typeof manifest.attemptId === 'string')
     : manifest.purpose === 'model-listing' && typeof manifest.harnessId === 'string' && VALID_IDENTITY.test(manifest.harnessId);
-  if (manifest.version !== MANIFEST_VERSION || manifest.directory !== basename(path)
-    || !identityValid || typeof manifest.machineId !== 'string' || manifest.machineId.length === 0
+  const stableIdentity = typeof manifest.machineId === 'string' && manifest.machineId.length > 0;
+  const ownerValid = manifest.version === MANIFEST_VERSION ? stableIdentity
+    : manifest.version === LEGACY_MANIFEST_VERSION && (stableIdentity
+      || (!Object.hasOwn(manifest, 'machineId') && typeof manifest.hostname === 'string' && manifest.hostname.length > 0));
+  if (!ownerValid || manifest.directory !== basename(path)
+    || !identityValid
     || typeof manifest.platform !== 'string' || typeof manifest.nonce !== 'string' || !validPid(manifest.pid)
     || !Array.isArray(manifest.pendingStarts) || !manifest.pendingStarts.every((id) => typeof id === 'string')
     || !Array.isArray(manifest.processGroups) || !manifest.processGroups.every(validPid)) return null;
@@ -81,6 +87,7 @@ function writeManifest(path: string, manifest: RunDirectoryManifest): void {
 }
 
 function ownedManifest(path: string): RunDirectoryManifest {
+  if (!directoryAt(path)) throw new Error('Run directory is not an owned directory.');
   const manifest = manifestAt(path);
   if (manifest === null || manifest.machineId !== getMachineId() || manifest.pid !== process.pid || manifest.nonce !== PROCESS_NONCE) {
     throw new Error('Run directory belongs to another owner.');
@@ -97,6 +104,21 @@ function provenDead(pid: number): boolean {
 function groupsDead(manifest: RunDirectoryManifest): boolean {
   return manifest.pendingStarts.length === 0 && manifest.platform === process.platform
     && manifest.processGroups.every((pid) => provenDead(process.platform === 'win32' ? pid : -pid));
+}
+
+class RunDirectoryOwnerAlive extends Error {
+  constructor() { super('Run directory still has a harness owner.'); }
+}
+
+/** Allocation and child disposal share the same owner gate before any deletion. */
+function withOwnedRunDirectoryDisposal<T>(path: string, dispose: () => T): T {
+  const manifest = ownedManifest(path);
+  if (!groupsDead(manifest)) {
+    PENDING_DISCARDS.add(resolve(path));
+    throw new RunDirectoryOwnerAlive();
+  }
+  try { return dispose(); }
+  catch (error) { PENDING_DISCARDS.add(resolve(path)); throw error; }
 }
 
 /** Credential paths are traversed only through actual directories, never home symlinks. */
@@ -144,7 +166,6 @@ function scrubCredentials(path: string): void {
 
 /** The manifest remains until every allocation entry is removed. Symlink targets are never traversed. */
 function removeDirectory(path: string): void {
-  const manifest = manifestAt(path);
   scrubCredentials(path);
   const failures: unknown[] = [];
   for (const entry of fs.readdirSync(path)) {
@@ -153,6 +174,11 @@ function removeDirectory(path: string): void {
     catch (error) { failures.push(error); }
   }
   if (failures.length > 0) throw new AggregateError(failures, 'Run directory cleanup failed.');
+  removeManifestAndDirectory(path, manifestAt(path));
+}
+
+/** An unsuccessful directory removal retains the manifest needed to authorize another disposal. */
+function removeManifestAndDirectory(path: string, manifest: RunDirectoryManifest | null): void {
   fs.unlinkSync(join(path, RUN_DIRECTORY_MANIFEST));
   try { fs.rmdirSync(path); }
   catch (error) {
@@ -190,33 +216,46 @@ export function discardOwnedRunDirectory(path: string): void {
     if (fs.existsSync(path)) throw new Error('Run directory is not an owned directory.');
     return;
   }
-  const manifest = ownedManifest(path);
-  if (!groupsDead(manifest)) {
-    PENDING_DISCARDS.add(resolve(path));
-    throw new Error('Run directory still has a harness owner.');
+  withOwnedRunDirectoryDisposal(path, () => {
+    removeDirectory(path);
+    PENDING_DISCARDS.delete(resolve(path));
+  });
+}
+
+/** Remove one direct child only after all allocation owners are absent; a refusal queues the whole allocation. */
+export function removeOwnedRunDirectoryEntry(path: string, entry: string): void {
+  if (entry === '' || entry === '.' || entry === '..' || entry === RUN_DIRECTORY_MANIFEST || /[/\\\0]/.test(entry)) {
+    throw new Error('Invalid run directory entry.');
   }
-  try { removeDirectory(path); PENDING_DISCARDS.delete(resolve(path)); }
-  catch (error) { PENDING_DISCARDS.add(resolve(path)); throw error; }
+  withOwnedRunDirectoryDisposal(path, () => fs.rmSync(join(path, entry), { recursive: true, force: true }));
 }
 
 /** Retry this worker's refused disposals after registered owners become absent. No timers are registered. */
 export function retryPendingRunDirectoryDiscards(): { recovered: number; preserved: number } {
   let recovered = 0;
   let preserved = 0;
+  const failures: unknown[] = [];
   for (const path of PENDING_DISCARDS) {
-    if (!directoryAt(path)) { PENDING_DISCARDS.delete(path); continue; }
-    const manifest = ownedManifest(path);
-    if (!groupsDead(manifest)) { preserved += 1; continue; }
-    discardOwnedRunDirectory(path);
-    recovered += 1;
+    try {
+      if (!entryExists(path)) { PENDING_DISCARDS.delete(path); continue; }
+      discardOwnedRunDirectory(path);
+      recovered += 1;
+    } catch (error) {
+      preserved += 1;
+      if (!(error instanceof RunDirectoryOwnerAlive)) failures.push(error);
+    }
   }
+  if (failures.length > 0) throw new AggregateError(failures, 'Waiting run directory cleanup failed.');
   return { recovered, preserved };
 }
 
-/** Sweep old unmanifested homes once at worker startup; unknown contents and linked directories are retained. */
-function sweepLegacyRunDirectory(path: string, now: number): boolean {
-  if (entryExists(join(path, RUN_DIRECTORY_MANIFEST)) || now - fs.lstatSync(path).mtimeMs < LEGACY_RUN_DIRECTORY_AGE_MS) return false;
-  if (!CREDENTIAL_FILES.some((file) => {
+/** Sweep old homes without stable machine identity; a prior manifest must prove every owner absent. */
+function sweepLegacyRunDirectory(path: string, now: number, manifest?: RunDirectoryManifest): boolean {
+  if ((manifest === undefined && entryExists(join(path, RUN_DIRECTORY_MANIFEST)))
+    || now - fs.lstatSync(path).mtimeMs < LEGACY_RUN_DIRECTORY_AGE_MS) return false;
+  if (manifest !== undefined && (manifest.version !== LEGACY_MANIFEST_VERSION || manifest.machineId !== undefined
+    || !provenDead(manifest.pid) || !groupsDead(manifest))) return false;
+  if (manifest === undefined && !CREDENTIAL_FILES.some((file) => {
     const at = credentialAt(path, file);
     return at !== null && entryExists(at);
   })) return false;
@@ -226,6 +265,11 @@ function sweepLegacyRunDirectory(path: string, now: number): boolean {
     if (!directoryAt(parent)) continue;
     try { fs.rmdirSync(parent); }
     catch (error) { if (!absent(error) && (error as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw error; }
+  }
+  if (manifest !== undefined) {
+    if (fs.readdirSync(path).some((entry) => entry !== RUN_DIRECTORY_MANIFEST)) return false;
+    removeManifestAndDirectory(path, manifest);
+    return true;
   }
   try { fs.rmdirSync(path); return true; }
   catch (error) { if (absent(error)) return true; if ((error as NodeJS.ErrnoException).code === 'ENOTEMPTY') return false; throw error; }
@@ -262,6 +306,11 @@ export function recoverAbandonedRunDirectories(root: string): { recovered: numbe
     const manifest = manifestAt(path);
     if (manifest === null) {
       if (sweepLegacyRunDirectory(path, now)) recovered += 1;
+      else preserved += 1;
+      continue;
+    }
+    if (manifest.machineId === undefined) {
+      if (sweepLegacyRunDirectory(path, now, manifest)) recovered += 1;
       else preserved += 1;
       continue;
     }

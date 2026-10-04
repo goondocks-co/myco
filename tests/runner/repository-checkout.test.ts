@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hashCommittedFiles, prepareRepositoryCheckout, repositoryUrl } from '@myco/runner/repository-checkout.js';
 import { prepareWorkerCheckout } from '@myco/runner/repository.js';
+import { writeRunDir, discardRunDir } from '@myco/runner/mcp-config.js';
+import { beginRunProcess, retryPendingRunDirectoryDiscards } from '@myco/runner/run-directory.js';
 import { RUN_REPOSITORY_DIGESTS_FILE } from '@goondocks/myco-shared/repository';
 
 import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
@@ -107,15 +109,40 @@ describe('committed repository checkout', () => {
       : { pin: { url, branch: 'main', commit: input.commit } };
     const spec = { url, branch: 'main', historyDepth: 1 };
     for (const digests of [true, false]) {
-      const scratch = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
+      const allocation = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
+      const { scratchDir: scratch } = writeRunDir(allocation, 'run_checkout', { serverUrl: 'https://server.example.test', runToken: 'synthetic-run-token', projectId: 'project_fixture' });
       try {
         const checkout = await prepareWorkerCheckout(spec, scratch, AbortSignal.timeout(15_000), answer, { gitPath, digests });
         try {
           const listing = await readFile(join(scratch, RUN_REPOSITORY_DIGESTS_FILE), 'utf8').catch(() => null);
           expect({ digests, listing }).toEqual({ digests, listing: digests ? `${createHash('sha256').update('Second committed rules.').digest('hex')}  AGENTS.md\n` : null });
         } finally { await checkout.dispose(); }
-      } finally { await rm(scratch, { recursive: true, force: true }); }
+      } finally { discardRunDir(scratch); await rm(allocation, { recursive: true, force: true }); }
     }
+  });
+
+  it('preserves worker checkout files until their registered harness owner exits', async () => {
+    const allocation = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
+    const { scratchDir } = writeRunDir(allocation, 'run_owned_checkout', { serverUrl: 'https://server.example.test', runToken: 'synthetic-run-token', projectId: 'project_fixture' });
+    const answer = async (input: Record<string, unknown>) => input.commit === undefined
+      ? { repository: { url, branch: 'main', credential: { username: 'reader', token } } }
+      : { pin: { url, branch: 'main', commit: input.commit } };
+    const checkout = await prepareWorkerCheckout({ url, branch: 'main', historyDepth: 1 }, scratchDir, AbortSignal.timeout(15_000), answer, { gitPath });
+    const launch = beginRunProcess(scratchDir)!;
+    const owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: checkout.root, detached: process.platform !== 'win32', stdio: 'ignore', env: process.env });
+    const exited = new Promise<void>((resolve) => owner.once('close', () => resolve()));
+    launch.started(owner.pid!);
+    try {
+      await expect(checkout.dispose()).rejects.toThrow('harness owner');
+      expect(await readFile(join(checkout.root, 'AGENTS.md'), 'utf8')).toBe('Second committed rules.');
+    } finally {
+      process.kill(process.platform === 'win32' ? owner.pid! : -owner.pid!, 'SIGKILL');
+      await exited;
+      retryPendingRunDirectoryDiscards();
+      discardRunDir(scratchDir);
+      await rm(allocation, { recursive: true, force: true });
+    }
+    expect(existsSync(scratchDir)).toBe(false);
   });
 
   it('refuses invalid credentials without exposing them', async () => {

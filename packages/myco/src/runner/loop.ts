@@ -315,6 +315,8 @@ const DEFAULT_HEARTBEAT_MS = 30_000;
 const RUN_OVERRUN_GRACE_MS = 5_000;
 /** The total time allowed for iterator return and repository disposal. */
 const RUN_CLEANUP_TIMEOUT_MS = STOP_GRACE_MS * 3;
+/** The largest delay represented by the runtime's signed 32-bit timer. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 const asRun = (value: unknown): ClaimedRun | null => {
   if (value === null || typeof value !== 'object') return null;
@@ -342,6 +344,11 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
   let deadline = initialDeadline;
   let lost = false;
   let unreachable = false;
+  let requestSequence = 0;
+  let acceptedSequence = 0;
+  let released = false;
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  let beat = wake.begin(heartbeatMs);
   const onAbort = (): void => stopping.abort();
   options.signal.addEventListener('abort', onAbort, { once: true });
   if (options.signal.aborted) onAbort();
@@ -349,15 +356,32 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
     if (lost) return;
     lost = true;
     options.log(line);
+    clearTimeout(expiryTimer);
+    renewals.abort();
     stopping.abort();
+  };
+  const expired = (slept: boolean): void => losing(slept
+    ? `this machine slept past its lease on ${run.id}; stopping the harness`
+    : `the lease on ${run.id} expired; stopping the harness`);
+  const scheduleExpiry = (): void => {
+    clearTimeout(expiryTimer);
+    if (released || lost || deadline === Number.POSITIVE_INFINITY) return;
+    const remaining = deadline - clock();
+    if (remaining <= 0) {
+      expired(beat());
+      return;
+    }
+    expiryTimer = setTimeout(scheduleExpiry, Math.min(remaining, MAX_TIMER_DELAY_MS));
   };
   const renew = (): void => {
     if (lost || renewals.signal.aborted) return;
     const sentAt = clock();
+    const sequence = ++requestSequence;
     void post({ ...options, signal: within(renewals.signal, heartbeatMs) }, '/worker/lease', {
       projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }),
     }).then((answer) => {
-      if (renewals.signal.aborted) return;
+      if (renewals.signal.aborted || sequence < acceptedSequence) return;
+      if (clock() >= deadline) { scheduleExpiry(); return; }
       if (answer.kind === 'unreachable') {
         if (!unreachable) { unreachable = true; options.log(`cannot renew the lease on ${run.id}: ${answer.detail}`); }
         return;
@@ -365,7 +389,9 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
       unreachable = false;
       if (answer.kind === 'answered' && answer.body.held === true) {
         const renewed = leaseDeadline(sentAt, answer.body.leaseMs);
-        deadline = deadline === Number.POSITIVE_INFINITY ? renewed : Math.max(deadline, renewed);
+        acceptedSequence = sequence;
+        deadline = renewed;
+        scheduleExpiry();
         return;
       }
       losing(answer.kind === 'refused'
@@ -376,17 +402,19 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
     });
   };
   const releaseAwake = options.keepAwake?.() ?? (() => {});
-  let beat = wake.begin(heartbeatMs);
   const heartbeat = setInterval(() => {
     const slept = beat();
     beat = wake.begin(heartbeatMs);
-    if (slept && clock() >= deadline) losing(`this machine slept past its lease on ${run.id}; stopping the harness`);
+    if (clock() >= deadline) expired(slept);
     else renew();
   }, heartbeatMs);
+  scheduleExpiry();
   wake.driving(true);
   return {
     get deadline() { return deadline; }, get lost() { return lost; }, signal: stopping.signal, lose: losing,
     release() {
+      released = true;
+      clearTimeout(expiryTimer);
       clearInterval(heartbeat);
       renewals.abort();
       stopping.abort();
@@ -911,10 +939,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
           outcome = { status: 'failed', error: coded, identity: { status: 'unknown', reason: 'worker_failure' } };
         }
         if (outcome.status === 'failed') detection.invalidate();
-        // A worker that lost its lease writes nothing: the run belongs to whoever
-        // holds it now, and a late outcome would be one worker reporting on
-        // another's run. The Deployment refuses such a write anyway; not making it
-        // is what keeps the two accounts of a run from disagreeing.
+        // Only the current lease owner reports the attempt's outcome.
         if (outcome.status !== 'lost' && !lease.lost) {
           const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
           const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
@@ -928,14 +953,9 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
             options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
             return { driven, refused: ended.code };
           }
-          // An outcome that never arrived leaves the run to the Deployment's sweep,
-          // which is what owns a run no worker reports on. Saying so is what makes
-          // the difference visible between that and a run nobody ever claimed.
+          // The Deployment's sweep settles runs whose terminal request did not arrive.
           if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
-          // The worker reports what the harness did; the Deployment records what the
-          // task actually left behind, and the two differ whenever a harness ends its
-          // turn having done none of the work. A worker that logged only its own
-          // report would show a clean drive against a run the Deployment failed.
+          // The Deployment records the task's close evidence independently of the harness outcome.
           if (ended.kind === 'answered' && ended.body.ended === false) {
             options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
           }
