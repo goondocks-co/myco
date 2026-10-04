@@ -179,7 +179,7 @@ function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
   const handle = winOpenLockHandle(k, lockPath);
   const ov = winOverlapped();
   const shared = opts.mode === 'shared';
-  const rc = k.LockFileEx(handle, (shared ? 0 : WIN_LOCKFILE_EXCLUSIVE_LOCK) | WIN_LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, ptr(ov));
+  const rc = k.LockFileEx(handle, (shared ? 0 : WIN_LOCKFILE_EXCLUSIVE_LOCK) | (opts.wait ? 0 : WIN_LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, ptr(ov));
   if (rc === 0) {
     const holder = readLockHolder(lockPath);
     k.CloseHandle(handle);
@@ -242,8 +242,8 @@ function refuseSharedUpdate(): never {
  * A `flock` shared lease: it coexists with other shared leases, excludes every exclusive one, writes and truncates
  * nothing, and is released by the kernel when this process ends.
  */
-function sharedLease(flockApi: { flock: (fd: number, op: number) => number }, fd: number, lockPath: string): AcquireResult {
-  if (flockApi.flock(fd, LOCK_SH | LOCK_NB) !== 0) {
+function sharedLease(flockApi: { flock: (fd: number, op: number) => number }, fd: number, lockPath: string, wait = false): AcquireResult {
+  if (flockApi.flock(fd, LOCK_SH | (wait ? 0 : LOCK_NB)) !== 0) {
     const holder = readHolderMetadata(fd);
     fs.closeSync(fd);
     return { acquired: false, holder, holderPid: holder?.pid ?? null };
@@ -321,6 +321,8 @@ export interface AcquireRefused {
 export type AcquireResult = AcquireSuccess | AcquireRefused;
 
 export interface AcquireOptions {
+  /** Wait for the lease rather than returning a contention result. */
+  wait?: boolean;
   /** Override the command string written to the lock file. Defaults to
    *  `process.argv.join(' ')`. Informational only. */
   command?: string;
@@ -336,9 +338,9 @@ export const LifecycleLock = {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
     let fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
-    if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath);
+    if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath, opts.wait);
     for (let attempt = 0; ; attempt++) {
-      const rc = flockApi.flock(fd, LOCK_EX | LOCK_NB);
+      const rc = flockApi.flock(fd, LOCK_EX | (opts.wait ? 0 : LOCK_NB));
       if (rc !== 0) {
         const holder = readHolderMetadata(fd);
         fs.closeSync(fd);

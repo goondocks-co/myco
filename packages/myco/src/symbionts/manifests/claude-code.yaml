@@ -3,7 +3,7 @@ displayName: Claude Code
 binary: claude
 health:
   installLocations: ["~/.claude", "/Applications/Claude.app", "~/Applications/Claude.app"]
-  activityLocations: ["~/.claude/projects"]
+  activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .claude
 detectionDir: ~/.claude
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT

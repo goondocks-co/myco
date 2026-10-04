@@ -125,6 +125,7 @@ export const claudeCodeDriver: Driver = {
       '-p', spec.prompt,
       ...(spec.profile === undefined ? [] : ['--model', spec.profile.model, ...(spec.profile.effort === null ? [] : ['--effort', spec.profile.effort])]),
       '--setting-sources', 'project,local',
+      '--no-session-persistence',
       '--output-format', 'stream-json',
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,

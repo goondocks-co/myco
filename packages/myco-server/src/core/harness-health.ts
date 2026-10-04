@@ -2,7 +2,9 @@ import type { RelationalStore } from './adapters.js';
 import {
   HARNESS_HEALTH_STATES, MAX_HARNESS_ACTION_CHARS, MAX_HARNESS_ID_CHARS, MAX_PROVISIONED_HARNESSES,
   type ProvisionedHarnessFact, type ProvisionedHarnessReport,
+  HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS,
 } from '@goondocks/myco-shared/harness-health';
+export { HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS } from '@goondocks/myco-shared/harness-health';
 import {
   claimedMachineNames, machineHarnessCaptureSince, machineHarnessReport, provisionedHarnessReportRows,
   latestHarnessCapture, recentMachineCapture, trustConfirmationCapture, workerMachineActivity,
@@ -81,13 +83,8 @@ export async function readProvisionedHarnessReports(db: RelationalStore): Promis
 }
 
 const HOUR_MS = 60 * 60_000;
-const DAY_MS = 24 * HOUR_MS;
-/** A harness that captured within this window is not unusually quiet. */
-export const HARNESS_SILENT_MS = DAY_MS;
 /** Machine activity must be recent enough to distinguish a quiet harness from an idle machine. */
 export const MACHINE_ACTIVE_MS = HOUR_MS;
-/** Allow small clock differences between local harness use and Deployment receipt. */
-export const HARNESS_RUN_CAPTURE_MARGIN_MS = 5 * 60_000;
 
 export type HarnessAttentionFact =
   | { kind: 'harness_needs_repair'; machineId: string; machineName: string | null; harness: string; state: Exclude<ProvisionedHarnessFact['state'], 'ready'>; action: string; since: number }

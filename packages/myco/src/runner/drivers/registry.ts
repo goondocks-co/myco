@@ -14,6 +14,7 @@ import { acpDriver, type RunHomeWriter } from './acp.js';
 import { claudeCodeDriver } from './claude-code.js';
 import { codexDriver } from './codex.js';
 import { writeCursorRunHome } from './cursor.js';
+import { withWorkerActivity } from './worker-activity.js';
 
 /** The drivers written against a harness's own stream rather than the agent protocol. */
 const NATIVE: Readonly<Record<string, Driver>> = {
@@ -32,7 +33,7 @@ export const RUN_HOMES: Readonly<Record<string, RunHomeWriter>> = {
  * under the machine's own approvals.
  */
 export const DRIVERS: Readonly<Record<string, Driver>> = Object.fromEntries(
-  HARNESSES.filter(offerable).map((harness) => [harness.id, NATIVE[harness.id] ?? acpDriver(harness.id, RUN_HOMES[harness.id])]),
+  HARNESSES.filter(offerable).map((harness) => [harness.id, withWorkerActivity(NATIVE[harness.id] ?? acpDriver(harness.id, RUN_HOMES[harness.id]))]),
 );
 
 /** The driver for this harness, or null when the worker drives none by that name. */

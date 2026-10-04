@@ -3,7 +3,7 @@ displayName: Cursor
 binary: cursor
 health:
   installLocations: ["~/.cursor", "/Applications/Cursor.app", "~/Applications/Cursor.app"]
-  activityLocations: ["~/.cursor/projects"]
+  activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .cursor
 detectionDir: ~/.cursor
 pluginRootEnvVar: CURSOR_PLUGIN_ROOT

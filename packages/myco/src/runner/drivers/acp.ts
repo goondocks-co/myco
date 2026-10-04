@@ -287,12 +287,13 @@ export async function* turnOver(
       return;
     }
     const info = recordOf(session.result) ?? {};
+    sessionId = stringOf(info.sessionId);
+    if (sessionId !== null) spec.sessionOpened?.(sessionId);
     const mode = sessionModeOf(info);
     if (asking.mode !== null && mode !== asking.mode) {
       yield { kind: 'ended', stop: 'error', detail: `the harness opened the session in mode ${mode ?? '(none)'} rather than the run's agent ${asking.mode}, so its calls would not be asked`, code: 'session_unasked' };
       return;
     }
-    sessionId = stringOf(info.sessionId);
     let reported = info;
     /** What the run's identity carries about how its profile was applied. */
     const warnings: string[] = [];
