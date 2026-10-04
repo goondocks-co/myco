@@ -44,6 +44,10 @@ export interface RouteContext {
   body: string;
   bodyBytes: number;
   now: number;
+  /** The server clock at a runtime mutation. */
+  clock?: () => number;
+  /** The immutable attempt deadline resolved from a run credential. */
+  runDeadline?: number;
   /** The request's own origin: where a runtime this request dispatches calls back to, so one Deployment never sends its runtime to another. */
   origin: string;
   /** Whether the request is a member's turn-end hook shipping its own session's transcript (`TURN_END_HEADER`). */

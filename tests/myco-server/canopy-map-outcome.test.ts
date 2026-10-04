@@ -289,7 +289,7 @@ describe('a map run a worker claimed', () => {
       const res = await worker.fetch(new Request(`${ORIGIN}/runs/canopy-map`, {
         method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }), body: JSON.stringify({ runId: run.id, ...body }),
       }), r.e.env);
-      expect({ op: body.op, answer: await res.json() }).toEqual({ op: body.op, answer: { persisted: true, held: false } });
+      expect({ op: body.op, answer: await res.json() }).toEqual({ op: body.op, answer: { persisted: false, code: 'no_run', reason: 'credential holds no live run' } });
     }
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM canopy_maps`).get()).toEqual({ n: 0 });
     expect(mapSourcePinOfRun((await getRun(r.e.db, scope, run.id))!)?.inputHash).not.toBe('e'.repeat(64));

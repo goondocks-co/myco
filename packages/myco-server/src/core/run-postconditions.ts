@@ -37,7 +37,7 @@
 import { agentProse, strictName } from '@goondocks/myco-shared/run-text';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert } from './runs.js';
+import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert, type RunCaller } from './runs.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
@@ -255,7 +255,7 @@ export const MAX_REPORT_DETAILS_CHARS = 65_536;
  * are stored as agent prose (`agentProse`), so both doors store the same thing
  * for the same offer.
  */
-export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportOffer): Promise<ReportOutcome> {
+export async function recordReport(db: RelationalStore, scope: ReadScope, report: ReportOffer, caller?: RunCaller): Promise<ReportOutcome> {
   const run = await getRun(db, scope, report.runId);
   if (run === null) return { recorded: false, reason: 'unheld' };
   // A report names its agent by an identifier, and its action from the task's own list; a task held to no rule takes none.
@@ -272,5 +272,5 @@ export async function recordReport(db: RelationalStore, scope: ReadScope, report
   // The agent's own words, bounded and masked (`agentProse`): stored with the run and kept as long as it is.
   const summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
   const details = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
-  return (await insertReport(db, scope, { ...report, summary, details, audit })) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
+  return (await insertReport(db, scope, { ...report, summary, details, audit }, caller)) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }

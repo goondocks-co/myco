@@ -4,8 +4,8 @@ import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.
 import { TURN_END_HEADER } from './ingest/turns.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
-import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
-import { heldRunOfCredential } from './api/run-admission.js';
+import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
+import { admitRunControl, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
 import { recordRunCall, recordRunControlRefusal, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
@@ -214,7 +214,8 @@ async function recordRunRoute(
 ): Promise<void> {
   let persisted = false;
   try {
-    persisted = ((await answered.clone().json()) as { persisted?: unknown }).persisted === true;
+    const result = await answered.clone().json() as { persisted?: unknown; applied?: unknown; changed?: unknown; claimed?: unknown };
+    persisted = result.persisted === true && result.claimed !== false && !(result.applied === false && result.changed === 0);
   } catch {
     persisted = false;
   }
@@ -368,6 +369,20 @@ export function createServer(deps: ServerDeps) {
     }
     if (!auth) {
       const digest = await sha256Hex(presented);
+      if (matched?.route.auth === 'member' && matched.route.legacyRunRoute === true && matched.route.path === '/runs/update') {
+        const released = await releasedRunCredential(env.db, digest, now);
+        if (released !== null) {
+          if (!(await env.tokenLimit.limit({ key: released.tokenId })).success) return limited();
+          if (!protocolSupported(request)) return unsupportedProtocol();
+          const projectId = requestedProject(request);
+          const body = await readBoundedBody(request, MAX_BODY_BYTES);
+          if (projectId !== null && body.ok) {
+            const admission = await admitRunControl(env, released, projectId, matched.route.path, body.text, now);
+            if (admission.held && admission.settled !== undefined) return withProtocol(admission.settled);
+          }
+          return anonymous();
+        }
+      }
       emit({ kind: 'auth_failed', credential: 'member', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
       // A superseded credential presented anywhere but the refresh route is recorded and
       // answered 401 like any other: a hook that lost a rotation race, or a bridge that
@@ -449,14 +464,6 @@ export function createServer(deps: ServerDeps) {
   async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
     try {
       const answered = await admitted(request, env, auth, matched, url, now);
-      if (auth.memberId === HARNESS_MEMBER_ID && matched?.route.auth === 'member' && matched.route.legacyRunRoute === true && answered.status === 200) {
-        const result: unknown = await answered.clone().json();
-        if (typeof result === 'object' && result !== null && 'persisted' in result && result.persisted === false) {
-          const code = runControlRefusalCode('code' in result ? result.code : null) ?? 'refused';
-          const refusalId = await recordRunControlRefusal(env.db, auth.tokenId, code);
-          if (refusalId !== null) return Response.json({ ...result, refusalId }, { status: answered.status, headers: answered.headers });
-        }
-      }
       return answered;
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), memberId: auth.memberId, tokenId: auth.tokenId });
@@ -478,16 +485,16 @@ export function createServer(deps: ServerDeps) {
     const { route, params } = matched;
     if (route.auth === 'public') return route.handler(request);
     if (route.auth !== 'member') return unauthorized();
-    // A run's credential — the harness member's — is not a member's authority. It
-    // reaches the run principal on a route that serves one, and the run routes it
-    // holds today with their own admission (`legacyRunRoute`, until #1146 moves
-    // those operations onto MCP); on every other member route, stream routes and
-    // the refresh route included, it is refused before its body or its Project is
-    // read. A refreshed credential names a token no run row holds, so refusing the
-    // refresh route here is what keeps a run credential unrefreshable.
+    // Run control resolves its dispatch principal before member Project resolution.
+    if (route.legacyRunRoute === true) {
+      if (auth.memberId !== HARNESS_MEMBER_ID && !('retired' in route && route.retired === true)) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+      if (route.bodyMode !== 'json') return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+      return asRunControl(request, env, auth, route, now);
+    }
+    // A run credential reaches only a declared run surface and cannot refresh.
     if (auth.memberId === HARNESS_MEMBER_ID) {
       if (servesRun(route)) return asRun(request, env, auth, route, now);
-      if (route.legacyRunRoute !== true) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+      return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
     }
     // A credential its issuer minted not to rotate is one an orchestrator hands to every
     // sandbox it starts through the environment. It is refused every route that mints an
@@ -564,20 +571,11 @@ export function createServer(deps: ServerDeps) {
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       const limit = await resolved();
       if (limit !== null) return limit;
-      // A run reaches this Deployment through two doors, and the record of what
-      // it called has to hold both or an empty list means nothing. The MCP door
-      // is recorded at `tools/call`; this is the other one — the run routes a
-      // container drives itself. The run is resolved from its credential BEFORE
-      // the handler runs: the handler that closes a run leaves it terminal, and a
-      // terminal row resolves to no held run.
-      const drivesRun = route.legacyRunRoute === true && auth.memberId === HARNESS_MEMBER_ID;
-      const heldBefore = drivesRun ? await heldRunOfCredential(env, auth, now) : null;
       const answered = await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
-        ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
+        ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
       });
-      if (drivesRun) await recordRunRoute(env, auth, route.path, answered, heldBefore, now);
       return answered;
     } catch (err) {
       return failed(env, auth, route, err);
@@ -640,6 +638,34 @@ export function createServer(deps: ServerDeps) {
     } catch (err) {
       return failed(env, auth, route, err);
     }
+  }
+
+  /** The retained runtime channel receives only its credential-bound dispatch and Project. */
+  async function asRunControl(request: Request, env: ServerEnv, auth: MemberAuth, route: Extract<MemberRoute, { bodyMode: 'json'; handler: unknown }>, now: number): Promise<Response> {
+    const projectId = requestedProject(request);
+    if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
+    const body = await readBoundedBody(request, MAX_BODY_BYTES);
+    if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
+    if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
+    const context = { projectId, memberId: auth.memberId, machineId: auth.machineId,
+      tokenId: auth.tokenId, expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
+      runtime: auth.runtime, body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: new URL(request.url).origin };
+    if (route.retired === true) return route.handler(env, context);
+    const admission = await admitRunControl(env, auth, projectId, route.path, body.text, now);
+    if (!admission.held) return refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
+    if (admission.settled !== undefined) return admission.settled;
+    const principal = { ...context, runDeadline: runDeadline(admission.run) };
+    const answered = await route.handler(env, principal);
+    await recordRunRoute(env, auth, route.path, answered, admission.run, now);
+    if (answered.status === 200) {
+      const result: unknown = await answered.clone().json();
+      if (typeof result === 'object' && result !== null && 'persisted' in result && result.persisted === false) {
+        const code = runControlRefusalCode('code' in result ? result.code : null) ?? 'refused';
+        const refusalId = await recordRunControlRefusal(env.db, auth.tokenId, code, runtimeCaller(principal));
+        if (refusalId !== null) return Response.json({ ...result, refusalId }, { status: answered.status, headers: answered.headers });
+      }
+    }
+    return answered;
   }
 
   async function handleRequest(request: Request, env: ServerEnv): Promise<Response> {

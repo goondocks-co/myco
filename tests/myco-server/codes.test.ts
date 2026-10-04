@@ -67,7 +67,7 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   refused: (r) => r.fetch(memberPost(r.t1.token, '[]', '/tokens/refresh')),
   invalid_field: (r) => r.post(r.t1.token, { createdAt: -1 }),
   route_retired: (r) => r.fetch(memberPost(r.t1.token, { runId: 'run_1' }, '/runs/get')),
-  field_retired: (r) => r.fetch(memberPost(r.t1.token, { runId: 'run_1', update: { actions_taken: 'x' } }, '/runs/update')),
+  field_retired: async (r) => { await r.running(); return r.fetch(memberPost(r.harness.token, { runId: 'run_1', update: { actions_taken: 'x' } }, '/runs/update')); },
   parse: (r) => r.fetch(memberPost(r.t1.token, 'not json')),
   body_cap: (r) => r.fetch(memberPost(r.t1.token, 'x'.repeat(MAX_BODY_BYTES + 1))),
   blob_cap: (r) => r.fetch(new Request(`https://s/blobs/${'a'.repeat(64)}`, { method: 'POST', headers: memberHeaders(r.t1.token, { 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1) }), body: new Uint8Array(8) })),

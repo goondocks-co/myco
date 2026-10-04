@@ -42,12 +42,12 @@ export const repositories: ParityScenario = {
       return await result.json() as any;
     };
     expect((await asRun({})).repository.credential.token).toBe(secret);
-    expect(await asRun({}, target.memberToken)).toEqual({ persisted: true, held: false });
+    expect(await asRun({}, target.memberToken)).toEqual({ persisted: false, code: 'run_scope', reason: "a run credential reaches only its run's surface" });
     expect((await asRun({ url: source, branch: 'main', commit: sha })).pin.commit).toBe(sha);
     expect((await asRun({ url: source, branch: 'main', commit: 'b'.repeat(40) })).pin.commit).toBe(sha);
     expect((await asRun({})).repository.commit).toBe(sha);
     await target.sql(`UPDATE agent_runs SET status='completed' WHERE project_id=${lit(target.projectId)} AND id=${lit(runId)}`);
-    expect(await asRun({})).toEqual({ persisted: true, held: false });
+    expect(await asRun({})).toEqual({ persisted: false, code: 'no_run', reason: 'credential holds no live run' });
     const edited = await owner('PUT', { url: 'https://example.test/new.git', branch: 'main', revision: saved.body.repository.revision });
     expect(edited.status).toBe(200);
     expect(edited.body.repository.credential).toBeNull();

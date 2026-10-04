@@ -1,3 +1,4 @@
+import { runRouteFixture } from './helpers/run-routes.js';
 import { shapeRunError } from '@goondocks/myco-shared/run-text';
 import { runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 /**
@@ -21,18 +22,7 @@ import { EMBEDDING_MODEL_LEAF, EMBEDDING_PROVIDER_LEAF, resolveEmbedding, type S
 
 const AGENT = 'agent_1';
 
-async function harness() {
-  const fixture = sqliteEnv();
-  const env = { ...fixture.env, ...OWNER_ENV };
-  const t = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-  fixture.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(Date.now());
-  fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, Date.now());
-  // Absence means NOT admitted; a fixture expecting a claim to land says so.
-  fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
-  const post = async (path: string, body: unknown): Promise<Record<string, unknown>> =>
-    await (await worker.fetch(memberPost(t.token, body, path), env)).json() as Record<string, unknown>;
-  return { ...fixture, env, token: t, post };
-}
+const harness = () => runRouteFixture(AGENT);
 
 describe('server-owned run refusal codes', () => {
   for (const code of ['parse', 'invalid_field', 'project_mismatch']) {
@@ -74,7 +64,7 @@ describe('POST /runs/claim', () => {
     sqlite.query(`DELETE FROM project_capabilities WHERE project_id = 'proj_1'`).run();
     const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(res).toEqual({ persisted: true, claimed: false, notAdmitted: 'cortex' });
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'running'`).get() as { c: number }).c).toBe(0);
   });
 
   it('admits a capture-driven claim independently of archived provider preferences and Project capabilities', async () => {
@@ -123,7 +113,7 @@ describe('POST /runs/claim', () => {
     }
     expect(await post('/runs/claim', { id: 'ordinary', agentId: AGENT, task: 'container-smoke', capability: 'cortex', model: 'custom model' }))
       .toMatchObject({ persisted: false, code: 'parse' });
-    expect(sqlite.query('SELECT COUNT(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'").get()).toEqual({ n: 0 });
     sqlite.close();
   });
 
@@ -138,14 +128,14 @@ describe('POST /runs/claim', () => {
     const { post, sqlite } = await harness();
     const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest' });
     expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'running'`).get() as { c: number }).c).toBe(0);
   });
 
   it('refuses a malformed claim terminally, in the route shape and with a code', async () => {
     const { post, sqlite } = await harness();
     const res = await post('/runs/claim', { id: 'r1', agentId: AGENT });
     expect({ persisted: res.persisted, coded: typeof res.code === 'string' }).toEqual({ persisted: false, coded: true });
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(0);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'running'`).get() as { c: number }).c).toBe(0);
   });
 
   it('claims per project: the same task in another Project is not blocked', async () => {
@@ -153,9 +143,7 @@ describe('POST /runs/claim', () => {
     sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'proj_2', ?)`).run(Date.now());
     sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_2', 'cortex', 1, ?, 'test')`).run(Date.now());
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    const other = await (await worker.fetch(
-      memberPost(token.token, { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' }, '/runs/claim', { 'x-myco-project': 'proj_2' }),
-      env)).json() as Record<string, unknown>;
+    const other = await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'digest', capability: 'cortex' }, 'proj_2');
     expect(other).toEqual({ persisted: true, claimed: true, runId: 'r2' });
   });
 });
@@ -222,12 +210,12 @@ describe('run lifecycle over HTTP', () => {
     expect(sqlite.query(`SELECT status, completed_at c FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', c: 42 });
   });
 
-  it('applies an update naming no status to a run that has already ended', async () => {
+  it('refuses accounting writes after the run credential is released', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     await post('/runs/update', { runId: 'r1', update: { status: 'completed', completed_at: 42 } });
-    expect(await post('/runs/update', { runId: 'r1', update: { tokens_used: 99, cost_usd: 1 } })).toEqual({ persisted: true, changed: 1, applied: true });
-    expect(sqlite.query(`SELECT status, tokens_used t FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', t: 99 });
+    expect(await post('/runs/update', { runId: 'r1', update: { tokens_used: 99, cost_usd: 1 } })).toEqual({ error: 'unauthorized' });
+    expect(sqlite.query(`SELECT status, tokens_used t FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'completed', t: null });
   });
 
   it('serves no route a plain member could write instructions through: the artifact is the dispatched run\'s to file', async () => {
@@ -259,6 +247,7 @@ describe('the run routes no 2.0 path sends', () => {
   it('refuses each with route_retired and what replaced it, and stores nothing', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    const callsBefore = sqlite.query('SELECT COUNT(*) AS c FROM agent_run_events').get();
     for (const [path, body] of [
       ['/runs/get', { runId: 'r1' }],
       ['/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' }],
@@ -271,7 +260,7 @@ describe('the run routes no 2.0 path sends', () => {
       expect({ path, persisted: answered.persisted, code: answered.code, retired: String(answered.reason).startsWith(`${path} is retired: `) })
         .toEqual({ path, persisted: false, code: 'route_retired', retired: true });
     }
-    expect((sqlite.query(`SELECT COUNT(*) c FROM agent_run_events`).get() as { c: number }).c).toBe(0);
+    expect(sqlite.query('SELECT COUNT(*) AS c FROM agent_run_events').get()).toEqual(callsBefore);
     expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'running', error: null });
   });
 
@@ -283,7 +272,7 @@ describe('the run routes no 2.0 path sends', () => {
       expect({ column, code: answered.code }).toEqual({ column, code: 'field_retired' });
     }
     expect(await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'container-smoke', capability: 'cortex', instruction: 'do it' })).toMatchObject({ persisted: false, code: 'field_retired' });
-    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE id = 'r2'`).get()).toEqual({ c: 0 });
+    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE id = 'r2' AND status = 'running'`).get()).toEqual({ c: 0 });
   });
 });
 
@@ -358,7 +347,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     await f.dispatch('own-run', f.minted);
     await f.dispatch('sibling-run', sibling);
     expect(await f.post(f.minted.token, '/runs/update', { runId: 'sibling-run', update: { error: 'the server refused run control (parse)' } }))
-      .toMatchObject({ persisted: false, code: 'refused' });
+      .toMatchObject({ persisted: false, code: 'no_run' });
     expect(f.sqlite.query('SELECT error, error_code FROM agent_runs WHERE id = ?').get('sibling-run')).toEqual({ error: null, error_code: null });
   });
 
@@ -442,7 +431,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect(run('run_t7')?.status).toBe('completed');
 
     const answered = await post(minted.token, '/runs/update', { runId: 'run_t7', update: { status: 'failed', completed_at: Date.now() } });
-    expect({ persisted: answered.persisted, reason: answered.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    expect({ persisted: answered.persisted, reason: answered.reason }).toEqual({ persisted: false, reason: 'credential holds no live run' });
   });
 
   it('refuses a failure recorded under a credential the row does not name, and queues no successor for it', async () => {
@@ -453,7 +442,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
 
     // A failure can ask for a successor; it is keyed on the row's credential.
     const failed = await post(minted.token, '/runs/update', { runId: 'run_t6', update: { status: 'failed', completed_at: Date.now(), error: 'stale' }, replaced: true });
-    expect({ persisted: failed.persisted, reason: failed.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    expect({ persisted: failed.persisted, reason: failed.reason }).toEqual({ persisted: false, reason: 'credential holds no live run' });
     expect(run('run_t6')?.status).toBe('running');
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
   });
@@ -469,7 +458,7 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect(claim.claimed).toBe(true);
 
     const terminal = await post(minted.token, '/runs/update', { runId: 'run_t3', update: { status: 'completed', completed_at: Date.now() } });
-    expect({ persisted: terminal.persisted, reason: terminal.reason }).toEqual({ persisted: false, reason: STALE_CREDENTIAL_REFUSAL });
+    expect({ persisted: terminal.persisted, reason: terminal.reason }).toEqual({ persisted: false, reason: 'credential holds no live run' });
     expect(run('run_t3')?.status).toBe('running');
     expect({ writer: credRevokedAt(minted.tokenId), dispatcher: credRevokedAt(sibling.tokenId) }).toEqual({ writer: null, dispatcher: null });
 
@@ -479,20 +468,20 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect(run('run_t3')?.status).toBe('completed');
   });
 
-  it('leaves any other member credential untouched at its terminal writes', async () => {
+  it('refuses member claims and terminal writes without revoking their credential', async () => {
     const { db, post, credRevokedAt } = await dispatchedRun();
     const member = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const claim = await post(member.token, '/runs/claim', { id: 'run_t4', agentId: AGENT, task: 'digest', capability: 'cortex' });
-    expect(claim.claimed).toBe(true);
+    expect(claim.persisted).toBe(false);
     const terminal = await post(member.token, '/runs/update', { runId: 'run_t4', update: { status: 'failed', completed_at: Date.now() } });
-    expect({ persisted: terminal.persisted, changed: terminal.changed }).toEqual({ persisted: true, changed: 1 });
+    expect(terminal).toMatchObject({ persisted: false, code: 'run_scope' });
     expect(credRevokedAt(member.tokenId)).toBe(null);
   });
 
   it('holds the release until an update actually lands: a terminal status for a run outside the Project changes nothing', async () => {
     const { minted, post, credRevokedAt } = await dispatchedRun();
     const miss = await post(minted.token, '/runs/update', { runId: 'run_ghost', update: { status: 'completed' } });
-    expect({ persisted: miss.persisted, changed: miss.changed, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: true, changed: 0, revoked: null });
+    expect({ persisted: miss.persisted, changed: miss.changed, revoked: credRevokedAt(minted.tokenId) }).toEqual({ persisted: false, changed: undefined, revoked: null });
   });
 });
 

@@ -20,20 +20,31 @@ import { indexFixture } from '../myco-server/helpers/vector-index.js';
 
 const AGENT = 'myco-agent';
 
-async function harness() {
+async function harness(runId?: string, task = 'container-smoke', runContext: string | null = null) {
   const fixture = sqliteEnv();
-  const t = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+  await ensureMember(fixture.db, HARNESS_MEMBER_ID, Date.now(), 'member', 'harness');
   fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, Date.now());
   fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
-  const client = new ServerClient(
-    { serverUrl: 'https://s', token: t.token, projectId: 'proj_1' },
+  const clientForToken = (token: string) => new ServerClient(
+    { serverUrl: 'https://s', token, projectId: 'proj_1' },
     ((input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       request.headers.set('cf-connecting-ip', '1.2.3.4');
       return worker.fetch(request, fixture.env);
     }) as typeof fetch,
   );
-  return { ...fixture, client };
+  const dispatch = async (id: string, dispatchedTask = 'container-smoke', context: string | null = null) => {
+    const now = Date.now();
+    const token = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'machine_1' }, now);
+    await recordDispatch(fixture.db, { projectId: 'proj_1' }, {
+      id, agentId: AGENT, task: dispatchedTask, provider: null, model: null, runContext: context, dispatchedBy: token.tokenId, startedAt: now,
+    });
+    return clientForToken(token.token);
+  };
+  const client = runId === undefined
+    ? clientForToken((await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'machine_1' }, Date.now())).token)
+    : await dispatch(runId, task, runContext);
+  return { ...fixture, client, dispatch };
 }
 
 const budget = { connectTimeoutMs: 5_000, requestTimeoutMs: 10_000 };
@@ -81,7 +92,7 @@ describe('runServerTask', () => {
     fixture.sqlite.close();
   });
   it('claims, executes with the materialized report surface, lands the report, and completes the run', async () => {
-    const { client, sqlite } = await harness();
+    const { client, sqlite } = await harness('run_smoke_1');
     const result = await runServerTask({ client, budget, runId: 'run_smoke_1', taskName: 'container-smoke', harness: fakeHarness('reports') });
     // The Deployment applied the ending this run posted, which is what `ending` says.
     expect(result).toEqual({ runId: 'run_smoke_1', status: 'completed', ending: 'posted', reportCount: 1 });
@@ -95,7 +106,7 @@ describe('runServerTask', () => {
   });
 
   it('retains partial billed usage when the model fails', async () => {
-    const { client, sqlite } = await harness();
+    const { client, sqlite } = await harness('run_metered_failure');
     const failing: AgentHarness = { ...fakeHarness('silent'), execute: async () => {
       throw new HarnessExecutionError('turn limit reached', { usage: { totalTokens: 123, costUsd: 0.1 } });
     } };
@@ -106,20 +117,20 @@ describe('runServerTask', () => {
     sqlite.close();
   });
 
-  it('records a failed run when the harness throws, and answers skipped when another run holds the task', async () => {
-    const { client, sqlite } = await harness();
+  it('records a failed harness execution and completes a separately dispatched run', async () => {
+    const { client, sqlite, dispatch } = await harness('run_smoke_2');
     const failed = await runServerTask({ client, budget, runId: 'run_smoke_2', taskName: 'container-smoke', harness: fakeHarness('throws') });
     expect({ status: failed.status, error: failed.error }).toEqual({ status: 'failed', error: 'provider unreachable' });
     expect((sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'run_smoke_2'`).get() as { status: string; error: string })).toEqual({ status: 'failed', error: 'the worker reported a failure (harness_error)' });
 
-    await runServerTask({ client, budget, runId: 'run_smoke_3', taskName: 'container-smoke', harness: fakeHarness('silent') });
-    // run_smoke_3 completed; a fresh claim within the window is refused → skipped
+    await runServerTask({ client: await dispatch('run_smoke_3'), budget, runId: 'run_smoke_3', taskName: 'container-smoke', harness: fakeHarness('silent') });
     const rows = sqlite.query(`SELECT id, status FROM agent_runs ORDER BY id`).all() as Array<{ id: string; status: string }>;
     expect(rows.map((r) => r.id)).toContain('run_smoke_3');
   });
 
   it('runs title-summary with the session tools, claiming on the provider gate with the dispatch\'s parameters as its context, and the prompt naming the session', async () => {
-    const { client, sqlite } = await harness();
+    const params = { session_id: 'sess_1', mode: 'claim' };
+    const { client, sqlite, dispatch } = await harness('run_title_1', 'title-summary', JSON.stringify(params));
     sqlite.query(`DELETE FROM project_capabilities`).run();
     sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', '"anthropic"', 1, 'test')`).run();
     sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 'sess_1', 'machine_1', 'tok_1', 1, 2, 'claude-code')`).run();
@@ -131,7 +142,6 @@ describe('runServerTask', () => {
       },
       supports: () => false,
     } as unknown as AgentHarness;
-    const params = { session_id: 'sess_1', mode: 'claim' };
     const result = await runServerTask({ client, budget, runId: 'run_title_1', taskName: 'title-summary', harness: observing, params, admission: CAPTURE_DRIVEN_ADMISSION });
     expect(seen!.names).toEqual(['vault_report', 'vault_session_summary_material', 'vault_update_session']);
     expect(seen!.prompt).toContain('Target session: sess_1');
@@ -144,7 +154,7 @@ describe('runServerTask', () => {
     let smokeNames: string[] = [];
     const smoke: AgentHarness = { async execute(input: HarnessExecuteInput) { smokeNames = (input.toolSurface.tools ?? []).map((t) => t.name); return { finalText: 'done', turnsUsed: 1 } as never; }, supports: () => false } as unknown as AgentHarness;
     sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, 1, 'test')`).run();
-    await runServerTask({ client, budget, runId: 'run_smoke_5', taskName: 'container-smoke', harness: smoke, admission: 'cortex' });
+    await runServerTask({ client: await dispatch('run_smoke_5'), budget, runId: 'run_smoke_5', taskName: 'container-smoke', harness: smoke, admission: 'cortex' });
     expect(smokeNames).toEqual(['vault_report']);
   });
 
@@ -158,7 +168,7 @@ describe('runServerTask', () => {
 
 describe('a run that dies names itself', () => {
   it('fails at its own deadline, even where the harness never honours the abort', async () => {
-    const { client, sqlite } = await harness();
+    const { client, sqlite } = await harness('run_deadline');
     const hanging: AgentHarness = {
       async execute() {
         await new Promise((resolve) => setTimeout(resolve, 5_000));
@@ -173,7 +183,7 @@ describe('a run that dies names itself', () => {
   });
 
   it('fails with the message of an execution that rejects after its own turn', async () => {
-    const { client, sqlite } = await harness();
+    const { client, sqlite } = await harness('run_late');
     const late: AgentHarness = {
       execute: () => new Promise((_, reject) => setTimeout(() => reject(new Error('the provider closed the stream')), 5)),
       supports: () => false,
@@ -186,7 +196,7 @@ describe('a run that dies names itself', () => {
   });
 
   it('lets a run in flight finish under a stop signal: nothing is posted, the run\'s own ending lands, and the drain then ends clean', async () => {
-    const { client, sqlite } = await harness();
+    const { client, sqlite } = await harness('run_drained', 'cortex-prompt-builder');
     const listeners = new Map<string, Array<(reason?: unknown) => void>>();
     const events = { on: (event: string, listener: (reason?: unknown) => void) => listeners.set(event, [...(listeners.get(event) ?? []), listener]) };
     const named: Array<{ error: string; named: boolean }> = [];
@@ -240,8 +250,7 @@ describe('a run that dies names itself', () => {
   });
 
   it('names a run still in flight when the drain budget runs out, marking it one a deployment replaced', async () => {
-    const { client, sqlite } = await harness();
-    await runServerTask({ client, budget, runId: 'run_reclaimed', taskName: 'container-smoke', harness: fakeHarness('silent') });
+    const { client, sqlite } = await harness('run_reclaimed');
     sqlite.query(`UPDATE agent_runs SET status = 'running', completed_at = NULL, error = NULL WHERE id = 'run_reclaimed'`).run();
 
     const listeners = new Map<string, Array<(reason?: unknown) => void>>();
@@ -308,15 +317,15 @@ describe('what the container makes of the deployment\'s answer', () => {
   });
 
   it('takes the run as its own only once the claim lands', async () => {
-    const { client } = await harness();
+    const { client } = await harness('run_claim_1');
     let claimed = 0;
     await runServerTask({ client, budget, runId: 'run_claim_1', taskName: 'container-smoke', harness: fakeHarness('silent'), onClaimed: () => { claimed += 1; } });
     expect(claimed).toBe(1);
 
-    // A second run of the same task inside the window is refused the claim, and the container never holds it.
+    // A closed dispatch cannot claim another execution.
     let refusedClaims = 0;
     const second = await runServerTask({ client, budget, runId: 'run_claim_1', taskName: 'container-smoke', harness: fakeHarness('silent'), onClaimed: () => { refusedClaims += 1; } });
-    expect(second.status).toBe('skipped');
+    expect(second.status).toBe('failed');
     expect(refusedClaims).toBe(0);
   });
 });

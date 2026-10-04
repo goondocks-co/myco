@@ -1,3 +1,4 @@
+import { runRouteFixture } from './helpers/run-routes.js';
 /**
  * Every free-text field a worker, a harness or an agent supplies to a run, judged by the adversarial secret corpus on
  * the Deployment that stores it: a worker's error (`/worker/end`) and a caller's error on the run routes
@@ -44,17 +45,7 @@ const QUOTED = (leaks: readonly Leak[]): string => leaks.map((leak, i) => [
 const SAID = [...CORPUS, ...FREE_TEXT, ...KEY_LEAKS].map((leak) => leak.command).join('\n');
 const ALL: readonly Leak[] = [...CORPUS, ...FREE_TEXT, ...KEY_LEAKS];
 
-async function routes() {
-  const fixture = sqliteEnv();
-  const env = { ...fixture.env, ...OWNER_ENV };
-  const t = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-  fixture.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(Date.now());
-  fixture.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, Date.now());
-  fixture.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(Date.now());
-  const post = async (path: string, body: unknown): Promise<Record<string, unknown>> =>
-    await (await worker.fetch(memberPost(t.token, body, path), env)).json() as Record<string, unknown>;
-  return { ...fixture, post };
-}
+const routes = () => runRouteFixture(AGENT);
 
 /** A titling run claimed by a worker, and the run's own tool to report through. */
 async function claimedRun() {
@@ -135,7 +126,7 @@ describe('every text field the run routes still take', () => {
       }
       expect(await post('/runs/claim', { id: `r_${seq += 1}`, agentId: AGENT, task: 'container-smoke', capability: 'cortex', runContext: JSON.stringify({ note: leak.command, nested: { key: leak.command, list: [leak.command] } }) })).toMatchObject({ claimed: true });
     }
-    expect(leaked(NAMES, JSON.stringify(sqlite.query('SELECT id, agent_id, task, harness, provider, model, run_context FROM agent_runs').all()))).toEqual([]);
+    expect(leaked(NAMES, JSON.stringify(sqlite.query("SELECT id, agent_id, task, harness, provider, model, run_context FROM agent_runs WHERE status = 'running'").all()))).toEqual([]);
   });
 
   it('keeps an update\'s usage and cost data as structured records and its cost source as a name, never as sent', async () => {

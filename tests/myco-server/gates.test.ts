@@ -794,14 +794,19 @@ describe('gates', () => {
       const refused = await worker.fetch(fixture.wellFormed(anonymous.token), e);
       machineless.push({ route: r.path, status: refused.status, ...answers.refusal(await refused.json()) });
     }
-    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => ({ route: route.slice('POST '.length), status: SHAPES[f.shape].refusedStatus, refused: true, code: 'no_machine_identity', reason: 'token has no machine identity' })));
+    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => {
+      const run = route.startsWith('POST /runs/') && !ROUTES.some(r => `${r.method} ${r.path}` === route && 'retired' in r && r.retired === true);
+      return { route: route.slice('POST '.length), status: SHAPES[f.shape].refusedStatus, refused: true,
+        code: run ? 'run_scope' : 'no_machine_identity', reason: run ? "a run credential reaches only its run's surface" : 'token has no machine identity' };
+    }));
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
     // A retired route refuses even a well-formed request, naming that it is retired (`RETIRED_RUN_ROUTES`).
     const retired = new Set(ROUTES.filter((r) => 'retired' in r && r.retired === true).map((r) => `${r.method} ${r.path}`));
     for (const [route, fixture] of Object.entries(FIXTURES)) {
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
-      if (retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'route_retired', persisted: false });
+      if (route.startsWith('POST /runs/') && !retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
+      else if (retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'route_retired', persisted: false });
       else expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
     }
   });
