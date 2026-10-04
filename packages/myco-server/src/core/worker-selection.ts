@@ -10,10 +10,10 @@
  * usable one is stored. Nothing this module imports reaches the secret store,
  * which `tests/meta/read-layer-credential-blind.test.ts` holds for every read.
  */
-import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
-import { CAPABILITY_HOLDS, credentialUnavailable, profileUnsupported } from '@goondocks/myco-shared/run-holds';
+import { capabilitiesRequiredBy, REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { CAPABILITY_HOLDS, credentialUnavailable, profileUnsupported, sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { PROFILE_HARNESSES, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
 import type { ServerEnv } from './adapters.js';
 import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
@@ -145,6 +145,11 @@ export async function selectExecution<L>(env: Pick<ServerEnv, 'harnessCredential
   for (;;) {
     const harness = chooseHarness(preference.preferred, preference.fallback, preference.override, remaining);
     if (harness === null) return { selected: null, reason: reason ?? (preference.override !== null && !Object.hasOwn(PROFILE_HARNESSES, preference.override) ? profileUnsupported(preference.override) : null) };
+    if (REPOSITORY_TASKS.includes(task) && !canReadSource(HARNESS_ASKING[harness])) {
+      reason ??= sourceReadUnavailable(harness);
+      remaining = remaining.filter((entry) => entry.id !== harness);
+      continue;
+    }
     const offer = remaining.find((entry) => entry.id === harness)!;
     const resolved = resolveExecutionProfile(task, harness, offer.profile, settings);
     if ('profile' in resolved) {

@@ -98,8 +98,8 @@ describe('the harness manifest', () => {
     expect(Object.fromEntries(HARNESSES.map((h) => [h.id, h.asking]))).toEqual({
       'claude-code': { kind: 'native' },
       codex: { kind: 'sandbox' },
-      opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT', extensionsOff: { OPENCODE_PURE: '1' } },
-      cursor: { kind: 'run-home', env: 'CURSOR_CONFIG_DIR' },
+      opencode: { kind: 'run-agent', env: 'OPENCODE_CONFIG_CONTENT', extensionsOff: { OPENCODE_PURE: '1' }, sourceReads: { read: 'ask', glob: 'ask', grep: 'ask', list: 'ask', external_directory: 'ask' } },
+      cursor: { kind: 'run-home', env: 'CURSOR_CONFIG_DIR', sourceReads: 'unheld' },
       antigravity: { kind: 'unheld' },
     });
   });

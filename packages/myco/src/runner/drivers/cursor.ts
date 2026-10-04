@@ -6,8 +6,8 @@
  * `cli-config.json`, an entry in the `permissions.json` beside it, or
  * `approvalMode: "unrestricted"` (Run Everything), under which nothing asks.
  * `autoAcceptWebSearch` approves every web search the same way. Each of these
- * is the machine's user deciding for themselves, and none of them may decide a
- * run's calls, which the run's grant answers.
+ * is the machine's user deciding for themselves. Native reads have no supported
+ * force-ask setting, so this harness is withheld from source runs.
  *
  * So a run reads a configuration directory of its own. The machine's settings
  * are carried into it with those four pinned: nothing approved in advance, and

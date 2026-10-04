@@ -207,11 +207,19 @@
       "env": "OPENCODE_CONFIG_CONTENT",
       "extensionsOff": {
         "OPENCODE_PURE": "1"
+      },
+      "sourceReads": {
+        "read": "ask",
+        "glob": "ask",
+        "grep": "ask",
+        "list": "ask",
+        "external_directory": "ask"
       }
     },
     "cursor": {
       "kind": "run-home",
-      "env": "CURSOR_CONFIG_DIR"
+      "env": "CURSOR_CONFIG_DIR",
+      "sourceReads": "unheld"
     },
     "antigravity": {
       "kind": "unheld"
@@ -484,6 +492,13 @@
         "env": "OPENCODE_CONFIG_CONTENT",
         "extensionsOff": {
           "OPENCODE_PURE": "1"
+        },
+        "sourceReads": {
+          "read": "ask",
+          "glob": "ask",
+          "grep": "ask",
+          "list": "ask",
+          "external_directory": "ask"
         }
       },
       "sourceGit": "shim",
@@ -534,7 +549,8 @@
       },
       "asking": {
         "kind": "run-home",
-        "env": "CURSOR_CONFIG_DIR"
+        "env": "CURSOR_CONFIG_DIR",
+        "sourceReads": "unheld"
       },
       "sourceGit": "none"
     },

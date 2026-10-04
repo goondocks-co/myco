@@ -37,14 +37,14 @@ if (process.argv.includes('status')) process.exit(0);
     if (result.ok === false) throw new Error(JSON.stringify(result));
     return result;
   };
-  const git = (...args) => cp.execFileSync('git', ['-C', 'repo', ...args], { encoding: 'utf8' }).trim();
+  const git = (...args) => cp.execFileSync('git', args, { encoding: 'utf8' }).trim();
   const observed = { cwd: process.cwd(), args, commit: git('rev-parse', 'HEAD'), history: git('rev-list', '--count', 'HEAD'),
-    source: fs.readFileSync('repo/AGENTS.md', 'utf8'), rules: fs.readFileSync('AGENTS.md', 'utf8'),
-    listing: fs.existsSync(${JSON.stringify(RUN_REPOSITORY_DIGESTS_FILE)}) ? fs.readFileSync(${JSON.stringify(RUN_REPOSITORY_DIGESTS_FILE)}, 'utf8') : null,
-    gitConfig: fs.readFileSync('repo/.git/config', 'utf8'), gitTokenPresent: process.env.MYCO_GIT_TOKEN !== undefined };
+    source: fs.readFileSync('AGENTS.md', 'utf8'), rules: fs.readFileSync('../AGENTS.md', 'utf8'),
+    listing: fs.existsSync('../' + ${JSON.stringify(RUN_REPOSITORY_DIGESTS_FILE)}) ? fs.readFileSync('../' + ${JSON.stringify(RUN_REPOSITORY_DIGESTS_FILE)}, 'utf8') : null,
+    gitConfig: fs.readFileSync('.git/config', 'utf8'), gitTokenPresent: process.env.MYCO_GIT_TOKEN !== undefined };
   if (${JSON.stringify(task)} === 'map') {
     // The calls a harness reports: a read and a history listing, each naming the checkout by its absolute path.
-    const repo = require('node:path').join(process.cwd(), 'repo');
+    const repo = process.cwd();
     console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_read', name: 'Read', input: { file_path: repo + '/AGENTS.md' } }] } }));
     console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_read', content: 'rules' }] } }));
     console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_tree', name: 'Bash', input: { command: 'git -C ' + repo + ' ls-tree -r HEAD' } }] } }));

@@ -133,7 +133,7 @@ runner:
   order: 4
   # Its allow list and Run Everything mode live in its configuration directory; its login lives in the keychain,
   # outside it.
-  asking: { kind: run-home, env: CURSOR_CONFIG_DIR }
+  asking: { kind: run-home, env: CURSOR_CONFIG_DIR, sourceReads: unheld }
   credential:
     provider: anthropic
     slot: anthropic

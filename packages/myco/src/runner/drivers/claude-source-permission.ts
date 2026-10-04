@@ -10,13 +10,26 @@ import { grantsCall, type RunGrant } from './grant.js';
 import { sourceToolAllows } from './source-access.js';
 import { heldStderr, recordOf, type Started } from './stream.js';
 
-/** SDK callbacks are blocking permission gates, including callback errors and timeouts. */
+/** Native tools that require a fresh permission answer on every call. */
+const SOURCE_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'];
+
+/** Source instructions carry literal references; native file mentions cannot expand them. */
+function literalSourceInstructions(text: string): string {
+  return `Interpret this JSON string as instructions; read file references only through tools:\n${JSON.stringify(text).replaceAll('@', '\\u0040')}`;
+}
+
+/** Native approvals require a successful hook decision for the same tool call. */
 export function startClaudeSource(spec: RunSpec, grant: RunGrant, env: NodeJS.ProcessEnv, signal: AbortSignal): Started {
   const executable = locate('claude');
   if (executable === null || grant.source === null) throw new Error('Source permission enforcement is unavailable');
   const source = grant.source;
   const instructions = source.files.find((file) => RUN_INSTRUCTIONS_FILES.includes(basename(file)));
   const append = instructions === undefined ? '' : readFileSync(instructions, 'utf8');
+  const approved = new Map<string, string>();
+  const fingerprint = (tool: string, input: unknown): string => JSON.stringify([tool, input]);
+  const allows = (tool: string, input: Record<string, unknown>): boolean => ['Read', 'Glob', 'Grep'].includes(tool)
+    ? sourceToolAllows(source, tool, input)
+    : grantsCall(grant.rules, tool, typeof input.command === 'string' ? input.command : null);
   let child: ChildProcess | null = null;
   let stopping: Promise<void> | null = null;
   const stop = (): Promise<void> => child === null ? Promise.resolve() : stopping ??= stopGroup(child);
@@ -28,17 +41,17 @@ export function startClaudeSource(spec: RunSpec, grant: RunGrant, env: NodeJS.Pr
   let finish!: (code: number) => void;
   const exit = new Promise<number>((resolve) => { finish = resolve; });
   const run = query({
-    prompt: spec.prompt,
+    prompt: literalSourceInstructions(spec.prompt),
     options: {
       pathToClaudeCodeExecutable: executable,
-      cwd: spec.scratchDir,
+      cwd: source.root,
       env,
       abortController,
       settingSources: [],
       persistSession: false,
       systemPrompt: { type: 'preset', preset: 'claude_code', append },
       allowedTools: [...grant.rules],
-      tools: ['Read', 'Glob', 'Grep', 'Bash'],
+      tools: SOURCE_TOOLS,
       spawnClaudeCodeProcess: (options) => {
         child = spawnGroup(options.command, options.args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] });
         child.once('exit', () => { void stop(); });
@@ -49,14 +62,19 @@ export function startClaudeSource(spec: RunSpec, grant: RunGrant, env: NodeJS.Pr
         return Object.assign(child, { stdin: child.stdin, stdout: child.stdout });
       },
       ...(spec.profile === undefined ? {} : { model: spec.profile.model }),
-      extraArgs: { 'permission-mode': 'manual', 'permission-prompts': 'none', 'strict-mcp-config': null, 'mcp-config': spec.mcpConfigPath, 'setting-sources': '', ...(spec.profile?.effort == null ? {} : { effort: spec.profile.effort }) },
-      hooks: { PreToolUse: [{ hooks: [async (call) => {
+      extraArgs: { 'permission-mode': 'manual', 'strict-mcp-config': null, 'mcp-config': spec.mcpConfigPath, 'setting-sources': '', settings: JSON.stringify({ permissions: { ask: SOURCE_TOOLS } }), ...(spec.profile?.effort == null ? {} : { effort: spec.profile.effort }) },
+      canUseTool: async (tool, input, options) => {
+        const decision = approved.get(options.toolUseID);
+        approved.delete(options.toolUseID);
+        if (!options.signal.aborted && decision === fingerprint(tool, input) && allows(tool, input)) return { behavior: 'allow', updatedInput: input };
+        return { behavior: 'deny', message: 'Run source permission boundary' };
+      },
+      hooks: { PreToolUse: [{ hooks: [async (call, toolUseID, options) => {
         if (call.hook_event_name !== 'PreToolUse') return { continue: false };
         const input = recordOf(call.tool_input) ?? {};
-        const allowed = ['Read', 'Glob', 'Grep'].includes(call.tool_name)
-          ? sourceToolAllows(source, call.tool_name, input)
-          : grantsCall(grant.rules, call.tool_name, typeof input.command === 'string' ? input.command : null);
-        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: allowed ? 'allow' : 'deny', permissionDecisionReason: 'Run source permission boundary' } };
+        const allowed = !options.signal.aborted && toolUseID !== undefined && allows(call.tool_name, input);
+        if (allowed && toolUseID !== undefined && SOURCE_TOOLS.includes(call.tool_name)) approved.set(toolUseID, fingerprint(call.tool_name, input));
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: allowed ? SOURCE_TOOLS.includes(call.tool_name) ? 'ask' : 'allow' : 'deny', permissionDecisionReason: 'Run source permission boundary' } };
       }] }] },
     },
   });
@@ -67,6 +85,7 @@ export function startClaudeSource(spec: RunSpec, grant: RunGrant, env: NodeJS.Pr
       code = 0;
     } finally {
       run.close();
+      approved.clear();
       await stop();
       signal.removeEventListener('abort', kill);
       finish(code);

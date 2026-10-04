@@ -8,7 +8,12 @@ export interface SourceAccess {
   base: string;
   root: string;
   files: readonly string[];
+  excluded?: ReadonlySet<string>;
+  refresh?: () => void;
 }
+
+/** Maximum synchronous work for a search permission; expiry carries no permission. */
+export const SOURCE_PERMISSION_BUDGET_MS = 100;
 
 /** A checkout must be a physical child of its run, rather than an alias to host files. */
 export function sourceAccess(runDir: string): SourceAccess {
@@ -21,44 +26,75 @@ export function sourceAccess(runDir: string): SourceAccess {
     if (nodeFs.realpathSync(path) !== path || !nodeFs.statSync(path).isFile()) throw new Error('Run input is not a regular physical file');
     return [path];
   });
-  return { base, root, files };
+  const excluded = new Set<string>();
+  let directories = new Map<string, string>();
+  const versionOf = (directory: string): string => {
+    const stat = nodeFs.lstatSync(directory, { bigint: true });
+    if (!stat.isDirectory()) throw new Error('Source directory is no longer physical');
+    return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  };
+  const rebuild = (deadline = Infinity): void => {
+    const indexed = new Map<string, string>();
+    const walk = (directory: string): void => {
+      if (performance.now() > deadline) throw new Error('Source index refresh exceeded its permission budget');
+      indexed.set(directory, versionOf(directory));
+      for (const entry of nodeFs.readdirSync(directory, { withFileTypes: true })) {
+        const named = nodePath.join(directory, entry.name);
+        if (entry.isSymbolicLink()) {
+          let target: string | null;
+          try { target = nodeFs.realpathSync(named); } catch { target = null; }
+          // Search engines may follow links; the disposable checkout contains only source targets.
+          if (target === null || !contained(root, target)) {
+            nodeFs.unlinkSync(named);
+            excluded.add(named);
+          }
+        } else if (entry.isDirectory()) walk(named);
+      }
+      indexed.set(directory, versionOf(directory));
+    };
+    walk(root);
+    if (performance.now() > deadline) throw new Error('Source index refresh exceeded its permission budget');
+    directories = indexed;
+  };
+  rebuild();
+  return { base, root, files, excluded, refresh: () => {
+    if (nodeFs.realpathSync(root) !== root) throw new Error('Source checkout moved outside its physical root');
+    const deadline = performance.now() + SOURCE_PERMISSION_BUDGET_MS;
+    for (const [directory, version] of directories) {
+      if (performance.now() > deadline) throw new Error('Source index check exceeded its permission budget');
+      if (versionOf(directory) !== version) { rebuild(deadline); return; }
+    }
+    if (performance.now() > deadline) throw new Error('Source index check exceeded its permission budget');
+  } };
 }
 
-/** A physical target and every searched descendant must be declared source inputs. */
-export function sourceAccessAllows(policy: SourceAccess, paths: readonly string[], recursive: boolean, fs = nodeFs, path = nodePath): boolean {
+/** Whether the resolved target is within a physical root on the active platform. */
+function contained(root: string, target: string, path = nodePath): boolean {
+  const relative = path.relative(root, target);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+/** Explicit paths resolve physically; search roots use the run's cached, link-excluded checkout. */
+export function sourceAccessAllows(policy: SourceAccess, paths: readonly string[], _recursive: boolean, fs: { realpathSync(path: string): string } = nodeFs, path = nodePath): boolean {
   try {
-    const within = (target: string): boolean => {
-      const relative = path.relative(policy.root, target);
-      return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-    };
+    if (_recursive) policy.refresh?.();
     if (fs.realpathSync(policy.root) !== policy.root) return false;
-    const seen = new Set<string>();
-    const allowed = (named: string): boolean => {
-      const physical = fs.realpathSync(named);
-      if (!within(physical) && !policy.files.includes(physical)) return false;
-      if (!recursive || !fs.statSync(physical).isDirectory() || seen.has(physical)) return true;
-      seen.add(physical);
-      return fs.readdirSync(physical).every((entry) => allowed(path.join(physical, entry)));
-    };
-    return paths.length > 0 && paths.every((named) => typeof named === 'string' && named.length > 0 && !named.split(/[\\/]/).includes('..') && allowed(path.resolve(policy.base, named)));
+    return paths.length > 0 && paths.every((named) => {
+      if (typeof named !== 'string' || named.length === 0 || named.split(/[\\/]/).includes('..')) return false;
+      const physical = fs.realpathSync(path.resolve(policy.root, named));
+      return contained(policy.root, physical, path) || policy.files.includes(physical);
+    });
   } catch {
     // Unresolvable targets carry no read permission.
     return false;
   }
 }
 
-/** File permissions use Claude's absolute-path syntax, whose leading double slash names the filesystem root. */
-export function sourceFileRules(policy: SourceAccess): string[] {
-  const absolute = (path: string): string => `/${path.replaceAll('\\', '/')}`;
-  if ([policy.root, ...policy.files].some((path) => /[(),*?\[\]{}!\n\r]/.test(path))) throw new Error('Source path cannot be represented by a literal permission rule');
-  return ['Read', 'Glob', 'Grep'].flatMap((tool) => [`${tool}(${absolute(policy.root)}/**)`, ...policy.files.map((file) => `${tool}(${absolute(file)})`)]);
-}
-
 /** All path-bearing input fields and locations participate in one file permission decision. */
 export function sourceToolAllows(policy: SourceAccess, tool: string, input: Record<string, unknown>, locations?: unknown): boolean {
   if (!['Read', 'Glob', 'Grep', 'Search'].includes(tool)) return false;
   const search = tool !== 'Read';
-  if (search && typeof input.path !== 'string') return false;
+  if (search && input.path !== undefined && typeof input.path !== 'string') return false;
   if (!search && !['path', 'file_path', 'filePath'].some((field) => typeof input[field] === 'string') && !Array.isArray(locations)) return false;
   const paths: string[] = [];
   for (const field of ['path', 'file_path', 'filePath', 'cwd', 'workdir'] as const) {
@@ -79,5 +115,6 @@ export function sourceToolAllows(policy: SourceAccess, tool: string, input: Reco
     if (typeof pattern !== 'string' || nodePath.isAbsolute(pattern) || pattern.startsWith('~')
       || /[\\{}()[\]!]/.test(pattern) || pattern.split('/').includes('..')) return false;
   }
+  if (search && input.path === undefined) paths.push(policy.root);
   return sourceAccessAllows(policy, paths, search);
 }

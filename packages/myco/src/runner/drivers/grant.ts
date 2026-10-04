@@ -16,13 +16,15 @@
  * reach the run's `git`, or no such `git` can be written, no Git rule is
  * granted.
  */
+import { canReadSource } from '@goondocks/myco-shared/execution-profile';
+import { sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { RUN_REPOSITORY_DIR, SOURCE_GIT_READ_COMMANDS } from '@goondocks/myco-shared/repository';
 import type { RunSpec } from '../events.js';
 import type { Harness } from '../harnesses.js';
 import { MCP_SERVER_NAME } from '../mcp-config.js';
-import { sourceAccess, sourceFileRules, type SourceAccess } from './source-access.js';
+import { sourceAccess, type SourceAccess } from './source-access.js';
 import { gitReadRefusal, prepareSourceGit, shellWords, type SourceGit } from './source-git.js';
 
 /** The run's own server, allowed whole. */
@@ -38,13 +40,12 @@ const GIT = 'git';
 const UNSCOPED_COMMAND = /[;&|<>$`\n\r]/;
 
 /** Source runs can inspect files, and repository history where the run's `git` holds it to reads. */
-function sourceReadTools(scratchDir: string, source: SourceAccess, git: SourceGit | null): string[] {
-  const files = sourceFileRules(source);
-  if (git === null) return files;
+function sourceReadTools(scratchDir: string, git: SourceGit | null): string[] {
+  if (git === null) return [];
   const root = join(scratchDir, RUN_REPOSITORY_DIR);
   const paths = [...new Set([RUN_REPOSITORY_DIR, root, realpathSync(root)])];
   const prefixes = [GIT, ...paths.map((path) => `${GIT} -C ${path}`)];
-  return [...files, ...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `${SHELL_TOOL}(${prefix} ${command}:*)`))];
+  return [...prefixes.flatMap((prefix) => SOURCE_GIT_READ_COMMANDS.map((command) => `${SHELL_TOOL}(${prefix} ${command}:*)`))];
 }
 
 /** What a run may call, and what a harness's environment needs so its calls are held to it. */
@@ -66,12 +67,13 @@ export interface RunGrant {
  * directory first, so a grant holding a Git rule always comes with the
  * environment that confines it.
  */
-export function runGrant(spec: RunSpec, harness: Pick<Harness, 'sourceGit'>, platform: NodeJS.Platform = process.platform): RunGrant {
+export function runGrant(spec: RunSpec, harness: Pick<Harness, 'sourceGit' | 'asking'> & Partial<Pick<Harness, 'id'>>, platform: NodeJS.Platform = process.platform): RunGrant {
+  if (spec.sourceReadOnly === true && !canReadSource(harness.asking)) throw new Error(sourceReadUnavailable(harness.id ?? 'harness'));
   const source = spec.sourceReadOnly === true ? sourceAccess(spec.scratchDir) : null;
   const git = spec.sourceReadOnly === true && harness.sourceGit === 'shim' ? prepareSourceGit(spec.scratchDir, platform) : null;
   return {
     source,
-    rules: [SERVER_GRANT, ...(source === null ? [] : sourceReadTools(spec.scratchDir, source, git))],
+    rules: [SERVER_GRANT, ...(source === null ? [] : sourceReadTools(spec.scratchDir, git))],
     env: git?.env ?? {},
     shellSetup: git?.shellSetup ?? null,
     runDir: spec.scratchDir,

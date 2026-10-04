@@ -67,7 +67,12 @@ const credentialUnavailableHold = {
   words: (harness: string) => `${harnessName(harness)} has no sign-in this server can use. Add one in Settings.`,
 };
 
-const PROFILE_HOLDS = [profileUnsupportedHold, invalidTaskTierHold, noModelForTierHold, credentialUnavailableHold] as const;
+const sourceReadUnavailableHold = {
+  key: 'source_read_unavailable',
+  words: (harness: string) => `${harnessName(harness)} cannot safely read repository source. Choose another agent for this task.`,
+};
+
+const PROFILE_HOLDS = [profileUnsupportedHold, invalidTaskTierHold, noModelForTierHold, credentialUnavailableHold, sourceReadUnavailableHold] as const;
 const prefixOf = (hold: typeof PROFILE_HOLDS[number]) => `${hold.key}:`;
 
 /** Prefixes of profile and credential holds that can be released when a worker's offer changes. */
@@ -78,6 +83,7 @@ const profileHold = (hold: typeof PROFILE_HOLDS[number], ...parts: string[]) => 
 export const profileUnsupported = (harness: string): string => profileHold(profileUnsupportedHold, harness);
 export const invalidTaskTier = (task: string): string => profileHold(invalidTaskTierHold, task);
 export const noModelForTier = (harness: string, tier: string): string => profileHold(noModelForTierHold, harness, tier);
+export const sourceReadUnavailable = (harness: string): string => profileHold(sourceReadUnavailableHold, harness);
 export const credentialUnavailable = (harness: string): string => profileHold(credentialUnavailableHold, harness);
 
 /** The sentence for a holder a run names, or null when it names none this Deployment knows. */

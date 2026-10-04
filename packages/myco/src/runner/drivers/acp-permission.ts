@@ -24,7 +24,7 @@
  *   `<server>_<tool>` OpenCode gives an MCP tool.
  * Nothing else is in the grant.
  */
-import { existsSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { MycoCallNames } from '../harnesses.js';
 import { mycoToolNamed } from './acp-myco.js';
@@ -83,19 +83,23 @@ export class ToolCalls {
 const present = (record: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined && value !== null));
 
-/** The physical path, where it exists. */
-const physical = (path: string): string => (existsSync(path) ? realpathSync(path) : path);
+/** A working directory must have a physical target. */
+const physical = (path: string): string => realpathSync(path);
 
 /** Whether every working directory a command's input names is inside the run's directory. */
 function runsInside(toolCall: Record<string, unknown>, runDir: string): boolean {
   const input = recordOf(toolCall.rawInput);
-  const root = physical(runDir);
-  return WORKING_DIRECTORY_FIELDS.every((field) => {
-    const named = stringOf(input?.[field]);
-    if (named === null) return true;
-    const path = relative(root, physical(resolve(root, named)));
-    return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-  });
+  try {
+    const root = physical(runDir);
+    return WORKING_DIRECTORY_FIELDS.every((field) => {
+      const named = stringOf(input?.[field]);
+      if (named === null) return true;
+      const path = relative(root, physical(resolve(root, named)));
+      return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a search call searches files for a pattern, rather than the web or a service for a query. */

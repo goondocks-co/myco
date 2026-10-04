@@ -338,7 +338,7 @@ describe('the Claude Code driver', () => {
     const scoped = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
     expect(scoped.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
 
-    process.env.PATH = `${stubClaudeSource([result(`${shell},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"repo/README.md"}}`)])}:${process.env.PATH ?? ''}`;
+    process.env.PATH = `${stubClaudeSource([result(`${shell},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"README.md"}}`)])}:${process.env.PATH ?? ''}`;
     const granted = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
     expect(granted.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for Read', code: 'permission_refused', names: ['Read'] });
   });
@@ -635,6 +635,7 @@ describe('the Codex driver', () => {
               // The harness runs a helper of its own program in the sandbox, by the path PATH gave it.
               [join(dir, 'codex')]: 'read',
               [realpathSync(join(dir, 'codex'))]: 'read',
+              [realpathSync(dir)]: 'read',
               // Only a source run runs `git`, so only a source run reads the developer directory.
               ...(sourceReadOnly ? { [TOOLS]: 'read' } : {}),
               [realpathSync(run.scratchDir)]: sourceReadOnly ? 'deny' : 'write',
@@ -1483,8 +1484,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       [{ kind: 'other', title: 'myco_dev_search' }, false, 'reject'],
       [{ kind: 'other', title: 'mcp__mycox__foo' }, false, 'reject'],
       [{ kind: 'other', title: 'mycox_foo' }, false, 'reject'],
-      [{ kind: 'read', title: 'repo/README.md', rawInput: { filePath: 'repo/README.md' } }, false, 'reject'],
-      [{ kind: 'read', title: 'repo/README.md', rawInput: { filePath: 'repo/README.md' } }, true, 'once'],
+      [{ kind: 'read', title: 'repo/README.md', rawInput: { filePath: 'README.md' } }, false, 'reject'],
+      [{ kind: 'read', title: 'repo/README.md', rawInput: { filePath: 'README.md' } }, true, 'once'],
       [shell('git -C repo log --oneline'), true, 'once'],
       [shell('git -C repo log --oneline'), false, 'reject'],
       [shell('git log | head'), true, 'reject'],
@@ -1499,8 +1500,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       [{ kind: 'other', title: 'myco: myco_run', rawInput: { providerIdentifier: 'myco', toolName: 'myco_run' } }, false, 'once'],
       [{ kind: 'other', title: 'myco: unlisted', rawInput: { providerIdentifier: 'myco', toolName: 'unlisted' } }, false, 'reject'],
       [{ kind: 'other', title: 'myco-dev: myco_run', rawInput: { providerIdentifier: 'myco-dev', toolName: 'myco_run' } }, false, 'reject'],
-      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO', path: 'repo' } }, true, 'once'],
-      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO', path: 'repo' } }, false, 'reject'],
+      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO', path: '.' } }, true, 'once'],
+      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO', path: '.' } }, false, 'reject'],
       [{ kind: 'search', title: 'react hooks', rawInput: { query: 'react hooks' } }, true, 'reject'],
       [{ kind: 'search', title: 'context7_resolve_library_id', rawInput: { libraryName: 'react' } }, true, 'reject'],
     ];
@@ -1598,7 +1599,7 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     const answerFor = async (sourceGit: 'shim' | 'none'): Promise<unknown[]> => {
       const answers: unknown[] = [];
       const channel = askingAgent(async (agent) => { answers.push((await cursorShellCall(agent, 'git -C repo log'))?.result); });
-      await collect(turnOver(channel, 'cursor', spec, () => '', listed, { grant: runGrant(spec, { sourceGit }) }));
+      await collect(turnOver(channel, 'cursor', spec, () => '', listed, { grant: runGrant(spec, { sourceGit, asking: { kind: 'native' } }) }));
       return answers;
     };
     expect(await answerFor('shim')).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow-once' } }]);
@@ -1628,7 +1629,7 @@ describe('the agent-protocol driver answering cursor-agent', () => {
     const channel = askingAgent(async (agent) => {
       answers.push((await agent.ask(2, 'session/request_permission', permissionFor({ toolCallId: 'web_search_1', title: 'Search: secret source text', kind: 'search', status: 'pending' }, CURSOR_OPTIONS)))?.result);
     });
-    await collect(turnOver(channel, 'cursor', { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, () => '', listed));
+    await collect(turnOver(channel, 'cursor', { ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, () => '', listed, { grant: runGrant({ ...run, sourceReadOnly: true, prompt: '', credentialEnv: {} }, { sourceGit: 'none', asking: { kind: 'native' } }) }));
     expect(answers).toEqual([{ outcome: { outcome: 'selected', optionId: 'reject-once' } }]);
   });
 

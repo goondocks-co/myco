@@ -8,7 +8,7 @@ import { answerPermission } from '@myco/runner/drivers/acp-permission.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
 import { runFilesystem } from '@myco/runner/drivers/codex.js';
 import { HARNESSES } from '@myco/runner/harnesses.js';
-import { canOfferHarness } from '@goondocks/myco-shared/execution-profile';
+import { canOfferHarness, canReadSource } from '@goondocks/myco-shared/execution-profile';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
 import { stubClaudeSource } from '../helpers/stub-claude-source.js';
@@ -48,18 +48,18 @@ describe('source file permission boundary (#1636)', () => {
     const spec = fixture();
     renameSync(spec.repo, join(spec.scratchDir, 'saved-repo'));
     symlinkSync(spec.home, spec.repo);
-    expect(() => runGrant(spec, { sourceGit: 'none' })).toThrow('Source checkout');
+    expect(() => runGrant(spec, { sourceGit: 'none', asking: { kind: 'native' } })).toThrow('Source checkout');
     const instructions = fixture();
     renameSync(join(instructions.scratchDir, 'CLAUDE.md'), join(instructions.scratchDir, 'saved-instructions'));
     symlinkSync(instructions.outside, join(instructions.scratchDir, 'CLAUDE.md'));
-    expect(() => runGrant(instructions, { sourceGit: 'none' })).toThrow('Run input');
+    expect(() => runGrant(instructions, { sourceGit: 'none', asking: { kind: 'native' } })).toThrow('Run input');
   });
-  for (const harness of HARNESSES.filter((harness) => canOfferHarness(harness.asking))) {
+  for (const harness of HARNESSES.filter((harness) => canOfferHarness(harness.asking) && canReadSource(harness.asking))) {
     it(`${harness.id} scopes file grants to the checkout`, () => {
       const spec = fixture();
       const grant = runGrant(spec, harness);
       expect(grant.rules.some((rule) => ['Read', 'Glob', 'Grep'].includes(rule))).toBe(false);
-      expect(grant.rules.some((rule) => rule.startsWith('Read(') && rule.includes(realpathSync(spec.repo)))).toBe(true);
+      expect(grant.rules.some((rule) => /^(Read|Glob|Grep)\(/.test(rule))).toBe(false);
     });
     if (harness.id === 'codex' || harness.id === 'claude-code') continue;
     it(`${harness.id} refuses the review's outside reads and searches after realpath`, () => {
@@ -73,21 +73,19 @@ describe('source file permission boundary (#1636)', () => {
       for (const path of [spec.outside, join(spec.home, 'auth.json'), spec.mcpConfigPath, 'repo/../../other-project.txt', 'repo/link/../secret', join(spec.repo, 'escape'), join(spec.repo, 'escape-dir', 'auth.json')]) {
         expect(decide('read', path)).toEqual({ outcome: 'selected', optionId: 'deny' });
       }
-      for (const path of [spec.home, spec.scratchDir, spec.repo, join(spec.repo, 'escape-dir')]) {
+      for (const path of [spec.home, spec.scratchDir, join(spec.repo, 'escape-dir')]) {
         expect(decide('search', path)).toEqual({ outcome: 'selected', optionId: 'deny' });
       }
     });
   }
   it('checks all ACP targets, including accumulated locations, and refuses omitted or malformed targets', () => {
     const spec = fixture();
-    const grant = runGrant(spec, { sourceGit: 'none' });
+    const grant = runGrant(spec, { sourceGit: 'none', asking: { kind: 'native' } });
     const calls = new ToolCalls();
     calls.saw({ sessionUpdate: 'tool_call', toolCallId: 'read', kind: 'read', rawInput: { file_path: spec.outside } });
     const decide = (call: Record<string, unknown>) => answerPermission(grant, new Set(), 'session', { sessionId: 'session', options }, call).outcome;
     for (const call of [
       { kind: 'read' }, { kind: 'read', rawInput: { path: [] } },
-      { kind: 'search', rawInput: { pattern: 'source' } },
-      { kind: 'search', rawInput: { pattern: 'source' }, locations: [{ path: join(spec.repo, 'safe') }] },
       { kind: 'read', rawInput: { cwd: join(spec.repo, 'safe') } },
       { kind: 'read', locations: [{ path: spec.outside }], rawInput: { path: join(spec.repo, 'README.md') } },
       { kind: 'search', rawInput: { path: join(spec.repo, 'safe'), pattern: `${spec.home}/**` } },
@@ -104,8 +102,8 @@ describe('source file permission boundary (#1636)', () => {
     const collect = async () => { for await (const _event of claudeCodeDriver.run(spec, new AbortController().signal)) { /* consume */ } };
     try {
       process.env.PATH = `${bin}:${oldPath}`;
-      await expect(collect()).rejects.toThrow();
-      expect(existsSync(join(bin, 'decisions.json'))).toBe(false);
+      await collect();
+      expect(JSON.parse(readFileSync(join(bin, 'decisions.json'), 'utf8'))).toEqual(['deny']);
     } finally { process.env.PATH = oldPath; }
   });
   it('executes Claude\'s blocking SDK permission callback through the native driver before attempted reads', async () => {
@@ -115,7 +113,7 @@ describe('source file permission boundary (#1636)', () => {
       { tool_name: 'Grep', tool_input: { path: join(spec.repo, 'safe'), pattern: 'source' } },
       { tool_name: 'Glob', tool_input: { path: join(spec.repo, 'safe'), pattern: '*.ts' } },
       ...[spec.outside, spec.mcpConfigPath, 'repo/../../other-project.txt', 'repo/link/../secret', join(spec.repo, 'escape'), join(spec.repo, 'escape-dir', 'auth.json')].map((file_path) => ({ tool_name: 'Read', tool_input: { file_path } })),
-      ...[spec.home, spec.scratchDir, spec.repo].map((path) => ({ tool_name: 'Grep', tool_input: { path, pattern: 'source' } })),
+      ...[spec.home, spec.scratchDir].map((path) => ({ tool_name: 'Grep', tool_input: { path, pattern: 'source' } })),
       { tool_name: 'Read', tool_input: {} },
       { tool_name: 'Glob', tool_input: { path: join(spec.repo, 'safe'), pattern: `${spec.home}/**` } },
       { tool_name: 'Glob', tool_input: { path: join(spec.repo, 'safe'), pattern: '../**' } },
@@ -158,17 +156,14 @@ describe('source file permission boundary (#1636)', () => {
     const spec = fixture();
     const installed = join(spec.home, 'codex');
     writeFileSync(installed, 'synthetic executable');
-    const filesystem = runFilesystem(spec, spec.home, installed, null);
-    expect(filesystem[realpathSync(installed)]).toBe('read');
-    expect(filesystem[realpathSync(spec.home)]).toBe('deny');
-    expect(filesystem[join(spec.home, 'auth.json')]).toBeUndefined();
+    expect(() => runFilesystem(spec, spec.home, installed, null)).toThrow('Unsafe Codex installation directory');
   });
   it('Codex denies undeclared run files and resolves symlink targets under its filesystem profile', () => {
     const spec = fixture();
     const filesystem = runFilesystem(spec, spec.home, null, null);
     const access = (path: string) => Object.entries(filesystem).filter(([root]) => !root.startsWith(':') && (path === root || path.startsWith(root + '/'))).sort(([a], [b]) => b.length - a.length)[0]?.[1] ?? 'deny';
     expect(access(realpathSync(join(spec.repo, 'README.md')))).toBe('read');
-    for (const path of [spec.mcpConfigPath, join(spec.repo, 'escape'), join(spec.home, 'auth.json'), resolve(spec.scratchDir, 'undeclared.txt')]) {
+    for (const path of [spec.mcpConfigPath, spec.outside, join(spec.home, 'auth.json'), resolve(spec.scratchDir, 'undeclared.txt')]) {
       expect(access(path.endsWith('undeclared.txt') ? path : realpathSync(path))).toBe('deny');
     }
   });

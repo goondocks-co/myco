@@ -23,7 +23,8 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { harnessById, type Harness } from '../harnesses.js';
 import type { Driver, Launch, LaunchSpec, RunEvent, RunSpec, StopReason } from '../events.js';
-import { MCP_SERVER_NAME } from '../mcp-config.js';
+import { RUN_INSTRUCTIONS_FILES, MCP_SERVER_NAME } from '../mcp-config.js';
+import { basename } from 'node:path';
 import { AcpEvents } from './acp-events.js';
 import { EFFORT_UNAPPLIED, PROFILE_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { applyProfile, optionsOf, type AnnouncedOptions } from './acp-profile.js';
@@ -170,13 +171,13 @@ const RUN_SHELL = '/bin/sh';
  * offers it, and its small model, so no part of the run falls to another; the
  * turn confirms it from the session before the prompt is sent.
  */
-export function runAgentConfig(agent: string, platform: NodeJS.Platform = process.platform, profile?: RunSpec['profile']): Record<string, unknown> {
+export function runAgentConfig(agent: string, platform: NodeJS.Platform = process.platform, profile?: RunSpec['profile'], sourceReads: Readonly<Record<string, 'ask'>> = {}): Record<string, unknown> {
   return {
     default_agent: agent,
     ...(profile === undefined ? {} : { model: profile.model, small_model: profile.model }),
     ...(platform === 'win32' ? {} : { shell: RUN_SHELL }),
     experimental: { continue_loop_on_deny: true },
-    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask' } } },
+    agent: { [agent]: { mode: 'primary', description: 'A Myco run: every call is asked, and answered from the run\'s grant.', permission: { '*': 'ask', ...sourceReads } } },
   };
 }
 
@@ -193,7 +194,7 @@ export interface RunAsking {
  */
 export function runAsking(harness: Harness | null, agent: string = runAgentName(), profile?: RunSpec['profile']): RunAsking {
   if (harness?.asking.kind !== 'run-agent') return { env: {}, mode: null };
-  return { env: { ...harness.asking.extensionsOff, [harness.asking.env]: JSON.stringify(runAgentConfig(agent, process.platform, profile)) }, mode: agent };
+  return { env: { ...harness.asking.extensionsOff, [harness.asking.env]: JSON.stringify(runAgentConfig(agent, process.platform, profile, harness.asking.sourceReads)) }, mode: agent };
 }
 
 /** The mode a session reports it started in: a configuration option named `mode`, or the protocol's own current mode. */
@@ -238,7 +239,7 @@ export async function* turnOver(
   options: { grant?: RunGrant; signal?: AbortSignal; asking?: RunAsking } = {},
 ): AsyncIterable<RunEvent> {
   const harness = harnessById(id);
-  const grant = options.grant ?? runGrant(spec, harness ?? { sourceGit: 'none' });
+  const grant = options.grant ?? runGrant(spec, harness ?? { sourceGit: 'none', asking: { kind: 'unheld' } });
   const signal = options.signal ?? new AbortController().signal;
   const server = runServerOf(spec);
   const asking = options.asking ?? runAsking(harness);
@@ -280,7 +281,7 @@ export async function* turnOver(
       return;
     }
     tools = listed.names;
-    const session = await connection.call('session/new', { cwd: spec.scratchDir, mcpServers: [acpServerOf(server)] });
+    const session = await connection.call('session/new', { cwd: grant.source?.root ?? spec.scratchDir, mcpServers: [acpServerOf(server)] });
     const refusedSession = recordOf(session.error);
     if (refusedSession !== null) {
       yield { kind: 'ended', stop: 'error', detail: `the harness refused the session: ${stringOf(refusedSession.message) ?? 'no reason given'} ${detailOnFailure()}`.trim() };
@@ -311,7 +312,9 @@ export async function* turnOver(
     yield { kind: 'started', harness: id, sessionId };
     yield* events.identity();
 
-    const answered = await connection.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: spec.prompt }] });
+    const answered = await connection.call('session/prompt', { sessionId, prompt: [{ type: 'text', text: [
+      ...(grant.source?.files.filter((file) => RUN_INSTRUCTIONS_FILES.includes(basename(file))).slice(0, 1).map((file) => readFileSync(file, 'utf8')) ?? []), spec.prompt,
+    ].join('\n\n') }] });
     yield* updates();
     const result = recordOf(answered.result) ?? {};
     yield* accountingEvents(() => [{ kind: 'usage', ...events!.usage(result) }]);
@@ -383,7 +386,11 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
     async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
       const harness = harnessById(id)!;
       const { command, args } = commandOf(harness);
-      const grant = runGrant(spec, harness);
+      let grant: RunGrant;
+      try { grant = runGrant(spec, harness); } catch (error) {
+        yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error), code: 'launch_failed' };
+        return;
+      }
       let launched: { launch: Launch; asking: RunAsking };
       try { launched = acpLaunch(harness, spec, writeHome); } catch (error) {
         yield { kind: 'ended', stop: 'error', detail: error instanceof Error ? error.message : String(error), code: 'launch_failed' };
@@ -391,7 +398,7 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
       }
       const { launch, asking } = launched;
       const child = spawnGroup(command, args, {
-        cwd: spec.scratchDir,
+        cwd: grant.source?.root ?? spec.scratchDir,
         env: launchEnvironment({ ...launch.env, ...grant.env }, launch.omitInherited),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
