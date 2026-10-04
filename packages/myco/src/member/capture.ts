@@ -17,12 +17,12 @@ import type { NormalizedHookInput } from '../hooks/normalize.js';
 import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { resolveHookBudget, type HookBudget } from './budget.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { parseCredentialFlag, redeemsJoinCode, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
+import { parseCredentialFlag, redeemsJoinCode, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
 import { withAsk, type ContextAsk } from './context-cache.js';
 import { deliveryNotice, withNotice } from './delivery-notice.js';
 import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
 import { appendPending, appendPendingTurnEnd } from './pending.js';
-import { flushHeldCapture } from './held.js';
+import { restoreHeldReceiptsForHook } from './held.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
@@ -168,6 +168,11 @@ export async function runMemberHook(
 ): Promise<void> {
   let symbiont: string | undefined;
   let response: HookResponse = {};
+  const pendingFull = (root: string, subject: 'capture' | 'turn end'): void => {
+    const notice = `Pending capture for ${root} is full; this hook's ${subject} was not retained.`;
+    process.stderr.write(`[myco] member: ${notice}\n`);
+    response = withNotice(notice, response);
+  };
   try {
     const input = await readHookInput();
     // A hook command names its harness (`--symbiont`); one that names none, or one no manifest knows, is not guessed at.
@@ -224,22 +229,34 @@ export async function runMemberHook(
         return unconnected.answer !== null;
       },
     });
-    const hold = unconnected.answer === LEFT_ALONE ? null : unconnected.answer;
+    let hold = unconnected.answer === LEFT_ALONE ? null : unconnected.answer;
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     if (credential === null) {
-      if (hold === null || hold.spool === null) { joinSteps(); return; }
-      credential = hold.credential;
+      if (hold?.spool === null) {
+        const joined = resolveCredential(source, { cwd, env, mycoHome, invokedBy: `hook ${hookName}` });
+        if (joined !== null) { credential = joined; hold = null; }
+      }
+      if (credential === null) {
+        if (hold === null || hold.spool === null) {
+          if (hold?.spool === null) pendingFull(hold.repo.root, 'capture');
+          joinSteps(); return;
+        }
+        credential = hold.credential;
+      }
     }
 
-    // A repository connected while its hooks held capture: what they held joins this run's spool first.
-    if (hold === null && credential.root !== undefined) flushHeldCapture(credential.root, credential.projectId, { mycoHome, now: now() });
-    const spool = hold?.spool ?? new MemberSpool(credential.projectId, { mycoHome });
+    const pending = hold;
+    const spool = pending?.spool ?? new MemberSpool(credential.projectId, { mycoHome });
+    if (pending === null && credential.root !== undefined) {
+      try { restoreHeldReceiptsForHook(credential.root, sessionId, spool, { mycoHome, now: now() }); }
+      catch (err) { process.stderr.write(`[myco] member: held receipts unavailable (${(err as Error).message}) — new capture continues\n`); }
+    }
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const serverUrl = credential.serverUrl;
     const run: HookRun = {
       hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, mycoHome,
       machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
-      ...(hold !== null ? { pending: true } : {}),
+      ...(pending !== null ? { pending: true } : {}),
     };
 
     const outcome = await handle(run);
@@ -256,8 +273,13 @@ export async function runMemberHook(
     // Capture held for a repository still joining lands under the repository's lock: in its pending spool, or in the
     // project's spool once the join has connected it. It is delivered once the repository is connected, by the helper
     // its next hook kicks; until then nothing is dialled and no helper is started.
+    let capturedInProject = false;
     const append = (events: readonly OutboundEvent[], receipt?: (state: SessionState) => void): void => {
-      if (hold !== null) appendPending(hold.repo, sessionId, events, receipt, { mycoHome, now: now() });
+      if (pending !== null) {
+        const destination = appendPending(pending.repo, sessionId, events, receipt, { mycoHome, now: now() });
+        if (destination === 'project') capturedInProject = true;
+        if (destination === 'full') pendingFull(pending.repo.root, 'capture');
+      }
       else spool.appendAndRecord(sessionId, events, receipt, now());
     };
     let appendedEvents = outcome.events;
@@ -275,7 +297,11 @@ export async function runMemberHook(
         }
       }
       if (turnEnd !== undefined) {
-        if (hold !== null) appendPendingTurnEnd(hold.repo, sessionId, turnEnd, undefined, { mycoHome, now: now() });
+        if (pending !== null) {
+          const destination = appendPendingTurnEnd(pending.repo, sessionId, turnEnd, undefined, { mycoHome, now: now() });
+          if (destination === 'project') capturedInProject = true;
+          if (destination === 'full') pendingFull(pending.repo.root, 'turn end');
+        }
         else spool.appendTurnEnd(sessionId, turnEnd, undefined, now());
       }
     } finally {
@@ -283,7 +309,14 @@ export async function runMemberHook(
     }
 
     // Work for the helper: records appended, context asked for, or a turn's or a session's end to deliver.
-    if (hold === null && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
+    if (capturedInProject && pending !== null) {
+      const joined = readRegistryEntry(pending.repo.root, mycoHome);
+      if (joined !== null) {
+        credential = registryCredential(joined, pending.repo.root);
+        run.credential = credential;
+      }
+    }
+    if ((pending === null || (capturedInProject && credential.projectId !== '')) && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
       const reason: KickReason = outcome.ends ?? 'capture';
       const target = { projectId: credential.projectId, mycoHome, reason };
       // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a

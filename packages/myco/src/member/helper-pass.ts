@@ -43,7 +43,7 @@ export function helperPass(projectId: string, mycoHome: string, deps: {
     catch (error) { process.stderr.write(`[myco] helper: context prefetch failed: ${error instanceof Error ? error.message : String(error)}\n`); }
     // Everything delivered (no journal and no transcript left behind): the state of sessions delivered long ago may go.
     const delivered = backlog.endedBy === 'done' && spool.sessionIds().length === 0 && spool.transcriptBacklogIds().length === 0;
-    applySpoolRetention(spool, now(), { tried: backlog.tried, delivered });
+    applySpoolRetention(spool, now(), { delivered });
     const shipped = backlog.sessions.reduce((n, s) => n + (s.events?.acked ?? 0) + (typeof s.transcripts === 'object' ? s.transcripts.shipped : 0), 0);
     const context = prefetched === null || prefetched.asked === 0 ? '' : `; context ${prefetched.answered} of ${prefetched.asked} served`;
     process.stderr.write(`[myco] helper: pass over ${backlog.sessions.length} session(s), ${shipped} record(s) and segment(s) delivered${force ? ' (past the offline latch)' : ''}${context}, ended by ${backlog.endedBy}\n`);

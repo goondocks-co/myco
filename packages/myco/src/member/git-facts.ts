@@ -13,7 +13,8 @@
  * alone (`git-verdict.ts`), and git is asked only where neither does. Whether tracked files changed is git's to say, since it means
  * comparing the index and the working tree: its two questions run at once.
  */
-import { gitExitStatusAsync, runGitAnswer } from '../utils/git.js';
+import { gitExitStatusAsync, runGit, runGitAnswer, type GitQueryBudget } from '../utils/git.js';
+import { subRequestBudget, type HookBudget } from './budget.js';
 import { readRepoHead, UNUSUAL } from '../utils/git-files.js';
 import { repoVerdict, type GitVerdictDeps } from './git-verdict.js';
 
@@ -61,13 +62,28 @@ export function gitRemote(cwd: string): string | undefined {
  * the index against HEAD, and the working tree against the index, asked at
  * once. Undefined when git could not say.
  */
-export async function trackedChanges(cwd: string): Promise<boolean | undefined> {
+export async function trackedChanges(cwd: string, budget: GitQueryBudget = {}): Promise<boolean | undefined> {
   const [staged, unstaged] = await Promise.all([
-    gitExitStatusAsync(['diff', '--cached', '--quiet', '--'], cwd),
-    gitExitStatusAsync(['diff', '--quiet', '--'], cwd),
+    gitExitStatusAsync(['diff', '--cached', '--quiet', '--'], cwd, budget),
+    gitExitStatusAsync(['diff', '--quiet', '--'], cwd, budget),
   ]);
   if (staged === 1 || unstaged === 1) return true;
   return staged === 0 && unstaged === 0 ? false : undefined;
+}
+
+/** Optional provenance receives at most this much hook time. */
+export const GIT_ENRICHMENT_CAP_MS = 500;
+
+/** Discovery fallback and dirty queries share a deadline that reserves a full request's headroom for delivery. */
+export async function sessionEndGitFacts(cwd: string, budget: HookBudget, now: number = Date.now()): Promise<Pick<GitFacts, 'headSha' | 'dirty'>> {
+  const deliveryReserve = Math.max(budget.connectTimeoutMs, budget.requestTimeoutMs);
+  const deadline = Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs);
+  if (deadline <= now) return { headSha: undefined, dirty: undefined };
+  const queryBudget = { deadline };
+  const askGit = (args: string[], cwd: string): string => runGitAnswer(args, cwd, (args, cwd) => runGit(args, cwd, queryBudget));
+  const head = gitHead(cwd, { askGit });
+  const dirty = head.headSha === undefined ? undefined : await trackedChanges(cwd, queryBudget);
+  return { headSha: head.headSha, dirty };
 }
 
 /** Every fact at once. */

@@ -102,6 +102,7 @@ const ALLOWLIST: readonly string[] = [
   'project-root.ts',
   'machine-id.ts',
   'utils/lifecycle-lock.ts',
+  'utils/sync-directory.ts',
   'utils/dot-path.ts',
   'utils/git.ts',
   // A repository's identity read from git's own files, so no hook starts git for it (#1561). Node built-ins only.

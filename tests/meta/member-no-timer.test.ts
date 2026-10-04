@@ -69,6 +69,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   'packages/myco/src/runner/process-group.ts': {
     calls: 1, form: 'awaited', bound: "the waits while a stopped harness's process group ends, bounded by the stop's grace",
   },
+  'packages/myco/src/utils/git.ts': {
+    calls: 1, form: 'cleared', bound: 'a one-shot Git child deadline, cleared on exit or spawn failure',
+  },
 };
 
 /**

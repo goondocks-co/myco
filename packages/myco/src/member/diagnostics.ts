@@ -16,6 +16,7 @@
  * lists are as long as the machine's own state: one entry per spool file and per
  * membership.
  */
+import { readCaptureLoss } from './capture-loss.js';
 import { REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getPluginVersion } from '../version.js';
 import type { MissingMembershipRecord } from './no-membership.js';
@@ -121,6 +122,7 @@ export interface MissedCaptureFacts {
 export interface ProjectDiagnostics {
   membership: MembershipFacts;
   spool: SpoolFacts;
+  captureLoss: ReturnType<typeof readCaptureLoss>;
   latch: LatchFacts | null;
   /** False where the latch file could not be used; whether this member is holding off is then unknown, not answered. */
   latchReadable: boolean;
@@ -309,6 +311,7 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
   const latch = latchUsable ? latchRead.latch : null;
   return {
     membership: membershipOf(entry, now),
+    captureLoss: readCaptureLoss(spool.dir),
     spool: {
       readable: spooled.readable,
       stateReadable,

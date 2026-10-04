@@ -91,6 +91,14 @@ describe('plan file capture', () => {
     }
   });
 
+  it('keeps the original file as a verified recovery source for a spilled plan', () => {
+    const large = path.join(root, '.claude/plans/recoverable.md');
+    fs.writeFileSync(large, '# Recoverable\n' + 'x'.repeat(200_000));
+    const event = planFileCapture(ctx(), emptySessionState(), 'proj_1', root, large).events[0];
+    expect(event.blobSource).toBeDefined();
+    expect(event.blobSource?.recovery).toEqual({ path: large });
+  });
+
   it('re-sends a shipped file whose content changed, once, and nothing for one unchanged or gone', () => {
     fs.writeFileSync(file, '# The plan\n\n- [x] one\n');
     const key = planKeyForPath('proj_1', '.claude/plans/p.md');
@@ -123,4 +131,3 @@ describe('the plan folders a machine adds (#1393)', () => {
     expect(planWritePath('claude-code', 'Write', { file_path: 'docs/other/f.md' }, root, machine)).toBeNull();
   });
 });
-

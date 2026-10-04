@@ -118,7 +118,8 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(sessionRow.origin_path).toBe('/work/repo');
     expect(sessionRow.ended_at).toBeGreaterThan(0);
 
-    expect(memberKinds()).toEqual(['session.start', 'transcript.segment', 'session.end']);
+    expect(memberKinds()).toEqual(['session.start', 'transcript.segment', 'session.end', 'session.end']);
+    expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM knowledge_git_provenance WHERE session_id = ? AND capture_point = 'session_end'").get(session)).toEqual({ n: 1 });
     assertNoRetired();
     expect(new Set(dialled())).toEqual(new Set(['/events', '/context/prompt', '/context/session', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
     expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
@@ -540,7 +541,7 @@ describe('member hooks through the worker: retention and plan files', () => {
     expect(readSessionState(spool.dir, session).transcript?.parsedSize).toBe(fs.statSync(tx).size - 40);
     fs.appendFileSync(tx, line.slice(40));
     const out = await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
-    expect(out.stderr).toContain(`plan file .claude/plans/${path.basename(gone)} was written this turn but cannot be read now`);
+    expect(out.stderr).toContain(`plan file .claude/plans/${path.basename(gone)} is absent — read pending`);
     expect(rig.rows('plans')).toBe(0);
     expect(readSessionState(spool.dir, session).transcript?.parsedSize).toBe(fs.statSync(tx).size);
   });
@@ -589,7 +590,7 @@ describe('member hooks through the worker: cursor', () => {
     expect(texts('responses')).toHaveLength(1);
     expect(texts('responses')[0]).toEndWith('Nothing was modified.');
     await cursor('session-end', { hook_event_name: 'sessionEnd' });
-    expect(memberKinds()).toEqual(['session.start', 'tool.use', 'tool.failure', 'transcript.segment', 'session.end']);
+    expect(memberKinds()).toEqual(['session.start', 'tool.use', 'tool.failure', 'transcript.segment', 'session.end', 'session.end']);
     assertNoRetired();
   });
 });

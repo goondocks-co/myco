@@ -94,7 +94,6 @@ const ALLOWED_EDGES: Readonly<Record<string, string>> = {
   'mcp/stdio-bridge.ts -> daemon/client.ts': '#1170 P4: the daemon upstream is deleted',
   'mcp/stdio-bridge.ts -> grove/request-context.ts': '#1170 P4: the daemon upstream is deleted',
   'mcp/stdio-bridge.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
-  'member/retention.ts -> capture/buffer.ts': '#1170 P3: the capture leaves move to member/',
   'member/spool.ts -> capture/buffer.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/prompt-kind.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/session-continuation.ts': '#1170 P3: the capture leaves move to member/',
