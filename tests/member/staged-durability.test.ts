@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
-import { appendPending, appendPendingTurnEnd, expirePending, flushPending, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
+import { appendPending, appendPendingTurnEnd, expirePending, flushPending, PENDING_TTL_MS, pendingSpool } from '@myco/member/pending.js';
 import { registryEntryPath, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -84,6 +84,74 @@ describe('staged capture durability', () => {
     } finally { observing.mockRestore(); }
   });
 
+  it('syncs the staged file and its directory before publishing its final name', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const bytes = Buffer.from(LARGE);
+    const dir = spool.blobsDirFor('sync-order');
+    const final = path.join(dir, crypto.createHash('sha256').update(bytes).digest('hex'));
+    const open = fs.openSync.bind(fs);
+    const sync = fs.fsyncSync.bind(fs);
+    const rename = fs.renameSync.bind(fs);
+    const paths = new Map<number, string>();
+    const order: string[] = [];
+    const opening = spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      const fd = open(file, flags, mode);
+      paths.set(fd, String(file));
+      return fd;
+    }) as typeof fs.openSync);
+    const syncing = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      const file = paths.get(fd);
+      if (file?.startsWith(dir)) order.push(file === dir ? 'directory-sync' : 'file-sync');
+      return sync(fd);
+    });
+    const renaming = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to) === final) order.push('publish');
+      return rename(from, to);
+    });
+    try {
+      expect(spool.stagerFor('sync-order')(bytes, 'text/plain').path).toBe(final);
+      expect(order.slice(0, 3)).toEqual(['file-sync', 'directory-sync', 'publish']);
+    } finally {
+      opening.mockRestore(); syncing.mockRestore(); renaming.mockRestore();
+    }
+  });
+
+  it('publishes when file flushing requires a writable handle', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const open = fs.openSync.bind(fs);
+    const sync = fs.fsyncSync.bind(fs);
+    const readonly = new Set<number>();
+    const opening = spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      const fd = open(file, flags, mode);
+      if (String(file).endsWith('.tmp')) {
+        readonly.delete(fd);
+        if (flags === 'r') readonly.add(fd);
+      }
+      return fd;
+    }) as typeof fs.openSync);
+    const syncing = spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      if (readonly.has(fd)) throw Object.assign(new Error('flush requires write access'), { code: 'EACCES' });
+      sync(fd);
+    });
+    try {
+      const source = spool.stagerFor('writable-flush')(Buffer.from(LARGE), 'text/plain');
+      expect(fs.readFileSync(source.path, 'utf8')).toBe(LARGE);
+    } finally { syncing.mockRestore(); opening.mockRestore(); }
+  });
+
+  it('does not publish a staged blob when its file sync fails', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const bytes = Buffer.from(LARGE);
+    const final = path.join(spool.blobsDirFor('sync-failure'), crypto.createHash('sha256').update(bytes).digest('hex'));
+    const syncing = spyOn(fs, 'fsyncSync').mockImplementation(() => {
+      throw Object.assign(new Error('injected sync failure'), { code: 'EIO' });
+    });
+    try {
+      expect(() => spool.stagerFor('sync-failure')(bytes, 'text/plain')).toThrow('injected sync failure');
+      expect(fs.existsSync(final)).toBe(false);
+    } finally { syncing.mockRestore(); }
+  });
+
   it('concurrent identical stagers and readers observe only complete final objects', async () => {
     const mycoHome = tempMycoHome();
     const spool = new MemberSpool('proj_1', { mycoHome });
@@ -130,7 +198,7 @@ describe('staged capture durability', () => {
   });
 
   for (const code of ['EACCES', 'EIO', 'ENOENT']) {
-    it(`pending migration retains capture and receipts on ${code}, then retries without new input`, async () => {
+    it(`pending migration transfers the source and receipts across ${code}, then delivers when readable`, async () => {
       const mycoHome = tempMycoHome();
       const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'a'.repeat(32) };
       const opts = { mycoHome, now: Date.now() };
@@ -144,12 +212,11 @@ describe('staged capture durability', () => {
         return Reflect.apply(read, fs, args);
       }) as typeof fs.readFileSync);
       try {
-        expect(flushPending(repo.rootKey, target, opts)).toBe(0);
-        expect(source.readRecords('pending')).toHaveLength(1);
-        expect(readSessionState(target.dir, 'pending').prompts.receipt).toBeUndefined();
-        expect(fs.existsSync(path.join(pendingDir(repo.rootKey, mycoHome), 'pending.json'))).toBe(true);
+        expect(flushPending(repo.rootKey, target, opts)).toBe(1);
+        expect(source.readRecords('pending')).toHaveLength(0);
+        expect(target.readRecords('pending')[0]?._blobSource?.path).toBe(event.blobSource!.path);
+        expect(readSessionState(target.dir, 'pending').prompts.receipt).toBe('prompt-id');
       } finally { fault.mockRestore(); }
-      expect(flushPending(repo.rootKey, target, opts)).toBe(1);
       expect(flushPending(repo.rootKey, target, opts)).toBe(0);
       expect(target.readRecords('pending')).toHaveLength(1);
       expect(readSessionState(target.dir, 'pending').prompts.receipt).toBe('prompt-id');
@@ -159,7 +226,7 @@ describe('staged capture durability', () => {
     });
   }
 
-  it('reports genuinely missing pending bytes and preserves their journal and receipt for recovery', () => {
+  it('moves missing pending bytes with their journal and receipt for live disposition', () => {
     const mycoHome = tempMycoHome();
     const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'b'.repeat(32) };
     const opts = { mycoHome, now: Date.now() };
@@ -167,18 +234,14 @@ describe('staged capture durability', () => {
     const event = promptEvent(context(source, 'missing'), { promptId: mintId(), text: LARGE });
     appendPending(repo, 'missing', [event], (state) => { state.prompts.receipt = 'id'; }, opts);
     fs.unlinkSync(event.blobSource!.path);
-    const lines: string[] = [];
-    const diagnostic = spyOn(process.stderr, 'write').mockImplementation((chunk) => { lines.push(String(chunk)); return true; });
-    try {
-      expect(flushPending(repo.rootKey, new MemberSpool('proj_1', { mycoHome }), opts)).toBe(0);
-      expect(source.readRecords('missing')).toHaveLength(1);
-      expect(readSessionState(source.dir, 'missing').prompts.receipt).toBe('id');
-      expect(lines.join('')).toContain('missing');
-      expect(lines.join('')).toContain('kept');
-    } finally { diagnostic.mockRestore(); }
+    const target = new MemberSpool('proj_1', { mycoHome });
+    expect(flushPending(repo.rootKey, target, opts)).toBe(1);
+    expect(fs.existsSync(path.join(source.dir, 'missing.jsonl'))).toBe(false);
+    expect(target.readRecords('missing')[0]?._blobSource?.path).toBe(event.blobSource!.path);
+    expect(readSessionState(target.dir, 'missing').prompts.receipt).toBe('id');
   });
 
-  it('new capture and turn marks stay behind held capture when join migration cannot read its payload', () => {
+  it('new capture and turn marks enter the live spool while a held blob read fails', () => {
     const mycoHome = tempMycoHome();
     const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32) };
     fs.mkdirSync(repo.root);
@@ -198,16 +261,16 @@ describe('staged capture durability', () => {
     const mark = { slot: 'primary' as const, transcriptId: 'tx_1234', atSize: 10 };
     const target = new MemberSpool('proj_1', { mycoHome });
     try {
-      expect(appendPending(repo, 'ordered', [fresh], undefined, opts)).toBe('pending');
-      expect(appendPendingTurnEnd(repo, 'ordered', mark, undefined, opts)).toBe('pending');
-      expect(target.readRecords('ordered')).toHaveLength(0);
-      expect(target.pendingTurnEnds('ordered')).toHaveLength(0);
+      expect(appendPending(repo, 'ordered', [fresh], undefined, opts)).toBe('project');
+      expect(appendPendingTurnEnd(repo, 'ordered', mark, undefined, opts)).toBe('project');
+      expect(target.readRecords('ordered')).toHaveLength(1);
+      expect(target.pendingTurnEnds('ordered')).toHaveLength(1);
       expect(expirePending(repo.rootKey, { mycoHome, now: opts.now + 2 * PENDING_TTL_MS })).toBe(false);
       registryUnavailable = true;
       expect(expirePending(repo.rootKey, { mycoHome, now: opts.now + 2 * PENDING_TTL_MS })).toBe(false);
-      expect(source.readRecords('ordered')).toHaveLength(2);
+      expect(source.readRecords('ordered')).toHaveLength(1);
     } finally { fault.mockRestore(); }
-    expect(flushPending(repo.rootKey, target, opts)).toBe(2);
+    expect(flushPending(repo.rootKey, target, opts)).toBe(1);
     expect(target.readRecords('ordered').map((line) => line?.eventId)).toEqual([old.envelope.eventId, fresh.envelope.eventId]);
     expect(target.pendingTurnEnds('ordered')).toHaveLength(1);
   });

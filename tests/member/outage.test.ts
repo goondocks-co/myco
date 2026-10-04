@@ -6,7 +6,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { MEMBER_SPOOL_QUARANTINE_MS } from '@myco/member/constants.js';
 import { mintId, promptEvent, toolUseEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { normalizeHookInput, _resetManifestCache } from '@myco/hooks/normalize.js';
 import { drainBacklog } from '@myco/member/backlog.js';
@@ -77,7 +76,7 @@ describe('outage convergence', () => {
     for (; passes < 3_000; passes++) {
       const report = await drainBacklog(spool, client, fastBudget, { now, force: true, machineId: 'machine_1' });
       if (report.sessions.every((r) => r.events?.remaining === 0) && spool.sessionIds().length === 0) break;
-      if (passes === 20) t += MEMBER_SPOOL_QUARANTINE_MS + 1; // the 30-day skip
+      if (passes === 20) t += 30 * 86_400_000 + 1; // the 30-day skip
       t += 60_000;
     }
     expect(failures).toBeGreaterThan(50);

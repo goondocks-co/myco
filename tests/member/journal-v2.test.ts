@@ -377,8 +377,6 @@ describe('the two lanes past a held record (G4f)', () => {
     expect(second.sessions[0].events).toMatchObject({ skipped: 'deferred' });
     expect(second.sessions[0].transcripts).toMatchObject({ endedBy: 'done', shipped: 1 });
     expect(segments(rig, 'sess-wait')).toBe(2);
-    // A walk that only waited is no answer from the Deployment: the session is not counted as tried.
-    expect(second.tried).toEqual([]);
   });
 });
 

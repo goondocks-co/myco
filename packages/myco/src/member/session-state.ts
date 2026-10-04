@@ -10,6 +10,7 @@ import path from 'node:path';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import { REFUSAL_RETRY_INITIAL_MS, REFUSAL_RETRY_MAX_MS } from './constants.js';
 import { ensurePrivateFile, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
+import { CaptureLossLedger, type CaptureLoss } from './capture-loss.js';
 
 export const SESSION_STATE_VERSION = 1;
 /** Captured-prompt and attachment bookkeeping is kept to this many entries, oldest dropped first. */
@@ -37,6 +38,8 @@ export interface TranscriptPointer {
 export interface RefusalRetry {
   at: number;
   backoffMs: number;
+  /** Local bytes retry per record; later capture can still be delivered. */
+  localPayload?: true;
   /**
    * The run of consecutive holds whose refusal named no cause: when the first
    * of them arrived, and the wait the run alone has grown to. A hold for any
@@ -86,6 +89,8 @@ export interface SessionState {
     hash: string;
     /** A file read still owed, even when no version of the plan has shipped. */
     pendingRead?: 'absent' | 'unreadable' | 'not-file';
+    pendingSince?: number;
+    pendingChecks?: number;
     /** The producing prompt, retained until a first successful read. */
     promptId?: string;
   }>;
@@ -115,6 +120,8 @@ export interface SessionState {
    * journal nothing is taking. Transcript segments and blobs do not move it (`lastDeliveryAt` does).
    */
   lastAckAt?: number;
+  /** When an event was last acknowledged or given an explicit terminal loss/refusal disposition. */
+  lastAccountedAt?: number;
   /**
    * When the Deployment last took a record of this session's: an event acknowledged, or a transcript segment
    * acknowledged or resliced. A blob alone is not a delivery: the record it belongs to may yet be refused. What a
@@ -135,6 +142,8 @@ export interface SessionState {
   /** The prompt whose served context a prompt of this session has rendered: each answer is rendered once. */
   renderedPrompt?: string;
   updatedAt: number;
+  /** Loss dispositions queued by the current receipt mutation, flushed before that receipt is committed. */
+  pendingLosses?: CaptureLoss[];
 }
 
 /** Every transcript pointer a session holds: its own, then the subagent transcripts beside it. */
@@ -242,6 +251,10 @@ function trimTracked(state: SessionState): void {
 
 /** Write the state atomically (0600). Callers hold the buffer lock, or run inside a callback that already does. */
 export function writeSessionStateUnlocked(spoolDir: string, sessionId: string, state: SessionState, now: number = Date.now()): void {
+  if (state.pendingLosses !== undefined) {
+    new CaptureLossLedger(spoolDir).record(state.pendingLosses);
+    delete state.pendingLosses;
+  }
   trimTracked(state);
   state.updatedAt = now;
   writePrivateFileAtomic(sessionStatePath(spoolDir, sessionId), JSON.stringify(state));

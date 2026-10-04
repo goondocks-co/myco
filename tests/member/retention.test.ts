@@ -8,10 +8,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BUFFER_QUARANTINE_DIRNAME } from '@myco/capture/buffer.js';
-import { longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budget.js';
-import { MEMBER_PROTOCOL, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, PROTOCOL_HEADER } from '@myco/member/constants.js';
+import { deadlineBudget, longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budget.js';
+import { MEMBER_PROTOCOL, MEMBER_SESSION_STATE_RETENTION_MS, PROTOCOL_HEADER } from '@myco/member/constants.js';
+import { readCaptureLoss } from '@myco/member/capture-loss.js';
 import { attachmentEvent, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { applySpoolRetention, lastAckAt, pruneDeliveredSessionState, sweepStagedBlobs, unacknowledgedSince } from '@myco/member/retention.js';
+import { MISSING_PAYLOAD_CONFIRM_MS } from '@myco/member/payload-disposition.js';
+import { applySpoolRetention, pruneDeliveredSessionState, sweepStagedBlobs } from '@myco/member/retention.js';
 import { drainBacklog, sessionTried } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
@@ -35,15 +37,222 @@ afterEach(() => {
 
 const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' });
 const DAY = 86_400_000;
+const OLD_HOLD_WINDOW = 30 * DAY;
+const OLD_PRUNE_WINDOW = 60 * DAY;
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../packages/myco/src/member');
 
 describe('spool retention', () => {
+  it('replays an old quarantined journal and blob, then removes the archive only after acknowledgement', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-archived-replay';
+    const ctx = ctxFor(spool, sessionId);
+    const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+    const source = ctx.stage(bytes, 'image/png');
+    const archivedEvent = attachmentEvent(ctx, { blobSource: source, attachmentId: mintId() });
+    spool.append(sessionId, archivedEvent);
+    const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+    const archived = path.join(archiveDir, `${sessionId}.jsonl`);
+    const archivedBlobDir = path.join(archiveDir, 'blobs', sessionId);
+    fs.mkdirSync(path.dirname(archivedBlobDir), { recursive: true });
+    fs.renameSync(path.join(spool.dir, `${sessionId}.jsonl`), archived);
+    fs.renameSync(spool.blobsDirFor(sessionId), archivedBlobDir);
+    const freshEvent = promptEvent(ctx, { promptId: mintId(), text: 'captured after quarantine' });
+    spool.append(sessionId, freshEvent);
+
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    let offline = true;
+    const heldClient = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, (input, init) => {
+      if (offline) throw new Error('offline');
+      return rig.fetch(input, init);
+    });
+    await drainBacklog(spool, heldClient, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(spool.depth(sessionId)).toBe(2);
+    expect(spool.readRecords(sessionId).map((record) => record?.eventId)).toEqual([archivedEvent.envelope.eventId, freshEvent.envelope.eventId]);
+    expect(fs.existsSync(archived)).toBe(true);
+    expect(fs.readFileSync(path.join(spool.blobsDirFor(sessionId), source.sha256))).toEqual(Buffer.from(bytes));
+    offline = false;
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(report.sessions[0].events?.acked).toBe(2);
+    expect(rig.rows('events')).toBe(2);
+    expect(rig.rows('blobs')).toBe(1);
+    expect(fs.existsSync(archived)).toBe(true);
+    applySpoolRetention(spool);
+    expect(fs.existsSync(archived)).toBe(false);
+    expect(fs.existsSync(archivedBlobDir)).toBe(false);
+    expect(fs.existsSync(archiveDir)).toBe(false);
+    applySpoolRetention(spool);
+    expect(spool.sessionIds()).toEqual([]);
+    expect(rig.rows('events')).toBe(2);
+  });
+
+  it('replays an archived journal whose staged bytes still live in pending capture', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-archived-pending-source';
+    const pendingDir = path.join(mycoHome, 'member', 'pending', 'a'.repeat(16));
+    const pending = new MemberSpool('pending', { mycoHome, dir: pendingDir });
+    const bytes = new Uint8Array([137, 80, 78, 71, 4, 5, 6]);
+    const source = pending.stagerFor(sessionId)(bytes, 'image/png');
+    spool.append(sessionId, attachmentEvent(ctxFor(spool, sessionId), { blobSource: source, attachmentId: mintId() }));
+    const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+    fs.mkdirSync(archiveDir);
+    const archived = path.join(archiveDir, `${sessionId}.jsonl`);
+    fs.renameSync(path.join(spool.dir, `${sessionId}.jsonl`), archived);
+
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(report.sessions[0].events?.acked).toBe(1);
+    expect(rig.rows('events')).toBe(1);
+    expect(rig.rows('blobs')).toBe(1);
+    expect(readCaptureLoss(spool.dir)).toMatchObject({ readable: true, records: 0, payloads: 0 });
+    applySpoolRetention(spool);
+    expect(fs.existsSync(archived)).toBe(false);
+  });
+
+  it('leaves archive recovery and live capture untouched after the hook budget expires', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-budgeted-archive';
+    const archivedEvent = promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'older' });
+    spool.append(sessionId, archivedEvent);
+    const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+    fs.mkdirSync(archiveDir);
+    const archived = path.join(archiveDir, `${sessionId}.jsonl`);
+    fs.renameSync(path.join(spool.dir, `${sessionId}.jsonl`), archived);
+    const liveEvent = promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'newer' });
+    spool.append(sessionId, liveEvent);
+    const before = fs.readFileSync(archived);
+    const time = Date.now();
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const report = await drainBacklog(spool, client, deadlineBudget(time - 1), { machineId: 'machine_1', now: () => time });
+    expect(report.endedBy).toBe('budget');
+    expect(spool.readRecords(sessionId).map((record) => record?.eventId)).toEqual([liveEvent.envelope.eventId]);
+    expect(fs.readFileSync(archived)).toEqual(before);
+    expect(rig.rows('events')).toBe(0);
+  });
+
+  it('delivers a healthy archive and visibly accounts for another entirely damaged journal', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+    fs.mkdirSync(archiveDir);
+    fs.writeFileSync(path.join(archiveDir, 'a-damaged.jsonl'), '{not-json}\n');
+    spool.append('z-healthy', promptEvent(ctxFor(spool, 'z-healthy'), { promptId: mintId(), text: 'recovered' }));
+    fs.renameSync(path.join(spool.dir, 'z-healthy.jsonl'), path.join(archiveDir, 'z-healthy.1.jsonl'));
+
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(report.sessions.find((session) => session.sessionId === 'z-healthy')?.events?.acked).toBe(1);
+    expect(rig.rows('events')).toBe(1);
+    applySpoolRetention(spool);
+    expect(fs.existsSync(path.join(archiveDir, 'z-healthy.1.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(archiveDir, 'a-damaged.jsonl'))).toBe(false);
+    expect(readCaptureLoss(spool.dir)).toMatchObject({ readable: true, records: 1 });
+    expect(stderrLines.some((line) => line.includes('a-damaged.jsonl') && line.includes('counted as capture loss'))).toBe(true);
+  });
+
+  it('delivers records after a damaged line inside an archived journal', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-partial-archive';
+    const ctx = ctxFor(spool, sessionId);
+    spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'before damage' }));
+    spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'after damage' }));
+    const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+    fs.mkdirSync(archiveDir);
+    const archived = path.join(archiveDir, `${sessionId}.jsonl`);
+    const lines = fs.readFileSync(path.join(spool.dir, `${sessionId}.jsonl`), 'utf8').trimEnd().split('\n');
+    fs.writeFileSync(archived, `${lines[0]}\n{damaged}\n${lines[1]}\n`);
+    fs.unlinkSync(path.join(spool.dir, `${sessionId}.jsonl`));
+
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(report.sessions[0].events?.acked).toBe(2);
+    expect(rig.rows('events')).toBe(2);
+    applySpoolRetention(spool);
+    expect(fs.existsSync(archived)).toBe(false);
+    expect(readCaptureLoss(spool.dir)).toMatchObject({ readable: true, records: 1 });
+    expect(stderrLines.some((line) => line.includes(sessionId) && line.includes('damaged record'))).toBe(true);
+  });
+
+  it('accounts for a missing archived payload and cleans the archive after terminal delivery', async () => {
+    const rig = await memberRig();
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-archived-missing';
+    const ctx = ctxFor(spool, sessionId);
+    const source = ctx.stage(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
+    spool.append(sessionId, attachmentEvent(ctx, { blobSource: source, attachmentId: mintId() }));
+    const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+    const archived = path.join(archiveDir, `${sessionId}.jsonl`);
+    const archivedBlobDir = path.join(archiveDir, 'blobs', sessionId);
+    fs.mkdirSync(path.dirname(archivedBlobDir), { recursive: true });
+    fs.renameSync(path.join(spool.dir, `${sessionId}.jsonl`), archived);
+    fs.renameSync(spool.blobsDirFor(sessionId), archivedBlobDir);
+    fs.unlinkSync(path.join(archivedBlobDir, source.sha256));
+    spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'later capture' }));
+
+    let time = Date.now();
+    const now = () => time;
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    await drainBacklog(spool, client, unboundedBudget(), { force: true, rescan: true, machineId: 'machine_1', now });
+    expect(fs.existsSync(archived)).toBe(true);
+    time += MISSING_PAYLOAD_CONFIRM_MS + 1;
+    await drainBacklog(spool, client, unboundedBudget(), { force: true, rescan: true, machineId: 'machine_1', now });
+    applySpoolRetention(spool, time);
+    expect(spool.sessionIds()).toEqual([]);
+    expect(rig.rows('events')).toBe(1);
+    expect(readCaptureLoss(spool.dir)).toMatchObject({ readable: true, payloads: 1 });
+    expect(fs.existsSync(archived)).toBe(false);
+    expect(fs.existsSync(archivedBlobDir)).toBe(false);
+  });
+
+  for (const code of ['EACCES', 'EIO'] as const) {
+    it(`retries an archived payload that reports ${code} and delivers its later record`, async () => {
+      const rig = await memberRig();
+      const spool = new MemberSpool('proj_1', { mycoHome });
+      const sessionId = `sess-archived-${code}`;
+      const ctx = ctxFor(spool, sessionId);
+      const source = ctx.stage(new Uint8Array([7, 8, 9]), 'application/octet-stream');
+      spool.append(sessionId, attachmentEvent(ctx, { blobSource: source, attachmentId: mintId() }));
+      const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+      const archived = path.join(archiveDir, `${sessionId}.jsonl`);
+      const archivedBlobDir = path.join(archiveDir, 'blobs', sessionId);
+      fs.mkdirSync(path.dirname(archivedBlobDir), { recursive: true });
+      fs.renameSync(path.join(spool.dir, `${sessionId}.jsonl`), archived);
+      fs.renameSync(spool.blobsDirFor(sessionId), archivedBlobDir);
+      const archivedBlob = path.join(archivedBlobDir, source.sha256);
+      spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'later capture' }));
+      const realRead = fs.readFileSync.bind(fs);
+      const failing = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+        if (String(file) === archivedBlob) throw Object.assign(new Error(code), { code });
+        return realRead(file, ...args as []);
+      }) as typeof fs.readFileSync);
+      const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+      try {
+        const first = await drainBacklog(spool, client, unboundedBudget(), { force: true, rescan: true, machineId: 'machine_1' });
+        expect(first.sessions[0].events?.acked).toBe(1);
+        expect(spool.depth(sessionId)).toBe(1);
+        expect(fs.existsSync(archived)).toBe(true);
+        expect(rig.rows('events')).toBe(1);
+        expect(readCaptureLoss(spool.dir)).toMatchObject({ readable: true, payloads: 0 });
+      } finally { failing.mockRestore(); }
+      const second = await drainBacklog(spool, client, unboundedBudget(), { force: true, rescan: true, machineId: 'machine_1' });
+      expect(second.sessions[0].events?.acked).toBe(1);
+      expect(rig.rows('events')).toBe(2);
+      expect(rig.rows('blobs')).toBe(1);
+      applySpoolRetention(spool);
+      expect(fs.existsSync(archived)).toBe(false);
+      expect(readCaptureLoss(spool.dir)).toMatchObject({ readable: true, payloads: 0 });
+    });
+  }
+
   for (const fault of ['protocol', 'unreadable', 'deployment'] as const) {
     it(`delivers old and fresh capture after a ${fault} hold, even beyond both retention windows`, async () => {
       const rig = await memberRig();
       const spool = new MemberSpool('proj_1', { mycoHome });
       const sessionId = `sess-held-${fault}`;
-      const t0 = Date.now() - MEMBER_SPOOL_QUARANTINE_MS - DAY;
+      const t0 = Date.now() - OLD_HOLD_WINDOW - DAY;
       const journal = path.join(spool.dir, `${sessionId}.jsonl`);
       const ctx = ctxFor(spool, sessionId);
       let repair = () => {};
@@ -73,15 +282,14 @@ describe('spool retention', () => {
       }
 
       const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, fetch);
-      const held = await spool.drainSession(sessionId, client, unboundedBudget(), { now: () => t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, force: true });
+      const held = await spool.drainSession(sessionId, client, unboundedBudget(), { now: () => t0 + OLD_HOLD_WINDOW + DAY, force: true });
       expect(held.remaining).toBe(1);
       expect(['protocol_mismatch', 'unreadable', 'refused']).toContain(held.endedBy);
       expect(sessionTried(held)).toBe(true);
-      spool.appendAndRecord(sessionId, [promptEvent(ctx, { promptId: mintId(), text: 'fresh' })], undefined, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY);
-      const tried = { tried: [sessionId] };
-      expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, tried).quarantined).toEqual([]);
+      spool.appendAndRecord(sessionId, [promptEvent(ctx, { promptId: mintId(), text: 'fresh' })], undefined, t0 + OLD_HOLD_WINDOW + DAY);
+      applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW + DAY);
       expect(spool.depth(sessionId)).toBe(2);
-      expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + MEMBER_SPOOL_QUARANTINE_PRUNE_MS + DAY, tried).pruned).toBe(0);
+      applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW + OLD_PRUNE_WINDOW + DAY);
       expect(spool.depth(sessionId)).toBe(2);
 
       repair();
@@ -99,16 +307,14 @@ describe('spool retention', () => {
     spool.append('sess-old', promptEvent(ctxFor(spool, 'sess-old'), { promptId: mintId(), text: 'old' }));
     const file = path.join(spool.dir, 'sess-old.jsonl');
     const t0 = Date.now();
-    // Under the cap: untouched.
-    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS - DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+    // An active journal remains available as it ages.
+    expect(applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW - DAY)).toEqual({ prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(file)).toBe(true);
     // A spool no walk has reached is only waiting, whatever its age.
-    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY).quarantined).toEqual([]);
-    const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-old'] });
-    expect(r.quarantined).toEqual([]);
+    applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW + DAY);
     expect(fs.readFileSync(file, 'utf-8')).toContain('"old"');
     expect(spool.sessionIds()).toEqual(['sess-old']);
-    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + MEMBER_SPOOL_QUARANTINE_PRUNE_MS + DAY).pruned).toBe(0);
+    applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW + OLD_PRUNE_WINDOW + DAY);
     expect(fs.existsSync(file)).toBe(true);
   });
 
@@ -124,7 +330,7 @@ describe('spool retention', () => {
     spool.consumeTurnEnds('sess-q', spool.pendingTurnEnds('sess-q')[0]);
     spool.markTranscriptBacklog('sess-q');
     const t0 = Date.now();
-    expect(applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-q'] }).quarantined).toEqual([]);
+    applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW + DAY);
     expect(readSessionState(spool.dir, 'sess-q')).toMatchObject({ highWater: 2, markWater: 2 });
 
     // The same journal retains its earlier records and the remaining mark.
@@ -144,15 +350,15 @@ describe('spool retention', () => {
       if (calls === 2) throw new Error('ECONNRESET');
       return rig.fetch(input, init);
     });
-    const far = Date.now() + MEMBER_SPOOL_QUARANTINE_MS + DAY;
+    const far = Date.now() + OLD_HOLD_WINDOW + DAY;
     // One ack lands far in the future, then the pass ends on retry: the state's updatedAt is "now".
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far, force: true });
     expect(spool.depth('sess-live')).toBe(2);
-    expect(applySpoolRetention(spool, far + DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+    expect(applySpoolRetention(spool, far + DAY)).toEqual({ prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
     expect(fs.existsSync(path.join(spool.dir, 'sess-live.jsonl'))).toBe(true);
     await spool.drainSession('sess-live', client, unboundedBudget(), { now: () => far + DAY, force: true });
     expect(spool.sessionIds()).toEqual([]);
-    expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
+    expect(applySpoolRetention(spool, far + 2 * DAY)).toEqual({ prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 });
   });
 
   it('keeps the state of a session whose transcript bytes are undelivered, and lets it go once its transcript file is gone', async () => {
@@ -174,7 +380,7 @@ describe('spool retention', () => {
 
     fs.rmSync(file);
     const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
-    expect(report).toEqual({ endedBy: 'done', tried: [], sessions: [{ sessionId: 'sess-tx' }] });
+    expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId: 'sess-tx' }] });
     expect(spool.transcriptBacklogIds()).toEqual([]);
     expect(applySpoolRetention(spool, late, { delivered: true }).prunedStates).toBe(1);
   });
@@ -203,8 +409,7 @@ describe('spool retention', () => {
     spool.appendAndRecord('sess-stuck', [promptEvent(ctxFor(spool, 'sess-stuck'), { promptId: mintId(), text: 'stuck' })], (state) => {
       state.transcript = { path: file, transcriptId: 'tx-stuck', inode: Number(fs.statSync(file).ino), nextOffset: 0, parsedSize: 0 };
     }, t0);
-    const r = applySpoolRetention(spool, t0 + MEMBER_SPOOL_QUARANTINE_MS + DAY, { tried: ['sess-stuck'] });
-    expect(r.quarantined).toEqual([]);
+    applySpoolRetention(spool, t0 + OLD_HOLD_WINDOW + DAY);
     expect(spool.sessionIds()).toEqual(['sess-stuck']);
     const state = readSessionState(spool.dir, 'sess-stuck');
     expect({ path: state.transcript?.path, highWater: state.highWater }).toEqual({ path: file, highWater: 0 });
@@ -238,17 +443,16 @@ describe('spool retention', () => {
     expect(readSessionState(spool.dir, 'sess-live').updatedAt).toBe(late);
   });
 
-  it('measures the last acknowledgement while keeping a session that is still appending', () => {
+  it('keeps a session that is still appending after a long outage', () => {
     const spool = new MemberSpool('proj_1', { mycoHome });
     const t0 = Date.now();
     spool.appendAndRecord('sess-offline', [promptEvent(ctxFor(spool, 'sess-offline'), { promptId: mintId(), text: 'first' })], undefined, t0);
-    // Still writing 40 days later, still never acknowledged: the spool file's
-    // mtime is minutes old, the last acknowledgement is 40 days away.
-    const late = t0 + MEMBER_SPOOL_QUARANTINE_MS + 10 * DAY;
+    // A recent append leaves both the old and new records available.
+    const late = t0 + OLD_HOLD_WINDOW + 10 * DAY;
     spool.appendAndRecord('sess-offline', [promptEvent(ctxFor(spool, 'sess-offline'), { promptId: mintId(), text: 'later' })], undefined, late);
     expect(fs.statSync(path.join(spool.dir, 'sess-offline.jsonl')).mtimeMs).toBeGreaterThan(t0);
-    expect(unacknowledgedSince(spool, 'sess-offline')).toBe(t0);
-    expect(applySpoolRetention(spool, late, { tried: ['sess-offline'] }).quarantined).toEqual([]);
+    expect(readSessionState(spool.dir, 'sess-offline').startedAt).toBe(t0);
+    applySpoolRetention(spool, late);
     expect(spool.depth('sess-offline')).toBe(2);
   });
 
@@ -257,10 +461,10 @@ describe('spool retention', () => {
     const spool = new MemberSpool('proj_1', { mycoHome });
     const t0 = Date.now();
     spool.appendAndRecord('sess-ack', [promptEvent(ctxFor(spool, 'sess-ack'), { promptId: mintId(), text: 'p' })], undefined, t0);
-    expect(lastAckAt(spool, 'sess-ack')).toBe(0);
-    const acked = t0 + MEMBER_SPOOL_QUARANTINE_MS - DAY;
+    expect(readSessionState(spool.dir, 'sess-ack').lastAckAt).toBeUndefined();
+    const acked = t0 + OLD_HOLD_WINDOW - DAY;
     await spool.drainSession('sess-ack', new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch), unboundedBudget(), { now: () => acked, force: true });
-    expect(lastAckAt(spool, 'sess-ack')).toBe(acked);
+    expect(readSessionState(spool.dir, 'sess-ack').lastAckAt).toBe(acked);
   });
 
   it('releases staged blob bytes once no live hook could still name them, and sweeps what a stopped drain left', async () => {
@@ -340,8 +544,8 @@ describe('spool retention', () => {
     const source = spool.stagerFor('sess-q')(new Uint8Array([137, 80, 78, 71, 9]), 'image/png');
     spool.appendAndRecord('sess-q', [attachmentEvent(ctxFor(spool, 'sess-q'), { blobSource: source, attachmentId: mintId() })], undefined, t0);
 
-    const late = t0 + MEMBER_SPOOL_QUARANTINE_MS + MEMBER_SPOOL_QUARANTINE_PRUNE_MS + DAY;
-    expect(applySpoolRetention(spool, late, { tried: ['sess-q'] }).quarantined).toEqual([]);
+    const late = t0 + OLD_HOLD_WINDOW + OLD_PRUNE_WINDOW + DAY;
+    applySpoolRetention(spool, late);
     expect(fs.readFileSync(source.path)).toEqual(Buffer.from([137, 80, 78, 71, 9]));
     expect(spool.depth('sess-q')).toBe(1);
     const rig = await memberRig();
@@ -425,9 +629,9 @@ describe('spool retention', () => {
     fs.mkdirSync(path.dirname(blob), { recursive: true });
     fs.writeFileSync(archived, '{"eventId":"ev-archived"}\n');
     fs.writeFileSync(blob, 'payload');
-    const old = (Date.now() - MEMBER_SPOOL_QUARANTINE_PRUNE_MS - DAY) / 1000;
+    const old = (Date.now() - OLD_PRUNE_WINDOW - DAY) / 1000;
     fs.utimesSync(archived, old, old);
-    expect(applySpoolRetention(spool).pruned).toBe(0);
+    applySpoolRetention(spool);
     expect(fs.readFileSync(archived, 'utf-8')).toContain('ev-archived');
     expect(fs.readFileSync(blob, 'utf-8')).toBe('payload');
   });

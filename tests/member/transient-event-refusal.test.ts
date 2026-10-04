@@ -118,7 +118,6 @@ describe('an event refused for a passing reason', () => {
 
     const walk = await drainBacklog(spool, clientFor(rig, spy.fetch), unboundedBudget(), { force: true, machineId: 'machine_1', now: () => t });
     expect(walk.sessions.map((s) => [s.sessionId, s.events?.endedBy, s.events?.remaining])).toEqual([['sess-a-held', 'refused', 2], ['sess-b', 'drained', 0]]);
-    expect(walk.tried).toEqual(['sess-a-held', 'sess-b']);
     expect(walk.endedBy).toBe('done');
     expect(storedIds(rig, 'sess-b')).toEqual(idsOf(otherEvents).sort());
     expect(storedIds(rig, 'sess-a-held')).toEqual([heldEvents[0].envelope.eventId]);
@@ -147,7 +146,6 @@ describe('an event refused for a passing reason', () => {
     const offered = spy.answers.length;
     const deferred = await walk();
     expect(deferred.sessions[0].events).toMatchObject({ skipped: 'deferred', sent: 0, remaining: 2 });
-    expect(deferred.tried).toEqual([]);
     expect(spy.answers.length).toBe(offered);
 
     t = wait.at;
@@ -373,15 +371,15 @@ describe('an event refused for a passing reason', () => {
     };
     const spy = answering({ ...rig, fetch: blobCap });
 
-    expect(await spool.drainSession('sess-bytes', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ refused: 0, acked: 0, remaining: 3, endedBy: 'unreadable' });
-    expect(spy.answers).toHaveLength(0);
+    expect(await spool.drainSession('sess-bytes', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ refused: 1, acked: 1, remaining: 1, endedBy: 'unreadable' });
+    expect(spy.answers.map((a) => a.eventId)).toEqual([after.envelope.eventId]);
     ctx.stage!(Buffer.from('g'.repeat(300_000)), gone.blobSource!.mediaType);
     const result = await spool.drainSession('sess-bytes', clientFor(rig, spy.fetch), unboundedBudget());
-    expect(result).toMatchObject({ refused: 1, acked: 2, remaining: 0, endedBy: 'drained' });
+    expect(result).toMatchObject({ refused: 0, acked: 1, remaining: 0, endedBy: 'drained' });
     expect(spool.readRefused().entries.map((e) => [e.eventId, e.code])).toEqual([[capped.envelope.eventId, 'blob_cap']]);
     // The capped record's event was never offered: its bytes' refusal is its own.
-    expect(spy.answers.map((a) => a.eventId)).toEqual([gone.envelope.eventId, after.envelope.eventId]);
-    expect(storedIds(rig, 'sess-bytes')).toEqual([gone.envelope.eventId, after.envelope.eventId]);
+    expect(spy.answers.map((a) => a.eventId)).toEqual([after.envelope.eventId, gone.envelope.eventId]);
+    expect(storedIds(rig, 'sess-bytes')).toEqual([gone.envelope.eventId, after.envelope.eventId].sort());
   });
   it('holds a record whose staged bytes are there but could not be read, keeps the bytes, and delivers it once they can be', async () => {
     const rig = await memberRig();
@@ -395,13 +393,13 @@ describe('an event refused for a passing reason', () => {
     const spy = answering(rig);
     try {
       const held = await spool.drainSession('sess-locked', clientFor(rig, spy.fetch), unboundedBudget());
-      expect(held).toMatchObject({ sent: 0, refused: 0, remaining: 2, endedBy: 'unreadable' });
+      expect(held).toMatchObject({ sent: 1, acked: 1, refused: 0, remaining: 1, endedBy: 'unreadable' });
       expect(readSessionState(spool.dir, 'sess-locked').eventRetry?.backoffMs).toBe(REFUSAL_RETRY_INITIAL_MS);
       expect(fs.existsSync(staged)).toBe(true);
     } finally {
       fs.chmodSync(staged, 0o600);
     }
-    expect(await spool.drainSession('sess-locked', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ acked: 2, remaining: 0, endedBy: 'drained' });
+    expect(await spool.drainSession('sess-locked', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ acked: 1, remaining: 0, endedBy: 'drained' });
     expect(storedIds(rig, 'sess-locked')).toEqual(idsOf([big, after]).sort());
   });
 

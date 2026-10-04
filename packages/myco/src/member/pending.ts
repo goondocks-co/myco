@@ -12,14 +12,16 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
-import { BLOBS_DIRNAME, MemberSpool, toWire, type TurnEndMark } from './spool.js';
+import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type TurnEndMark } from './spool.js';
 import { readRegistryEntry, readRegistryEntryResult } from './registry.js';
-import { readSessionState, readSessionStateResult, type SessionState } from './session-state.js';
-import { readStagedBlob } from './staged-blobs.js';
+import { readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
+import { isProjectId } from './constants.js';
+import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
-import { withFileLockSync } from '../utils/lifecycle-lock.js';
+import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 export const PENDING_DIRNAME = 'pending';
@@ -38,6 +40,7 @@ export interface PendingMeta {
   root: string;
   rootKey: string;
   createdAt: number;
+  generation?: string;
 }
 
 /** That a repository's capture is held no more: its spool reached the cap, or its capture outlived the TTL. */
@@ -104,6 +107,14 @@ function clearHeldEnd(rootKey: string, mycoHome: string): void {
   fs.rmSync(endedPath(rootKey, mycoHome), { force: true });
 }
 
+/** Establish a distinct pending hold before its first journal append. */
+function ensurePendingMeta(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }, dir: string): void {
+  if (readMeta(dir) !== null) return;
+  const meta: PendingMeta = { version: META_VERSION, root: repo.root, rootKey: repo.rootKey, createdAt: opts.now, generation: crypto.randomUUID() };
+  writePrivateFileAtomic(path.join(dir, META_FILE), `${JSON.stringify(meta)}\n`);
+  clearHeldEnd(repo.rootKey, opts.mycoHome);
+}
+
 /** Every repository whose held capture ended, most recent first. */
 export function listHeldEnds(mycoHome: string): HeldEnd[] {
   let names: string[];
@@ -138,32 +149,24 @@ export function withPendingLock<T>(rootKey: string, mycoHome: string, fn: () => 
   return withFileLockSync(path.join(pendingRoot(mycoHome), `.${rootKey}.lock`), fn);
 }
 
-class PendingPayloadUnavailable extends Error {
-  constructor(event: OutboundEvent, status: string) {
-    super(`pending capture ${event.envelope.eventId}: staged payload ${status} — kept with its receipts for retry`);
-  }
+/** A failed held move remains retryable while the current hook continues into the live spool. */
+export function attemptHeldMigrationForCapture(move: () => number): void {
+  try { move(); }
+  catch (err) { process.stderr.write(`[myco] member: held migration failed (${(err as Error).message}) — held capture retained for retry\n`); }
 }
 
-/** Restage a complete batch, retaining its source and receipts whenever a payload cannot be verified. */
-function restaged(events: readonly OutboundEvent[], into: MemberSpool, sessionId: string): OutboundEvent[] {
-  const stage = into.stagerFor(sessionId);
-  const kept: OutboundEvent[] = [];
-  for (const event of events) {
-    if (event.blobSource === undefined) { kept.push(event); continue; }
-    const read = readStagedBlob(event.blobSource);
-    if (read.status !== 'ready') throw new PendingPayloadUnavailable(event, read.status);
-    kept.push({ envelope: event.envelope, blobSource: stage(read.bytes, event.blobSource.mediaType) });
-  }
-  return kept;
-}
-
-/** New capture follows held capture; an incomplete migration keeps both in the pending spool. */
+/** A joined repository sends new capture to its live spool even while an older held journal waits for recovery. */
 function connectedSpool(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }): MemberSpool | null {
   const entry = readRegistryEntry(repo.root, opts.mycoHome);
   if (entry === null) return null;
-  const project = new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
-  moveHeld(repo.rootKey, project, opts);
-  return hasPendingCapture(repo.rootKey, opts.mycoHome) ? null : project;
+  return new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
+}
+
+function appendJoined(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }, append: (spool: MemberSpool) => void): boolean {
+  const project = connectedSpool(repo, opts);
+  if (project === null) return false;
+  append(project);
+  return true;
 }
 
 /**
@@ -175,24 +178,13 @@ export function appendPending(
   repo: { root: string; rootKey: string }, sessionId: string, events: readonly OutboundEvent[], record: ((state: SessionState) => void) | undefined,
   opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
+  const write = (spool: MemberSpool) => spool.appendAndRecord(sessionId, events, record, opts.now);
+  if (appendJoined(repo, opts, write)) return 'project';
   return withPendingLock(repo.rootKey, opts.mycoHome, () => {
-    const project = connectedSpool(repo, opts);
-    if (project !== null) {
-      try {
-        project.appendAndRecord(sessionId, restaged(events, project, sessionId), record, opts.now);
-        return 'project';
-      } catch (err) {
-        if (!(err instanceof PendingPayloadUnavailable)) throw err;
-        process.stderr.write(`[myco] member: ${err.message}\n`);
-      }
-    }
+    if (appendJoined(repo, opts, write)) return 'project';
     const dir = pendingDir(repo.rootKey, opts.mycoHome);
     ensureMemberDir(dir, opts.mycoHome);
-    if (readMeta(dir) === null) {
-      const meta: PendingMeta = { version: META_VERSION, root: repo.root, rootKey: repo.rootKey, createdAt: opts.now };
-      writePrivateFileAtomic(path.join(dir, META_FILE), `${JSON.stringify(meta)}\n`);
-      clearHeldEnd(repo.rootKey, opts.mycoHome);
-    }
+    ensurePendingMeta(repo, opts, dir);
     const spool = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir });
     if (recordsIn(spool) >= PENDING_MAX_RECORDS) {
       recordHeldEnd(repo, 'full', opts.mycoHome, opts.now);
@@ -212,19 +204,13 @@ export function appendPendingTurnEnd(
   repo: { root: string; rootKey: string }, sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number },
   record: ((state: SessionState) => void) | undefined, opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
+  const write = (spool: MemberSpool) => spool.appendTurnEnd(sessionId, mark, record, opts.now);
+  if (appendJoined(repo, opts, write)) return 'project';
   return withPendingLock(repo.rootKey, opts.mycoHome, () => {
-    const project = connectedSpool(repo, opts);
-    if (project !== null) {
-      project.appendTurnEnd(sessionId, mark, record, opts.now);
-      return 'project';
-    }
+    if (appendJoined(repo, opts, write)) return 'project';
     const dir = pendingDir(repo.rootKey, opts.mycoHome);
     ensureMemberDir(dir, opts.mycoHome);
-    if (readMeta(dir) === null) {
-      const meta: PendingMeta = { version: META_VERSION, root: repo.root, rootKey: repo.rootKey, createdAt: opts.now };
-      writePrivateFileAtomic(path.join(dir, META_FILE), `${JSON.stringify(meta)}\n`);
-      clearHeldEnd(repo.rootKey, opts.mycoHome);
-    }
+    ensurePendingMeta(repo, opts, dir);
     const spool = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir });
     if (recordsIn(spool) >= PENDING_MAX_RECORDS) {
       recordHeldEnd(repo, 'full', opts.mycoHome, opts.now);
@@ -256,9 +242,37 @@ function expirePendingUnlocked(rootKey: string, opts: { mycoHome: string; now: n
     try { since = fs.statSync(dir).mtimeMs; } catch { return false; }
   }
   if (opts.now - since < PENDING_TTL_MS) return false;
+  if (liveReferencesPending(rootKey, opts.mycoHome)) return false;
   fs.rmSync(dir, { recursive: true, force: true });
   if (meta !== null) recordHeldEnd(meta, 'expired', opts.mycoHome, opts.now);
   return true;
+}
+
+/** Keep pending staged bytes while any live journal still needs them. */
+function liveReferencesPending(rootKey: string, mycoHome: string): boolean {
+  const sourceDir = path.resolve(pendingDir(rootKey, mycoHome), BLOBS_DIRNAME);
+  const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
+  let projectIds: string[];
+  try { projectIds = fs.readdirSync(spoolRoot).filter(isProjectId); }
+  catch { return !pathIsAbsent(spoolRoot); }
+  for (const projectId of projectIds) {
+    const live = new MemberSpool(projectId, { mycoHome, initialize: false });
+    let sessions: string[];
+    try { sessions = fs.readdirSync(live.dir).filter((name) => name.endsWith('.jsonl') && name !== REFUSED_LOG_FILE).map((name) => name.slice(0, -'.jsonl'.length)); }
+    catch { if (pathIsAbsent(live.dir)) continue; return true; }
+    for (const sessionId of sessions) {
+      const journal = live.readRecordsOrNull(sessionId);
+      if (!journal.readable) return true;
+      const ack = readSessionStateResult(live.dir, sessionId);
+      if (!ack.ok && ack.reason !== 'missing') return true;
+      const first = ack.ok ? ack.state.highWater : 0;
+      for (const record of journal.records.slice(first)) {
+        const file = record?._blobSource?.path;
+        if (file !== undefined && path.relative(sourceDir, path.resolve(file)).split(path.sep)[0] !== '..' && !path.isAbsolute(path.relative(sourceDir, path.resolve(file)))) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** Discard everything held for a repository, under its lock: `myco member leave` opted it out. */
@@ -292,60 +306,95 @@ export function listPending(opts: { mycoHome: string; now: number }): PendingSum
 
 /**
  * Move a repository's held capture into the spool of the project it joined, under the repository's lock, and discard
- * what was held. Each record keeps its envelope; its blob, where it carries one, is staged again under the project's
- * spool, so the drain reads it from there. Unavailable payloads keep the source journal and receipts for retry.
+ * what was held. Each record keeps its envelope and its original staged source. The live drain decides how to retry or account for
+ * unavailable bytes, and pending retention protects those bytes until the live record is acknowledged.
  * How many records moved.
  */
-export function flushPending(rootKey: string, into: MemberSpool, opts: { mycoHome: string; now: number }): number {
-  return withPendingLock(rootKey, opts.mycoHome, () => moveHeld(rootKey, into, opts));
+export function flushPending(rootKey: string, into: MemberSpool, opts: { mycoHome: string; now: number; deadline?: number }): number {
+  if (Date.now() >= (opts.deadline ?? Number.POSITIVE_INFINITY)) return 0;
+  ensureMemberDir(pendingRoot(opts.mycoHome), opts.mycoHome);
+  const taken = LifecycleLock.acquire(path.join(pendingRoot(opts.mycoHome), `.${rootKey}.lock`), { command: 'myco member held migration' });
+  if (!taken.acquired) return 0;
+  try { return moveHeld(rootKey, into, opts); }
+  finally { taken.lock.release(); }
 }
 
 /** The move itself; the caller holds the repository's pending lock. */
-function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; now: number }): number {
+function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; now: number; deadline?: number }): number {
   const dir = pendingDir(rootKey, opts.mycoHome);
-  if (readMeta(dir) === null) return 0;
+  const meta = readMeta(dir);
+  if (meta === null) return 0;
   const held = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir, initialize: false });
-  const prepared: Array<{ sessionId: string; events: OutboundEvent[]; state: SessionState }> = [];
-  for (const sessionId of new Set([...held.sessionIds(), ...held.stateSessionIds()])) {
+  let moved = 0;
+  let blocked = false;
+  const journalSessions = new Set(held.sessionIds());
+  for (const sessionId of new Set([...journalSessions, ...held.stateSessionIds()])) {
+    if (Date.now() >= (opts.deadline ?? Number.POSITIVE_INFINITY)) {
+      blocked = true;
+      break;
+    }
     // The journal moves in its order, then the turn-end marks no pass has consumed, each with the time its turn ended.
     const run: OutboundEvent[] = [];
-    const journal = held.sessionIds().includes(sessionId) ? held.readRecordsOrNull(sessionId) : { readable: true as const, records: [] };
+    const journal = journalSessions.has(sessionId) ? held.readRecordsOrNull(sessionId) : { readable: true as const, records: [] };
     if (!journal.readable) {
       process.stderr.write(`[myco] member: pending journal ${sessionId} unreadable — kept with its receipts for retry\n`);
-      return 0;
+      blocked = true;
+      continue;
     }
-    for (const line of journal.records) {
+    const damaged: number[] = [];
+    for (const [index, line] of journal.records.entries()) {
       if (line === null) {
-        process.stderr.write(`[myco] member: pending journal ${sessionId} contains a damaged record — kept for recovery\n`);
-        return 0;
+        damaged.push(index);
+        continue;
       }
       run.push({ envelope: toWire(line), ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
+    }
+    let damagedKeys: string[] = [];
+    if (damaged.length > 0) {
+      let raw: string;
+      try { raw = fs.readFileSync(path.join(dir, `${sessionId}.jsonl`), 'utf8'); }
+      catch {
+        process.stderr.write(`[myco] member: pending journal ${sessionId} unreadable — kept with its receipts for retry\n`);
+        blocked = true;
+        continue;
+      }
+      const lines = raw.split('\n').filter((line) => line.trim() !== '');
+      damagedKeys = damaged.map((index) => crypto.createHash('sha256').update(`${rootKey}\0${sessionId}\0${index}\0${lines[index] ?? ''}`).digest('hex'));
+      process.stderr.write(`[myco] member: pending journal ${sessionId} contains ${damaged.length} damaged record(s) — counted as capture loss\n`);
     }
     const state = readSessionStateResult(dir, sessionId);
     if (!state.ok && state.reason !== 'missing') {
       process.stderr.write(`[myco] member: pending receipts ${sessionId} ${state.reason} — kept with their journal for retry\n`);
-      return 0;
+      blocked = true;
+      continue;
     }
-    try { prepared.push({ sessionId, events: restaged(run, into, sessionId), state: state.ok ? state.state : readSessionState(dir, sessionId) }); }
-    catch (err) {
-      if (!(err instanceof PendingPayloadUnavailable)) throw err;
-      process.stderr.write(`[myco] member: ${err.message}\n`);
-      return 0;
+    const heldState = state.ok ? state.state : readSessionState(dir, sessionId);
+    if (run.length > 0 && !into.prependRecovered(sessionId, run, opts.now)) {
+      blocked = true;
+      continue;
     }
-  }
-  let moved = 0;
-  for (const { sessionId, events, state } of prepared) {
-    into.appendAndRecord(sessionId, events, undefined, opts.now, true);
-    moved += events.length;
+    moved += run.length;
     into.appendMovedTurnEnds(sessionId, held.pendingTurnEnds(sessionId).map((pending) => pending.mark), opts.now);
     // The session's state moves with its journal, under the session's lock in the project's spool: its transcript
     // pointers, so the transcript ships; and its prompt map and prompt id, so nothing is minted twice.
-    into.appendAndRecord(sessionId, [], (target) => mergeHeldState(target, state), opts.now);
+    into.appendAndRecord(sessionId, [], (target) => {
+      mergeHeldState(target, heldState);
+      for (const key of damagedKeys) recordSessionLoss(target, key, 'record', opts.now);
+    }, opts.now);
+    for (const file of [path.join(dir, `${sessionId}.jsonl`), sessionStatePath(dir, sessionId), turnsFileOf(dir, sessionId)]) {
+      fs.rmSync(file, { force: true });
+    }
+  }
+  if (blocked) return moved;
+  try { new CaptureLossLedger(into.dir).transferFrom(dir, `${rootKey}:${meta.generation ?? meta.createdAt}`); }
+  catch (err) {
+    process.stderr.write(`[myco] member: pending capture loss counts could not move (${(err as Error).message}) — kept for retry\n`);
+    return moved;
   }
   clearHeldEnd(rootKey, opts.mycoHome);
   // Everything but the staged blobs goes now; a hook may be staging one as this runs, so they go with the TTL.
   for (const name of fs.readdirSync(dir)) if (name !== BLOBS_DIRNAME) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
-  removeEmpty(dir);
+  if (!liveReferencesPending(rootKey, opts.mycoHome)) removeEmpty(dir);
   return moved;
 }
 

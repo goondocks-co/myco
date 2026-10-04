@@ -1,10 +1,21 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import { syncDirectoryForDurability } from '../utils/sync-directory.js';
 import type { BlobSource } from './envelope.js';
 import { MEMBER_FILE_MODE } from './constants.js';
 import { pathIsAbsent, renameReplacing } from './store.js';
 
 export type StagedBlobRead = { status: 'ready'; bytes: Buffer } | { status: 'missing' | 'unreadable' | 'corrupt' };
+
+const UNSUPPORTED_DIRECTORY_SYNC = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF']);
+
+function syncDirectoryIfSupported(directory: string): void {
+  try { syncDirectoryForDurability(directory); }
+  catch (error) {
+    if (!UNSUPPORTED_DIRECTORY_SYNC.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+  }
+}
 
 /** Read and verify local payloads before either migration or delivery consumes their records. */
 export function readStagedBlob(source: BlobSource): StagedBlobRead {
@@ -27,7 +38,13 @@ export function publishStagedBlob(source: BlobSource, bytes: Uint8Array): void {
     fs.writeFileSync(temporary, bytes, { mode: MEMBER_FILE_MODE, flag: 'wx' });
     const staged = readStagedBlob({ ...source, path: temporary });
     if (staged.status !== 'ready') throw new Error(`Staged blob publication failed verification (${staged.status})`);
+    const fd = fs.openSync(temporary, 'r+');
+    try { fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    const directory = path.dirname(source.path);
+    syncDirectoryIfSupported(directory);
     renameReplacing(temporary, source.path);
+    syncDirectoryIfSupported(directory);
   } finally {
     fs.rmSync(temporary, { force: true });
   }

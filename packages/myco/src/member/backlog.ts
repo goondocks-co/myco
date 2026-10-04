@@ -27,12 +27,14 @@ import { resolveTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
 import { clearNonRotatingRefusal, refreshDue, refreshMemberCredential, rotatedCredential } from './refresh.js';
 import { readRegistryEntry, type RegistryEntry } from './registry.js';
+import { recoverArchivedQuarantine } from './retention.js';
 import { pointerBehind, pointersOf, readSessionState, retryWaiting, turnsFileOf, updateSessionState, type SessionState } from './session-state.js';
 import { HOLD_ENDS, MemberSpool, turnEndIdentity, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
 import { featureAdvertised } from './context-cache.js';
 import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { flushHeldCapture } from './held.js';
+import { attemptHeldMigrationForCapture } from './pending.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
 /** Marks a spool whose session states have been read once for transcripts behind their files. */
@@ -60,8 +62,6 @@ export interface BacklogSession {
 
 export interface BacklogReport {
   sessions: BacklogSession[];
-  /** The sessions whose spooled events this walk actually offered the Deployment and got a session's own answer to: the ones retention may judge stuck. */
-  tried: string[];
   /** Why the walk stopped: `done` when it reached every session and tried each one not waiting after a refusal; `skipped` when it passed one it could not try (latched, or held by another process). */
   endedBy: 'done' | 'skipped' | 'budget' | DrainEnd | ShipResult['endedBy'];
 }
@@ -227,8 +227,9 @@ export function consumeSatisfiedTurnEnds(spool: MemberSpool, sessionId: string, 
 /** Deliver the backlog inside `budget`, session by session, until it is delivered, the budget is spent, or an answer says the next session would fare no better. A session's own failure never ends the walk. */
 export async function drainBacklog(spool: MemberSpool, client: ServerClient, budget: HookBudget, opts: BacklogOptions): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
-  const report: BacklogReport = { sessions: [], tried: [], endedBy: 'done' };
+  const report: BacklogReport = { sessions: [], endedBy: 'done' };
   if (!budget.drains) return report;
+  recoverArchivedQuarantine(spool, now(), () => canStartRequest(budget, now()));
   const scanned = path.join(spool.dir, BACKLOG_SCANNED_FILE);
   if (opts.rescan === true || !fs.existsSync(scanned)) {
     markBehindTranscripts(spool);
@@ -249,7 +250,6 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       session.events = events;
       if (events.skipped === undefined) {
         if (!sessionTried(events)) { report.endedBy = events.endedBy; break; }
-        report.tried.push(sessionId);
       } else if (events.skipped !== 'deferred') {
         skipped = true;
         continue;
@@ -320,10 +320,10 @@ export async function drainEntryBacklog(
     await refreshMemberCredential(entry.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: opts.budget ?? unboundedBudget() });
     current = readRegistryEntry(entry.root, opts.mycoHome) ?? entry;
   }
-  // What the repository's hooks held before it was connected is delivered with the rest.
-  flushHeldCapture(current.root, current.projectId, { mycoHome: opts.mycoHome, now: now() });
-  const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
   const budget = opts.budget ?? unboundedBudget();
+  // What the repository's hooks held before it was connected is delivered with the rest.
+  attemptHeldMigrationForCapture(() => flushHeldCapture(current.root, current.projectId, { mycoHome: opts.mycoHome, now: now(), deadline: budget.deadline }));
+  const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
   const report = await drainBacklog(spool, new ServerClient(current, fetchImpl), budget, {
     force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst,
     // A 401 on a live send: another process may have rotated this root's token, so the registry is re-read and the

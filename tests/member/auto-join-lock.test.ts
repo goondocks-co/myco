@@ -83,20 +83,25 @@ describe('a repository\'s pending lock', () => {
     return { exited: child.exited };
   }
 
-  it('keeps a hook\'s append and the join\'s move apart: each waits while the other holds it', async () => {
+  it('waits for a pending writer to append, then retries a busy migration after that writer leaves', async () => {
     const mycoHome = home();
     const rootKey = 'b'.repeat(16);
     const repo = { root: path.join(mycoHome, 'repo'), rootKey };
     const event = { envelope: { eventId: '00000000-0000-4000-8000-000000000001', sessionId: 's', kind: 'session.start', createdAt: 1, channel: 'cli', producer: { adapter: 'claude-code', version: '1' }, payload: {} } } as never;
-    for (const act of [
-      () => appendPending(repo, 's', [event], undefined, { mycoHome, now: Date.now() }),
-      () => flushPending(rootKey, new MemberSpool('proj_1', { mycoHome }), { mycoHome, now: Date.now() }),
-    ]) {
-      const holder = await holdPendingLock(mycoHome, rootKey, 1_500);
-      const started = Date.now();
-      act();
-      expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
-      await holder.exited;
-    }
+    const appendHolder = await holdPendingLock(mycoHome, rootKey, 1_500);
+    const appendStarted = Date.now();
+    expect(appendPending(repo, 's', [event], undefined, { mycoHome, now: Date.now() })).toBe('pending');
+    expect(Date.now() - appendStarted).toBeGreaterThanOrEqual(1_000);
+    await appendHolder.exited;
+
+    const target = new MemberSpool('proj_1', { mycoHome });
+    const migrationHolder = await holdPendingLock(mycoHome, rootKey, 1_500);
+    const migrationStarted = Date.now();
+    expect(flushPending(rootKey, target, { mycoHome, now: Date.now() })).toBe(0);
+    expect(Date.now() - migrationStarted).toBeLessThan(1_000);
+    expect(target.readRecords('s')).toHaveLength(0);
+    await migrationHolder.exited;
+    expect(flushPending(rootKey, target, { mycoHome, now: Date.now() })).toBe(1);
+    expect(target.readRecords('s')).toHaveLength(1);
   });
 });

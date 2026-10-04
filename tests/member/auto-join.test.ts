@@ -22,6 +22,9 @@ import { readMissingMembership, recordMissingMembership } from '@myco/member/no-
 import { appendPending, appendPendingTurnEnd, expirePending, flushPending, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { readCaptureLoss } from '@myco/member/capture-loss.js';
+import { unboundedBudget } from '@myco/member/budget.js';
+import { ServerClient } from '@myco/member/transport.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { joinPass, runAutoJoin } from '@myco/cli/member-auto-join.js';
 import { helperPass } from '@myco/cli/member-helper.js';
@@ -720,7 +723,91 @@ describe('the machine salt', () => {
 });
 
 describe('the pending spool', () => {
-  it('keeps a joined hook behind held capture until its unreadable blob can migrate', async () => {
+  it('uses a held prompt receipt for the first joined tool hook before replay', async () => {
+    const root = repository(path.join(base, 'Repos'), 'joined-prompt-receipt', 'https://github.com/acme/joined-prompt-receipt.git');
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const at = Date.now();
+    const sessionId = 'sess-receipt';
+    const promptId = mintId();
+    const held = pendingSpool(repo, { mycoHome, now: at })!;
+    appendPending(repo, sessionId, [promptEvent({ agent: 'copilot', sessionId, stage: held.stagerFor(sessionId), now: () => at },
+      { promptId, text: 'held prompt' })], (state) => { state.promptId = promptId; }, { mycoHome, now: at });
+    writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token,
+      root, machineId: TEST_MACHINE_ID, joinedAt: at, updatedAt: at }, { mycoHome });
+
+    await runHook('post-tool-use', { session_id: sessionId, hook_event_name: 'PostToolUse', cwd: root,
+      tool_name: 'Read', tool_input: { file_path: '/x' } }, { fetch: rig.fetch, helpers: 'record', symbiont: 'copilot' });
+    const live = new MemberSpool('proj_1', { mycoHome });
+    expect(live.readRecords(sessionId).map((record) => record?.kind)).toEqual(['tool.use']);
+    expect(live.readRecords(sessionId)[0]?.payload).toMatchObject({ promptId });
+    expect(held.readRecords(sessionId)).toHaveLength(1);
+  });
+
+  it('captures a joined hook before held cleanup runs, and retains the old record on cleanup failure', async () => {
+    const root = repository(path.join(base, 'Repos'), 'joined-cleanup-eio', 'https://github.com/acme/joined-cleanup-eio.git');
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const at = Date.now();
+    const held = pendingSpool(repo, { mycoHome, now: at })!;
+    const old = sessionStartEvent({ agent: 'claude-code', sessionId: 'sess-cleanup', stage: held.stagerFor('sess-cleanup'), now: () => at },
+      { startedAt: at, originPath: root });
+    appendPending(repo, 'sess-cleanup', [old], undefined, { mycoHome, now: at });
+    writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token,
+      root, machineId: TEST_MACHINE_ID, joinedAt: at, updatedAt: at }, { mycoHome });
+    const remove = fs.rmSync.bind(fs);
+    let sawLiveAtCleanup = false;
+    const fault = spyOn(fs, 'rmSync').mockImplementation(((file: fs.PathLike, options?: fs.RmOptions) => {
+      if (String(file) === path.join(pendingDir(repo.rootKey, mycoHome), 'pending.json')) {
+        sawLiveAtCleanup = new MemberSpool('proj_1', { mycoHome }).readRecords('sess-cleanup').length === 2;
+        throw Object.assign(new Error('injected cleanup failure'), { code: 'EIO' });
+      }
+      return remove(file, options);
+    }) as typeof fs.rmSync);
+    try {
+      const captured = await runHook('session-start', { session_id: 'sess-cleanup', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcript(root, 'sess-cleanup') },
+        { fetch: rig.fetch, helpers: 'run' });
+      expect(captured.stderr).toContain('held migration failed');
+      expect(captured.stderr).not.toContain('session-start error');
+      expect(sawLiveAtCleanup).toBe(true);
+      expect(rig.env.sqlite.query(`SELECT kind FROM events WHERE session_id = 'sess-cleanup'`).all()).toEqual([{ kind: 'session.start' }, { kind: 'session.start' }]);
+      expect(fs.existsSync(path.join(pendingDir(repo.rootKey, mycoHome), 'pending.json'))).toBe(true);
+    } finally { fault.mockRestore(); }
+  });
+
+  it('keeps more than 2,000 joined hooks after a deleted held blob and delivers every movable record', async () => {
+    const root = repository(path.join(base, 'Repos'), 'joined-many', 'https://github.com/acme/joined-many.git');
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const at = Date.now();
+    const held = pendingSpool(repo, { mycoHome, now: at })!;
+    const sessionId = 'sess-many';
+    const missing = promptEvent({ agent: 'claude-code', sessionId, stage: held.stagerFor(sessionId), now: () => at },
+      { promptId: mintId(), text: 'held'.repeat(80_000) });
+    appendPending(repo, sessionId, [missing], undefined, { mycoHome, now: at });
+    fs.unlinkSync(missing.blobSource!.path);
+    writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token,
+      root, machineId: TEST_MACHINE_ID, joinedAt: at, updatedAt: at }, { mycoHome });
+    const transcriptPath = transcript(root, sessionId);
+    const furtherHooks = PENDING_MAX_RECORDS + 1;
+    for (let i = 0; i < furtherHooks; i++) {
+      const run = await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
+        { fetch: rig.fetch, helpers: 'record' });
+      expect(run.stderr).not.toContain('not retained');
+    }
+    const live = new MemberSpool('proj_1', { mycoHome });
+    expect(live.readRecords(sessionId)).toHaveLength(furtherHooks);
+    expect(flushPending(repo.rootKey, live, { mycoHome, now: at })).toBe(1);
+    expect(live.readRecords(sessionId)).toHaveLength(furtherHooks + 1);
+    const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    const logs = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await live.drainSession(sessionId, client, unboundedBudget(), { now: () => at });
+      expect(rig.rows('events')).toBeGreaterThanOrEqual(furtherHooks);
+      expect(await live.drainSession(sessionId, client, unboundedBudget(), { now: () => at + 60_000 })).toMatchObject({ remaining: 0 });
+      expect(rig.rows('events')).toBe(furtherHooks);
+      expect(readCaptureLoss(live.dir)).toMatchObject({ readable: true, payloads: 1 });
+    } finally { logs.mockRestore(); }
+  }, 180_000);
+
+  it('routes a joined hook to live delivery while an older held blob is unreadable', async () => {
     const root = repository(path.join(base, 'Repos'), 'joined-held', 'https://github.com/acme/joined-held.git');
     const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
     const at = Date.now();
@@ -737,12 +824,13 @@ describe('the pending spool', () => {
       return Reflect.apply(read, fs, args);
     }) as typeof fs.readFileSync);
     try {
-      const blocked = await runHook('session-start', { session_id: 'sess-order', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
+      const captured = await runHook('session-start', { session_id: 'sess-order', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
         { fetch: rig.fetch, helpers: 'record' });
-      expect(blocked.stderr).not.toContain('session-start: dropped');
-      expect(held.readRecords('sess-order').map((record) => record?.kind)).toEqual(['prompt', 'session.start']);
-      expect(new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order')).toEqual([]);
+      expect(captured.stderr).not.toContain('not retained');
+      expect(held.readRecords('sess-order')).toHaveLength(1);
+      expect(new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order').map((record) => record?.kind)).toEqual(['session.start']);
     } finally { fault.mockRestore(); }
+    expect(flushPending(repo.rootKey, new MemberSpool('proj_1', { mycoHome }), { mycoHome, now: at })).toBe(1);
     await runHook('session-start', { session_id: 'sess-order', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
       { fetch: rig.fetch, helpers: 'record' });
     const records = new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order');
@@ -801,7 +889,10 @@ describe('the pending spool', () => {
     writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token, root, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
     const late = promptEvent({ ...ctx('sess-o'), now: () => at + 1 }, { promptId: mintId(), text: 'after' });
     expect(appendPending(repo, 'sess-o', [late], undefined, { mycoHome, now: at + 1 })).toBe('project');
-    expect(new MemberSpool('proj_1', { mycoHome }).readRecords('sess-o').map((r) => (r !== null && 'kind' in r ? r.kind : null))).toEqual(['session.start', 'prompt']);
+    const into = new MemberSpool('proj_1', { mycoHome });
+    expect(into.readRecords('sess-o').map((r) => r?.kind)).toEqual(['prompt']);
+    expect(flushPending(repo.rootKey, into, { mycoHome, now: at + 2 })).toBe(1);
+    expect(into.readRecords('sess-o').map((r) => r?.kind)).toEqual(['session.start', 'prompt']);
   });
 
   it('moves each held turn-end mark once when a move stopped part-way runs again, and leaves a hook\'s own marks as they come', () => {
@@ -847,6 +938,8 @@ describe('the pending spool', () => {
     for (const root of [full, old]) await join(['--root', root]);
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-n1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: full, transcript_path: transcript(full, 'sess-n1') }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });
     expect(prompt.stdout).toContain('is no longer held');
+    expect(prompt.stderr).toContain("this hook's capture was not retained");
+    expect(prompt.stdout).toContain("this hook's capture was not retained");
     // The cap is found by the hook, the age by any read of the spool; the next attempt tells the Deployment.
     listPending({ mycoHome, now: at });
     for (const root of [full, old]) await join(['--root', root]);

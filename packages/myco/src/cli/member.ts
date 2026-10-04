@@ -860,9 +860,9 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   for (const entry of entriesFor(args, deps)) {
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
     for (const line of backlogLines(entry.projectId, backlog)) out(line);
-    // Retention follows the drain, and judges only the sessions the drain offered the Deployment.
-    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now(), { tried: backlog.tried });
-    if (retention.quarantined.length > 0 || retention.pruned > 0 || retention.releasedBlobs > 0) out(`${entry.projectId}: quarantined ${retention.quarantined.length}, pruned ${retention.pruned}, released ${retention.releasedBlobs} staged file(s)`);
+    // Retention follows the drain so acknowledged archive copies can be removed.
+    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now());
+    if (retention.releasedBlobs > 0) out(`${entry.projectId}: released ${retention.releasedBlobs} staged file(s)`);
     results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
   }
   return results;
@@ -910,6 +910,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`spool:      ${spool.readable ? spool.sessionFiles : 'unknown'} session file(s), ${spool.unacknowledgedTotal ?? 'unknown'} un-acknowledged event(s)`);
     // Anything the Deployment acknowledged: an event, a blob, a transcript segment. A recall answer stamps nothing.
     out(`last delivery: ${!spool.stateReadable ? 'unknown — state could not be read' : spool.lastDeliveryAt === null ? 'none acknowledged yet' : `acknowledged ${when(spool.lastDeliveryAt)}`}`);
+    out(`lost:       ${facts.captureLoss.readable ? `${facts.captureLoss.payloads} payload(s), ${facts.captureLoss.plans} plan(s), ${facts.captureLoss.records} record(s)` : 'unknown — loss counts could not be read'}`);
     const last = refusals.entries[refusals.entries.length - 1];
     const damaged = refusals.unreadableLines > 0 ? `, ${refusals.unreadableLines} unreadable` : '';
     out(`refused:    ${refusals.logReadable ? `${refusals.loggedSinceLastReset} logged${damaged}${last ? `; last ${last.kind ?? 'unknown kind'} ${last.eventId ?? 'unknown event'} (${last.code ?? 'code not recognised'}${last.held ? ', kept spooled' : ''}) at ${last.at === null ? 'unknown' : when(last.at)}` : ''}` : 'the log could not be read'}`);

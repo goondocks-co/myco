@@ -13,6 +13,7 @@ import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveHomeDir } from '../paths/home.js';
 import { resolveWorktreeRoot } from '../project-root.js';
 import { remainingMs, type HookBudget } from './budget.js';
+import { recordSessionLoss } from './capture-loss.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { planEvent, planKeyForPath, type EnvelopeContext, type OutboundEvent } from './envelope.js';
 import type { SessionState } from './session-state.js';
@@ -102,6 +103,27 @@ export function readPlanFile(absPath: string): string | null {
 const oversizeReceipt = (bytes: number): string => `oversize:${bytes}`;
 /** A tracked path with no captured content yet. */
 const UNCAPTURED_PLAN_HASH = '';
+/** A missing path gets time for the writer to publish it before the read obligation expires. */
+export const PENDING_PLAN_READ_TTL_MS = 5 * 60_000;
+/** Outstanding plan reads are bounded even if a harness reports an unlimited stream of deleted paths. */
+export const MAX_PENDING_PLAN_READS = 1_000;
+
+function recordLostPlan(state: SessionState, normalized: string, at: number): void {
+  const pending = state.planPaths[normalized];
+  if (pending?.pendingRead === undefined) return;
+  recordSessionLoss(state, `plan:${pending.planKey}:${pending.pendingSince ?? 0}`, 'plan', at);
+  delete state.planPaths[normalized];
+  process.stderr.write(`[myco] plan file ${normalized} remained unavailable — capture lost\n`);
+}
+
+function boundPendingPlanReads(state: SessionState, at: number): void {
+  const pending = Object.entries(state.planPaths)
+    .filter(([, entry]) => entry.pendingRead !== undefined)
+    .sort((left, right) => (left[1].pendingSince ?? 0) - (right[1].pendingSince ?? 0));
+  for (const [normalized] of pending.slice(0, Math.max(0, pending.length - MAX_PENDING_PLAN_READS))) {
+    recordLostPlan(state, normalized, at);
+  }
+}
 
 /** The plan's title: its first heading, else the file's name. */
 export const planTitle = (content: string, filePath: string): string => firstHeading(content) ?? path.basename(filePath, path.extname(filePath));
@@ -125,7 +147,7 @@ export function planFileCapture(ctx: EnvelopeContext, state: SessionState, proje
 }
 
 /** File reads and their retry obligations share one receipt path across write discovery and the backstop. */
-function capturePlanPath(ctx: EnvelopeContext, state: SessionState, projectRoot: string, absPath: string, planKey: string, promptId?: string): PlanFileCapture {
+function capturePlanPath(ctx: EnvelopeContext, state: SessionState, projectRoot: string, absPath: string, planKey: string, promptId?: string, now: () => number = Date.now): PlanFileCapture {
   const none: PlanFileCapture = { events: [], record: () => {} };
   const normalized = normalizePlanPath(projectRoot, absPath);
   const shipped = state.planPaths[normalized];
@@ -133,11 +155,22 @@ function capturePlanPath(ctx: EnvelopeContext, state: SessionState, projectRoot:
   if ('miss' in read) {
     if (read.miss !== 'oversize') {
       const miss = read.miss;
+      const observedAt = now();
+      const sameMiss = shipped?.pendingRead === miss && shipped.pendingSince !== undefined;
+      const pendingSince = sameMiss ? shipped.pendingSince! : observedAt;
+      const pendingChecks = sameMiss ? (shipped.pendingChecks ?? 0) + 1 : 1;
+      const expired = miss !== 'unreadable' && pendingChecks >= 2 && observedAt - pendingSince >= PENDING_PLAN_READ_TTL_MS;
+      if (expired) return { events: [], record: (next) => {
+        const current = next.planPaths[normalized];
+        if (current?.pendingRead === miss && current.pendingSince === shipped?.pendingSince) recordLostPlan(next, normalized, observedAt);
+      } };
       if (shipped?.pendingRead !== read.miss) process.stderr.write(`[myco] plan file ${normalized} is ${read.miss} — read pending\n`);
       return { events: [], record: (next) => {
         const current = next.planPaths[normalized];
-        next.planPaths[normalized] = { ...current, planKey: current?.planKey ?? planKey, hash: current?.hash ?? UNCAPTURED_PLAN_HASH, pendingRead: miss,
+        if (current !== undefined && (current.hash !== shipped?.hash || current.pendingRead !== shipped?.pendingRead)) return;
+        next.planPaths[normalized] = { ...current, planKey: current?.planKey ?? planKey, hash: current?.hash ?? UNCAPTURED_PLAN_HASH, pendingRead: miss, pendingSince, pendingChecks,
           ...(current?.hash === undefined && promptId !== undefined ? { promptId } : {}) };
+        if (current?.pendingRead === undefined) boundPendingPlanReads(next, observedAt);
       } };
     }
     const receipt = oversizeReceipt(read.bytes ?? 0);
@@ -148,10 +181,19 @@ function capturePlanPath(ctx: EnvelopeContext, state: SessionState, projectRoot:
   const content = read.content;
   const hash = sha256Text(content);
   if (shipped?.hash === hash) return shipped.pendingRead === undefined ? none : {
-    events: [], record: (next) => { if (next.planPaths[normalized]?.hash === hash) delete next.planPaths[normalized].pendingRead; },
+    events: [], record: (next) => {
+      const current = next.planPaths[normalized];
+      if (current?.hash === hash) {
+        delete current.pendingRead;
+        delete current.pendingSince;
+        delete current.pendingChecks;
+      }
+    },
   };
+  const event = planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined || shipped.hash === UNCAPTURED_PLAN_HASH ? shipped?.promptId ?? promptId : undefined });
+  if (event.blobSource !== undefined) event.blobSource.recovery = { path: absPath };
   return {
-    events: [planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined || shipped.hash === UNCAPTURED_PLAN_HASH ? shipped?.promptId ?? promptId : undefined })],
+    events: [event],
     record: (next) => { next.planPaths[normalized] = { planKey, hash }; },
   };
 }
@@ -223,11 +265,11 @@ export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, proj
 /** Every tracked plan, including unresolved first reads, re-read inside the hook's budget. Changed content ships under its key. Paths in `skip` were read by the same hook already. */
 export function planBackstop(ctx: EnvelopeContext, state: SessionState, projectRoot: string, budget?: HookBudget, now: () => number = Date.now, skip: readonly string[] = []): PlanFileCapture {
   const events: OutboundEvent[] = [];
-  const records: PlanFileCapture['record'][] = [];
+  const records: PlanFileCapture['record'][] = [(next) => { boundPendingPlanReads(next, now()); }];
   for (const [normalized, shipped] of Object.entries(state.planPaths)) {
     if (skip.includes(normalized)) continue;
     if (budget !== undefined && remainingMs(budget, now()) < budget.requestTimeoutMs) break;
-    const capture = capturePlanPath(ctx, state, projectRoot, planFilePath(projectRoot, normalized), shipped.planKey, shipped.promptId);
+    const capture = capturePlanPath(ctx, state, projectRoot, planFilePath(projectRoot, normalized), shipped.planKey, shipped.promptId, now);
     events.push(...capture.events);
     records.push(capture.record);
   }

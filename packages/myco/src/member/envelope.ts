@@ -39,6 +39,8 @@ export interface BlobSource {
   sha256: string;
   mediaType: string;
   size: number;
+  /** Original file bytes available to reconstruct a staged object after local corruption. */
+  recovery?: { path: string; offset?: number };
 }
 
 /** One event ready for the spool: the wire envelope plus its blob source, when the payload references one. */

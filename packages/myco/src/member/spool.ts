@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventBuffer, listBufferSessionIds } from '../capture/buffer.js';
+export { BUFFER_QUARANTINE_DIRNAME } from '../capture/buffer.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { canStartRequest, clippedRequestBudget, longestDeclaredHookTimeoutMs, type HookBudget } from './budget.js';
@@ -29,7 +30,9 @@ import {
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
-import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
+import { publishStagedBlob } from './staged-blobs.js';
+import { payloadDisposition, type PayloadRetry } from './payload-disposition.js';
+import { recordSessionLoss } from './capture-loss.js';
 
 export const SPOOL_DIRNAME = 'spool';
 export const BLOBS_DIRNAME = 'blobs';
@@ -56,6 +59,7 @@ export interface SpoolRecord extends MemberEnvelope {
   _memberProtocol: number;
   _blobSource?: BlobSource;
   _journal?: number;
+  _payloadRetry?: PayloadRetry;
 }
 
 /**
@@ -373,6 +377,45 @@ export class MemberSpool {
   /** Write-ahead: append one record before anything is sent. */
   append(sessionId: string, out: OutboundEvent): void {
     this.appendAndRecord(sessionId, [out]);
+  }
+
+  /** Reconcile a journal under its append lock; reset the checkpoint before replacing its rows. */
+  private reconcileJournal(sessionId: string, reconcile: (lines: string[], state: SessionState) => string[], now: number): number {
+    const lock = bufferLockPath(this.dir, sessionId);
+    ensurePrivateFile(lock);
+    return withFileLockSync(lock, () => {
+      const file = this.spoolFile(sessionId);
+      let raw: string;
+      try { raw = fs.readFileSync(file, 'utf8'); }
+      catch (err) { if (!pathIsAbsent(file)) throw err; raw = ''; }
+      const state = readSessionStateUnlocked(this.dir, sessionId);
+      const lines = reconcile(raw.split('\n').filter((line) => line.trim() !== ''), state);
+      state.highWater = 0;
+      writeSessionStateUnlocked(this.dir, sessionId, state, now);
+      writePrivateFileAtomic(file, lines.length === 0 ? '' : `${lines.join('\n')}\n`);
+      return lines.length;
+    });
+  }
+
+  /** Replay older recovered records before current capture; a concurrent drain retains its journal generation. */
+  prependRecovered(sessionId: string, events: readonly OutboundEvent[], now: number = Date.now()): boolean {
+    ensurePrivateFile(this.leasePath(sessionId));
+    const lease = LifecycleLock.acquire(this.leasePath(sessionId), { command: 'myco member recover' });
+    if (!lease.acquired) return false;
+    try {
+      this.reconcileJournal(sessionId, (lines, state) => {
+        const live = lines.slice(state.highWater);
+        const ids = new Set(parseSpoolLines(live.join('\n')).flatMap((record) => record === null ? [] : [record.eventId]));
+        const recovered = events.filter((event) => {
+          if (ids.has(event.envelope.eventId)) return false;
+          ids.add(event.envelope.eventId);
+          return true;
+        }).map((event) => JSON.stringify({ ...event.envelope, _memberProtocol: MEMBER_PROTOCOL, _journal: JOURNAL_VERSION,
+          ...(event.blobSource === undefined ? {} : { _blobSource: event.blobSource }) }));
+        return [...recovered, ...live];
+      }, now);
+      return true;
+    } finally { lease.lock.release(); }
   }
 
   /**
@@ -861,13 +904,17 @@ export class MemberSpool {
   // Drain
   // ---------------------------------------------------------------------------
 
-  /**
-   * Upload a verified staged blob. Every unavailable payload holds its record for recovery.
-   */
-  private async uploadBlob(client: ServerClient, source: BlobSource, budget: HookBudget, now: () => number, uploaded: Set<string>): Promise<Outcome | 'unreadable'> {
+  /** Upload verified or repaired bytes; unavailable records receive their own bounded retry disposition. */
+  private async uploadBlob(client: ServerClient, record: SpoolRecord, budget: HookBudget, now: () => number, uploaded: Set<string>): Promise<Outcome | 'missing' | 'unreadable'> {
+    const source = record._blobSource!;
     if (uploaded.has(source.sha256)) return { class: 'acked', body: {} };
-    const read = readStagedBlob(source);
-    if (read.status !== 'ready') return 'unreadable';
+    const read = payloadDisposition(source, record._payloadRetry, now(), (bytes) => {
+      const repaired = this.stagerFor(record.sessionId)(bytes, source.mediaType);
+      source.path = repaired.path;
+    });
+    if (read.status === 'retry') { record._payloadRetry = read.retry; return 'unreadable'; }
+    delete record._payloadRetry;
+    if (read.status === 'missing') return 'missing';
     const outcome = await client.postBlob(read.bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
     if (outcome.class === 'acked') uploaded.add(source.sha256);
     return outcome;
@@ -885,15 +932,19 @@ export class MemberSpool {
     const result: DrainResult = { sessionId, sent: 0, acked: 0, refused: 0, remaining: 0, endedBy: 'drained' };
     if (!budget.drains) return { ...result, skipped: 'never-drains', remaining: this.depth(sessionId) };
     if (!this.shouldDial(now(), opts.force)) return { ...result, skipped: 'latched', remaining: this.depth(sessionId) };
-    if (opts.honourRetry === true && retryWaiting(readSessionState(this.dir, sessionId).eventRetry, now())) return { ...result, skipped: 'deferred', remaining: this.depth(sessionId) };
+    const wait = readSessionState(this.dir, sessionId).eventRetry;
+    if (opts.honourRetry === true && wait?.localPayload !== true && retryWaiting(wait, now())) return { ...result, skipped: 'deferred', remaining: this.depth(sessionId) };
     ensurePrivateFile(this.leasePath(sessionId));
     const lease = LifecycleLock.acquire(this.leasePath(sessionId), { command: 'myco member drain' });
     if (!lease.acquired) return { ...result, skipped: 'lease', remaining: this.depth(sessionId) };
 
     try {
       const records = this.readRecords(sessionId);
+      const rawLines = records.includes(null) ? fs.readFileSync(this.spoolFile(sessionId), 'utf8').split('\n').filter((line) => line.trim() !== '') : [];
       let i = readSessionState(this.dir, sessionId).highWater;
       const uploaded = new Set<string>();
+      const retained: SpoolRecord[] = [];
+      let contiguous = true;
       let sawUnauthorized = false;
       let retriedAfterUnauthorized = false;
       let activeClient = client;
@@ -917,7 +968,11 @@ export class MemberSpool {
         // are left for the retention sweep, which runs once nobody can.
         if (remaining > 0) return;
         // Only bytes this spool staged: a source outside the session's staging dir belongs to someone else.
-        if (path.dirname(path.resolve(source.path)) !== path.resolve(this.blobsDirFor(sessionId))) return;
+        const owned = path.dirname(path.resolve(source.path)) === path.resolve(this.blobsDirFor(sessionId));
+        const pending = path.relative(path.join(memberRoot(this.mycoHome), 'pending'), source.path).split(path.sep);
+        const pendingOwned = pending.length === 4 && /^[0-9a-f]{16,64}$/.test(pending[0]) && pending[1] === BLOBS_DIRNAME && pending[2] === sessionId && pending[3] === source.sha256;
+        if (!owned && !pendingOwned) return;
+        assertMemberPathContained(source.path, this.mycoHome);
         withFileLockSync(bufferLockPath(this.dir, sessionId), () => {
           try {
             if (fs.statSync(source.path).mtimeMs > settled) return;
@@ -927,7 +982,8 @@ export class MemberSpool {
       };
       // A high-water past the held record ends the wait it set; one past a start settles the session's start.
       const persist = (highWater: number, acked?: boolean, passed?: SpoolRecord) => updateSessionState(this.dir, sessionId, (s) => {
-        s.highWater = highWater;
+        if (contiguous) s.highWater = highWater;
+        s.lastAccountedAt = now();
         if (acked) {
           s.lastAckAt = now();
           s.lastDeliveryAt = now();
@@ -941,8 +997,8 @@ export class MemberSpool {
        * refusals, begun at least `UNCLASSIFIED_REFUSAL_HOLD_MS` ago, whose own
        * wait has reached `REFUSAL_RETRY_MAX_MS`.
        */
-      const verdictOn = (record: SpoolRecord, code: MemberCode): 'final' | 'held-too-long' | 'held' => {
-        if (refusalPermanent(code)) return 'final';
+      const verdictOn = (record: SpoolRecord, code: MemberCode, missing: boolean): 'final' | 'held-too-long' | 'held' => {
+        if (refusalPermanent(code) || (missing && code === 'blob_absent')) return 'final';
         if (REFUSAL_SUBJECT[code] !== 'unclassified') return 'held';
         const run = readSessionState(this.dir, sessionId).eventRetry?.unclassified;
         const heldTooLong = run !== undefined && run.backoffMs >= REFUSAL_RETRY_MAX_MS && now() - run.since >= UNCLASSIFIED_REFUSAL_HOLD_MS;
@@ -951,14 +1007,18 @@ export class MemberSpool {
       /** Keep the record at the high-water, and every record after it, for a later pass: the session's wait starts or lengthens. */
       const hold = (unclassified: boolean) => deferAfterRefusal(this.dir, sessionId, 'eventRetry', now(), { unclassified });
       /** Log a refusal of `record` and apply it: true when the pass moves past the record, false when the record is held. */
-      const refuse = (record: SpoolRecord, code: MemberCode, reason: string): boolean => {
-        const verdict = verdictOn(record, code);
+      const refuse = (record: SpoolRecord, code: MemberCode, reason: string, missing = false): boolean => {
+        const verdict = verdictOn(record, code, missing);
         if (verdict === 'held') {
           const alreadyHeld = readSessionState(this.dir, sessionId).eventRetry !== undefined;
           const wait = hold(REFUSAL_SUBJECT[code] === 'unclassified');
           if (!alreadyHeld) this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, reason, at: now(), held: { retryAt: wait.at } });
           stderr(`${record.kind} ${record.eventId} refused by the server (${code}): ${reason} — kept spooled with the session's later events, sent again later`);
           return false;
+        }
+        if (missing && code === 'blob_absent') {
+          updateSessionState(this.dir, sessionId, (state) => recordSessionLoss(state, record.eventId, 'payload', now()), now());
+          stderr(`${record.kind} ${record.eventId}: confirmed payload loss — counted in member status`);
         }
         const logged = verdict === 'held-too-long' ? `refused for ${UNCLASSIFIED_REFUSAL_HOLD_HOURS} h: ${reason}` : reason;
         this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, reason: logged, at: now() });
@@ -974,6 +1034,8 @@ export class MemberSpool {
         if (!canStartRequest(budget, now())) { result.endedBy = 'budget'; break; }
         const record = records[i];
         if (record === null) {
+          const key = crypto.createHash('sha256').update(rawLines[i] ?? '').digest('hex');
+          updateSessionState(this.dir, sessionId, (state) => recordSessionLoss(state, `damaged:${sessionId}:${key}`, 'record', now()), now());
           this.appendRefused({ eventId: '', sessionId, kind: '', code: 'refused', reason: 'unparsable spool line', at: now() });
           result.refused += 1;
           i += 1;
@@ -985,13 +1047,17 @@ export class MemberSpool {
           result.endedBy = 'protocol_mismatch';
           break;
         }
+        let sourceMissing = false;
         if (record._blobSource) {
-          const blobOutcome = await this.uploadBlob(activeClient, record._blobSource, budget, now, uploaded);
+          const blobOutcome = await this.uploadBlob(activeClient, record, budget, now, uploaded);
           if (blobOutcome === 'unreadable') {
-            hold(false);
-            stderr(`${record.kind} ${record.eventId}: its staged bytes at ${record._blobSource.path} could not be read — kept spooled with the session's later events, sent again later`);
-            result.endedBy = 'unreadable';
-            break;
+            retained.push(record);
+            contiguous = false;
+            i += 1;
+            stderr(`${record.kind} ${record.eventId}: staged bytes unavailable — this record retries with backoff; later capture can deliver`);
+            continue;
+          } else if (blobOutcome === 'missing') {
+            sourceMissing = true;
           } else if (blobOutcome.class === 'refused') {
             // The record's bytes were refused: the refusal of the bytes is the record's.
             if (refuse(record, blobOutcome.code, blobOutcome.reason)) continue;
@@ -1013,7 +1079,7 @@ export class MemberSpool {
             persist(i, true, record);
             continue;
           case 'refused':
-            if (refuse(record, outcome.code, outcome.reason)) continue;
+            if (refuse(record, outcome.code, outcome.reason, sourceMissing)) continue;
             result.endedBy = 'refused';
             break pass;
           case 'reslice':
@@ -1046,7 +1112,16 @@ export class MemberSpool {
         }
       }
 
-      if (i >= records.length && records.length > 0) {
+      if (retained.length > 0) {
+        result.remaining = this.reconcileJournal(sessionId, (lines, state) => {
+          const fresh = parseSpoolLines(lines.join('\n'));
+          if (records.some((record, index) => record?.eventId !== fresh[index]?.eventId)) throw new Error('Journal changed during payload retry accounting');
+          const retry = retained.map((record) => record._payloadRetry!).sort((a, b) => a.at - b.at)[0];
+          if (result.endedBy !== 'refused') state.eventRetry = { at: retry.at, backoffMs: retry.backoffMs, localPayload: true };
+          return [...retained.map((record) => JSON.stringify(record)), ...lines.slice(i)];
+        }, now());
+        if (result.endedBy === 'drained') result.endedBy = 'unreadable';
+      } else if (i >= records.length && records.length > 0) {
         // Deleted once every record is acknowledged. Turn-end marks live in their own file and are no reason to keep
         // it. A line this pass could not parse is already logged (`refused.jsonl`) below the mark, and pins nothing.
         const deleted = this.buffer(sessionId).deleteIfSync((fresh) => {

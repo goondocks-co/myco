@@ -188,10 +188,6 @@ export function hookNameInCommand(command: string): string | null {
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-/** The age window for member spool archive fixtures. */
-export const MEMBER_SPOOL_QUARANTINE_MS = 30 * MS_PER_DAY;
-/** The prune window for member spool archive fixtures. */
-export const MEMBER_SPOOL_QUARANTINE_PRUNE_MS = 60 * MS_PER_DAY;
 /**
  * A fully delivered session's state file untouched for this long is pruned
  * after a drain that delivered everything. The state holds the transcript

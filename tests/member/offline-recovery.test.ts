@@ -363,7 +363,7 @@ describe('a member that could not deliver', () => {
 
       const client = new ServerClient(readRegistryEntry(root, mycoHome)!, rig.fetch);
       const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
-      expect(report).toEqual({ endedBy: 'done', tried: [], sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
+      expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
       expect(rig.env.sqlite.query('SELECT agent FROM transcripts WHERE session_id = ?').get(sessionId)).toEqual({ agent: 'claude-code' });
       expect(spool.transcriptBacklogIds()).toEqual([]);
       expect(readSessionState(spool.dir, sessionId).agent).toBe('claude-code');
@@ -394,7 +394,7 @@ describe('the backlog walk', () => {
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
 
     const held = await spool.withSessionLease('sess-held', () => drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' }));
-    expect(held).toEqual({ endedBy: 'skipped', tried: [], sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
+    expect(held).toEqual({ endedBy: 'skipped', sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
     expect(blobUploads(spy)).toBe(0);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-held']);
 
