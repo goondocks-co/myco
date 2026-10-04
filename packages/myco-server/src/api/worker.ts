@@ -100,7 +100,7 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   // An authenticated claim is contact whatever it answers: a worker told
   // `no_work` is attached and idle, which nothing else in the schema records.
   await recordWorkerContact(env.db, {
-    credentialId: ctx.tokenId, machineId: ctx.machineId, offers: harnesses, capabilities,
+    credentialId: ctx.tokenId, machineId: ctx.machineId,
     reason: outcome.claimed ? 'claimed' : outcome.reason, now: ctx.now,
   });
   // The Deployment decides the cadence and says it on every answer: a worker
