@@ -12,13 +12,16 @@ import { createHttpRunStore, ProjectNotAdmittedError, RunControlError, HTTP_MUTA
 import { ServerClient } from '@myco/member/transport.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
+import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import worker from '@myco-server-worker/index.js';
 
 const PROJECT = 'proj_1';
 const AGENT = 'agent_1';
 const BUDGET = { connectTimeoutMs: 2000, requestTimeoutMs: 4000 };
 
-async function harness(opts: { admit?: boolean; admission?: RunClaimAdmission; provider?: string } = {}) {
+async function harness(opts: { admit?: boolean; admission?: RunClaimAdmission; provider?: string; task?: string; context?: string } = {}) {
   const { env, db, sqlite } = sqliteEnv();
   const now = Date.now();
   sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(PROJECT, PROJECT, now);
@@ -29,7 +32,7 @@ async function harness(opts: { admit?: boolean; admission?: RunClaimAdmission; p
   if (opts.provider !== undefined) {
     sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', ?, ?, 'test')`).run(JSON.stringify(opts.provider), now);
   }
-  const token = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+  await ensureMember(db, HARNESS_MEMBER_ID, now, 'member', 'harness');
 
   // The client's transport IS the worker: no mock between them.
   const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -38,9 +41,15 @@ async function harness(opts: { admit?: boolean; admission?: RunClaimAdmission; p
     headers.set('cf-connecting-ip', '1.2.3.4');
     return worker.fetch(new Request(req.url, { method: req.method, headers, body: req.body ? await req.text() : undefined }), env);
   };
-  const client = new ServerClient({ serverUrl: 'https://s', token: token.token, projectId: PROJECT }, fetchImpl as never);
-  const store = createHttpRunStore({ client, agentId: AGENT, admissionForTask: () => opts.admission ?? { capability: 'cortex' }, budget: BUDGET });
-  return { store, sqlite, token };
+  const dispatch = async (id: string, task = 'digest', runContext: string | null = null) => {
+    const token = await issueMemberToken(db, { memberId: HARNESS_MEMBER_ID, machineId: 'machine_1' }, Date.now());
+    await recordDispatch(db, { projectId: PROJECT }, { id, agentId: AGENT, task, provider: null, model: null,
+      runContext, dispatchedBy: token.tokenId, startedAt: Date.now() });
+    const client = new ServerClient({ serverUrl: 'https://s', token: token.token, projectId: PROJECT }, fetchImpl as never);
+    const store = createHttpRunStore({ client, agentId: AGENT, admissionForTask: () => opts.admission ?? { capability: 'cortex' }, budget: BUDGET });
+    return { store, token };
+  };
+  return { ...await dispatch('r1', opts.task, opts.context), sqlite, dispatch };
 }
 
 /** No `started_at`: the server stamps it from its own clock, which is the only clock the guard compares against. */
@@ -48,9 +57,9 @@ const insert = (id: string, task: string) => ({ id, agent_id: AGENT, task });
 
 describe('HTTP RunStore — claim', () => {
   it('claims through the real routes: a second run of the task claims too, and the same id claimed twice is refused', async () => {
-    const { store, sqlite } = await harness();
+    const { store, sqlite, dispatch } = await harness();
     expect(await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 })).toEqual({ claimed: true });
-    expect(await store.claimRun(insert('r2', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 })).toEqual({ claimed: true });
+    expect(await (await dispatch('r2')).store.claimRun(insert('r2', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 })).toEqual({ claimed: true });
     const again = await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
     expect(again.claimed).toBe(false);
     expect(again.claimed === false && again.running.id).toBe('r1');
@@ -63,12 +72,12 @@ describe('HTTP RunStore — claim', () => {
   });
 
   it('claims a capture-driven task with its context independently of archived provider configuration', async () => {
-    const provided = await harness({ admit: false, admission: { captureDriven: true }, provider: 'anthropic' });
     const context = JSON.stringify({ session_id: 'sess_1', mode: 'claim' });
+    const provided = await harness({ admit: false, admission: { captureDriven: true }, provider: 'anthropic', task: 'title-summary', context });
     expect(await provided.store.claimRun({ ...insert('r1', 'title-summary'), run_context: context }, { taskName: 'title-summary', maxAgeSeconds: 0 })).toEqual({ claimed: true });
     expect(provided.sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ c: context });
 
-    const unprovided = await harness({ admit: false, admission: { captureDriven: true } });
+    const unprovided = await harness({ admit: false, admission: { captureDriven: true }, task: 'title-summary' });
     expect(await unprovided.store.claimRun(insert('r1', 'title-summary'), { taskName: 'title-summary', maxAgeSeconds: 0 })).toEqual({ claimed: true });
   });
 
@@ -101,7 +110,8 @@ describe('HTTP RunStore — lifecycle', () => {
   it('records no run event: the route is retired, and says so by name', async () => {
     const { store, sqlite } = await harness();
     await store.claimRun(insert('r1', 'digest'), { taskName: 'digest', maxAgeSeconds: 3600 });
+    const before = sqlite.query('SELECT COUNT(*) c FROM agent_run_events').get();
     await expect(store.recordRunEvent({ runId: 'r1', eventType: 'post_tool_use', toolName: 'Bash', payload: '{"toolInput":{"command":"cat .env"}}' })).rejects.toBeInstanceOf(RunControlError);
-    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_run_events`).get()).toEqual({ c: 0 });
+    expect(sqlite.query(`SELECT COUNT(*) c FROM agent_run_events`).get()).toEqual(before);
   });
 });

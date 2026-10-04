@@ -217,11 +217,10 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     const answered = await (await worker.fetch(memberPost(other.token, {
       runId: 'run_live', replaced: true, update: { status: 'failed', completed_at: Date.now(), error: 'not mine to say' },
     }, '/runs/update'), bindings as never)).json() as Record<string, unknown>;
-    // The status it posted stands; the word it may not say changed nothing.
-    expect(answered).toEqual({ persisted: true, changed: 1, applied: true });
+    expect(answered).toMatchObject({ persisted: false, code: 'run_scope' });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
     expect(rows()).toHaveLength(1);
-    expect(sqlite.query(`SELECT status FROM agent_runs WHERE id = 'run_live'`).get()).toEqual({ status: 'failed' });
+    expect(sqlite.query(`SELECT status FROM agent_runs WHERE id = 'run_live'`).get()).toEqual({ status: 'running' });
   });
 
   it('leaves the context alone on a failure that names no deployment', async () => {

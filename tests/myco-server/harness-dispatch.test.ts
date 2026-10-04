@@ -98,7 +98,7 @@ describe('POST /api/harness/dispatch', () => {
       headers: memberHeaders(vars.MYCO_MEMBER_TOKEN!),
       body: JSON.stringify({ id: 'run_self_minted', agentId: 'user', task: 'container-smoke', capability: 'cortex' }),
     }), bound);
-    expect(await jsonBody(foreign)).toEqual({ persisted: true, claimed: false, running: null });
+    expect(await jsonBody(foreign)).toMatchObject({ persisted: false, code: 'no_run' });
   });
 
   it('ensures the runtime agent row on dispatch, and never edits one an owner registered', async () => {
