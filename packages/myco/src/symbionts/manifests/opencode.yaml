@@ -24,10 +24,8 @@ capture:
   planDirs:
     # opencode Plan mode permits edits only to .opencode/plans/*.md — captured by plan-capture.ts
     - .opencode/plans/
-  # opencode stores a session as one JSON file per message and per part, which
-  # carries no byte offset to ship a delta against. The plugin writes an
-  # append-only transcript from the events it sees in process, and Myco's
-  # retention pass ages it.
+  # The native session store provides no append-only byte stream. The plugin writes
+  # a transcript from the events it sees in process, and Myco's retention pass ages it.
   transcriptDiscovery:
     roots:
       - "@memberHome/member/transcripts/opencode"
