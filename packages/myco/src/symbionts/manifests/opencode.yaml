@@ -9,7 +9,7 @@ health:
       path: opencode/opencode.db
       dataHomeEnv: XDG_DATA_HOME
       dataHomeDefault: "~/.local/share"
-      query: "SELECT id, time_updated AS ran_at FROM session WHERE time_updated >= ? ORDER BY time_updated DESC"
+      query: "SELECT id, time_updated AS ran_at FROM session WHERE parent_id IS NULL AND time_updated >= ? ORDER BY time_updated DESC"
       sessionIdColumn: id
       timeColumn: ran_at
 configDir: .opencode

@@ -211,6 +211,18 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } finally { void server.stop(true); db.close(); }
 });
 
+it('a worker child session is excluded with its root; only interactive root sessions establish activity', () => {
+  const db = sessionStore();
+  try {
+    session(db, USER, RECENT);
+    session(db, WORKER, NOW);
+    session(db, 'worker-child', NOW + 1);
+    db.run('UPDATE session SET parent_id = ? WHERE id = ?', [WORKER, 'worker-child']);
+    new WorkerSessionEvidence(mycoHome).record('opencode', WORKER);
+    expect(harnessRanAt(opencodeManifest(), mycoHome)).toBe(RECENT);
+  } finally { db.close(); }
+});
+
 it('reads committed WAL session times under a writer lock without writing the database, WAL or shared-memory index', () => {
   const db = sessionStore();
   try {
@@ -419,11 +431,11 @@ it('missing, incompatible, locked and invalid SQLite activity is unknown, never 
   const locked = new Database(opencodeFile());
   try {
     locked.run('PRAGMA journal_mode = DELETE');
-    locked.run('CREATE TABLE session (id TEXT, time_updated INTEGER)');
+    locked.run('CREATE TABLE session (id TEXT, parent_id TEXT, time_updated INTEGER)');
     locked.run('BEGIN EXCLUSIVE');
     expect(() => harnessRanAt(opencodeManifest(), mycoHome)).toThrow('locked');
     locked.run('ROLLBACK');
-    locked.run("INSERT INTO session VALUES ('invalid', 'not a timestamp')");
+    locked.run("INSERT INTO session VALUES ('invalid', NULL, 'not a timestamp')");
     expect(() => harnessRanAt(opencodeManifest(), mycoHome)).toThrow('invalid identity or time');
   } finally { locked.close(); }
 });
