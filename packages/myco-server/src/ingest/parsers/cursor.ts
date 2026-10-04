@@ -71,7 +71,8 @@ export const cursorParser: TranscriptParser = {
   fidelity: 'no_tool_results',
   planTags: [],
 
-  async parse({ lines, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
+  async parse(input: ParserInput): Promise<DerivedEvent[]> {
+    const { lines, sessionId, now, openPromptId } = input;
     const events: DerivedEvent[] = [];
     let promptId: string | undefined = openPromptId;
     let reply: { parts: ReplyPart[]; promptId?: string } | null = null;

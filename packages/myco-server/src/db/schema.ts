@@ -1,3 +1,4 @@
+import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
@@ -1677,6 +1678,23 @@ const V48_STATEMENTS: readonly string[] = [
   `DROP TABLE _v48_credential_rows`,
 ];
 
+/** Bounded continuation chunks share the transcript cursor's atomic commit. */
+const V70_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS transcript_parser_state_chunks (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     transcript_id TEXT NOT NULL,
+     cursor_offset INTEGER NOT NULL CHECK (cursor_offset >= 0),
+     chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+     chunk_count INTEGER NOT NULL CHECK (chunk_count > chunk_index),
+     payload TEXT NOT NULL CHECK (length(CAST(payload AS BLOB)) <= ${MAX_PAYLOAD_BYTES}),
+     PRIMARY KEY (project_id, transcript_id, chunk_index),
+     FOREIGN KEY (project_id, transcript_id) REFERENCES transcripts(project_id, transcript_id) ON DELETE CASCADE)`,
+  `CREATE TRIGGER IF NOT EXISTS clear_inline_parser_chunks AFTER UPDATE OF parser_context ON transcripts
+     WHEN COALESCE(json_extract(NEW.parser_context, '$.mycoParserState.chunked'), 0) <> 1 BEGIN
+       DELETE FROM transcript_parser_state_chunks WHERE project_id = NEW.project_id AND transcript_id = NEW.transcript_id;
+     END`,
+];
+
 /** Machine settings revisions and the values a member last reported caching. */
 const V69_STATEMENTS: readonly string[] = [
   `ALTER TABLE machine_claims ADD COLUMN settings_revision INTEGER NOT NULL DEFAULT 0`,
@@ -1700,7 +1718,7 @@ const V69_STATEMENTS: readonly string[] = [
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS), withStamp(49, V49_STATEMENTS), withStamp(50, V50_STATEMENTS), withStamp(51, V51_STATEMENTS), withStamp(52, V52_STATEMENTS), withStamp(53, V53_STATEMENTS), withStamp(54, V54_STATEMENTS), withStamp(55, V55_STATEMENTS), withStamp(56, V56_STATEMENTS), withStamp(57, V57_STATEMENTS), withStamp(58, V58_STATEMENTS), withStamp(59, V59_STATEMENTS), withStamp(60, V60_STATEMENTS), withStamp(61, V61_STATEMENTS), withStamp(62, V62_STATEMENTS), withStamp(63, V63_STATEMENTS), withStamp(64, V64_STATEMENTS), withStamp(65, V65_STATEMENTS), withStamp(66, V66_STATEMENTS), withStamp(67, V67_STATEMENTS), withStamp(68, V68_STATEMENTS), withStamp(69, V69_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS), withStamp(49, V49_STATEMENTS), withStamp(50, V50_STATEMENTS), withStamp(51, V51_STATEMENTS), withStamp(52, V52_STATEMENTS), withStamp(53, V53_STATEMENTS), withStamp(54, V54_STATEMENTS), withStamp(55, V55_STATEMENTS), withStamp(56, V56_STATEMENTS), withStamp(57, V57_STATEMENTS), withStamp(58, V58_STATEMENTS), withStamp(59, V59_STATEMENTS), withStamp(60, V60_STATEMENTS), withStamp(61, V61_STATEMENTS), withStamp(62, V62_STATEMENTS), withStamp(63, V63_STATEMENTS), withStamp(64, V64_STATEMENTS), withStamp(65, V65_STATEMENTS), withStamp(66, V66_STATEMENTS), withStamp(67, V67_STATEMENTS), withStamp(68, V68_STATEMENTS), withStamp(69, V69_STATEMENTS), withStamp(70, V70_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

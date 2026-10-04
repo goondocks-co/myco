@@ -20,11 +20,12 @@ import { drainObjectReleases } from '@myco-server-worker/core/object-release.js'
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, eventGroups, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  AWAITING_BYTES, eventGroups, TRANSCRIPT_PRODUCER, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
   TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
 } from '@myco-server-worker/ingest/parse.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { blobHeld } from '@myco-server-worker/core/blob-references.js';
@@ -41,7 +42,7 @@ import { sqliteEnv, count, registeredObject, uuid } from './helpers/fixtures.js'
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { sha256HexOf } from '@myco-server-worker/hash.js';
+import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
 import { checkProject, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { REPO, X, fakeGithub } from './helpers/github-fake.js';
@@ -282,7 +283,7 @@ describe('parsing a held transcript', () => {
     expect(await drain(env, sqlite)).toBeGreaterThan(1);
     expect(target(sqlite).parsed_offset).toBe(Buffer.byteLength(text));
     expect(count(sqlite, 'prompt_batches')).toBe(0);
-    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context)).toEqual({ source });
+    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context).mycoParserMeta).toEqual({ source });
   });
 
   it('recovers a header before continuing an existing cursor without rewriting prior rows', async () => {
@@ -1178,7 +1179,7 @@ describe('reading a stored transcript again', () => {
     expect(sqlite.query('SELECT text FROM prompt_batches').all()).toEqual([
       { text: 'List the files in this directory and say how many there are. Do not modify anything.' },
     ]);
-    expect(count(sqlite, 'responses')).toBe(1);
+    expect((sqlite.query('SELECT text FROM responses ORDER BY created_at, response_id').all() as { text: string }[]).map((row) => row.text).join('\n\n')).toContain('Nothing was modified.');
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
   });
 
@@ -1193,6 +1194,46 @@ describe('reading a stored transcript again', () => {
 
     expect(rowCounts(sqlite)).toEqual(before);
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
+  });
+
+  it('rereads joined legacy replies across windows and retries without duplicating their text', async () => {
+    const replies = ['first reply ' + 'a'.repeat(120_000) + ' ', ' second reply ' + 'b'.repeat(120_000) + ' ', ' third reply'];
+    const prefix = line({ type: 'user', promptId: uuid(70), message: { content: 'legacy prompt' } });
+    const firstOffset = new TextEncoder().encode(prefix).length;
+    const spacer = line({ type: 'system', text: 's'.repeat(400_000) });
+    const text = prefix + line({ type: 'assistant', message: { content: [{ type: 'text', text: replies[0] }] } }) + spacer + replies.slice(1).map((reply) => line({ type: 'assistant', message: { content: [{ type: 'text', text: reply }] } })).join('');
+    const later = line({ type: 'assistant', message: { content: [{ type: 'text', text: 'later appended reply' }] } });
+    const { sqlite, serverEnv, tokenId } = await rig(text + later, 300_000);
+    // A stored joined reply uses the identity of its first assistant record.
+    const first = (await PARSERS['claude-code'].parse({ lines: [{ value: JSON.parse(text.split('\n')[1]), offset: firstOffset }], sessionId: SESSION, now: NOW }))[0];
+    const oldText = replies.join('\n\n');
+    expect((await ingestEvent(serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId, now: NOW, bodyBytes: 0, writeOrigin: 'server' }, {
+      eventId: await uuidv5('transcript-event', TRANSCRIPT, 'response', String(first.payload.responseId)), sessionId: SESSION, kind: 'response', createdAt: NOW, channel: 'cli', producer: TRANSCRIPT_PRODUCER,
+      payload: { ...first.payload, promptId: uuid(70), text: oldText },
+    })).persisted).toBe(true);
+    sqlite.run('UPDATE transcripts SET parsed_offset = ?, parser_version = 3', [Buffer.byteLength(text)]);
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION });
+      await drain({ db: serverEnv.db, blobs: serverEnv.blobs }, sqlite);
+      expect(sqlite.query('SELECT text FROM responses ORDER BY rowid').all()).toEqual([{ text: oldText }, { text: 'later appended reply' }]);
+      expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
+    }
+  });
+
+  it('preserves Codex header metadata when rereading after its header segment was retained away', async () => {
+    const header = line({ type: 'session_meta', payload: { source: 'cli', marker: 'retained-header-context' } });
+    const user = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'human question' }] } });
+    const reply = line({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] } });
+    const { sqlite, serverEnv, env } = await rig(header + user + reply, Buffer.byteLength(header), { agent: 'codex' });
+    await drain(env, sqlite);
+    const before = rowCounts(sqlite);
+    sqlite.run('DELETE FROM transcript_segments WHERE base_offset = 0');
+    await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION });
+    await drain(env, sqlite);
+    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context).mycoParserMeta)
+      .toEqual({ source: 'cli', marker: 'retained-header-context' });
+    expect(rowCounts(sqlite)).toEqual(before);
+    expect(target(sqlite).parse_error).toBeNull();
   });
 
   it('clears a recorded failure, so a transcript a parser stopped on is read again under the fixed one', async () => {
@@ -1423,11 +1464,12 @@ describe('a turn whose reply is longer than one response holds', () => {
     expect(responses(sqlite).length).toBeGreaterThan(1);
   });
 
-  it('stops with event_refused, not parse, when the catalogue refuses an event the parser derived', async () => {
+  it('admits an oversized derived prompt and advances instead of stopping capture', async () => {
     const tooLong = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x'.repeat(300_000) }] } });
     const { sqlite, serverEnv } = await rig(tooLong, 1 << 20, { agent: 'codex' });
     await parseTranscripts(serverEnv, NOW);
-    expect(target(sqlite)).toMatchObject({ parse_error: 'event_refused', parsed_offset: 0 });
+    expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(tooLong) });
+    expect((sqlite.query('SELECT text FROM prompt_batches').get() as { text: string }).text).toContain('not kept');
   });
 });
 
@@ -1456,5 +1498,68 @@ describe('the groups a pass writes', () => {
   it('writes an event larger than a call alone rather than dropping it', () => {
     const events = [event(0, 'x'.repeat(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)), event(1, 'small')];
     expect(eventGroups(events).map((g) => g.length)).toEqual([1, 1]);
+  });
+});
+
+
+describe('durable parser continuation at the read floor', () => {
+  const rows = (sqlite: Database) => Object.fromEntries([
+    ['prompt_batches', 'prompt_id, text, origin, prompt_kind, created_at'],
+    ['responses', 'response_id, prompt_id, text, created_at'],
+    ['tool_calls', 'tool_call_id, prompt_id, tool_name, input, success, output_preview, error_message, created_at'],
+    ['plans', 'plan_key, prompt_id, title, content, status, origin_path, source, created_at'],
+  ].map(([table, columns]) => [table, sqlite.query(`SELECT ${columns} FROM ${table} ORDER BY created_at, 1`).all()]));
+
+  it('retains successful tool results and both plans across read windows and a serialized restart', async () => {
+    const at = '2026-09-01T10:00:00Z';
+    const prefix = line({ type: 'user', promptId: uuid(1), message: { content: 'start' }, timestamp: at })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># First plan</ultraplan>' },
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/a.ts' } }] }, timestamp: at })
+      + line({ type: 'file-history-snapshot', padding: 'x'.repeat(TRANSCRIPT_PARSE_BYTES_PER_READ) });
+    const suffix = line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] }, timestamp: at })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># Second plan</ultraplan>' }] }, timestamp: at })
+      + line({ type: 'user', promptId: uuid(2), message: { content: 'later' }, timestamp: at });
+    const text = prefix + suffix;
+    const whole = await rig(text, text.length);
+    await drain(whole.env, whole.sqlite);
+    const split = await rig(text, Buffer.byteLength(prefix));
+    await parseTranscripts(split.serverEnv, NOW, { budget: { calls: 3, wallMs: 60_000 } });
+    expect(target(split.sqlite).parsed_offset).toBe(Buffer.byteLength(prefix));
+    expect(count(split.sqlite, 'tool_calls')).toBe(0);
+    const persisted = split.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+    expect(JSON.parse(persisted.parser_context).mycoParserState.planPosition).toBe(1);
+    await drain(split.env, split.sqlite);
+    expect(target(split.sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(text) });
+    expect(rows(split.sqlite)).toEqual(rows(whole.sqlite));
+    expect(split.sqlite.query('SELECT success, output_preview FROM tool_calls').all()).toEqual([{ success: 1, output_preview: 'ok' }]);
+    expect(count(split.sqlite, 'plans')).toBe(2);
+  });
+
+  it('cursor-budget checkpoints retain only the plan ordinal and pending calls before the cursor', async () => {
+    const text = Array.from({ length: 70 }, (_, i) => line({ type: 'assistant', timestamp: '2026-09-01T10:00:00Z',
+      message: { content: [{ type: 'text', text: `<ultraplan># Plan ${i}</ultraplan>` }] } })).join('');
+    const whole = await rig(text);
+    await drain(whole.env, whole.sqlite);
+    const split = await rig(text);
+    for (let pass = 0; pass < 20 && target(split.sqlite).parsed_offset < target(split.sqlite).size; pass += 1)
+      await parseTranscripts(split.serverEnv, NOW, { budget: { calls: 3, wallMs: 60_000 } });
+    expect(target(split.sqlite).parsed_offset).toBe(Buffer.byteLength(text));
+    expect(rows(split.sqlite)).toEqual(rows(whole.sqlite));
+    expect(count(split.sqlite, 'plans')).toBe(70);
+  });
+
+  it('an oversized Claude reply followed by a valid turn is admitted and capture completes', async () => {
+    for (const oversized of ['a'.repeat(300_000), '😀'.repeat(100_000), '\\"\n'.repeat(100_000)]) {
+      const text = line({ type: 'user', promptId: uuid(1), message: { content: 'start' } })
+        + line({ type: 'assistant', message: { content: [{ type: 'text', text: oversized }] } })
+        + line({ type: 'user', promptId: uuid(2), message: { content: 'later valid turn' } })
+        + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'later valid reply' }] } });
+      const { sqlite, env } = await rig(text);
+      await drain(env, sqlite);
+      expect(target(sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+      expect(sqlite.query("SELECT text FROM prompt_batches WHERE text = 'later valid turn'").get()).toEqual({ text: 'later valid turn' });
+      expect(sqlite.query("SELECT text FROM responses WHERE text = 'later valid reply'").get()).toEqual({ text: 'later valid reply' });
+      expect((sqlite.query('SELECT text FROM responses WHERE text <> ?').get('later valid reply') as { text: string }).text).toContain('not kept');
+    }
   });
 });

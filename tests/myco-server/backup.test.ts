@@ -109,15 +109,16 @@ describe('create, list, preview', () => {
     sqlite.close();
   });
 
-  it('counts the serialized rows when a source row disappears before its page is read', async () => {
+  it('counts the serialized rows when a source row disappears after its snapshot is read', async () => {
     const { db, bucket, sqlite, now } = seeded();
     const liveDb = {
       ...db,
-      prepare(sql: string) {
-        if (sql.startsWith('SELECT rowid AS __rid, * FROM sessions ')) {
+      async batch(statements: Parameters<typeof db.batch>[0]) {
+        const results = await db.batch(statements);
+        if (results.some((one) => one.results.some((row) => 'snapshot_count' in (row as Record<string, unknown>)))) {
           sqlite.query(`DELETE FROM sessions WHERE session_id = 'sess_1'`).run();
         }
-        return db.prepare(sql);
+        return results;
       },
     };
     const backup = await createBackup(liveDb, bucket, { producer: 'test', now });
@@ -126,7 +127,8 @@ describe('create, list, preview', () => {
     const actual = Object.fromEntries(BACKUP_TABLES.map((table) => [table, rows.filter((row) => row.t === table).length]));
     expect(header.counts).toEqual(actual);
     expect(JSON.parse(backup.counts_json)).toEqual(actual);
-    expect(actual.sessions).toBe(0);
+    expect(actual.sessions).toBe(1);
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ n: 0 });
     sqlite.close();
   });
 

@@ -17,8 +17,8 @@
  * again soon rather than at its cadence.
  *
  * **A pass consumes only complete lines**, and the cursor advances to the byte
- * past the last one (`segments.ts`). Nothing is carried between passes but that
- * integer, so a pass that dies costs the work and none of the correctness.
+ * past the last one (`segments.ts`). Continuation is committed with that
+ * integer, so a pass that dies cannot advance beyond its durable state.
  *
  * **The cursor never passes an event that did not land.** A derived event that
  * comes back unpersisted stops the transcript and stamps the failure. Advancing
@@ -33,8 +33,10 @@ import { MAX_PAYLOAD_BYTES } from './envelope.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
-import { isBlock, type DerivedEvent, type ParsedLine } from './parsers/index.js';
+import { isBlock, type DerivedEvent, type ParsedLine, type ParserState } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
+import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
+import { parserCheckpointStatements, readParserCheckpoint } from './parser-checkpoint.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
@@ -81,10 +83,10 @@ export const TRANSCRIPT_PARSE_IMPORTED_AT_ONCE = 4;
 /**
  * The segment bytes passes read side by side may hold at once. A pass holds its segment's bytes, the lines parsed from
  * them and the events derived from those until its last write, several times the segment's size in all, in an object
- * whose memory an embedding run shares. Under two full 8 MiB segments, so a full segment is read alone while small
+ * whose memory an embedding run shares. At most one full 8 MiB segment, so a full segment is read alone while small
  * ones are read together.
  */
-export const TRANSCRIPT_PARSE_CONCURRENT_BYTES = 16_000_000;
+export const TRANSCRIPT_PARSE_CONCURRENT_BYTES = 8 * 1024 * 1024;
 /** Maximum bytes retained while completing the first record across segments. */
 export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
@@ -97,7 +99,7 @@ export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
  * be answered by a deploy — and a failure nothing can clear would mean one bad
  * line silences a transcript permanently, which no later fix could undo.
  */
-export const PARSER_VERSION = 3;
+export const PARSER_VERSION = 4;
 
 /**
  * Unreadable lines ONE WINDOW tolerates before the transcript is stopped.
@@ -253,27 +255,16 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
   };
 }
 
-/**
- * The turn an event belongs to: its own id when it opens one, else the prompt
- * it names.
- *
- * This is what a pass records when it stops mid-turn, so the next pass derives
- * the remainder against the same prompt. Reading it from the events themselves
- * rather than from the store is what makes it exact: a lookup for "the
- * session's newest prompt" answers with whatever landed most recently, which a
- * member-shipped prompt or a subagent sibling can be.
- */
+/** The prompt that opens a turn; delayed results retain their own prompt without changing the active turn. */
 function turnOf(event: DerivedEvent): string | null {
-  if (event.kind === 'prompt' && event.opensTurn === false) return null;
-  // Every kind the parsers derive names its turn in the same field, a prompt
-  // included: a prompt's `promptId` is its own.
+  if (event.kind !== 'prompt' || event.opensTurn === false) return null;
   const named = event.payload.promptId;
   return typeof named === 'string' ? named : null;
 }
 
 /** Persists pass state and the dates of retained imported rows in one batch. */
-async function finalizePass(db: RelationalStore, target: ParseTarget, statement: PreparedStatement): Promise<void> {
-  await db.batch([statement, ...(target.imported ? [resolvePresentedDates(db, target.projectId, target.sessionId)] : [])]);
+async function finalizePass(db: RelationalStore, target: ParseTarget, statement: PreparedStatement | PreparedStatement[]): Promise<void> {
+  await db.batch([...(Array.isArray(statement) ? statement : [statement]), ...(target.imported ? [resolvePresentedDates(db, target.projectId, target.sessionId)] : [])]);
 }
 
 /** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
@@ -367,7 +358,7 @@ async function skipUnheld(
   // Where the cursor now stands is a segment's first byte or the end: no line of its segment is behind it.
   const statement = db
     .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN 0 ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?,
-                 open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+                 open_prompt_id = NULL, parser_context = NULL, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                WHERE project_id = ? AND transcript_id = ?`)
     .bind(to, to, now, target.projectId, target.transcriptId);
   await finalizePass(db, target, statement);
@@ -584,7 +575,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const heldEnd = readOffset + joined.length;
   const tail = heldEnd === target.size ? finalRecord(joined.subarray(split.nextOffset - readOffset), split.nextOffset) : null;
   let windowLines: ParsedLine[] | null = tail?.line === undefined || tail.line === null ? split.lines : [...split.lines, tail.line];
-  const windowEnd = tail === null ? split.nextOffset : heldEnd;
+  let windowEnd = tail === null ? split.nextOffset : heldEnd;
   // The window is lines from here on: its bytes are not read again.
   joined = new Uint8Array(0);
   split = null;
@@ -603,7 +594,12 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // recorded it. With it, an event derived after a break is identical to the
   // same event derived in one uninterrupted read, so a pass may stop anywhere
   // rather than only where a turn begins.
-  const transcriptMeta = target.parserContext ?? parser.headerContext?.(windowLines);
+  const stored = target.parserContext;
+  const continued = stored?.mycoParserState;
+  if (continued !== undefined && !isBlock(continued)) throw new Error('Stored parser continuation is not an object');
+  const transcriptMeta = stored?.mycoParserMeta !== undefined
+    ? (isBlock(stored.mycoParserMeta) ? stored.mycoParserMeta : undefined)
+    : stored === null || stored === undefined ? parser.headerContext?.(windowLines) : continued === undefined ? stored : undefined;
   if (recoveringHeader) {
     await env.db.prepare('UPDATE transcripts SET parser_context = ? WHERE project_id = ? AND transcript_id = ?')
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
@@ -611,7 +607,27 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   }
   let lines: ParsedLine[] | null = datedByPosition(windowLines, held);
   windowLines = null;
-  const events = await parser.parse({ lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta });
+  const chunkedState = continued?.chunked === true;
+  const initialState: ParserState = chunkedState ? await readParserCheckpoint(env.db, target, continued?.digest) : structuredClone(continued ?? {});
+  if (chunkedState) calls += 1;
+  if (typeof stored?.mycoLegacyResponseUntil === 'number') initialState.legacyReplies = { until: stored.mycoLegacyResponseUntil };
+  if (initialState.legacyReplies !== undefined && lines.length > LEGACY_REPLY_LINES_PER_READ) {
+    windowEnd = lines[LEGACY_REPLY_LINES_PER_READ].offset;
+    lines = lines.slice(0, LEGACY_REPLY_LINES_PER_READ);
+  }
+  const state: ParserState = structuredClone(initialState);
+  const input = { lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state };
+  const parsedEvents = await parser.parse(input);
+  const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
+  const events = preserveLegacyReplies(parsedEvents, state, heldReplies);
+  const stateAt = async (to: number): Promise<ParserState> => {
+    const checkpoint = to === windowEnd ? state : structuredClone(initialState);
+    if (to !== windowEnd) {
+      const prefix = await parser.parse({ ...input, lines: input.lines.filter((line) => line.offset < to), state: checkpoint });
+      preserveLegacyReplies(prefix, checkpoint, heldReplies);
+    }
+    return checkpoint;
+  };
   lines = null;
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
@@ -629,21 +645,22 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
    * events is in the store, so it can ride the batch that writes them: a pass whose last group did not land whole
    * leaves the cursor where it stood.
    */
-  const advanceTo = (to: number, openPrompt: string | null, landedIds?: readonly string[]): PreparedStatement => {
+  const advanceTo = async (to: number, openPrompt: string | null, landedIds?: readonly string[]): Promise<PreparedStatement[]> => {
     const guard = landedIds === undefined ? '' : ` AND (SELECT COUNT(*) FROM events WHERE project_id = ? AND event_id IN (${landedIds.map(() => '?').join(', ')})) = ?`;
-    return env.db
+    const checkpoint = await stateAt(to);
+    return parserCheckpointStatements(env.db, target, to, checkpoint, transcriptMeta, chunkedState, (context) => env.db
       .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
-                   fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = COALESCE(parser_context, ?),
+                   fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = CASE WHEN ? >= parsed_offset THEN ? ELSE parser_context END,
                    parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                  WHERE project_id = ? AND transcript_id = ?${guard}`)
-      .bind(to, linesBehind(to), to, now, PARSER_VERSION, parser.fidelity, to, openPrompt, transcriptMeta === undefined ? null : JSON.stringify(transcriptMeta),
-        target.projectId, target.transcriptId, ...(landedIds === undefined ? [] : [target.projectId, ...landedIds, landedIds.length]));
+      .bind(to, linesBehind(to), to, now, PARSER_VERSION, parser.fidelity, to, openPrompt, to, context,
+        target.projectId, target.transcriptId, ...(landedIds === undefined ? [] : [target.projectId, ...landedIds, landedIds.length])));
   };
   // Whether the cursor's advance rode the last group's batch and applied there.
   let advanced = false;
   const groups = eventGroups(events);
   // The line counts every cursor this pass can end at needs, read before the writes so the segment bytes they are
-  // counted in are let go first: a pass holds its events while it writes, and needs nothing else of the window.
+  // counted in are let go first. Parsed records remain available for a cursor's continuation checkpoint.
   const linesAt = new Map<number, number>([windowEnd, ...groups.map((group) => group[0].offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
   held = [];
   const linesBehind = (offset: number): number => {
@@ -678,10 +695,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     const last = g === groups.length - 1 && cursor > target.parsedOffset;
     const envelopes = last ? [...eventIds] : [];
     const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
-    const tail = last ? [advanceTo(cursor, turnAfter, envelopes), ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
+    const advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : [];
+    const tail = last ? [...advancement, ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
     const results = await env.db.batch([...writes.flatMap((w) => w.statements), ...tail]);
     calls += 1;
-    if (last) advanced = (results[writes.reduce((n, w) => n + w.statements.length, 0)] as { meta: { changes: number } }).meta.changes > 0;
+    if (last) advanced = (results[writes.reduce((n, w) => n + w.statements.length, 0) ] as { meta: { changes: number } }).meta.changes > 0;
 
     let offset = 0;
     for (const [n, write] of writes.entries()) {
@@ -711,7 +729,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // moved further keeps its own turn and no count: the pass after reads that segment from its first byte. An advance
   // the last batch carried is already in place; one it could not prove (a row held elsewhere as a duplicate) is made here.
   if (!advanced) {
-    await finalizePass(env.db, target, advanceTo(cursor, lastTurn));
+    await finalizePass(env.db, target, await advanceTo(cursor, lastTurn));
     calls += 1;
   }
 
@@ -734,8 +752,8 @@ export type RereadSelector = { agent: string } | { projectId: string; sessionId:
  * retention left, never before it: bytes read from a later segment as if they
  * began earlier would name every row at the wrong offset, and each would land a
  * second time. A transcript that holds no segment is left where it stands. The
- * open turn and any recorded failure or wait are cleared, the header context is
- * kept (it describes the file, not the cursor), and the tick's own parse job
+ * open turn and any recorded failure or wait are cleared, header context is
+ * preserved, and the tick's own parse job
  * does the rest under its ordinary call budget.
  *
  * Reading again is idempotent. Every derived event is named by its transcript
@@ -750,7 +768,7 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
     ? { sql: 'agent = ?', params: [selector.agent] }
     : { sql: 'project_id = ? AND session_id = ?', params: [selector.projectId, selector.sessionId] };
   const result = await db
-    .prepare(`UPDATE transcripts SET parsed_offset = (${FIRST_HELD_BYTE}), parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+    .prepare(`UPDATE transcripts SET parsed_offset = (${FIRST_HELD_BYTE}), parse_segment_lines = 0, open_prompt_id = NULL, parser_context = json_object('mycoLegacyResponseUntil', parsed_offset, 'mycoParserMeta', CASE WHEN json_type(parser_context, '$.mycoParserMeta') IS NOT NULL THEN json_extract(parser_context, '$.mycoParserMeta') ELSE json(parser_context) END), parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                WHERE ${where.sql} AND (${FIRST_HELD_BYTE}) IS NOT NULL`)
     .bind(...where.params)
     .run();

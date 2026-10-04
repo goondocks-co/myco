@@ -8,8 +8,8 @@
  * member's hook event lands in, so one row shape has one implementation and a
  * parser that invents a field is refused rather than stored.
  *
- * A parser is a pure function of the lines it is given. It holds no clock, no
- * store and no I/O, which is what lets one fixture prove one agent's format.
+ * A parser derives events from supplied lines and continuation. It holds no
+ * clock, store or I/O; a fixture exercises the format and its boundary state.
  *
  * Ids that a member also derives are derived here with the same parts through
  * `uuidv5`, which shares the member's namespace (`hash.ts`). A prompt the hook
@@ -53,6 +53,48 @@ export interface ParserInput {
    */
   openPromptId?: string;
   transcriptMeta?: Record<string, unknown>;
+  /** Mutable continuation committed at the same byte as the parse cursor. Absent for a complete-file parse. */
+  state?: ParserState;
+}
+
+export interface PendingCall {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  promptId?: string;
+  createdAt: number;
+  offset: number;
+}
+
+export interface ParserState {
+  pending?: Record<string, PendingCall>;
+  planPosition?: number;
+  legacyReplies?: { until: number; remaining?: string; promptId?: string };
+}
+
+/** A declared complete transcript records calls whose results never arrived. */
+export function unfinishedCalls(pending: Iterable<PendingCall>): DerivedEvent[] {
+  return [...pending].map((call) => ({
+    kind: 'tool.failure',
+    payload: { toolCallId: call.toolCallId, promptId: call.promptId, toolName: call.toolName, input: call.input,
+      success: false, errorMessage: 'tool call has no result in the transcript' },
+    createdAt: call.createdAt, offset: call.offset,
+  }));
+}
+
+/** Pending calls and plan positions survive read boundaries; a read boundary never closes a call. */
+export function parserContinuation(input: ParserInput): {
+  pending: Map<string, PendingCall>; position: number; save(position: number): void;
+} {
+  const pending = new Map(Object.entries(input.state?.pending ?? {}));
+  return {
+    pending, position: input.state?.planPosition ?? 0,
+    save(position) {
+      if (input.state === undefined) return;
+      input.state.pending = Object.fromEntries(pending);
+      input.state.planPosition = position;
+    },
+  };
 }
 
 /** A kind and a payload the catalogue admits, named by the byte offset that produced it. */
@@ -231,7 +273,7 @@ function truncated(text: string, bound: ResponseBound): string {
 /**
  * One turn's assistant messages as the responses that hold them.
  *
- * The messages join into one response, as they always have. When the joined
+ * The supplied message parts join into one response. When the joined
  * text would pass the catalogue's bound on `response.text` or the payload's
  * byte bound, the reply is split at message boundaries instead: each response
  * holds as many whole messages as fit and is named by its first message's

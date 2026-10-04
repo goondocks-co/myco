@@ -73,10 +73,10 @@ describe('parser registry', () => {
    * therefore ships green and captures nothing.
    */
   const FLOOR: Record<string, Record<string, number>> = {
-    'claude-code': { prompt: 2, response: 2, 'tool.use': 1, 'tool.failure': 1, plan: 1 },
+    'claude-code': { prompt: 2, response: 3, 'tool.use': 1, 'tool.failure': 1, plan: 1 },
     cline: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
     codex: { prompt: 1, response: 1, 'tool.use': 1 },
-    cursor: { prompt: 2, response: 2 },
+    cursor: { prompt: 2, response: 3 },
     opencode: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
     pi: { prompt: 1, response: 1, 'tool.use': 1 },
   };
@@ -151,12 +151,10 @@ describe('parser registry', () => {
 });
 
 describe('claude-code parser', () => {
-  it('derives prompts, one response per turn, tool calls and a plan', async () => {
+  it('derives prompts, one response per assistant record, tool calls and a plan', async () => {
     const events = await parseFixture('claude-code');
-    // Offset order, ties in insertion order: everything a turn produced is
-    // dated to the byte that produced it, and a turn's response is dated to
-    // the first assistant byte of the turn rather than its last.
-    expect(kinds(events)).toEqual(['prompt', 'plan', 'tool.use', 'response', 'tool.failure', 'prompt', 'response']);
+    // Events use their source record's byte, with ties in insertion order.
+    expect(kinds(events)).toEqual(['prompt', 'plan', 'response', 'tool.use', 'response', 'tool.failure', 'prompt', 'response']);
   });
 
   it('skips a meta record and never turns a tool result into a prompt', async () => {
@@ -192,7 +190,8 @@ describe('claude-code parser', () => {
     const first = only(events, 'prompt')[0].payload.promptId;
     expect(only(events, 'tool.use')[0].payload.promptId).toBe(first);
     expect(only(events, 'response')[0].payload.promptId).toBe(first);
-    expect(only(events, 'response')[1].payload.promptId).toBe(only(events, 'prompt')[1].payload.promptId);
+    expect(only(events, 'response')[1].payload.promptId).toBe(first);
+    expect(only(events, 'response')[2].payload.promptId).toBe(only(events, 'prompt')[1].payload.promptId);
   });
 
   it('lifts a plan out of its tag envelope with the member key, a title and its channel', async () => {
@@ -205,14 +204,15 @@ describe('claude-code parser', () => {
     expect(plan.payload.tags).toEqual(['ultraplan']);
   });
 
-  it('joins a turn\'s assistant text into one response rather than one per record', async () => {
+  it('names each assistant record by its own offset and keeps its turn prompt', async () => {
     const responses = only(await parseFixture('claude-code'), 'response');
-    // A tool result is not a turn boundary, so both assistant records of the
-    // first turn join into its single response.
-    expect(responses).toHaveLength(2);
+    expect(responses).toHaveLength(3);
     expect(responses[0].payload.text).toContain('Looking now.');
-    expect(responses[0].payload.text).toContain('Done.');
-    expect(responses[1].payload.text).toBe('Tests pass.');
+    expect(responses[1].payload.text).toBe('Done.');
+    expect(responses[2].payload.text).toBe('Tests pass.');
+    const assistantOffsets = linesOf('claude-parse-basic.jsonl').filter(({ value }) => value.type === 'assistant').map(({ offset }) => offset);
+    expect(responses.map(({ offset }) => offset)).toEqual(assistantOffsets);
+    expect(responses.map(({ payload }) => payload.responseId)).toEqual(await Promise.all(assistantOffsets.map((offset) => uuidv5('response', SESSION, String(offset)))));
   });
 
   it('records a call the transcript never answered rather than dropping it', async () => {
@@ -245,7 +245,7 @@ describe('claude-code parser', () => {
 
   it('parses a subagent sibling as an ordinary transcript of the same session', async () => {
     const events = await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-subagent.jsonl'), sessionId: SESSION, now: NOW });
-    expect(kinds(events)).toEqual(['prompt', 'tool.use', 'response']);
+    expect(kinds(events)).toEqual(['prompt', 'response', 'tool.use']);
     expect(only(events, 'tool.use')[0].payload.toolName).toBe('Grep');
   });
 });
@@ -266,13 +266,13 @@ describe('codex parser', () => {
   it('does not project developer messages as responses in the native rollout', async () => {
     const lines = linesOf('codex-0.153.4-redacted.jsonl');
     const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW });
-    expect(only(events, 'response')).toHaveLength(1);
+    expect(only(events, 'response')).toHaveLength(2);
     const assistantOffsets = lines.filter(({ value }) => {
       const payload = value.payload as { role?: string };
       return payload.role === 'assistant';
     }).map(({ offset }) => offset);
-    expect(only(events, 'response').map(({ offset }) => offset)).toEqual(assistantOffsets.slice(0, 1));
-    expect(only(events, 'response')[0].payload.text).toBe('[redacted text]\n\n[redacted text]');
+    expect(only(events, 'response').map(({ offset }) => offset)).toEqual(assistantOffsets);
+    expect(only(events, 'response').map(({ payload }) => payload.text)).toEqual(['[redacted text]', '[redacted text]']);
   });
 
   it('applies declared Codex prompt drops, origins and desktop rewriting', async () => {
@@ -344,7 +344,7 @@ describe('cursor parser', () => {
   it('declares the fidelity its format can support and derives no tool calls', async () => {
     expect(PARSERS.cursor.fidelity).toBe('no_tool_results');
     const events = await parseFixture('cursor');
-    expect(kinds(events)).toEqual(['prompt', 'response', 'prompt', 'response']);
+    expect(kinds(events)).toEqual(['prompt', 'response', 'response', 'prompt', 'response']);
   });
 
   it('reads a recorded cursor-agent transcript into its prompt and its reply (#1461)', async () => {
@@ -353,10 +353,11 @@ describe('cursor parser', () => {
       'List the files in this directory and say how many there are. Do not modify anything.',
     ]);
     const responses = only(events, 'response');
-    expect(responses).toHaveLength(1);
-    expect(responses[0].payload.promptId).toBe(only(events, 'prompt')[0].payload.promptId);
-    expect(responses[0].payload.text).toStartWith('Listing the directory contents without changing anything.\n\nTrying a simpler listing approach:');
-    expect(responses[0].payload.text).toEndWith('7. `AGENTS.md`\n\nNothing was modified.');
+    expect(responses).toHaveLength(4);
+    expect(responses.every(({ payload }) => payload.promptId === only(events, 'prompt')[0].payload.promptId)).toBe(true);
+    expect(responses[0].payload.text).toStartWith('Listing the directory contents without changing anything.');
+    expect(responses[responses.length - 1].payload.text).toEndWith('7. `AGENTS.md`\n\nNothing was modified.');
+    expect(new Set(responses.map(({ offset }) => offset)).size).toBe(responses.length);
   });
 
   it('takes what the person typed out of its <user_query> wrapper, and skips a line of injected context', async () => {
@@ -364,23 +365,19 @@ describe('cursor parser', () => {
     expect(only(events, 'prompt').map((e) => e.payload.text)).toEqual(['why is the daemon restarting', 'and how do I stop it']);
   });
 
-  it('drops the [REDACTED] reasoning masks and closes a reply at the end of its turn', async () => {
+  it('drops the [REDACTED] reasoning masks while retaining each assistant record', async () => {
     const events = await parseFixture('cursor');
     const [first, second] = only(events, 'prompt');
     expect(only(events, 'response').map((e) => ({ promptId: e.payload.promptId, text: e.payload.text }))).toEqual([
-      { promptId: first.payload.promptId, text: 'Checking the service log.\n\nThe lease expired.' },
+      { promptId: first.payload.promptId, text: 'Checking the service log.' },
+      { promptId: first.payload.promptId, text: 'The lease expired.' },
       { promptId: second.payload.promptId, text: 'Renew the lease before it lapses.' },
     ]);
   });
 });
 
-/**
- * A turn's reply longer than one response holds (#1144 parse errors on chatty
- * Codex Desktop turns). The joined reply is split at message boundaries into
- * responses the catalogue and the payload bound both admit; a reply that fits
- * keeps the id and text it always had.
- */
-describe('a reply longer than one response holds', () => {
+/** Each assistant record owns a stable response id and an independently bounded payload. */
+describe('responses across assistant records', () => {
   const TEXT_CHARS = (() => {
     const bound = kindSpec('response')?.fields.text.bound;
     if (bound?.type !== 'string') throw new Error('no string bound on response.text');
@@ -406,31 +403,25 @@ describe('a reply longer than one response holds', () => {
   ].join('\n') + '\n');
 
   for (const [agent, linesFor] of [['codex', codexLines], ['cursor', cursorLines]] as const) {
-    it(`${agent}: splits a 600,000-character turn at message boundaries into responses the catalogue admits`, async () => {
+    it(`${agent}: gives every message in a 600,000-character turn its own admitted response`, async () => {
       const replies = messages(24, 25_000);
       const lines = linesFor(replies);
       const events = await PARSERS[agent].parse({ lines, sessionId: SESSION, now: NOW });
       const responses = only(events, 'response');
       const whole = replies.join(REPLY_SEPARATOR);
       expect(whole.length).toBeGreaterThan(TEXT_CHARS);
-      expect(responses.length).toBeGreaterThan(1);
+      expect(responses).toHaveLength(replies.length);
       // Every response lands: the kind's bounds and the envelope's payload bound both hold.
       for (const r of responses) {
         expect(parsePayload(kindSpec('response')!, r.payload, NOW).ok).toBe(true);
         expect(payloadFits(r.payload)).toBe(true);
       }
-      // The responses are the reply exactly, split only where a message begins.
+      // The responses preserve the complete turn in message order.
       const texts = responses.map((r) => r.payload.text as string);
       expect(texts.join(REPLY_SEPARATOR)).toBe(whole);
       const assistantOffsets = lines.slice(1).map((l) => l.offset);
-      expect(responses.every((r) => assistantOffsets.includes(r.offset))).toBe(true);
-      expect(responses[0].offset).toBe(assistantOffsets[0]);
-      // Each response is as full as it can be: the next message would not have fit.
-      for (let i = 0; i < responses.length - 1; i += 1) {
-        const nextFirst = replies[assistantOffsets.indexOf(responses[i + 1].offset)];
-        expect(fitsOne(texts[i] + REPLY_SEPARATOR + nextFirst)).toBe(false);
-      }
-      // Each is named by its own first message's offset, and all of them answer the same prompt.
+      expect(responses.map((r) => r.offset)).toEqual(assistantOffsets.slice(0, replies.length));
+      // Each response is named by its message's offset and answers the same prompt.
       for (const r of responses) expect(r.payload.responseId).toBe(await uuidv5('response', SESSION, String(r.offset)));
       expect(new Set(responses.map((r) => r.payload.promptId)).size).toBe(1);
     });
@@ -452,13 +443,13 @@ describe('a reply longer than one response holds', () => {
     });
   }
 
-  it('keeps every response a reply that fits has always had: id, offset, time, prompt and text', async () => {
+  it('pins each response identity, offset, time, prompt and text from recorded transcripts', async () => {
     const pinned: Array<[string, string, number, string]> = [
       ['codex', 'codex-parse-basic.jsonl', 1, 'c828fd50ab8880c182b5dab339a9eaf01d5f61b9b7da72759ca24e19fa5ed9bb'],
       ['codex', 'codex-context-redacted.jsonl', 1, 'a183b0c3a973b1dcc572d1740c96fe5383ccb1ccdc5843c64e7e7c7ea24936f1'],
-      ['codex', 'codex-0.153.4-redacted.jsonl', 1, 'b9b5485d9a812fe5645edc297ef36b0ba7ea82bdcaf8139e86b6f6f0d4ea612c'],
-      ['cursor', 'cursor-parse-basic.jsonl', 2, '693870a68ffa541359c742e715c90bd3a5a4ba8dc26c57ed86a26a5e9ad18778'],
-      ['cursor', 'cursor-agent-2026.09-redacted.jsonl', 1, 'ada97dd05035b9a07a309c184c8a25ae72423f5a5c621c4a1d33fcb908dfc21f'],
+      ['codex', 'codex-0.153.4-redacted.jsonl', 2, 'e509dfdd1960a985628dc5525779a42bb60743d343328998cecafe850d6e3f01'],
+      ['cursor', 'cursor-parse-basic.jsonl', 3, '9318d1d827b3ba43f4950015e777e82fed8498db13149bad1aa57a01cd4a2ed0'],
+      ['cursor', 'cursor-agent-2026.09-redacted.jsonl', 4, '13e62935046bc301f4234ec09f2d144fe9accc93ee52225ec66724883ab0d026'],
     ];
     const seen = [];
     for (const [agent, file] of pinned) {

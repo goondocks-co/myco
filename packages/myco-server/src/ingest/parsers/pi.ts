@@ -18,7 +18,7 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  unfinishedCalls, parserContinuation, blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -29,14 +29,7 @@ const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uu
 const MYCO_CUSTOM_TYPES = new Set(['myco-context', 'myco-prompt-context']);
 
 /** A tool call an assistant turn opened, held until the result naming it arrives. */
-interface PendingCall {
-  toolCallId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-  createdAt: number;
-  offset: number;
-  promptId?: string;
-}
+
 
 interface PiMessage {
   role?: unknown;
@@ -67,9 +60,10 @@ export const piParser: TranscriptParser = {
 
   async parse(input: ParserInput): Promise<DerivedEvent[]> {
     const events: DerivedEvent[] = [];
-    const pending = new Map<string, PendingCall>();
+    const continuation = parserContinuation(input);
+    const pending = continuation.pending;
     let promptId = input.openPromptId;
-    let planPosition = 0;
+    let planPosition = continuation.position;
 
     for (const { value, offset, undatedAt } of input.lines as readonly ParsedLine[]) {
       const createdAt = lineTime({ timestamp: value.timestamp }, input.now, undatedAt);
@@ -153,25 +147,9 @@ export const piParser: TranscriptParser = {
       // `session` also carries the working directory attribution reads.
     }
 
-    // A call the window ends on has no result yet; the next pass sees its
-    // result with the call already consumed, so it is recorded here as an
-    // unclosed call rather than left out of the rows entirely.
-    for (const call of pending.values()) {
-      events.push({
-        kind: 'tool.failure',
-        payload: {
-          toolCallId: call.toolCallId,
-          promptId: call.promptId,
-          toolName: call.toolName,
-          input: call.input,
-          success: false,
-          errorMessage: 'tool call has no result in the transcript',
-        },
-        createdAt: call.createdAt,
-        offset: call.offset,
-      });
-    }
+    if (input.state === undefined) events.push(...unfinishedCalls(pending.values()));
 
+    continuation.save(planPosition);
     return events;
   },
 };

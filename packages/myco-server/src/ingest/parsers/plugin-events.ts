@@ -18,7 +18,7 @@
  * prompt at the moment capture is already degraded.
  */
 import {
-  lineTime, offsetIdFor, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  parserContinuation, lineTime, offsetIdFor, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type Fidelity, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -85,7 +85,8 @@ export function pluginEventsParser(options: {
     async parse(input: ParserInput): Promise<DerivedEvent[]> {
       const events: DerivedEvent[] = [];
       let promptId = input.openPromptId;
-      let planPosition = 0;
+      const continuation = parserContinuation(input);
+      let planPosition = continuation.position;
 
       for (const { value, offset, undatedAt } of input.lines as readonly ParsedLine[]) {
         const line = value as PluginLine;
@@ -154,6 +155,7 @@ export function pluginEventsParser(options: {
         // write a second one.
       }
 
+      continuation.save(planPosition);
       return events;
     },
   };
