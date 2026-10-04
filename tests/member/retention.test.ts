@@ -2,7 +2,8 @@
  * Retention keeps unacknowledged journals and their payloads deliverable at
  * every age. Delivered session state and unreferenced staged bytes may age out.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,7 @@ import { BUFFER_QUARANTINE_DIRNAME } from '@myco/capture/buffer.js';
 import { longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { attachmentEvent, mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { applySpoolRetention, lastAckAt, pruneDeliveredSessionState, unacknowledgedSince } from '@myco/member/retention.js';
+import { applySpoolRetention, lastAckAt, pruneDeliveredSessionState, sweepStagedBlobs, unacknowledgedSince } from '@myco/member/retention.js';
 import { drainBacklog, sessionTried } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
@@ -363,6 +364,57 @@ describe('spool retention', () => {
       expect(fs.existsSync(source.path)).toBe(true);
     } finally {
       fs.chmodSync(journal, 0o600);
+    }
+  });
+
+  it('keeps every staged byte when a readable journal contains a torn record', () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-torn-journal';
+    const orphan = spool.stagerFor(sessionId)(new Uint8Array([5, 6, 7, 8]), 'application/octet-stream');
+    spool.append(sessionId, promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'complete' }));
+    const journal = path.join(spool.dir, `${sessionId}.jsonl`);
+    fs.appendFileSync(journal, '{"_blobSource":');
+    const old = (Date.now() - longestDeclaredHookTimeoutMs() - DAY) / 1000;
+    fs.utimesSync(orphan.path, old, old);
+    expect(spool.readRecordsOrNull(sessionId)).toMatchObject({ readable: true, records: [expect.any(Object), null] });
+    expect(sweepStagedBlobs(spool, spool.sessionIds())).toBe(0);
+    expect(fs.existsSync(orphan.path)).toBe(true);
+    fs.writeFileSync(journal, fs.readFileSync(journal, 'utf-8').split('\n')[0] + '\n');
+    expect(sweepStagedBlobs(spool, spool.sessionIds())).toBe(1);
+    expect(fs.existsSync(orphan.path)).toBe(false);
+  });
+
+  it('does not delete a byte refreshed by a concurrent session stager', async () => {
+    const spool = new MemberSpool('proj_1', { mycoHome });
+    const sessionId = 'sess-racing-stage';
+    const source = spool.stagerFor(sessionId)(new Uint8Array([9, 8, 7, 6]), 'application/octet-stream');
+    spool.append(sessionId, promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'live' }));
+    const old = (Date.now() - longestDeclaredHookTimeoutMs() - DAY) / 1000;
+    fs.utimesSync(source.path, old, old);
+    const marker = path.join(mycoHome, 'stager-finished');
+    const spoolModule = path.resolve(SRC, 'spool.ts');
+    const script = `import fs from 'node:fs'; import { MemberSpool } from ${JSON.stringify(spoolModule)}; new MemberSpool('proj_1', { mycoHome: ${JSON.stringify(mycoHome)} }).stagerFor(${JSON.stringify(sessionId)})(new Uint8Array([9, 8, 7, 6]), 'application/octet-stream'); fs.writeFileSync(${JSON.stringify(marker)}, 'done');`;
+    const realStat = fs.statSync.bind(fs);
+    let child: ReturnType<typeof spawn> | undefined;
+    let finished: Promise<number | null> | undefined;
+    const paused = spyOn(fs, 'statSync').mockImplementation(((file: fs.PathLike, ...args: unknown[]) => {
+      const stat = realStat(file, ...args as []);
+      if (String(file) !== source.path || child !== undefined) return stat;
+      child = spawn(process.execPath, ['-e', script], { env: process.env, stdio: 'ignore' });
+      finished = new Promise<number | null>((resolve, reject) => { child!.on('error', reject); child!.on('exit', resolve); });
+      const deadline = Date.now() + 400;
+      while (!fs.existsSync(marker) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      return stat;
+    }) as typeof fs.statSync);
+    try {
+      sweepStagedBlobs(spool, spool.sessionIds());
+      expect(child).toBeDefined();
+      expect(await finished).toBe(0);
+      expect(fs.existsSync(marker)).toBe(true);
+      expect(fs.existsSync(source.path)).toBe(true);
+    } finally {
+      paused.mockRestore();
+      if (child?.exitCode === null) child.kill('SIGTERM');
     }
   });
 

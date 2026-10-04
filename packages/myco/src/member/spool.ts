@@ -40,8 +40,6 @@ const DRAIN_LEASE_SUFFIX = '.drain.lock';
 const TRANSCRIPT_BACKLOG_SUFFIX = '.transcript-backlog';
 /** Suffix of a session's state file, the sibling of its spool file. */
 const STATE_FILE_SUFFIX = '.state.json';
-/** The code the Deployment answers an event whose blob it does not hold. */
-const BLOB_ABSENT_CODE: MemberCode = 'blob_absent';
 
 /** The seven envelope fields; nothing else leaves the spool. */
 export const WIRE_FIELDS = ['eventId', 'sessionId', 'kind', 'createdAt', 'channel', 'producer', 'payload'] as const;
@@ -336,11 +334,15 @@ export class MemberSpool {
   stagerFor(sessionId: string): BlobStager {
     const dir = this.blobsDirFor(sessionId);
     return (bytes, mediaType) => {
-      ensureMemberDir(dir, this.mycoHome);
       const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
       const file = path.join(dir, sha256);
       const source = { path: file, sha256, mediaType, size: bytes.byteLength };
-      publishStagedBlob(source, bytes);
+      const lock = bufferLockPath(this.dir, sessionId);
+      ensurePrivateFile(lock);
+      withFileLockSync(lock, () => {
+        ensureMemberDir(dir, this.mycoHome);
+        publishStagedBlob(source, bytes);
+      });
       return source;
     };
   }
@@ -646,22 +648,24 @@ export class MemberSpool {
    */
   readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
     try {
-      const file = this.spoolFile(sessionId);
-      const lock = bufferLockPath(this.dir, sessionId);
-      if (!this.reachable(file) || !this.reachable(lock)) return { readable: false };
-      ensurePrivateFile(lock);
-      return withFileLockSync(lock, () => {
-        let raw: string;
-        try {
-          raw = fs.readFileSync(file, 'utf-8');
-        } catch {
-          return { readable: false as const };
-        }
-        return { readable: true as const, records: parseSpoolLines(raw) };
-      });
+      return this.withSessionRecordsLock(sessionId, (read) => read.readable ? read : { readable: false });
     } catch {
       return { readable: false };
     }
+  }
+
+  /** Keep journal accounting and staged-byte reclamation under the append and publication lock. */
+  withSessionRecordsLock<T>(sessionId: string, fn: (read: { readable: true; records: Array<SpoolRecord | null> } | { readable: false; absent?: true }) => T): T {
+    const file = this.spoolFile(sessionId);
+    const lock = bufferLockPath(this.dir, sessionId);
+    if (!this.reachable(file) || !this.reachable(lock)) throw new Error(UNAVAILABLE_PATH);
+    ensurePrivateFile(lock);
+    return withFileLockSync(lock, () => {
+      let raw: string;
+      try { raw = fs.readFileSync(file, 'utf8'); }
+      catch { return fn({ readable: false, ...(pathIsAbsent(file) ? { absent: true as const } : {}) }); }
+      return fn({ readable: true, records: parseSpoolLines(raw) });
+    });
   }
 
   /**
@@ -858,15 +862,12 @@ export class MemberSpool {
   // ---------------------------------------------------------------------------
 
   /**
-   * Upload a staged blob. `gone` when nothing is at the source any more (the
-   * event is sent without it, and the Deployment answers `blob_absent` unless
-   * it already holds the bytes); `unreadable` when the bytes may be there but
-   * could not be read.
+   * Upload a verified staged blob. Every unavailable payload holds its record for recovery.
    */
-  private async uploadBlob(client: ServerClient, source: BlobSource, budget: HookBudget, now: () => number, uploaded: Set<string>): Promise<Outcome | 'gone' | 'unreadable'> {
+  private async uploadBlob(client: ServerClient, source: BlobSource, budget: HookBudget, now: () => number, uploaded: Set<string>): Promise<Outcome | 'unreadable'> {
     if (uploaded.has(source.sha256)) return { class: 'acked', body: {} };
     const read = readStagedBlob(source);
-    if (read.status !== 'ready') return read.status === 'missing' ? 'gone' : 'unreadable';
+    if (read.status !== 'ready') return 'unreadable';
     const outcome = await client.postBlob(read.bytes, source.sha256, source.mediaType, clippedRequestBudget(budget, now()));
     if (outcome.class === 'acked') uploaded.add(source.sha256);
     return outcome;
@@ -917,10 +918,12 @@ export class MemberSpool {
         if (remaining > 0) return;
         // Only bytes this spool staged: a source outside the session's staging dir belongs to someone else.
         if (path.dirname(path.resolve(source.path)) !== path.resolve(this.blobsDirFor(sessionId))) return;
-        try {
-          if (fs.statSync(source.path).mtimeMs > settled) return;
-          fs.unlinkSync(source.path);
-        } catch { /* already gone */ }
+        withFileLockSync(bufferLockPath(this.dir, sessionId), () => {
+          try {
+            if (fs.statSync(source.path).mtimeMs > settled) return;
+            fs.unlinkSync(source.path);
+          } catch { /* already gone */ }
+        });
       };
       // A high-water past the held record ends the wait it set; one past a start settles the session's start.
       const persist = (highWater: number, acked?: boolean, passed?: SpoolRecord) => updateSessionState(this.dir, sessionId, (s) => {
@@ -933,14 +936,13 @@ export class MemberSpool {
         delete s.eventRetry;
       }, now());
       /**
-       * Whether a refusal is final for `record`: its code is permanent; the
-       * Deployment lacks bytes this member no longer holds; or no code names
+       * Whether a refusal is final for `record`: its code is permanent; or no code names
        * the cause and the holds before it were an unbroken run of such
        * refusals, begun at least `UNCLASSIFIED_REFUSAL_HOLD_MS` ago, whose own
        * wait has reached `REFUSAL_RETRY_MAX_MS`.
        */
-      const verdictOn = (record: SpoolRecord, code: MemberCode, sourceGone: boolean): 'final' | 'held-too-long' | 'held' => {
-        if (refusalPermanent(code) || (code === BLOB_ABSENT_CODE && sourceGone)) return 'final';
+      const verdictOn = (record: SpoolRecord, code: MemberCode): 'final' | 'held-too-long' | 'held' => {
+        if (refusalPermanent(code)) return 'final';
         if (REFUSAL_SUBJECT[code] !== 'unclassified') return 'held';
         const run = readSessionState(this.dir, sessionId).eventRetry?.unclassified;
         const heldTooLong = run !== undefined && run.backoffMs >= REFUSAL_RETRY_MAX_MS && now() - run.since >= UNCLASSIFIED_REFUSAL_HOLD_MS;
@@ -949,8 +951,8 @@ export class MemberSpool {
       /** Keep the record at the high-water, and every record after it, for a later pass: the session's wait starts or lengthens. */
       const hold = (unclassified: boolean) => deferAfterRefusal(this.dir, sessionId, 'eventRetry', now(), { unclassified });
       /** Log a refusal of `record` and apply it: true when the pass moves past the record, false when the record is held. */
-      const refuse = (record: SpoolRecord, code: MemberCode, reason: string, sourceGone: boolean): boolean => {
-        const verdict = verdictOn(record, code, sourceGone);
+      const refuse = (record: SpoolRecord, code: MemberCode, reason: string): boolean => {
+        const verdict = verdictOn(record, code);
         if (verdict === 'held') {
           const alreadyHeld = readSessionState(this.dir, sessionId).eventRetry !== undefined;
           const wait = hold(REFUSAL_SUBJECT[code] === 'unclassified');
@@ -983,19 +985,16 @@ export class MemberSpool {
           result.endedBy = 'protocol_mismatch';
           break;
         }
-        let sourceGone = false;
         if (record._blobSource) {
           const blobOutcome = await this.uploadBlob(activeClient, record._blobSource, budget, now, uploaded);
-          if (blobOutcome === 'gone') {
-            sourceGone = true;
-          } else if (blobOutcome === 'unreadable') {
+          if (blobOutcome === 'unreadable') {
             hold(false);
             stderr(`${record.kind} ${record.eventId}: its staged bytes at ${record._blobSource.path} could not be read — kept spooled with the session's later events, sent again later`);
             result.endedBy = 'unreadable';
             break;
           } else if (blobOutcome.class === 'refused') {
             // The record's bytes were refused: the refusal of the bytes is the record's.
-            if (refuse(record, blobOutcome.code, blobOutcome.reason, false)) continue;
+            if (refuse(record, blobOutcome.code, blobOutcome.reason)) continue;
             result.endedBy = 'refused';
             break;
           } else if (blobOutcome.class !== 'acked') {
@@ -1014,7 +1013,7 @@ export class MemberSpool {
             persist(i, true, record);
             continue;
           case 'refused':
-            if (refuse(record, outcome.code, outcome.reason, sourceGone)) continue;
+            if (refuse(record, outcome.code, outcome.reason)) continue;
             result.endedBy = 'refused';
             break pass;
           case 'reslice':

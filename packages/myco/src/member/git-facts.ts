@@ -74,9 +74,11 @@ export async function trackedChanges(cwd: string, budget: GitQueryBudget = {}): 
 /** Optional provenance receives at most this much hook time. */
 export const GIT_ENRICHMENT_CAP_MS = 500;
 
-/** One deadline covers discovery fallback and dirty queries, leaving the remaining hook budget for delivery. */
+/** Discovery fallback and dirty queries share a deadline that reserves a full request's headroom for delivery. */
 export async function sessionEndGitFacts(cwd: string, budget: HookBudget, now: number = Date.now()): Promise<Pick<GitFacts, 'headSha' | 'dirty'>> {
-  const deadline = Math.min(budget.deadline, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs);
+  const deliveryReserve = Math.max(budget.connectTimeoutMs, budget.requestTimeoutMs);
+  const deadline = Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs);
+  if (deadline <= now) return { headSha: undefined, dirty: undefined };
   const queryBudget = { deadline };
   const askGit = (args: string[], cwd: string): string => runGitAnswer(args, cwd, (args, cwd) => runGit(args, cwd, queryBudget));
   const head = gitHead(cwd, { askGit });

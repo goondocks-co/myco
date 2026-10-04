@@ -6,7 +6,7 @@
  * Repositories are made under `target/`, inside the checkout: every temporary folder is one the machine never
  * captures, so a repository there would say nothing.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -720,6 +720,36 @@ describe('the machine salt', () => {
 });
 
 describe('the pending spool', () => {
+  it('keeps a joined hook behind held capture until its unreadable blob can migrate', async () => {
+    const root = repository(path.join(base, 'Repos'), 'joined-held', 'https://github.com/acme/joined-held.git');
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const at = Date.now();
+    const held = pendingSpool(repo, { mycoHome, now: at })!;
+    const old = promptEvent({ agent: 'claude-code', sessionId: 'sess-order', stage: held.stagerFor('sess-order'), now: () => at },
+      { promptId: mintId(), text: 'held'.repeat(80_000) });
+    const transcriptPath = transcript(root, 'sess-order');
+    appendPending(repo, 'sess-order', [old], undefined, { mycoHome, now: at });
+    writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token,
+      root, machineId: TEST_MACHINE_ID, joinedAt: at, updatedAt: at }, { mycoHome });
+    const read = fs.readFileSync.bind(fs);
+    const fault = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      if (String(args[0]) === old.blobSource!.path) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
+      return Reflect.apply(read, fs, args);
+    }) as typeof fs.readFileSync);
+    try {
+      const blocked = await runHook('session-start', { session_id: 'sess-order', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
+        { fetch: rig.fetch, helpers: 'record' });
+      expect(blocked.stderr).not.toContain('session-start: dropped');
+      expect(held.readRecords('sess-order').map((record) => record?.kind)).toEqual(['prompt', 'session.start']);
+      expect(new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order')).toEqual([]);
+    } finally { fault.mockRestore(); }
+    await runHook('session-start', { session_id: 'sess-order', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
+      { fetch: rig.fetch, helpers: 'record' });
+    const records = new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order');
+    expect(records.map((record) => record?.kind)).toEqual(['prompt', 'session.start', 'session.start']);
+    expect(records[0]?.eventId).toBe(old.envelope.eventId);
+  });
+
   it('discards held capture once it is older than the TTL, and refuses more past the record cap', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
     const repo = { root, rootKey: rootKeyFor(root, mycoHome) };

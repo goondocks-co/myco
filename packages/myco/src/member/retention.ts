@@ -174,7 +174,7 @@ export function unacknowledgedSince(spool: MemberSpool, sessionId: string): numb
  * longest timeout a hook can declare is left alone: past that the harness has
  * killed whoever staged it, so "unreferenced" is a fact rather than a race.
  */
-export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string[], now: number = Date.now()): number {
+export function sweepStagedBlobs(spool: MemberSpool, _sessionIds: readonly string[], now: number = Date.now()): number {
   let released = 0;
   let staged: fs.Dirent[];
   try {
@@ -190,7 +190,6 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
       released += 1;
     } catch { /* already gone */ }
   };
-  const live = new Set(sessionIds);
   for (const entry of staged) {
     // Bytes a project-wide-dir build staged sit directly under `blobs/`; no
     // record of this build names them by that path, so they are reclaimable.
@@ -199,27 +198,29 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
       continue;
     }
     const dir = spool.blobsDirFor(entry.name);
-    let files: string[];
     try {
-      files = fs.readdirSync(dir);
+      spool.withSessionRecordsLock(entry.name, (read) => {
+        if (!read.readable && read.absent !== true) return;
+        if (read.readable && read.records.includes(null)) return;
+        let files: string[];
+        try { files = fs.readdirSync(dir); } catch { return; }
+        const referenced = new Set<string>();
+        if (read.readable) {
+          for (const record of read.records) {
+            const source = blobSourceOf(record);
+            if (source) referenced.add(source.sha256);
+          }
+        }
+        for (const file of files) {
+          if (referenced.has(file)) continue;
+          reclaim(path.join(dir, file));
+        }
+        if (referenced.size === 0) {
+          try { fs.rmdirSync(dir); } catch { /* not empty, or still in use */ }
+        }
+      });
     } catch {
-      continue;
-    }
-    const referenced = new Set<string>();
-    if (live.has(entry.name)) {
-      const read = spool.readRecordsOrNull(entry.name);
-      if (!read.readable) continue;
-      for (const record of read.records) {
-        const source = blobSourceOf(record);
-        if (source) referenced.add(source.sha256);
-      }
-    }
-    for (const file of files) {
-      if (referenced.has(file)) continue;
-      reclaim(path.join(dir, file));
-    }
-    if (referenced.size === 0) {
-      try { fs.rmdirSync(dir); } catch { /* not empty, or still in use */ }
+      process.stderr.write(`[myco] member: staged bytes for session ${entry.name} could not be checked — kept for a later sweep\n`);
     }
   }
   return released;

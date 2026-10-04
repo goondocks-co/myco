@@ -5,7 +5,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
-import { appendPending, flushPending, pendingDir, pendingSpool } from '@myco/member/pending.js';
+import { appendPending, appendPendingTurnEnd, expirePending, flushPending, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
+import { registryEntryPath, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient } from '@myco/member/transport.js';
@@ -175,5 +176,39 @@ describe('staged capture durability', () => {
       expect(lines.join('')).toContain('missing');
       expect(lines.join('')).toContain('kept');
     } finally { diagnostic.mockRestore(); }
+  });
+
+  it('new capture and turn marks stay behind held capture when join migration cannot read its payload', () => {
+    const mycoHome = tempMycoHome();
+    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32) };
+    fs.mkdirSync(repo.root);
+    const opts = { mycoHome, now: Date.now() };
+    const source = pendingSpool(repo, opts)!;
+    const old = promptEvent(context(source, 'ordered'), { promptId: mintId(), text: LARGE });
+    const fresh = promptEvent(context(source, 'ordered'), { promptId: mintId(), text: 'new capture' });
+    appendPending(repo, 'ordered', [old], undefined, opts);
+    writeRegistryEntry({ version: REGISTRY_VERSION, root: repo.root, projectId: 'proj_1', serverUrl: 'https://s', token: 'fixture-token', machineId: 'machine_1', joinedAt: opts.now, updatedAt: opts.now }, { mycoHome });
+    const read = fs.readFileSync.bind(fs);
+    let registryUnavailable = false;
+    const fault = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      if (String(args[0]) === old.blobSource!.path) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
+      if (registryUnavailable && String(args[0]) === registryEntryPath(repo.root, mycoHome)) throw Object.assign(new Error('injected registry failure'), { code: 'EACCES' });
+      return Reflect.apply(read, fs, args);
+    }) as typeof fs.readFileSync);
+    const mark = { slot: 'primary' as const, transcriptId: 'tx_1234', atSize: 10 };
+    const target = new MemberSpool('proj_1', { mycoHome });
+    try {
+      expect(appendPending(repo, 'ordered', [fresh], undefined, opts)).toBe('pending');
+      expect(appendPendingTurnEnd(repo, 'ordered', mark, undefined, opts)).toBe('pending');
+      expect(target.readRecords('ordered')).toHaveLength(0);
+      expect(target.pendingTurnEnds('ordered')).toHaveLength(0);
+      expect(expirePending(repo.rootKey, { mycoHome, now: opts.now + 2 * PENDING_TTL_MS })).toBe(false);
+      registryUnavailable = true;
+      expect(expirePending(repo.rootKey, { mycoHome, now: opts.now + 2 * PENDING_TTL_MS })).toBe(false);
+      expect(source.readRecords('ordered')).toHaveLength(2);
+    } finally { fault.mockRestore(); }
+    expect(flushPending(repo.rootKey, target, opts)).toBe(2);
+    expect(target.readRecords('ordered').map((line) => line?.eventId)).toEqual([old.envelope.eventId, fresh.envelope.eventId]);
+    expect(target.pendingTurnEnds('ordered')).toHaveLength(1);
   });
 });

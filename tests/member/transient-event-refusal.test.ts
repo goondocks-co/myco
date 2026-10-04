@@ -357,7 +357,7 @@ describe('an event refused for a passing reason', () => {
     }
   });
 
-  it('drops a record whose staged bytes are gone when the Deployment holds none, and one whose bytes are refused for good, without holding the session', async () => {
+  it('holds missing staged bytes for recovery, then drops only a payload the Deployment refuses permanently', async () => {
     const rig = await memberRig();
     const spool = new MemberSpool(PROJECT, { mycoHome });
     const ctx = ctxFor(spool, 'sess-bytes');
@@ -373,12 +373,15 @@ describe('an event refused for a passing reason', () => {
     };
     const spy = answering({ ...rig, fetch: blobCap });
 
+    expect(await spool.drainSession('sess-bytes', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ refused: 0, acked: 0, remaining: 3, endedBy: 'unreadable' });
+    expect(spy.answers).toHaveLength(0);
+    ctx.stage!(Buffer.from('g'.repeat(300_000)), gone.blobSource!.mediaType);
     const result = await spool.drainSession('sess-bytes', clientFor(rig, spy.fetch), unboundedBudget());
-    expect(result).toMatchObject({ refused: 2, acked: 1, remaining: 0, endedBy: 'drained' });
-    expect(spool.readRefused().entries.map((e) => [e.eventId, e.code])).toEqual([[gone.envelope.eventId, 'blob_absent'], [capped.envelope.eventId, 'blob_cap']]);
+    expect(result).toMatchObject({ refused: 1, acked: 2, remaining: 0, endedBy: 'drained' });
+    expect(spool.readRefused().entries.map((e) => [e.eventId, e.code])).toEqual([[capped.envelope.eventId, 'blob_cap']]);
     // The capped record's event was never offered: its bytes' refusal is its own.
     expect(spy.answers.map((a) => a.eventId)).toEqual([gone.envelope.eventId, after.envelope.eventId]);
-    expect(storedIds(rig, 'sess-bytes')).toEqual([after.envelope.eventId]);
+    expect(storedIds(rig, 'sess-bytes')).toEqual([gone.envelope.eventId, after.envelope.eventId]);
   });
   it('holds a record whose staged bytes are there but could not be read, keeps the bytes, and delivers it once they can be', async () => {
     const rig = await memberRig();

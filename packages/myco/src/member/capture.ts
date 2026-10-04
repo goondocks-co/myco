@@ -22,7 +22,7 @@ import { withAsk, type ContextAsk } from './context-cache.js';
 import { deliveryNotice, withNotice } from './delivery-notice.js';
 import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
 import { appendPending, appendPendingTurnEnd } from './pending.js';
-import { flushHeldCapture } from './held.js';
+import { joinedCaptureHold } from './held.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
@@ -231,15 +231,17 @@ export async function runMemberHook(
       credential = hold.credential;
     }
 
-    // A repository connected while its hooks held capture: what they held joins this run's spool first.
-    if (hold === null && credential.root !== undefined) flushHeldCapture(credential.root, credential.projectId, { mycoHome, now: now() });
-    const spool = hold?.spool ?? new MemberSpool(credential.projectId, { mycoHome });
+    const joinedHold = hold === null && credential.root !== undefined
+      ? joinedCaptureHold(credential.root, credential.projectId, { mycoHome, now: now() }) : null;
+    const pending = hold ?? joinedHold;
+    if (joinedHold !== null && joinedHold.spool === null) { joinSteps(); return; }
+    const spool = pending?.spool ?? new MemberSpool(credential.projectId, { mycoHome });
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const serverUrl = credential.serverUrl;
     const run: HookRun = {
       hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, mycoHome,
       machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
-      ...(hold !== null ? { pending: true } : {}),
+      ...(pending !== null ? { pending: true } : {}),
     };
 
     const outcome = await handle(run);
@@ -257,7 +259,7 @@ export async function runMemberHook(
     // project's spool once the join has connected it. It is delivered once the repository is connected, by the helper
     // its next hook kicks; until then nothing is dialled and no helper is started.
     const append = (events: readonly OutboundEvent[], receipt?: (state: SessionState) => void): void => {
-      if (hold !== null) appendPending(hold.repo, sessionId, events, receipt, { mycoHome, now: now() });
+      if (pending !== null) appendPending(pending.repo, sessionId, events, receipt, { mycoHome, now: now() });
       else spool.appendAndRecord(sessionId, events, receipt, now());
     };
     let appendedEvents = outcome.events;
@@ -275,7 +277,7 @@ export async function runMemberHook(
         }
       }
       if (turnEnd !== undefined) {
-        if (hold !== null) appendPendingTurnEnd(hold.repo, sessionId, turnEnd, undefined, { mycoHome, now: now() });
+        if (pending !== null) appendPendingTurnEnd(pending.repo, sessionId, turnEnd, undefined, { mycoHome, now: now() });
         else spool.appendTurnEnd(sessionId, turnEnd, undefined, now());
       }
     } finally {
@@ -283,7 +285,7 @@ export async function runMemberHook(
     }
 
     // Work for the helper: records appended, context asked for, or a turn's or a session's end to deliver.
-    if (hold === null && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
+    if (pending === null && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
       const reason: KickReason = outcome.ends ?? 'capture';
       const target = { projectId: credential.projectId, mycoHome, reason };
       // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a

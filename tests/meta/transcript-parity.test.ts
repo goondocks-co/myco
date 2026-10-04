@@ -113,9 +113,9 @@ describe('retained-hook replay reproduces the parity rows', () => {
     for (const kind of ['prompt', 'tool.use', 'response', 'plan']) expect({ kind, producers: [...producers(kind)] }).toEqual({ kind, producers: [TRANSCRIPT_PRODUCER.adapter] });
     // A turn's start and end are the member's own records of when the turn ran, not rows of it.
     const member = (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> ? AND kind <> 'turn' ORDER BY received_at, rowid`).all(TRANSCRIPT_PRODUCER.adapter) as { kind: string }[]).map((r) => r.kind);
-    expect(member).toEqual(['session.start', 'transcript.segment', 'session.end']);
-    // One events row per fact: a second writer would show here before it showed anywhere else.
-    expect((rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n).toBe(3 + 2 + 1 + 1 + 2);
+    expect(member).toEqual(['session.start', 'transcript.segment', 'session.end', 'session.end']);
+    // Mandatory end capture and optional provenance share one projected observation.
+    expect((rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n).toBe(4 + 2 + 1 + 1 + 2);
     expect(rig.rows('prompt_batches')).toBe(2);
     expect(rig.rows('responses')).toBe(2);
   });

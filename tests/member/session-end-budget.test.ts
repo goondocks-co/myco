@@ -8,32 +8,39 @@ import { readSessionState, sessionStatePath } from '@myco/member/session-state.j
 import { findGitBinary } from '@myco/utils/git.js';
 import { __resetGitBinaryCacheForTest } from '@myco/utils/git.js';
 import { sessionEndGitFacts } from '@myco/member/git-facts.js';
-import { resolveHookBudget } from '@myco/member/budget.js';
+import { canStartRequest, resolveHookBudget } from '@myco/member/budget.js';
 import { REPO_ROOT } from '../helpers/import-closure.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 describe.skipIf(process.platform === 'win32')('SessionEnd Git enrichment budget', () => {
-  it('bounds synchronous Git discovery by the same optional deadline', async () => {
-    const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-git-fallback-')));
-    const fake = path.join(root, 'slow-git.js');
-    fs.writeFileSync(fake, 'setTimeout(() => process.exit(0), 4000);\n');
-    fs.writeFileSync(path.join(root, 'git'), `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
-    const oldPath = process.env.PATH;
-    const oldGitDir = process.env.GIT_DIR;
-    process.env.PATH = `${root}${path.delimiter}${oldPath}`;
-    process.env.GIT_DIR = path.join(root, 'steered.git');
-    __resetGitBinaryCacheForTest();
-    try {
-      const started = Date.now();
-      const facts = await sessionEndGitFacts(root, resolveHookBudget('claude-code', 'session-end', { startedAt: started }));
-      expect(Date.now() - started).toBeLessThan(850);
-      expect(facts).toEqual({ headSha: undefined, dirty: undefined });
-    } finally {
-      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
-      if (oldGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGitDir;
+  for (const nearDeadline of [false, true]) {
+    it(nearDeadline ? 'skips optional Git near the hook deadline so inline delivery can still start' : 'bounds synchronous Git discovery by the same optional deadline', async () => {
+      const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-git-fallback-')));
+      const fake = path.join(root, 'slow-git.js');
+      const called = path.join(root, 'git-called');
+      fs.writeFileSync(fake, `require('node:fs').writeFileSync(${JSON.stringify(called)}, 'called');\nsetTimeout(() => process.exit(0), 4000);\n`);
+      fs.writeFileSync(path.join(root, 'git'), `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+      const oldPath = process.env.PATH;
+      const oldGitDir = process.env.GIT_DIR;
+      process.env.PATH = `${root}${path.delimiter}${oldPath}`;
+      process.env.GIT_DIR = path.join(root, 'steered.git');
       __resetGitBinaryCacheForTest();
-    }
-  });
+      try {
+        const started = Date.now();
+        const budget = resolveHookBudget('claude-code', 'session-end', { startedAt: started });
+        if (nearDeadline) budget.deadline = started + budget.connectTimeoutMs + 100;
+        const facts = await sessionEndGitFacts(root, budget);
+        expect(Date.now() - started).toBeLessThan(850);
+        expect(facts).toEqual({ headSha: undefined, dirty: undefined });
+        expect(fs.existsSync(called)).toBe(!nearDeadline);
+        if (nearDeadline) expect(canStartRequest(budget)).toBe(true);
+      } finally {
+        if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+        if (oldGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGitDir;
+        __resetGitBinaryCacheForTest();
+      }
+    });
+  }
 
   it('commits mandatory end capture and the transcript receipt before slow Git, leaving time for inline delivery', () => {
     const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-end-budget-')));

@@ -15,12 +15,12 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, toWire, type TurnEndMark } from './spool.js';
-import { readRegistryEntry } from './registry.js';
+import { readRegistryEntry, readRegistryEntryResult } from './registry.js';
 import { readSessionState, readSessionStateResult, type SessionState } from './session-state.js';
 import { readStagedBlob } from './staged-blobs.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
-import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 export const PENDING_DIRNAME = 'pending';
 /** How long capture waits for its repository to join before it is discarded. */
@@ -72,6 +72,14 @@ function readMeta(dir: string): PendingMeta | null {
   if (!read.ok) return null;
   const value = read.value;
   return value?.version === META_VERSION && typeof value.root === 'string' && typeof value.createdAt === 'number' ? value : null;
+}
+
+/** A pending obligation remains until its metadata is verifiably absent. */
+export function hasPendingCapture(rootKey: string, mycoHome: string): boolean {
+  const dir = pendingDir(rootKey, mycoHome);
+  if (!pathIsAbsent(path.join(dir, META_FILE))) return true;
+  try { return fs.readdirSync(dir).some((name) => name.endsWith('.jsonl') || name.endsWith('.state.json') || name.endsWith('.turns')); }
+  catch { return !pathIsAbsent(dir); }
 }
 
 const endedPath = (rootKey: string, mycoHome: string): string => path.join(pendingRoot(mycoHome), `${rootKey}.ended.json`);
@@ -149,6 +157,15 @@ function restaged(events: readonly OutboundEvent[], into: MemberSpool, sessionId
   return kept;
 }
 
+/** New capture follows held capture; an incomplete migration keeps both in the pending spool. */
+function connectedSpool(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }): MemberSpool | null {
+  const entry = readRegistryEntry(repo.root, opts.mycoHome);
+  if (entry === null) return null;
+  const project = new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
+  moveHeld(repo.rootKey, project, opts);
+  return hasPendingCapture(repo.rootKey, opts.mycoHome) ? null : project;
+}
+
 /**
  * Append a hook's capture for a repository that had no connection when the hook began: into the pending spool, or,
  * where the join connected the repository meanwhile, into the project's own spool. Where the capture lands, or `full`
@@ -159,11 +176,8 @@ export function appendPending(
   opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
   return withPendingLock(repo.rootKey, opts.mycoHome, () => {
-    const entry = readRegistryEntry(repo.root, opts.mycoHome);
-    if (entry !== null) {
-      // Connected while this hook ran, and perhaps not yet settled: the held capture goes first, so this lands after it.
-      const project = new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
-      moveHeld(repo.rootKey, project, opts);
+    const project = connectedSpool(repo, opts);
+    if (project !== null) {
       try {
         project.appendAndRecord(sessionId, restaged(events, project, sessionId), record, opts.now);
         return 'project';
@@ -199,10 +213,8 @@ export function appendPendingTurnEnd(
   record: ((state: SessionState) => void) | undefined, opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
   return withPendingLock(repo.rootKey, opts.mycoHome, () => {
-    const entry = readRegistryEntry(repo.root, opts.mycoHome);
-    if (entry !== null) {
-      const project = new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
-      moveHeld(repo.rootKey, project, opts);
+    const project = connectedSpool(repo, opts);
+    if (project !== null) {
       project.appendTurnEnd(sessionId, mark, record, opts.now);
       return 'project';
     }
@@ -228,11 +240,19 @@ export function appendPendingTurnEnd(
  * moved (blobs a hook staged as the move ran) once they are as old. Whether anything was discarded.
  */
 export function expirePending(rootKey: string, opts: { mycoHome: string; now: number }): boolean {
+  return withPendingLock(rootKey, opts.mycoHome, () => expirePendingUnlocked(rootKey, opts));
+}
+
+function expirePendingUnlocked(rootKey: string, opts: { mycoHome: string; now: number }): boolean {
   const dir = pendingDir(rootKey, opts.mycoHome);
   const meta = readMeta(dir);
   let since: number;
-  if (meta !== null) since = meta.createdAt;
+  if (meta !== null) {
+    if (readRegistryEntryResult(meta.root, opts.mycoHome).status !== 'missing') return false;
+    since = meta.createdAt;
+  }
   else {
+    if (hasPendingCapture(rootKey, opts.mycoHome)) return false;
     try { since = fs.statSync(dir).mtimeMs; } catch { return false; }
   }
   if (opts.now - since < PENDING_TTL_MS) return false;
