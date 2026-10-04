@@ -245,7 +245,7 @@ describe('what Status answers about workers', () => {
     expect(JSON.stringify(body.workers)).not.toContain(worker1.token);
   });
 
-  it('keeps a value an older deployment stored for a control the dashboard no longer offers', async () => {
+  it('omits a retired setting inserted after migration and refuses its writes', async () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.harness','"claude-sdk"',1,'historic')`);
     const written = await worker.fetch(await asOwnerPut('/api/settings/agent.harness', { value: 'replacement' }), { ...r.e.env, ...OWNER_ENV });
@@ -253,7 +253,8 @@ describe('what Status answers about workers', () => {
 
     const res = await worker.fetch(await asOwner('/api/settings'), { ...r.e.env, ...OWNER_ENV });
     const body = await res.json() as { leaves: { leaf: string; value: unknown; configured: boolean }[] };
-    expect(body.leaves.find((l) => l.leaf === 'agent.harness')).toMatchObject({ value: 'claude-sdk', configured: true });
+    expect(body.leaves.find((l) => l.leaf === 'agent.harness')).toBeUndefined();
+    expect(r.e.sqlite.query("SELECT value FROM deployment_settings WHERE leaf = 'agent.harness'").get()).toEqual({ value: '"claude-sdk"' });
   });
 
   it('answers unavailable rather than zero workers when the store cannot be read', async () => {

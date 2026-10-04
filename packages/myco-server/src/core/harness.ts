@@ -36,7 +36,7 @@ import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
-import { runtimeProbePreferences } from './runtime-probe.js';
+import { runtimeProbeModel } from './runtime-probe.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
 import { credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
@@ -87,7 +87,7 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   no_instruction: 'this server has no instructions for that task',
   not_landed: 'no machine can run that task yet',
   unknown_project: 'the project is not on this server',
-  probe_preferences_invalid: 'The retained container check cannot use its stored preferences or key.',
+  probe_preferences_invalid: 'The retained container check needs a usable Anthropic key and Claude Code default-tier model.',
   no_provider: 'search embeddings are unavailable; configure an embedding provider',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
 };
@@ -532,18 +532,13 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
     return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.model, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
   }
 
-  const archived = await runtimeProbePreferences(env.db, task);
-  const { type: providerType, model, baseUrl } = archived;
-  if (providerType === null) return { ok: false, refusal: 'probe_preferences_invalid' };
-  const provider: Record<string, unknown> = { type: providerType, ...(model === null ? {} : { model }) };
-  let credentialEnv: Record<string, string> = {};
-  if (providerType === 'anthropic') {
-    const key = await openProviderCredential(env.db, env.wrappingKey, 'anthropic');
-    if (key === null) return { ok: false, refusal: 'probe_preferences_invalid' };
-    credentialEnv = providerCredentialEnv(providerType, key);
-  } else if (providerType === 'openai-compatible' && baseUrl !== null) {
-    provider.baseUrl = baseUrl;
-  } else return { ok: false, refusal: 'probe_preferences_invalid' };
+  const key = await openProviderCredential(env.db, env.wrappingKey, 'anthropic');
+  if (key === null) return { ok: false, refusal: 'probe_preferences_invalid' };
+  const model = await runtimeProbeModel(env, task);
+  if (model === null) return { ok: false, refusal: 'probe_preferences_invalid' };
+  const providerType = 'anthropic';
+  const provider = { type: providerType, model };
+  const credentialEnv = providerCredentialEnv(providerType, key);
   const admission = gate.kind === 'capture' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
   return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType, model, provider, credentialEnv, admission } };
 }

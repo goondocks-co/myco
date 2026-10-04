@@ -25,7 +25,7 @@ export type SettingState = 'active' | 'inactive' | 'not-applicable' | 'invalid' 
  * Deployment runs on, a derived constant, nothing at all (`unset`), or nowhere usable because the stored value is
  * invalid.
  */
-export type SettingSource = 'configured' | 'default' | 'task-override' | 'platform' | 'derived' | 'unset' | 'invalid';
+export type SettingSource = 'configured' | 'default' | 'task-override' | 'platform' | 'derived' | 'unset' | 'invalid' | 'member-cache';
 
 /** The effective answer for one leaf, as the consumer that acts on it resolves it. */
 export interface EffectiveSetting {
@@ -41,6 +41,8 @@ export interface EffectiveSetting {
   appliesTo: readonly DeploymentTarget[];
   /** Changes whenever the stored value is written or reset. */
   revision: string;
+  /** Whether the whole stored value applies; null when no value is stored. */
+  storedApplies?: boolean | null;
 }
 
 /** One embedding model as a target offers it, and why it cannot be chosen now, if it cannot. */

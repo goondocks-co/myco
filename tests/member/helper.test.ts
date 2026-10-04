@@ -5,12 +5,13 @@
  * a session's end dials past the offline latch; any other kick waits for it. A kick the helper cannot outlive is
  * logged and answered so its caller ships inline.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { helperPass, runHelperVerb } from '@myco/cli/member-helper.js';
 import { HELPER_START_GRACE_MS, helperLogPath, helperPaths, kickHelper, runHelper, shipsInline, type KickOutcome } from '@myco/member/helper.js';
 import { updateSessionState } from '@myco/member/session-state.js';
+import { machineSettingsPath } from '@myco/member/registry.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -127,6 +128,76 @@ describe('a kick', () => {
 });
 
 describe('myco member helper', () => {
+  for (const damage of ['loose-mode', 'truncated', 'foreign-owner', 'unreadable', 'directory'] as const) {
+    it(`delivers capture with ${damage} machine-settings order file`, async () => {
+      const rig = await memberRig();
+      registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
+      const spool = new MemberSpool(PROJECT, { mycoHome });
+      const sessionId = `sess-order-${damage}`;
+      const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
+      spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'must arrive' }));
+      updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'start', at: Date.now() }]; });
+      const orderFile = `${machineSettingsPath('https://s', mycoHome)}.order`;
+      fs.mkdirSync(path.dirname(orderFile), { recursive: true, mode: 0o700 });
+      if (damage === 'directory') fs.mkdirSync(orderFile, { mode: 0o700 });
+      else fs.writeFileSync(orderFile, damage === 'truncated' ? '{"issued":' : '{"issued":999,"received":999}\n', { mode: damage === 'loose-mode' ? 0o644 : 0o600 });
+      const realLstat = fs.lstatSync;
+      const ownerStat = damage === 'foreign-owner' ? spyOn(fs, 'lstatSync').mockImplementation(((file: fs.PathLike, ...args: unknown[]) => {
+        const result = Reflect.apply(realLstat, fs, [file, ...args]) as fs.Stats;
+        return String(file) === orderFile ? Object.assign(Object.create(Object.getPrototypeOf(result)), result, { uid: result.uid + 1 }) : result;
+      }) as typeof fs.lstatSync) : null;
+      const realStat = fs.statSync;
+      const unreadableStat = damage === 'unreadable' ? spyOn(fs, 'statSync').mockImplementation(((file: fs.PathLike, ...args: unknown[]) => {
+        if (String(file) === orderFile) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        return Reflect.apply(realStat, fs, [file, ...args]);
+      }) as typeof fs.statSync) : null;
+      const diagnostics: string[] = [];
+      const write = damage === 'foreign-owner' ? spyOn(process.stderr, 'write').mockImplementation(((chunk: string) => {
+        diagnostics.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write) : null;
+      try {
+        await helperPass(PROJECT, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true });
+      } finally { ownerStat?.mockRestore(); unreadableStat?.mockRestore(); write?.mockRestore(); }
+      expect(rig.rows('events')).toBe(1);
+      expect(spool.depth(sessionId)).toBe(0);
+      if (damage === 'foreign-owner' && typeof process.getuid === 'function') expect(diagnostics.join('')).toContain('foreign-owner');
+      if (damage === 'directory') expect(fs.statSync(orderFile).isDirectory()).toBe(true);
+      else {
+        expect(JSON.parse(fs.readFileSync(orderFile, 'utf-8')).issued).toBeGreaterThan(999);
+        if (process.platform !== 'win32') expect(fs.statSync(orderFile).mode & 0o777).toBe(0o600);
+      }
+    });
+  }
+
+  it('drains the backlog when optional prefetch throws', async () => {
+    const rig = await memberRig();
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
+    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const sessionId = 'sess-prefetch-fails';
+    const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
+    spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'must arrive' }));
+    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'start', at: Date.now() }]; });
+    const orderFile = `${machineSettingsPath('https://s', mycoHome)}.order`;
+    const realRename = fs.renameSync;
+    const rename = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to) === orderFile || String(to) === `${orderFile}-checkpoint`) throw new Error('optional order write failed');
+      return realRename(from, to);
+    });
+    const diagnostics: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    const write = spyOn(process.stderr, 'write').mockImplementation(((chunk: string) => {
+      diagnostics.push(String(chunk));
+      return realWrite(chunk);
+    }) as typeof process.stderr.write);
+    try {
+      await helperPass(PROJECT, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true });
+    } finally { rename.mockRestore(); write.mockRestore(); }
+    expect(rig.rows('events')).toBe(1);
+    expect(spool.depth(sessionId)).toBe(0);
+    expect(diagnostics.join('')).toContain('context prefetch failed: Cannot persist machine settings request order.');
+  });
+
   it('ships the project\'s spool to its Deployment and logs what it did', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });

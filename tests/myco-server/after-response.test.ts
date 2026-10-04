@@ -61,9 +61,6 @@ describe('afterResponse', () => {
     sqlite.exec('PRAGMA foreign_keys = ON');
     for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
     sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();
-    for (const [leaf, value] of [['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'm'], ['agent.provider.base_url', 'http://titles.internal/v1']]) {
-      sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'mem_1')`).run(leaf, JSON.stringify(value));
-    }
     const { token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.close();
 

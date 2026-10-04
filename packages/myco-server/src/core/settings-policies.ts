@@ -19,13 +19,16 @@ import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS } fr
 import type { ServerEnv } from './adapters.js';
 import {
   DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES, executionProfileLeafDefault, heldPartitions, leafRuleViolation,
-  leafResets, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, switchUnderWay, taskOverridesMetadata, type LeafRecord,
+  leafResets, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, switchUnderWay, taskOverridesResolution, type LeafRecord,
 } from './settings.js';
-import { scheduleLeaves } from './scheduled-tasks.js';
+import { scheduleLeaves, scheduleFor, memberRunsPerDay } from './scheduled-tasks.js';
+import { TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE } from './jobs.js';
 import { readDispatchLimits, LIMIT_LEAVES } from './limits.js';
 import { workerPreference } from './harness.js';
 import { readRecallLeaves } from './recall.js';
 import { readMapSettings } from './canopy.js';
+import { ACCELERATORS, PRE_CONDITIONS } from './schedule-rules.js';
+import { TITLING_TASK } from './task-catalogue.js';
 import { reconcileIntervalMinutes } from './release-provenance.js';
 import { runRetentionDays } from './jobs-run.js';
 import { scheduledIntervalHours } from './recovery-schedule.js';
@@ -98,7 +101,7 @@ const limits: SettingPolicy = {
   leaves: Object.values(LIMIT_LEAVES),
   async resolve(env) {
     const set = await readDispatchLimits(env);
-    const answer = (n: number | null): LeafAnswer => ({ effective: n, meanwhile: 'No limit applies', ...(n === null ? { reason: 'No limit' } : {}) });
+    const answer = (n: number | null): LeafAnswer => ({ effective: n, meanwhile: 'No limit applies', ...(n === null ? { reason: 'No limit applies.' } : {}) });
     return {
       [LIMIT_LEAVES.concurrent_runs]: answer(set.concurrent_runs),
       [LIMIT_LEAVES.task_concurrent_runs]: answer(set.task_concurrent_runs),
@@ -114,7 +117,7 @@ const workers: SettingPolicy = {
   async resolve(env) {
     const { preferred, fallback } = await workerPreference(env);
     return {
-      'worker.harness': { effective: preferred, ...(preferred === null ? { reason: 'The first agent a machine is signed in to' } : {}) },
+      'worker.harness': { effective: preferred, ...(preferred === null ? { reason: 'Myco uses the first agent this machine is signed in to.' } : {}) },
       'worker.harness_fallback': { effective: fallback },
     };
   },
@@ -167,7 +170,7 @@ const records: SettingPolicy = {
     const days = await runRetentionDays(env);
     return {
       'agent.run_retention_days': { effective: days, meanwhile: `Task records are kept for ${days} days` },
-      'retention.transcripts': fact.state === 'days' ? { effective: fact.days } : { effective: null, reason: 'Kept forever', meanwhile: 'Nothing is removed' },
+      'retention.transcripts': fact.state === 'days' ? { effective: fact.days } : { effective: null, reason: 'Transcripts are kept forever.', meanwhile: 'Nothing is removed' },
     };
   },
 };
@@ -183,7 +186,7 @@ const backups: SettingPolicy = {
     const kept = await keptStagings(env.db);
     const off = retention.keepDaily < 1 ? { effective: null, meanwhile: 'No manual export is removed' } : null;
     return {
-      'backup.auto_interval_hours': { effective: interval, meanwhile: `Backups run every ${interval} hours`, ...(interval === null ? { reason: 'Off' } : {}), ...noProducer },
+      'backup.auto_interval_hours': { effective: interval, meanwhile: `Backups run every ${interval} hours`, ...(interval === null ? { reason: 'Automatic backups are off.' } : {}), ...noProducer },
       'backup.recovery.keep_stagings': { effective: kept, meanwhile: 'No recovery copy is released', ...noProducer },
       'backup.retention.keep_daily': off ?? { effective: retention.keepDaily },
       'backup.retention.keep_weekly': off ?? { effective: retention.keepWeekly },
@@ -252,7 +255,7 @@ const embedding: SettingPolicy = {
 /** Execution profiles hold the task they name while a stored value is unusable, so they report it as nothing in effect. */
 const executionProfiles: SettingPolicy = {
   id: 'execution-profiles',
-  owners: ['core/worker-selection.ts'],
+  owners: ['core/worker-selection.ts', 'core/runtime-probe.ts'],
   leaves: CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.flatMap((tier) => [`agent.reasoning_map.${harness}.${tier}`, `agent.effort_map.${harness}.${tier}`]),
     `agent.harnesses.${harness}.credential`,
@@ -281,12 +284,54 @@ const taskOverrides: SettingPolicy = {
   selfJudged: true,
   async resolve(env) {
     const held = (await settingsWriter(env.db).leaves())['agent.tasks'];
-    if (held === undefined) return { 'agent.tasks': { effective: {}, source: 'default', state: 'active', reason: 'No overrides' } };
-    const violation = held.malformed ? 'The stored value does not read' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS['agent.tasks']!, held.value);
-    if (violation !== null) {
-      return { 'agent.tasks': { effective: null, source: 'invalid', state: 'invalid', reason: `${violation}. Correct this setting${held.malformed ? ' or reset it.' : '.'}` } };
+    if (held === undefined) return { 'agent.tasks': { effective: {}, source: 'default', state: 'active', reason: 'No task overrides are stored.' } };
+    if (held.malformed) return { 'agent.tasks': { effective: null, source: 'invalid', state: 'invalid', reason: 'The stored value does not read. Worker tasks wait for a valid overrides object; scheduling uses the declared task defaults. Clear or reset the stored value to restore defaults.' } };
+    const resolution = taskOverridesResolution(held.value);
+    if (resolution.effective !== null && typeof resolution.effective === 'object') {
+      const tasks = resolution.effective as Record<string, Record<string, unknown> | null>;
+      const schedules = await scheduleLeaves(env);
+      for (const [task, entry] of Object.entries(tasks)) {
+        if (entry === null || entry.schedule === undefined) continue;
+        const declared = task === TITLING_TASK ? TITLING_BACKFILL_SCHEDULE : TASK_SCHEDULE[task];
+        if (declared === undefined || declared === null) {
+          delete entry.schedule;
+          resolution.reasons.push(`${task}.schedule: this task has no declared schedule; the stored schedule does not apply.`);
+          continue;
+        }
+        const original = entry.schedule as Record<string, unknown>;
+        const accelerator = original.accelerator;
+        if (accelerator !== null && typeof accelerator === 'object' && !Object.hasOwn(ACCELERATORS, String((accelerator as Record<string, unknown>).name))) {
+          delete original.accelerator;
+          resolution.reasons.push(`${task}.schedule.accelerator: no accelerator named ${JSON.stringify((accelerator as Record<string, unknown>).name)} exists; the ordinary interval applies.`);
+        }
+        if (typeof original.preCondition === 'string' && !Object.hasOwn(PRE_CONDITIONS, original.preCondition)) {
+          original.preCondition = null;
+          resolution.invalid = true;
+          resolution.reasons.push(`${task}.schedule.preCondition: this condition does not exist; scheduled work waits for a valid condition.`);
+        }
+        const reserved = original.reservedRunsPerDay;
+        const invalidReserve = reserved !== null && typeof reserved === 'object' && typeof (reserved as Record<string, unknown>).preCondition === 'string'
+          && !Object.hasOwn(PRE_CONDITIONS, (reserved as Record<string, unknown>).preCondition as string);
+        if (invalidReserve) {
+          original.reservedRunsPerDay = { ...(reserved as Record<string, unknown>), preCondition: null };
+          resolution.invalid = true;
+          resolution.reasons.push(`${task}.schedule.reservedRunsPerDay.preCondition: this condition does not exist; the reserved slots wait for a valid condition.`);
+        }
+        const actual = scheduleFor(task, declared, schedules.overrides) as unknown as Record<string, unknown>;
+        const storedSchedule = entry.schedule as Record<string, unknown>;
+        for (const [key, value] of Object.entries(storedSchedule)) {
+          if ((key === 'preCondition' && value === null) || (key === 'reservedRunsPerDay' && invalidReserve)) continue;
+          const running = key === 'memberRunsPerDay' ? await memberRunsPerDay(env, task) : actual[key] ?? null;
+          if (JSON.stringify(value) !== JSON.stringify(running)) {
+            storedSchedule[key] = running;
+            resolution.invalid = true;
+            resolution.reasons.push(`${task}.schedule.${key}: stored ${JSON.stringify(value)} does not apply; the scheduler uses ${JSON.stringify(running)}.`);
+          }
+        }
+      }
     }
-    return { 'agent.tasks': { effective: taskOverridesMetadata(held.value).editableValue, source: 'configured', state: 'active' } };
+    return { 'agent.tasks': { effective: resolution.effective, source: resolution.invalid ? 'invalid' : 'configured', state: resolution.invalid ? 'invalid' : resolution.reasons.length > 0 ? 'not-applicable' : 'active',
+      reason: resolution.reasons.length > 0 ? resolution.reasons.join(' ') : null } };
   },
 };
 
@@ -331,12 +376,19 @@ export async function effectiveSettings(env: ServerEnv): Promise<Map<string, Eff
       const violation = held === undefined ? null : held.malformed ? 'The stored value does not read' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, held.value);
       if (violation !== null) {
         const sentence = violation.charAt(0).toUpperCase() + violation.slice(1);
-        out.set(leaf, { ...base, source: 'invalid', state: 'invalid', reason: `${sentence}. ${answer.meanwhile ?? 'The default applies'} until it is corrected or reset.` });
+        out.set(leaf, { ...base, source: 'invalid', state: 'invalid', reason: `${sentence}. ${answer.meanwhile ?? 'The default applies'} until it is corrected or reset.${answer.reason === undefined || answer.reason === null ? '' : ` ${answer.reason}`}` });
         continue;
       }
       const source: SettingSource = answer.source ?? (held !== undefined ? 'configured' : answer.effective === null ? 'unset' : 'default');
       out.set(leaf, { ...base, source, state: answer.state ?? 'active', reason: answer.reason ?? null });
     }
+  }
+  for (const [leaf, answer] of out) {
+    const held = stored[leaf];
+    const applies = held === undefined ? null : answer.source === 'configured'
+      && answer.state === 'active' && JSON.stringify(held.value) === JSON.stringify(answer.effective);
+    out.set(leaf, { ...answer, storedApplies: applies, reason: held !== undefined && JSON.stringify(held.value) !== JSON.stringify(answer.effective)
+      ? `${answer.reason ?? 'The stored value does not apply.'} The effective value is shown by this control.` : answer.reason });
   }
   return out;
 }
@@ -363,7 +415,7 @@ export async function embeddingChoices(env: ServerEnv): Promise<EmbeddingChoices
       }),
     };
   });
-  const selection = resolution.selection ?? current;
+  const selection = resolution.selection;
   return {
     target,
     providers,

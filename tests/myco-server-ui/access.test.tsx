@@ -301,7 +301,7 @@ describe('machines', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
     const captured = await within(dialog).findByRole('region', { name: 'Folders it captures' });
     expect(within(captured).getByRole('list', { name: 'Folders it captures' }).textContent).toBe('~/Repos');
-    // The map of repositories connected from Needs you is the server's to write, and never offered here.
+    // Server-written connections have no folder editor.
     expect(dialog.querySelector('[data-machine-leaf="capture.connect_roots"]')).toBeNull();
     // A folder that does not start at the home or the root is refused before it is ever sent, and so is the whole home.
     for (const [folder, why] of [['Repos', 'starts with ~/, / or a drive'], ['~', 'not the home itself'], ['C:\\', 'not the drive itself']] as const) {
@@ -316,6 +316,49 @@ describe('machines', () => {
     await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.auto_join_roots', body: { value: ['~/work'] } }]));
     fireEvent.click(within(captured).getByRole('button', { name: 'Remove ~/work' }));
     expect(within(captured).getByText('None: every repository waits in Needs you until it’s connected.')).toBeTruthy();
+  });
+
+  it('shows effective folders, pending machine values and a neutral repair for unusable stored entries', async () => {
+    const puts: unknown[] = [];
+    let cleared = false;
+    accessServer({ member: [credential()] }, {
+      '/api/machines/ada_5a2d54af/settings': () => Response.json({ leaves: [
+        { leaf: 'capture.plan_dirs', configured: !cleared, value: cleared ? [] : ['/', 'docs/plans'], stored: cleared ? null : ['/', 'docs/plans'], effective: cleared ? [] : ['docs/plans'], source: cleared ? 'default' : 'invalid', storedApplies: cleared ? null : false, state: cleared ? 'inactive' : 'invalid', reason: cleared ? 'Saved. Applies at the next session start.' : 'Some stored folders cannot be used. Clear the stored value to restore the default.', updatedAt: null, updatedBy: null },
+        { leaf: 'capture.auto_join_roots', configured: true, value: ['~/New'], effective: ['~/Old'], nextEffective: ['~/New'], source: 'member-cache', nextSource: 'configured', storedApplies: true, application: 'pending', appliedValue: ['~/Old'], reason: 'Saved. Applies at the next session start.', updatedAt: null, updatedBy: null },
+        { leaf: 'capture.connect_roots', configured: true, value: { ['a'.repeat(64)]: 'proj_usable', broken: 7 }, effective: { ['a'.repeat(64)]: 'proj_old' }, nextEffective: { ['a'.repeat(64)]: 'proj_usable' }, application: 'pending', appliedValue: { ['a'.repeat(64)]: 'proj_old' }, nextSource: 'invalid', source: 'member-cache', storedApplies: false, reason: 'Some stored repository connections cannot be used.', updatedAt: null, updatedBy: null },
+      ] }),
+      '/api/machines/ada_5a2d54af/settings/capture.plan_dirs': (init) => {
+        puts.push(JSON.parse(String(init?.body)));
+        cleared = true;
+        return Response.json({ applied: true });
+      },
+    });
+    mount('/people');
+    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
+    const plans = await within(dialog).findByRole('region', { name: 'Extra plan folders' });
+    expect(within(plans).getByRole('list').textContent).toBe('docs/plans');
+    expect(plans.querySelector('pre') === null).toBe(true);
+    fireEvent.click(within(plans).getByRole('button', { name: 'Stored value' }));
+    expect(plans.querySelector('pre')?.textContent).toContain('docs/plans');
+    expect(within(plans).queryByRole('alert')).toBeNull();
+    const roots = within(dialog).getByRole('region', { name: 'Folders it captures' });
+    expect(within(roots).getByRole('list').textContent).toBe('~/New');
+    expect(within(roots).getByText('This machine currently uses these folders: ~/Old.')).toBeTruthy();
+    const connections = within(dialog).getByRole('region', { name: 'Connected repositories' });
+    expect(connections.textContent).toContain('1 repository');
+    fireEvent.click(within(connections).getByRole('button', { name: 'At next session start' }));
+    expect(connections.textContent).toContain('1 repository is configured from Needs you.');
+    expect(connections.textContent).toContain('Myco currently uses 1 cached connection.');
+    expect(connections.querySelector('pre')?.textContent).toContain('proj_usable');
+    expect(connections.querySelector('pre')?.textContent).not.toContain('broken');
+    fireEvent.click(within(connections).getByRole('button', { name: 'At next session start' }));
+    fireEvent.click(within(connections).getByRole('button', { name: 'Currently applied connections' }));
+    expect(connections.querySelector('pre')?.textContent).toContain('proj_old');
+    expect(within(connections).getByRole('button', { name: 'Remove entries that no longer apply' })).toBeTruthy();
+    fireEvent.click(within(plans).getByRole('button', { name: 'Clear the stored value' }));
+    await waitFor(() => expect(puts).toEqual([{ value: null, reset: true }]));
+    expect(await within(plans).findByText('The next session uses Myco’s default.')).toBeTruthy();
   });
 
   it('keeps a list\'s unsaved folders when its save is refused, says so on that list, and saves the other', async () => {

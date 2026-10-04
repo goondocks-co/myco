@@ -4,7 +4,7 @@
  * stored, titling imported sessions as a switch, and Sign-in and access as the
  * way to the pages that hold people, machines and access keys.
  */
-import { afterEach, describe, expect, it } from 'bun:test';
+import { beforeAll, afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -14,7 +14,8 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
 import { agentListRefusal, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
-import { defaultValueOf } from '../../packages/myco-server/ui/src/features/admin/settings/defaults';
+import { effectiveSettings } from '../../packages/myco-server/src/core/settings-policies';
+import { sqliteEnv } from '../myco-server/helpers/fixtures';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server/src/core/settings';
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
@@ -45,7 +46,13 @@ const SECRET = 'sk-full-secret-value-1234567890';
 /** What a hosted server stores nothing for the embedding leaves resolves them to. */
 const HOSTED_EMBEDDING: Readonly<Record<string, unknown>> = { 'embedding.provider': 'workers-ai', 'embedding.model': '@cf/baai/bge-m3' };
 /** What the server applies to a leaf nobody wrote. */
-const effectiveOf = (leaf: string): unknown => HOSTED_EMBEDDING[leaf] ?? defaultValueOf(leaf) ?? null;
+const defaults = new Map<string, unknown>();
+beforeAll(async () => {
+  const { serverEnv, sqlite } = sqliteEnv();
+  for (const [leaf, row] of await effectiveSettings(serverEnv)) defaults.set(leaf, row.effective);
+  sqlite.close();
+});
+const effectiveOf = (leaf: string): unknown => HOSTED_EMBEDDING[leaf] ?? defaults.get(leaf) ?? null;
 /** One leaf as the server answers it, marked retired as the server marks it (`RETIRED_LEAVES`). */
 const rowFor = (leaf: string) => ({
   leaf, configured: false, value: null as unknown, updatedAt: null as number | null, updatedBy: null as string | null, retired: RETIRED_LEAVES.has(leaf),
@@ -91,7 +98,7 @@ const leaves = (over: Record<string, Partial<{ value: unknown; updatedBy: string
   leaves: DEPLOYMENT_LEAVES.map((leaf) => {
     const f = { leaf };
     const o = over[f.leaf];
-    return { ...rowFor(f.leaf), editableValue: o?.editableValue, retiredValue: o?.retiredValue, configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
+    return { ...rowFor(f.leaf), ...(o?.value !== undefined ? { stored: o.value, effective: o.value, effectiveValue: o.value, source: 'configured' } : {}), editableValue: o?.editableValue, retiredValue: o?.retiredValue, configured: o?.value !== undefined, value: o?.value ?? null, updatedAt: o?.updatedAt ?? null, updatedBy: o?.updatedBy ?? null, retired: o?.retired ?? RETIRED_LEAVES.has(f.leaf) };
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
@@ -221,10 +228,47 @@ describe('Settings, in five sections', () => {
     }));
     mount('/settings/models');
     await group('Codex tiers');
-    expect(statusOf(leaf)).toContain('Correct it or reset this setting.');
-    fireEvent.click(screen.getByRole('button', { name: 'Reset High tier effort' }));
+    expect(statusOf(leaf)).toContain('stored value does not apply');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for High tier effort' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: `/api/settings/${leaf}` });
+  });
+
+  it('shows the API effective value and neutral reason on each settings section, with one clear action', async () => {
+    const changed = {
+      'cortex.spores.inject_on_prompt_submit': { stored: false, effective: true, state: 'invalid', source: 'default', reason: 'The stored switch is invalid; spores are served.' },
+      'agent.reasoning_map.claude-code.low': { stored: 'old-model', effective: 'haiku', state: 'not-applicable', source: 'default', reason: 'The stored model is unavailable; Haiku runs.' },
+      'import.window_days': { stored: 99, effective: 7, state: 'inactive', source: 'task-override', reason: 'Importing past sessions is off.' },
+      'backup.auto_interval_hours': { stored: 99, effective: 6, state: 'invalid', source: 'default', reason: 'The stored cadence is invalid; backups use six hours.' },
+    };
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => {
+        const change = changed[row.leaf as keyof typeof changed];
+        return change === undefined ? row : { ...row, ...change, value: change.stored, effectiveValue: change.effective, configured: true, storedApplies: false };
+      }) }),
+      '/api/settings/import.window_days': () => Response.json({ applied: true }),
+    }));
+    mount('/settings');
+    const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
+    expect(spores.getAttribute('aria-checked')).toBe('true');
+    for (const [label, leaf, words] of [
+      ['Myco’s work', 'cortex.spores.inject_on_prompt_submit', 'This setting is on'],
+      ['Models and keys', 'agent.reasoning_map.claude-code.low', 'Myco uses haiku'],
+      ['Capture and retention', 'import.window_days', 'When active, Myco uses 7 days'],
+      ['Backups', 'backup.auto_interval_hours', 'Myco uses 6 hours'],
+    ]) {
+      await section(label!);
+      await waitFor(() => expect(statusOf(leaf!)).toContain(words!));
+      const status = document.querySelector(`[data-setting-status="${leaf}"]`)!;
+      expect(status.getAttribute('role')).toBeNull();
+      expect(status.className).not.toContain('text-bad');
+      const control = within(status.closest('[data-setting]') as HTMLElement);
+      expect(control.getAllByRole('button', { name: /Clear the stored value/ })).toHaveLength(1);
+    }
+    await section('Capture and retention');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Reach back at most' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'DELETE', path: '/api/settings/import.window_days' });
   });
 
   it('shows login choices in user words while saving their wire values', async () => {
@@ -237,7 +281,7 @@ describe('Settings, in five sections', () => {
     mount('/settings/models');
     const claude = within(await group('Claude Code tiers'));
     expect(claude.getByLabelText('Sign in with')).toBeTruthy();
-    expect(statusOf(leaf)).toBe('Server default: Server login');
+    expect(statusOf(leaf)).toBe('Myco uses Server login (server default).');
     fireEvent.click(claude.getByLabelText('Sign in with'));
     fireEvent.click(await screen.findByRole('option', { name: 'Worker login' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -305,7 +349,7 @@ describe('Settings, in five sections', () => {
     fireEvent.blur(input);
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${model}`, body: { value: 'haiku' } });
-    fireEvent.click(tiers.getByRole('button', { name: 'Reset Low tier model' }));
+    fireEvent.click(tiers.getByRole('button', { name: 'Clear the stored value for Low tier model' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'DELETE', path: `/api/settings/${model}` });
   });
@@ -350,13 +394,11 @@ describe('Settings, in five sections', () => {
     await section('Myco’s work');
     await group('What sessions receive');
     // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
-    expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('Server default: on');
-    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Server default');
-    expect(statusOf('agent.limits.concurrent_runs')).toBe('Server default');
-    expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('No limit');
-    // A retired setting with a value stored sits under Older settings, and says nothing reads it.
-    fireEvent.click(within(await screen.findByRole('region', { name: 'Older settings' })).getByRole('button', { name: /^Older settings/ }));
-    expect(document.querySelector('[data-retired-setting="cortex.digest.inject_on_session_start"]')).toBeTruthy();
+    expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('This setting is on (server default).');
+    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Myco uses 14 days (server default).');
+    expect(statusOf('agent.limits.concurrent_runs')).toBe('Myco uses none (not set).');
+    expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('Not set');
+    expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
@@ -390,10 +432,10 @@ describe('Settings, in five sections', () => {
     }));
     mount('/settings/models');
     await screen.findByLabelText('Embedding provider');
-    await waitFor(() => expect(statusOf('embedding.provider')).toBe('In use: Cloudflare Workers AI · bge-m3 (1024 dimensions)'));
+    await waitFor(() => expect(statusOf('embedding.provider')).toBe('Search uses Cloudflare Workers AI with bge-m3 (1024 dimensions).'));
     expect(screen.queryByLabelText('Embedding endpoint')).toBeNull();
     await pick('Embedding provider', 'OpenRouter');
-    await waitFor(() => expect(statusOf('embedding.provider')).toBe('Choose a model below to switch search to OpenRouter.'));
+    await waitFor(() => expect(statusOf('embedding.provider')).toContain('Choose a model below to switch search to OpenRouter.'));
     expect(sent).toEqual([]);
     await pick('Embedding model', 'baai/bge-m3 · 1024 dimensions');
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -524,7 +566,24 @@ describe('Settings, in five sections', () => {
     }));
     mount('/settings/models');
     await waitFor(() => expect(statusOf('embedding.provider')).toContain('Reset the provider'));
-    expect(screen.getByRole('button', { name: 'Reset Embedding provider' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Clear the stored value for Embedding provider' })).toBeTruthy();
+    expect(statusOf('embedding.provider')).toContain('Search uses Cloudflare Workers AI with bge-m3');
+    expect(document.querySelector('[data-setting="embedding.provider"] [role="alert"]')).toBeNull();
+  });
+
+  it('shows a blank stored embedding model beside the running model and clears that leaf alone', async () => {
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === 'embedding.model'
+        ? { ...row, configured: true, value: '', stored: '', storedApplies: false, state: 'invalid', reason: 'The blank stored model does not apply. Clear the stored value.' }
+        : row) }),
+    }));
+    mount('/settings/models');
+    await waitFor(() => expect(statusOf('embedding.model')).toContain('Search uses Cloudflare Workers AI with bge-m3'));
+    expect(statusOf('embedding.model')).toContain('blank stored model');
+    expect(document.querySelector('[data-setting="embedding.model"] [role="alert"]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Embedding model' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'DELETE', path: '/api/settings/embedding.model' });
   });
 
   it('says the refusal in the person\'s words: a foreign leaf is named as not held, any other refusal carries its status, and a bad number never leaves', async () => {
@@ -568,7 +627,7 @@ describe('Settings, in five sections', () => {
       '/api/settings/worker.harness': (init) => { held = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
     }));
     mount('/settings');
-    await waitFor(() => expect(statusOf('worker.harness')).toBe('Server default'));
+    await waitFor(() => expect(statusOf('worker.harness')).toBe('Myco uses none (not set).'));
     await pick('Preferred agent', 'Codex');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: 'codex' } });
@@ -644,12 +703,7 @@ describe('Settings, in five sections', () => {
     };
     const held = { ...CONFIGURED };
     const { sent } = server(base({
-      '/api/settings': () => Response.json({
-        leaves: LEAF_FIELDS.map((f) => ({
-          leaf: f.leaf, configured: f.leaf in held, value: held[f.leaf] ?? null,
-          updatedAt: f.leaf in held ? NOW : null, updatedBy: f.leaf in held ? ADA : null,
-        })),
-      }),
+      '/api/settings': () => Response.json(leaves(Object.fromEntries(Object.entries(held).map(([leaf, value]) => [leaf, { value, updatedAt: NOW, updatedBy: ADA }])))),
       '/api/settings/retention.transcripts': (init) => {
         held['retention.transcripts'] = JSON.parse(String(init!.body)).value;
         return Response.json({ applied: true });
@@ -708,34 +762,12 @@ describe('Settings, in five sections', () => {
    * value stored it is not shown at all; with one stored, it is listed under
    * "Older settings" at its section's foot, read-only, and never writes.
    */
-  it('leaves out a retired setting with no value stored, and shows one with a value stored under Older settings, read-only', async () => {
-    const retired = RETIRED_FIELDS.filter((field) => !LEAF_FIELDS.some((f) => f.leaf === field.leaf && f.readOnly));
-    expect(retired.length).toBeGreaterThan(0);
-    server(base({ '/api/settings': () => Response.json(leaves()) }));
+  it('offers no retired settings or Older settings surface', async () => {
+    expect(RETIRED_LEAVES.size).toBe(0);
+    server(base());
     mount('/settings');
-    await group('When Myco works');
-    for (const s of SETTINGS_SECTIONS.filter((x) => x.id !== 'access')) {
-      await section(s.label);
-      await screen.findByRole('group', { name: groupsOf(s.id).find((g) => g.leaves.some((f) => LIVE_FIELDS.includes(f)))!.label });
-      for (const f of retired) expect({ leaf: f.leaf, shown: document.querySelector(`[data-setting="${f.leaf}"]`) !== null }).toEqual({ leaf: f.leaf, shown: false });
-      // A boolean, not the element: a failed match would print the element's whole object graph.
-      expect({ section: s.id, older: document.querySelector('[data-older-settings]') !== null }).toEqual({ section: s.id, older: false });
-    }
-    cleanup();
-
-    const { sent } = server(base({ '/api/settings': () => Response.json(leaves({
-      'skills.usage_stale_days': { value: 45, updatedBy: ADA, updatedAt: NOW },
-      'agent.event_tasks_enabled': { value: true, updatedBy: ADA, updatedAt: NOW },
-    })) }));
-    mount('/settings');
-    const older = await screen.findByRole('region', { name: 'Older settings' });
-    fireEvent.click(within(older).getByRole('button', { name: 'Older settings (2)' }));
-    expect(within(older).getByText('skills.usage_stale_days')).toBeTruthy();
-    expect(within(older).getByText('45')).toBeTruthy();
-    expect(within(older).getByText('agent.event_tasks_enabled')).toBeTruthy();
-    expect(within(older).queryByRole('switch')).toBeNull();
-    expect(within(older).queryByRole('textbox')).toBeNull();
-    expect(sent).toEqual([]);
+    await group('What sessions receive');
+    expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
   });
 
   it('takes which settings and keys are retired from the server\'s answer, not from a list of its own', async () => {
@@ -749,16 +781,8 @@ describe('Settings, in five sections', () => {
         return Response.json(answer);
       },
     }));
-    mount('/settings');
-    const older = await screen.findByRole('region', { name: 'Older settings' });
-    expect(within(await group('What sessions receive')).queryByLabelText('Digest size')).toBeNull();
-    fireEvent.click(within(older).getByRole('button', { name: 'Older settings (1)' }));
-    expect(within(older).getByText('cortex.digest.tier')).toBeTruthy();
-    expect(within(older).queryByRole('combobox')).toBeNull();
-
-    await section('Models and keys');
-    const keys = await group('Keys');
-    expect(within(keys).queryByText('Codex (OpenAI)')).toBeNull();
+    mount('/settings/models');
+    expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
     expect(await screen.findByRole('button', { name: 'Older keys' })).toBeTruthy();
   });
 
@@ -772,8 +796,8 @@ describe('Settings, in five sections', () => {
       const toggle = await screen.findByRole('switch', { name: label });
       expect({ label, on: toggle.getAttribute('aria-checked') === 'true' }).toEqual({ label, on });
     }
-    expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('Server default: on');
-    expect(statusOf('agent.scheduled_tasks_enabled')).toBe('Server default: off');
+    expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('This setting is on (server default).');
+    expect(statusOf('agent.scheduled_tasks_enabled')).toBe('This setting is off (server default).');
   });
 
   it('says what the server said was wrong with a value it refused', async () => {
@@ -1004,8 +1028,10 @@ it('shows retired task preferences as metadata outside the task-overrides editor
   const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
   expect((editor as HTMLTextAreaElement).value).not.toContain('provider');
   expect((editor as HTMLTextAreaElement).value).not.toContain('container-smoke');
-  expect(screen.getByTestId('retired-task-overrides').textContent).toContain('container-smoke');
-  expect(screen.getByTestId('retired-task-overrides').querySelectorAll('input,textarea,button')).toHaveLength(0);
+  const taskRow = editor.closest('[data-setting]') as HTMLElement;
+  expect(taskRow.querySelector('pre') === null).toBe(true);
+  fireEvent.click(within(taskRow).getByRole('button', { name: 'Stored value' }));
+  expect(taskRow.querySelector('pre')?.textContent).toContain('container-smoke');
 });
 it('describes weekly retention by the most recent weeks containing exports', () => {
   const field = LEAF_FIELDS.find(({ leaf }) => leaf === 'backup.retention.keep_weekly')!;
@@ -1039,8 +1065,8 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     mount('/settings/models');
     const claude = within(await group('Claude Code tiers'));
     expect(claude.getAllByText(/^Models listed by your machines/)).toHaveLength(1);
-    expect(document.querySelector('[data-model-listing="claude-code"]')?.textContent).toBe('Models listed by your machines 1 h ago, each with its own sign-in to Claude Code.');
-    expect(statusOf(leaf)).toBe('Server default: haiku: newest Haiku (now Haiku 4.5)');
+    expect(document.querySelector('[data-model-listing="claude-code"]')?.textContent).toContain('Models listed by your machines 1 h ago, each with its own sign-in to Claude Code.');
+    expect(statusOf(leaf)).toBe('Myco uses haiku (server default).');
     fireEvent.click(claude.getByLabelText('Low tier model'));
     expect(await optionWords()).toEqual(['haiku: newest Haiku (now Haiku 4.5)', 'sonnet: newest Sonnet (now Sonnet 5.5)', 'Opus 4.8 (claude-opus-4-8)']);
     fireEvent.click(await screen.findByRole('option', { name: 'sonnet: newest Sonnet (now Sonnet 5.5)' }));
@@ -1062,7 +1088,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([CLAUDE], { [leaf]: { value: 'claude-opus-4-1', updatedBy: ADA, updatedAt: NOW } }) }));
     mount('/settings/models');
     await group('Claude Code tiers');
-    expect(statusOf(leaf)).toBe('claude-opus-4-1 is not among the models your machines listed for Claude Code. Check the name, or choose a listed model.');
+    expect(statusOf(leaf)).toContain('claude-opus-4-1 is not among the models your machines listed for Claude Code.');
     fireEvent.click(within(await group('Claude Code tiers')).getByLabelText('High tier model'));
     expect((await optionWords())[0]).toBe('claude-opus-4-1 (not listed)');
   });
@@ -1075,7 +1101,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     }));
     mount('/settings/models');
     const codex = within(await group('Codex tiers'));
-    expect(statusOf(leaf)).toBe('Codex names GPT-6-Sol as the successor to GPT-5.5.');
+    expect(statusOf(leaf)).toContain('Codex names GPT-6-Sol as the successor to GPT-5.5.');
     fireEvent.click(codex.getByRole('button', { name: 'Use GPT-6-Sol' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'gpt-6-sol' } });
@@ -1099,7 +1125,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([CODEX]) }));
     mount('/settings/models');
     await group('Codex tiers');
-    expect(statusOf('agent.reasoning_map.codex.low')).toBe('Not set. Runs at this tier wait until you choose a model.');
+    expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
     fireEvent.click(within(await group('Codex tiers')).getByLabelText('Low tier model'));
     expect((await optionWords())[0]).toBe('GPT-6.1-Sol (gpt-6.1-sol), Codex’s default');
   });
@@ -1108,7 +1134,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([]) }));
     mount('/settings/models');
     await group('Codex tiers');
-    expect(statusOf('agent.reasoning_map.codex.low')).toBe('Not set. Runs at this tier wait until you choose a model.');
+    expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
   });
 
   it('offers a preset in plain words where a machine lists all its models, and applies it tier by tier through the same write', async () => {
@@ -1146,4 +1172,48 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     fireEvent.click(claude.getAllByRole('button', { name: 'Type a model name' })[0]!);
     expect(claude.getByLabelText('Low tier model').tagName).toBe('INPUT');
   });
+});
+
+
+it('repairs non-applying task entries separately from clearing all overrides', async () => {
+  const historic = { 'cortex-instructions': { schedule: { maxRunsPerDay: 3 } }, 'title-summary': { schedule: { enabled: true, intervalSeconds: 900, maxRunsPerDay: 24 } } };
+  let repaired = false;
+  const { sent } = server(base({
+    '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === 'agent.tasks' ? {
+      ...row, configured: true, stored: repaired ? { 'title-summary': historic['title-summary'] } : historic,
+      editableValue: repaired ? { 'title-summary': historic['title-summary'] } : historic,
+      effective: { 'title-summary': historic['title-summary'] }, repair: repaired ? undefined : 'clean-document', storedApplies: repaired,
+      reason: repaired ? null : 'The cortex-instructions task no longer exists.',
+    } : row) }),
+    '/api/settings/agent.tasks/repair': () => { repaired = true; return Response.json({ applied: true }); },
+  }));
+  mount('/settings/models');
+  const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
+  const row = within(editor.closest('[data-setting]') as HTMLElement);
+  expect((editor.closest('[data-setting]') as HTMLElement).querySelector('pre') === null).toBe(true);
+  expect(row.getByText('Clearing resets every task override, including imported-session titling.')).toBeTruthy();
+  fireEvent.click(row.getByRole('button', { name: 'Effective value' }));
+  const effectiveDisplay = (editor.closest('[data-setting]') as HTMLElement).querySelector('pre')!;
+  expect(effectiveDisplay.textContent).toContain('title-summary');
+  expect(effectiveDisplay.textContent).toContain('"enabled": true');
+  expect(effectiveDisplay.textContent).not.toContain('cortex-instructions');
+  fireEvent.click(row.getByRole('button', { name: 'Stored value' }));
+  expect((editor.closest('[data-setting]') as HTMLElement).textContent).toContain('cortex-instructions');
+  fireEvent.click(row.getByRole('button', { name: 'Remove entries that no longer apply' }));
+  await waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0]).toMatchObject({ method: 'POST', path: '/api/settings/agent.tasks/repair', body: {} });
+  await waitFor(() => expect((editor as HTMLTextAreaElement).value).not.toContain('cortex-instructions'));
+  expect((editor as HTMLTextAreaElement).value).toContain('"enabled": true');
+  expect(row.getByRole('button', { name: 'Clear the stored value for Task overrides' })).toBeTruthy();
+});
+
+it('keeps blank-input placeholders short and the reason in the status sentence', async () => {
+  const leaf = 'agent.limits.concurrent_runs';
+  const reason = 'No limit applies.';
+  server(base({ '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === leaf ? { ...row, effective: null, reason } : row) }) }));
+  mount('/settings');
+  await waitFor(() => expect(statusOf(leaf)).toContain(reason));
+  expect((screen.getByRole('spinbutton', { name: 'Tasks at once' }) as HTMLInputElement).placeholder).toBe('Not set');
+  expect(statusOf(leaf)).toContain('Myco uses none (not set).');
+  expect(screen.queryByRole('heading', { name: 'Container smoke test' })).toBeNull();
 });

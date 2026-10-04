@@ -30,9 +30,6 @@ function fixture(opts: { bound?: boolean } = {}) {
   const receipt = (projectId: string, at: number) => e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES (?, ?, 'machine_1', ?, ?, ?, 'claude-code')`, [projectId, `s_${projectId}_${at}`, token, at, at]);
   const capability = (projectId: string, name: string, on: boolean) => e.sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, 'mem_1')`, [projectId, name, on ? 1 : 0, NOW]);
   const runs = (projectId: string) => e.sqlite.query(`SELECT id, task, status, run_context AS runContext, started_at AS startedAt FROM agent_runs WHERE project_id = ? ORDER BY COALESCE(queued_at, started_at), id`).all(projectId) as Array<{ id: string; task: string; status: string; runContext: string | null; startedAt: number | null }>;
-  setting('agent.provider.type', 'openai-compatible');
-  setting('agent.provider.model', 'm');
-  setting('agent.provider.base_url', 'http://models.internal/v1');
   setting('agent.scheduled_tasks_enabled', true);
   capability('proj_1', 'cortex', true);
   capability('proj_2', 'cortex', true);

@@ -135,18 +135,18 @@ describe('settings API', () => {
     }
   });
 
-  it('refuses retired execution settings writes and preserves their readable historical values', async () => {
+  it('refuses retired execution settings writes and omits historical rows from the active contract', async () => {
     const e = env();
     const leaves = ['agent.model', 'agent.reasoningLevel', 'agent.provider.reasoning_map.low', 'agent.provider.effort_map.default.effort', 'agent.provider.thinking_budget_map.high'];
     for (const leaf of leaves) {
       e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?, '"kept"', 1, 'historic')`, [leaf]);
       const response = await worker.fetch(await put(`/api/settings/${leaf}`, { value: 'replacement' }), e.all);
-      expect({ status: response.status, body: await response.json() }).toEqual({ status: 400, body: { applied: false, reason: 'retired', leaf } });
+      expect({ status: response.status, body: await response.json() }).toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf } });
       const reset = await worker.fetch(new Request(await asOwnerPost(`/api/settings/${leaf}`), { method: 'DELETE' }), e.all);
-      expect({ status: reset.status, body: await reset.json() }).toEqual({ status: 400, body: { applied: false, reason: 'retired', leaf } });
+      expect({ status: reset.status, body: await reset.json() }).toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf } });
     }
     const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
-    for (const leaf of leaves) expect(rows.find((row) => row.leaf === leaf)).toMatchObject({ configured: true, retired: true, value: 'kept', updatedBy: 'historic' });
+    for (const leaf of leaves) expect(rows.find((row) => row.leaf === leaf)).toBeUndefined();
   });
 
   it('patches one task tier against the live document and retains concurrent sibling changes', async () => {
@@ -377,7 +377,7 @@ function sampleFor(leaf: string): unknown {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec !== undefined && 'type' in spec) {
     if (spec.type === 'integer') return spec.min;
-    if (spec.type === 'task-overrides') return { digest: { harness: 'claude-code', model: 'sonnet', schedule: { maxRunsPerDay: 0 } } };
+    if (spec.type === 'task-overrides') return { 'title-summary': { harness: 'claude-code', model: 'sonnet', schedule: { maxRunsPerDay: 0 } } };
     if (spec.type === 'profile-model') return spec.harness === 'opencode' ? 'openai/gpt-5' : spec.harness === 'claude-code' ? 'sonnet' : 'gpt-5';
     if (spec.type === 'profile-effort') return 'high';
     if (spec.type === 'credential-source') return 'deployment';
@@ -432,7 +432,7 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
 });
 
 
-it('projects retired task overrides as metadata and preserves them across live writes and resets', async () => {
+it('surfaces ignored task fields, preserves them during sibling edits, and clears the whole document on reset', async () => {
   const e = env();
   const archived = { 'container-smoke': { model: 'haiku', harness: 'claude-code' }, 'title-summary': { provider: 'anthropic' } };
   const stored = { ...archived, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
@@ -442,14 +442,33 @@ it('projects retired task overrides as metadata and preserves them across live w
     expect(reply.status).toBe(200);
     return ((await json(reply)).leaves as Array<Record<string, unknown>>).find((entry) => entry.leaf === 'agent.tasks');
   };
-  expect(await row()).toMatchObject({ value: stored, editableValue: { 'title-summary': { reasoningLevel: 'low' } }, retiredValue: archived });
-  for (const value of [stored, { 'container-smoke': { model: 'sonnet' } }]) {
+  expect(await row()).toMatchObject({ value: stored, editableValue: stored, retiredValue: {}, storedApplies: false, reason: expect.stringContaining('title-summary.provider') });
+  expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: stored }), e.all)).status).toBe(200);
+  for (const value of [{ 'container-smoke': { model: 'sonnet' } }]) {
     expect((await worker.fetch(await put('/api/settings/agent.tasks', { value }), e.all)).status).toBe(400);
     expect((await row())?.value).toEqual(stored);
   }
   const live = { 'title-summary': { reasoningLevel: 'high' } };
   expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: live }), e.all)).status).toBe(200);
-  expect(await row()).toMatchObject({ editableValue: live, retiredValue: archived });
+  expect(await row()).toMatchObject({ editableValue: { ...archived, 'title-summary': { ...archived['title-summary'], ...live['title-summary'] } }, retiredValue: {} });
   expect((await worker.fetch(await remove('/api/settings/agent.tasks'), e.all)).status).toBe(200);
-  expect(await row()).toMatchObject({ value: archived, editableValue: { 'title-summary': {} }, retiredValue: archived });
+  expect(await row()).toMatchObject({ configured: false, stored: null, effective: {} });
+});
+
+it('repairs stale task fields through the authenticated Settings operation and preserves live siblings', async () => {
+  const e = env();
+  const stale = {
+    'cortex-instructions': { schedule: { maxRunsPerDay: 3 } },
+    'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high', retiredField: 'old' },
+  };
+  e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stale)]);
+  const path = '/api/settings/agent.tasks/repair';
+  const malformed = await worker.fetch(await asOwnerPost(path, { value: stale }), e.all);
+  expect(malformed.status).toBe(400);
+  expect((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value).toBe(JSON.stringify(stale));
+  const repaired = await worker.fetch(await asOwnerPost(path, {}), e.all);
+  expect({ status: repaired.status, body: await json(repaired) }).toEqual({ status: 200, body: { applied: true } });
+  const saved = e.sqlite.query(`SELECT value, updated_by FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string; updated_by: string };
+  expect(JSON.parse(saved.value)).toEqual({ 'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' } });
+  expect(saved.updated_by).toBe('mem_machine_1');
 });

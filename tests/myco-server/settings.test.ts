@@ -130,6 +130,64 @@ describe('deployment settings', () => {
   });
 });
 
+describe('task document repair', () => {
+  const stored = {
+    'cortex-instructions': { schedule: { maxRunsPerDay: 3 } },
+    'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high', forgottenField: 'old' },
+    'extract-curate': { harness: 'missing-harness', model: 'missing-model', schedule: { intervalSeconds: 600, forgottenScheduleField: 1 } },
+    'container-smoke': { provider: 'anthropic', model: 'old-probe-model' },
+  };
+
+  it('clears only fields without consumers, records the actor, rearms once, and then stays idle', async () => {
+    const rearmed: string[] = [];
+    const r = rig({ rearm: async ({ leaf }) => { rearmed.push(leaf); } });
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+    expect(await r.w.repairTaskDocument('mem_repair', 2)).toEqual({ applied: true });
+    expect((await r.w.leaves())['agent.tasks']).toEqual({ value: {
+      'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' },
+      'extract-curate': { schedule: { intervalSeconds: 600 } },
+    }, updatedAt: 2, updatedBy: 'mem_repair' });
+    expect(rearmed).toEqual(['agent.tasks']);
+    expect(await r.w.repairTaskDocument('mem_repair_again', 3)).toEqual({ applied: true });
+    expect((await r.w.leaves())['agent.tasks']?.updatedBy).toBe('mem_repair');
+    expect(rearmed).toEqual(['agent.tasks']);
+  });
+
+  it('refuses unauthorized and malformed repair without touching the row', async () => {
+    const r = rig({ authorize: async () => false });
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+    expect(await r.w.repairTaskDocument('mem_unauthorized', 2)).toEqual({ applied: false, refusal: { reason: 'unauthorized', leaf: 'agent.tasks' } });
+    expect((await r.w.leaves())['agent.tasks']?.value).toEqual(stored);
+    r.sqlite.run(`UPDATE deployment_settings SET value = '[]' WHERE leaf = 'agent.tasks'`);
+    expect(await settingsWriter(r.db).repairTaskDocument('mem_repair', 3))
+      .toEqual({ applied: false, refusal: { reason: 'invalid_value', leaf: 'agent.tasks', detail: 'the task overrides held by the server are not an object' } });
+    expect((await r.w.leaves())['agent.tasks']?.value).toEqual([]);
+  });
+
+  it('refuses a race and keeps the concurrently written sibling document', async () => {
+    const r = rig();
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+    const latest = { ...stored, 'title-summary': { schedule: { enabled: true, intervalSeconds: 60 }, reasoningLevel: 'low' } };
+    let raced = false;
+    const db = {
+      prepare: (sql: string) => {
+        if (!raced && sql.startsWith('UPDATE deployment_settings SET value = ?')) {
+          raced = true;
+          r.sqlite.run(`UPDATE deployment_settings SET value = ?, updated_at = 2, updated_by = 'mem_sibling' WHERE leaf = 'agent.tasks'`, [JSON.stringify(latest)]);
+        }
+        return r.db.prepare(sql);
+      },
+      batch: r.db.batch,
+    };
+    const rearmed: string[] = [];
+    expect(await settingsWriter(db, { rearm: async ({ leaf }) => { rearmed.push(leaf); } }).repairTaskDocument('mem_repair', 3))
+      .toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks' } });
+    expect(raced).toBe(true);
+    expect((await r.w.leaves())['agent.tasks']).toEqual({ value: latest, updatedAt: 2, updatedBy: 'mem_sibling' });
+    expect(rearmed).toEqual([]);
+  });
+});
+
 describe('project capability admission', () => {
   it('reads every capability OFF for a Project nothing has admitted', async () => {
     const r = rig();
@@ -204,9 +262,9 @@ describe('the deployment leaf registry', () => {
     expect(deployment.size).toBeGreaterThan(20);
     // Both directions: the runtime cannot accept a leaf the ledger did not assign
     // here, and cannot silently ignore one it did.
-    const historical = DEPLOYMENT_LEAVES.filter((leaf) => dropped.has(leaf));
-    expect(historical.every((leaf) => RETIRED_LEAVES.has(leaf))).toBe(true);
-    expect(DEPLOYMENT_LEAVES.filter((leaf) => !dropped.has(leaf)).sort()).toEqual([...deployment].sort());
+    expect(DEPLOYMENT_LEAVES.filter((leaf) => dropped.has(leaf))).toEqual([]);
+    expect([...RETIRED_LEAVES]).toEqual([]);
+    expect([...DEPLOYMENT_LEAVES].sort()).toEqual([...deployment].sort());
   });
 });
 
@@ -291,14 +349,14 @@ describe('retired per-task provider preferences', () => {
 });
 
 
-it('keeps every container probe override read-only and refuses echoed retired provider keys', async () => {
+it('keeps container preferences intact while accepting unchanged historical provider keys', async () => {
   const r = rig();
   const historic = { 'container-smoke': { harness: 'claude-code', model: 'haiku' }, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
   r.sqlite.run(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(historic)]);
   expect(await r.w.setLeaf('agent.tasks', { ...historic, 'container-smoke': { harness: 'claude-code', model: 'sonnet' } }, 'mem_1', 2)).toMatchObject({ applied: false });
-  expect(await r.w.setLeaf('agent.tasks', { 'title-summary': historic['title-summary'] }, 'mem_1', 2)).toMatchObject({ applied: false });
+  expect(await r.w.setLeaf('agent.tasks', { 'title-summary': historic['title-summary'] }, 'mem_1', 2)).toMatchObject({ applied: true });
   expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { reasoningLevel: 'high' } }, 'mem_1', 2)).toEqual({ applied: true });
   expect((await r.w.leaves())['agent.tasks'].value).toEqual({ ...historic, 'title-summary': { provider: 'anthropic', reasoningLevel: 'high' } });
   await r.w.resetLeaf('agent.tasks', 'mem_1', 3);
-  expect((await r.w.leaves())['agent.tasks'].value).toEqual({ 'container-smoke': historic['container-smoke'], 'title-summary': { provider: 'anthropic' } });
+  expect((await r.w.leaves())['agent.tasks']).toBeUndefined();
 });

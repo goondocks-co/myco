@@ -410,6 +410,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   settleSporeTimes(ctx.databasePath, sporeIds, now);
   const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
   seedBackup(ctx.databasePath, now);
+  seedUnappliedSettings(ctx.databasePath, now);
 
   return {
     projects: PROJECTS.map((p) => ({ projectId: p.projectId, name: p.name })),
@@ -423,6 +424,19 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
 
 /** The search the fixture's Ollama models are partitioned under. */
 const OLLAMA_KEY = (model: string) => JSON.stringify(['ollama', model, 'http://localhost:11434/api/embed']);
+
+/** Stored values from an older release, alongside the settings the fixture's current consumers use. */
+function seedUnappliedSettings(databasePath: string, now: number): void {
+  const sqlite = new Database(databasePath);
+  try {
+    sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('import.window_days', '"old-value"', ?, ?)
+      ON CONFLICT(leaf) DO UPDATE SET value = excluded.value`).run(now, OWNER.id);
+    sqlite.query(`UPDATE deployment_settings SET value = json_set(value, '$."cortex-instructions"', json(?)) WHERE leaf = 'agent.tasks'`)
+      .run(JSON.stringify({ schedule: { maxRunsPerDay: 3 } }));
+    sqlite.query(`INSERT INTO machine_settings(machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.connect_roots', ?, ?, ?)` )
+      .run(MACHINE_IDS.buildbox, JSON.stringify({ ['a'.repeat(64)]: PROJECTS[0].projectId, stale: 7 }), now, READER.id);
+  } finally { sqlite.close(); }
+}
 
 /**
  * Search built with bge-m3 for every source, and a switch to nomic-embed-text a third of the way through, started twelve

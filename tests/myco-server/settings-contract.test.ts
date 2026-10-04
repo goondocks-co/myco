@@ -23,6 +23,8 @@ import { LIVE_LEAVES, SETTING_POLICIES } from '@myco-server-worker/core/settings
 import { DEPLOYMENT_LEAF_SPECS, settingTexts } from '@myco-server-worker/core/settings.js';
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { taskFactsKey } from '@myco-server-worker/core/runs.js';
+import { titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
 import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';
 import { mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
@@ -137,6 +139,8 @@ interface BehaviorCase {
   notOn?: readonly DeploymentTarget[];
   /** A stored value the rule refuses holds the consumer's work, which says why, rather than falling back to the default. */
   invalidHolds?: true;
+  /** The document has no effective overrides, though the clock still uses its declared task schedules. */
+  invalidDocument?: true;
   /**
    * What a stored value the rule refuses means, where it is not the default: the same as this valid value, or this
    * observation. Retention and backups keep everything, clamp or hold rather than delete or stop more.
@@ -155,6 +159,15 @@ const at = (module: string, fn: (...args: never[]) => unknown): Consumer => ({ m
 
 /** The extraction schedule a Project twenty days quiet meets, decided against the leaves as the clock reads them. */
 const quietDecision = async (r: Rig) => decideTask(r.env, 'proj_1', NOW - 20 * DAY, 'extract-curate', scheduleFor('extract-curate', TASK_SCHEDULE['extract-curate']!, {}), 'idle', await scheduleLeaves(r.env), NOW);
+const extractionDecision = async (r: Rig, lastEntryAt: number | null) => {
+  const leaves = await scheduleLeaves(r.env);
+  const facts = {
+    runs: new Map([[taskFactsKey('proj_1', 'extract-curate'), { live: false, lastEntryAt, entriesSince: lastEntryAt === null ? 0 : 1 }]]),
+    capabilities: new Set([taskFactsKey('proj_1', 'vault_evolution')]),
+  };
+  return decideTask(r.env, 'proj_1', NOW - 3_600_000, 'extract-curate',
+    scheduleFor('extract-curate', TASK_SCHEDULE['extract-curate']!, leaves.overrides), 'idle', leaves, NOW, facts);
+};
 /** Runs the clock dispatched at this wake; each is removed again so the next read starts from the same state. */
 async function dispatched(r: Rig): Promise<number> {
   const report = await runScheduledTasks(r.env, 'idle', NOW, ORIGIN);
@@ -225,14 +238,15 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     value: () => 30, invalid: () => 30.5, observe: quietDecision,
   },
   'cortex.canopy.refresh.background_enabled': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => true, invalid: () => 1, observe: async (r) => (await mapSchedule(r))?.enabled ?? null,
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
+    value: () => true, invalid: () => 1, observe: async (r) => (await mapSchedule(r))?.enabled ?? null,
   },
   'cortex.canopy.refresh.background_period_minutes': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['cortex.canopy.refresh.background_enabled', true]],
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true], ['cortex.canopy.refresh.background_enabled', true]],
     value: () => 30, invalid: () => 20_000, invalidMeans: { value: 10_080 }, observe: async (r) => (await mapSchedule(r))?.intervalSeconds ?? null,
   },
   'agent.tasks': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'extract-curate': { schedule: { intervalSeconds: 600 } } }), invalid: () => [],
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'extract-curate': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
     observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'extract-curate')?.schedule.intervalSeconds,
   },
   ...Object.fromEntries((['concurrent_runs', 'task_concurrent_runs', 'task_runs_per_hour'] as const).map((limit) => [`agent.limits.${limit}`, {
@@ -400,9 +414,11 @@ describe('the settings contract', () => {
     const bound = SETTING_POLICIES.flatMap((policy) => policy.leaves);
     expect([...bound].sort()).toEqual([...LIVE_LEAVES].sort());
     expect(new Set(bound).size).toBe(bound.length);
+    expect(SETTING_POLICIES.find((policy) => policy.id === 'execution-profiles')?.owners).toContain('core/runtime-probe.ts');
   });
 
-  it('gives every live leaf a typed rule and a behavior case', () => {
+  it('gives every Deployment leaf a typed rule and a behavior case', () => {
+    expect(Object.keys(DEPLOYMENT_LEAF_SPECS).sort()).toEqual([...LIVE_LEAVES].sort());
     for (const leaf of LIVE_LEAVES) {
       expect({ leaf, typed: 'type' in DEPLOYMENT_LEAF_SPECS[leaf]! }).toEqual({ leaf, typed: true });
       expect({ leaf, cased: CASES[leaf] !== undefined }).toEqual({ leaf, cased: true });
@@ -443,6 +459,12 @@ describe('the settings contract', () => {
           const refused = await put(r, leaf, value);
           expect(refused.status).toBe(400);
           expect(await row(r, leaf)).toMatchObject({ configured: false, appliesTo: expect.not.arrayContaining([target]) });
+          const before = await behavior.observe(r);
+          storedRaw(r, leaf, JSON.stringify(value));
+          const mismatched = await row(r, leaf);
+          expect(mismatched).toMatchObject({ stored: value, storedApplies: false, state: 'not-applicable', reason: expect.any(String) });
+          expect(mismatched.effective).not.toEqual(value);
+          expect(await behavior.observe(r)).toEqual(before);
           return;
         }
         const before = await behavior.observe(r);
@@ -454,7 +476,7 @@ describe('the settings contract', () => {
         const after = await behavior.observe(r);
         expect({ leaf, moved: JSON.stringify(after) !== JSON.stringify(before), before, after }).toMatchObject({ leaf, moved: true });
         const configured = await row(r, leaf);
-        expect(configured).toMatchObject({ configured: true, stored: value, effective: value, source: expect.stringMatching(/^(configured|task-override)$/) });
+        expect(configured).toMatchObject({ configured: true, stored: value, effective: value, storedApplies: true, source: expect.stringMatching(/^(configured|task-override)$/) });
         expect(String(configured.revision)).toStartWith('w');
 
         const refused = await put(r, leaf, behavior.invalid(target));
@@ -463,16 +485,28 @@ describe('the settings contract', () => {
 
         storedRaw(r, leaf, JSON.stringify(behavior.invalid(target)));
         const invalid = await row(r, leaf);
-        expect({ leaf, state: invalid.state, reason: typeof invalid.reason }).toEqual({ leaf, state: expect.stringMatching(/^(invalid|not-applicable)$/), reason: 'string' });
+        expect({ leaf, state: invalid.state, applies: invalid.storedApplies, reason: typeof invalid.reason })
+          .toEqual({ leaf, state: expect.stringMatching(/^(invalid|not-applicable)$/), applies: false, reason: 'string' });
+        expect(invalid.effective).not.toEqual(invalid.stored);
         const held = await behavior.observe(r);
         const means = behavior.invalidMeans;
-        if (behavior.invalidHolds) expect({ leaf, held }).toEqual({ leaf, held: expect.objectContaining({ reason: expect.any(String) }) });
-        else if (means === undefined) expect({ leaf, held }).toEqual({ leaf, held: before });
+        if (behavior.invalidHolds) {
+          expect(invalid.effective).toBeNull();
+          expect({ leaf, held }).toEqual({ leaf, held: expect.objectContaining({ reason: expect.any(String) }) });
+        } else if (means === undefined) {
+          if (behavior.invalidDocument) expect(invalid.effective).toBeNull();
+          expect({ leaf, held }).toEqual({ leaf, held: before });
+        }
         else if ('observed' in means) expect({ leaf, held }).toEqual({ leaf, held: means.observed });
         else {
           expect({ leaf, held: JSON.stringify(held) === JSON.stringify(before) }).toEqual({ leaf, held: false });
           expect((await put(r, leaf, means.value)).status).toBe(200);
+          expect({ leaf, reportedFallback: invalid.effective }).toEqual({ leaf, reportedFallback: means.value });
           expect({ leaf, held }).toEqual({ leaf, held: await behavior.observe(r) });
+        }
+        if (!behavior.invalidHolds && !behavior.invalidDocument && invalid.effective !== null) {
+          expect({ leaf, fallbackWrite: (await put(r, leaf, invalid.effective)).status }).toEqual({ leaf, fallbackWrite: 200 });
+          expect({ leaf, reportedFallbackRuns: await behavior.observe(r) }).toEqual({ leaf, reportedFallbackRuns: held });
         }
 
         expect({ leaf, reset: await json(await reset(r, leaf)) }).toEqual({ leaf, reset: { applied: true } });
@@ -482,6 +516,125 @@ describe('the settings contract', () => {
         expect(String(restored.revision)).toStartWith('r');
       });
     }
+  }
+});
+
+describe('stored settings that do not apply', () => {
+  for (const target of DEPLOYMENT_TARGETS) {
+    it(`a malformed task document holds worker selection on ${target} while the clock keeps declared schedules`, async () => {
+      const r = rigFor(target);
+      for (const [leaf, value] of [...workerLogin('claude-code'), ...modelFor('claude-code', 'low')]) {
+        expect((await put(r, leaf, value)).status).toBe(200);
+      }
+      const before = await selection(r, 'title-summary', [offer('claude-code')]);
+      expect(before).toMatchObject({ harness: 'claude-code' });
+      const clockBefore = scheduledTasks((await scheduleLeaves(r.env)).overrides).map(({ task, schedule }) => ({ task, schedule }));
+      storedRaw(r, 'agent.tasks', JSON.stringify([]));
+      expect(await row(r, 'agent.tasks')).toMatchObject({ storedApplies: false, effective: null, state: 'invalid', reason: expect.any(String) });
+      expect(await selection(r, 'title-summary', [offer('claude-code')])).toMatchObject({ reason: expect.any(String) });
+      expect(scheduledTasks((await scheduleLeaves(r.env)).overrides).map(({ task, schedule }) => ({ task, schedule }))).toEqual(clockBefore);
+    });
+
+    it(`names stale task and field overrides on ${target}, while the clock uses only live tasks`, async () => {
+      const r = rigFor(target);
+      const held = {
+        'cortex-instructions': { schedule: { enabled: false } },
+        'title-summary': { schedule: { enabled: true }, forgottenField: 'old value' },
+      };
+      storedRaw(r, 'agent.tasks', JSON.stringify(held));
+      const answer = await row(r, 'agent.tasks');
+      const reason = String(answer.reason);
+      expect(answer).toMatchObject({ stored: held, storedApplies: false, reason: expect.any(String) });
+      expect(answer.effective).toEqual({ 'title-summary': { schedule: { enabled: true } } });
+      expect(reason).toContain('cortex-instructions');
+      expect(reason).toContain('forgottenField');
+      expect(scheduledTasks((await scheduleLeaves(r.env)).overrides).some((task) => task.task === 'cortex-instructions')).toBe(false);
+    });
+
+    it(`explains an unknown task harness on ${target}, while a real worker cannot use it`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'title-summary': { harness: 'vanished-harness' } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('vanished-harness') });
+      expect(answer.effective).toEqual({ 'title-summary': { harness: null } });
+      const selected = await selection(r, 'title-summary', [offer('claude-code')]);
+      expect(selected).toMatchObject({ reason: expect.any(String) });
+    });
+
+    it(`reports an unknown accelerator while the extraction clock keeps its ordinary interval on ${target}`, async () => {
+      const r = rigFor(target);
+      const accelerator = { name: 'vanished-accelerator', thresholds: { steady: 0, accelerated: 1 } };
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: { accelerator } } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('vanished-accelerator') });
+      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['extract-curate']?.schedule.accelerator).toBeUndefined();
+      expect(await extractionDecision(r, NOW - 1_800_000)).toBe('not_yet');
+    });
+
+    it(`reports an unknown precondition while the extraction clock holds work on ${target}`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: { preCondition: 'vanished-condition' } } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('extract-curate.schedule.preCondition') });
+      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['extract-curate']?.schedule.preCondition).toBeNull();
+      expect(await extractionDecision(r, null)).toBe('precondition');
+    });
+
+    it(`reports an unknown reserved-run precondition while the extraction clock holds reserve on ${target}`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: {
+        maxRunsPerDay: 2, reservedRunsPerDay: { count: 2, preCondition: 'vanished-reserve' },
+      } } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('extract-curate.schedule.reservedRunsPerDay.preCondition') });
+      expect(await extractionDecision(r, null)).toBe('reserved_runs_per_day');
+    });
+
+    it(`reports the title backfill schedule its separate job actually uses on ${target}`, async () => {
+      const r = rigFor(target);
+      expect((await put(r, 'agent.scheduled_tasks_enabled', true)).status).toBe(200);
+      expect((await put(r, 'agent.tasks', { 'title-summary': { schedule: { enabled: true, intervalSeconds: 60 } } })).status).toBe(200);
+      const policy = await titlingBackfillPolicy(r.env);
+      const answer = await row(r, 'agent.tasks');
+      expect(policy).toMatchObject({ scheduledTasksEnabled: true, backfillEnabled: true, enabled: true, intervalSeconds: 60 });
+      expect(answer).toMatchObject({ storedApplies: true, state: 'active', effective: {
+        'title-summary': { schedule: { enabled: policy.backfillEnabled, intervalSeconds: policy.intervalSeconds } },
+      } });
+    });
+  }
+
+  it('reports stored Ollama and an empty model as unapplied on Cloudflare while Workers AI runs bge-m3', async () => {
+    const r = rigFor('cloudflare');
+    storedRaw(r, 'embedding.provider', JSON.stringify('ollama'));
+    storedRaw(r, 'embedding.model', JSON.stringify(''));
+    const provider = await row(r, 'embedding.provider');
+    const model = await row(r, 'embedding.model');
+    const providerReason = String(provider.reason);
+    const modelReason = String(model.reason);
+    expect(provider).toMatchObject({ stored: 'ollama', effective: 'workers-ai', storedApplies: false, state: 'not-applicable', reason: expect.stringContaining('Ollama') });
+    expect(model).toMatchObject({ stored: '', effective: '@cf/baai/bge-m3', storedApplies: false, state: 'invalid', reason: expect.any(String) });
+    expect(providerReason).toMatch(/reset|clear/i);
+    expect(modelReason).toMatch(/reset|clear/i);
+    expect(await providerKey(r)).toEqual(JSON.stringify(['cloudflare', '@cf/baai/bge-m3']));
+  });
+
+  for (const target of DEPLOYMENT_TARGETS) {
+    it(`repairs the production stale task while retaining the live title backfill on ${target}`, async () => {
+      const r = rigFor(target);
+      expect((await put(r, 'agent.scheduled_tasks_enabled', true)).status).toBe(200);
+      const stored = {
+        'cortex-instructions': { schedule: { maxRunsPerDay: 3 } },
+        'title-summary': { schedule: { enabled: true } },
+      };
+      storedRaw(r, 'agent.tasks', JSON.stringify(stored));
+      expect(await row(r, 'agent.tasks')).toMatchObject({ stored, storedApplies: false, repair: 'clean-document' });
+      expect(await json(await r.fetch(await asOwnerPost('/api/settings/agent.tasks/repair', {})))).toEqual({ applied: true });
+      expect(await row(r, 'agent.tasks')).toMatchObject({ stored: { 'title-summary': { schedule: { enabled: true } } },
+        effective: { 'title-summary': { schedule: { enabled: true } } }, storedApplies: true });
+      expect((await row(r, 'agent.tasks')).repair).toBeUndefined();
+      expect(await titlingBackfillPolicy(r.env)).toMatchObject({ scheduledTasksEnabled: true, backfillEnabled: true, enabled: true });
+      expect((r.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { updated_by: string }).updated_by).toBe('mem_machine_1');
+    });
   }
 });
 

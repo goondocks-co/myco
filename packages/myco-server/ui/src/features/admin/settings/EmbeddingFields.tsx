@@ -6,6 +6,7 @@ import { useIsAdmin } from '../../../hooks/use-me';
 import { settingsRefusalText, switchRefusalText, useSettings, useSettingsActions } from '../../../hooks/use-settings';
 import { useNow } from '../../../hooks/use-today';
 import { SettingRow } from '../AdminFrame';
+import { StoredValue } from '../StoredValue';
 import type { LeafField } from './catalogue';
 import { EmbeddingSwitchPanel, PassedOverSources, estimateWords, shortModel } from './EmbeddingSwitch';
 import type { LeafRow } from './wire';
@@ -45,8 +46,8 @@ export function inUseWords(choices: EmbeddingChoices): string {
   const selection = choices.selection;
   if (selection === null) return choices.reason ?? 'Search matches words only.';
   const label = choices.providers.find((p) => p.id === selection.provider)?.label ?? selection.provider;
-  const words = `In use: ${label} · ${shortModel(selection.model)} (${dimensionWords(selection.dimensions)})`;
-  return choices.reason === null ? words : `${words}. ${choices.reason}`;
+  const words = `Search uses ${label} with ${shortModel(selection.model)} (${dimensionWords(selection.dimensions)})`;
+  return choices.reason === null ? `${words}.` : `${words}. ${choices.reason}`;
 }
 
 /** The cache key holding the provider a person has picked and not yet chosen a model for. */
@@ -140,7 +141,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   };
 
   const notInUse = row !== undefined && row.state !== 'active';
-  const refused = error !== null || row?.state === 'invalid' || row?.state === 'not-applicable';
+  const refused = error !== null;
   let status: string | null = error ?? (notInUse ? row!.reason : null);
   let control;
   let stacked = false;
@@ -229,7 +230,10 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
     else if (status === null && built !== undefined && !choices.switchable && offer === null) {
       status = `Search was built with ${shortModel(built.model)}${built.dimensions === null ? '' : ` (${built.dimensions} dimensions)`}. Choosing another model offers to switch search to it, rebuilding search in the background.`;
     }
-    if (status === null && model !== null) status = `${dimensionWords(listed.find((m) => m.id === model)?.dimensions ?? null)}${row?.source === 'default' ? ' · the provider’s default' : ''}`;
+    if (status === null && model !== null) {
+      const dimensions = listed.find((m) => m.id === model)?.dimensions ?? null;
+      status = `${dimensions === null ? 'The model’s dimensions are not published.' : `The model uses ${dimensions} dimensions.`}${row?.source === 'default' ? ' This is the provider’s default model.' : ''}`;
+    }
   } else {
     const editable = provider?.endpoint.editable === true;
     const shown = draft ?? (storedEndpoint ?? '');
@@ -254,7 +258,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
     ) : (
       <p aria-label={field.label} className="t-small text-muted">{provider === null ? 'No provider is chosen.' : provider.endpoint.url ?? `${provider.label} on this server`}</p>
     );
-    status ??= editable ? (storedEndpoint === null ? `Default: ${provider?.endpoint.url ?? 'none'}` : null) : provider === null ? null : `${provider.label} uses its own endpoint.`;
+    status ??= editable ? (storedEndpoint === null ? `Search uses the default endpoint: ${provider?.endpoint.url ?? 'none'}.` : null) : provider === null ? null : `${provider.label} uses its own endpoint.`;
   }
 
   return (
@@ -263,13 +267,15 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
       label={field.label}
       htmlFor={labelled ? id : undefined}
       note={field.note}
-      status={status}
+      details={row?.configured ? <StoredValue value={row.stored} /> : undefined}
+      status={[status === null ? null : /[.!?]$/.test(status) ? status : `${status}.`, (field.kind === 'embedding-provider' || notInUse) && status !== inUseWords(choices) ? inUseWords(choices) : null, null].filter(Boolean).join(' ')}
       refused={refused}
       stacked={stacked || row?.configured === true}
       control={(
-        <div className={`flex w-full items-center gap-s2${stacked || row?.configured === true ? ' max-w-measure' : ''}`}>
-          {control}
-          {row?.configured === true && !locked && choices.switch === null && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={busy} onClick={reset}>Reset</Button>}
+        <div className={`flex w-full flex-col items-start gap-s2${stacked || row?.configured === true ? ' max-w-measure' : ''}`}>
+          <div className="flex w-full min-w-0 items-center gap-s2">{control}</div>
+          {row?.configured === true && !locked && choices.switch === null && <Button size="sm" aria-label={`Clear the stored value for ${field.label}`} disabled={busy} onClick={reset}>Clear the stored value</Button>}
+          {row?.configured && !locked && <p className="t-meta text-muted">Clearing restores this setting’s effective default.</p>}
         </div>
       )}
     />

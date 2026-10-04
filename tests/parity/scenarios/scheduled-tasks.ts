@@ -12,12 +12,7 @@ export const scheduledTasks: ParityScenario = {
   async run(target: ParityTarget) {
     const now = Date.now();
     const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    for (const [name, value] of [
-      ['agent.provider.type', 'openai-compatible'],
-      ['agent.provider.model', 'parity-model'],
-      ['agent.provider.base_url', 'http://models.internal/v1'],
-      ['agent.scheduled_tasks_enabled', true],
-    ] as const) await leaf(name, value);
+    await leaf('agent.scheduled_tasks_enabled', true);
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
     // Nothing earlier holds a place or sets the extraction interval.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);

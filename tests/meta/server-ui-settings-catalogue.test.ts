@@ -10,7 +10,6 @@ import { join } from 'node:path';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { LEAF_FIELDS, LEAF_GROUPS } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue.js';
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired.js';
-import { LEAF_DEFAULTS } from '../../packages/myco-server/ui/src/features/admin/settings/defaults.js';
 
 /** A leaf as the server answers it, with the server's own retired flag. */
 const served = (leaf: string) => ({ leaf, configured: false, value: null, updatedAt: null, updatedBy: null, retired: RETIRED_LEAVES.has(leaf) });
@@ -70,39 +69,11 @@ describe('settings catalogue', () => {
     expect(unrendered).toEqual([]);
   });
 
-  /**
-   * Every setting the page shows says what the server does while nothing is
-   * stored: the value it applies ("Server default: on", "14 days"), or what
-   * leaving it unset means ("No limit"). A switch always has a value, since a
-   * switch drawn off while the server treats it as on misstates the setting.
-   */
-  it('gives every setting still in use a server default or the words for unset', () => {
-    const missing = LIVE_FIELDS.filter((f) => LEAF_DEFAULTS[f.leaf] === undefined).map((f) => f.leaf);
-    expect(missing).toEqual([]);
-    const toggles = LIVE_FIELDS.filter((f) => f.kind === 'toggle').filter((f) => {
-      const entry = LEAF_DEFAULTS[f.leaf];
-      return entry === undefined || !('value' in entry) || typeof entry.value !== 'boolean';
-    }).map((f) => f.leaf);
-    expect(toggles).toEqual([]);
-    // A default for a setting the page no longer offers would be a second copy with no reader.
-    expect(Object.keys(LEAF_DEFAULTS).filter((leaf) => !LIVE_FIELDS.some((f) => f.leaf === leaf)).sort()).toEqual([]);
+  it('offers only live leaves returned by the effective contract', () => {
+    expect(LIVE_FIELDS.map((field) => field.leaf).sort()).toEqual([...DEPLOYMENT_LEAVES].sort());
+    expect(RETIRED_LEAVES.size).toBe(0);
   });
 
-  /**
-   * The page reads which settings are retired from the server's answer
-   * (`retired`, from `RETIRED_LEAVES`), which `retired-settings.test.ts` holds
-   * to the leaves nothing reads. The two meet here: the catalogue carries no
-   * retired flag of its own, and every leaf the server retires is one the page
-   * shows as retired, but for the one whose value Myco keeps and shows from the
-   * shared constant the code map reads.
-   */
-  it('takes retired from the server, and differs from it only where Myco keeps the value', () => {
-    const catalogue = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'ui', 'src', 'features', 'admin', 'settings', 'catalogue.ts'), 'utf8');
-    expect(/\bretired\b/.test(catalogue), 'the catalogue names no retired setting: the server\'s answer does').toBe(false);
-    const keptByMyco = LEAF_FIELDS.filter((f) => RETIRED_LEAVES.has(f.leaf) && !isRetired(f, served(f.leaf))).map((f) => f.leaf);
-    expect(keptByMyco).toEqual(['cortex.canopy.exclude.default_patterns']);
-    expect(LEAF_FIELDS.filter((f) => !RETIRED_LEAVES.has(f.leaf) && isRetired(f, served(f.leaf))).map((f) => f.leaf)).toEqual([]);
-  });
 });
 
 describe('obsolete editable contracts', () => {

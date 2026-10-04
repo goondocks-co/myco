@@ -26,7 +26,7 @@ export type LeafRow = {
   retiredValue?: Record<string, unknown>;
   error?: 'invalid_value';
   remedy?: string;
-  repair?: 'reset-leaf';
+  repair?: 'reset-leaf' | 'clean-document';
 } & EffectiveSetting;
 
 export interface SettingsAnswer {
