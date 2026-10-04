@@ -15,7 +15,8 @@ it.skipIf(!enabled)('contains module-load fixtures and subprocesses with replace
   const contained = (candidate: string) => expect(path.relative(root, candidate)).not.toMatch(/^\.\.(?:[/\\]|$)/);
   contained(moduleFixture!);
   const env = { BOUNDARY_VALUE: 'preserved' };
-  const script = 'if(process.env.BOUNDARY_VALUE!=="preserved")process.exit(42);' + childScript;
+  const home = JSON.stringify(process.env.HOME);
+  const script = `if(process.env.BOUNDARY_VALUE!=="preserved"||process.env.HOME!==${home}||!process.env.CODEX_HOME||!process.env.CLAUDE_CONFIG_DIR||!process.env.MYCO_HOME)process.exit(42);` + childScript;
   for (const binary of [Bun.which('node')!, Bun.which('bun')!]) {
     const child = spawnSync(binary, ['-e', script], { env, encoding: 'utf8' });
     expect({ status: child.status, error: child.stderr }).toEqual({ status: 0, error: '' });

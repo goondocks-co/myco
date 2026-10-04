@@ -15,11 +15,15 @@ describe('test temp boundary', () => {
   it('routes every active Bun test script and the Windows CI contracts through the runner', () => {
     for (const file of ['../../package.json', '../../packages/myco/package.json']) {
       const pkg = JSON.parse(fs.readFileSync(new URL(file, import.meta.url), 'utf8')) as { scripts: Record<string, string> };
-      const scripts = Object.entries(pkg.scripts).filter(([name]) => name === 'test' || name.startsWith('test:') && name !== 'test:screens');
+      expect(pkg.scripts.pretest).toBeUndefined();
+      const scripts = Object.entries(pkg.scripts).filter(([name]) => name === 'test' || name.startsWith('test:'));
       expect(scripts.length).toBeGreaterThan(0);
-      for (const [name, command] of scripts) expect({ name, command }).toEqual({ name, command: expect.stringContaining('scripts/run-bun-tests.mjs') });
+      for (const [name, command] of scripts) expect({ name, command }).toEqual({ name, command: expect.stringContaining(name === 'test:screens' ? 'scripts/run-test-command.mjs' : 'scripts/run-bun-tests.mjs') });
     }
     const ci = fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
     expect(ci).not.toMatch(/\bbun test\b/);
+    const runner = fs.readFileSync(new URL('../../scripts/run-bun-tests.mjs', import.meta.url), 'utf8');
+    expect(runner.indexOf('createTestTempRun();')).toBeLessThan(runner.indexOf('gen-worker-bundle.ts'));
+    expect(runner).toContain("['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']");
   });
 });

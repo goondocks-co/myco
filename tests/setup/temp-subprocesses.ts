@@ -2,9 +2,11 @@ import { TEST_TEMP_ROOT } from './temp-root.js';
 import path from 'node:path';
 
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
+const HOME_ENV_NAMES = ['HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'MYCO_HOME'];
 
 function tempEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const result = { ...env };
+  for (const name of HOME_ENV_NAMES) result[name] ??= process.env[name];
   for (const name of TEMP_ENV_NAMES) {
     const candidate = result[name];
     const relative = candidate ? path.relative(TEST_TEMP_ROOT, path.resolve(candidate)) : '..';

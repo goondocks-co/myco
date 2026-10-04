@@ -36,7 +36,8 @@ export function sweepStaleRunRoots(parent) {
       fs.rmSync(claimed, { recursive: true, force: true, maxRetries: 3 });
       swept += 1;
     } catch (error) {
-      if (!['ENOENT', 'EBUSY', 'EPERM', 'EACCES'].includes(error.code)) throw error;
+      if (error.code === 'ENOENT') continue;
+      throw error;
     }
   }
   return swept;
@@ -89,15 +90,18 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
     root,
     finish() {
       if (finished) return [];
-      finished = true;
-      const leaks = newTestTemps(before, startedAt, root);
-      for (const dir of directories) {
-        const left = leaks.filter((entry) => path.dirname(entry) === dir);
-        console.log(`[run-bun-tests] temp entries left in ${dir}: ${left.length}${left.length ? ` (${left.join(', ')})` : ''}`);
+      try {
+        const leaks = newTestTemps(before, startedAt, root);
+        for (const dir of directories) {
+          const left = leaks.filter((entry) => path.dirname(entry) === dir);
+          console.log(`[run-bun-tests] temp entries left in ${dir}: ${left.length}${left.length ? ` (${left.join(', ')})` : ''}`);
+        }
+        if (leaks.length) console.error('[run-bun-tests] FAIL: test temp entries escaped the run root');
+        return leaks;
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+        finished = true;
       }
-      if (leaks.length) console.error('[run-bun-tests] FAIL: test temp entries escaped the run root');
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
-      return leaks;
     },
   };
 }

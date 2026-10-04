@@ -1,6 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export function sandboxTestHome(root) {
+  const home = fs.mkdtempSync(path.join(root, 'h-'));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  process.env.CODEX_HOME = path.join(home, '.codex');
+  process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
+  process.env.MYCO_HOME ??= path.join(home, '.myco');
+  process.env.MYCO_TEST_RUN_HOME = home;
+  process.env.PATH = sandboxPath(home);
+  return home;
+}
+
 // Only test tooling is reachable by name; installed harnesses and Myco are excluded.
 export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
   const bin = path.join(home, 'bin');

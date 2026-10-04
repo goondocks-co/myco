@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
-import { sandboxPath } from './test-environment.mjs';
+import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, sweepStaleRunRoots } from './test-temp-root.mjs';
 
 // ---------------------------------------------------------------------------
@@ -45,13 +45,7 @@ for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) 
 process.env.MYCO_TEST_REAL_HOME = os.userInfo().homedir;
 
 // Child runtimes receive home and PATH isolation before any preload executes.
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
-process.env.HOME = TEST_HOME;
-process.env.USERPROFILE = TEST_HOME;
-process.env.CODEX_HOME = path.join(TEST_HOME, '.codex');
-process.env.CLAUDE_CONFIG_DIR = path.join(TEST_HOME, '.claude');
-process.env.MYCO_TEST_RUN_HOME = TEST_HOME;
-process.env.PATH = sandboxPath(TEST_HOME);
+sandboxTestHome(RUN_ROOT);
 
 // ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME
@@ -157,6 +151,13 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Test prerequisites share the run's temp root and leak gate.
+const generated = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'], {
+  cwd: REPO, env: process.env, stdio: 'inherit',
+});
+if (generated.error) throw generated.error;
+if (generated.status !== 0) process.exit(generated.status ?? 1);
 
 /**
  * Warn when the Bun running the suite is not the Bun that ships.

@@ -2,6 +2,8 @@
 
 Use `npm test -- <files>` for focused runs and `npm test` for the full suite.
 Watch, parity, Node, jsdom and the Windows CI contracts use the same runner.
+Screen tests use `run-test-command.mjs`, which shares its temp root, sandbox
+home and exit gate. Bundle generation runs inside the Bun test runner's root.
 The retained `tests/setup/vitest.ts` is loaded by the Bun jsdom setup; there
 is no separate active Vitest runner in this checkout.
 

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newTestTemps, snapshotTestTemps, systemTempDirectories } from '../../scripts/test-temp-root.mjs';
+import { createTestTempRun, newTestTemps, snapshotTestTemps, systemTempDirectories } from '../../scripts/test-temp-root.mjs';
 
 const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-temp-snapshot-'));
 afterAll(() => fs.rmSync(parent, { recursive: true, force: true }));
@@ -32,5 +32,23 @@ describe('system temp leak snapshot', () => {
     const dirs = systemTempDirectories();
     expect(dirs).toContain(fs.realpathSync(os.tmpdir()));
     if (process.platform !== 'win32') expect(dirs).toContain(fs.realpathSync(path.join(path.parse(parent).root, 'tmp')));
+  });
+
+  it('removes its owned root even when the leak scan fails', () => {
+    const keys = ['MYCO_TEST_RUN_ROOT', 'TMPDIR', 'TEMP', 'TMP'];
+    const saved = new Map(keys.map((key) => [key, process.env[key]]));
+    const monitor = fs.mkdtempSync(path.join(parent, 'monitor-'));
+    const run = createTestTempRun({ parent, directories: [monitor] });
+    try {
+      fs.rmSync(monitor, { recursive: true });
+      expect(() => run.finish()).toThrow();
+      expect(fs.existsSync(run.root)).toBe(false);
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(run.root, { recursive: true, force: true });
+    }
   });
 });
