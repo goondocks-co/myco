@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { describeWindowsFileLock } from './windows-file-lock.mjs';
 
 const ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const TEST_NAME = /^(?:myco-|mt-)/;
@@ -102,7 +103,15 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
         if (leaks.length) console.error('[run-bun-tests] FAIL: test temp entries escaped the run root');
         return leaks;
       } finally {
-        fs.rmSync(root, { recursive: true, force: true, maxRetries: CLEANUP_RETRIES });
+        try {
+          fs.rmSync(root, { recursive: true, force: true, maxRetries: CLEANUP_RETRIES });
+        } catch (error) {
+          if (process.platform === 'win32' && error.code === 'EBUSY') {
+            try { console.error(`[run-bun-tests] locked file ${error.path}: ${describeWindowsFileLock(error.path)}`); }
+            catch (inspectionError) { console.error(`[run-bun-tests] file-lock inspection failed: ${inspectionError}`); }
+          }
+          throw error;
+        }
         finished = true;
       }
     },
