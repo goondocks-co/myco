@@ -24,6 +24,7 @@
  * builders and this list to one another.
  */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { MAX_WORKER_RUN_SECONDS } from '@goondocks/myco-shared/harness-health';
 import { declared } from './declared.js';
 import type { RunAdmissionGate } from './runs.js';
 
@@ -105,7 +106,7 @@ export function taskTools(task: string | null): readonly string[] {
 export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
   [MAP_TASK]: 900,
   [EXTRACTION_TASK]: 900,
-  [SEEDING_TASK]: 3600,
+  [SEEDING_TASK]: MAX_WORKER_RUN_SECONDS,
 };
 
 /** The budget one run of this task gets, or null for a task that takes the dispatcher's default. */

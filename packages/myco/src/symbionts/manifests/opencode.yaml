@@ -3,7 +3,15 @@ displayName: OpenCode
 binary: opencode
 health:
   installLocations: ["~/.config/opencode"]
-  activityLocations: ["~/.local/share/opencode/storage/session", "~/.local/share/opencode/opencode.db", "~/.local/share/opencode/opencode.db-wal"]
+  # Read-only WAL access requires an existing readable shared-memory index; unavailable stores leave activity unknown in Health.
+  activityLocations:
+    - kind: sqlite
+      path: opencode/opencode.db
+      dataHomeEnv: XDG_DATA_HOME
+      dataHomeDefault: "~/.local/share"
+      query: "SELECT id, time_updated AS ran_at FROM session WHERE parent_id IS NULL AND time_updated >= ? ORDER BY time_updated DESC"
+      sessionIdColumn: id
+      timeColumn: ran_at
 configDir: .opencode
 detectionDir: ~/.config/opencode
 pluginRootEnvVar: OPENCODE_PLUGIN_ROOT
@@ -16,10 +24,8 @@ capture:
   planDirs:
     # opencode Plan mode permits edits only to .opencode/plans/*.md — captured by plan-capture.ts
     - .opencode/plans/
-  # opencode stores a session as one JSON file per message and per part, which
-  # carries no byte offset to ship a delta against. The plugin writes an
-  # append-only transcript from the events it sees in process, and Myco's
-  # retention pass ages it.
+  # The native session store provides no append-only byte stream. The plugin writes
+  # a transcript from the events it sees in process, and Myco's retention pass ages it.
   transcriptDiscovery:
     roots:
       - "@memberHome/member/transcripts/opencode"

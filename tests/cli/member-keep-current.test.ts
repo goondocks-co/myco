@@ -318,15 +318,16 @@ it('settings drift is repaired through the same installer', () => {
 
 it('reports only mtimes from harness activity files and never their contents', () => {
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
-  const root = path.join(agentHome, '.codex', 'sessions');
+  const root = path.join(agentHome, '.codex', 'sessions', '2026', '10', '04');
   fs.mkdirSync(root, { recursive: true });
-  const file = path.join(root, 'session.jsonl');
+  const file = path.join(root, 'rollout-2026-10-04-11111111-1111-1111-1111-111111111111.jsonl');
   fs.writeFileSync(file, 'private session content');
-  fs.utimesSync(file, 1700000000, 1700000000);
+  const at = Math.trunc(Date.now() / 1000) * 1000;
+  fs.utimesSync(file, at / 1000, at / 1000);
   const read = spyOn(fs, 'readFileSync');
   try {
-    expect(harnessRanAt(loadManifests().find((m) => m.name === 'codex')!)).toBe(1700000000000);
-    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].ranAt).toBe(1700000000000);
+    expect(harnessRanAt(loadManifests().find((m) => m.name === 'codex')!)).toBe(at);
+    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].ranAt).toBe(at);
     expect(read.mock.calls.some(([target]) => String(target) === file)).toBe(false);
   } finally { read.mockRestore(); }
 });

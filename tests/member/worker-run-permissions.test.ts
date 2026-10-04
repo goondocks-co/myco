@@ -659,7 +659,9 @@ describe('a run on a harness that asks only under the run\'s agent', () => {
     const run = writeRunDir(mkdtempSync(join(tmpdir(), 'myco-run-')), 'run_1', CONNECTION);
     const asking = runAsking(harnessById('opencode'));
     const other = peerInMode('build');
-    const events = await collect(turnOver(other.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {} }, () => '', listed, { asking }));
+    const sessions: string[] = [];
+    const events = await collect(turnOver(other.channel, 'opencode', { ...run, prompt: 'do it', credentialEnv: {}, sessionOpened: (id) => { sessions.push(id); } }, () => '', listed, { asking }));
+    expect(sessions).toEqual(['s']);
     expect(other.asked).toEqual(['initialize', 'session/new']);
     expect(events).toEqual([{ kind: 'ended', stop: 'error', detail: `the harness opened the session in mode build rather than the run's agent ${asking.mode!}, so its calls would not be asked`, code: 'session_unasked' }]);
 

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { expandHome } from '@myco/paths/home.js';
+import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { getPluginVersion } from '@myco/version.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
@@ -14,6 +14,7 @@ import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/
 import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
 import { listRegistryEntries, deploymentUrl, type RegistryEntry } from '@myco/member/registry.js';
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
+import { readHarnessActivity } from '@myco/symbionts/harness-activity.js';
 import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
 
 export const REPAIR_LOCK = 'keep-current.lock';
@@ -27,22 +28,9 @@ export interface KeepCurrentResult {
   pendingTrust?: ProvisionRecord['pendingTrust'];
 }
 
-/** The newest file mtime in the manifest's own activity locations; session contents are never read. */
-export function harnessRanAt(manifest: SymbiontManifest): number | undefined {
-  let newest: number | undefined;
-  const visit = (location: string): void => {
-    let stat: fs.Stats;
-    try { stat = fs.lstatSync(location); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw error;
-    }
-    if (stat.isSymbolicLink()) return;
-    if (stat.isDirectory()) {
-      for (const child of fs.readdirSync(location)) visit(path.join(location, child));
-    } else if (stat.isFile()) newest = Math.max(newest ?? 0, Math.trunc(stat.mtimeMs));
-  };
-  for (const location of manifest.health?.activityLocations ?? []) visit(expandHome(location));
-  return newest;
+/** The newest recent interactive session's time, excluding Myco worker identities. */
+export function harnessRanAt(manifest: SymbiontManifest, mycoHome = resolveMycoHome(), now = Date.now()): number | undefined {
+  return readHarnessActivity(manifest, mycoHome, now);
 }
 
 function installEvidence(manifest: SymbiontManifest, binaryFound: (binary: string) => boolean): boolean {
@@ -107,9 +95,9 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           : `Run myco member provision ${id} to see what needs fixing`;
       }
       let ranAt: number | undefined;
-      try { if (manifest !== undefined) ranAt = harnessRanAt(manifest); } catch {
+      try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {
         state = 'repair_failed';
-        action = `Allow Myco to inspect ${manifest?.displayName ?? id}'s session times`;
+        action = `Can't tell whether ${manifest?.displayName ?? id} ran; open it and check access to its session store`;
       }
       result.harnesses.push({ id, provisioned: true, state, ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
     }

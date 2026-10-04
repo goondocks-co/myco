@@ -3,7 +3,7 @@ displayName: Cline
 binary: cline
 health:
   installLocations: ["~/.cline"]
-  activityLocations: ["~/.cline/data/tasks"]
+  activityLocations: [{ kind: file, path: "~/.cline/data/tasks/{sessionId}/api_conversation_history.json" }]
 configDir: .cline
 detectionDir: ~/.cline
 pluginRootEnvVar: CLINE_PLUGIN_ROOT
