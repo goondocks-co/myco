@@ -4,7 +4,7 @@
  * file at once and ships it keyed by its path; for an agent whose hooks do not
  * see tool calls, the turn-end hook finds the writes in the transcript delta
  * and reads the files then — an `Edit` record carries only a diff, never the
- * file. Either way Stop re-reads every path the session has shipped and sends
+ * file. Either way Stop re-reads every tracked path and sends
  * what changed since.
  */
 import fs from 'node:fs';
@@ -13,6 +13,7 @@ import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveHomeDir } from '../paths/home.js';
 import { resolveWorktreeRoot } from '../project-root.js';
 import { remainingMs, type HookBudget } from './budget.js';
+import { recordSessionLoss } from './capture-loss.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { planEvent, planKeyForPath, type EnvelopeContext, type OutboundEvent } from './envelope.js';
 import type { SessionState } from './session-state.js';
@@ -77,17 +78,18 @@ export function normalizePlanPath(projectRoot: string, absPath: string): string 
 export const planFilePath = (projectRoot: string, normalized: string): string => resolvePlanDir(normalized, projectRoot);
 
 /** Why a plan file yielded no text. */
-export type PlanFileMiss = 'absent' | 'oversize';
+export type PlanFileMiss = 'absent' | 'unreadable' | 'not-file' | 'oversize';
 
-/** The file's text, or the reason there is none: absent (or not a file, or unreadable) or larger than the bound. */
+/** The file's text, or the filesystem disposition or size bound that prevented its read. */
 export function readPlanFileOrMiss(absPath: string): { content: string } | { miss: PlanFileMiss; bytes?: number } {
   try {
     const stat = fs.statSync(absPath);
-    if (!stat.isFile()) return { miss: 'absent' };
+    if (!stat.isFile()) return { miss: 'not-file' };
     if (stat.size > MAX_PLAN_FILE_BYTES) return { miss: 'oversize', bytes: stat.size };
     return { content: fs.readFileSync(absPath, 'utf-8') };
-  } catch {
-    return { miss: 'absent' };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { miss: code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unreadable' };
   }
 }
 
@@ -99,6 +101,29 @@ export function readPlanFile(absPath: string): string | null {
 
 /** The receipt recorded for a plan file too large to ship, keyed by the size that was refused so a smaller rewrite ships. */
 const oversizeReceipt = (bytes: number): string => `oversize:${bytes}`;
+/** A tracked path with no captured content yet. */
+const UNCAPTURED_PLAN_HASH = '';
+/** A missing path gets time for the writer to publish it before the read obligation expires. */
+export const PENDING_PLAN_READ_TTL_MS = 5 * 60_000;
+/** Outstanding plan reads are bounded even if a harness reports an unlimited stream of deleted paths. */
+export const MAX_PENDING_PLAN_READS = 1_000;
+
+function recordLostPlan(state: SessionState, normalized: string, at: number): void {
+  const pending = state.planPaths[normalized];
+  if (pending?.pendingRead === undefined) return;
+  recordSessionLoss(state, `plan:${pending.planKey}:${pending.pendingSince ?? 0}`, 'plan', at);
+  delete state.planPaths[normalized];
+  process.stderr.write(`[myco] plan file ${normalized} remained unavailable — capture lost\n`);
+}
+
+function boundPendingPlanReads(state: SessionState, at: number): void {
+  const pending = Object.entries(state.planPaths)
+    .filter(([, entry]) => entry.pendingRead !== undefined)
+    .sort((left, right) => (left[1].pendingSince ?? 0) - (right[1].pendingSince ?? 0));
+  for (const [normalized] of pending.slice(0, Math.max(0, pending.length - MAX_PENDING_PLAN_READS))) {
+    recordLostPlan(state, normalized, at);
+  }
+}
 
 /** The plan's title: its first heading, else the file's name. */
 export const planTitle = (content: string, filePath: string): string => firstHeading(content) ?? path.basename(filePath, path.extname(filePath));
@@ -117,29 +142,58 @@ export interface PlanFileCapture {
  * parses has no id the member could name.
  */
 export function planFileCapture(ctx: EnvelopeContext, state: SessionState, projectId: string, projectRoot: string, absPath: string, promptId?: string): PlanFileCapture {
+  const normalized = normalizePlanPath(projectRoot, absPath);
+  return capturePlanPath(ctx, state, projectRoot, absPath, state.planPaths[normalized]?.planKey ?? planKeyForPath(projectId, normalized), promptId);
+}
+
+/** File reads and their retry obligations share one receipt path across write discovery and the backstop. */
+function capturePlanPath(ctx: EnvelopeContext, state: SessionState, projectRoot: string, absPath: string, planKey: string, promptId?: string, now: () => number = Date.now): PlanFileCapture {
   const none: PlanFileCapture = { events: [], record: () => {} };
   const normalized = normalizePlanPath(projectRoot, absPath);
   const shipped = state.planPaths[normalized];
   const read = readPlanFileOrMiss(absPath);
   if ('miss' in read) {
-    // Capture that did not happen has to say so: a plan the turn wrote and
-    // then removed or renamed is not silence, and one past the size bound is
-    // said once, under a receipt the backstop honours until the file changes.
-    if (read.miss === 'absent') {
-      process.stderr.write(`[myco] plan file ${normalized} was written this turn but cannot be read now — not captured\n`);
-      return none;
+    if (read.miss !== 'oversize') {
+      const miss = read.miss;
+      const observedAt = now();
+      const sameMiss = shipped?.pendingRead === miss && shipped.pendingSince !== undefined;
+      const pendingSince = sameMiss ? shipped.pendingSince! : observedAt;
+      const pendingChecks = sameMiss ? (shipped.pendingChecks ?? 0) + 1 : 1;
+      const expired = miss !== 'unreadable' && pendingChecks >= 2 && observedAt - pendingSince >= PENDING_PLAN_READ_TTL_MS;
+      if (expired) return { events: [], record: (next) => {
+        const current = next.planPaths[normalized];
+        if (current?.pendingRead === miss && current.pendingSince === shipped?.pendingSince) recordLostPlan(next, normalized, observedAt);
+      } };
+      if (shipped?.pendingRead !== read.miss) process.stderr.write(`[myco] plan file ${normalized} is ${read.miss} — read pending\n`);
+      return { events: [], record: (next) => {
+        const current = next.planPaths[normalized];
+        if (current !== undefined && (current.hash !== shipped?.hash || current.pendingRead !== shipped?.pendingRead)) return;
+        next.planPaths[normalized] = { ...current, planKey: current?.planKey ?? planKey, hash: current?.hash ?? UNCAPTURED_PLAN_HASH, pendingRead: miss, pendingSince, pendingChecks,
+          ...(current?.hash === undefined && promptId !== undefined ? { promptId } : {}) };
+        if (current?.pendingRead === undefined) boundPendingPlanReads(next, observedAt);
+      } };
     }
     const receipt = oversizeReceipt(read.bytes ?? 0);
     if (shipped?.hash === receipt) return none;
     process.stderr.write(`[myco] plan file ${normalized} is ${read.bytes} bytes, over the ${MAX_PLAN_FILE_BYTES}-byte bound — not captured until it shrinks\n`);
-    return { events: [], record: (next) => { next.planPaths[normalized] = { planKey: shipped?.planKey ?? planKeyForPath(projectId, normalized), hash: receipt }; } };
+    return { events: [], record: (next) => { next.planPaths[normalized] = { planKey, hash: receipt }; } };
   }
   const content = read.content;
   const hash = sha256Text(content);
-  if (shipped?.hash === hash) return none;
-  const planKey = shipped?.planKey ?? planKeyForPath(projectId, normalized);
+  if (shipped?.hash === hash) return shipped.pendingRead === undefined ? none : {
+    events: [], record: (next) => {
+      const current = next.planPaths[normalized];
+      if (current?.hash === hash) {
+        delete current.pendingRead;
+        delete current.pendingSince;
+        delete current.pendingChecks;
+      }
+    },
+  };
+  const event = planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined || shipped.hash === UNCAPTURED_PLAN_HASH ? shipped?.promptId ?? promptId : undefined });
+  if (event.blobSource !== undefined) event.blobSource.recovery = { path: absPath };
   return {
-    events: [planEvent(ctx, { planKey, content, title: planTitle(content, absPath), originPath: normalized, promptId: shipped === undefined ? promptId : undefined })],
+    events: [event],
     record: (next) => { next.planPaths[normalized] = { planKey, hash }; },
   };
 }
@@ -208,19 +262,16 @@ export function planFilesWritten(ctx: EnvelopeContext, state: SessionState, proj
   return { events, captured, record: (next) => { for (const record of records) record(next); } };
 }
 
-/** Every plan file this session has shipped, re-read inside the hook's budget: the ones whose content changed since are sent again under their key. Paths in `skip` were read by the same hook already. */
+/** Every tracked plan, including unresolved first reads, re-read inside the hook's budget. Changed content ships under its key. Paths in `skip` were read by the same hook already. */
 export function planBackstop(ctx: EnvelopeContext, state: SessionState, projectRoot: string, budget?: HookBudget, now: () => number = Date.now, skip: readonly string[] = []): PlanFileCapture {
   const events: OutboundEvent[] = [];
-  const receipts: Array<[string, string, string]> = [];
+  const records: PlanFileCapture['record'][] = [(next) => { boundPendingPlanReads(next, now()); }];
   for (const [normalized, shipped] of Object.entries(state.planPaths)) {
     if (skip.includes(normalized)) continue;
     if (budget !== undefined && remainingMs(budget, now()) < budget.requestTimeoutMs) break;
-    const content = readPlanFile(planFilePath(projectRoot, normalized));
-    if (content === null) continue;
-    const hash = sha256Text(content);
-    if (hash === shipped.hash) continue;
-    receipts.push([normalized, shipped.planKey, hash]);
-    events.push(planEvent(ctx, { planKey: shipped.planKey, content, title: planTitle(content, normalized), originPath: normalized }));
+    const capture = capturePlanPath(ctx, state, projectRoot, planFilePath(projectRoot, normalized), shipped.planKey, shipped.promptId, now);
+    events.push(...capture.events);
+    records.push(capture.record);
   }
-  return { events, record: (next) => { for (const [normalized, planKey, hash] of receipts) next.planPaths[normalized] = { planKey, hash }; } };
+  return { events, record: (next) => { for (const record of records) record(next); } };
 }

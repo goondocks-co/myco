@@ -64,13 +64,13 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
     const shim = path.join(dir, 'bin');
     fs.mkdirSync(shim);
     const log = path.join(dir, 'git.log');
-    // Each call is logged; a dirty question also holds for 300 ms and logs when it ran, so the two can be seen to overlap.
+    // Each call is logged; a dirty question also holds for 50 ms and logs when it ran, so the two can be seen to overlap.
     const spans = path.join(dir, 'spans.log');
     fs.writeFileSync(path.join(shim, 'git'), [
       '#!/bin/sh',
       `printf '%s\\n' "$*" >> "${log}"`,
       'case "$1" in diff)',
-      `  s=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); sleep 0.3; "${realGit}" "$@"; rc=$?`,
+      `  s=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); sleep 0.05; "${realGit}" "$@"; rc=$?`,
       `  e=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); printf '%s %s\\n' "$s" "$e" >> "${spans}"; exit $rc ;;`,
       'esac',
       `exec "${realGit}" "$@"`,

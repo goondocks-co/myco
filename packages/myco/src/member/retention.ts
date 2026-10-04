@@ -1,55 +1,264 @@
 /**
- * Spool retention: an un-acknowledged spool is never age-deleted. A session
- * spool the server has not acknowledged for `MEMBER_SPOOL_QUARANTINE_MS`, and
- * that a delivery pass has just offered the Deployment and still could not
- * deliver, is
- * moved into the spool's `quarantine/` subdir (`quarantineBufferFile`), and
- * quarantined files older than `MEMBER_SPOOL_QUARANTINE_PRUNE_MS` are pruned
- * (`pruneQuarantinedBuffers`). A machine that cannot deliver at all — offline,
- * or holding a credential the Deployment refuses — quarantines nothing, however
- * long that lasts. A quarantined session whose transcripts are still in the
- * backlog keeps its state, and with it the pointers to those bytes.
- *
- * "No acknowledgement" is measured on the acknowledgement itself — the drain
- * stamps `lastAckAt` on every ack — falling back to the session's first append
- * until one arrives. File mtimes are not the clock: an append bumps them, so a
- * session that keeps writing while permanently offline would never age out,
- * which is exactly the session retention exists for.
+ * Unacknowledged records remain in their active journal for delivery regardless
+ * of age. Session state is retired only after its event journal has been
+ * delivered and its transcript pointers have no bytes left to ship.
  *
  * Staged blob bytes are swept here too: the drain releases a record's bytes
  * when its high-water advances, and this sweep collects whatever a drain that
  * never finished left behind — but never bytes young enough that a live hook
- * could still commit a record naming them, and never the bytes a quarantined
- * spool references, which move into quarantine with it and are pruned with
- * it.
+ * could still commit a record naming them, or bytes whose journal cannot be
+ * read to prove they are unreferenced.
  *
- * Plugin-written transcripts age here too. They are the member's own store —
- * written by a native plugin for an agent whose runtime keeps no append-only
- * transcript of its own — so nothing else would ever delete them. A store any
- * manifest declares `retention: harness` is the agent's, holds the user's own
- * history, and is never touched by this pass.
+ * Archived quarantine journals are replayed through the live spool and cleaned
+ * once their replay is accounted for. Plugin-written transcripts age here too.
+ * They are the member's own store, written by a native plugin for an agent
+ * whose runtime keeps no append-only transcript of its own. A store whose
+ * manifest declares `retention: harness` belongs to the agent and is untouched.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BUFFER_QUARANTINE_DIRNAME, pruneQuarantinedBuffers, quarantineBufferFile } from '../capture/buffer.js';
+import crypto from 'node:crypto';
+import { BUFFER_QUARANTINE_DIRNAME } from './spool.js';
+import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { longestDeclaredHookTimeoutMs } from './budget.js';
-import { MEMBER_DIR_MODE, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_SPOOL_QUARANTINE_MS, MEMBER_SPOOL_QUARANTINE_PRUNE_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import { CaptureLossLedger } from './capture-loss.js';
+import { MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import type { OutboundEvent } from './envelope.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
-import { pointerBehind, pointersOf, readSessionState, readSessionStateUnlocked, retireSessionFiles, updateSessionState } from './session-state.js';
-import { BLOBS_DIRNAME, blobSourceOf, SPOOL_DIRNAME, type MemberSpool } from './spool.js';
-import { memberRoot } from './store.js';
+import { pointerBehind, pointersOf, readSessionState, readSessionStateUnlocked, retireSessionFiles } from './session-state.js';
+import { blobSourceOf, SPOOL_DIRNAME, WIRE_FIELDS, type MemberSpool, type SpoolRecord } from './spool.js';
+import { readStagedBlob } from './staged-blobs.js';
+import { assertMemberPathContained, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 export interface RetentionResult {
-  quarantined: string[];
-  pruned: number;
   /** State files of fully delivered sessions untouched past the retention window, removed after a drain that delivered everything. */
   prunedStates: number;
   /** Staged blob files deleted because no live spool record references them. */
   releasedBlobs: number;
   /** Plugin-written transcripts deleted because they aged past the member window. */
   prunedTranscripts: number;
+}
+
+interface ArchiveReplay {
+  sessionId: string;
+  replayedAt: number;
+  eventIds: string[];
+  lostRecords: number;
+}
+
+const ARCHIVE_REPLAY_SUFFIX = '.replayed.json';
+const ARCHIVE_LEASE_FILE = '.quarantine-recovery.lock';
+const archiveWarning = (file: string, why: string): void => {
+  process.stderr.write(`[myco] member: archived journal ${file} could not be recovered: ${why}\n`);
+};
+
+function withArchiveLease(spool: MemberSpool, action: () => number): number {
+  const file = path.join(spool.dir, ARCHIVE_LEASE_FILE);
+  try {
+    ensurePrivateFile(file);
+    const lease = LifecycleLock.acquire(file, { command: 'myco member quarantine recovery' });
+    if (!lease.acquired) return 0;
+    try { return action(); }
+    finally { lease.lock.release(); }
+  } catch (error) {
+    archiveWarning(file, error instanceof Error ? error.message : String(error));
+    return 0;
+  }
+}
+
+function archiveReplayOf(file: string): ArchiveReplay | null {
+  const read = readPrivateJson<ArchiveReplay>(file);
+  if (!read.ok) return null;
+  const value = read.value;
+  return value !== null && typeof value === 'object' && typeof value.sessionId === 'string'
+    && typeof value.replayedAt === 'number' && Number.isFinite(value.replayedAt)
+    && Array.isArray(value.eventIds) && value.eventIds.every((id) => typeof id === 'string')
+    && Number.isSafeInteger(value.lostRecords) && value.lostRecords >= 0 ? value : null;
+}
+
+function archiveRecord(line: unknown): line is SpoolRecord {
+  if (line === null || typeof line !== 'object') return false;
+  const record = line as Partial<SpoolRecord>;
+  return typeof record.sessionId === 'string' && record.sessionId !== ''
+    && typeof record.eventId === 'string' && record.eventId !== '' && typeof record.kind === 'string'
+    && record.payload !== null && typeof record.payload === 'object' && !Array.isArray(record.payload)
+    && (record._blobSource === undefined || (typeof record._blobSource.path === 'string'
+      && typeof record._blobSource.sha256 === 'string' && /^[a-f0-9]{64}$/.test(record._blobSource.sha256)
+      && typeof record._blobSource.mediaType === 'string' && typeof record._blobSource.size === 'number'
+      && Number.isSafeInteger(record._blobSource.size) && record._blobSource.size >= 0));
+}
+
+function archiveNames(spool: MemberSpool): string[] {
+  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+  try {
+    assertMemberPathContained(dir, spool.mycoHome);
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (!pathIsAbsent(dir)) archiveWarning(dir, error instanceof Error ? error.message : String(error));
+    return [];
+  }
+}
+
+function replayMarkerNames(spool: MemberSpool): string[] {
+  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+  try {
+    assertMemberPathContained(dir, spool.mycoHome);
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(ARCHIVE_REPLAY_SUFFIX))
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (!pathIsAbsent(dir)) archiveWarning(dir, error instanceof Error ? error.message : String(error));
+    return [];
+  }
+}
+
+function liveArchiveRecords(spool: MemberSpool, sessionId: string): Array<SpoolRecord | null> | null {
+  try {
+    return spool.withSessionRecordsLock(sessionId, (read) => read.readable ? read.records : read.absent === true ? [] : null);
+  } catch { return null; }
+}
+
+function readArchivedRecords(spool: MemberSpool, file: string): { records: SpoolRecord[]; damaged: string[] } {
+  assertMemberPathContained(file, spool.mycoHome);
+  const records: SpoolRecord[] = [];
+  const damaged: string[] = [];
+  const prefix = `${spool.projectId}:${path.basename(file)}`;
+  for (const [index, line] of fs.readFileSync(file, 'utf8').split('\n').entries()) {
+    if (line.trim() === '') continue;
+    try {
+      const record = JSON.parse(line) as unknown;
+      if (archiveRecord(record)) records.push(record);
+      else damaged.push(`${prefix}:${index}:${crypto.createHash('sha256').update(line).digest('hex')}`);
+    } catch { damaged.push(`${prefix}:${index}:${crypto.createHash('sha256').update(line).digest('hex')}`); }
+  }
+  if (records.length === 0 && damaged.length === 0) damaged.push(`${prefix}:empty`);
+  return { records, damaged };
+}
+
+function classifyArchivedRecords(spool: MemberSpool, file: string, base: string): { sessionId: string; records: SpoolRecord[]; damaged: string[] } {
+  const read = readArchivedRecords(spool, file);
+  const records: SpoolRecord[] = [];
+  const damaged = [...read.damaged];
+  const sessionId = read.records[0]?.sessionId ?? base;
+  for (const record of read.records) {
+    if (record.sessionId !== sessionId) { damaged.push(`${spool.projectId}:${base}:foreign-session:${record.eventId}`); continue; }
+    const source = record._blobSource;
+    if (source !== undefined) {
+      try {
+        const original = path.join(spool.blobsDirFor(sessionId), source.sha256);
+        const legacy = path.join(spool.blobsDir, source.sha256);
+        const pending = path.relative(path.join(memberRoot(spool.mycoHome), 'pending'), path.resolve(source.path)).split(path.sep);
+        const pendingSource = pending.length === 4 && /^[a-f0-9]{16,64}$/.test(pending[0])
+          && pending[1] === 'blobs' && pending[2] === sessionId && pending[3] === source.sha256;
+        if (path.resolve(source.path) !== path.resolve(original) && path.resolve(source.path) !== path.resolve(legacy)
+            && !pendingSource) throw new Error('unexpected staged path');
+        assertMemberPathContained(source.path, spool.mycoHome);
+        assertMemberPathContained(path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'blobs', base, source.sha256), spool.mycoHome);
+      } catch { damaged.push(`${spool.projectId}:${base}:invalid-source:${record.eventId}`); continue; }
+    }
+    records.push(record);
+  }
+  return { sessionId, records, damaged };
+}
+
+/** Replay quarantine journals through ordinary delivery while retaining each archive until its replay is acknowledged. */
+export function recoverArchivedQuarantine(spool: MemberSpool, now: number = Date.now(), canRecover: () => boolean = () => true): number {
+  if (!canRecover()) return 0;
+  if (archiveNames(spool).length === 0) return 0;
+  return withArchiveLease(spool, () => recoverArchivedQuarantineUnlocked(spool, now, canRecover));
+}
+
+function recoverArchivedQuarantineUnlocked(spool: MemberSpool, now: number, canRecover: () => boolean): number {
+  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+  let recovered = 0;
+  for (const name of archiveNames(spool)) {
+    if (!canRecover()) break;
+    const base = name.slice(0, -'.jsonl'.length);
+    const file = path.join(dir, name);
+    const markerFile = path.join(dir, `${base}${ARCHIVE_REPLAY_SUFFIX}`);
+    try {
+      const { sessionId, records, damaged } = classifyArchivedRecords(spool, file, base);
+      if (damaged.length > 0) archiveWarning(file, `${damaged.length} damaged record(s) counted as capture loss`);
+      const marker = archiveReplayOf(markerFile);
+      const eventIds = records.map((record) => record.eventId);
+      if (marker?.sessionId === sessionId && eventIds.length === marker.eventIds.length
+          && eventIds.every((id, i) => id === marker.eventIds[i]) && marker.lostRecords === damaged.length) {
+        const live = liveArchiveRecords(spool, sessionId);
+        if (live !== null && eventIds.every((id) => live.some((record) => record?.eventId === id))) continue;
+        if (live !== null) {
+          const state = readSessionState(spool.dir, sessionId);
+          if ((state.lastAccountedAt ?? state.lastAckAt ?? 0) >= marker.replayedAt
+              && eventIds.every((id) => !live.some((record) => record?.eventId === id))) continue;
+        }
+      }
+      const events: OutboundEvent[] = records.map((record) => {
+        const envelope = Object.fromEntries(WIRE_FIELDS.map((field) => [field, record[field]])) as unknown as OutboundEvent['envelope'];
+        const original = record._blobSource;
+        if (original === undefined) return { envelope };
+        const candidate = { ...original, path: path.join(dir, 'blobs', base, original.sha256) };
+        const archiveBytes = readStagedBlob(candidate);
+        if (archiveBytes.status === 'ready') return { envelope, blobSource: spool.stagerFor(sessionId)(archiveBytes.bytes, original.mediaType) };
+        const originalBytes = readStagedBlob(original);
+        if (originalBytes.status === 'ready') return { envelope, blobSource: spool.stagerFor(sessionId)(originalBytes.bytes, original.mediaType) };
+        return { envelope, blobSource: archiveBytes.status === 'missing' ? original : candidate };
+      });
+      if (events.length > 0 && !spool.prependRecovered(sessionId, events, now)) continue;
+      new CaptureLossLedger(spool.dir).record(damaged.map((key) => ({ key, kind: 'record', at: now })));
+      writePrivateFileAtomic(markerFile, JSON.stringify({ sessionId, replayedAt: now, eventIds, lostRecords: damaged.length } satisfies ArchiveReplay));
+      recovered += 1;
+    } catch (error) {
+      archiveWarning(file, error instanceof Error ? error.message : String(error));
+    }
+  }
+  return recovered;
+}
+
+/** Delete only archives whose replayed records have all passed the live journal's acknowledgement mark. */
+export function cleanAcknowledgedQuarantine(spool: MemberSpool): number {
+  if (replayMarkerNames(spool).length === 0) return 0;
+  return withArchiveLease(spool, () => cleanAcknowledgedQuarantineUnlocked(spool));
+}
+
+function cleanAcknowledgedQuarantineUnlocked(spool: MemberSpool): number {
+  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
+  let cleaned = 0;
+  for (const name of replayMarkerNames(spool)) {
+    const base = name.slice(0, -ARCHIVE_REPLAY_SUFFIX.length);
+    const file = path.join(dir, `${base}.jsonl`);
+    const markerFile = path.join(dir, name);
+    const marker = archiveReplayOf(markerFile);
+    if (marker === null) continue;
+    try {
+      assertMemberPathContained(file, spool.mycoHome);
+      const blobDir = path.join(dir, 'blobs', base);
+      assertMemberPathContained(blobDir, spool.mycoHome);
+      if (!pathIsAbsent(file)) {
+        const archived = classifyArchivedRecords(spool, file, base);
+        if (archived.damaged.length !== marker.lostRecords || archived.records.length !== marker.eventIds.length
+            || archived.records.some((record, index) => record.eventId !== marker.eventIds[index])) continue;
+      }
+      if (marker.eventIds.length > 0) {
+        const live = liveArchiveRecords(spool, marker.sessionId);
+        if (live === null) continue;
+        const state = readSessionState(spool.dir, marker.sessionId);
+        if ((state.lastAccountedAt ?? state.lastAckAt ?? 0) < marker.replayedAt) continue;
+        if (live.some((record, index) => index >= state.highWater && marker.eventIds.includes(record?.eventId ?? ''))) continue;
+      }
+      if (!pathIsAbsent(file)) fs.unlinkSync(file);
+      fs.rmSync(blobDir, { recursive: true, force: true });
+      fs.unlinkSync(markerFile);
+      cleaned += 1;
+    } catch (error) {
+      archiveWarning(file, error instanceof Error ? error.message : String(error));
+    }
+  }
+  try { fs.rmdirSync(path.join(dir, 'blobs')); } catch { /* archives or other files remain */ }
+  try { fs.rmdirSync(dir); } catch { /* archives or other files remain */ }
+  return cleaned;
 }
 
 /**
@@ -149,27 +358,6 @@ export function behindTranscriptPaths(mycoHome: string): Set<string> {
 
 const STATE_SUFFIX = '.state.json';
 
-/** When the server last acknowledged one of this session's spooled events (not a segment or a blob); 0 when it never has. */
-export function lastAckAt(spool: MemberSpool, sessionId: string): number {
-  return readSessionState(spool.dir, sessionId).lastAckAt ?? 0;
-}
-
-/**
- * The instant retention counts from: the last acknowledgement, or the
- * session's first append while there has been none. A spool file with neither
- * (written by an older build) falls back to its own mtime.
- */
-export function unacknowledgedSince(spool: MemberSpool, sessionId: string): number {
-  const state = readSessionState(spool.dir, sessionId);
-  if (state.lastAckAt !== undefined) return state.lastAckAt;
-  if (state.startedAt !== undefined) return state.startedAt;
-  try {
-    return fs.statSync(path.join(spool.dir, `${sessionId}.jsonl`)).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
 /**
  * Delete staged blob bytes nothing references, and the staging dir of a session
  * whose spool is gone.
@@ -183,7 +371,7 @@ export function unacknowledgedSince(spool: MemberSpool, sessionId: string): numb
  * longest timeout a hook can declare is left alone: past that the harness has
  * killed whoever staged it, so "unreferenced" is a fact rather than a race.
  */
-export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string[], now: number = Date.now()): number {
+export function sweepStagedBlobs(spool: MemberSpool, _sessionIds: readonly string[], now: number = Date.now()): number {
   let released = 0;
   let staged: fs.Dirent[];
   try {
@@ -199,7 +387,6 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
       released += 1;
     } catch { /* already gone */ }
   };
-  const live = new Set(sessionIds);
   for (const entry of staged) {
     // Bytes a project-wide-dir build staged sit directly under `blobs/`; no
     // record of this build names them by that path, so they are reclaimable.
@@ -208,67 +395,32 @@ export function sweepStagedBlobs(spool: MemberSpool, sessionIds: readonly string
       continue;
     }
     const dir = spool.blobsDirFor(entry.name);
-    let files: string[];
     try {
-      files = fs.readdirSync(dir);
+      spool.withSessionRecordsLock(entry.name, (read) => {
+        if (!read.readable && read.absent !== true) return;
+        if (read.readable && read.records.includes(null)) return;
+        let files: string[];
+        try { files = fs.readdirSync(dir); } catch { return; }
+        const referenced = new Set<string>();
+        if (read.readable) {
+          for (const record of read.records) {
+            const source = blobSourceOf(record);
+            if (source) referenced.add(source.sha256);
+          }
+        }
+        for (const file of files) {
+          if (referenced.has(file)) continue;
+          reclaim(path.join(dir, file));
+        }
+        if (referenced.size === 0) {
+          try { fs.rmdirSync(dir); } catch { /* not empty, or still in use */ }
+        }
+      });
     } catch {
-      continue;
-    }
-    const referenced = new Set<string>();
-    if (live.has(entry.name)) {
-      for (const record of spool.readRecords(entry.name)) {
-        const source = blobSourceOf(record);
-        if (source) referenced.add(source.sha256);
-      }
-    }
-    for (const file of files) {
-      if (referenced.has(file)) continue;
-      reclaim(path.join(dir, file));
-    }
-    if (referenced.size === 0) {
-      try { fs.rmdirSync(dir); } catch { /* not empty, or still in use */ }
+      process.stderr.write(`[myco] member: staged bytes for session ${entry.name} could not be checked — kept for a later sweep\n`);
     }
   }
   return released;
-}
-
-/**
- * Move a session's staged bytes with the spool that names them, under
- * `quarantine/blobs/<quarantined file's base name>`.
- *
- * A quarantined spool is RETAINED — it is the only durable copy of events
- * nothing acknowledged — so destroying the payloads it references would empty
- * it of exactly what it was kept for. The name follows the quarantined file
- * (which `quarantineBufferFile` may suffix on collision), so the two stay
- * paired and the prune can tie their lifetimes together.
- */
-function quarantineStagedBlobs(spool: MemberSpool, sessionId: string, quarantinedFile: string): void {
-  const from = spool.blobsDirFor(sessionId);
-  if (!fs.existsSync(from)) return;
-  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, BLOBS_DIRNAME);
-  fs.mkdirSync(dir, { recursive: true, mode: MEMBER_DIR_MODE });
-  try {
-    fs.renameSync(from, path.join(dir, path.basename(quarantinedFile, '.jsonl')));
-  } catch { /* nothing staged, or already moved */ }
-}
-
-/** Delete quarantined staged bytes whose spool the prune has taken: the bytes live exactly as long as the events that name them. */
-function pruneQuarantinedStagedBlobs(spool: MemberSpool): number {
-  const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
-  const blobsDir = path.join(quarantineDir, BLOBS_DIRNAME);
-  let pruned = 0;
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(blobsDir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (fs.existsSync(path.join(quarantineDir, `${entry.name}.jsonl`))) continue;
-    try { fs.rmSync(path.join(blobsDir, entry.name), { recursive: true, force: true }); pruned += 1; } catch { /* concurrent removal */ }
-  }
-  return pruned;
 }
 
 /**
@@ -301,37 +453,12 @@ export function pruneDeliveredSessionState(spool: MemberSpool, now: number = Dat
 export interface RetentionOptions {
   /** The caller's own session was delivered in full this pass: the state of sessions long since delivered may go. */
   delivered?: boolean;
-  /**
-   * The sessions a delivery pass offered the Deployment this time and got the
-   * session's own answer to. Only such a session may be quarantined for its
-   * age: what the Deployment was offered and still did not take is stuck, where
-   * a spool nobody could offer — offline, a refused credential, a walk cut short
-   * by its budget — is only waiting.
-   */
-  tried?: readonly string[];
 }
 
-/** Quarantine every session spool unacknowledged past the cap that a delivery pass just tried and could not deliver, prune quarantined files past the prune cap, release staged bytes nothing references, and after a drain that delivered everything, prune the state of sessions long since delivered. */
+/** Retain active event journals, release unreferenced staged bytes, and retire fully delivered session state. */
 export function applySpoolRetention(spool: MemberSpool, now: number = Date.now(), opts: RetentionOptions = {}): RetentionResult {
-  const result: RetentionResult = { quarantined: [], pruned: 0, prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 };
-  const tried = new Set(opts.tried ?? []);
-  for (const sessionId of spool.sessionIds().filter((id) => tried.has(id))) {
-    if (spool.depth(sessionId) === 0) continue;
-    if (now - unacknowledgedSince(spool, sessionId) < MEMBER_SPOOL_QUARANTINE_MS) continue;
-    const quarantineDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
-    if (!fs.existsSync(quarantineDir)) fs.mkdirSync(quarantineDir, { mode: MEMBER_DIR_MODE });
-    const target = quarantineBufferFile(spool.dir, `${sessionId}.jsonl`, { keepLockCompanion: true });
-    quarantineStagedBlobs(spool, sessionId, target);
-    // The events move; the transcript pointers and the turn-end marks stay, so bytes still on disk are delivered once
-    // delivery resumes.
-    if (spool.hasTranscriptBacklog(sessionId)) updateSessionState(spool.dir, sessionId, (state) => { state.highWater = 0; delete state.eventRetry; }, now);
-    else retireSessionFiles(spool.dir, sessionId, () => true);
-    result.quarantined.push(target);
-    process.stderr.write(`[myco] member: spool for session ${sessionId} had no acknowledgement for ${Math.round(MEMBER_SPOOL_QUARANTINE_MS / 86_400_000)} days — quarantined at ${target}\n`);
-  }
-  result.pruned = pruneQuarantinedBuffers(spool.dir, MEMBER_SPOOL_QUARANTINE_PRUNE_MS);
-  // After the prune, whatever no quarantined spool still names goes with it.
-  pruneQuarantinedStagedBlobs(spool);
+  const result: RetentionResult = { prunedStates: 0, releasedBlobs: 0, prunedTranscripts: 0 };
+  cleanAcknowledgedQuarantine(spool);
   result.releasedBlobs = sweepStagedBlobs(spool, spool.sessionIds(), now);
   if (opts.delivered === true) result.prunedStates = pruneDeliveredSessionState(spool, now);
   // The spool's OWN home: a hook resolving a project pin must not age the

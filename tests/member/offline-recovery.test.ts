@@ -241,7 +241,7 @@ describe('a member that could not deliver', () => {
     expect(rig.rows('sessions')).toBe(0);
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
     const spool = new MemberSpool(PROJECT, { mycoHome });
-    expect(spool.depth('sess-refused')).toBe(2);
+    expect(spool.depth('sess-refused')).toBe(3);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-refused']);
 
     // A re-login replaces the credential and every piece of the old token's rotation state.
@@ -259,7 +259,7 @@ describe('a member that could not deliver', () => {
     const order = (rig.env.sqlite.query(`SELECT session_id AS s, kind AS k FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ s: string; k: string }>)
       .map((r) => `${r.s} ${r.k}`);
     expect(order[0]).toBe('sess-next session.start');
-    expect(order.filter((o) => o.startsWith('sess-refused'))).toEqual(['sess-refused session.start', 'sess-refused session.end', 'sess-refused transcript.segment']);
+    expect(order.filter((o) => o.startsWith('sess-refused'))).toEqual(['sess-refused session.start', 'sess-refused session.end', 'sess-refused session.end', 'sess-refused transcript.segment']);
     expect(order).toContain('sess-next transcript.segment');
     expect(spy.requests.slice(seen).every((r) => r.path !== '/tokens/refresh')).toBe(true);
 
@@ -363,7 +363,7 @@ describe('a member that could not deliver', () => {
 
       const client = new ServerClient(readRegistryEntry(root, mycoHome)!, rig.fetch);
       const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
-      expect(report).toEqual({ endedBy: 'done', tried: [], sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
+      expect(report).toEqual({ endedBy: 'done', sessions: [{ sessionId, transcripts: { shipped: 1, endedBy: 'done' } }] });
       expect(rig.env.sqlite.query('SELECT agent FROM transcripts WHERE session_id = ?').get(sessionId)).toEqual({ agent: 'claude-code' });
       expect(spool.transcriptBacklogIds()).toEqual([]);
       expect(readSessionState(spool.dir, sessionId).agent).toBe('claude-code');
@@ -394,7 +394,7 @@ describe('the backlog walk', () => {
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
 
     const held = await spool.withSessionLease('sess-held', () => drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' }));
-    expect(held).toEqual({ endedBy: 'skipped', tried: [], sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
+    expect(held).toEqual({ endedBy: 'skipped', sessions: [{ sessionId: 'sess-held', transcripts: 'lease' }] });
     expect(blobUploads(spy)).toBe(0);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-held']);
 
@@ -566,7 +566,7 @@ describe('the backlog walk', () => {
     expect(segmentsOf(rig, 'sess-gone')).toBe(0);
   });
 
-  it('walks past a session stuck on its own records, delivers the ones after it, and quarantines only the stuck one it tried', async () => {
+  it('walks past a session stuck on its own records and leaves it active while delivering later sessions', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
     const spool = new MemberSpool(PROJECT, { mycoHome });
@@ -582,9 +582,9 @@ describe('the backlog walk', () => {
     await runMemberCli(['drain'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: () => {} });
 
     for (const id of ['sess-b', 'sess-c']) expect(rig.env.sqlite.query('SELECT COUNT(*) AS n FROM events WHERE session_id = ?').get(id)).toEqual({ n: 1 });
-    expect(spool.sessionIds()).toEqual([]);
-    expect(fs.existsSync(path.join(spool.dir, 'quarantine', 'sess-a-stuck.jsonl'))).toBe(true);
-    expect(out.join('\n')).toContain('quarantined 1');
+    expect(spool.sessionIds()).toEqual(['sess-a-stuck']);
+    expect(fs.existsSync(path.join(spool.dir, 'sess-a-stuck.jsonl'))).toBe(true);
+    expect(out.join('\n')).not.toContain('quarantined');
   });
 
   it('walks the session written to last first when asked, ahead of where the last walk ended', async () => {
