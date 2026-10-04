@@ -1,3 +1,5 @@
+import { processedResourceProofSql } from '../core/processed-resources.js';
+import { rawMemberResourceSql } from '../core/raw-resources.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import type { CaptureEnvelope } from './envelope.js';
 import { blobFields, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
@@ -17,6 +19,7 @@ export interface WriteContext {
   nonce: string;
   /** The member acting through a server-origin write, or null: what an applied end is attributed to. */
   actor: string | null;
+  processing?: boolean;
 }
 
 /** A SQL fragment with its bound parameters. */
@@ -92,12 +95,18 @@ const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): S
   };
 };
 
-/** The blob under `key` exists in this project. Media type is metadata recorded by the first uploader, never an admission gate. */
-const present = (ctx: WriteContext, key: string): SharedCheck => ({
-  admission: { sql: `EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ?)`, params: [ctx.projectId, key] },
-  read: { sql: `SELECT media_type FROM blobs WHERE project_id = ? AND key = ?`, params: [ctx.projectId, key] },
-  refusal: (row) => (row === undefined ? BLOB_ABSENT(key) : null),
-});
+/** A member may reference only uploaded bytes they possess; server processing uses its recorded input. */
+const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedCheck => {
+  const upload = rawMemberResourceSql('?', 'blob', '?', '(SELECT member_id FROM member_credentials WHERE id = ?)');
+  const retained = retainedPlan === undefined ? '' : ` OR ${processedResourceProofSql('?', 'plan', '?', '?')}`;
+  const proof = ctx.processing === true ? '1 = 1' : `(${upload}${retained})`;
+  const params = [ctx.projectId, key, ...(ctx.processing === true ? [] : [ctx.projectId, key, ctx.tokenId, ...(retainedPlan === undefined ? [] : [ctx.projectId, retainedPlan, key])])];
+  return {
+    admission: { sql: `EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ? AND ${proof})`, params },
+    read: { sql: `SELECT media_type FROM blobs WHERE project_id = ? AND key = ? AND ${proof}`, params },
+    refusal: (row) => (row === undefined ? BLOB_ABSENT(key) : null),
+  };
+};
 
 const opt = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
 /** The instant an ordering is decided by: the payload's, or the envelope's caller time when the field is absent. The field must carry the catalogue's `time` bound, so an ordering can never be decided by a value the envelope's clock rule does not reach. */
@@ -160,7 +169,7 @@ export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelo
     ...(e.channel === 'import' ? [importEnabled()] : []),
     owned(ctx, { table: 'sessions', keyColumn: 'session_id', key: e.sessionId, owner: 'row' }),
     ...identities.map((identity) => owned(ctx, identity)),
-    ...named(blobFields(spec)).map((key) => present(ctx, key)),
+    ...named(blobFields(spec)).map((key) => present(ctx, key, spec.name === 'plan' && typeof p.planKey === 'string' ? p.planKey : undefined)),
     ...named(promptReferenceFields(spec)).map((promptId) => owned(ctx, { table: 'prompt_batches', keyColumn: 'prompt_id', key: promptId, owner: 'session' })),
   ];
 }

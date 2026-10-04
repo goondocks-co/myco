@@ -1,3 +1,4 @@
+import { processedResourceProofSql } from '../core/processed-resources.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { occurredAt, presentedStatus } from '../db/session-dates.js';
 import { pendingSearchBlobs, SEARCH_QUERY_MAX_CHARS } from '../core/search-index.js';
@@ -23,17 +24,17 @@ export function sanitizeFtsQuery(query: string): string {
 
 interface Source {
   table: string; id: string; title: string; created: string; session: string; prompt: string;
-  status?: string; blob?: boolean; namespace: string;
+  status?: string; blob?: 'plan' | 'prompt' | 'response'; namespace: string;
   /** The one line a reader sees for the record, which previews it in place of a snippet wherever it has one. */
   line?: string;
 }
 const SOURCES: Record<SearchType, Source> = {
   session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: occurredAt('d.'), session: 'd.session_id', prompt: 'NULL', status: presentedStatus('d.'), namespace: 'sessions' },
   spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', namespace: 'spores', line: 'd.agent_line' },
-  plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: true, namespace: 'plans' },
+  plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: 'plan', namespace: 'plans' },
   skill: { table: 'skill_records', id: 'id', title: "COALESCE(NULLIF(d.display_name, ''), d.name)", created: 'd.created_at', session: 'NULL', prompt: 'NULL', status: 'd.status', namespace: 'skill_records' },
-  prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: true, namespace: 'prompt_batches' },
-  response: { table: 'responses', id: 'response_id', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: true, namespace: 'responses' },
+  prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'prompt', namespace: 'prompt_batches' },
+  response: { table: 'responses', id: 'response_id', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'response', namespace: 'responses' },
 };
 
 const ALIASES: Record<string, SearchType> = {
@@ -76,7 +77,7 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     search_blob_chunks_fts.rowid AS match_rowid
     FROM search_blob_chunks_fts CROSS JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
     CROSS JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
-    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql}` : '';
+    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql} AND ${processedResourceProofSql('d.project_id', s.blob, `d.${s.id}`, 'd.blob_key')}` : '';
   if (s.blob) params.push(terms[0], ...inReach.params);
   // Each candidate is already a row of the reach. The outer read walks the candidates and joins each one's row back by
   // rowid: `CROSS JOIN` holds that order, so no statistics can turn it into a walk of the table.
@@ -88,7 +89,7 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     if (s.blob) {
       exists += ` OR EXISTS (SELECT 1 FROM search_blob_chunks_fts JOIN search_blob_chunks c
         ON c.rowid = search_blob_chunks_fts.rowid WHERE c.project_id = d.project_id AND c.blob_key = d.blob_key
-        AND search_blob_chunks_fts MATCH ?)`;
+        AND search_blob_chunks_fts MATCH ? AND ${processedResourceProofSql('d.project_id', s.blob, `d.${s.id}`, 'd.blob_key')})`;
       params.push(term);
     }
     where.push(`(${exists})`);

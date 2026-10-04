@@ -251,7 +251,12 @@ export const RENDERABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jp
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 
-export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}`;
+const RAW_READ_CACHE_VERSION = 70;
+export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}?raw=${RAW_READ_CACHE_VERSION}`;
+
+export type ProcessedBodyKind = 'prompt' | 'response' | 'plan' | 'tool-input' | 'tool-output';
+export interface ProcessedBodyRef { kind: ProcessedBodyKind; id: string }
+export const processedBodyUrl = (projectId: string, ref: ProcessedBodyRef) => `${project(projectId)}/processed/${ref.kind}/${seg(ref.id)}`;
 
 /** What the table asks the list for; each narrows the list on the server. */
 export interface SessionListFilters {
@@ -464,13 +469,12 @@ export function useTranscript(projectId: string, sessionId: string) {
 }
 
 
-/** The text of a blob, read as text whatever it happens to contain. Blobs are content-addressed and immutable, so a fetched one is never refetched. */
-export function useBlobText(projectId: string, key: string) {
+/** A processed row's complete field, resolved by its identity rather than its storage hash. */
+export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revision: string) {
   return useQuery({
-    queryKey: ['blob-text', projectId, key],
-    staleTime: Infinity,
+    queryKey: ['processed-text', projectId, ref.kind, ref.id, revision],
     queryFn: async ({ signal }) => {
-      const res = await fetch(blobUrl(projectId, key), { credentials: 'same-origin', signal });
+      const res = await fetch(processedBodyUrl(projectId, ref), { credentials: 'same-origin', signal });
       if (res.status === 401) throw new SignedOutError();
       if (!res.ok) throw new ApiError(res.status, null);
       return res.text();

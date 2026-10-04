@@ -1,3 +1,4 @@
+import { RAW_CACHE_HEADERS } from './core/raw-resources.js';
 import { runControlRefusalCode } from '@goondocks/myco-shared/run-control';
 import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
@@ -45,12 +46,13 @@ const SECURITY_HEADERS: Record<string, string> = {
   'strict-transport-security': `max-age=${HSTS_MAX_AGE_SECONDS}`,
 };
 
-function stamp(res: Response): Response {
+function stamp(res: Response, raw = false): Response {
   const headers = new Headers(res.headers);
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
     if (k === 'cache-control' && res.headers.has('cache-control')) continue;
     headers.set(k, v);
   }
+  if (raw) for (const [key, value] of Object.entries(RAW_CACHE_HEADERS)) headers.set(key, value);
   return new Response(res.body, { status: res.status, headers });
 }
 
@@ -669,11 +671,13 @@ export function createServer(deps: ServerDeps) {
   }
 
   async function handleRequest(request: Request, env: ServerEnv): Promise<Response> {
+    const route = matchRoute(request.method, new URL(request.url).pathname)?.route;
+    const raw = route?.auth === 'session' && 'raw' in route && route.raw !== undefined;
     try {
-      return stamp(await run(request, env));
+      return stamp(await run(request, env), raw);
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
-      return stamp(unavailable());
+      return stamp(unavailable(), raw);
     }
   }
 

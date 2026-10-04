@@ -77,7 +77,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 57;
+const PLANNED_STATEMENTS = 61;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 10, group: 1 };
@@ -290,13 +290,19 @@ describe('kind catalogue', () => {
     expect(count(e.sqlite, 'events')).toBe(2);
   });
 
-  it('refuses a cross-project blob reference while allowing a same-project reference by another member', async () => {
+  it('refuses cross-project and unverified member references, and admits the same event after that member verifies an upload', async () => {
     const e = sqliteEnv();
     const t1 = await member(e);
     const t3 = await member(e, 'proj_1', 'machine_3');
     const t2 = await member(e, 'proj_2', 'machine_2');
     const key = await upload(e, t1.token, utf8('shared'), 'image/png');
-    expect(await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(50), sessionId: 'sess_3', kind: 'attachment', payload: { attachmentId: uuid(51), blob: key } })), e.env))).toEqual({ persisted: true, projected: true });
+    const shared = envelope({ eventId: uuid(50), sessionId: 'sess_3', kind: 'attachment', payload: { attachmentId: uuid(51), blob: key } });
+    expect(await json(await worker.fetch(memberPost(t3.token, shared), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
+    expect(count(e.sqlite, 'events')).toBe(0);
+    expect(count(e.sqlite, 'attachments')).toBe(0);
+    expect(bytesWritten(e.sqlite, t3.tokenId)).toBe(0);
+    expect(await upload(e, t3.token, utf8('shared'), 'image/png')).toBe(key);
+    expect(await json(await worker.fetch(memberPost(t3.token, shared), e.env))).toEqual({ persisted: true, projected: true });
     expect(await json(await worker.fetch(memberPost(t2.token, envelope({ eventId: uuid(52), sessionId: 'sess_2', kind: 'attachment', payload: { attachmentId: uuid(53), blob: key } }), '/events', { [PROJECT_HEADER]: 'proj_2' }), e.env))).toEqual({ persisted: false, code: 'blob_absent', reason: `blob not present: ${key}` });
     expect((e.sqlite.query(`SELECT media_type FROM attachments`).get() as any).media_type).toBe('image/png');
   });
@@ -878,7 +884,7 @@ describe('kind catalogue', () => {
     await worker.fetch(blobPost(t.token, await sha256HexOf(utf8('past-ceiling')), utf8('past-ceiling')), e.env);
     await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: 'session.start', createdAt: 4_000, payload: FIXTURES['session.start'].payload })), e.env);
 
-    const scoped = new Set(['events', 'sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs', 'blob_reservations']);
+    const scoped = new Set(['events', 'sessions', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'transcript_segments', 'tags', 'blobs', 'blob_reservations', 'raw_resources', 'processed_resources']);
     const byTable = new Map<string, string>();
     const unique = new Map<string, number>();
     for (const row of e.sqlite.query(`SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'`).all() as { name: string; tbl_name: string }[]) byTable.set(row.name, row.tbl_name);

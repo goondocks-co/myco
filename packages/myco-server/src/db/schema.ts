@@ -1,4 +1,6 @@
 import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
+import { rawCredentialOwner, rawTranscriptOwner } from '../core/raw-provenance.js';
+import { PROCESSED_FIELDS, processedReferenceSql, processedResourceProofSql } from '../core/processed-resources.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
@@ -1679,7 +1681,7 @@ const V48_STATEMENTS: readonly string[] = [
 ];
 
 /** Bounded continuation chunks share the transcript cursor's atomic commit. */
-const V70_STATEMENTS: readonly string[] = [
+const V70_MAIN_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_transcripts_parser_version ON transcripts (parser_version, project_id, transcript_id)`,
   `CREATE INDEX IF NOT EXISTS idx_transcripts_terminal ON transcripts (imported_at, last_received_at, project_id, transcript_id)
      WHERE parsed_offset = size AND json_extract(parser_context, '$.mycoParserUnfinished') = 1`,
@@ -1717,6 +1719,84 @@ const V69_STATEMENTS: readonly string[] = [
      UPDATE machine_claims SET settings_revision = settings_revision + 1 WHERE machine_id = NEW.machine_id; END`,
   `CREATE TRIGGER IF NOT EXISTS machine_settings_delete_revision AFTER DELETE ON machine_settings BEGIN
      UPDATE machine_claims SET settings_revision = settings_revision + 1 WHERE machine_id = OLD.machine_id; END`,
+];
+
+/** Historical raw ownership is fixed at the logical reference, independently of physical deduplication. */
+const RAW_SOURCES = [
+  { table: 'blobs', kind: 'blob', id: 'key', ref: 'token_id', owner: (a: string) => rawCredentialOwner(`${a}.token_id`), machine: (a: string) => `(SELECT machine_id FROM member_credentials WHERE id = ${a}.token_id)` },
+  { table: 'events', kind: 'event', id: 'event_id', ref: null, owner: (a: string) => rawCredentialOwner(`${a}.token_id`), machine: (a: string) => `(SELECT machine_id FROM member_credentials WHERE id = ${a}.token_id)` },
+  { table: 'transcripts', kind: 'transcript', id: 'transcript_id', ref: null, owner: rawTranscriptOwner, machine: (a: string) => `${a}.machine_id` },
+] as const;
+
+/** Raw reference snapshots retain unknown provenance and cannot be reassigned or reclassified. */
+const V70_STATEMENTS: readonly string[] = [
+  ...['prompt_batches', 'responses', 'plans'].flatMap((table) => ['ai', 'au'].flatMap((operation) => [
+    `DROP TRIGGER IF EXISTS ${table}_search_blob_${operation}`,
+    `CREATE TRIGGER IF NOT EXISTS ${table}_search_blob_${operation} AFTER ${operation === 'ai' ? 'INSERT' : 'UPDATE OF project_id, blob_key'} ON ${table}
+       WHEN new.blob_key IS NOT NULL BEGIN
+       INSERT INTO search_blob_queue(project_id, blob_key) VALUES(new.project_id, new.blob_key)
+       ON CONFLICT(project_id, blob_key) DO NOTHING; END`,
+  ])),
+  `CREATE TABLE IF NOT EXISTS raw_resources (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     kind TEXT NOT NULL CHECK (kind IN ('blob', 'event', 'transcript')),
+     resource_id TEXT NOT NULL,
+     reference_id TEXT NOT NULL,
+     owner_member_id TEXT REFERENCES members(id),
+     machine_id TEXT,
+     token_id TEXT,
+     classification TEXT NOT NULL DEFAULT 'raw' CHECK (classification = 'raw'),
+     PRIMARY KEY (project_id, kind, resource_id, reference_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_resources_owner ON raw_resources (project_id, owner_member_id, kind, resource_id)`,
+  ...RAW_SOURCES.flatMap((source) => {
+    const reference = (a: string): string => source.ref === null ? "''" : `${a}.${source.ref}`;
+    const values = (a: string): string => `${a}.project_id, '${source.kind}', ${a}.${source.id}, ${reference(a)}, ${source.owner(a)}, ${source.machine(a)}, ${a}.token_id`;
+    return [
+      `INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
+         SELECT ${values('s')} FROM ${source.table} s WHERE 1 ON CONFLICT DO NOTHING`,
+      `CREATE TRIGGER IF NOT EXISTS ${source.table}_raw_reference AFTER INSERT ON ${source.table} BEGIN
+         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
+           SELECT ${values('NEW')} ${source.kind === 'transcript' ? 'WHERE NEW.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id)' : ''} ON CONFLICT DO NOTHING; END`,
+      `CREATE TRIGGER IF NOT EXISTS ${source.table}_raw_reference_delete AFTER DELETE ON ${source.table} BEGIN
+         DELETE FROM raw_resources WHERE project_id = OLD.project_id AND kind = '${source.kind}' AND resource_id = OLD.${source.id}; END`,
+    ];
+  }),
+  `CREATE TRIGGER IF NOT EXISTS transcript_segments_raw_reference AFTER INSERT ON transcript_segments BEGIN
+     INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
+       SELECT t.project_id, 'transcript', t.transcript_id, '', ${rawTranscriptOwner('t')}, t.machine_id, t.token_id
+         FROM transcripts t WHERE t.project_id = NEW.project_id AND t.transcript_id = NEW.transcript_id
+           AND t.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id)
+       ON CONFLICT DO NOTHING; END`,
+  `CREATE TABLE IF NOT EXISTS processed_resources (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     kind TEXT NOT NULL CHECK (kind IN ('prompt', 'response', 'plan', 'tool-input', 'tool-output')),
+     resource_id TEXT NOT NULL,
+     blob_key TEXT NOT NULL,
+     source_token_id TEXT NOT NULL,
+     event_id TEXT NOT NULL,
+     classification TEXT NOT NULL DEFAULT 'processed' CHECK (classification = 'processed'),
+     PRIMARY KEY (project_id, kind, resource_id, blob_key))`,
+  ...Object.entries(PROCESSED_FIELDS).flatMap(([kind, field]) => {
+    const insert = (alias: string): string => `INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
+      SELECT ${alias}.project_id, '${kind}', ${alias}.${field.id}, ${alias}.${field.blob}, ${alias}.token_id, ${alias}.event_id
+        ${alias === 's' ? `FROM ${field.table} s` : ''}
+        WHERE ${alias}.${field.blob} IS NOT NULL AND ${processedReferenceSql(alias, field)} ON CONFLICT DO NOTHING`;
+    return [
+      insert('s'),
+      ...['INSERT', 'UPDATE'].map((operation) => `CREATE TRIGGER IF NOT EXISTS ${kind.replace('-', '_')}_processed_reference_${operation.toLowerCase()}
+        AFTER ${operation} ON ${field.table} BEGIN ${insert('NEW')}; END`),
+      `CREATE TRIGGER IF NOT EXISTS ${kind.replace('-', '_')}_processed_reference_delete AFTER DELETE ON ${field.table} BEGIN
+        DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = '${kind}' AND resource_id = OLD.${field.id}; END`,
+    ];
+  }),
+  `DROP VIEW IF EXISTS embedding_sources`,
+  embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
+    ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')})` }
+    : source)),
+  `CREATE TRIGGER IF NOT EXISTS processed_resources_immutable BEFORE UPDATE ON processed_resources BEGIN
+     SELECT RAISE(ABORT, 'processed reference classification is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS raw_resources_immutable BEFORE UPDATE ON raw_resources BEGIN
+     SELECT RAISE(ABORT, 'raw reference ownership and classification are immutable'); END`,
 ];
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */

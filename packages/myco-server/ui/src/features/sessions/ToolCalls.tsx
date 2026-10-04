@@ -1,6 +1,6 @@
 import { CheckCircle2, XCircle } from 'lucide-react';
 import { Button, Disclosure, ExternalLink, Skeleton } from '../../design';
-import { blobUrl, useTurnToolCalls, type ToolCallRow } from '../../hooks/use-sessions';
+import { processedBodyUrl, useTurnToolCalls, type ToolCallRow } from '../../hooks/use-sessions';
 import { formatBytes, formatMillis } from '../../lib/format';
 import { count } from './words';
 
@@ -44,14 +44,14 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
               {row.inputPreview !== null && (
                 <pre className={block}>{row.inputPreview}{row.inputBytes !== null && row.inputBytes > row.inputPreview.length ? '…' : ''}</pre>
               )}
-              {row.inputBlobKey !== null && <ExternalLink href={blobUrl(projectId, row.inputBlobKey)} className="w-fit t-small">Full input</ExternalLink>}
+              {row.inputBlobKey !== null && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-input', id: row.toolCallId })} className="w-fit t-small">Full input</ExternalLink>}
             </div>
           )}
           {(row.outputPreview !== null || row.outputBlobKey !== null) && (
             <div className="flex flex-col gap-s1">
               <span className="t-meta font-medium text-muted">Output</span>
               {row.outputPreview !== null && <pre className={block}>{row.outputPreview}</pre>}
-              {row.outputBlobKey !== null && <ExternalLink href={blobUrl(projectId, row.outputBlobKey)} className="w-fit t-small">Full output</ExternalLink>}
+              {row.outputBlobKey !== null && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-output', id: row.toolCallId })} className="w-fit t-small">Full output</ExternalLink>}
             </div>
           )}
           {row.errorMessage !== null && (

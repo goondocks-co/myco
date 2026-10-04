@@ -10,6 +10,7 @@
 import { changePlanStatus, savePlan } from '../../core/plans.js';
 import { getPlan, listProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../../read/plans.js';
 import type { ReadScope } from '../../read/scope.js';
+import { processedBody } from '../../read/processed.js';
 import { failure, memberOf, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -29,14 +30,6 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v.leng
 
 function summary(row: ProjectPlanRow): PlanSummary {
   return { id: row.planKey, title: row.title, status: row.status, progress: row.progress, prompt_id: row.promptId, tags: row.tags, created_at: row.createdAt };
-}
-
-/** The plan's text: the row's, or the spilled blob's. */
-async function contentOf(ctx: ToolContext, scope: ReadScope, row: ProjectPlanRow): Promise<string | null> {
-  if (row.content !== null || row.blobKey === null) return row.content;
-  if (row.objectKey === null) return null;
-  const object = await ctx.env.blobs.get(row.objectKey);
-  return object === null ? null : new Response(object.body).text();
 }
 
 const saved = (row: ProjectPlanRow, logicalKey: string) => ({
@@ -65,7 +58,7 @@ export async function handlePlans(input: ToolInput, ctx: ToolContext): Promise<u
     if (id === undefined) return failure('id is required for op: get');
     const row = await getPlan(db, scope, id);
     if (row === null) return failure('Plan not found');
-    return { ...summary(row), content: await contentOf(ctx, scope, row) };
+    return { ...summary(row), content: await processedBody(ctx.env, scope, 'plan', row.planKey) };
   }
 
   if (op === 'save') return save(input, ctx, scope);

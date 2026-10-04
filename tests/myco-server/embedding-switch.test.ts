@@ -58,6 +58,14 @@ interface Models { failing: Map<string, Failing>; refusing: Map<string, Failing>
 /** The word a source's text carries for a model in `refusing` to refuse that one text. */
 const REFUSED_TEXT = 'unembeddable';
 
+/** A classified processed plan whose stored body is missing. */
+function missingPlanBody(t: Pick<Target, 'sqlite'>): void {
+  t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
+    VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+  t.sqlite.run(`INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id, classification)
+    VALUES ('proj_1', 'plan', 'unreadable', 'gone-key', 't', 'e', 'processed')`);
+}
+
 interface Target {
   name: 'hosted' | 'self-hosted';
   sqlite: Database;
@@ -364,8 +372,7 @@ describe('what never holds a switch back', () => {
   it('passes over a source no model can read, names it, completes, and keeps the Project\'s embedding moving after the flip', async () => {
     const t = await built(selfHosted);
     await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
-    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+    missingPlanBody(t);
     let named = false;
     let whole = false;
     for (let i = 0; i < 30 && (await status(t)) !== null; i++) {
@@ -409,8 +416,7 @@ describe('what never holds a switch back', () => {
 
   it('without a switch, an unreadable source neither fails a run nor holds back calibration or retirement, and a new revision clears it', async () => {
     const t = await built(selfHosted);
-    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+    missingPlanBody(t);
     t.sqlite.run(`DELETE FROM spores WHERE id = 'three'`);
     expect(await t.step(3_000)).toMatchObject({ phase: 'passed-over', processed: 1 });
     for (let i = 0; i < 6; i++) await t.step(3_001 + i);
@@ -484,8 +490,7 @@ describe('guards the completion and the settings writer carry', () => {
     const t = await built(selfHosted);
     await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
     for (let i = 0; i < 20 && (await status(t))!.done < 3; i++) await t.step(2_000 + i);
-    t.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, blob_key, content_hash, status, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', 'unreadable', 's', 'e', 'm', 'A plan whose body is gone', NULL, 'gone-key', 'h', 'active', 1, 1, 't', 1)`);
+    missingPlanBody(t);
     for (let i = 0; i < 20 && (await status(t)) !== null; i++) await t.step(3_000 + i);
     expect({ standing: await status(t), model: JSON.parse(storedModel(t)!), recorded: t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_source_failures`).get() })
       .toEqual({ standing: null, model: t.otherSize.model, recorded: { n: 1 } });

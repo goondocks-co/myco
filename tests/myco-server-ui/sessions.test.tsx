@@ -46,7 +46,7 @@ const KEY_TEXT = 'a'.repeat(64);
 const KEY_IMG = 'b'.repeat(64);
 const KEY_SVG = 'c'.repeat(64);
 const KEY_SEG = 'd'.repeat(64);
-const BLOB = (key: string) => `/api/projects/x/blobs/${key}`;
+const BLOB = (key: string) => `/api/projects/x/blobs/${key}?raw=70`;
 const P1 = '00000000-0000-7000-8000-000000000001';
 const P2 = '00000000-0000-7000-8000-000000000002';
 const P3 = '00000000-0000-7000-8000-000000000003';
@@ -365,7 +365,7 @@ describe('the session reading page', () => {
       { attachmentId: 'a2', promptId: null, blobKey: KEY_SVG, mediaType: 'image/svg+xml', byteSize: 99, description: 'a diagram', createdAt: NOW, orderedAt: NOW },
     ]),
     '/api/projects/x/sessions/s1/transcript': () => Response.json(transcriptPayload()),
-    [BLOB(KEY_TEXT)]: () => new Response('{"a":1}', { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
+    [`/api/projects/x/processed/prompt/${P3}`]: () => new Response('{"a":1}', { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
     ...over,
   }, me);
 
@@ -589,6 +589,8 @@ describe('the session reading page', () => {
       // A prompt kept as stored text is read only when asked for.
       fireEvent.click(await within(last).findByRole('button', { name: 'Show the whole prompt' }));
       expect(await within(last).findByText('{"a":1}')).toBeTruthy();
+      expect(requested).toContain(`/api/projects/x/processed/prompt/${P3}`);
+      expect(requested).not.toContain(BLOB(KEY_TEXT));
       expect(within(last).getByTestId('turn-child').textContent).toContain('steer it left');
       expect(within(last).getByTestId('turn-child').textContent).toContain('reviewer');
       expect(requested.filter((p) => p.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P3}`]);
@@ -602,6 +604,32 @@ describe('the session reading page', () => {
     } finally {
       (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = original;
     }
+  });
+
+  it('reads spilled replies and steering prompts by typed identities, and links tool bodies by field', async () => {
+    const { requested } = server(routes({
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, text: 'Please rename the project card', blobKey: null, origin: 'user', createdAt: NOW },
+        responses: [{ responseId: 'reply-spill', text: null, blobKey: KEY_TEXT, createdAt: NOW }],
+        attachments: [], plans: [], injection: null,
+        children: [{ prompt: { promptId: P2, text: null, blobKey: KEY_TEXT, origin: 'user', createdAt: NOW }, responses: [], toolCallCount: 0 }],
+      }),
+      '/api/projects/x/processed/response/reply-spill': () => new Response('A complete processed reply'),
+      [`/api/projects/x/processed/prompt/${P2}`]: () => new Response('A complete steering prompt'),
+      [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
+        { toolCallId: 't-spill', promptId: P1, toolName: 'Read', mycoTool: null, mycoOp: null, inputPreview: null, inputBytes: null, inputBlobKey: KEY_TEXT, outputPreview: 'preview', outputBlobKey: KEY_TEXT, success: true, errorMessage: null, durationMs: 1, filesAffected: null, createdAt: NOW, orderedAt: NOW },
+      ]),
+    }, MEMBER));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText('A complete processed reply')).toBeTruthy();
+    expect(await screen.findByText('A complete steering prompt')).toBeTruthy();
+    const first = screen.getByTestId(`turn-${P1}`);
+    fireEvent.click(within(first).getByTestId('tool-calls-toggle'));
+    const row = await screen.findByTestId('tool-call-t-spill');
+    fireEvent.click(within(row).getByRole('button'));
+    expect(within(row).getByRole('link', { name: 'Full input' }).getAttribute('href')).toBe('/api/projects/x/processed/tool-input/t-spill');
+    expect(within(row).getByRole('link', { name: 'Full output' }).getAttribute('href')).toBe('/api/projects/x/processed/tool-output/t-spill');
+    expect(requested).not.toContain(BLOB(KEY_TEXT));
   });
 
   it('opens a long conversation on its latest turns, keeping the earlier ones a page at a time above them', async () => {

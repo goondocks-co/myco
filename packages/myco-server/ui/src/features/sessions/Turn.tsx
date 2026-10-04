@@ -76,7 +76,7 @@ function Replies({ projectId, responses }: { projectId: string; responses: Respo
       {responses.map((r) => (
         <div key={r.responseId} className="flex flex-col gap-s1" data-testid="turn-response">
           <time dateTime={new Date(r.createdAt).toISOString()} className="t-meta text-faint">Reply · {clockTime(r.createdAt)}</time>
-          <TextOrBlob projectId={projectId} text={r.text} blobKey={r.blobKey} markdown />
+          <TextOrBlob projectId={projectId} text={r.text} blobKey={r.blobKey} body={{ kind: 'response', id: r.responseId }} markdown />
         </div>
       ))}
     </div>
@@ -91,7 +91,7 @@ function SteeringChild({ projectId, sessionId, child }: { projectId: string; ses
         <span className="font-medium text-ink-2">Steered while it ran{child.prompt.threadLabel !== null ? ` · ${child.prompt.threadLabel}` : ''}</span>
         <time dateTime={new Date(child.prompt.createdAt).toISOString()}>{clockTime(child.prompt.createdAt)}</time>
       </div>
-      <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} />
+      <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} body={{ kind: 'prompt', id: child.prompt.promptId }} />
       <ToolCalls projectId={projectId} sessionId={sessionId} promptId={child.prompt.promptId} total={child.toolCallCount} />
       <Replies projectId={projectId} responses={child.responses} />
     </div>
@@ -135,7 +135,7 @@ function PromptText({ projectId, turn, text, blobKey }: { projectId: string; tur
       </div>
     );
   }
-  return <div className="font-medium text-ink"><TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} /></div>;
+  return <div className="font-medium text-ink"><TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId }} /></div>;
 }
 
 export interface TurnProps {

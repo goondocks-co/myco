@@ -443,10 +443,10 @@ describe('blob route', () => {
     expect(journaled(e.sqlite)).toEqual(e.bucket.puts);
   });
 
-  it('answers a repeated upload as a duplicate from the blobs row, uncharged, without writing and without consulting the store', async () => {
+  it('answers the same member’s repeated upload as a duplicate, uncharged, without writing or consulting the store', async () => {
     const e = sqliteEnv();
     const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    const t3 = await issueMemberToken(e.db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now());
+    const t3 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_3' }, Date.now());
     const key = await keyOf(bytes);
     await worker.fetch(blobPost(t.token, key, bytes), e.env);
     const again = await worker.fetch(blobPost(t3.token, key, bytes, 'image/png'), e.env);

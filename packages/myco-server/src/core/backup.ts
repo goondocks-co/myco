@@ -37,7 +37,7 @@ const RESTORE_CHUNK_ROWS = 20;
  */
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
-  'member_credentials', 'agents',
+  'member_credentials', 'raw_resources', 'processed_resources', 'agents',
   'sessions', 'session_tombstones', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
