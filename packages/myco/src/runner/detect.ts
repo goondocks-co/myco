@@ -9,8 +9,9 @@
  *
  * A probe never prints a credential. It answers whether one is present.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
@@ -37,6 +38,9 @@ export interface OfferedHarness extends DetectedHarness {
  * two together.
  */
 const probeEnv = (): NodeJS.ProcessEnv => process.env;
+const PROBE_TIMEOUT_MS = 10_000;
+export const HARNESS_DETECTION_MAX_MS = 2 * PROBE_TIMEOUT_MS;
+export const HARNESS_DETECTION_TTL_MS = 30_000;
 
 /** Where this harness's binary is, or null when the machine has none. */
 export function locate(binary: string): string | null {
@@ -52,8 +56,12 @@ export function locate(binary: string): string | null {
 /** A file that exists and holds at least one of the keys a login writes. An empty file is a logged-out file. */
 function fileHolds(at: string | null, requires: readonly string[]): boolean {
   if (at === null || !existsSync(at)) return false;
+  try { return holdsCredentials(readFileSync(at, 'utf8'), requires); } catch { return false; }
+}
+
+function holdsCredentials(content: string, requires: readonly string[]): boolean {
   let parsed: unknown;
-  try { parsed = JSON.parse(readFileSync(at, 'utf8')); } catch { return false; }
+  try { parsed = JSON.parse(content); } catch { return false; }
   if (parsed === null || typeof parsed !== 'object') return false;
   const held = parsed as Record<string, unknown>;
   if (Object.keys(held).length === 0) return false;
@@ -63,7 +71,7 @@ function fileHolds(at: string | null, requires: readonly string[]): boolean {
 
 function commandSucceeds(binary: string, args: readonly string[]): boolean {
   try {
-    execFileSync(binary, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000, env: probeEnv() });
+    execFileSync(binary, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, env: probeEnv() });
     return true;
   } catch {
     return false;
@@ -77,7 +85,7 @@ function authenticated(harness: Harness): boolean {
   return fileHolds(credentialFile(harness), probe.requires) || commandSucceeds(harness.binary, probe.args);
 }
 
-/** Every harness this machine has, with whether each is logged in. A worker offers this list on every claim. */
+/** Every harness this machine has, with whether each is logged in, for synchronous diagnostic callers. */
 export function detectHarnesses(only?: readonly string[]): DetectedHarness[] {
   const wanted = only === undefined || only.length === 0 ? null : new Set(only);
   const out: DetectedHarness[] = [];
@@ -87,6 +95,64 @@ export function detectHarnesses(only?: readonly string[]): DetectedHarness[] {
     out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness) });
   }
   return out;
+}
+
+/** A bounded local probe; output is read only for binary lookup and is never logged. */
+function probeCommand(binary: string, args: readonly string[], signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted === true) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(binary, [...args], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: probeEnv(), signal }, (error, stdout) => {
+      resolve(error === null ? stdout : null);
+    });
+  });
+}
+
+async function fileHoldsAsync(at: string | null, requires: readonly string[]): Promise<boolean> {
+  if (at === null) return false;
+  try { return holdsCredentials(await readFile(at, 'utf8'), requires); } catch { return false; }
+}
+
+/** Worker detection leaves the event loop free for leases, requests and shutdown. */
+export async function detectHarnessesAsync(only?: readonly string[], signal?: AbortSignal): Promise<DetectedHarness[]> {
+  const wanted = only === undefined || only.length === 0 ? null : new Set(only);
+  return Promise.all(HARNESSES.filter((harness) => wanted === null || wanted.has(harness.id)).map(async (harness) => {
+    const found = await probeCommand(process.platform === 'win32' ? 'where' : 'which', [harness.binary], signal);
+    const installed = (found?.split('\n')[0]?.trim() ?? '').length > 0;
+    if (!installed) return { id: harness.id, installed, authenticated: false };
+    const probe = harness.credential;
+    const fileAuthenticated = probe.kind !== 'command' && await fileHoldsAsync(credentialFile(harness), probe.requires);
+    const authenticated = fileAuthenticated || (probe.kind !== 'file' && await probeCommand(harness.binary, probe.args, signal) !== null);
+    return { id: harness.id, installed, authenticated };
+  }));
+}
+
+/** One worker's coalesced detection snapshot; invalidation also refuses results from an older in-flight probe. */
+export function harnessDetection(options: { detect: () => Promise<DetectedHarness[]>; clock: () => number }): {
+  read: () => Promise<DetectedHarness[]>;
+  invalidate: () => void;
+} {
+  let generation = 0;
+  let snapshot: { at: number; detected: DetectedHarness[] } | null = null;
+  let pending: { generation: number; work: Promise<DetectedHarness[]> } | null = null;
+  return {
+    async read() {
+      for (;;) {
+        if (snapshot !== null && options.clock() - snapshot.at < HARNESS_DETECTION_TTL_MS) return snapshot.detected;
+        if (pending === null) {
+          const revision = generation;
+          const work = options.detect().then((detected) => {
+            if (revision === generation) snapshot = { at: options.clock(), detected };
+            return detected;
+          }).finally(() => { pending = null; });
+          pending = { generation: revision, work };
+        }
+        const held = pending;
+        const detected = await held.work;
+        if (held.generation === generation) return detected;
+      }
+    },
+    invalidate() { generation += 1; snapshot = null; },
+  };
 }
 
 /**

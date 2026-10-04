@@ -1,7 +1,7 @@
 import { describe, expect, it, spyOn } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from '../support/fenced-fs.mjs';
 import fs from 'node:fs';
@@ -78,11 +78,11 @@ describe('run directory ownership and dead-worker recovery', () => {
     await kill(abandoned.child);
     const original = fs.rmSync;
     const failure = spyOn(fs, 'rmSync').mockImplementation((path, options) => {
-      if (String(path).endsWith('mcp.json')) throw new Error('interrupted cleanup');
+      if (String(path).endsWith('/codex')) throw new Error('interrupted cleanup');
       return original(path, options);
     });
     try {
-      expect(() => recoverAbandonedRunDirectories(runs)).toThrow('interrupted cleanup');
+      expect(() => recoverAbandonedRunDirectories(runs)).toThrow('Run directory cleanup failed');
     } finally { failure.mockRestore(); }
     expect(existsSync(join(abandoned.scratchDir, RUN_DIRECTORY_MANIFEST))).toBe(true);
     expect(recoverAbandonedRunDirectories(runs).recovered).toBe(1);
@@ -90,7 +90,7 @@ describe('run directory ownership and dead-worker recovery', () => {
     expect(readFileSync(login, 'utf8')).toBe('synthetic-login-target');
   });
 
-  it('preserves unowned, malformed, foreign-host, and symlinked directories', async () => {
+  it('preserves unowned, malformed, foreign-machine, and symlinked directories', async () => {
     const runs = root();
     const target = root();
     writeFileSync(join(target, 'auth.json'), 'synthetic-target');
@@ -101,7 +101,7 @@ describe('run directory ownership and dead-worker recovery', () => {
     const foreign = await worker(runs, target);
     await kill(foreign.child);
     const manifest = JSON.parse(readFileSync(join(foreign.scratchDir, RUN_DIRECTORY_MANIFEST), 'utf8'));
-    writeFileSync(join(foreign.scratchDir, RUN_DIRECTORY_MANIFEST), JSON.stringify({ ...manifest, hostname: `${hostname()}-other-machine` }));
+    writeFileSync(join(foreign.scratchDir, RUN_DIRECTORY_MANIFEST), JSON.stringify({ ...manifest, machineId: 'other-machine' }));
     expect(recoverAbandonedRunDirectories(runs).recovered).toBe(0);
     expect(existsSync(join(runs, 'unowned'))).toBe(true);
     expect(readFileSync(join(target, 'auth.json'), 'utf8')).toBe('synthetic-target');

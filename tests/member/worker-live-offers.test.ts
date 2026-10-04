@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { HARNESSES, credentialFile, offerable } from '@myco/runner/harnesses.js';
 import { runWorker } from '@myco/runner/loop.js';
+import { HARNESS_DETECTION_TTL_MS } from '@myco/runner/detect.js';
 import { EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { stubProfileHarness } from '../helpers/stub-profile-harness.js';
@@ -59,6 +60,7 @@ describe('live worker offers', () => {
         }
       };
       let claims = 0;
+      let now = 0;
       const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
         const path = new URL(String(input)).pathname;
         if (path === '/worker/claim') {
@@ -66,6 +68,7 @@ describe('live worker offers', () => {
           const offered = body.harnesses.find((h) => h.id === harness.id)!;
           offers.push({ installed: offered.installed, authenticated: offered.authenticated });
           claims += 1;
+          now += HARNESS_DETECTION_TTL_MS;
           if (claims === 1) install();
           if (claims === 2) authenticate();
           if (claims === 3) { rmSync(marker); if (login !== null && existsSync(login)) rmSync(login); }
@@ -79,6 +82,7 @@ describe('live worker offers', () => {
       }) as typeof fetch;
       try {
         await runWorker({ serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'), only: [harness.id], pollIdleMs: 5, log: () => {}, fetchImpl, signal: stop.signal,
+          clock: () => now,
           listModels: async (ids) => { catalogSets.push([...ids]); return []; },
         });
         expect(offers).toEqual([

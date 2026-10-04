@@ -27,11 +27,12 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import nodeFs from 'node:fs';
 const { mkdirSync, realpathSync } = nodeFs;
 import { join } from 'node:path';
-import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
+import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, WITHHELD_REASON } from './detect.js';
 import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
+import { STOP_GRACE_MS } from './process-group.js';
 import { harnessById, offerable } from './harnesses.js';
-import { recoverAbandonedRunDirectories } from './run-directory.js';
+import { recoverAbandonedRunDirectories, retryPendingRunDirectoryDiscards } from './run-directory.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
@@ -312,6 +313,8 @@ const DEFAULT_HEARTBEAT_MS = 30_000;
  * account of the overrun is the one that lands.
  */
 const RUN_OVERRUN_GRACE_MS = 5_000;
+/** The total time allowed for iterator return and repository disposal. */
+const RUN_CLEANUP_TIMEOUT_MS = STOP_GRACE_MS * 3;
 
 const asRun = (value: unknown): ClaimedRun | null => {
   if (value === null || typeof value !== 'object') return null;
@@ -327,6 +330,7 @@ interface AttemptLease {
   readonly deadline: number;
   readonly lost: boolean;
   signal: AbortSignal;
+  lose(line: string): void;
   release(): void;
 }
 
@@ -381,7 +385,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
   }, heartbeatMs);
   wake.driving(true);
   return {
-    get deadline() { return deadline; }, get lost() { return lost; }, signal: stopping.signal,
+    get deadline() { return deadline; }, get lost() { return lost; }, signal: stopping.signal, lose: losing,
     release() {
       clearInterval(heartbeat);
       renewals.abort();
@@ -445,6 +449,7 @@ async function drive(
   if (options.signal.aborted) stopping.abort();
   let lost = false;
   let overran = false;
+  const cleanupDeadline = clock() + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
   /**
    * The budget, settled by the timer rather than by the harness.
    *
@@ -520,13 +525,55 @@ async function drive(
     clearTimeout(budget);
     options.signal.removeEventListener('abort', onAbort);
     stopping.abort();
+    const deadline = Math.min(cleanupDeadline, clock() + RUN_CLEANUP_TIMEOUT_MS);
+    let expired = false;
+    let abandon: () => void = () => {};
+    const abandoned = new Promise<false>((resolve) => {
+      abandon = () => {
+        if (expired) return;
+        expired = true;
+        lost = true;
+        lease.lose(`cleanup of ${run.id} exceeded its deadline or lost its lease; leaving the run to the Deployment`);
+        resolve(false);
+      };
+    });
+    const cleanupTimer = setTimeout(abandon, Math.max(0, deadline - clock()));
+    lease.signal.addEventListener('abort', abandon, { once: true });
+    const checkDeadline = (): void => {
+      if (lease.lost || lease.signal.aborted || clock() >= deadline || clock() >= lease.deadline) abandon();
+    };
+    const dispose = async (work: () => Promise<unknown> | undefined): Promise<void> => {
+      checkDeadline();
+      const settled = Promise.resolve().then(work).then(() => true).catch((error: unknown) => {
+        if (expired) options.log(`cleanup of ${run.id} failed after its attempt was abandoned: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      });
+      await Promise.race([settled, abandoned]);
+      checkDeadline();
+    };
     try {
-      await stream?.return?.();
-    } catch (error) {
-      failure ??= { code: 'worker_error', words: error instanceof Error ? error.message : String(error) };
+      try {
+        await dispose(() => stream?.return?.());
+      } catch (error) {
+        failure ??= { code: 'worker_error', words: error instanceof Error ? error.message : String(error) };
+      } finally {
+        if (stepLog !== null) keepStepLog(options, run, stepLog, clock());
+        try {
+          await dispose(() => checkout?.dispose());
+        } catch (error) {
+          failure ??= { code: 'worker_error', words: error instanceof Error ? error.message : String(error) };
+        } finally {
+          try { discardRunDir(scratchDir); } catch (error) {
+            const words = error instanceof Error ? error.message : String(error);
+            options.log(`could not discard the attempt directory of ${run.id}: ${words}`);
+            failure ??= { code: 'worker_error', words };
+          }
+        }
+      }
     } finally {
-      if (stepLog !== null) keepStepLog(options, run, stepLog, clock());
-      try { await checkout?.dispose(); } finally { discardRunDir(scratchDir); }
+      checkDeadline();
+      clearTimeout(cleanupTimer);
+      lease.signal.removeEventListener('abort', abandon);
     }
   }
 
@@ -711,6 +758,12 @@ async function becomeInstance(options: WorkerOptions): Promise<{ release: () => 
   return null;
 }
 
+/** Surface a refused cleanup and retry it at the next worker lifecycle boundary. */
+function retryRunDirectoryDiscards(options: WorkerOptions): void {
+  try { retryPendingRunDirectoryDiscards(); }
+  catch (error) { options.log(`could not discard waiting run directories: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
 async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promise<WorkerOutcome> {
   let offerSignature: string | null = null;
   let driven = 0;
@@ -740,6 +793,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   };
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
+  const detection = harnessDetection({ detect: () => detectHarnessesAsync(options.only, options.signal), clock });
   const catalogs = modelCatalogs({
     harnesses: [],
     list: options.listModels ?? ((ids, signal) => listModels(ids, options.runRoot, signal, clock)),
@@ -750,11 +804,12 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   try {
     return await claimLoop();
   } finally {
-    await catalogs.stop();
+    try { await catalogs.stop(); } finally { retryRunDirectoryDiscards(options); }
   }
 
   async function claimLoop(): Promise<WorkerOutcome> {
     while (!options.signal.aborted) {
+      retryRunDirectoryDiscards(options);
       sweepStepLogs(options);
       if (options.stillCurrent !== undefined && !options.stillCurrent()) {
         options.log('the myco program on disk changed; stopping so the new one starts');
@@ -793,7 +848,9 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
         await deliverStepLogs(options, compatibility.steps, requestMs);
         if (!wake.settled()) continue;
       }
-      const { offered: harnesses, withheld } = offerOf(detectHarnesses(options.only));
+      const { offered: harnesses, withheld } = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read()));
+      if (options.signal.aborted) break;
+      if (!wake.settled()) continue;
       const ready = harnesses.filter((h) => h.installed && h.authenticated).map((h) => h.id);
       catalogs.reconcile(ready);
       const signature = JSON.stringify({ harnesses, withheld });
@@ -807,6 +864,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
       if (advertisesCatalog) catalogs.due();
       const claimSentAt = (options.clock ?? Date.now)();
       const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
+      if (answer.kind !== 'answered') detection.invalidate();
       if (answer.kind === 'refused') {
         options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
         return { driven, refused: answer.code };
@@ -852,6 +910,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
           keepRunDiagnostic(options, run, coded, error instanceof Error ? error.message : String(error));
           outcome = { status: 'failed', error: coded, identity: { status: 'unknown', reason: 'worker_failure' } };
         }
+        if (outcome.status === 'failed') detection.invalidate();
         // A worker that lost its lease writes nothing: the run belongs to whoever
         // holds it now, and a late outcome would be one worker reporting on
         // another's run. The Deployment refuses such a write anyway; not making it

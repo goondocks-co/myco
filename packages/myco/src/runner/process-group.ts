@@ -6,7 +6,7 @@
  * leads a group of its own, and stopping it signals helpers that remain in that group: SIGTERM first, SIGKILL to
  * whatever is still in the group once `STOP_GRACE_MS` has passed, then the leader's `close` is waited for, bounded
  * by the same grace.
- * Windows has no process groups, so there the harness alone is signalled.
+ * Windows signals only the harness leader; descendant termination is not guaranteed.
  */
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { fileURLToPath } from 'node:url';

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { recoverAbandonedRunDirectories, RUN_DIRECTORY_MANIFEST } from '@myco/runner/run-directory.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+import { getMachineId } from '@myco/machine-id.js';
 
 async function killed(child: ChildProcess): Promise<void> {
   const closed = once(child, 'close');
@@ -33,6 +34,8 @@ it('recovers a crashed real model-listing allocation after its harness group is 
     const home = join(lane, 'home');
     const bin = join(lane, 'bin');
     mkdirSync(join(home, '.codex'), { recursive: true });
+    mkdirSync(join(home, '.myco'));
+    writeFileSync(join(home, '.myco', 'machine_id'), getMachineId());
     mkdirSync(bin);
     const login = join(home, '.codex', 'auth.json');
     writeFileSync(login, '{"tokens":{"fixture":"synthetic-login-target"}}');

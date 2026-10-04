@@ -50,7 +50,7 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
   const lines: string[] = [];
   let claimed = false;
 
-  const run = { projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it', harness: PROFILE_STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 60, attemptId: ATTEMPT };
+  const run = { projectId: 'proj_1', id: 'run_1', task: 'title-summary', instruction: 'do it', harness: PROFILE_STUB_HARNESS, runToken: 'tok_run', credentialEnv: {}, profile: STUB_PROFILE, timeoutSeconds: 600, attemptId: ATTEMPT };
   const defaultClaim: Handler = () => {
     if (claimed) return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 });
     claimed = true;

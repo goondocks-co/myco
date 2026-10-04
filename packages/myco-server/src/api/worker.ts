@@ -136,7 +136,7 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
   // report keeps its liveness refreshed.
   if (outcome.held) await recordWorkerContact(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now });
   return ok(outcome.held
-    ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: WORKER_LEASE_MS }
+    ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: outcome.expiresAt - ctx.now }
     : { persisted: true, held: false, reason: 'the lease is no longer held' });
 }
 

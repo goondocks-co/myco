@@ -40,6 +40,7 @@ import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
 import { workerLeaseAuthority } from './worker-lease.js';
+import { runDeadlineSql } from './run-deadline.js';
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
 export const INPUT_UNCHANGED = 'input_unchanged';
@@ -1395,16 +1396,34 @@ export async function recordClaimedInput(
   ).bind(input.instruction, JSON.stringify({ input_hash: input.inputHash, counts: input.counts, checkout: input.repository ?? null }), scope.projectId, runId, dispatchedBy).run();
 }
 
+/** A worker may renew or read its lease only while the attempt remains inside its run deadline. */
+function renewingLeaseAuthority(tokenId: string, now: number, dispatchedBy?: string): { sql: string; params: unknown[] } {
+  const authority = workerLeaseAuthority({ tokenId, now }, dispatchedBy);
+  return { sql: `${authority.sql} AND ${runDeadlineSql()} > ?`, params: [...authority.params, now] };
+}
+
 /** Extend a lease the caller still holds. False says the lease is gone: swept, or the run ended. */
 export async function renewRunLease(
   db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, expiresAt: number, now: number, dispatchedBy?: string,
 ): Promise<boolean> {
-  const authority = workerLeaseAuthority({ tokenId: leasedBy, now }, dispatchedBy);
+  const authority = renewingLeaseAuthority(leasedBy, now, dispatchedBy);
+  const deadline = runDeadlineSql();
   const result = await db.prepare(
-    `UPDATE agent_runs SET lease_expires_at = MAX(lease_expires_at, ?)
+    `UPDATE agent_runs SET lease_expires_at = MIN(${deadline}, MAX(lease_expires_at, ?))
       WHERE project_id = ? AND id = ? AND ${authority.sql}`,
   ).bind(expiresAt, scope.projectId, runId, ...authority.params).run();
   return result.meta.changes === 1;
+}
+
+/** Read the expiry only while the authenticated worker still holds this attempt. */
+export async function workerRunLeaseExpiry(
+  db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, now: number, dispatchedBy?: string,
+): Promise<number | null> {
+  const authority = renewingLeaseAuthority(leasedBy, now, dispatchedBy);
+  const row = await db.prepare(`SELECT lease_expires_at AS expiresAt FROM agent_runs
+    WHERE project_id = ? AND id = ? AND ${authority.sql}`)
+    .bind(scope.projectId, runId, ...authority.params).first<{ expiresAt: number }>();
+  return row?.expiresAt ?? null;
 }
 
 /**

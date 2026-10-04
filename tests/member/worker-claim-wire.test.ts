@@ -25,6 +25,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "..
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
+import { HARNESS_DETECTION_TTL_MS } from '@myco/runner/detect.js';
 import workerServer from '@myco-server-worker/index.js';
 import { asOwnerPost, OWNER_ENV } from '../myco-server/helpers/owner.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
@@ -77,7 +78,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
   /** Attach a worker, bounded by this test's own signal, and answer what it did with the lines it logged. */
   const attach = async (
     token: string,
-    opts: { once?: boolean; stopping?: AbortController; only?: string } = {},
+    opts: { once?: boolean; stopping?: AbortController; only?: string; clock?: () => number } = {},
   ): Promise<WorkerOutcome & { lines: string[] }> => {
     const lines: string[] = [];
     const stopping = opts.stopping ?? new AbortController();
@@ -97,6 +98,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
         log: (line) => { lines.push(line); },
         fetchImpl,
         signal: stopping.signal,
+        clock: opts.clock,
       }));
       return { ...outcome, lines };
     } finally {
@@ -120,16 +122,18 @@ describe('a worker on the real claim wire', () => {
     const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-login-transition-')));
     writeFileSync(join(dir, 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
     process.env.PATH = `${dir}:/usr/bin:/bin`;
+    let now = Date.now();
     const r = await rig((route, n) => {
       if (route === '/worker/claim' && n === 1) {
         expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
+        now += HARNESS_DETECTION_TTL_MS;
       }
       return null;
     });
     try {
       r.queueRun('run_login_transition');
       const token = await r.member('mem_admin', 'admin');
-      const attached = await r.attach(token);
+      const attached = await r.attach(token, { clock: () => now });
       expect(attached.driven).toBe(1);
       expect(attached.refused).toBeNull();
       expect(r.sent.filter((s) => s.path === '/worker/claim')).toHaveLength(2);
