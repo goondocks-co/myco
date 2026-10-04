@@ -21,14 +21,19 @@ Native per-user lock tests inject the existing lock namespace; the preload
 fences the fixed POSIX native lock root. Native path assertions verify a
 runner-owned filesystem fixture.
 
-On Windows, PowerShell 7 (`pwsh`) records runner children, test subprocesses
-and the long-lived screen server with their PID and creation identity under
-the root. Cleanup holds a process handle and checks that identity before
+On Windows, Bun's preload reads child creation FILETIME through Win32;
+Node runners use PowerShell 7 (`pwsh`). Both record the PID and creation
+identity under the root, including the long-lived screen server.
+Cleanup holds a process handle and checks that identity before
 terminating a registered process tree, including a server whose parent has
 exited. Arbitrary unregistered descendants of an already-exited Windows
 parent cannot be proven owned from reused parent PIDs. Raw Bun fallback
 cleanup runs in its final test hook; Windows handles still held by Bun may
 cause cleanup to fail and leave a root for the next run's stale-root sweep.
+Cleanup retries transient file locks within a bound and reports the exact
+file's process owners if a Windows lock persists. Git capability probes
+initialize disposable repositories; `git <command> --help` opens browser
+help and must not be used as a test capability probe.
 
 At exit, the runner compares `myco-*` and `mt-*` names in the inherited temp
 directory and OS default temp directories with its startup snapshot. New
