@@ -11,6 +11,8 @@ The retained `tests/setup/vitest.ts` is loaded by the Bun jsdom setup; there
 is no separate active Vitest runner in this checkout.
 CI shard discovery uses the command wrapper; parity manifests return on
 stdout through the Bun runner rather than writing into another run's root.
+Discovery reports stay in the audit's scratch directory and preserve the
+enclosing test runner's reports.
 
 The runner creates one `mt-*` root before starting any test runtime. Its
 preloads establish a fallback root before sandbox creation for direct test

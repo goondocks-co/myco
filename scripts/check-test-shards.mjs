@@ -13,6 +13,7 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shard-audit-'));
 const manifestPath = path.join(scratch, 'manifest.json');
 const baseEnv = { ...process.env };
 for (const key of ['MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD']) delete baseEnv[key];
+baseEnv.MYCO_RUNNER_REPORT_DIR = path.join(scratch, 'reports');
 
 function manifest(command, env, outputPrefix) {
   fs.rmSync(manifestPath, { force: true });
