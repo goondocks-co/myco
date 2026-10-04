@@ -12,7 +12,7 @@ import { keepCurrent, reportHarnesses, harnessRanAt } from '@myco/cli/member-kee
 import { readProvisionRecord, recordProvision, holdHookTrust } from '@myco/symbionts/member-provision-record.js';
 import { writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { updateProjectContext } from '@myco/member/context-cache.js';
-import { spoolDirFor } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/spool.js';
 import { PROTOCOL_HEADER, MEMBER_PROTOCOL } from '@goondocks/myco-shared/member-protocol';
 import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { run as update } from '@myco/cli/update.js';
@@ -60,7 +60,7 @@ it('the next CLI helper pass restores deleted hooks and MCP byte for byte and pr
   const originalConfig = fs.readFileSync(config(), 'utf8');
   fs.unlinkSync(hooks());
   fs.writeFileSync(config(), originalConfig.slice(0, originalConfig.indexOf('[mcp_servers.myco]')));
-  await runHelperVerb(['--project', 'proj_test', '--server', 'https://s', '--home', home, '--stderr'], { pass: async () => {}, lingerMs: 0 });
+  await runHelperVerb(['--project', 'proj_test', '--server', SERVER, '--home', home, '--stderr'], { pass: async () => {}, lingerMs: 0 });
   expect(fs.readFileSync(hooks(), 'utf8')).toBe(originalHooks);
   expect(fs.readFileSync(config(), 'utf8')).toBe(originalConfig);
   expect(parseToml(originalConfig)).toMatchObject({ model: 'personal-model', mcp_servers: { other: { command: 'other' } } });
@@ -153,7 +153,7 @@ it('reports repair status only after the Deployment advertises the feature', asy
   };
   await reportHarnesses(report, home, Date.now() + 10_000, { entry, fetch });
   expect(requests).toHaveLength(0);
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   await reportHarnesses(report, home, Date.now() + 10_000, { entry, fetch });
   expect(requests).toHaveLength(1);
   expect(new URL(requests[0]!.url).pathname).toBe('/members/harnesses/report');
@@ -164,8 +164,8 @@ it('reports from the newest project advertisement and logs a missing feature onc
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_old', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome: home });
   writeRegistryEntry({ ...entry, projectId: 'proj_new', root: path.join(agentHome, 'other') }, { mycoHome: home });
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = ['turn']; cache.featuresAt = 1; });
-  const newest = spoolDirFor({ projectId: 'proj_new', serverUrl: 'https://second.example' }, home);
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = ['turn']; cache.featuresAt = 1; });
+  const newest = new MemberSpool({ projectId: 'proj_new', serverUrl: SERVER }, { mycoHome: home }).dir;
   updateProjectContext(newest, home, (cache) => { cache.features = ['turn', HARNESS_HEALTH_FEATURE]; cache.featuresAt = 2; });
   const report = { serverUrl: SERVER, ready: [], harnesses: [] };
   let sent = 0;
@@ -196,8 +196,8 @@ it('an unrepairable helper pass reaches Deployment Health through the real repor
   writeRegistryEntry(entry, { mycoHome: home });
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   fs.writeFileSync(config(), 'invalid TOML [');
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
-  await runHelperVerb(['--project', entry.projectId, '--server', 'https://s', '--home', home, '--stderr'], { fetch: rig.fetch, lingerMs: 0 });
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  await runHelperVerb(['--project', entry.projectId, '--server', SERVER, '--home', home, '--stderr'], { fetch: rig.fetch, lingerMs: 0 });
   expect((await readAttention(rig.env.serverEnv, Date.now())).items).toContainEqual(expect.objectContaining({
     kind: 'harness_needs_repair', machineId: 'machine_1', harness: 'codex', state: 'repair_failed', action: 'Run myco member provision codex to see what needs fixing',
   }));
@@ -211,10 +211,10 @@ it('retains a trust action through offline reporting, then clears the local hold
   fs.unlinkSync(hooks());
   const repaired = keepCurrent(home, { binaryFound: () => true });
   expect(repaired?.harnesses[0].state).toBe('trust_required');
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   await reportHarnesses(repaired, home, Date.now() + 10_000, { entry, fetch: async () => { throw new Error('offline'); } });
   expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('trust_required');
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   await reportHarnesses(repaired, home, Date.now() + 10_000, { entry, fetch: async () => Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } }) });
   expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('ready');
 });
@@ -343,7 +343,7 @@ it('identical accepted reports are skipped while changed activity is delivered',
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome: home });
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   let calls = 0;
   const fetch = async () => { calls++; return Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } }); };
   const result = keepCurrent(home, { binaryFound: () => true });
@@ -388,7 +388,7 @@ it('automatic repair keeps bounded backups of changed original config', () => {
 
 it('keep-current failure never interrupts the helper capture delivery', async () => {
   let delivered = false;
-  await runHelperVerb(['--project', 'proj_test', '--server', 'https://s', '--home', home, '--stderr'], {
+  await runHelperVerb(['--project', 'proj_test', '--server', SERVER, '--home', home, '--stderr'], {
     keepCurrent: () => { throw new Error('repair unavailable'); },
     pass: async () => { delivered = true; }, lingerMs: 0,
   });
@@ -469,7 +469,7 @@ it('a second hook repair changes the report even when its state action and activ
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome: home });
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
-  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://second.example' }, home), home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   holdHookTrust(home, 'codex', "Restart Codex and trust Myco's hooks");
   const reports: unknown[] = [];
   const fetch = async (_url: string | URL | Request, init?: RequestInit) => {

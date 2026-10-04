@@ -13,14 +13,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import {
-  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, requestJoin, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
+  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { cacheMachineSettings, machineAutoJoinLeaves } from '@myco/member/machine-settings.js';
 import { readMissingMembership, recordMissingMembership } from '@myco/member/no-membership.js';
 import { appendPending, appendPendingTurnEnd, expirePending, flushPending, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
-import { readRegistryEntry, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, registryEntryPath, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readCaptureLoss } from '@myco/member/capture-loss.js';
 import { unboundedBudget } from '@myco/member/budget.js';
@@ -1117,7 +1117,7 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
     }
   });
 
-  it('holds a request asked for under another Deployment than the default, or under none', async () => {
+  it('delivers a pinned join request to its original membership after the default changes', async () => {
     const root = repository(path.join(base, 'Repos'), 'moved', 'https://github.com/acme/moved.git');
     await ask(root, 'sess-moved');
     const other = 'https://other-deployment.invalid';
@@ -1129,16 +1129,54 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
       return rig.fetch(input, init);
     };
     await pass(Date.now() + 60_000, fetch);
-    // Nothing is asked of either Deployment for it, and no attempt is recorded.
-    expect({ requested: requested(), dialled, connected: connected(root), tried: readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL) })
-      .toEqual({ requested: [root], dialled: [], connected: false, tried: null });
+    expect(dialled.length).toBeGreaterThan(0);
+    expect(dialled.every((url) => url.startsWith(SERVER_URL))).toBe(true);
+    expect(connected(root)).toBe(true);
+    expect(requested()).toEqual([]);
 
     recordDefaultDeployment(SERVER_URL, { mycoHome, replace: true });
     await ask(root, 'sess-moved-2');
-    expect(requested()).toEqual([root]);
+    expect(requested()).toEqual([]);
     fs.rmSync(defaultDeploymentPath(mycoHome));
     await pass(Date.now() + 60_000, fetch);
+    expect(requested()).toEqual([]);
+  });
+
+  it('holds queued joins and imports when an existing binding is unavailable', async () => {
+    const root = repository(path.join(base, 'Repos'), 'unreadable-binding', 'https://github.com/acme/widget.git');
+    await ask(root, 'sess-unreadable');
+    const other = 'https://other-deployment.invalid';
+    writeRegistryEntry({ version: REGISTRY_VERSION, root, serverUrl: other, projectId: 'proj_1', token: 'B'.repeat(43), machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    const file = registryEntryPath(root, mycoHome);
+    const original = fs.readFileSync(file);
+    fs.writeFileSync(file, '{unavailable');
+    queueImport({ root, rootKey: rootKeyFor(root, mycoHome), serverUrl: other, projectId: 'proj_1', at: Date.now() }, mycoHome);
+    recordDefaultDeployment(other, { mycoHome, replace: true });
+    let calls = 0;
+    await pass(Date.now() + 60_000, async (input, init) => { calls++; return rig.fetch(input, init); });
+    expect(calls).toBe(0);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{unavailable');
     expect(requested()).toEqual([root]);
+    expect(listPendingImports(mycoHome)).toHaveLength(1);
+    fs.writeFileSync(file, original);
+    await pass(Date.now() + 60_000, async () => { throw new Error('offline'); });
+    expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(other);
+    expect(listPending({ mycoHome, now: Date.now() }).some((pending) => pending.root === root)).toBe(true);
+  });
+
+  it('rechecks unavailable bindings before committing a remote join answer', async () => {
+    const root = repository(path.join(base, 'Repos'), 'raced-binding', 'https://github.com/acme/widget.git');
+    await ask(root, 'sess-race');
+    const file = registryEntryPath(root, mycoHome);
+    await pass(Date.now() + 60_000, async (input, init) => {
+      const response = await rig.fetch(input, init);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url).pathname === RESOLVE_PROJECT_PATH) fs.writeFileSync(file, '{unavailable');
+      return response;
+    });
+    expect(fs.readFileSync(file, 'utf8')).toBe('{unavailable');
+    expect(requested()).toEqual([root]);
+    expect(listPending({ mycoHome, now: Date.now() }).some((pending) => pending.root === root)).toBe(true);
   });
 
   it('runs with the home its command line names as MYCO_HOME, whatever the environment it was started with', async () => {

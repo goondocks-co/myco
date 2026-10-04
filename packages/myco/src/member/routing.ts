@@ -1,8 +1,9 @@
+import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isProjectId } from './constants.js';
 import { deploymentKeyFor, deploymentUrl, listRegistryEntries, REGISTRY_VERSION, readDeploymentMembership, type RegistryEntry } from './registry.js';
-import { assertMemberPathContained, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { assertMemberPathContained, ensurePrivateFile, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 /** The immutable destination of a member's Project state. */
 export interface MemberRoutingIdentity {
@@ -34,15 +35,7 @@ export function routedSpoolDir(route: MemberRoutingIdentity, mycoHome: string): 
 
 /** Persist the destination before buffered state can be written. */
 export function pinSpoolDestination(dir: string, route: MemberRoutingIdentity): void {
-  const identity = memberRoutingIdentity(route);
-  const file = path.join(dir, ROUTING_FILE);
-  const held = readPrivateJson<MemberRoutingIdentity>(file);
-  if (held.ok) {
-    if (!sameRoutingIdentity(held.value, identity)) throw new Error('Member spool destination mismatch');
-    return;
-  }
-  if (held.reason !== 'missing') throw new Error('Member spool destination is unreadable');
-  writePrivateFileAtomic(file, `${JSON.stringify(identity)}\n`);
+  pinMemberDestination(path.join(dir, ROUTING_FILE), memberRoutingIdentity(route), sameRoutingIdentity, 'Member spool');
 }
 
 /** Read a destination's current membership without consulting its repository's current binding. */
@@ -52,43 +45,88 @@ export function liveRoutingEntry(entry: RegistryEntry, mycoHome: string): Regist
 }
 
 /** The membership for an immutable buffered destination, including one whose repository was rebound. */
-export function routingEntry(route: MemberRoutingIdentity, mycoHome: string): RegistryEntry | null {
+export function routingEntry(route: MemberRoutingIdentity, mycoHome: string, bindings: readonly RegistryEntry[] = listRegistryEntries(mycoHome)): RegistryEntry | null {
   const identity = memberRoutingIdentity(route);
   const membership = readDeploymentMembership(identity.serverUrl, mycoHome);
   if (membership === null) return null;
-  const binding = listRegistryEntries(mycoHome).find((entry) => sameRoutingIdentity(entry, identity));
+  const binding = bindings.find((entry) => sameRoutingIdentity(entry, identity));
   return { ...membership, version: REGISTRY_VERSION, ...identity, root: binding?.root ?? '' };
 }
 
-/** Buffered destinations survive repository rebindings and remain eligible for helper delivery. */
-export function listSpoolDestinations(mycoHome: string): MemberRoutingIdentity[] {
-  const root = path.join(memberRoot(mycoHome), 'spool');
-  const names = (dir: string): string[] => {
-    assertMemberPathContained(dir, mycoHome);
-    try { return fs.readdirSync(dir); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
-  };
-  const found: MemberRoutingIdentity[] = [];
-  for (const deployment of names(root).filter((name) => /^[0-9a-f]{16}$/.test(name))) {
-    for (const projectId of names(path.join(root, deployment)).filter(isProjectId)) {
-      const dir = path.join(root, deployment, projectId);
-      assertMemberPathContained(dir, mycoHome);
-      const read = readPrivateJson<MemberRoutingIdentity>(path.join(dir, ROUTING_FILE));
-      if (!read.ok) throw new Error(`Buffered destination is unavailable: ${deployment}/${projectId} (${read.reason})`);
-      const identity = memberRoutingIdentity(read.value);
-      if (routedSpoolDir(identity, mycoHome) !== dir) throw new Error('Buffered destination does not match its directory');
-      found.push(identity);
-    }
-  }
-  return found;
+export interface BufferedDestinationIssue {
+  key: string;
+  reason: 'store-unavailable' | 'destination-missing' | 'destination-unavailable' | 'destination-mismatch' | 'membership-unavailable';
 }
 
-export function listRoutingEntries(mycoHome: string): RegistryEntry[] {
-  const entries = new Map(listRegistryEntries(mycoHome).map((entry) => [routingKey(entry), entry]));
-  for (const route of listSpoolDestinations(mycoHome)) {
-    if (entries.has(routingKey(route))) continue;
-    const entry = routingEntry(route, mycoHome);
-    if (entry !== null) entries.set(routingKey(route), entry);
+/** Buffered destinations and the entries that must remain held locally. */
+export function listSpoolDestinationsResult(mycoHome: string): { destinations: MemberRoutingIdentity[]; issues: BufferedDestinationIssue[] } {
+  const root = path.join(memberRoot(mycoHome), 'spool');
+  const issues: BufferedDestinationIssue[] = [];
+  const names = (dir: string, key: string): string[] => {
+    try { assertMemberPathContained(dir, mycoHome); return fs.readdirSync(dir); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') issues.push({ key, reason: 'store-unavailable' });
+      return [];
+    }
+  };
+  const destinations: MemberRoutingIdentity[] = [];
+  for (const deployment of names(root, 'spool').filter((name) => /^[0-9a-f]{16}$/.test(name))) {
+    for (const projectId of names(path.join(root, deployment), deployment).filter(isProjectId)) {
+      const key = `${deployment}/${projectId}`;
+      const dir = path.join(root, deployment, projectId);
+      try {
+        assertMemberPathContained(dir, mycoHome);
+        const read = readPrivateJson<MemberRoutingIdentity>(path.join(dir, ROUTING_FILE));
+        if (!read.ok) { issues.push({ key, reason: read.reason === 'missing' ? 'destination-missing' : 'destination-unavailable' }); continue; }
+        const identity = memberRoutingIdentity(read.value);
+        if (routedSpoolDir(identity, mycoHome) !== dir) { issues.push({ key, reason: 'destination-mismatch' }); continue; }
+        destinations.push(identity);
+      } catch { issues.push({ key, reason: 'destination-unavailable' }); }
+    }
   }
-  return [...entries.values()];
+  return { destinations, issues };
+}
+
+/** A delivery walk refuses incomplete destination metadata before any outbound request. */
+export function listSpoolDestinations(mycoHome: string): MemberRoutingIdentity[] {
+  const result = listSpoolDestinationsResult(mycoHome);
+  assertCompleteDestinations(result.issues);
+  return result.destinations;
+}
+
+/** A diagnostic walk reports unavailable destinations alongside readable bindings. */
+export function listRoutingEntriesResult(mycoHome: string, bindings: readonly RegistryEntry[]): { entries: RegistryEntry[]; heldDestinations: BufferedDestinationIssue[] } {
+  const entries = new Map(bindings.map((entry) => [routingKey(entry), entry]));
+  const { destinations, issues } = listSpoolDestinationsResult(mycoHome);
+  for (const route of destinations) {
+    if (entries.has(routingKey(route))) continue;
+    const entry = routingEntry(route, mycoHome, bindings);
+    if (entry !== null) entries.set(routingKey(route), entry);
+    else issues.push({ key: routingKey(route), reason: 'membership-unavailable' });
+  }
+  return { entries: [...entries.values()], heldDestinations: issues };
+}
+
+/** Buffered destinations survive repository rebindings and remain eligible for helper delivery. */
+export function listRoutingEntries(mycoHome: string, bindings: readonly RegistryEntry[] = listRegistryEntries(mycoHome)): RegistryEntry[] {
+  const result = listRoutingEntriesResult(mycoHome, bindings);
+  assertCompleteDestinations(result.heldDestinations);
+  return result.entries;
+}
+
+function assertCompleteDestinations(issues: readonly BufferedDestinationIssue[]): void {
+  if (issues.length > 0) throw new Error(`Buffered destination is unavailable: ${issues.map((issue) => `${issue.key} (${issue.reason})`).join(', ')}`);
+}
+
+/** An immutable destination is checked and published under one per-file lease. */
+export function pinMemberDestination<T>(file: string, destination: T, matches: (held: T, proposed: T) => boolean, label: string): void {
+  const lock = `${file}.lock`;
+  ensurePrivateFile(lock);
+  withFileLockSync(lock, () => {
+    const held = readPrivateJson<T>(file);
+    if (held.ok) {
+      if (!matches(held.value, destination)) throw new Error(`${label} destination mismatch`);
+    } else if (held.reason === 'missing') writePrivateFileAtomic(file, `${JSON.stringify(destination)}\n`);
+    else throw new Error(`${label} destination is unreadable`);
+  });
 }

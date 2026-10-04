@@ -148,7 +148,7 @@ try {
   }
 } finally {
   // The registry's hooks started helpers apart from themselves: each lets its lock go once it has nothing to do.
-  const lock = helperPaths(PROJECT, path.join(scratch, 'home-registry')).lock;
+  const lock = helperPaths(PROJECT, path.join(scratch, 'home-registry'), DEPLOYMENT).lock;
   for (let waited = 0; waited < 15_000; waited += 250) {
     const probe = fs.existsSync(lock) ? LifecycleLock.acquire(lock, { command: 'measure-hook-work' }) : null;
     if (probe === null || probe.acquired) { if (probe?.acquired) probe.lock.release(); break; }

@@ -4,7 +4,7 @@ import { defaultMembership } from './default-deployment.js';
 import { resolveCredential, resolveMemberProjectRoot, type CredentialSource } from './credential.js';
 import { rootKeyFor } from './auto-join.js';
 import { deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from './registry.js';
-import { memberRoutingIdentity, routingKey, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
+import { memberRoutingIdentity, pinMemberDestination, routingKey, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
 const DESTINATION_FILE = 'destination.json';
@@ -30,11 +30,7 @@ export function memberTranscriptRoutingKey(source: CredentialSource, cwd: string
   const dir = path.join(memberRoot(mycoHome), 'transcripts', key);
   ensureMemberDir(dir, mycoHome);
   const file = path.join(dir, DESTINATION_FILE);
-  const held = readPrivateJson<TranscriptDestination>(file);
-  if (held.ok) {
-    if (JSON.stringify(held.value) !== JSON.stringify(destination)) throw new Error('Plugin transcript destination mismatch');
-  } else if (held.reason === 'missing') writePrivateFileAtomic(file, `${JSON.stringify(destination)}\n`);
-  else throw new Error('Plugin transcript destination is unavailable');
+  pinMemberDestination(file, destination, (held, proposed) => JSON.stringify(held) === JSON.stringify(proposed), 'Plugin transcript');
   return key;
 }
 
@@ -83,11 +79,7 @@ export function adoptPendingTranscript(file: string, route: MemberRoutingIdentit
   if (!/^[0-9a-f]{16}$/.test(parts[0] ?? '') || !/^~pending-[0-9a-f]{32}$/.test(parts[1] ?? '')) return;
   assertMemberTranscriptDestination(file, { ...route, projectId: '' }, mycoHome, rootKey);
   const adoptionFile = path.join(root, parts[0]!, parts[1]!, ADOPTION_FILE);
-  const previous = readPrivateJson<MemberRoutingIdentity>(adoptionFile);
-  if (previous.ok) {
-    if (!sameRoutingIdentity(previous.value, route)) throw new Error('Pending plugin transcript already belongs to another Project');
-  } else if (previous.reason === 'missing') writePrivateFileAtomic(adoptionFile, `${JSON.stringify(memberRoutingIdentity(route))}\n`);
-  else throw new Error('Pending plugin transcript adoption is unavailable');
+  pinMemberDestination(adoptionFile, memberRoutingIdentity(route), sameRoutingIdentity, 'Pending plugin transcript');
 }
 
 export class TranscriptDestinationError extends Error {

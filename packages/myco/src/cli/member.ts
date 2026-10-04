@@ -34,7 +34,7 @@ import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMembe
 import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
 import { assignLegacySpoolDestination, listLegacySpools } from '../member/spool-migration.js';
-import { listRoutingEntries, routingEntry } from '../member/routing.js';
+import { listRoutingEntries, listRoutingEntriesResult, routingEntry, routingKey, type BufferedDestinationIssue } from '../member/routing.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { memberTranscriptRoutingKey } from '../member/transcript-routing.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
@@ -164,15 +164,21 @@ function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry
  * reported rather than repaired.
  */
 function registrySelection(args: readonly string[], deps: MemberCliDeps): {
-  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number;
+  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number; heldDestinations: BufferedDestinationIssue[];
 } {
   const mycoHome = homeFor(deps);
   const all = args.includes('--all');
-  if (all) return { root: null, all, ...listRegistryEntriesResult(mycoHome) };
+  if (all) {
+    const registry = listRegistryEntriesResult(mycoHome);
+    const bound = new Set(registry.entries.map(routingKey));
+    const routing = listRoutingEntriesResult(mycoHome, registry.entries);
+    const retained = routing.entries.filter((entry) => !bound.has(routingKey(entry)));
+    return { root: null, all, ...registry, entries: [...registry.entries, ...retained], heldDestinations: routing.heldDestinations };
+  }
   const root = projectRootOrNull(deps.cwd);
   const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
   return {
-    root, all,
+    root, all, heldDestinations: [],
     entries: selected?.status === 'present' ? [selected.entry] : [],
     readable: selected?.status !== 'unavailable',
     unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
@@ -938,7 +944,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     const facts = projectDiagnostics(entry, mycoHome, now());
     const { membership, spool, latch, refusals } = facts;
     out(`project:    ${membership.projectId}`);
-    out(`root:       ${membership.root}`);
+    out(`root:       ${membership.root || 'no repository currently bound'}`);
     out(`server:     ${membership.serverUrl ?? 'unknown'}`);
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
     out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
@@ -960,6 +966,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
     out(`worker:     ${workerServiceWords(describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })).line}`);
   }
+  for (const held of selection.heldDestinations) out(`buffered destination: ${held.key} — ${held.reason}; capture held locally`);
   if (selection.all) {
     if (!selection.readable) err('myco member: the registry directory could not be read');
     else if (selection.unavailableEntries > 0) {
@@ -1029,10 +1036,10 @@ function projectRootOrNull(cwd?: string): string | null {
 export async function runExport(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const mycoHome = homeFor(deps);
-  const { root, all, entries, ...registry } = registrySelection(args, deps);
+  const { root, all, entries, heldDestinations, ...registry } = registrySelection(args, deps);
   const { records: missedCapture, ...missedCaptureStore } = missedCaptureSelection(root, all, deps);
   const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
-  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
+  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root).filter((root) => root.length > 0) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
     name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,
     scope: check.scope ?? null, root: check.root ?? (check.scope === 'global' ? null : checkRoot), fixable: check.fixable, fixId: check.fixId ?? null,
@@ -1045,7 +1052,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
       .map((check) => toFacts(check, checkRoot))));
   const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
   out(JSON.stringify(memberDiagnostics({
-    mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
+    mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture, heldDestinations,
     selection: { root, scope: all ? 'all' : 'root' }, registry, missedCaptureStore, checks,
   }), null, 2));
 }

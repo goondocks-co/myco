@@ -231,7 +231,10 @@ function routingKeyFor(directory: string, refresh = true): string | null {
     if (run.status === 0 && /^[0-9a-f]{16}\/(?:[A-Za-z0-9._-]{1,64}|~pending-[0-9a-f]{32})$/.test(key)
       && !key.endsWith("/.") && !key.endsWith("/..")) { verifiedRoutingKeys.set(directory, key); return key; }
   } catch { /* An unavailable binary cannot name a capture destination. */ }
-  if (held !== undefined) return held;
+  if (held !== undefined) {
+    noteOnce(`routing-refresh-${directory}`, `${directory}: routing refresh unavailable — capture remains pinned to its verified destination`);
+    return held;
+  }
   noteOnce(`routing-${directory}`, `${directory}: could not resolve the member routing key — this session is not captured`);
   return null;
 }

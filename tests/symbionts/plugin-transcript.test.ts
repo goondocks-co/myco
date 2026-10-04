@@ -211,7 +211,7 @@ function snippetModule(
   spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [],
   noted: string[] = [],
   execImpl?: (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { status: number | null; stdout: string; stderr: string },
-  routingKey: string | null = ROUTING_KEY,
+  routingKey: string | null | (() => string | null) = ROUTING_KEY,
 ) {
   const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
@@ -223,9 +223,10 @@ function snippetModule(
     fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
     fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
     (_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
-      if (args[0] === 'member' && args[1] === 'routing-key') return routingKey === null
-        ? { status: 1, stdout: '', stderr: 'no route' }
-        : { status: 0, stdout: `${routingKey}\n`, stderr: '' };
+      if (args[0] === 'member' && args[1] === 'routing-key') {
+        const key = typeof routingKey === 'function' ? routingKey() : routingKey;
+        return key === null ? { status: 1, stdout: '', stderr: 'no route' } : { status: 0, stdout: `${key}\n`, stderr: '' };
+      }
       if (execImpl) return execImpl(_bin, args, opts);
       spawns.push({ env: opts?.env, args });
       return { status: 0, stdout: '{}', stderr: '' };
@@ -259,6 +260,19 @@ describe('one instance speaks for a session', () => {
     expect(first.transcriptPathFor('/repo', 'opencode', 'same')).not.toBe(second.transcriptPathFor('/repo', 'opencode', 'same'));
     expect(fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'same'), 'utf8')).toContain('first');
     expect(fs.readFileSync(second.transcriptPathFor('/repo', 'opencode', 'same'), 'utf8')).toContain('second');
+  });
+
+  it('keeps raw capture on its verified destination through a temporary routing refresh failure', () => {
+    const env = sandboxEnv();
+    const noted: string[] = [];
+    let available = true;
+    const mod = snippetModule(env, [], noted, undefined, () => available ? ROUTING_KEY : null);
+    expect(mod.holdsSessionClaim('/repo', 'opencode', 'same')).toBe(true);
+    available = false;
+    mod.appendTranscriptLine('/repo', 'opencode', 'same', { type: 'prompt', text: 'durable while binary unavailable' });
+    const file = mod.transcriptPathFor('/repo', 'opencode', 'same');
+    expect(fs.readFileSync(file, 'utf8')).toContain('durable while binary unavailable');
+    expect(noted.join('')).toContain('remains pinned');
   });
 
   it('holds capture when the binary cannot name its route', () => {

@@ -635,8 +635,12 @@ export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()):
   return { entries, readable: true, unavailableEntries };
 }
 
-/** The entry for `root` as a report reads it, in one parse and without repairing anything. */
-export function readRegistryEntryResult(root: string, mycoHome: string = resolveMycoHome()): RegistryEntryResult {
+/** A binding distinguishes proven absence from unavailable state; upgrading is explicit. */
+export function readRegistryEntryResult(root: string, mycoHome: string = resolveMycoHome(), opts: { upgrade?: boolean } = {}): RegistryEntryResult {
+  if (opts.upgrade) {
+    const entry = readRegistryEntry(root, mycoHome);
+    if (entry !== null) return { status: 'present', entry };
+  }
   const file = registryEntryPath(root, mycoHome);
   const read = readEntryFile(file, path.basename(file), mycoHome, true);
   if (read.ok) return { status: 'present', entry: read.entry };

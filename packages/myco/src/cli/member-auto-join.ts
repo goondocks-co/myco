@@ -36,7 +36,7 @@ import { IMPORT_DEADLINE, runImport } from '../member/import.js';
 import { forgetConnectRoot, machineAutoJoinLeaves, seedMachineSettings } from '../member/machine-settings.js';
 import { clearMissingMembership, listMissingMemberships } from '../member/no-membership.js';
 import { discardPending, flushPending, readHeldEnd } from '../member/pending.js';
-import { deploymentUrl, readRegistryEntry, REGISTRY_VERSION, withRegistryLock, writeRegistryEntry, type DeploymentMembership, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, REGISTRY_VERSION, withRegistryLock, writeRegistryEntry, type DeploymentMembership, type RegistryEntry } from '../member/registry.js';
 import { MemberSpool } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { postRoute } from './deployment-reader.js';
@@ -48,8 +48,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /** What one repository's attempt came to. */
 export type AutoJoinResult =
   | { root: string; result: 'joined'; projectId: string; moved: number; imported: number }
-  | { root: string; result: 'connected' }
-  | { root: string; result: 'silent' | 'busy' | 'left' }
+  | { root: string; result: 'connected' | 'connected-elsewhere' }
+  | { root: string; result: 'silent' | 'busy' | 'left' | 'binding-unavailable' }
   | { root: string; result: AutoJoinState['outcome']; reason?: string };
 
 interface AutoJoinArgs { root?: string; sweep: boolean; error?: string }
@@ -103,8 +103,11 @@ type AttemptRun = MemberCliDeps & { mycoHome: string; now: () => number; importN
 /** Join one repository, or record why it did not. The caller holds the repository's lock. */
 async function joinRepository(root: string, membership: DeploymentMembership, deps: AttemptRun): Promise<AutoJoinResult> {
   const { mycoHome, now } = deps;
-  const connected = readRegistryEntry(root, mycoHome);
-  if (connected !== null) {
+  const binding = readRegistryEntryResult(root, mycoHome, { upgrade: true });
+  if (binding.status === 'unavailable') return { root, result: 'binding-unavailable' };
+  if (binding.status === 'present') {
+    const connected = binding.entry;
+    if (deploymentUrl(connected.serverUrl) !== deploymentUrl(membership.serverUrl)) return { root, result: 'connected-elsewhere' };
     // Connected already: by `myco member join`, or by a join that stopped before moving the held capture.
     await settleConnection(connected, { mycoHome, now, fetch: deps.fetch, tell: false });
     return { root, result: 'connected' };
@@ -173,17 +176,19 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   const projectId = String(answer.value.projectId);
 
   // A connection written while this asked (`myco member join`, another attempt) is the one that stands.
-  const entry = withRegistryLock(() => {
-    const held = readRegistryEntry(root, mycoHome);
-    if (held !== null) return null;
+  const committed = withRegistryLock(() => {
+    const held = readRegistryEntryResult(root, mycoHome);
+    if (held.status !== 'missing') return held;
     const written: RegistryEntry = {
       version: REGISTRY_VERSION, projectId, serverUrl: membership.serverUrl, token: membership.token, root,
       machineId: membership.machineId ?? getMachineId(), joinedAt: now(), updatedAt: now(),
     };
     writeRegistryEntry(written, { mycoHome, locked: true });
-    return written;
+    return { status: 'written' as const, entry: written };
   }, mycoHome);
-  if (entry === null) return { root, result: 'connected' };
+  if (committed.status === 'unavailable') return { root, result: 'binding-unavailable' };
+  if (committed.status === 'present') return { root, result: deploymentUrl(committed.entry.serverUrl) === deploymentUrl(membership.serverUrl) ? 'connected' : 'connected-elsewhere' };
+  const entry = committed.entry;
   clearMissingMembership(root, mycoHome);
   markSessionsReported(repo.rootKey, sessions, mycoHome, membership.serverUrl);
   writeAutoJoinState({ root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl: membership.serverUrl, attemptAt: now(), outcome: 'joined', projectId, placement, connectTo }, mycoHome);
@@ -254,10 +259,8 @@ async function sweep(membership: DeploymentMembership, run: AttemptRun, err: (li
 /**
  * The member helper's join pass (`JOIN_BUCKET`), each step stopping at `deadline` and leaving the rest for the pass,
  * or the successor, after it:
- * 1. each repository a hook asked about, the oldest first, checked again by the rule the hook applied
- *    (`joinStanding`): one left, one no longer due (an attempt made since it was asked), or one no longer due is dropped; a request for another
- *    Deployment is retained; any other is attempted, and its request dropped once it is. A repository
- *    another attempt holds keeps its request;
+ * 1. each repository a hook asked about, oldest first, using the request's Deployment membership; busy or unavailable
+ *    bindings keep their request, and left or no-longer-due repositories are dropped;
  * 2. the past sessions of each repository joined, a step at a time;
  * 3. the sweep, once per machine.
  */
@@ -269,27 +272,28 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
     const run: AttemptRun = { fetch: deps.fetch, mycoHome, now, importNow: false };
     for (const request of listJoinRequests(mycoHome)) {
       if (now() >= deadline) return { more: true };
-      if (membership === null || request.serverUrl === undefined || deploymentUrl(request.serverUrl) !== deploymentUrl(membership.serverUrl)) continue;
-      if (joinStanding(request.root, request.rootKey, membership.serverUrl, mycoHome, now()).standing !== 'due') {
+      const destination = request.serverUrl === undefined ? null : readDeploymentMembership(request.serverUrl, mycoHome);
+      if (destination === null) continue;
+      if (joinStanding(request.root, request.rootKey, destination.serverUrl, mycoHome, now()).standing !== 'due') {
         clearJoinRequest(request, mycoHome);
         continue;
       }
       let result: AutoJoinResult;
       try {
-        result = await attempt(request.root, membership, run);
+        result = await attempt(request.root, destination, run);
       } catch (error) {
         err(`auto-join: ${request.root}: ${(error as Error).message}`);
         clearJoinRequest(request, mycoHome);
         continue;
       }
       err(`auto-join ${request.root}: ${result.result}${'projectId' in result ? ` ${result.projectId}` : ''}`);
-      if (result.result !== 'busy') clearJoinRequest(request, mycoHome);
+      if (result.result !== 'busy' && result.result !== 'binding-unavailable') clearJoinRequest(request, mycoHome);
     }
-    if (membership === null) return;
-
     for (const pending of listPendingImports(mycoHome)) {
       if (now() >= deadline) return { more: true };
-      const entry = readRegistryEntry(pending.root, mycoHome);
+      const binding = readRegistryEntryResult(pending.root, mycoHome, { upgrade: true });
+      if (binding.status === 'unavailable') continue;
+      const entry = binding.status === 'present' ? binding.entry : null;
       // Left, or connected elsewhere since: its history is not this join's to bring.
       if (entry === null || entry.projectId !== pending.projectId || deploymentUrl(entry.serverUrl) !== deploymentUrl(pending.serverUrl)) {
         clearPendingImport(pending.rootKey, mycoHome, pending);
@@ -303,7 +307,7 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
       err(`auto-join ${pending.root}: imported ${importedBy(report)} past session(s)`);
     }
 
-    if (!sweepDone(mycoHome) && !(await sweep(membership, run, err, deadline)).done) return { more: true };
+    if (membership !== null && !sweepDone(mycoHome) && !(await sweep(membership, run, err, deadline)).done) return { more: true };
   };
 }
 

@@ -105,7 +105,7 @@ export function resolveCredential(
   const cwd = opts.cwd ?? process.cwd();
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? memberHomeFor(cwd, opts.env).home;
-  const lookup = readRegistryEntryResult(root, mycoHome);
+  const lookup = readRegistryEntryResult(root, mycoHome, { upgrade: true });
   const entry = lookup.status === 'present' ? lookup.entry : null;
   if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {

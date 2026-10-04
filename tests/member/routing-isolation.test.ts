@@ -1,3 +1,10 @@
+import { runExport, runStatus } from '@myco/cli/member.js';
+import { warmProjectContext } from '@myco/member/prefetch.js';
+import { cacheMachineSettings } from '@myco/member/machine-settings.js';
+import { joinPass } from '@myco/cli/member-auto-join.js';
+import { markSweepDone, requestJoin } from '@myco/member/auto-join.js';
+import { readRegistryEntry } from '@myco/member/registry.js';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { locateTranscript } from '@myco/member/legacy-import.js';
 import { prunePluginTranscripts } from '@myco/member/retention.js';
 import { rootKeyFor } from '@myco/member/auto-join.js';
@@ -9,11 +16,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
 import { helperPass } from '@myco/member/helper-pass.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { kickWaitingProjects } from '@myco/member/sweep.js';
-import { routingEntry, sameRoutingIdentity } from '@myco/member/routing.js';
+import { listRoutingEntries, routingEntry, sameRoutingIdentity } from '@myco/member/routing.js';
 import { deploymentPath, readDeploymentMembership, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { rotatedCredential } from '@myco/member/refresh.js';
 import { unboundedBudget } from '@myco/member/budget.js';
@@ -39,6 +46,7 @@ afterEach(() => { if (priorHome === undefined) delete process.env.MYCO_HOME; els
 async function pair(now: number = Date.now()) {
   const a = await memberRig({ projectId: PROJECT, now });
   const b = await memberRig({ projectId: PROJECT, now });
+  for (const rig of [a, b]) rig.env.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, 0)`, [PROJECT, PROJECT]);
   const roots = [path.join(mycoHome, 'repo-a'), path.join(mycoHome, 'repo-b')];
   for (const root of roots) { fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]); }
   const entries = [
@@ -54,7 +62,9 @@ async function pair(now: number = Date.now()) {
     const membership = readDeploymentMembership(destination, mycoHome)!;
     // Credential comparison stays inside the assertion and never enters the capture log.
     expect(req.headers.get('authorization') === `Bearer ${membership.token}`).toBe(true);
-    if (new URL(req.url).pathname !== '/tokens/refresh' && !new URL(req.url).pathname.startsWith('/worker/')) expect(req.headers.get('x-myco-project')).toBe(PROJECT);
+    const pathname = new URL(req.url).pathname;
+    if (req.headers.has('x-myco-project')) expect(req.headers.get('x-myco-project')).toBe(PROJECT);
+    else expect(pathname === '/tokens/refresh' || pathname.startsWith('/worker/') || pathname.startsWith('/machines/') || pathname.startsWith('/members/')).toBe(true);
     calls.push({ url: req.url, destination });
     if (offline) throw new Error('offline scratch Deployment');
     return (destination === A ? a : b).fetch(input, init);
@@ -202,6 +212,75 @@ describe('Deployment and Project member routing', () => {
     fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '{}\n');
     expect(() => assertMemberTranscriptDestination(file, rig.entries[0], mycoHome)).toThrow('ambiguous');
     expect(fs.existsSync(`${file}.destination.json`)).toBe(false);
+  });
+
+  it('joins two pinned pending repositories to their own memberships after a default change', async () => {
+    const rig = await pair();
+    const base = removeWhenTestsEnd(fs.mkdtempSync(path.join(process.cwd(), 'target', 'routing-pending-')));
+    const roots = [path.join(base, 'a'), path.join(base, 'b')];
+    markSweepDone(mycoHome, Date.now());
+    for (const [index, entry] of rig.entries.entries()) {
+      const root = roots[index]; fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+      const rootKey = rootKeyFor(root, mycoHome);
+      const leaves = { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [rootKey]: PROJECT } };
+      const server = index === 0 ? rig.a : rig.b;
+      server.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)`, ['machine_1', 'mem_machine_1', Date.now()]);
+      for (const [leaf, value] of Object.entries(leaves)) server.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 1, ?)`, ['machine_1', leaf, JSON.stringify(value), 'mem_machine_1']);
+      cacheMachineSettings(entry.serverUrl, { leaves }, mycoHome);
+      recordDefaultDeployment(entry.serverUrl, { mycoHome, replace: index !== 0 });
+      const before = rig.calls.length;
+      const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: root, prompt: entry.serverUrl }, { symbiont: 'copilot', fetch: rig.fetch });
+      expect(hook.stderr).not.toContain('error:');
+      expect(rig.calls.length).toBe(before);
+      requestJoin(root, rootKey, entry.serverUrl, mycoHome, Date.now());
+    }
+    await joinPass(mycoHome, { fetch: rig.fetch })(Date.now() + 10000, { force: true });
+    expect(roots.map((root) => readRegistryEntry(root, mycoHome)?.serverUrl)).toEqual([A, B]);
+    expect(roots.map((root) => readRegistryEntry(root, mycoHome)?.projectId)).toEqual([PROJECT, PROJECT]);
+    expect([rig.a.rows('events'), rig.b.rows('events')]).toEqual([1, 1]);
+  });
+
+  it('reports retained buffered destinations after their last repository rebinds', async () => {
+    const rig = await pair();
+    const original = rig.entries[0];
+    const spool = new MemberSpool(original, { mycoHome });
+    spool.append(SESSION, promptEvent({ agent: 'copilot', sessionId: SESSION, stage: spool.stagerFor(SESSION) }, { promptId: mintId(), text: 'old destination' }));
+    writeRegistryEntry({ ...rig.entries[1], root: original.root }, { mycoHome });
+    const lines: string[] = [];
+    runStatus(['--all'], { mycoHome, stdout: (line) => lines.push(line), stderr: () => {} });
+    expect(lines).toContain(`server:     ${A}/`);
+    expect(lines).toContain('root:       no repository currently bound');
+    const exported: string[] = [];
+    await runExport(['--all'], { mycoHome, stdout: (line) => exported.push(line), stderr: () => {} });
+    const report = JSON.parse(exported.join('')) as { projects: Array<{ membership: { serverUrl: string; root: string }; spool: { unacknowledgedTotal: number } }>; checks: Array<{ root: string | null }> };
+    expect(report.projects.find((project) => project.membership.serverUrl === `${A}/`)).toMatchObject({ membership: { root: '' }, spool: { unacknowledgedTotal: 1 } });
+    expect(report.checks.every((check) => check.root !== '')).toBe(true);
+  });
+
+  it('reports damaged buffered metadata alongside healthy projects and refuses delivery enumeration', async () => {
+    const rig = await pair();
+    const spool = new MemberSpool(rig.entries[0], { mycoHome });
+    const manifest = path.join(spool.dir, 'destination.json');
+    fs.writeFileSync(manifest, '{unavailable');
+    const original = fs.readFileSync(manifest);
+    const lines: string[] = [];
+    runStatus(['--all'], { mycoHome, stdout: (line) => lines.push(line), stderr: () => {} });
+    expect(lines).toContain(`server:     ${B}/`);
+    expect(lines.some((line) => line.includes('destination-unavailable; capture held locally'))).toBe(true);
+    const exported: string[] = [];
+    await runExport(['--all'], { mycoHome, stdout: (line) => exported.push(line), stderr: () => {} });
+    const report = JSON.parse(exported.join('')) as { heldDestinations: Array<{ reason: string }> };
+    expect(report.heldDestinations).toEqual([expect.objectContaining({ reason: 'destination-unavailable' })]);
+    expect(fs.readFileSync(manifest)).toEqual(original);
+    expect(() => listRoutingEntries(mycoHome)).toThrow('Buffered destination is unavailable');
+    expect(rig.calls).toHaveLength(0);
+  });
+
+  it('pins context-only namespaces before a helper or spool walk can see them', async () => {
+    const rig = await pair();
+    for (const entry of rig.entries) await warmProjectContext(entry, { mycoHome, fetch: rig.fetch });
+    expect(listRoutingEntries(mycoHome).map((entry) => entry.serverUrl).sort()).toEqual([A, B]);
+    for (const entry of rig.entries) expect(JSON.parse(fs.readFileSync(path.join(spoolDirFor(entry, mycoHome), 'destination.json'), 'utf8'))).toEqual({ serverUrl: entry.serverUrl, projectId: PROJECT });
   });
 
   it('refuses mismatched delivery and refresh clients before any outbound request', async () => {

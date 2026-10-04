@@ -1,3 +1,4 @@
+import { listRoutingEntries } from '@myco/member/routing.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -75,6 +76,9 @@ describe('legacy member spool migration', () => {
     appendPrompt(source, 'session-one', 'original');
     expect(pinLegacySpoolDestination(binding(routeA.serverUrl), mycoHome)).toMatchObject({ status: 'pinned', destination: routeA });
     writeRegistryEntry(binding(routeB.serverUrl), { mycoHome });
+    expect(listRoutingEntries(mycoHome).map((entry) => entry.serverUrl).sort()).toEqual([routeA.serverUrl, routeB.serverUrl]);
+    expect(new MemberSpool(routeA, { mycoHome }).readRecords('session-one')).toHaveLength(0);
+    expect(source.readRecords('session-one')).toHaveLength(1);
     expect(migrateLegacySpool(routeB, mycoHome)).toMatchObject({ status: 'held', reason: 'Legacy spool is pinned to another Deployment' });
     expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', records: 1, copied: 1 });
     expect(new MemberSpool(routeA, { mycoHome }).readRecords('session-one')).toHaveLength(1);

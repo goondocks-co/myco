@@ -239,15 +239,11 @@ export function pinLegacySpoolDestinationForProject(projectId: string, mycoHome:
       const hold = readRoutingHold(dir);
       const pinned = readPinned(dir);
       if (assigned !== null && pinned !== null && !sameRoutingIdentity(assigned, pinned)) throw new MigrationHold('Legacy spool assignment conflicts with its pinned Deployment');
-      if (assigned !== null) {
-        if (pinned === null) pinSpoolDestination(dir, assigned);
-        return { ...base, status: 'assigned' as const, destination: assigned };
-      }
-      if (hold !== null) throw new MigrationHold(hold);
-      if (pinned !== null) return { ...base, status: 'pinned' as const, destination: pinned };
-      const route = uniqueDestination(projectId, mycoHome);
-      pinSpoolDestination(dir, route);
-      return { ...base, status: 'pinned' as const, destination: route };
+      if (assigned === null && hold !== null) throw new MigrationHold(hold);
+      const destination = assigned ?? pinned ?? uniqueDestination(projectId, mycoHome);
+      if (pinned === null) pinSpoolDestination(dir, destination);
+      new MemberSpool(destination, { mycoHome });
+      return { ...base, status: assigned === null ? 'pinned' as const : 'assigned' as const, destination };
     } catch (error) {
       if (!(error instanceof MigrationHold)) throw error;
       holdRouting(dir, error.message);
