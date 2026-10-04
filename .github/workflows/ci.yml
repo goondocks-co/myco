@@ -382,6 +382,8 @@ jobs:
           tests/install/place-binary.test.ts
           tests/upgrade/apply-binary.test.ts
           tests/meta/binary-replaced-mid-run.test.ts
+          tests/meta/test-temp-fence.test.ts
+          tests/scripts/test-temp-root.test.ts
           tests/member/journal-v2.test.ts
           tests/runtime/spawn-detached.test.ts
           tests/member/inline-and-upgrade.test.ts

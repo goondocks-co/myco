@@ -72,11 +72,27 @@ function processGroupMembers(pgid: number): number[] {
 }
 
 function withReportDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-guards-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-reports-'));
   return fn(dir).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
 }
 
 describe('run-bun-tests guards', () => {
+  test.skipIf(process.platform === 'win32')('ends fixture children when writing their PID receipt fails', () => withReportDir(async (reports) => {
+    let pids: number[] = [];
+    try {
+      const { status, output } = await runRunner(HANG_FIXTURE, {
+        MYCO_RUNNER_HANG_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports,
+        MYCO_RUNNER_HANG_PIDS_FILE: path.join(reports, 'missing', 'children.pids'),
+      }, ['-t', 'blocks']);
+      pids = output.match(/FIXTURE_CHILD_PIDS (\d+) (\d+)/)!.slice(1).map(Number);
+      expect(status).toBe(1);
+      expect(output).toContain('ENOENT');
+      await waitFor(() => pids.every((pid) => !alive(pid)), 5000, 'the failed fixture children to exit');
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }), RUN_BOUND_MS + 10_000);
+
   test('a test group reads EOF on stdin even when the runner\'s stdin stays open', () => withReportDir(async (reports) => {
     const { status, output } = await runRunner(STDIN_FIXTURE, {
       MYCO_RUNNER_STDIN_FIXTURE: '1',
@@ -213,10 +229,10 @@ describe('run-bun-tests temp containment', () => {
   test('fails a passing test phase when new myco-* or mt-* entries escape, preserving old and escaped entries', () => withRunDirs(async ({ reports, tempDir }) => {
     fs.writeFileSync(path.join(tempDir, 'myco-preexisting'), 'retain');
     const result = await runRunner(TEMP_BOUNDARY_FIXTURE, {
-      MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1', MYCO_RUNNER_ESCAPE_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+      MYCO_TEST_STRICT_TEMP: '1', MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1', MYCO_RUNNER_ESCAPE_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
     });
     expect(result.status).toBe(1);
-    expect(result.output).toContain('FAIL: test temp entries escaped');
+    expect(result.output).toContain('FAIL: new test temp entries outside');
     expect(result.output).toContain(' 0 fail');
     expect(result.output).toContain(`temp entries left in ${tempDir}: 2`);
     expect(entries(tempDir).sort()).toEqual([expect.stringMatching(/^mt-escaped-/), expect.stringMatching(/^myco-escaped-/), 'myco-preexisting']);
@@ -227,8 +243,7 @@ describe('run-bun-tests temp containment', () => {
     expect(alive(exited.pid)).toBe(false);
     seedRunRoot(tempDir, 'mt-gone00', exited.pid);
     seedRunRoot(tempDir, 'mt-live00', process.pid);
-    // A root another runner has just made and not yet written its owner into is kept;
-    // one that has gone without an owner for over an hour is swept.
+    // Roots with no owner record have unknown ownership at any age.
     seedRunRoot(tempDir, 'mt-fresh0', null);
     const hoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     fs.utimesSync(seedRunRoot(tempDir, 'mt-stale0', null), hoursAgo, hoursAgo);
@@ -240,7 +255,7 @@ describe('run-bun-tests temp containment', () => {
     });
 
     expect({ status, output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
-    expect(entries(tempDir)).toEqual(['mt-fresh0', 'mt-live00']);
+    expect(entries(tempDir)).toEqual(['mt-fresh0', 'mt-live00', 'mt-stale0']);
     expect(output).toContain(`temp entries left in ${tempDir}: 0`);
   }), RUN_BOUND_MS + 10_000);
 

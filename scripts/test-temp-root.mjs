@@ -7,7 +7,6 @@ import { describeWindowsFileLock } from './windows-file-lock.mjs';
 const ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const TEST_NAME = /^(?:myco-|mt-)/;
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
-const OWNERLESS_GRACE_MS = 60 * 60 * 1000;
 const CLEANUP_RETRIES = 30;
 
 function ownerPid(root) {
@@ -15,14 +14,18 @@ function ownerPid(root) {
     const pid = Number(fs.readFileSync(path.join(root, '.owner'), 'utf8').trim());
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch (error) {
-    if (['ENOENT', 'ENOTDIR', 'EACCES'].includes(error.code)) return null;
+    if (typeof error.code === 'string') return null;
     throw error;
   }
 }
 
 function alive(pid) {
   try { process.kill(pid, 0); return true; }
-  catch (error) { return error.code === 'EPERM'; }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code === 'EPERM') return true;
+    return null;
+  }
 }
 
 export function sweepStaleRunRoots(parent) {
@@ -30,9 +33,10 @@ export function sweepStaleRunRoots(parent) {
   for (const name of fs.readdirSync(parent)) {
     if (!ROOT_NAME.test(name)) continue;
     const root = path.join(parent, name);
-    const pid = ownerPid(root);
     try {
-      if (pid !== null ? alive(pid) : Date.now() - fs.statSync(root).mtimeMs <= OWNERLESS_GRACE_MS) continue;
+      if (!fs.lstatSync(root).isDirectory()) continue;
+      const pid = ownerPid(root);
+      if (pid === null || alive(pid) !== false) continue;
       const claimed = path.join(parent, `mt-sweep-${process.pid}-${swept}`);
       fs.renameSync(root, claimed);
       fs.rmSync(claimed, { recursive: true, force: true, maxRetries: 3 });
@@ -86,12 +90,16 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
   const startedAt = Date.now();
   const before = snapshotTestTemps(directories);
   const root = fs.realpathSync(fs.mkdtempSync(path.join(parent, 'mt-')));
+  const strict = process.env.MYCO_TEST_STRICT_TEMP === '1'
+    || !['', '0', 'false'].includes((process.env.CI ?? '').toLowerCase());
   fs.writeFileSync(path.join(root, '.owner'), `${process.pid}\n`);
   process.env.MYCO_TEST_RUN_ROOT = root;
+  process.env.MYCO_TEST_SYSTEM_TEMP_DIRS = JSON.stringify(directories);
   for (const name of TEMP_ENV_NAMES) process.env[name] = root;
   let finished = false;
   return {
     root,
+    strict,
     finish() {
       if (finished) return [];
       try {
@@ -100,7 +108,7 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
           const left = leaks.filter((entry) => path.dirname(entry) === dir);
           console.log(`[run-bun-tests] temp entries left in ${dir}: ${left.length}${left.length ? ` (${left.join(', ')})` : ''}`);
         }
-        if (leaks.length) console.error('[run-bun-tests] FAIL: test temp entries escaped the run root');
+        if (leaks.length) console.error(`[run-bun-tests] ${strict ? 'FAIL' : 'WARN'}: new test temp entries outside the run root (creator unknown)`);
         return leaks;
       } finally {
         try {
@@ -124,7 +132,7 @@ export function finishTestTempRun(run, beforeCleanup = () => {}) {
     try {
       beforeCleanup();
     } finally {
-      if (run.finish().length > 0 && !process.exitCode) process.exitCode = 1;
+      if (run.finish().length > 0 && run.strict && !process.exitCode) process.exitCode = 1;
     }
   } catch (error) {
     process.exitCode ||= 1;

@@ -17,6 +17,15 @@ the root. The test-only subprocess boundary supplies `TMPDIR`, `TEMP` and
 `TMP` to Node and Bun subprocess APIs, including replacement environments;
 an explicitly supplied temp directory inside the root remains valid.
 Compiled executables and harness stubs receive these variables at startup.
+Every Bun test preload installs the filesystem fence before test modules
+load, using system directories captured by the runner before it changes
+`TMPDIR`. Its shared fs/Bun mutation guard refuses creating `myco-*` and `mt-*`
+entries under a system temp directory outside that process's run root,
+including recursive parent creation and symlink aliases. Existing enclosing
+scratch directories can hold explicitly addressed report files. Mutations
+within matching entries directly below a system temp directory are also
+blocked. The exception identifies the API, path and caller stack.
+Standalone native-lock test children install the same guard.
 Native per-user lock tests inject the existing lock namespace; the preload
 fences the fixed POSIX native lock root. Native path assertions verify a
 runner-owned filesystem fixture.
@@ -36,15 +45,21 @@ initialize disposable repositories; `git <command> --help` opens browser
 help and must not be used as a test capability probe.
 
 At exit, the runner compares `myco-*` and `mt-*` names in the inherited temp
-directory and OS default temp directories with its startup snapshot. New
-entries born during the run fail the run even when every test passed. The
-gate reads these directories but removes only its own root; escaped entries
+directory and OS default temp directories with its startup snapshot,
+including Darwin's `getconf DARWIN_USER_TEMP_DIR`. New entries born during
+the run produce a warning locally. They fail a CI run, where the machine is
+owned by one run, or a run started with `MYCO_TEST_STRICT_TEMP=1`. The scan
+reads these directories but removes only its own root; observed entries
 remain available for diagnosis. Pre-existing names and live sibling runner
-roots (identified by their `.owner` PID) do not count.
+roots (identified by their `.owner` PID) do not count. Stale-root cleanup
+removes only directories with a valid, provably dead owner PID; files,
+symlinks, missing or unreadable owners, and unknown liveness are retained.
 
 There is no portable creator-PID metadata for an arbitrary closed file or
-directory. A concurrent process creating an unmarked `myco-*` entry can
-therefore fail another run's gate. Names already present in the snapshot,
-entries with older birth times, unrelated prefixes and live sibling roots
-are excluded. Concurrent lanes should each supply their own scratch temp
-parent. On filesystems without birth times, the snapshot alone bounds age.
+directory. The local snapshot therefore reports observations rather than
+attributing another process's entry to the test run. The preload attributes
+blocked mutations to the test process at their source. Names already present
+in the snapshot, entries with older birth times, unrelated prefixes and
+live sibling roots are excluded. An isolated scratch temp parent contains
+the run's own files; it does not suppress inspection of OS defaults. On
+filesystems without birth times, the snapshot alone bounds age.

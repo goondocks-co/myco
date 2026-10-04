@@ -10,6 +10,45 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-command-gate-'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
 describe('non-Bun test command temp boundary', () => {
+  for (const mode of [
+    { name: 'local', ci: '', strict: '', status: 0, label: 'WARN' },
+    { name: 'CI', ci: 'true', strict: '', status: 1, label: 'FAIL' },
+    { name: 'explicit strict', ci: '', strict: '1', status: 1, label: 'FAIL' },
+  ]) {
+    it(`a concurrent foreign temp entry ${mode.status ? 'fails' : 'only warns in'} ${mode.name} mode`, async () => {
+      const parent = fs.mkdtempSync(path.join(scratch, 'concurrent-'));
+      const ready = path.join(parent, 'ready');
+      const release = path.join(parent, 'release');
+      const foreign = path.join(parent, 'myco-foreign');
+      const script = `
+        const fs = require('node:fs');
+        fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+        const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) clearInterval(timer); }, 20);
+      `;
+      const wrapper = spawn('node', ['scripts/run-test-command.mjs', 'node', '-e', script], {
+        env: { ...process.env, CI: mode.ci, MYCO_TEST_STRICT_TEMP: mode.strict, TMPDIR: parent, TEMP: parent, TMP: parent },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = new Promise((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
+      try {
+        const deadline = Date.now() + 20_000;
+        while (!fs.existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
+        expect(fs.existsSync(ready)).toBe(true);
+        const sibling = spawnSync('node', ['-e', `require('node:fs').writeFileSync(${JSON.stringify(foreign)}, 'foreign')`]);
+        expect(sibling.status).toBe(0);
+        fs.writeFileSync(release, 'release');
+        expect({ status: await exited, stderr }).toEqual({ status: mode.status, stderr: expect.stringContaining(`${mode.label}: new test temp entries outside`) });
+        expect(fs.readFileSync(foreign, 'utf8')).toBe('foreign');
+        expect(fs.readdirSync(parent).sort()).toEqual(['myco-foreign', 'ready', 'release']);
+      } finally {
+        if (wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill('SIGKILL');
+        await exited;
+      }
+    }, 45_000);
+  }
+
   it.skipIf(process.platform !== 'win32')('registers test children natively and catches removal of the native reader', async () => {
     const saved = process.env.MYCO_TEST_PWSH_EXECUTABLE;
     process.env.MYCO_TEST_PWSH_EXECUTABLE = path.join(scratch, 'missing-pwsh.exe');
@@ -86,9 +125,9 @@ describe('non-Bun test command temp boundary', () => {
         console.log('TEMP_PROBE ' + JSON.stringify({ root, home: os.homedir(), codex: process.env.CODEX_HOME, claude: process.env.CLAUDE_CONFIG_DIR }));
       `;
       const result = spawnSync('node', ['scripts/run-test-command.mjs', 'node', '-e', script], {
-        env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, encoding: 'utf8',
+        env: { ...process.env, MYCO_TEST_STRICT_TEMP: '1', TMPDIR: parent, TEMP: parent, TMP: parent }, encoding: 'utf8',
       });
-      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: escape ? 1 : 0, stderr: escape ? expect.stringContaining('FAIL: test temp entries escaped') : '' });
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: escape ? 1 : 0, stderr: escape ? expect.stringContaining('FAIL: new test temp entries outside') : '' });
       const probe = JSON.parse(result.stdout.match(/^TEMP_PROBE (.+)$/m)![1]!) as { root: string; home: string; codex: string; claude: string };
       expect(path.dirname(probe.root)).toBe(parent);
       expect(path.dirname(probe.home)).toBe(probe.root);

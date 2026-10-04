@@ -60,6 +60,11 @@ int main(void) {
 
 it.skipIf(!enabled || process.env.MYCO_RUNNER_ESCAPE_FIXTURE !== '1')('deliberately escapes into the nested runner parent', () => {
   // The guard supplies a private simulated system temp directory.
-  fs.writeFileSync(path.join(process.env.MYCO_TEST_RUN_PARENT_TMPDIR!, `myco-escaped-${process.pid}`), 'escaped');
-  fs.mkdirSync(path.join(process.env.MYCO_TEST_RUN_PARENT_TMPDIR!, `mt-escaped-${process.pid}`));
+  const parent = process.env.MYCO_TEST_RUN_PARENT_TMPDIR!;
+  const child = spawnSync('node', ['-e', `
+    const fs = require('node:fs'), path = require('node:path');
+    fs.writeFileSync(path.join(${JSON.stringify(parent)}, 'myco-escaped-${process.pid}'), 'escaped');
+    fs.mkdirSync(path.join(${JSON.stringify(parent)}, 'mt-escaped-${process.pid}'));
+  `], { encoding: 'utf8' });
+  expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
 });
