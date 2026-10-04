@@ -71,7 +71,7 @@ export interface Upkeep {
   task: string;
   lastSuccessAt: number | null;
   failedInWindow: number;
-  unrecovered: { runs: number; since: number } | null;
+  unrecovered: { runs: number; since: number; latestFailure?: { projectId: string; runId: string; at: number; code: string | null } } | null;
 }
 
 /** `GET /api/work`. */

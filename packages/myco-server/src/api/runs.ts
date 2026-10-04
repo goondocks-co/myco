@@ -27,10 +27,9 @@ import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { releaseRun } from '../core/release.js';
 import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport, runCloseRefusal } from '../core/run-postconditions.js';
 import { recordShape, shapeRunError, strictId, strictName, strictRunId } from '@goondocks/myco-shared/run-text';
-import { closeErrorCode, type RunErrorCode } from '../core/reader-codes.js';
+import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal, type Refusal } from '../telemetry.js';
-import { partitionModel } from '../core/embedding/policy.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
 
@@ -49,18 +48,14 @@ const strOrNull = (v: unknown, max = MAX_ID_CHARS): string | null | undefined =>
 const int = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null);
 /** An identifier, null where none is given, or undefined where what is given is not one. */
 const idOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictId(v) ?? undefined);
-/** The longest model a claim names: an identifier, or an embedding partition identity carrying an endpoint. */
+/** The longest model text an embedding claim may carry. */
 const MAX_MODEL_CHARS = 1024;
-/**
- * A claim's model, null where none is given, or undefined where it is neither a model identifier nor the embedding
- * partition identity a dispatched embedding run names its model by, whose model is itself an identifier.
- */
-const modelOrNull = (v: unknown): string | null | undefined => {
+/** An embedding claim names the server's stored model; its text stays bounded and contains no controls. */
+const modelOrNull = (v: unknown, embedding: boolean): string | null | undefined => {
   if (v === undefined || v === null) return null;
-  if (strictId(v) !== null) return v as string;
-  if (typeof v !== 'string' || v.length > MAX_MODEL_CHARS) return undefined;
-  const partition = partitionModel(v);
-  return partition !== null && strictId(partition.model) !== null ? v : undefined;
+  if (embedding) return typeof v === 'string' && v.length > 0 && v.length <= MAX_MODEL_CHARS
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(v) ? v : undefined;
+  return strictId(v) ?? undefined;
 };
 /** A name, null where none is given, or undefined where what is given is not one. */
 const nameOrNull = (v: unknown): string | null | undefined => (v === undefined || v === null ? null : strictName(v) ?? undefined);
@@ -103,7 +98,7 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
   const startedAt = int(body.startedAt) ?? ctx.now;
   const harness = nameOrNull(body.harness);
   const provider = nameOrNull(body.provider);
-  const model = modelOrNull(body.model);
+  const model = modelOrNull(body.model, task === 'embedding-reconcile');
   const runContext = body.runContext == null ? null : typeof body.runContext === 'string' && body.runContext.length <= MAX_STATE_BYTES ? recordShape(body.runContext, MAX_STATE_BYTES) ?? undefined : undefined;
   if (id === null || agentId === null || task === null || admission === null
     || harness === undefined || provider === undefined || model === undefined || runContext === undefined) {
@@ -278,7 +273,7 @@ async function endRunAsCaller(
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return { refused: foreign };
   const scope = { projectId: ctx.projectId };
-  const changed = await applyRunUpdate(env.db, scope, runId, update, undefined, options.errorCode);
+  const changed = await applyRunUpdate(env.db, scope, runId, update, undefined, options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null));
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, update.status);
     if (options.replaced === true) await recordReplacedRun(env, ctx, runId);

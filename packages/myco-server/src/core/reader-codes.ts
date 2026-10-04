@@ -1,4 +1,5 @@
 import { runErrorDiagnostic } from '@goondocks/myco-shared/run-text';
+import { storedRunControlRefusal, type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 export const STALE_RUN_ERROR = 'the machine running it stopped responding';
 export const STALE_PENDING_REASON = 'no machine started the task within a day';
 export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
@@ -6,7 +7,7 @@ export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
 /** How a run whose closing reports carry no audit is recorded (`core/run-postconditions.ts`). */
 export const RUN_CLOSE_AUDIT_ERROR = 'the run ended without its audit';
 
-export type RunErrorCode = 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit'
+export type RunErrorCode = RunControlRefusalCode | 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit'
   | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed'
   | 'agent_failed' | 'agent_launch_failed' | 'agent_protocol_error' | 'agent_permission_refused' | 'agent_tools_unlisted' | 'agent_tools_unused' | 'run_failed';
 
@@ -26,7 +27,7 @@ const DIAGNOSTIC_ERROR_CODES: Readonly<Record<string, RunErrorCode>> = {
 };
 
 /** The code a run whose worker reported this error is recorded under: its diagnostic's reader code, or `run_failed`. */
-export const diagnosticErrorCode = (error: string | null): RunErrorCode => DIAGNOSTIC_ERROR_CODES[runErrorDiagnostic(error) ?? ''] ?? 'run_failed';
+export const diagnosticErrorCode = (error: string | null): RunErrorCode => storedRunControlRefusal(error) ?? DIAGNOSTIC_ERROR_CODES[runErrorDiagnostic(error) ?? ''] ?? 'run_failed';
 
 /** The code a run that closed short of its task's rule is recorded under. */
 export const closeErrorCode = (unmet: string): RunErrorCode => (unmet === RUN_CLOSE_AUDIT_ERROR ? 'report_without_audit' : 'run_failed');

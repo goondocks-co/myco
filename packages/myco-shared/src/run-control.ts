@@ -1,8 +1,38 @@
 import { memberHeaders } from './member-protocol.js';
 
+/** Refusals the run control plane names, in the reader's words. */
+export const RUN_CONTROL_REFUSAL_WORDS = {
+  no_machine_identity: 'The machine running the task could not be identified.',
+  body_cap: 'The task’s request was too large for the server.',
+  parse: 'The server refused the task’s request because its format was invalid.',
+  refused: 'The server refused the task’s request.',
+  invalid_field: 'The server refused a value in the task’s request.',
+  field_retired: 'The task sent a field this server no longer accepts.',
+  route_retired: 'The task called a route this server no longer serves.',
+  run_scope: 'The task is not allowed to make this request.',
+  no_run: 'The server could not find the task’s run.',
+  project_mismatch: 'The task’s request named a different project.',
+  project_archived: 'The task’s project is archived.',
+  no_project: 'The server could not find the task’s project.',
+} as const;
+export type RunControlRefusalCode = keyof typeof RUN_CONTROL_REFUSAL_WORDS;
+
+/** A known run-control refusal code, or null for anything else. */
+export function runControlRefusalCode(value: unknown): RunControlRefusalCode | null {
+  return typeof value === 'string' && Object.hasOwn(RUN_CONTROL_REFUSAL_WORDS, value) ? value as RunControlRefusalCode : null;
+}
+
+/** A server refusal recorded without the request's text. */
+export const runControlRefusedError = (code: RunControlRefusalCode): string => `the server refused run control (${code})`;
+
+/** The refusal code carried by a stored server-refusal sentence. */
+export function storedRunControlRefusal(text: string | null): RunControlRefusalCode | null {
+  return runControlRefusalCode(text === null ? null : /^the server refused run control \(([a-z_]+)\)$/.exec(text)?.[1]);
+}
+
 export class RunControlError extends Error {
-  constructor(readonly path: string, detail: string) {
-    super(`run control ${path}: ${detail}`);
+  constructor(readonly path: string, detail: string, readonly code: RunControlRefusalCode | null = null) {
+    super(code === null ? `run control ${path}: ${detail}` : runControlRefusedError(code));
     this.name = 'RunControlError';
   }
 }
@@ -14,7 +44,7 @@ export function runControlResult(status: number, body: unknown, path: string): R
   }
   const result = body as Record<string, unknown>;
   if (result.persisted === false) {
-    throw new RunControlError(path, `${String(result.code ?? 'refused')}: ${String(result.reason ?? '')}`);
+    throw new RunControlError(path, 'request refused', runControlRefusalCode(result.code) ?? 'refused');
   }
   return result;
 }

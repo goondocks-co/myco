@@ -72,7 +72,7 @@ export async function executeEmbeddingRun(
   };
   try {
     const claimed = await control('/runs/claim', { id: spec.runId, agentId: HARNESS_AGENT_ID, task: spec.envVars.MYCO_TASK,
-      captureDriven: true, startedAt: Date.now(), provider: 'embedding', model: spec.envVars.MYCO_MODEL });
+      captureDriven: true, startedAt: Date.now(), provider: 'embedding', model: spec.envVars.MYCO_CLAIM_MODEL });
     if (claimed.claimed !== true) throw new Error('embedding run claim refused');
     const result = await runEmbeddingSteps(() => control('/runs/embedding-step', { runId: spec.runId }),
       options.signal, options.deadline, options.closeReserveMs);

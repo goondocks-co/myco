@@ -95,8 +95,20 @@ describe('POST /runs/claim', () => {
       const answer = await post('/runs/claim', { id, agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, startedAt: Date.now(), provider: 'embedding', model: modelKey });
       expect({ modelKey, persisted: answer.persisted, code: answer.code }).toEqual({ modelKey, persisted: true, code: undefined });
     }
-    expect(await post('/runs/claim', { id: 'embed_key_bad', agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, provider: 'embedding', model: '["cloudflare","sk-live key"]' }))
+    expect(await post('/runs/claim', { id: 'embed_key_bad', agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, provider: 'embedding', model: '["cloudflare","bad\u0000model"]' }))
       .toMatchObject({ persisted: false, code: 'parse' });
+  });
+
+  it('bounds embedding claim text, excludes controls, and keeps identifier validation for other tasks', async () => {
+    const { post, sqlite } = await harness();
+    for (const [i, model] of ['', 42, 'm'.repeat(1025), 'model\u0000name', 'model\u007fname', 'model\u0085name'].entries()) {
+      expect(await post('/runs/claim', { id: `invalid_embedding_${i}`, agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, model }))
+        .toMatchObject({ persisted: false, code: 'parse' });
+    }
+    expect(await post('/runs/claim', { id: 'ordinary', agentId: AGENT, task: 'container-smoke', capability: 'cortex', model: 'custom model' }))
+      .toMatchObject({ persisted: false, code: 'parse' });
+    expect(sqlite.query('SELECT COUNT(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
+    sqlite.close();
   });
 
   it('admits a capture-driven claim without archived provider configuration', async () => {

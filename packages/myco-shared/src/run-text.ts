@@ -1,3 +1,4 @@
+import { storedRunControlRefusal } from './run-control.js';
 /**
  * What a run's record keeps of text a harness, a worker or an agent wrote.
  *
@@ -271,7 +272,7 @@ export function shapeRunError(text: string | null, harnessId: string | null): st
   if (text === null) return null;
   const trimmed = text.trim();
   if (trimmed === '') return null;
-  if (parseRunError(trimmed) !== null) return trimmed;
+  if (storedRunControlRefusal(trimmed) !== null || parseRunError(trimmed) !== null) return trimmed;
   const stopped = /^the harness stopped: ([a-z_]+)(?: \(([\s\S]*)\))?$/.exec(trimmed);
   if (stopped !== null && isCode(RUN_STOP_REASONS, stopped[1]!)) {
     const stop = stopped[1] as RunStopReason;

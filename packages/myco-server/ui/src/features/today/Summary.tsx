@@ -1,3 +1,5 @@
+import { runErrorWords } from '../work/words';
+import { runPath } from '../../routes/nav';
 import { Fragment, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { focusRing, HealthDot } from '../../design';
@@ -81,6 +83,10 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
       <span className="flex h-lh shrink-0 items-center">{dot}</span>
       <span>
         {words}
+        {upkeep.unrecovered?.latestFailure !== undefined && <>
+          {' '}{runErrorWords(upkeep.unrecovered.latestFailure.code)}{' '}
+          <RouterLink to={runPath(upkeep.unrecovered.latestFailure.projectId, upkeep.unrecovered.latestFailure.runId)} className="text-primary hover:underline">See the latest failed run</RouterLink>
+        </>}
         {statusHref !== null && (
           <>
             {' · '}
