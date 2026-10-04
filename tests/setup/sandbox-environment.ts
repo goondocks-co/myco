@@ -1,3 +1,5 @@
+import './temp-root.js';
+import './temp-subprocesses.js';
 import { afterAll } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';

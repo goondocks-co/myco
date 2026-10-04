@@ -5,9 +5,9 @@
 //   1. Redirect os.homedir()/userInfo()/HOME to a throwaway per-process sandbox,
 //      so home-derived paths resolve INSIDE the sandbox (current + future subsystems).
 //   2. Fence fs mutations under real Myco and manifest-declared agent homes.
+import './sandbox-environment.js';
 import { afterAll } from 'bun:test';
 import os from 'node:os';
-import './sandbox-environment.js';
 import { execFileSync } from 'node:child_process';
 import { installFilesystemFence } from './filesystem-fence.js';
 import fs from 'node:fs';

@@ -24,6 +24,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const HANG_FIXTURE = 'tests/fixtures/runner/budget_hang_test.ts';
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
 const TEMP_LEAK_FIXTURE = 'tests/fixtures/runner/temp_leak_test.ts';
+const TEMP_BOUNDARY_FIXTURE = 'tests/fixtures/runner/temp_boundary_test.ts';
 const STREAM_FAULT_FIXTURE = 'tests/fixtures/runner/stream_fault_test.tsx';
 const BUDGET_MS = 3000;
 // Sampling takes a few seconds per process; anything near this bound means a guard did not fire.
@@ -161,6 +162,28 @@ async function waitFor(condition: () => boolean, boundMs: number, what: string):
 }
 
 describe('run-bun-tests temp containment', () => {
+  for (const target of [TEMP_BOUNDARY_FIXTURE, 'tests/fixtures/runner/temp_dom_boundary_test.tsx']) {
+    test(`contains module-load and subprocess temp paths through ${target}`, () => withRunDirs(async ({ reports, tempDir }) => {
+      const result = await runRunner(target, {
+        MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+      });
+      expect({ status: result.status, output: result.output }).toEqual({ status: 0, output: expect.stringContaining(' 0 fail') });
+      expect(entries(tempDir)).toEqual([]);
+    }), RUN_BOUND_MS + 10_000);
+  }
+
+  test('fails a passing test phase when new myco-* or mt-* entries escape, preserving old and escaped entries', () => withRunDirs(async ({ reports, tempDir }) => {
+    fs.writeFileSync(path.join(tempDir, 'myco-preexisting'), 'retain');
+    const result = await runRunner(TEMP_BOUNDARY_FIXTURE, {
+      MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1', MYCO_RUNNER_ESCAPE_FIXTURE: '1', MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+    });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('FAIL: test temp entries escaped');
+    expect(result.output).toContain(' 0 fail');
+    expect(result.output).toContain(`temp entries left in ${tempDir}: 2`);
+    expect(entries(tempDir).sort()).toEqual([expect.stringMatching(/^mt-escaped-/), expect.stringMatching(/^myco-escaped-/), 'myco-preexisting']);
+  }), RUN_BOUND_MS + 10_000);
+
   test('a run leaves nothing in the temp directory, and sweeps only the roots of runners that are gone', () => withRunDirs(async ({ reports, tempDir }) => {
     const exited = spawnSync(process.execPath, ['-e', '0']);
     expect(alive(exited.pid)).toBe(false);
@@ -261,10 +284,10 @@ describe('run-bun-tests temp containment', () => {
   test('a raw bun test run outside the runner removes the sandbox home its preload made and the homes test helpers made', () => withRunDirs(async ({ tempDir }) => {
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^MYCO_(TEST|RUNNER)_/.test(key)));
     // tempMycoHome() and tempStager() (tests/member/helpers/server.ts) from a beforeAll, a beforeEach and a test body.
-    const files = [`./${STDIN_FIXTURE}`, './tests/member/envelope.test.ts', './tests/member/machine-settings.test.ts', './tests/member/diagnostic-private-link.test.ts'];
+    const files = [`./${STDIN_FIXTURE}`, `./${TEMP_BOUNDARY_FIXTURE}`, './tests/member/envelope.test.ts', './tests/member/machine-settings.test.ts', './tests/member/diagnostic-private-link.test.ts'];
     for (const isolation of [[], ['--isolate']]) {
       const run = spawnSync('bun', ['test', ...isolation, ...files], {
-        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir) }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
+        cwd: REPO, env: { ...inherited, ...tempDirEnv(tempDir), MYCO_RUNNER_TEMP_BOUNDARY_FIXTURE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
       });
       expect({ isolation, status: run.status, output: `${run.stdout}${run.stderr}` }).toEqual({ isolation, status: 0, output: expect.stringMatching(/ 0 fail/) });
       expect({ isolation, left: entries(tempDir) }).toEqual({ isolation, left: [] });

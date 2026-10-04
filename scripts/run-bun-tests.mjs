@@ -11,86 +11,17 @@ import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxPath } from './test-environment.mjs';
+import { createTestTempRun, sweepStaleRunRoots } from './test-temp-root.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
 // ---------------------------------------------------------------------------
-// Every temp file the run creates lands under one root that the runner owns:
-// TMPDIR (TEMP/TMP on Windows) points there for the runner itself and every
-// process it spawns, so os.tmpdir() in a test, a preload, a spawned binary or
-// a grandchild resolves inside it, whatever cleanup that code does or skips.
-// The root is removed when the runner exits, on an error or a signal too. A
-// runner killed outright cannot remove its root; the next run sweeps every
-// root whose owning runner is no longer alive. The name is short: socket paths
-// tests derive from os.tmpdir() must stay under the 104-byte limit.
-const RUN_ROOT_PREFIX = 'mt-';
-/** A run root as mkdtemp names it, or as a sweep renames it to claim it. */
-const RUN_ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
-const RUN_ROOT_OWNER_FILE = '.owner';
-/** A root with no readable owner is swept once it is this old. */
-const OWNERLESS_ROOT_GRACE_MS = 60 * 60 * 1000;
-const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
-
-function pidIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === 'EPERM';
-  }
-}
-
-function runRootOwnerPid(root) {
-  try {
-    const pid = Number.parseInt(fs.readFileSync(path.join(root, RUN_ROOT_OWNER_FILE), 'utf8').trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function runRootIsStale(root) {
-  const pid = runRootOwnerPid(root);
-  if (pid !== null) return !pidIsAlive(pid);
-  try {
-    return Date.now() - fs.statSync(root).mtimeMs > OWNERLESS_ROOT_GRACE_MS;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Remove every run root in `parent` left by a runner that is no longer
- * alive. A stale root is first renamed to a name of this runner's own, so two
- * runners sweeping at once never delete the same tree; the renamed root
- * keeps the dead owner's file, so a sweep interrupted mid-delete is finished
- * by the next one.
- */
-function sweepStaleRunRoots(parent) {
-  let names;
-  try { names = fs.readdirSync(parent); } catch { return 0; }
-  let swept = 0;
-  for (const name of names) {
-    if (!RUN_ROOT_NAME.test(name)) continue;
-    const root = path.join(parent, name);
-    if (!runRootIsStale(root)) continue;
-    const claimed = path.join(parent, `${RUN_ROOT_PREFIX}sweep-${process.pid}-${swept}`);
-    try { fs.renameSync(root, claimed); } catch { continue; }
-    try { fs.rmSync(claimed, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next sweep retries */ }
-    swept += 1;
-  }
-  return swept;
-}
-
+// The runner owns the root before loading test modules or starting subprocesses.
 const PARENT_TMPDIR = os.tmpdir();
 const sweptRunRoots = sweepStaleRunRoots(PARENT_TMPDIR);
 if (sweptRunRoots > 0) console.log(`[run-bun-tests] removed ${sweptRunRoots} temp root(s) left by earlier runs`);
-let parentTmpdirBefore;
-try { parentTmpdirBefore = new Set(fs.readdirSync(PARENT_TMPDIR)); } catch { parentTmpdirBefore = null; }
-const RUN_ROOT = fs.mkdtempSync(path.join(PARENT_TMPDIR, RUN_ROOT_PREFIX));
-fs.writeFileSync(path.join(RUN_ROOT, RUN_ROOT_OWNER_FILE), `${process.pid}\n`);
-for (const name of TEMP_ENV_NAMES) process.env[name] = RUN_ROOT;
-// The directory the root sits in, for tests that measure paths a run builds under it.
+const tempRun = createTestTempRun();
+const RUN_ROOT = tempRun.root;
 process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;
 
 /** Kills the running group's process tree; null between groups. */
@@ -103,25 +34,11 @@ let restoreSwappedBunfig = null;
 process.on('exit', () => {
   try { killActiveGroup?.('SIGKILL'); } catch { /* best-effort */ }
   try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
-  try { fs.rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next run sweeps it */ }
+  const leaks = tempRun.finish();
+  if (leaks.length > 0 && !process.exitCode) process.exitCode = 1;
 });
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
   process.on(signal, () => process.exit(128 + number));
-}
-
-/**
- * Print how many entries appeared in the parent temp directory while this
- * run was going: anything a test wrote around the run root rather than into
- * it. Other processes writing there at the same time are counted too; other
- * runners' roots are not.
- */
-function reportParentTmpdirLeftovers() {
-  if (parentTmpdirBefore === null) return;
-  let after;
-  try { after = fs.readdirSync(PARENT_TMPDIR); } catch { return; }
-  const left = after.filter((name) => !parentTmpdirBefore.has(name) && !RUN_ROOT_NAME.test(name));
-  const sample = left.slice(0, 10).join(', ');
-  console.log(`[run-bun-tests] temp entries left in ${PARENT_TMPDIR}: ${left.length}${left.length > 0 ? ` (${sample}${left.length > 10 ? ', ...' : ''})` : ''}`);
 }
 
 // Node reads the account home independently of HOME; Bun's userInfo follows HOME.
@@ -1697,5 +1614,4 @@ if (exitCode !== 0) {
   printFailureSummary(phaseReports);
   printOverBudgetSummary();
 }
-reportParentTmpdirLeftovers();
 process.exit(exitCode);

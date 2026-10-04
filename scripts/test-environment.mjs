@@ -12,7 +12,7 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
     'find', 'xargs', 'dirname', 'basename', 'codesign', 'xattr', 'launchctl', 'plutil', 'cut', 'tr', 'date', 'uname', 'id', 'whoami', 'which',
     'taskkill', 'tasklist', 'cmd', 'powershell', 'pwsh', 'where',
     'perl', 'python', 'python3', 'ruby', 'file', 'stat', 'readlink', 'realpath', 'getconf',
-    'cmp', 'diff', 'dd', 'mktemp', 'du', 'df',
+    'cmp', 'diff', 'dd', 'mktemp', 'du', 'df', 'cc',
     'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'prlimit', 'timeout',
   ];
   const extensions = process.platform === 'win32'
@@ -32,4 +32,3 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
   }
   return bin;
 }
-

@@ -369,7 +369,7 @@ jobs:
       - run: npm ci
       - name: Focused Windows unit contracts
         run: >-
-          bun test
+          npm test --
           tests/service/windows-native-ci-contract.test.ts
           tests/service/windows.test.ts
           tests/service/sandbox-runner-gate.test.ts

@@ -6,6 +6,7 @@
 // two React instances when tests import `@testing-library/react` (root) and
 // the component under test (ui). Force all `react`/`react-dom` imports to
 // resolve to the root-level copies.
+import './sandbox-environment.js';
 import path from 'node:path';
 import fs from 'node:fs';
 const repoRoot = path.resolve(import.meta.dir, '..', '..');
