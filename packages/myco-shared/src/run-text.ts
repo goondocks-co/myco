@@ -295,9 +295,10 @@ export function runErrorDiagnostic(text: string | null): RunDiagnosticCode | nul
 
 /**
  * An identifier a run route names something by — a run, an agent, a task, a harness, a provider, a model or a report's
- * action: letters, digits and `. _ : / @ + [ ] -`, opening with a letter or a digit, at most 192 characters.
+ * action: letters, digits and `. _ : / @ + [ ] -`, opening with a letter, a digit or `@` (a Workers AI model such as
+ * `@cf/baai/bge-m3`), at most 192 characters.
  */
-export const RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@+[\]-]{0,191}$/;
+export const RUN_IDENTIFIER = /^[A-Za-z0-9@][A-Za-z0-9._:/@+[\]-]{0,191}$/;
 
 /** A value as a run route's identifier, or null where it is not one. */
 export function strictId(value: unknown): string | null {

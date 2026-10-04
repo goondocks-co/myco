@@ -14,6 +14,7 @@ import worker from '@myco-server-worker/index.js';
 import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
+import { EMBEDDING_CATALOGUE } from '@goondocks/myco-shared/settings-contract';
 
 const AGENT = 'agent_1';
 
@@ -66,6 +67,17 @@ describe('POST /runs/claim', () => {
       VALUES ('agent.provider.type', '"anthropic"', ?, 'test')`).run(Date.now());
     expect(await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'title-summary', captureDriven: true }))
       .toEqual({ persisted: true, claimed: true, runId: 'r1' });
+  });
+
+  it('reads the claim an embedding run sends, for every model the embedding catalogue names, rather than refusing its shape', async () => {
+    const { post } = await harness();
+    const models = [...new Set(Object.values(EMBEDDING_CATALOGUE).flatMap((spec) => [spec.defaultModel, ...spec.models.map((option) => option.id)]))];
+    expect(models).toContain('@cf/baai/bge-m3');
+    for (const [index, model] of models.entries()) {
+      const id = `embed_${index}`;
+      const answer = await post('/runs/claim', { id, agentId: AGENT, task: 'embedding-reconcile', captureDriven: true, startedAt: Date.now(), provider: 'embedding', model });
+      expect({ model, persisted: answer.persisted, code: answer.code }).toEqual({ model, persisted: true, code: undefined });
+    }
   });
 
   it('admits a capture-driven claim without archived provider configuration', async () => {
