@@ -12,7 +12,7 @@ import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
-import { stopTestProcessGroup } from './test-process-tree.mjs';
+import { registerTestProcess, stopTestProcessGroup } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
@@ -1092,15 +1092,8 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
   return new Promise((resolve) => {
-    // `detached: true` puts the child in its own process group so a hard
-    // phase-kill can signal the WHOLE tree (bun + bun's isolate
-    // workers) via the negative pid. Without this, killing only the bash
-    // wrapper would leave the spinning bun worker (and the test ports it
-    // holds) orphaned — the exact failure that poisons subsequent runs.
-    //
-    // stdin is /dev/null, never the runner's own: a test that reads fd 0
-    // gets EOF at once, as in CI, instead of blocking on a terminal or an
-    // agent harness's socket that never ends.
+    // POSIX phase termination signals the detached process group and its workers.
+    // Tests reading stdin receive EOF.
     const child = spawn(command, args, {
       cwd: REPO,
       env: process.env,
@@ -1109,6 +1102,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     });
 
     killActiveGroup = (signal) => killPhaseTree(signal);
+    if (child.pid) registerTestProcess(child.pid, tempRun.root);
 
     let killedForHang = false;
     let killedForBudget = false;

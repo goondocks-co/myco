@@ -30,7 +30,8 @@ if (OWN_LOCKS_ROOT !== null) process.env[LOCKS_ROOT_ENV] = OWN_LOCKS_ROOT;
 const realHome = process.env.MYCO_TEST_REAL_HOME
   ?? execFileSync('node', ['-e', 'process.stdout.write(require("node:os").userInfo().homedir)'], { encoding: 'utf8' });
 delete process.env.MYCO_TEST_REAL_HOME;
-installFilesystemFence(realHome);
+installFilesystemFence(realHome, process.platform !== 'win32' && process.getuid
+  ? [path.join('/var/tmp', `myco-locks-${process.getuid()}`)] : []);
 
 // Cleanup retains the filesystem guard.
 const origRmSync = fs.rmSync.bind(fs);

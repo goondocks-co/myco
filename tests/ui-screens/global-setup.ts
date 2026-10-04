@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCREENS_ENV, type LaunchInfo } from './env.ts';
+import { registerTestProcess } from '../../scripts/test-process-tree.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LAUNCH_TIMEOUT_MS = 120_000;
@@ -27,6 +28,7 @@ export default async function globalSetup(): Promise<void> {
   }
 
   const child = spawn('bun', ['tests/ui-screens/serve.ts'], { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'] });
+  registerTestProcess(child.pid!);
   process.env[SCREENS_ENV.pid] = String(child.pid);
 
   const info = await new Promise<LaunchInfo>((resolve, reject) => {

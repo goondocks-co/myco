@@ -5,10 +5,11 @@ import { protectedAgentPaths } from './protected-agent-paths.js';
 
 // Fence mutations to the operating-system account home.
 const scopes = new Set<string[]>();
-export function installFilesystemFence(home: string) {
+export function installFilesystemFence(home: string, additionalRoots: string[] = []) {
   const protectedRoots = [
     ...protectedAgentPaths(home),
     ...['.myco', '.myco-team', '.myco-dev', '.myco-collective', 'myco_backups'].map((name) => path.join(home, name)),
+    ...additionalRoots,
   ];
   const targets = [...new Set(protectedRoots.flatMap((root) => [root, resolvedTarget(root)]))];
   scopes.add(targets);
@@ -162,4 +163,3 @@ function fenceBunFile(file: Bun.BunFile): Bun.BunFile {
 }
 const originalBunFile = Bun.file;
 Bun.file = ((...args: Parameters<typeof Bun.file>) => fenceBunFile(originalBunFile(...args))) as typeof Bun.file;
-

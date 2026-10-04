@@ -60,7 +60,7 @@ describe('non-Bun test command temp boundary', () => {
       import { syncBuiltinESMExports } from 'node:module';
       Object.defineProperty(process, 'platform', { value: 'win32' });
       process.kill = () => true;
-      cp.spawnSync = () => ({ status: 5 });
+      cp.spawnSync = (command) => command === 'powershell' ? { status: 0, stdout: '123456', stderr: '' } : { status: 5 };
       syncBuiltinESMExports();
     `);
     const result = spawnSync('node', ['--import', preload, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
@@ -98,6 +98,66 @@ describe('non-Bun test command temp boundary', () => {
     } finally {
       if (wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill('SIGKILL');
       for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }, 30_000);
+
+  it('stops a registered Windows descendant after its parent exits and refuses a reused PID', () => {
+    const root = fs.mkdtempSync(path.join(scratch, 'windows-registry-'));
+    const preload = path.join(root, 'simulate.mjs');
+    const module = new URL('../../scripts/test-process-tree.mjs', import.meta.url).href;
+    fs.writeFileSync(preload, `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      let changed = false;
+      const killed = [];
+      cp.spawnSync = (command, args) => {
+        if (command === 'powershell') {
+          const pid = Number(args.at(-1).match(/ProcessId = (\\d+)/)[1]);
+          return { status: 0, stdout: pid === 101 && changed ? '' : pid === 103 && changed ? '999' : '123', stderr: '' };
+        }
+        killed.push(Number(args[1]));
+        return { status: 0 };
+      };
+      syncBuiltinESMExports();
+      const { registerTestProcess, stopTestProcessGroup } = await import(${JSON.stringify(module)});
+      for (const pid of [101, 102, 103]) registerTestProcess(pid, ${JSON.stringify(root)});
+      changed = true;
+      stopTestProcessGroup(101, 'SIGKILL', ${JSON.stringify(root)});
+      console.log(JSON.stringify(killed));
+    `);
+    const result = spawnSync('node', [preload], { encoding: 'utf8' });
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(JSON.parse(result.stdout)).toEqual([102]);
+  });
+
+  it.skipIf(process.platform !== 'win32')('ends a registered native Windows child after the command exits', async () => {
+    const parent = fs.mkdtempSync(path.join(scratch, 'native-windows-'));
+    const ready = path.join(parent, 'child.pid');
+    const module = new URL('../../scripts/test-process-tree.mjs', import.meta.url).href;
+    const script = `
+      const cp = require('node:child_process');
+      const fs = require('node:fs');
+      const child = cp.spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+      import(${JSON.stringify(module)}).then(({ registerTestProcess }) => {
+        registerTestProcess(child.pid);
+        fs.writeFileSync(${JSON.stringify(ready)}, String(child.pid));
+        child.unref();
+      });
+    `;
+    const wrapper = spawn('node', ['scripts/run-test-command.mjs', 'node', '-e', script], {
+      env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
+    const status = await new Promise((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
+    const pid = Number(fs.readFileSync(ready, 'utf8'));
+    try {
+      expect({ status, stderr }).toEqual({ status: 0, stderr: '' });
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(fs.readdirSync(parent)).toEqual(['child.pid']);
+    } finally {
+      try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
   }, 30_000);
 });

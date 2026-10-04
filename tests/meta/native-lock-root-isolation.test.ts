@@ -28,3 +28,8 @@ it('verifies the native lock provider exclusively against a runner-owned filesys
     for (const [name, original] of originals) filesystem[name] = original;
   }
 });
+
+it.skipIf(process.platform === 'win32' || !process.getuid)('fences an uninjected native lock mutation before filesystem access', () => {
+  const native = path.join(path.sep, 'var', 'tmp', `myco-locks-${process.getuid!()}`);
+  expect(() => fs.mkdirSync(native, { recursive: true })).toThrow('TEST SAFETY');
+});

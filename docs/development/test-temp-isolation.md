@@ -17,6 +17,17 @@ the root. The test-only subprocess boundary supplies `TMPDIR`, `TEMP` and
 `TMP` to Node and Bun subprocess APIs, including replacement environments;
 an explicitly supplied temp directory inside the root remains valid.
 Compiled executables and harness stubs receive these variables at startup.
+Native per-user lock tests inject the existing lock namespace; the preload
+fences the fixed POSIX native lock root. Native path assertions verify a
+runner-owned filesystem fixture.
+
+On Windows, runner children and the long-lived screen server register their
+PID and creation identity under the root. Cleanup checks that identity before
+terminating a registered process tree, including a server whose parent has
+exited. Arbitrary unregistered descendants of an already-exited Windows
+parent cannot be proven owned from reused parent PIDs. Raw Bun fallback
+cleanup runs in its final test hook; Windows handles still held by Bun may
+cause cleanup to fail and leave a root for the next run's stale-root sweep.
 
 At exit, the runner compares `myco-*` and `mt-*` names in the inherited temp
 directory and OS default temp directories with its startup snapshot. New

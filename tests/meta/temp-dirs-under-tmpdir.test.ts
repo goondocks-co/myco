@@ -22,6 +22,7 @@ const SELF = fileURLToPath(import.meta.url);
  */
 const NAMED_FIXED_PATHS: ReadonlyMap<string, string> = new Map([
   ['tests/config/secrets.test.ts: `/var/tmp/myco-locks-${process.getuid!()}`', 'asserts the production per-user lock root, which is fixed outside every temp directory'],
+  ["tests/setup/sandbox-preload.ts: '/var/tmp'", 'fences the native per-user lock root against test writes'],
 ]);
 
 function files(dir: string): string[] {
