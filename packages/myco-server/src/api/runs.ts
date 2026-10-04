@@ -1,3 +1,4 @@
+import { runtimeCaller } from './run-admission.js';
 /**
  * The run control plane over HTTP.
  *
@@ -26,14 +27,13 @@ import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.j
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { releaseRun } from '../core/release.js';
 import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
-import { shapeRunError } from '@goondocks/myco-shared/run-text';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
 
-import { BAD_BODY, RUN_UPDATE_FIELDS, decodeRunFields, readRunFields } from './run-fields.js';
+import { BAD_BODY, RUN_UPDATE_FIELDS, decodeRunUpdate, endedAnswer, readRunFields } from './run-fields.js';
 
 /**
  * Claim a run of a task: one row per run id, exactly once.
@@ -75,11 +75,11 @@ export async function handleClaimRun(env: ServerEnv, ctx: RouteContext): Promise
     id, agentId, task, instruction: null, harness, provider, model,
     dryRun: body.dryRun === true, startedAt, runContext, dispatchedBy: ctx.tokenId,
   };
-  // The runtime member claims only a run the server dispatched under this credential.
+  // A runtime claims only a run the server dispatched under this credential.
   const embedding = task === 'embedding-reconcile';
   const outcome = await claimRun(env.db, { projectId: ctx.projectId }, row, {
     taskName: task, admission: embedding ? { kind: 'embedding' } : admission,
-    dispatchedOnly: embedding || ctx.memberId === HARNESS_MEMBER_ID,
+    dispatchedOnly: true, caller: runtimeCaller(ctx),
     ...(embedding ? { embeddingConfigured: env.vectors !== undefined && (await env.embeddingProvider?.()) != null } : {}),
   }, ctx.now);
   if (outcome.claimed) return Response.json({ persisted: true, claimed: true, runId: id });
@@ -168,8 +168,7 @@ async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: st
  * the run's own `dispatched_by` exactly as the release is. The word starts a
  * run on the Deployment's money: any other member holding a run id would turn
  * one failure into a dispatch nobody asked for. A caller that is not that
- * runtime marks nothing and queues nothing; its status update still stands, and
- * it is answered as the update route answers any other.
+ * runtime is refused before a status update, replacement mark or successor dispatch.
  */
 async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: string): Promise<void> {
   const scope = { projectId: ctx.projectId };
@@ -182,25 +181,6 @@ async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: strin
 /** Whether a failure body asks for the one context word a runtime may add. */
 const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean => body.replaced === true && status === 'failed';
 
-/** The answer a status change gets on a run that has already ended under a DIFFERENT ending: nothing moved, and the row's own ending stands. */
-const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: 'terminal' } as const;
-/** The answer a status change gets on a run already carrying that very status: nothing moved, and nothing needs to. */
-const SETTLED_ANSWER = { persisted: true, changed: 0, applied: true } as const;
-
-/**
- * What a status write answers on a run that has already ended, or nothing when
- * the run is still open.
- *
- * A repeat of the ending the row carries is the same close arriving twice — a
- * retried request, or a runtime offering its terminal status the second time the
- * update surface allows it — and it is answered as applied: the row says what
- * the caller asked it to say. A DIFFERENT ending is the race, and it is refused
- * by name.
- */
-function endedAnswer(status: string | undefined, posted: unknown): Response | null {
-  if (!isTerminalRunStatus(status)) return null;
-  return Response.json(status === posted ? SETTLED_ANSWER : TERMINAL_ANSWER);
-}
 
 /**
  * What a write answers when the caller is not the credential the run
@@ -215,8 +195,7 @@ function endedAnswer(status: string | undefined, posted: unknown): Response | nu
  * `tests/meta/queued-run-release-chokepoint.test.ts` holds.
  */
 function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Response | null {
-  if (ctx.memberId !== HARNESS_MEMBER_ID || before === null) return null;
-  if (before.dispatchedBy === ctx.tokenId) return null;
+  if (ctx.memberId === HARNESS_MEMBER_ID && before?.dispatchedBy === ctx.tokenId) return null;
   return Response.json(refused(ctx, refusal(STALE_CREDENTIAL_REFUSAL, 'refused')));
 }
 
@@ -241,7 +220,7 @@ async function endRunAsCaller(
   const scope = { projectId: ctx.projectId };
   const changed = await applyRunUpdate(env.db, scope, runId, update, undefined,
     options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null), undefined,
-    ctx.memberId === HARNESS_MEMBER_ID ? { tokenId: ctx.tokenId, ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) } : undefined);
+    { ...runtimeCaller(ctx), ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) });
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, update.status);
     if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
@@ -257,11 +236,6 @@ async function endRunAsCaller(
  */
 export const ROUTE_UPDATE_COLUMNS = Object.keys(RUN_UPDATE_FIELDS);
 
-function routeUpdate(update: Record<string, unknown>, harness: string | null): RunUpdate | null {
-  const decoded = decodeRunFields(update, RUN_UPDATE_FIELDS, true);
-  if (Object.values(decoded).some((value) => value === undefined)) return null;
-  return { ...decoded, ...('error' in update ? { error: shapeRunError(decoded.error ?? null, harness) } : {}) } as RunUpdate;
-}
 
 /**
  * Apply a partial update to one run.
@@ -304,7 +278,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   const guarded = 'status' in update;
   const row = await getRun(env.db, scope, runId);
   const before = row;
-  const runUpdate = routeUpdate(update as Record<string, unknown>, row?.harness ?? null);
+  const runUpdate = decodeRunUpdate(update as Record<string, unknown>, row?.harness ?? null);
   if (runUpdate === null) {
     return Response.json(refused(ctx, refusal('update holds a value outside its column\'s shape: an error is text, usage and cost data are JSON objects, a cost source an identifier, and the rest numbers', 'invalid_field')));
   }
@@ -336,9 +310,8 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
 }
 
 /**
- * Record one report against a run. The run row is the tenancy anchor;
- * `agentId` is the reporter's label and is not held to the run's own agent —
- * attribution of the WRITE stays with the authenticated credential.
+ * Record a report for the dispatch admitted by the pipeline. The write rechecks
+ * the credential and live attempt in the statement that inserts the report.
  */
 export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = readRunFields(ctx.body, '/runs/report');
@@ -351,7 +324,7 @@ export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Prom
   if (runId === null || agentId === null || action === null || summary === null || details === undefined) {
     return Response.json(refused(ctx, refusal('a report requires a runId, agentId and action each an identifier, and a summary within bounds', 'parse')));
   }
-  const recorded = await recordReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, audit: body.audit, createdAt: ctx.now });
+  const recorded = await recordReport(env.db, { projectId: ctx.projectId }, { runId, agentId, action, summary, details, audit: body.audit, createdAt: ctx.now }, runtimeCaller(ctx));
   if (!recorded.recorded) {
     return Response.json(refused(ctx, refusal(recorded.reason === 'unaccepted' ? recorded.error : 'report names a run this Project does not hold, or an agent this Deployment does not know', 'parse')));
   }

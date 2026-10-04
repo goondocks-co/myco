@@ -15,7 +15,7 @@ import { readCanopyMap } from '@myco-server-worker/read/canopy.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { materializedReportTool } from '@myco/agent/runtime/server-tools.js';
 import { materializeRunMap, prepareRunMap } from '@myco/agent/runtime/server-canopy.js';
-import { postRunControl, postRunReport } from '@myco/agent/runtime/run-store-http.js';
+import { postRunControl, postRunReport, RunControlError } from '@myco/agent/runtime/run-store-http.js';
 
 const repository = { url: 'https://example.test/repo.git', branch: 'main' };
 const scope = { projectId: 'proj_1' };
@@ -88,8 +88,9 @@ it('publishes grounded maps through held routes, preserves unchanged domains, an
     expect((await readCanopyMap(e.db, scope))?.revision).toBe(after.revision);
 
     const foreignTask = await run('foreign', [], 'container-smoke');
-    expect(await postRunControl(foreignTask.ctx.client, budget, '/runs/canopy-map', { runId: 'foreign', op: 'prepare' })).toMatchObject({ held: false });
-    expect(await postRunControl(foreignTask.ctx.client, budget, '/runs/canopy-map', { runId: 'same', op: 'write', artifact: nextArtifact })).toMatchObject({ held: false });
+    await expect(postRunControl(foreignTask.ctx.client, budget, '/runs/canopy-map', { runId: 'foreign', op: 'prepare' })).rejects.toBeInstanceOf(RunControlError);
+    await expect(postRunControl(foreignTask.ctx.client, budget, '/runs/canopy-map', { runId: 'same', op: 'write', artifact: nextArtifact })).rejects.toBeInstanceOf(RunControlError);
+    expect((await readCanopyMap(e.db, scope))?.revision).toBe(after.revision);
 
     const liar = await run('liar', []);
     await postRunReport(liar.ctx.client, budget, { runId: 'liar', agentId: 'myco', action: 'canopy_map_unchanged', summary: 'Claimed unchanged.', details: null });

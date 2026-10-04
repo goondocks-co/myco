@@ -76,7 +76,7 @@ export type UnboundMemberHandler = (env: ServerEnv, ctx: UnboundMemberContext) =
 export type CredentialHandler = (env: ServerEnv, ctx: CredentialContext) => Promise<Response>;
 /** Grant handlers answer a json route reached over an External Agent grant: the grant's Project and the consumed body, nothing of a member. A route declares one to admit grants at all. */
 export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
-/** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; a run credential is refused on every member route that declares neither this nor `legacyRunRoute`. */
+/** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; the retained runtime channel declares `legacyRunRoute` and resolves its dispatch principal at the pipeline. */
 export type RunHandler = (env: ServerEnv, ctx: RunContext) => Promise<Response>;
 /** Deployment handlers answer a route scoped to the whole Deployment rather than to one Project: a worker's claim, lease and end. A route declares one to be reached at all, and the pipeline admits only an admin member to it. */
 export type DeploymentHandler = (env: ServerEnv, ctx: DeploymentContext) => Promise<Response>;
@@ -140,13 +140,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, mintsAuthority: true, credential: handleRefresh },
   // #1148 — bounded import and backfill
   { method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleImportPlan },
-  // The run's own channel. A route no 2.0 path sends answers `route_retired` with what replaced it
-  // (`RETIRED_RUN_ROUTES` in api/runs.ts). `legacyRunRoute: true` admits the harness credential as a
-  // member here alone, with whatever admission each handler performs itself —
-  // `heldRun` on the task surfaces, none on the run-row handlers. The model's tool
-  // surface is `/mcp`; these are the worker's and the push-launch seam's, and go
-  // with the seam. `capture: false`: a run is the Deployment's own scheduled
-  // intelligence, not a member's capture.
+  // The retained runtime channel binds every operation to its dispatch credential,
+  // Project, lifecycle and task capability at the pipeline. It is not member capture.
   { method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleClaimRun },
   { method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/get') },
   { method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleUpdateRun },

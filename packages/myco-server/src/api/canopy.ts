@@ -1,11 +1,11 @@
 import { readRunFields } from './run-fields.js';
-import { MAP_TASK, MapArtifactError, parseMapSourcePin } from '@goondocks/myco-shared/canopy';
+import { MapArtifactError, parseMapSourcePin } from '@goondocks/myco-shared/canopy';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import { readCanopyMap } from '../read/canopy.js';
 import { readMapSettings, writeCanopyMap } from '../core/canopy.js';
 import { mapSourcePinOfRun, pinMapSourceForRun, repositoryPinOfRun } from '../core/runs.js';
-import { heldRun } from './run-admission.js';
+import { CONTROL_CAPABILITIES, heldRun } from './run-admission.js';
 import { notFound, ok, resolveProjectScope } from './scope.js';
 import { refused } from '../ingest/events.js';
 import { refusal } from '../telemetry.js';
@@ -25,7 +25,7 @@ export async function handleRunMap(env: ServerEnv, ctx: RouteContext): Promise<R
   if (body === null || body.runId === null) {
     return Response.json(refused(ctx, refusal('runId is required', 'parse')));
   }
-  const run = await heldRun(env, ctx, body.runId, [MAP_TASK]);
+  const run = await heldRun(env, ctx, body.runId, CONTROL_CAPABILITIES['/runs/canopy-map']!.tasks!);
   if (run === null || run.leaseExpiresAt !== null) return ok({ persisted: true, held: false });
   const scope = { projectId: ctx.projectId };
   try {

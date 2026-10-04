@@ -1,4 +1,5 @@
-import { recordShape, strictId, strictName, strictRunId } from '@goondocks/myco-shared/run-text';
+import { isTerminalRunStatus, type RunUpdate } from '../core/runs.js';
+import { recordShape, shapeRunError, strictId, strictName, strictRunId } from '@goondocks/myco-shared/run-text';
 import { MAX_REPORT_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS } from '../core/run-postconditions.js';
 import { refusal, type Refusal } from '../telemetry.js';
 
@@ -76,4 +77,30 @@ export function readRunFields<P extends keyof typeof RUN_REQUEST_FIELDS>(text: s
   let body: unknown;
   try { body = JSON.parse(text); } catch { return null; }
   return isRecord(body) ? decodeRunFields(body, RUN_REQUEST_FIELDS[path]) : null;
+}
+
+export function decodeRunUpdate(update: Record<string, unknown>, harness: string | null): RunUpdate | null {
+  const decoded = decodeRunFields(update, RUN_UPDATE_FIELDS, true);
+  if (Object.values(decoded).some((value) => value === undefined)) return null;
+  return { ...decoded, ...('error' in update ? { error: shapeRunError(decoded.error ?? null, harness) } : {}) } as RunUpdate;
+}
+
+/** The answer a status change gets on a run that has already ended under a DIFFERENT ending: nothing moved, and the row's own ending stands. */
+const TERMINAL_ANSWER = { persisted: true, changed: 0, applied: false, reason: 'terminal' } as const;
+/** The answer a status change gets on a run already carrying that very status: nothing moved, and nothing needs to. */
+const SETTLED_ANSWER = { persisted: true, changed: 0, applied: true } as const;
+
+/**
+ * What a status write answers on a run that has already ended, or nothing when
+ * the run is still open.
+ *
+ * A repeat of the ending the row carries is the same close arriving twice — a
+ * retried request, or a runtime offering its terminal status the second time the
+ * update surface allows it — and it is answered as applied: the row says what
+ * the caller asked it to say. A DIFFERENT ending is the race, and it is refused
+ * by name.
+ */
+export function endedAnswer(status: string | undefined, posted: unknown): Response | null {
+  if (!isTerminalRunStatus(status)) return null;
+  return Response.json(status === posted ? SETTLED_ANSWER : TERMINAL_ANSWER);
 }

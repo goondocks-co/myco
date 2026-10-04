@@ -1,6 +1,6 @@
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
-import { SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
+import { HARNESS_MEMBER_ID, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { carriedBytes, TOKEN_LIVE } from '../ingest/live-credential.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
@@ -360,4 +360,12 @@ export async function detectLineageReplay(db: RelationalStore, digest: string, n
 export async function revokedForReplay(db: RelationalStore, digest: string): Promise<boolean> {
   const row = await db.prepare(`SELECT 1 AS hit FROM member_credentials WHERE token_hash = ? AND revoked_by = ?`).bind(digest, LINEAGE_REPLAY_REVOKER).first<{ hit: number }>();
   return row !== null;
+}
+
+/** A release-retired credential can read its close acknowledgement until its original expiry. */
+export async function releasedRunCredential(db: RelationalStore, digest: string, now: number): Promise<{ memberId: string; tokenId: string } | null> {
+  return db.prepare(`SELECT t.member_id AS memberId, t.id AS tokenId FROM member_credentials t
+    JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
+    WHERE t.token_hash = ? AND t.member_id = ? AND t.revoked_by = ? AND t.revoked_at IS NOT NULL AND t.expires_at > ?`)
+    .bind(digest, HARNESS_MEMBER_ID, HARNESS_MEMBER_ID, now).first<{ memberId: string; tokenId: string }>();
 }

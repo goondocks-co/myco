@@ -337,7 +337,7 @@ export async function claimRun(
   db: RelationalStore,
   scope: ReadScope,
   row: RunInsert,
-  guard: { taskName: string; admission: RunAdmissionGate; dispatchedOnly?: boolean; embeddingConfigured?: boolean },
+  guard: { taskName: string; admission: RunAdmissionGate; dispatchedOnly?: boolean; embeddingConfigured?: boolean; caller?: RunCaller },
   _now: number,
 ): Promise<ClaimOutcome> {
   if (guard.admission.kind === 'capability') {
@@ -348,9 +348,10 @@ export async function claimRun(
     return { claimed: false, noProvider: true };
   }
   if (row.dispatchedBy !== null) {
-    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL).bind(
+    const caller = runCallerGuard(guard.caller, UNCLAIMED_RUN_STATUSES);
+    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL + caller.sql).bind(
       row.harness, row.instruction, row.provider, row.model, row.startedAt,
-      scope.projectId, row.id, row.dispatchedBy,
+      scope.projectId, row.id, row.dispatchedBy, ...caller.params,
     ).run();
     if (dispatched.meta.changes === 1) return { claimed: true };
   }
@@ -575,6 +576,13 @@ export async function getRequestedWorkerProfile(db: RelationalStore, scope: Read
 /** A run row with the Project it belongs to: what a read keyed by credential answers; a credential spans every Project of its Deployment. */
 export type HeldRun = RunRow & { projectId: string };
 
+/** Every row bound to a dispatch credential, including its pending claim and terminal acknowledgement. */
+export async function runsOfCredential(db: RelationalStore, tokenId: string): Promise<HeldRun[]> {
+  const { results } = await db.prepare(`SELECT project_id AS projectId, ${RUN_COLUMNS} FROM agent_runs WHERE dispatched_by = ?`)
+    .bind(tokenId).all<HeldRun>();
+  return results;
+}
+
 /** Every `running` row this credential dispatched, in any Project — read by the credential alone, which `idx_agent_runs_credential` serves. */
 export async function liveRunsOfCredential(db: RelationalStore, tokenId: string): Promise<HeldRun[]> {
   const { results } = await db
@@ -585,11 +593,12 @@ export async function liveRunsOfCredential(db: RelationalStore, tokenId: string)
 }
 
 /** Record a server refusal receipt for the unique open run dispatched under this credential. */
-export async function recordRunControlRefusal(db: RelationalStore, tokenId: string, code: RunControlRefusalCode): Promise<string | null> {
+export async function recordRunControlRefusal(db: RelationalStore, tokenId: string, code: RunControlRefusalCode, caller?: RunCaller): Promise<string | null> {
   const { results } = await db.prepare(`SELECT project_id AS projectId, id FROM agent_runs
     WHERE dispatched_by = ? AND ${LIVE_RUN_STATUSES}`).bind(tokenId).all<{ projectId: string; id: string }>();
   if (results.length !== 1) return null;
   const run = results[0]!;
+  const guard = runCallerGuard(caller);
   const key = `runControlRefusals.${code}`;
   // A non-object context is retained verbatim under unparsedRunContext.
   // One receipt per code bounds the record; repeated refusals of that code share it.
@@ -598,9 +607,9 @@ export async function recordRunControlRefusal(db: RelationalStore, tokenId: stri
     WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
     ELSE json_object('unparsedRunContext', run_context) END, '$.${key}',
       CASE WHEN ${contextValue(`${key}.tokenId`)} = ? THEN ${contextValue(key)} ELSE json(?) END)
-    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND ${LIVE_RUN_STATUSES}
+    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND ${LIVE_RUN_STATUSES}${guard.sql}
     RETURNING ${contextValue(`${key}.id`)} AS refusalId`)
-    .bind(tokenId, JSON.stringify({ tokenId, code, id: crypto.randomUUID() }), run.projectId, run.id, tokenId).first<{ refusalId: string }>();
+    .bind(tokenId, JSON.stringify({ tokenId, code, id: crypto.randomUUID() }), run.projectId, run.id, tokenId, ...guard.params).first<{ refusalId: string }>();
   return row?.refusalId ?? null;
 }
 
@@ -641,6 +650,21 @@ export async function runInstruction(db: RelationalStore, scope: ReadScope, runI
   return row?.instruction ?? null;
 }
 
+/** The dispatch credential and admission clock carried into an atomic runtime write. */
+export interface RunCaller { tokenId: string; now: number; deadline: number; clock?: () => number; refusalId?: string }
+
+/** Runtime writes require the same dispatch and an unexpired open attempt. */
+function runCallerGuard(caller: RunCaller | undefined, statuses = LIVE_RUN_STATUSES): { sql: string; params: (string | number)[] } {
+  if (caller === undefined) return { sql: '', params: [] };
+  const now = caller.clock?.() ?? caller.now;
+  return {
+    sql: ` AND dispatched_by = ? AND ${statuses} AND (lease_expires_at IS NULL OR lease_expires_at > ?) AND ? > ?
+      AND EXISTS (SELECT 1 FROM member_credentials c JOIN members m ON m.id = c.member_id
+        WHERE c.id = ? AND c.revoked_at IS NULL AND c.expires_at > ? AND m.revoked_at IS NULL)`,
+    params: [caller.tokenId, now, caller.deadline, now, caller.tokenId, now],
+  };
+}
+
 /**
  * Apply a partial update to one run, scoped.
  *
@@ -669,7 +693,7 @@ export async function applyRunUpdate(
   lease?: RunLease & { dispatchedBy: string },
   errorCode: RunErrorCode = 'run_failed',
   context?: Readonly<Record<string, string>>,
-  caller?: { tokenId: string; refusalId?: string },
+  caller?: RunCaller,
 ): Promise<number> {
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return 0;
@@ -689,13 +713,13 @@ export async function applyRunUpdate(
       AND CASE WHEN type = 'object' THEN json_extract(value, '$.id') END = ?
       AND CASE WHEN type = 'object' THEN json_extract(value, '$.code') END IN (${Object.keys(RUN_CONTROL_REFUSAL_WORDS).map((code) => `'${code}'`).join(', ')}) LIMIT 1), ?)`;
   const codeSet = coded ? `, error_code = ${issuedCode}` : '';
-  const callerGuard = caller === undefined ? '' : ' AND dispatched_by = ?';
+  const callerGuard = runCallerGuard(caller);
   // Keys merged into the run's context; a context the store did not write as JSON is left as it is.
   const contextSet = context === undefined ? '' : `, run_context = CASE WHEN run_context IS NULL OR json_valid(run_context) THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`;
   const result = await db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard}`)
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`)
     .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(context === undefined ? [] : [JSON.stringify(context)]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
-      ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]), ...(caller === undefined ? [] : [caller.tokenId]))
+      ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]), ...callerGuard.params)
     .run();
   return result.meta.changes;
 }
@@ -756,14 +780,15 @@ export interface ReportInsert {
 }
 
 /** Record one report against a run this Project holds; an unknown run or an unregistered agent writes nothing and answers false — a foreign-key throw would read as retryable, and neither condition is. */
-export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert): Promise<boolean> {
+export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert, caller?: RunCaller): Promise<boolean> {
+  const guard = runCallerGuard(caller);
   const result = await db
     .prepare(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, audit, created_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
+        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?${guard.sql})
           AND EXISTS (SELECT 1 FROM agents WHERE id = ?)`)
     .bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.audit, report.createdAt,
-          scope.projectId, report.runId, report.agentId)
+          scope.projectId, report.runId, ...guard.params, report.agentId)
     .run();
   return result.meta.changes === 1;
 }

@@ -1,3 +1,4 @@
+import { runRouteFixture } from './helpers/run-routes.js';
 /**
  * Project archival.
  *
@@ -50,7 +51,9 @@ describe('an archived project', () => {
     await r.ownerPost('/api/projects/proj_1/archive');
     const refreshed = await json(await r.fetch(memberPost(r.windowed, {}, '/tokens/refresh')));
     expect(refreshed.refreshed).toBe(true);
-    const claim = await json(await r.fetch(memberPost(r.token, { id: 'run_arch', agentId: 'agent_arch', task: 'digest', capability: 'cortex' }, '/runs/claim')));
+    const run = await runRouteFixture('agent_arch');
+    run.sqlite.run("UPDATE projects SET archived_at = 1 WHERE project_id = 'proj_1'");
+    const claim = await run.post('/runs/claim', { id: 'run_arch', agentId: 'agent_arch', task: 'digest', capability: 'cortex' });
     expect(claim.persisted).toBe(true);
   });
 
