@@ -161,8 +161,8 @@ export async function readWorkerContact(db: RelationalStore, credentialId: strin
  * a lease renewal, which is the only contact a busy worker makes. A renewal
  * names no outcome and no offer of its own: it refreshes the liveness of what
  * the worker last reported rather than erasing it. An unchanged observation
- * inside `CONTACT_THROTTLE_MS` is skipped; a changed one is written at once.
- * Answers whether a row is written.
+ * inside `CONTACT_THROTTLE_MS` is skipped; a changed one is written at once. A renewal advances liveness and preserves
+ * the offer revision in `updated_at`. Answers whether a row is written.
  */
 export async function recordWorkerContact(
   db: RelationalStore,
@@ -182,10 +182,11 @@ export async function recordWorkerContact(
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (credential_id) DO UPDATE SET
        machine_id = excluded.machine_id, offers = excluded.offers, capabilities = excluded.capabilities,
-       last_reason = excluded.last_reason, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at`,
+       last_reason = excluded.last_reason, last_seen_at = excluded.last_seen_at,
+       updated_at = CASE WHEN ? = 1 THEN excluded.updated_at ELSE worker_contacts.updated_at END`,
   ).bind(
     contact.credentialId, contact.machineId, offers === null ? null : JSON.stringify(offers), capabilities === null ? null : JSON.stringify(capabilities),
-    reason, contact.now, contact.now,
+    reason, contact.now, contact.now, contact.offers === undefined ? 0 : 1,
   ).run();
   return true;
 }
@@ -250,16 +251,17 @@ export interface MachineContact {
 
 /**
  * Every worker report with the machine it came from, newest first: the machine the worker named, or else the one its
- * credential joined as. Each carries the latest start of a run its credential leased, sought down the lease index by
- * that one credential; the index is named, as statistics that see every run unleased would walk the runs instead.
+ * credential joined as, ordered by contact time or explicit offer revision. Each carries the latest start of a run its
+ * credential leased, sought down the lease index by that one credential; the index is named, as statistics that see
+ * every run unleased would walk the runs instead.
  */
-export function machineContactsStatement(db: RelationalStore): PreparedStatement {
+export function machineContactsStatement(db: RelationalStore, order: 'contact' | 'offers' = 'contact'): PreparedStatement {
   return db.prepare(
     `SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.offers, w.last_seen_at,
             (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_lease WHERE r.leased_by = w.credential_id) AS last_run_at
        FROM worker_contacts w
       CROSS JOIN member_credentials c ON c.id = w.credential_id
-      ORDER BY w.last_seen_at DESC`,
+      ORDER BY ${order === 'offers' ? 'w.updated_at' : 'w.last_seen_at'} DESC`,
   );
 }
 
@@ -275,6 +277,22 @@ export function machineContactsOf(rows: readonly unknown[]): Map<string, Machine
     else if (run !== null && (held.lastRunAt === null || run > held.lastRunAt)) held.lastRunAt = run;
   }
   return contacts;
+}
+
+/**
+ * Each machine's latest readable offer report. Unknown reports preserve the latest explicit observation; a machine
+ * with only unknown reports answers null, and a machine with no contact is absent from the map.
+ */
+export async function readMachineOffers(db: RelationalStore): Promise<Map<string, ReportedHarness[] | null>> {
+  const { results } = await machineContactsStatement(db, 'offers').all<Record<string, unknown>>();
+  const reports = new Map<string, ReportedHarness[] | null>();
+  for (const row of results ?? []) {
+    if (row.machine_id == null) continue;
+    const machineId = String(row.machine_id);
+    const offers = parseOffers(row.offers);
+    if (!reports.has(machineId) || (reports.get(machineId) === null && offers !== null)) reports.set(machineId, offers);
+  }
+  return reports;
 }
 
 /** The latest instant any worker reported in, or null when none ever has. */

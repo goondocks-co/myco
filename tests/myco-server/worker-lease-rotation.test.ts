@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
@@ -13,10 +13,16 @@ import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
+import type { PreparedStatement } from '@myco-server-worker/core/adapters.js';
 
 const RUN = { projectId: 'proj_1', runId: 'run_rotation' };
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
 const WRAP_KEY = btoa('r'.repeat(32));
+const OPERATIONS = [
+  { path: '/worker/lease', body: {}, expected: { held: true } },
+  { path: '/worker/repository', body: { ...SOURCE, commit: 'a'.repeat(40) }, expected: { held: true } },
+  { path: '/worker/end', body: { status: 'failed' }, expected: { ended: true } },
+] as const;
 
 async function rig(target: 'cloudflare' | 'bun') {
   const e = sqliteEnv({ workerLogin: true });
@@ -54,15 +60,152 @@ async function rig(target: 'cloudflare' | 'bun') {
     expect(result).toMatchObject({ status: 200, body: { refreshed: true } });
     return result.body as { token: string; tokenId: string };
   };
-  const row = () => e.sqlite.query('SELECT status, leased_by AS leasedBy, dispatched_by AS attemptId FROM agent_runs WHERE id=?')
-    .get(RUN.runId) as { status: string; leasedBy: string; attemptId: string };
+  const row = () => e.sqlite.query('SELECT status, leased_by AS leasedBy, dispatched_by AS attemptId, lease_expires_at AS leaseExpiresAt FROM agent_runs WHERE id=?')
+    .get(RUN.runId) as { status: string; leasedBy: string; attemptId: string; leaseExpiresAt: number | null };
   return { e, env, owner, post, claim, rotate, row,
     advance: (ms: number) => { now += ms; }, clock: () => now,
     close: () => { e.sqlite.close(); rmSync(root, { recursive: true, force: true }); },
   };
 }
 
+function pauseAuthenticatedOwner(r: Awaited<ReturnType<typeof rig>>) {
+  const prior = r.env.tokenLimit;
+  let release = () => {};
+  let reached = () => {};
+  const admitted = new Promise<void>((resolve) => { reached = resolve; });
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  r.env.tokenLimit = { limit: async (input) => {
+    if (input.key === r.owner.tokenId) { reached(); await paused; }
+    return prior.limit(input);
+  } };
+  return { admitted, resume: release, restore: () => { release(); r.env.tokenLimit = prior; } };
+}
+
+function pauseStatement(r: Awaited<ReturnType<typeof rig>>, match: string) {
+  const prepare = r.env.db.prepare.bind(r.env.db);
+  let release = () => {};
+  let reached = () => {};
+  const admitted = new Promise<void>((resolve) => { reached = resolve; });
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  let held = false;
+  const wrap = (statement: PreparedStatement, sql: string): PreparedStatement => ({
+    bind: (...params) => wrap(statement.bind(...params), sql),
+    first: () => statement.first(), all: () => statement.all(),
+    run: async () => {
+      if (!held && sql.includes(match)) { held = true; reached(); await paused; }
+      return statement.run();
+    },
+  });
+  r.env.db.prepare = (sql) => sql.includes(match) ? wrap(prepare(sql), sql) : prepare(sql);
+  return { admitted, resume: release, restore: () => { release(); r.env.db.prepare = prepare; } };
+}
+
 for (const target of ['cloudflare', 'bun'] as const) describe(`${target}: authenticated worker lease rotation`, () => {
+  for (const operation of OPERATIONS) it(`keeps authenticated ${operation.path} valid when activation overtakes it`, async () => {
+      const r = await rig(target);
+      let pause: ReturnType<typeof pauseAuthenticatedOwner> | undefined;
+      try {
+        const attemptId = await r.claim(r.owner.token);
+        const next = await r.rotate(r.owner.token, r.owner.tokenId);
+        pause = pauseAuthenticatedOwner(r);
+        const pending = r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body });
+        await pause.admitted;
+        r.advance(1_000);
+        expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
+        expect(r.row()).toMatchObject({ leasedBy: next.tokenId });
+        const later = await r.rotate(next.token, next.tokenId);
+        expect((await r.post(later.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
+        pause.resume();
+        expect(await pending).toMatchObject({ status: 200, body: operation.expected });
+        expect(r.row()).toMatchObject({ leasedBy: later.tokenId });
+        if (operation.path === '/worker/lease') expect(r.row().leaseExpiresAt).toBe(r.clock() + WORKER_LEASE_MS);
+        expect(await r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body })).toMatchObject({ status: 401 });
+      } finally { pause?.restore(); r.close(); }
+  });
+
+  for (const operation of OPERATIONS.filter((operation) => operation.path !== '/worker/lease')) {
+    it(`keeps ${operation.path} valid when activation overtakes its final guarded write`, async () => {
+      const r = await rig(target);
+      let pause: ReturnType<typeof pauseStatement> | undefined;
+      try {
+        const attemptId = await r.claim(r.owner.token);
+        const next = await r.rotate(r.owner.token, r.owner.tokenId);
+        pause = pauseStatement(r, operation.path === '/worker/repository'
+          ? "UPDATE agent_runs SET run_context = json_set" : 'completed_at = ?');
+        const pending = r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body });
+        await pause.admitted;
+        expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
+        pause.resume();
+        expect((await pending).body).toMatchObject(operation.expected);
+        expect(r.row()).toMatchObject({ leasedBy: next.tokenId });
+      } finally { pause?.restore(); r.close(); }
+    });
+  }
+
+  it('requires member, machine and lineage matches even for live authenticated credentials', async () => {
+    const r = await rig(target);
+    try {
+      const attemptId = await r.claim(r.owner.token);
+      for (const identity of [
+        { memberId: 'mem_other_worker', machineId: 'machine_worker', lineage: r.owner.tokenId },
+        { memberId: 'mem_worker', machineId: 'machine_other', lineage: r.owner.tokenId },
+        { memberId: 'mem_worker', machineId: 'machine_worker', lineage: 'another_lineage' },
+      ]) {
+        const token = await issueMemberToken(r.env.db, identity, r.clock());
+        r.e.sqlite.run('UPDATE member_credentials SET lineage_root=? WHERE id=?', [identity.lineage, token.tokenId]);
+        for (const operation of OPERATIONS) {
+          expect((await r.post(token.token, operation.path, { ...RUN, attemptId, ...operation.body })).body)
+            .toMatchObject(operation.path === '/worker/end' ? { ended: false } : { held: false });
+        }
+      }
+      expect(r.row()).toMatchObject({ status: 'running', leasedBy: r.owner.tokenId });
+    } finally { r.close(); }
+  });
+
+  it('refuses separately revoked callers, lease owners and members after authentication', async () => {
+    for (const refusal of ['caller', 'holder', 'member', 'successor-proof', 'expired-holder'] as const) {
+      for (const operation of OPERATIONS) {
+        const r = await rig(target);
+        let pause: ReturnType<typeof pauseAuthenticatedOwner> | undefined;
+        try {
+          const attemptId = await r.claim(r.owner.token);
+          const next = await r.rotate(r.owner.token, r.owner.tokenId);
+          pause = pauseAuthenticatedOwner(r);
+          const pending = r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body });
+          await pause.admitted;
+          expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
+          if (refusal === 'caller') r.e.sqlite.run('UPDATE member_credentials SET revoked_by=? WHERE id=?', ['mem_worker', r.owner.tokenId]);
+          if (refusal === 'holder') r.e.sqlite.run('UPDATE member_credentials SET revoked_at=?, revoked_by=? WHERE id=?', [r.clock(), 'mem_worker', next.tokenId]);
+          if (refusal === 'member') r.e.sqlite.run('UPDATE members SET revoked_at=? WHERE id=?', [r.clock(), 'mem_worker']);
+          if (refusal === 'successor-proof') r.e.sqlite.run('UPDATE member_credentials SET first_used_at=NULL WHERE id=?', [next.tokenId]);
+          if (refusal === 'expired-holder') r.e.sqlite.run('UPDATE member_credentials SET expires_at=? WHERE id=?', [r.clock(), next.tokenId]);
+          pause.resume();
+          expect((await pending).body).toMatchObject(operation.path === '/worker/end' ? { ended: false } : { held: false });
+          expect(r.row()).toMatchObject({ status: 'running', leasedBy: next.tokenId });
+        } finally { pause?.restore(); r.close(); }
+      }
+    }
+  });
+
+  it('refuses an authenticated request whose lineage is explicitly revoked before its lease write', async () => {
+    for (const operation of OPERATIONS) {
+      const r = await rig(target);
+      let pause: ReturnType<typeof pauseAuthenticatedOwner> | undefined;
+      try {
+        const attemptId = await r.claim(r.owner.token);
+        const next = await r.rotate(r.owner.token, r.owner.tokenId);
+        pause = pauseAuthenticatedOwner(r);
+        const pending = r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body });
+        await pause.admitted;
+        expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
+        await revokeMemberLineage(r.env.db, next.tokenId, r.clock(), 'mem_worker');
+        pause.resume();
+        expect((await pending).body).toMatchObject(operation.path === '/worker/end' ? { ended: false } : { held: false });
+        expect(r.row()).toMatchObject({ status: 'running', leasedBy: next.tokenId });
+      } finally { pause?.restore(); r.close(); }
+    }
+  });
+
   it('activates a successor, renews, prepares source access and closes the same attempt', async () => {
     const r = await rig(target);
     try {
@@ -121,6 +264,21 @@ for (const target of ['cloudflare', 'bun'] as const) describe(`${target}: authen
       expect((await r.post(later.token, '/worker/end', { ...RUN, attemptId: first, status: 'failed' })).body).toMatchObject({ ended: false });
       expect((await r.post(later.token, '/worker/lease', { ...RUN, attemptId: second })).body).toMatchObject({ held: true });
       expect((await r.post(later.token, '/worker/end', { ...RUN, attemptId: second, status: 'failed' })).body).toMatchObject({ ended: true });
+    } finally { r.close(); }
+  });
+
+  it('refuses an expired attempt while its current rotated worker credential remains live', async () => {
+    const r = await rig(target);
+    try {
+      const attemptId = await r.claim(r.owner.token);
+      const next = await r.rotate(r.owner.token, r.owner.tokenId);
+      expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
+      r.advance(WORKER_LEASE_MS);
+      for (const operation of OPERATIONS) {
+        expect((await r.post(next.token, operation.path, { ...RUN, attemptId, ...operation.body })).body)
+          .toMatchObject(operation.path === '/worker/end' ? { ended: false } : { held: false });
+      }
+      expect(r.row()).toMatchObject({ leasedBy: next.tokenId, status: 'running' });
     } finally { r.close(); }
   });
 

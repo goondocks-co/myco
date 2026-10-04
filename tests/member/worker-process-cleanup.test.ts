@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { driverFor } from '@myco/runner/drivers/registry.js';
 import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
 import { startHarness } from '@myco/runner/drivers/stream.js';
-import { STOP_GRACE_MS } from '@myco/runner/process-group.js';
+import { spawnOwnedGroup, STOP_GRACE_MS } from '@myco/runner/process-group.js';
 import type { RunEvent } from '@myco/runner/events.js';
 
 const BOUND_MS = STOP_GRACE_MS * 3;
@@ -27,7 +27,7 @@ function alive(pid: number): boolean {
   return !execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
 }
 
-function fixture(id: string, leaveLeader: boolean): { dir: string; pids: () => number[]; cleanup: () => void } {
+function fixture(id: string, leaveLeader: boolean, detachedHelper = false): { dir: string; pids: () => number[]; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'myco-process-owner-'));
   const pidFile = join(dir, 'pids.json');
   const helperReady = join(dir, 'helper.pid');
@@ -37,7 +37,7 @@ function fixture(id: string, leaveLeader: boolean): { dir: string; pids: () => n
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 process.on('SIGTERM', () => {});
-const helper = spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: ['ignore', 'inherit', 'inherit'] });
+const helper = spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: ['ignore', 'inherit', 'inherit'], detached: ${JSON.stringify(detachedHelper)} });
 const ready = setInterval(() => {
   if (!fs.existsSync(${JSON.stringify(helperReady)})) return;
   clearInterval(ready);
@@ -82,56 +82,63 @@ async function ready(pids: () => number[]): Promise<void> {
 
 describe('a harness process owner', () => {
   for (const harness of HARNESSES.filter(offerable)) {
-    for (const ending of ['return', 'consumer exception', 'abort', 'leader exit'] as const) {
-      it(`${harness.id} awaits leader and TERM-ignoring descendant cleanup on ${ending}`, async () => {
-        const f = fixture(harness.id, ending === 'leader exit');
-        const previousPath = process.env.PATH;
-        process.env.PATH = `${f.dir}:${previousPath ?? ''}`;
-        const server = Bun.serve({ port: 0, fetch: async (request) => {
-          const body = await request.json() as { id: number; method: string };
-          return Response.json({ jsonrpc: '2.0', id: body.id, result: body.method === 'tools/list' ? { tools: [] } : { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } } });
-        } });
-        const config = join(f.dir, 'mcp.json');
-        writeFileSync(config, JSON.stringify({ mcpServers: { myco: { url: `http://127.0.0.1:${server.port}/mcp`, headers: {} } } }));
-        const stopping = new AbortController();
-        const stream = driverFor(harness.id)!.run({ prompt: 'fixture', scratchDir: f.dir, mcpConfigPath: config, credentialEnv: {} }, stopping.signal);
-        const iterator = stream[Symbol.asyncIterator]();
-        try {
-          if (ending === 'leader exit') {
-            const events: RunEvent[] = [];
-            await bounded((async () => { for await (const event of stream) events.push(event); })());
-            expect(events.at(-1)?.kind).toBe('ended');
-            expect(f.pids()).toHaveLength(2);
-          } else if (ending === 'consumer exception') {
-            const consumerError = new Error('fixture evidence write failed');
-            async function consume(): Promise<void> {
-              for await (const event of { [Symbol.asyncIterator]: () => iterator }) {
-                if (event.kind !== 'started') continue;
-                await ready(f.pids);
-                throw consumerError;
+    for (const detached of [false, true]) {
+      const endings = detached ? ['return', 'abort', 'leader exit'] as const : ['return', 'consumer exception', 'abort', 'leader exit'] as const;
+      for (const ending of endings) {
+        it(`${harness.id} awaits ${detached ? 'detached helper pipe disposal' : 'leader and TERM-ignoring descendant cleanup'} on ${ending}`, async () => {
+          const f = fixture(harness.id, ending === 'leader exit', detached);
+          const previousPath = process.env.PATH;
+          process.env.PATH = `${f.dir}:${previousPath ?? ''}`;
+          const server = Bun.serve({ port: 0, fetch: async (request) => {
+            const body = await request.json() as { id: number; method: string };
+            return Response.json({ jsonrpc: '2.0', id: body.id, result: body.method === 'tools/list' ? { tools: [] } : { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } } });
+          } });
+          const config = join(f.dir, 'mcp.json');
+          writeFileSync(config, JSON.stringify({ mcpServers: { myco: { url: `http://127.0.0.1:${server.port}/mcp`, headers: {} } } }));
+          const stopping = new AbortController();
+          const stream = driverFor(harness.id)!.run({ prompt: 'fixture', scratchDir: f.dir, mcpConfigPath: config, credentialEnv: {} }, stopping.signal);
+          const iterator = stream[Symbol.asyncIterator]();
+          try {
+            if (ending === 'leader exit') {
+              const events: RunEvent[] = [];
+              await bounded((async () => { for await (const event of stream) events.push(event); })());
+              expect(events.at(-1)?.kind).toBe('ended');
+              expect(f.pids()).toHaveLength(2);
+            } else if (ending === 'consumer exception') {
+              const consumerError = new Error('fixture evidence write failed');
+              async function consume(): Promise<void> {
+                for await (const event of { [Symbol.asyncIterator]: () => iterator }) {
+                  if (event.kind !== 'started') continue;
+                  await ready(f.pids);
+                  throw consumerError;
+                }
               }
+              await expect(bounded(consume())).rejects.toBe(consumerError);
+            } else {
+              let first = await bounded(iterator.next());
+              while (!first.done && first.value.kind !== 'started') first = await bounded(iterator.next());
+              expect(first.value?.kind).toBe('started');
+              await ready(f.pids);
+              if (detached) {
+                const groups = f.pids().map((pid) => execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
+                expect(groups[0]).not.toBe(groups[1]);
+              }
+              if (ending === 'abort') {
+                const drain = (async () => { while (!(await iterator.next()).done) { /* consume through process exit */ } })();
+                stopping.abort();
+                await bounded(Promise.all([drain, iterator.return!()]));
+              } else await bounded(iterator.return!());
             }
-            await expect(bounded(consume())).rejects.toBe(consumerError);
-          } else {
-            let first = await bounded(iterator.next());
-            while (!first.done && first.value.kind !== 'started') first = await bounded(iterator.next());
-            expect(first.value?.kind).toBe('started');
-            await ready(f.pids);
-            if (ending === 'abort') {
-              const drain = (async () => { while (!(await iterator.next()).done) { /* consume through process exit */ } })();
-              stopping.abort();
-              await bounded(drain);
-            } else await bounded(iterator.return!());
+            expect(f.pids().map(alive)).toEqual([false, detached]);
+          } finally {
+            stopping.abort();
+            f.cleanup();
+            if (previousPath === undefined) delete process.env.PATH;
+            else process.env.PATH = previousPath;
+            await server.stop(true);
           }
-          expect(f.pids().map(alive)).toEqual([false, false]);
-        } finally {
-          stopping.abort();
-          f.cleanup();
-          if (previousPath === undefined) delete process.env.PATH;
-          else process.env.PATH = previousPath;
-          await server.stop(true);
-        }
-      }, BOUND_MS * 3);
+        }, BOUND_MS * 3);
+      }
     }
   }
 
@@ -166,5 +173,30 @@ describe('a harness process owner', () => {
       await bounded(lines.return!());
       expect(f.pids().map(alive)).toEqual([false, false]);
     } finally { stopping.abort(); f.cleanup(); }
+  }, BOUND_MS * 2);
+
+  it('ends a Node pipe iterator cleanly when disposing a detached helper pipe', async () => {
+    const f = fixture('claude-code', false, true);
+    const script = join(f.dir, 'node-consumer.mjs');
+    const source = new URL('../../packages/myco/src/runner/drivers/stream.ts', import.meta.url).href;
+    writeFileSync(script, `
+import { startHarness } from ${JSON.stringify(source)};
+const stopping = new AbortController();
+const started = startHarness(${JSON.stringify(join(f.dir, 'claude'))}, [], { cwd: ${JSON.stringify(f.dir)}, env: {}, signal: stopping.signal });
+const lines = started.lines[Symbol.asyncIterator]();
+await lines.next();
+const pending = lines.next();
+stopping.abort();
+await Promise.all([pending, lines.return()]);
+await started.exit;
+`);
+    const stopping = new AbortController();
+    const owner = spawnOwnedGroup('node', ['--import', 'tsx', script], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] }, stopping.signal);
+    let errors = '';
+    owner.child.stderr?.on('data', (chunk: Buffer) => { errors += chunk.toString(); });
+    try {
+      expect({ exit: await bounded(owner.exit), errors }).toEqual({ exit: 0, errors: '' });
+      expect(f.pids().map(alive)).toEqual([false, true]);
+    } finally { stopping.abort(); await owner.dispose(); f.cleanup(); }
   }, BOUND_MS * 2);
 });

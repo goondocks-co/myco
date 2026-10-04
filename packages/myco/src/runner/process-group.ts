@@ -3,8 +3,9 @@
  *
  * A harness starts helpers of its own — a background `git fetch`, a server, a shell — and a signal sent to the
  * harness alone leaves them running after it exits. So every harness a worker starts, for a run or for a listing,
- * leads a group of its own, and stopping it signals the whole group: SIGTERM first, SIGKILL to whatever is still in
- * the group once `STOP_GRACE_MS` has passed, then the leader's `close` is waited for, bounded by the same grace.
+ * leads a group of its own, and stopping it signals helpers that remain in that group: SIGTERM first, SIGKILL to
+ * whatever is still in the group once `STOP_GRACE_MS` has passed, then the leader's `close` is waited for, bounded
+ * by the same grace.
  * Windows has no process groups, so there the harness alone is signalled.
  */
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
@@ -68,6 +69,8 @@ export interface OwnedProcess {
   dispose(): Promise<void>;
   /** Surface a failed ownership registration inside the consumer's disposal scope. */
   assertStarted(): void;
+  /** Whether disposal interrupted an open stdout pipe. */
+  pipesClosed(): boolean;
 }
 
 /** Own a harness's group until disposal, including helpers holding pipes after the leader exits. */
@@ -78,8 +81,13 @@ export function spawnOwnedGroup(command: string, args: readonly string[], option
   let child: ChildProcess;
   try { child = spawnGroup(command, args, options); } catch (error) { registration?.cancelled(); throw error; }
   let disposal: Promise<void> | undefined;
+  let pipesClosed = false;
   const dispose = (): Promise<void> => {
-    disposal ??= stopGroup(child).finally(() => { signal.removeEventListener('abort', abort); });
+    disposal ??= stopGroup(child).finally(() => {
+      pipesClosed = child.stdout !== null && !child.stdout.destroyed;
+      for (const pipe of [child.stdin, child.stdout, child.stderr]) pipe?.destroy();
+      signal.removeEventListener('abort', abort);
+    });
     return disposal;
   };
   let resolveExit: (code: number) => void;
@@ -96,7 +104,7 @@ export function spawnOwnedGroup(command: string, args: readonly string[], option
     if (child.pid === undefined) registration?.cancelled();
     else registration?.started(child.pid);
   } catch (error) { failure = { error }; abort(); }
-  return { child, exit, dispose, assertStarted: () => { if (failure !== undefined) throw failure.error; } };
+  return { child, exit, dispose, assertStarted: () => { if (failure !== undefined) throw failure.error; }, pipesClosed: () => pipesClosed };
 }
 
 /** A wait of `ms`, the one timer a stop holds. */

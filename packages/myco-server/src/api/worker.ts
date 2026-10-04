@@ -86,6 +86,10 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   if (asked === null) return unreadable();
   const harnesses = offered(asked.harnesses);
   const capabilities = Array.isArray(asked.capabilities) ? asked.capabilities.filter((value): value is string => typeof value === 'string') : [];
+  // Profile resolution consumes the offers admitted by this claim.
+  await recordWorkerContact(env.db, {
+    credentialId: ctx.tokenId, machineId: ctx.machineId, offers: harnesses, capabilities, now: ctx.now,
+  });
   const outcome = await claimNextRun(env, {
     tokenId: ctx.tokenId,
     machineId: ctx.machineId,

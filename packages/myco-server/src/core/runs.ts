@@ -39,6 +39,7 @@ import { CAPABILITY_ON_SQL, settingsWriter, type ProjectCapability } from './set
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
+import { workerLeaseAuthority } from './worker-lease.js';
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
 export const INPUT_UNCHANGED = 'input_unchanged';
@@ -699,7 +700,8 @@ export async function applyRunUpdate(
   if (columns.length === 0) return 0;
   const guarded = 'status' in update;
   const guard = guarded ? ` AND status NOT IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')})` : '';
-  const leaseGuard = lease === undefined ? '' : ` AND status = 'running' AND leased_by = ? AND dispatched_by = ? AND lease_expires_at > ?`;
+  const authority = lease === undefined ? null : workerLeaseAuthority(lease, lease.dispatchedBy);
+  const leaseGuard = authority === null ? '' : ` AND ${authority.sql}`;
   // A terminal transition ends the worker's lease and keeps the worker it
   // named: the row goes on saying which worker credential, and so which
   // machine, ran it. Only a live lease has an expiry, and the sweep reads that.
@@ -719,7 +721,7 @@ export async function applyRunUpdate(
   const result = await db
     .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`)
     .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(context === undefined ? [] : [JSON.stringify(context)]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
-      ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]), ...callerGuard.params)
+      ...(authority?.params ?? []), ...callerGuard.params)
     .run();
   return result.meta.changes;
 }
@@ -1397,11 +1399,11 @@ export async function recordClaimedInput(
 export async function renewRunLease(
   db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, expiresAt: number, now: number, dispatchedBy?: string,
 ): Promise<boolean> {
+  const authority = workerLeaseAuthority({ tokenId: leasedBy, now }, dispatchedBy);
   const result = await db.prepare(
-    `UPDATE agent_runs SET lease_expires_at = ?
-      WHERE project_id = ? AND id = ? AND status = 'running' AND leased_by = ? AND lease_expires_at > ?
-      ${dispatchedBy === undefined ? '' : 'AND dispatched_by = ?'}`,
-  ).bind(expiresAt, scope.projectId, runId, leasedBy, now, ...(dispatchedBy === undefined ? [] : [dispatchedBy])).run();
+    `UPDATE agent_runs SET lease_expires_at = MAX(lease_expires_at, ?)
+      WHERE project_id = ? AND id = ? AND ${authority.sql}`,
+  ).bind(expiresAt, scope.projectId, runId, ...authority.params).run();
   return result.meta.changes === 1;
 }
 
@@ -1745,13 +1747,15 @@ export async function pinMapSourceForRun(db: RelationalStore, scope: ReadScope, 
 /** Each preparation value is written once under the held run's guard, then answered from a fresh read. */
 async function pinRunPreparation(db: RelationalStore, scope: ReadScope, run: RunRow, key: 'repository' | 'canopy', value: RepositoryPin | MapSourcePin, lease?: RunLease): Promise<RunRow | null> {
   const path = `$.${key}`;
+  const authority = lease === undefined
+    ? { sql: "status = 'running' AND dispatched_by = ?", params: [run.dispatchedBy] }
+    : workerLeaseAuthority(lease, run.dispatchedBy);
   await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), ?, json(?))
-    WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?
-      AND json_type(COALESCE(run_context, '{}'), ?) IS NULL
-      ${lease === undefined ? '' : 'AND leased_by = ? AND lease_expires_at > ?'}`)
-    .bind(path, JSON.stringify(value), scope.projectId, run.id, run.dispatchedBy, path, ...(lease === undefined ? [] : [lease.tokenId, lease.now])).run();
-  if (lease !== undefined && !(await db.prepare(`SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND leased_by = ? AND lease_expires_at > ?`)
-    .bind(scope.projectId, run.id, lease.tokenId, lease.now).first())) return null;
+    WHERE project_id = ? AND id = ? AND ${authority.sql}
+      AND json_type(COALESCE(run_context, '{}'), ?) IS NULL`)
+    .bind(path, JSON.stringify(value), scope.projectId, run.id, ...authority.params, path).run();
+  if (lease !== undefined && !(await db.prepare(`SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND ${authority.sql}`)
+    .bind(scope.projectId, run.id, ...authority.params).first())) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
   return fresh;

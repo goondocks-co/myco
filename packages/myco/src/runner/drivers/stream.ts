@@ -8,7 +8,7 @@
  * coded reason and kept in the worker's local diagnostics log under the run they
  * belong to; they never reach the Deployment. The harness
  * leads a process group of its own (`process-group.ts`): stopping it, and its
- * exit, end every helper it started.
+ * exit, dispose that group and the worker's pipe handles.
  */
 import { spawnOwnedGroup } from '../process-group.js';
 
@@ -66,8 +66,11 @@ export function startHarness(command: string, args: readonly string[], options: 
           at = held.indexOf('\n');
         }
       }
-      if (held.trim().length > 0) yield held.trim();
+    } catch (error) {
+      const interrupted = error instanceof Error && 'code' in error && error.code === 'ERR_STREAM_PREMATURE_CLOSE';
+      if (!owner.pipesClosed() || !interrupted) throw error;
     } finally { await dispose(); }
+    if (held.trim().length > 0) yield held.trim();
   }
 
   return { lines: lines(), errorText: () => errors, exit, signal: () => ended, kill, dispose };
