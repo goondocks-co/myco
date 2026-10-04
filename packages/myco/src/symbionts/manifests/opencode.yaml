@@ -3,7 +3,15 @@ displayName: OpenCode
 binary: opencode
 health:
   installLocations: ["~/.config/opencode"]
-  activityLocations: ["~/.local/share/opencode/storage/session/*/{sessionId}.json"]
+  # Read-only WAL access requires an existing readable shared-memory index; unavailable stores leave activity unknown in Health.
+  activityLocations:
+    - kind: sqlite
+      path: opencode/opencode.db
+      dataHomeEnv: XDG_DATA_HOME
+      dataHomeDefault: "~/.local/share"
+      query: "SELECT id, time_updated AS ran_at FROM session WHERE time_updated >= ? ORDER BY time_updated DESC"
+      sessionIdColumn: id
+      timeColumn: ran_at
 configDir: .opencode
 detectionDir: ~/.config/opencode
 pluginRootEnvVar: OPENCODE_PLUGIN_ROOT

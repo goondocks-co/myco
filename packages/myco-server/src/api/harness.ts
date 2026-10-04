@@ -10,6 +10,7 @@
  * for and answered.
  */
 import type { ServerEnv } from '../core/adapters.js';
+import { MAX_WORKER_RUN_SECONDS } from '@goondocks/myco-shared/harness-health';
 import type { OwnerContext } from '../context.js';
 import { CeilingReached, DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask, RUNTIME_SERVED_TASKS } from '../core/harness.js';
 import { deploymentTaskCeilingWindow, type ActorCeiling } from '../core/runs.js';
@@ -63,7 +64,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const projectId = typeof body.projectId === 'string' && PROJECT_ID_SHAPE.test(body.projectId) ? body.projectId : null;
   if (task === null || projectId === null) return badRequest('dispatch requires task and projectId');
   // An admin's bound, else the task's own budget, else the flat default. A member runs a task on its own budget.
-  const timeoutSeconds = isAdmin(ctx.member.role) && typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= 3600
+  const timeoutSeconds = isAdmin(ctx.member.role) && typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= MAX_WORKER_RUN_SECONDS
     ? body.timeoutSeconds
     : runTimeoutForTask(task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
   // A switch that decides what a run spends is a boolean or absent; anything else is refused rather than read as off.

@@ -3,7 +3,7 @@ displayName: Windsurf
 binary: windsurf
 health:
   installLocations: ["~/.codeium/windsurf", "/Applications/Windsurf.app", "~/Applications/Windsurf.app"]
-  activityLocations: ["@transcripts"]
+  activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .windsurf
 detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT

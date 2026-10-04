@@ -19,7 +19,6 @@ import { accountingEvents } from '../accounting.js';
  * own. The run's grant then answers every call the harness makes.
  */
 import { spawnGroup, stopGroup } from '../process-group.js';
-import { opencodeLaunchHome } from './opencode.js';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { harnessById, type Harness } from '../harnesses.js';
@@ -374,7 +373,7 @@ function runHomeOf(harness: Harness, spec: LaunchSpec, writeHome: RunHomeWriter 
  */
 function acpLaunch(harness: Harness, spec: LaunchSpec, writeHome: RunHomeWriter | undefined): { launch: Launch; asking: RunAsking } {
   const asking = runAsking(harness, runAgentName(), spec.profile);
-  return { asking, launch: { env: { ...spec.credentialEnv, ...asking.env, ...runHomeOf(harness, spec, writeHome), ...(harness.id === 'opencode' ? opencodeLaunchHome(spec.scratchDir, harness) : {}) }, omitInherited: [] } };
+  return { asking, launch: { env: { ...spec.credentialEnv, ...asking.env, ...runHomeOf(harness, spec, writeHome) }, omitInherited: [] } };
 }
 
 export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {

@@ -3,7 +3,7 @@ displayName: Google Antigravity
 binary: antigravity
 health:
   installLocations: ["~/.gemini", "/Applications/Antigravity.app", "~/Applications/Antigravity.app"]
-  activityLocations: ["@transcripts"]
+  activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .agents/plugins/myco
 # Antigravity uses the same ~/.gemini/ user-home directory as the retired
 # Gemini CLI — Google reused the dir under the new product. The detection

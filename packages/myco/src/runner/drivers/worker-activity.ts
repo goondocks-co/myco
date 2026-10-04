@@ -9,14 +9,22 @@ export function withWorkerActivity(driver: Driver): Driver {
     async *run(spec, signal) {
       const evidence = new WorkerSessionEvidence(resolveMycoHome());
       const recorded = new Set<string>();
+      let admission: (() => void) | undefined = evidence.begin(driver.id);
       const record = (sessionId: string): void => {
         if (recorded.has(sessionId)) return;
         evidence.record(driver.id, sessionId);
         recorded.add(sessionId);
+        admission?.();
+        admission = undefined;
       };
-      for await (const event of driver.run({ ...spec, sessionOpened: record }, signal)) {
-        if (event.kind === 'started' && event.sessionId !== null) record(event.sessionId);
-        yield event;
+      try {
+        for await (const event of driver.run({ ...spec, sessionOpened: record }, signal)) {
+          if (event.kind === 'started' && event.sessionId !== null) record(event.sessionId);
+          yield event;
+        }
+      } finally {
+        for (const id of recorded) evidence.record(driver.id, id);
+        admission?.();
       }
     },
   };

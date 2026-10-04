@@ -6,7 +6,7 @@ displayName: GitHub Copilot
 binary: copilot
 health:
   installLocations: ["~/.copilot"]
-  activityLocations: ["@transcripts"]
+  activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .vscode
 # Copilot detection key: ~/.copilot/ is the user-home location both the
 # terminal CLI and the VS Code Copilot extension read hooks and skills

@@ -3,7 +3,7 @@ displayName: Pi
 binary: pi
 health:
   installLocations: ["~/.pi"]
-  activityLocations: ["@transcripts"]
+  activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .pi
 detectionDir: ~/.pi
 pluginRootEnvVar: PI_PLUGIN_ROOT

@@ -953,8 +953,21 @@ export const SymbiontManifestSchema = z.object({
   detectionDir: z.string().nullable().optional(),
   health: z.object({
     installLocations: z.array(z.string()),
-    /** Session-record layouts with {sessionId}, or @transcripts for the canonical capture layouts. */
-    activityLocations: z.array(z.string()),
+    /** Per-session evidence; file paths may reference the canonical capture layouts with @transcripts. */
+    activityLocations: z.array(z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('file'), path: z.string() }),
+      z.object({
+        kind: z.literal('sqlite'),
+        path: z.string(),
+        /** Environment variable overriding the data root, relative to which path is resolved. */
+        dataHomeEnv: z.string().optional(),
+        dataHomeDefault: z.string().optional(),
+        /** One SELECT returning session ids and epoch-millisecond times, with ? bound to the retention cutoff. */
+        query: z.string().regex(/^\s*SELECT\b/i).refine((query) => !query.includes(';'), 'One read-only SELECT is required'),
+        sessionIdColumn: z.string(),
+        timeColumn: z.string(),
+      }).refine((source) => (source.dataHomeEnv === undefined) === (source.dataHomeDefault === undefined), 'A data-home override requires a default root'),
+    ])),
   }).optional(),
   pluginRootEnvVar: z.string(),
   settingsPath: z.string().optional(),

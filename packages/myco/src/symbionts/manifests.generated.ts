@@ -22,7 +22,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Antigravity.app"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "ANTIGRAVITY_PLUGIN_ROOT",
@@ -333,7 +336,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Claude.app"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
@@ -974,7 +980,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.cline"
       ],
       "activityLocations": [
-        "~/.cline/data/tasks/{sessionId}/api_conversation_history.json"
+        {
+          "kind": "file",
+          "path": "~/.cline/data/tasks/{sessionId}/api_conversation_history.json"
+        }
       ]
     },
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
@@ -1147,7 +1156,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Codex.app"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
@@ -1622,7 +1634,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.copilot"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
@@ -1918,7 +1933,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Cursor.app"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
@@ -2276,7 +2294,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.config/opencode"
       ],
       "activityLocations": [
-        "~/.local/share/opencode/storage/session/*/{sessionId}.json"
+        {
+          "kind": "sqlite",
+          "path": "opencode/opencode.db",
+          "dataHomeEnv": "XDG_DATA_HOME",
+          "dataHomeDefault": "~/.local/share",
+          "query": "SELECT id, time_updated AS ran_at FROM session WHERE time_updated >= ? ORDER BY time_updated DESC",
+          "sessionIdColumn": "id",
+          "timeColumn": "ran_at"
+        }
       ]
     },
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
@@ -2626,7 +2652,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.pi"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
@@ -2750,7 +2779,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Windsurf.app"
       ],
       "activityLocations": [
-        "@transcripts"
+        {
+          "kind": "file",
+          "path": "@transcripts"
+        }
       ]
     },
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
