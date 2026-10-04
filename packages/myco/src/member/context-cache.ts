@@ -226,7 +226,7 @@ function newestProjectFeatures(deployment: Deployment, mycoHome: string): Cached
     .map((entry) => entry.projectId)]);
   let newest: ProjectContextCache | undefined;
   for (const projectId of projects) {
-    const spoolDir = spoolDirFor(projectId, mycoHome);
+    const spoolDir = spoolDirFor({ projectId, serverUrl: deployment.serverUrl }, mycoHome);
     if (pathIsAbsent(projectContextPath(spoolDir))) continue;
     const cache = readProjectContext(spoolDir);
     if (newest === undefined || (cache.featuresAt ?? 0) > (newest.featuresAt ?? 0)) newest = cache;
@@ -259,7 +259,7 @@ export function readDeploymentFeatures(deployment: Deployment, mycoHome: string)
     featureCacheDiagnostic(deployment.serverUrl, mycoHome, 'read', error);
     let ownFeatures: CachedFeature[] | undefined;
     try {
-      const ownDir = deployment.projectId.length > 0 ? spoolDirFor(deployment.projectId, mycoHome) : undefined;
+      const ownDir = deployment.projectId.length > 0 ? spoolDirFor(deployment, mycoHome) : undefined;
       const own = ownDir === undefined ? null : readCache<ProjectContextCache>(projectContextPath(ownDir));
       if (own !== null && Array.isArray(own.features)) ownFeatures = cachedDeploymentFeatures(own.features.join(','));
     } catch { /* An unreadable own-project cache leaves the bound-project fallback available. */ }

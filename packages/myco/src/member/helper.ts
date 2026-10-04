@@ -57,8 +57,8 @@ export interface HelperPaths {
  * The files a bucket's helper coordinates through: a project's in its spool, and the join bucket's (`JOIN_BUCKET`, the
  * repositories joining a project) in the auto-join folder.
  */
-export function helperPaths(projectId: string, mycoHome: string): HelperPaths {
-  const dir = projectId === JOIN_BUCKET ? autoJoinDir(mycoHome) : spoolDirFor(projectId, mycoHome);
+export function helperPaths(projectId: string, mycoHome: string, serverUrl?: string): HelperPaths {
+  const dir = projectId === JOIN_BUCKET ? autoJoinDir(mycoHome) : spoolDirFor({ projectId, serverUrl: serverUrl ?? '' }, mycoHome);
   return {
     lock: path.join(dir, HELPER_LOCK_FILE),
     dirty: path.join(dir, HELPER_DIRTY_FILE),
@@ -103,7 +103,7 @@ export function shipsInline(outcome: KickOutcome): boolean {
  * once it does. Otherwise this kick starts one. A start it could not make, or one that cannot outlive the caller, is
  * logged to `helper.log` and answered so the caller can ship inline (`shipsInline`).
  */
-export function kickHelper(opts: { projectId: string; mycoHome: string; reason?: KickReason; spawn?: DetachedSpawn; now?: () => number }): KickOutcome {
+export function kickHelper(opts: { projectId: string; serverUrl?: string; mycoHome: string; reason?: KickReason; spawn?: DetachedSpawn; now?: () => number }): KickOutcome {
   markWork(opts);
   // A join's caller ships nothing itself: its request stays, and the next hook in the repository kicks again.
   const fallback = opts.projectId === JOIN_BUCKET ? 'the join waits for the next hook' : 'the caller ships inline';
@@ -114,8 +114,8 @@ export function kickHelper(opts: { projectId: string; mycoHome: string; reason?:
  * Mark the project's work, as a kick does, without starting a helper: for a caller that runs the helper's pass
  * itself. A running helper still sees the marks; one started later reads them.
  */
-export function markWork(opts: { projectId: string; mycoHome: string; reason?: KickReason }): void {
-  const paths = helperPaths(opts.projectId, opts.mycoHome);
+export function markWork(opts: { projectId: string; serverUrl?: string; mycoHome: string; reason?: KickReason }): void {
+  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
   ensureMemberDir(path.dirname(paths.dirty), opts.mycoHome);
   fs.writeFileSync(paths.dirty, '', { mode: 0o600 });
   if (opts.reason === 'turn-end' || opts.reason === 'session-end') fs.writeFileSync(paths.probe, '', { mode: 0o600 });
@@ -126,18 +126,18 @@ export function markWork(opts: { projectId: string; mycoHome: string; reason?: K
  * (`helper.starting`, created exclusively), so of many kicks landing while a start is under way, one starts a helper.
  */
 function startHelper(opts: {
-  projectId: string; mycoHome: string; spawn?: DetachedSpawn; now?: () => number; afterFailure?: boolean;
+  projectId: string; serverUrl?: string; mycoHome: string; spawn?: DetachedSpawn; now?: () => number; afterFailure?: boolean;
   /** Who asked, and what becomes of the work when no helper can carry it: both go in the log line. */
   why: string; fallback: string;
 }): KickOutcome {
   const now = opts.now ?? Date.now;
-  const paths = helperPaths(opts.projectId, opts.mycoHome);
+  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
   const probe = LifecycleLock.acquire(paths.lock, { command: 'myco member helper (probe)' });
   if (!probe.acquired) return { kind: 'running', contained: probe.holder?.contained === true };
   probe.lock.release();
   if (!claimStart(paths.starting, now())) return { kind: 'starting', contained: readStartClaim(paths.starting)?.contained === true };
   const self = selfExec();
-  const bucket = opts.projectId === JOIN_BUCKET ? ['--join'] : ['--project', opts.projectId];
+  const bucket = opts.projectId === JOIN_BUCKET ? ['--join'] : ['--project', opts.projectId, '--server', opts.serverUrl!];
   const args = [...self.args, 'member', 'helper', ...bucket, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
   let start: DetachedStart;
   try {
@@ -243,6 +243,7 @@ export interface HelperPassResult {
 
 export interface HelperRunOptions {
   projectId: string;
+  serverUrl?: string;
   mycoHome: string;
   pass: HelperPass;
   now?: () => number;
@@ -293,13 +294,13 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
   const deadline = now() + (opts.deadlineMs ?? HELPER_DEADLINE_MS);
   const linger = opts.lingerMs ?? HELPER_LINGER_MS;
   const poll = opts.pollMs ?? HELPER_POLL_MS;
-  const paths = helperPaths(opts.projectId, opts.mycoHome);
+  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
   ensureMemberDir(path.dirname(paths.lock), opts.mycoHome);
   const dirty = (): boolean => fs.existsSync(paths.dirty);
   /** Remove a mark, answering whether it was there: a kick after the removal writes it again, for the next look. */
   const take1 = (file: string): boolean => { try { fs.unlinkSync(file); return true; } catch { return false; } };
   const successor = (afterFailure: boolean): KickOutcome => startHelper({
-    projectId: opts.projectId, mycoHome: opts.mycoHome, spawn: opts.spawn, now, afterFailure,
+    projectId: opts.projectId, serverUrl: opts.serverUrl, mycoHome: opts.mycoHome, spawn: opts.spawn, now, afterFailure,
     why: afterFailure ? 'a failed pass' : 'the deadline', fallback: 'the work waits for the next kick',
   });
 

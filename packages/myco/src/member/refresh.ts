@@ -284,7 +284,8 @@ export async function refreshMemberCredential(root: string, opts: RefreshOptions
  * events stay spooled and the operator re-provisions.
  */
 export function rotatedCredential(root: string, presented: ClientRecord, mycoHome: string = resolveMycoHome()): ClientRecord | null {
-  const entry = readRegistryEntry(root, mycoHome);
-  if (!entry || entry.token === presented.token) return null;
-  return { serverUrl: entry.serverUrl, token: entry.token, projectId: entry.projectId };
+  void root;
+  const membership = readDeploymentMembership(presented.serverUrl, mycoHome);
+  if (!membership || membership.token === presented.token) return null;
+  return { serverUrl: presented.serverUrl, token: membership.token, projectId: presented.projectId };
 }

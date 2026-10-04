@@ -147,6 +147,7 @@ export class ServerClient {
   private readonly protocol: number;
 
   constructor(private readonly record: DeploymentRecord & { projectId?: string }, private readonly fetchImpl: FetchLike = globalThis.fetch, opts: { protocol?: number } = {}) {
+    this.record = { ...record };
     this.base = record.serverUrl.replace(/\/+$/, '');
     this.protocol = opts.protocol ?? MEMBER_PROTOCOL;
   }

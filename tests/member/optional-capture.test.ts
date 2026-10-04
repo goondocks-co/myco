@@ -28,7 +28,7 @@ afterEach(() => {
   resetMachineIdCache();
 });
 
-const kinds = (sessionId: string): string[] => new MemberSpool('proj_1', { mycoHome })
+const kinds = (sessionId: string): string[] => new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome })
   .readRecords(sessionId).flatMap((record) => record ? [record.kind] : []);
 
 describe('optional capture follows the mandatory spool append', () => {
@@ -38,7 +38,7 @@ describe('optional capture follows the mandatory spool append', () => {
       const result = await runHook('user-prompt-submit', { session_id: 'sess-prompt', hook_event_name: 'UserPromptSubmit', prompt: 'capture me' }, { fetch: rig.fetch, symbiont: 'copilot' });
       expect(result.stderr).toContain('optional capture skipped: feature lookup failed');
       expect(kinds('sess-prompt')).toEqual(['prompt']);
-      expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, 'sess-prompt').promptId).toBeDefined();
+      expect(readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, 'sess-prompt').promptId).toBeDefined();
     } finally {
       lookup.mockRestore();
     }
@@ -54,7 +54,7 @@ describe('optional capture follows the mandatory spool append', () => {
       }, { fetch: rig.fetch, symbiont: 'copilot' });
       expect(result.stderr).toContain('optional capture skipped: feature lookup failed');
       expect(kinds('sess-stop')).toContain('response');
-      expect(new MemberSpool('proj_1', { mycoHome }).pendingTurnEnds('sess-stop').map(({ mark }) => mark.atSize)).toEqual([fs.statSync(transcript).size]);
+      expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).pendingTurnEnds('sess-stop').map(({ mark }) => mark.atSize)).toEqual([fs.statSync(transcript).size]);
     } finally {
       lookup.mockRestore();
     }

@@ -2,9 +2,9 @@
  * Capture held for a repository that has no project yet (#1547).
  *
  * The first hooks in a repository this machine joins by itself run before the join answers: the join runs apart from
- * them (`auto-join.ts`), so no hook waits on it. What those hooks capture is spooled here, one spool per repository at
- * `<MYCO_HOME>/member/pending/<rootKey>/`, and moved into the project's own spool once the repository joins, where the
- * ordinary drain delivers it.
+ * them (`auto-join.ts`), so no hook waits on it. What those hooks capture is spooled under
+ * `<MYCO_HOME>/member/pending/<deploymentKey>/<rootKey>/`, and moved into a project on that Deployment once the
+ * repository joins, where the ordinary drain delivers it.
  *
  * A repository that never joins must not hold capture forever: a pending spool is bounded in records, and one whose
  * first record is older than `PENDING_TTL_MS` is discarded. Either end is recorded beside the spool (`HeldEnd`), so
@@ -23,6 +23,9 @@ import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { deploymentKeyFor, deploymentUrl } from './registry.js';
+import { admitMemberServerUrl } from './server-url.js';
+import { assertMemberPathContained } from './store.js';
 
 export const PENDING_DIRNAME = 'pending';
 /** How long capture waits for its repository to join before it is discarded. */
@@ -30,15 +33,16 @@ export const PENDING_TTL_MS = HELD_CAPTURE_TTL_MS;
 /** The most records one repository's pending spool holds; a hook past it spools nothing more. */
 export const PENDING_MAX_RECORDS = 2000;
 const META_FILE = 'pending.json';
-const META_VERSION = 1;
-/** The project id a pending spool is built under: it names no project, and nothing it holds is drained from here. */
-const NO_PROJECT = '';
+const META_VERSION = 2;
+const ROOT_KEY = /^[0-9a-f]{16,64}$/;
+const DEPLOYMENT_KEY = /^[0-9a-f]{16,64}$/;
 
 /** What a pending spool says of itself: the repository it holds capture for, and when it began holding. */
 export interface PendingMeta {
   version: number;
   root: string;
   rootKey: string;
+  serverUrl?: string;
   createdAt: number;
   generation?: string;
 }
@@ -48,6 +52,7 @@ export interface HeldEnd {
   version: number;
   root: string;
   rootKey: string;
+  serverUrl?: string;
   held: 'full' | 'expired';
   at: number;
 }
@@ -56,6 +61,7 @@ export interface HeldEnd {
 export interface PendingSummary {
   rootKey: string;
   root: string;
+  serverUrl?: string;
   createdAt: number;
   sessions: number;
   records: number;
@@ -65,75 +71,170 @@ export function pendingRoot(mycoHome: string = resolveMycoHome()): string {
   return path.join(memberRoot(mycoHome), PENDING_DIRNAME);
 }
 
-export function pendingDir(rootKey: string, mycoHome: string = resolveMycoHome()): string {
-  if (!/^[0-9a-f]{16,64}$/.test(rootKey)) throw new Error(`pendingDir: ${rootKey} is not a repository key`);
-  return path.join(pendingRoot(mycoHome), rootKey);
+function normalizedServerUrl(serverUrl: string): string {
+  if (!admitMemberServerUrl(serverUrl)) throw new Error('Invalid pending Deployment URL');
+  return deploymentUrl(serverUrl);
+}
+
+export function pendingDir(rootKey: string, mycoHome: string = resolveMycoHome(), serverUrl?: string): string {
+  if (!ROOT_KEY.test(rootKey)) throw new Error(`pendingDir: ${rootKey} is not a repository key`);
+  return serverUrl === undefined
+    ? path.join(pendingRoot(mycoHome), rootKey)
+    : path.join(pendingRoot(mycoHome), deploymentKeyFor(normalizedServerUrl(serverUrl)), rootKey);
 }
 
 function readMeta(dir: string): PendingMeta | null {
   const read = readPrivateJson<PendingMeta>(path.join(dir, META_FILE));
   if (!read.ok) return null;
   const value = read.value;
-  return value?.version === META_VERSION && typeof value.root === 'string' && typeof value.createdAt === 'number' ? value : null;
+  if (value === null || typeof value.root !== 'string' || !ROOT_KEY.test(value.rootKey) || typeof value.createdAt !== 'number') return null;
+  if (value.version === 1 && value.serverUrl === undefined && path.basename(dir) === value.rootKey && path.basename(path.dirname(dir)) === PENDING_DIRNAME) return value;
+  if (value.version !== META_VERSION || typeof value.serverUrl !== 'string') return null;
+  try {
+    return path.basename(dir) === value.rootKey && path.basename(path.dirname(dir)) === deploymentKeyFor(value.serverUrl)
+      && path.basename(path.dirname(path.dirname(dir))) === PENDING_DIRNAME
+      && value.serverUrl === normalizedServerUrl(value.serverUrl) ? value : null;
+  } catch { return null; }
 }
 
 /** A pending obligation remains until its metadata is verifiably absent. */
-export function hasPendingCapture(rootKey: string, mycoHome: string): boolean {
-  const dir = pendingDir(rootKey, mycoHome);
+export function hasPendingCapture(rootKey: string, mycoHome: string, serverUrl?: string): boolean {
+  const dir = pendingDir(rootKey, mycoHome, serverUrl);
+  return hasPendingCaptureAt(dir, mycoHome);
+}
+
+function hasPendingCaptureAt(dir: string, mycoHome: string): boolean {
+  assertMemberPathContained(dir, mycoHome);
   if (!pathIsAbsent(path.join(dir, META_FILE))) return true;
   try { return fs.readdirSync(dir).some((name) => name.endsWith('.jsonl') || name.endsWith('.state.json') || name.endsWith('.turns')); }
   catch { return !pathIsAbsent(dir); }
 }
 
-const endedPath = (rootKey: string, mycoHome: string): string => path.join(pendingRoot(mycoHome), `${rootKey}.ended.json`);
+const endedPath = (rootKey: string, mycoHome: string, serverUrl?: string): string => `${pendingDir(rootKey, mycoHome, serverUrl)}.ended.json`;
 
 /** Where a repository's held capture ended, or null while it is held or was never held. */
-export function readHeldEnd(rootKey: string, mycoHome: string): HeldEnd | null {
-  const read = readPrivateJson<HeldEnd>(endedPath(rootKey, mycoHome));
+export function readHeldEnd(rootKey: string, mycoHome: string, serverUrl?: string): HeldEnd | null {
+  const read = readPrivateJson<HeldEnd>(endedPath(rootKey, mycoHome, serverUrl));
   if (!read.ok) return null;
   const value = read.value;
-  return value?.version === META_VERSION && (value.held === 'full' || value.held === 'expired') ? value : null;
+  if (value?.held !== 'full' && value?.held !== 'expired') return null;
+  if (value.rootKey !== rootKey || typeof value.root !== 'string' || typeof value.at !== 'number') return null;
+  if (serverUrl === undefined) return value.version === 1 && value.serverUrl === undefined ? value : null;
+  return value.version === META_VERSION && value.serverUrl === normalizedServerUrl(serverUrl) ? value : null;
 }
 
 /** Record that a repository's capture is held no more, keeping the first such record until the capture is held again. */
-function recordHeldEnd(repo: { root: string; rootKey: string }, held: HeldEnd['held'], mycoHome: string, now: number): void {
-  if (readHeldEnd(repo.rootKey, mycoHome)?.held === held) return;
-  ensureMemberDir(pendingRoot(mycoHome), mycoHome);
-  const end: HeldEnd = { version: META_VERSION, root: repo.root, rootKey: repo.rootKey, held, at: now };
-  writePrivateFileAtomic(endedPath(repo.rootKey, mycoHome), `${JSON.stringify(end)}\n`);
+function recordHeldEnd(repo: { root: string; rootKey: string; serverUrl?: string }, held: HeldEnd['held'], mycoHome: string, now: number): void {
+  if (readHeldEnd(repo.rootKey, mycoHome, repo.serverUrl)?.held === held) return;
+  const file = endedPath(repo.rootKey, mycoHome, repo.serverUrl);
+  ensureMemberDir(path.dirname(file), mycoHome);
+  const end: HeldEnd = { version: repo.serverUrl === undefined ? 1 : META_VERSION, root: repo.root, rootKey: repo.rootKey,
+    ...(repo.serverUrl === undefined ? {} : { serverUrl: normalizedServerUrl(repo.serverUrl) }), held, at: now };
+  writePrivateFileAtomic(file, `${JSON.stringify(end)}\n`);
 }
 
-function clearHeldEnd(rootKey: string, mycoHome: string): void {
-  fs.rmSync(endedPath(rootKey, mycoHome), { force: true });
-}
-
-/** Establish a distinct pending hold before its first journal append. */
-function ensurePendingMeta(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }, dir: string): void {
-  if (readMeta(dir) !== null) return;
-  const meta: PendingMeta = { version: META_VERSION, root: repo.root, rootKey: repo.rootKey, createdAt: opts.now, generation: crypto.randomUUID() };
-  writePrivateFileAtomic(path.join(dir, META_FILE), `${JSON.stringify(meta)}\n`);
-  clearHeldEnd(repo.rootKey, opts.mycoHome);
+function clearHeldEnd(rootKey: string, mycoHome: string, serverUrl?: string): void {
+  fs.rmSync(endedPath(rootKey, mycoHome, serverUrl), { force: true });
 }
 
 /** Every repository whose held capture ended, most recent first. */
 export function listHeldEnds(mycoHome: string): HeldEnd[] {
+  return pendingLocations(mycoHome, true)
+    .filter(({ rootKey, serverUrl, dir }) => dir === pendingDir(rootKey, mycoHome, serverUrl))
+    .map(({ rootKey, serverUrl }) => readHeldEnd(rootKey, mycoHome, serverUrl))
+    .filter((end): end is HeldEnd => end !== null).sort((a, b) => b.at - a.at);
+}
+
+function pendingLocations(mycoHome: string, ended = false): Array<{ rootKey: string; serverUrl?: string; dir: string }> {
+  const root = pendingRoot(mycoHome);
   let names: string[];
-  try { names = fs.readdirSync(pendingRoot(mycoHome)).filter((name) => /^[0-9a-f]{16,64}\.ended\.json$/.test(name)); } catch { return []; }
-  return names.map((name) => readHeldEnd(name.slice(0, -'.ended.json'.length), mycoHome)).filter((end): end is HeldEnd => end !== null).sort((a, b) => b.at - a.at);
+  try { names = fs.readdirSync(root); } catch { return []; }
+  const suffix = ended ? '.ended.json' : '';
+  const locations: Array<{ rootKey: string; serverUrl?: string; dir: string }> = [];
+  for (const name of names) {
+    const key = suffix ? name.endsWith(suffix) ? name.slice(0, -suffix.length) : '' : name;
+    if (ended && ROOT_KEY.test(key)) {
+      locations.push({ rootKey: key, dir: path.join(root, key) });
+      continue;
+    }
+    if (!DEPLOYMENT_KEY.test(name)) continue;
+    const directory = path.join(root, name);
+    try { if (!fs.statSync(directory).isDirectory()) continue; } catch { continue; }
+    if (!ended && readMeta(directory)?.version === 1) {
+      locations.push({ rootKey: name, dir: directory });
+      continue;
+    }
+    let nested: string[];
+    try { nested = fs.readdirSync(directory); } catch { continue; }
+    let foundNested = false;
+    for (const leaf of nested) {
+      const rootKey = suffix ? leaf.endsWith(suffix) ? leaf.slice(0, -suffix.length) : '' : leaf;
+      if (!ROOT_KEY.test(rootKey)) continue;
+      const file = path.join(directory, leaf);
+      if (!ended) {
+        try { if (!fs.lstatSync(file).isDirectory()) continue; } catch { continue; }
+      }
+      foundNested = true;
+      const value = ended ? readPrivateJson<HeldEnd>(file) : readPrivateJson<PendingMeta>(path.join(file, META_FILE));
+      const serverUrl = value.ok ? value.value?.serverUrl : undefined;
+      locations.push({ rootKey, dir: ended ? path.join(directory, rootKey) : file,
+        ...(typeof serverUrl === 'string' && deploymentKeyFor(serverUrl) === name ? { serverUrl } : {}) });
+    }
+    if (!ended && !foundNested && nested.includes(BLOBS_DIRNAME)) locations.push({ rootKey: name, dir: directory });
+  }
+  return locations;
+}
+
+function pendingPathsFor(rootKey: string, mycoHome: string): string[] {
+  const root = pendingRoot(mycoHome);
+  let names: string[];
+  try { names = fs.readdirSync(root); } catch { return []; }
+  const dirs: string[] = [];
+  const add = (dir: string): void => {
+    try { if (fs.lstatSync(dir).isDirectory()) dirs.push(dir); } catch { /* absent */ }
+  };
+  add(path.join(root, rootKey));
+  for (const name of names) if (DEPLOYMENT_KEY.test(name)) {
+    const parent = path.join(root, name);
+    try { if (fs.lstatSync(parent).isDirectory()) add(path.join(parent, rootKey)); } catch { /* absent */ }
+  }
+  return [...new Set(dirs)];
 }
 
 /**
  * The spool a repository's capture waits in, for a hook to stage blobs and read session state through; null where its
  * capture is past the record cap. Nothing is written here: `appendPending` writes, under the repository's lock.
  */
-export function pendingSpool(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }): MemberSpool | null {
-  expirePending(repo.rootKey, opts);
-  ensureMemberDir(pendingRoot(opts.mycoHome), opts.mycoHome);
-  // The directory, and no record: a hook's handler reads the session's state here before anything is appended.
-  const spool = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir: pendingDir(repo.rootKey, opts.mycoHome) });
-  if (recordsIn(spool) < PENDING_MAX_RECORDS) return spool;
-  recordHeldEnd(repo, 'full', opts.mycoHome, opts.now);
-  return null;
+export function pendingSpool(repo: { root: string; rootKey: string; serverUrl?: string }, opts: { mycoHome: string; now: number }): MemberSpool | null {
+  // Stage and append use the same pinned destination even if the default changes between them.
+  return withPendingLock(repo.rootKey, opts.mycoHome, () => {
+    expireOne(repo.rootKey, { ...opts, serverUrl: repo.serverUrl });
+    ensurePendingMeta(repo, opts);
+    const spool = new MemberSpool(null, { mycoHome: opts.mycoHome, dir: pendingDir(repo.rootKey, opts.mycoHome, repo.serverUrl) });
+    if (recordsIn(spool) < PENDING_MAX_RECORDS) return spool;
+    recordHeldEnd(repo, 'full', opts.mycoHome, opts.now);
+    return null;
+  });
+}
+
+function ensurePendingMeta(repo: { root: string; rootKey: string; serverUrl?: string }, opts: { mycoHome: string; now: number }): string {
+  const dir = pendingDir(repo.rootKey, opts.mycoHome, repo.serverUrl);
+  ensureMemberDir(dir, opts.mycoHome);
+  const held = readPrivateJson<PendingMeta>(path.join(dir, META_FILE));
+  if (held.ok) {
+    const meta = readMeta(dir);
+    if (meta === null || meta.root !== repo.root || meta.rootKey !== repo.rootKey || meta.serverUrl !== (repo.serverUrl === undefined ? undefined : normalizedServerUrl(repo.serverUrl))) {
+      throw new Error('Pending capture destination mismatch');
+    }
+    return dir;
+  }
+  if (held.reason !== 'missing') throw new Error('Pending capture metadata is unreadable');
+  const meta: PendingMeta = { version: repo.serverUrl === undefined ? 1 : META_VERSION, root: repo.root, rootKey: repo.rootKey,
+    ...(repo.serverUrl === undefined ? {} : { serverUrl: normalizedServerUrl(repo.serverUrl) }), createdAt: opts.now,
+    generation: crypto.randomUUID() };
+  writePrivateFileAtomic(path.join(dir, META_FILE), `${JSON.stringify(meta)}\n`);
+  clearHeldEnd(repo.rootKey, opts.mycoHome, repo.serverUrl);
+  return dir;
 }
 
 function recordsIn(spool: MemberSpool): number {
@@ -145,6 +246,7 @@ function recordsIn(spool: MemberSpool): number {
  * every append lands either before the move, and moves with it, or after, and reads the connection the join wrote.
  */
 export function withPendingLock<T>(rootKey: string, mycoHome: string, fn: () => T): T {
+  if (!ROOT_KEY.test(rootKey)) throw new Error(`withPendingLock: ${rootKey} is not a repository key`);
   ensureMemberDir(pendingRoot(mycoHome), mycoHome);
   return withFileLockSync(path.join(pendingRoot(mycoHome), `.${rootKey}.lock`), fn);
 }
@@ -156,13 +258,13 @@ export function attemptHeldMigrationForCapture(move: () => number): void {
 }
 
 /** A joined repository sends new capture to its live spool even while an older held journal waits for recovery. */
-function connectedSpool(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }): MemberSpool | null {
+function connectedSpool(repo: { root: string; rootKey: string; serverUrl?: string }, opts: { mycoHome: string; now: number }): MemberSpool | null {
   const entry = readRegistryEntry(repo.root, opts.mycoHome);
-  if (entry === null) return null;
-  return new MemberSpool(entry.projectId, { mycoHome: opts.mycoHome });
+  if (entry === null || repo.serverUrl === undefined || deploymentUrl(entry.serverUrl) !== normalizedServerUrl(repo.serverUrl)) return null;
+  return new MemberSpool(entry, { mycoHome: opts.mycoHome });
 }
 
-function appendJoined(repo: { root: string; rootKey: string }, opts: { mycoHome: string; now: number }, append: (spool: MemberSpool) => void): boolean {
+function appendJoined(repo: { root: string; rootKey: string; serverUrl?: string }, opts: { mycoHome: string; now: number }, append: (spool: MemberSpool) => void): boolean {
   const project = connectedSpool(repo, opts);
   if (project === null) return false;
   append(project);
@@ -175,17 +277,15 @@ function appendJoined(repo: { root: string; rootKey: string }, opts: { mycoHome:
  * where the pending spool is past its cap.
  */
 export function appendPending(
-  repo: { root: string; rootKey: string }, sessionId: string, events: readonly OutboundEvent[], record: ((state: SessionState) => void) | undefined,
+  repo: { root: string; rootKey: string; serverUrl?: string }, sessionId: string, events: readonly OutboundEvent[], record: ((state: SessionState) => void) | undefined,
   opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
   const write = (spool: MemberSpool) => spool.appendAndRecord(sessionId, events, record, opts.now);
   if (appendJoined(repo, opts, write)) return 'project';
   return withPendingLock(repo.rootKey, opts.mycoHome, () => {
     if (appendJoined(repo, opts, write)) return 'project';
-    const dir = pendingDir(repo.rootKey, opts.mycoHome);
-    ensureMemberDir(dir, opts.mycoHome);
-    ensurePendingMeta(repo, opts, dir);
-    const spool = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir });
+    const dir = ensurePendingMeta(repo, opts);
+    const spool = new MemberSpool(null, { mycoHome: opts.mycoHome, dir });
     if (recordsIn(spool) >= PENDING_MAX_RECORDS) {
       recordHeldEnd(repo, 'full', opts.mycoHome, opts.now);
       return 'full';
@@ -201,17 +301,15 @@ export function appendPending(
  * has connected it. Held marks sit in the pending spool's marks file for the session (`.<session>.turns`).
  */
 export function appendPendingTurnEnd(
-  repo: { root: string; rootKey: string }, sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number },
+  repo: { root: string; rootKey: string; serverUrl?: string }, sessionId: string, mark: { slot: TurnEndMark['slot']; transcriptId: string; atSize: number },
   record: ((state: SessionState) => void) | undefined, opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
   const write = (spool: MemberSpool) => spool.appendTurnEnd(sessionId, mark, record, opts.now);
   if (appendJoined(repo, opts, write)) return 'project';
   return withPendingLock(repo.rootKey, opts.mycoHome, () => {
     if (appendJoined(repo, opts, write)) return 'project';
-    const dir = pendingDir(repo.rootKey, opts.mycoHome);
-    ensureMemberDir(dir, opts.mycoHome);
-    ensurePendingMeta(repo, opts, dir);
-    const spool = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir });
+    const dir = ensurePendingMeta(repo, opts);
+    const spool = new MemberSpool(null, { mycoHome: opts.mycoHome, dir });
     if (recordsIn(spool) >= PENDING_MAX_RECORDS) {
       recordHeldEnd(repo, 'full', opts.mycoHome, opts.now);
       return 'full';
@@ -225,12 +323,21 @@ export function appendPendingTurnEnd(
  * Discard a repository's held capture once its first record is older than the TTL, and the leftovers of one already
  * moved (blobs a hook staged as the move ran) once they are as old. Whether anything was discarded.
  */
-export function expirePending(rootKey: string, opts: { mycoHome: string; now: number }): boolean {
-  return withPendingLock(rootKey, opts.mycoHome, () => expirePendingUnlocked(rootKey, opts));
+export function expirePending(rootKey: string, opts: { mycoHome: string; now: number; serverUrl?: string }): boolean {
+  return withPendingLock(rootKey, opts.mycoHome, () => {
+    if (opts.serverUrl === undefined) {
+      return pendingPathsFor(rootKey, opts.mycoHome).map((dir) => expirePath(dir, opts)).some(Boolean);
+    }
+    return expireOne(rootKey, opts);
+  });
 }
 
-function expirePendingUnlocked(rootKey: string, opts: { mycoHome: string; now: number }): boolean {
-  const dir = pendingDir(rootKey, opts.mycoHome);
+function expireOne(rootKey: string, opts: { mycoHome: string; now: number; serverUrl?: string }): boolean {
+  return expirePath(pendingDir(rootKey, opts.mycoHome, opts.serverUrl), opts);
+}
+
+function expirePath(dir: string, opts: { mycoHome: string; now: number }): boolean {
+  assertMemberPathContained(dir, opts.mycoHome);
   const meta = readMeta(dir);
   let since: number;
   if (meta !== null) {
@@ -238,25 +345,37 @@ function expirePendingUnlocked(rootKey: string, opts: { mycoHome: string; now: n
     since = meta.createdAt;
   }
   else {
-    if (hasPendingCapture(rootKey, opts.mycoHome)) return false;
+    if (hasPendingCaptureAt(dir, opts.mycoHome)) return false;
     try { since = fs.statSync(dir).mtimeMs; } catch { return false; }
   }
   if (opts.now - since < PENDING_TTL_MS) return false;
-  if (liveReferencesPending(rootKey, opts.mycoHome)) return false;
+  if (liveReferencesPending(dir, opts.mycoHome)) return false;
   fs.rmSync(dir, { recursive: true, force: true });
   if (meta !== null) recordHeldEnd(meta, 'expired', opts.mycoHome, opts.now);
   return true;
 }
 
 /** Keep pending staged bytes while any live journal still needs them. */
-function liveReferencesPending(rootKey: string, mycoHome: string): boolean {
-  const sourceDir = path.resolve(pendingDir(rootKey, mycoHome), BLOBS_DIRNAME);
+function liveReferencesPending(pendingPath: string, mycoHome: string): boolean {
+  const sourceDir = path.resolve(pendingPath, BLOBS_DIRNAME);
   const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
-  let projectIds: string[];
-  try { projectIds = fs.readdirSync(spoolRoot).filter(isProjectId); }
+  let names: string[];
+  try { names = fs.readdirSync(spoolRoot); }
   catch { return !pathIsAbsent(spoolRoot); }
-  for (const projectId of projectIds) {
-    const live = new MemberSpool(projectId, { mycoHome, initialize: false });
+  const spoolDirs: string[] = [];
+  for (const name of names) {
+    const child = path.join(spoolRoot, name);
+    if (isProjectId(name)) {
+      spoolDirs.push(child);
+    } else if (DEPLOYMENT_KEY.test(name)) {
+      assertMemberPathContained(child, mycoHome);
+      try { spoolDirs.push(...fs.readdirSync(child).filter(isProjectId).map((projectId) => path.join(child, projectId))); }
+      catch { return true; }
+    }
+  }
+  for (const dir of spoolDirs) {
+    assertMemberPathContained(dir, mycoHome);
+    const live = new MemberSpool(null, { mycoHome, dir, initialize: false });
     let sessions: string[];
     try { sessions = fs.readdirSync(live.dir).filter((name) => name.endsWith('.jsonl') && name !== REFUSED_LOG_FILE).map((name) => name.slice(0, -'.jsonl'.length)); }
     catch { if (pathIsAbsent(live.dir)) continue; return true; }
@@ -268,7 +387,10 @@ function liveReferencesPending(rootKey: string, mycoHome: string): boolean {
       const first = ack.ok ? ack.state.highWater : 0;
       for (const record of journal.records.slice(first)) {
         const file = record?._blobSource?.path;
-        if (file !== undefined && path.relative(sourceDir, path.resolve(file)).split(path.sep)[0] !== '..' && !path.isAbsolute(path.relative(sourceDir, path.resolve(file)))) return true;
+        if (file !== undefined) {
+          const relative = path.relative(sourceDir, path.resolve(file));
+          if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) return true;
+        }
       }
     }
   }
@@ -278,28 +400,35 @@ function liveReferencesPending(rootKey: string, mycoHome: string): boolean {
 /** Discard everything held for a repository, under its lock: `myco member leave` opted it out. */
 export function discardPending(rootKey: string, mycoHome: string): void {
   withPendingLock(rootKey, mycoHome, () => {
-    fs.rmSync(pendingDir(rootKey, mycoHome), { recursive: true, force: true });
-    clearHeldEnd(rootKey, mycoHome);
+    for (const dir of pendingPathsFor(rootKey, mycoHome)) {
+      assertMemberPathContained(dir, mycoHome);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const root = pendingRoot(mycoHome);
+    fs.rmSync(endedPath(rootKey, mycoHome), { force: true });
+    for (const name of fs.readdirSync(root)) if (DEPLOYMENT_KEY.test(name)) {
+      const parent = path.join(root, name);
+      try { if (!fs.lstatSync(parent).isDirectory()) continue; } catch { continue; }
+      const file = path.join(parent, `${rootKey}.ended.json`);
+      assertMemberPathContained(file, mycoHome);
+      fs.rmSync(file, { force: true });
+    }
   });
 }
 
 /** Every repository whose capture is waiting, oldest first; expired ones are discarded on the way. */
 export function listPending(opts: { mycoHome: string; now: number }): PendingSummary[] {
-  let keys: string[];
-  try {
-    keys = fs.readdirSync(pendingRoot(opts.mycoHome)).filter((name) => /^[0-9a-f]{16,64}$/.test(name));
-  } catch {
-    return [];
-  }
   const found: PendingSummary[] = [];
-  for (const rootKey of keys) {
-    if (expirePending(rootKey, opts)) continue;
-    const dir = pendingDir(rootKey, opts.mycoHome);
-    const meta = readMeta(dir);
-    if (meta === null) continue;
-    const spool = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir, initialize: false });
-    const sessions = spool.sessionIds();
-    found.push({ rootKey, root: meta.root, createdAt: meta.createdAt, sessions: sessions.length, records: sessions.reduce((n, id) => n + spool.readRecords(id).length, 0) });
+  for (const { rootKey, serverUrl, dir } of pendingLocations(opts.mycoHome)) {
+    withPendingLock(rootKey, opts.mycoHome, () => {
+      if (expirePath(dir, opts)) return;
+      const meta = readMeta(dir);
+      if (meta === null) return;
+      const spool = new MemberSpool(null, { mycoHome: opts.mycoHome, dir, initialize: false });
+      const sessions = spool.sessionIds();
+      found.push({ rootKey, root: meta.root, ...(serverUrl === undefined ? {} : { serverUrl }), createdAt: meta.createdAt,
+        sessions: sessions.length, records: sessions.reduce((n, id) => n + spool.readRecords(id).length, 0) });
+    });
   }
   return found.sort((a, b) => a.createdAt - b.createdAt);
 }
@@ -321,10 +450,12 @@ export function flushPending(rootKey: string, into: MemberSpool, opts: { mycoHom
 
 /** The move itself; the caller holds the repository's pending lock. */
 function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; now: number; deadline?: number }): number {
-  const dir = pendingDir(rootKey, opts.mycoHome);
+  const route = into.routing;
+  if (route === null) throw new Error('Pending capture requires a destination');
+  const dir = pendingDir(rootKey, opts.mycoHome, route.serverUrl);
   const meta = readMeta(dir);
-  if (meta === null) return 0;
-  const held = new MemberSpool(NO_PROJECT, { mycoHome: opts.mycoHome, dir, initialize: false });
+  if (meta === null || meta.serverUrl !== normalizedServerUrl(route.serverUrl)) return 0;
+  const held = new MemberSpool(null, { mycoHome: opts.mycoHome, dir, initialize: false });
   let moved = 0;
   let blocked = false;
   const journalSessions = new Set(held.sessionIds());
@@ -391,10 +522,10 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
     process.stderr.write(`[myco] member: pending capture loss counts could not move (${(err as Error).message}) — kept for retry\n`);
     return moved;
   }
-  clearHeldEnd(rootKey, opts.mycoHome);
+  clearHeldEnd(rootKey, opts.mycoHome, route.serverUrl);
   // Everything but the staged blobs goes now; a hook may be staging one as this runs, so they go with the TTL.
   for (const name of fs.readdirSync(dir)) if (name !== BLOBS_DIRNAME) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
-  if (!liveReferencesPending(rootKey, opts.mycoHome)) removeEmpty(dir);
+  if (!liveReferencesPending(dir, opts.mycoHome)) removeEmpty(dir);
   return moved;
 }
 

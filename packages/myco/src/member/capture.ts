@@ -246,7 +246,7 @@ export async function runMemberHook(
     }
 
     const pending = hold;
-    const spool = pending?.spool ?? new MemberSpool(credential.projectId, { mycoHome });
+    const spool = pending?.spool ?? new MemberSpool(credential, { mycoHome });
     if (pending === null && credential.root !== undefined) {
       try { restoreHeldReceiptsForHook(credential.root, sessionId, spool, { mycoHome, now: now() }); }
       catch (err) { process.stderr.write(`[myco] member: held receipts unavailable (${(err as Error).message}) — new capture continues\n`); }
@@ -318,7 +318,7 @@ export async function runMemberHook(
     }
     if ((pending === null || (capturedInProject && credential.projectId !== '')) && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
       const reason: KickReason = outcome.ends ?? 'capture';
-      const target = { projectId: credential.projectId, mycoHome, reason };
+      const target = { projectId: credential.projectId, serverUrl: credential.serverUrl, mycoHome, reason };
       // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a
       // sandbox, whose processes end with it: its other hooks only append, and its turn's and session's ends deliver
       // in-process. That holds after a join code is redeemed too, though the credential then resolves from the
@@ -363,13 +363,13 @@ const INLINE_WAIT_MS = 100;
  * the Deployment; and the rest of the session (a subagent's transcript still growing) is not this hook's to wait on.
  */
 async function shipInline(run: HookRun, opts: HookMainOptions, appended: HookAppended): Promise<void> {
-  const { projectId } = run.credential;
+  const { projectId, serverUrl } = run.credential;
   const entry = run.credential.source === 'registry' ? undefined : environmentEntry(run.credential, run.mycoHome);
-  const pass = helperPass(projectId, run.mycoHome, { fetch: opts.fetch, now: run.now, entry });
+  const pass = helperPass(run.credential, run.mycoHome, { fetch: opts.fetch, now: run.now, entry });
   for (;;) {
     const left = run.budget.deadline - run.now();
     if (left <= 0) return;
-    const result = await runHelper({ projectId, mycoHome: run.mycoHome, pass, now: run.now, deadlineMs: left, lingerMs: 0, noSuccessor: true });
+    const result = await runHelper({ projectId, serverUrl, mycoHome: run.mycoHome, pass, now: run.now, deadlineMs: left, lingerMs: 0, noSuccessor: true });
     if (result.endedBy !== 'busy') return;
     if (hookDelivered(run.spool, run.sessionId, appended)) return;
     if (run.budget.deadline - run.now() <= INLINE_WAIT_MS) return;

@@ -747,7 +747,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     const projectId = project.projectId;
     const ledger = new LegacyLedger(mycoHome, serverUrl, projectId);
     const done = ledger.read();
-    const spool = new MemberSpool(projectId, { mycoHome });
+    const spool = new MemberSpool({ projectId, serverUrl }, { mycoHome });
 
     // What a person deleted stays out of later transcript imports on this machine as well.
     const newlyDeleted = [...g.deleted].filter((id) => done.sources.get(id) !== 'deleted');

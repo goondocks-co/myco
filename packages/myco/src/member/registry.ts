@@ -19,6 +19,7 @@
  * Both files are written atomically under the registry lock and read fail-closed;
  * lookup is by the worktree-aware project root, exact match.
  */
+import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -245,6 +246,10 @@ export function readDeploymentMembership(serverUrl: string, mycoHome: string = r
     reportSkippedPrivateFile('deployment membership', file, { reason: 'malformed', detail: 'not a deployment membership' });
     return null;
   }
+  if (deploymentUrl(read.value.serverUrl) !== deploymentUrl(serverUrl)) {
+    reportSkippedPrivateFile('deployment membership', file, { reason: 'malformed', detail: 'destination mismatch' });
+    return null;
+  }
   return read.value;
 }
 
@@ -448,6 +453,7 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
   const write = () => {
     prepareRegistryDir(mycoHome);
+    pinLegacySpoolDestinationForProject(entry.projectId, mycoHome);
     const { membership, binding } = decompose(entry);
     // The membership is MERGED, never replaced. One membership serves every project
     // bound to a Deployment, so a write on behalf of one project must not discard what
@@ -507,6 +513,7 @@ export function removeRegistryEntry(root: string, mycoHome: string = resolveMyco
     if (!fs.existsSync(file)) return false;
     const read = readPrivateJson<ProjectBinding>(file);
     const serverUrl = read.ok && isBinding(read.value) ? read.value.serverUrl : null;
+    if (read.ok && isBinding(read.value)) pinLegacySpoolDestinationForProject(read.value.projectId, mycoHome);
     fs.unlinkSync(file);
     // The machine's default Deployment keeps its membership with no binding left: new repositories join through it.
     if (serverUrl !== null && !anyBindingMayName(serverUrl, mycoHome) && !isDefaultDeployment(serverUrl, mycoHome)) {
@@ -669,5 +676,5 @@ export type DeploymentMembershipResult =
 export function readDeploymentMembershipResult(serverUrl: string, mycoHome: string = resolveMycoHome()): DeploymentMembershipResult {
   const read = readPrivateJson<DeploymentMembership>(deploymentPath(serverUrl, mycoHome));
   if (!read.ok) return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable', reason: read.detail === undefined ? read.reason : `${read.reason} (${read.detail})` };
-  return isMembership(read.value) ? { status: 'present', membership: read.value } : { status: 'unavailable', reason: 'not a deployment membership' };
+  return isMembership(read.value) && deploymentUrl(read.value.serverUrl) === deploymentUrl(serverUrl) ? { status: 'present', membership: read.value } : { status: 'unavailable', reason: 'not a deployment membership' };
 }

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { deploymentKeyFor } from '@myco/member/registry.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE } from '@myco/member/spool.js';
 import { tempMycoHome } from './helpers/server.js';
 
@@ -24,7 +25,7 @@ beforeEach(() => {
   mycoHome = tempMycoHome();
   temps.push(mycoHome);
   process.env.MYCO_HOME = mycoHome;
-  spoolRoot = path.join(mycoHome, 'member', 'spool');
+  spoolRoot = path.join(mycoHome, 'member', 'spool', deploymentKeyFor('https://s'));
   fs.mkdirSync(spoolRoot, { recursive: true, mode: 0o700 });
   outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-outside-')));
   temps.push(outside);
@@ -52,7 +53,7 @@ function snapshot(dir: string): Array<[string, string, string]> {
 }
 
 /** A report's spool: built without making its directories, as `projectDiagnostics` builds it. */
-const reportSpool = (): MemberSpool => new MemberSpool('proj_1', { mycoHome, initialize: false });
+const reportSpool = (): MemberSpool => new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome, initialize: false });
 
 describe('a spool directory that leads outside the member root', () => {
   beforeEach(() => {

@@ -177,7 +177,7 @@ export async function warmProjectContext(
   opts: { mycoHome: string; fetch?: FetchLike; budget?: HookBudget; now?: () => number },
 ): Promise<number> {
   const now = opts.now ?? Date.now;
-  const spoolDir = spoolDirFor(membership.projectId, opts.mycoHome);
+  const spoolDir = spoolDirFor(membership, opts.mycoHome);
   const budget = opts.budget ?? deadlineBudget(now() + WARMED.length * CONTEXT_CAP_MS);
   const fetchImpl = watchingFeatures(opts.fetch ?? globalThis.fetch, { serverUrl: membership.serverUrl, spoolDir, mycoHome: opts.mycoHome, now });
   const client = new ServerClient(membership, fetchImpl);

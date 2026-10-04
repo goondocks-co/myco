@@ -77,7 +77,7 @@ describe('a repository\'s pending lock', () => {
   async function holdPendingLock(mycoHome: string, rootKey: string, holdMs: number): Promise<{ exited: Promise<number> }> {
     const script = path.join(mycoHome, 'hold.ts');
     const module = path.resolve('packages/myco/src/member/pending.ts');
-    fs.writeFileSync(script, `import { withPendingLock } from ${JSON.stringify(module)};\nwithPendingLock(${JSON.stringify(rootKey)}, ${JSON.stringify(mycoHome)}, () => { process.stdout.write('held'); const until = Date.now() + ${holdMs}; while (Date.now() < until) { /* hold */ } });\n`);
+    fs.writeFileSync(script, `import { withPendingLock } from ${JSON.stringify(module)};\nwithPendingLock(${JSON.stringify(rootKey)}, ${JSON.stringify(mycoHome)}, () => { process.stdout.write('held'); const until = Date.now() + ${holdMs}; while (Date.now() < until) { /* hold */ } }, 'https://s');\n`);
     const child = Bun.spawn([process.execPath, script], { stdout: 'pipe', stderr: 'ignore' });
     await (child.stdout as ReadableStream<Uint8Array>).getReader().read();
     return { exited: child.exited };
@@ -86,7 +86,7 @@ describe('a repository\'s pending lock', () => {
   it('waits for a pending writer to append, then retries a busy migration after that writer leaves', async () => {
     const mycoHome = home();
     const rootKey = 'b'.repeat(16);
-    const repo = { root: path.join(mycoHome, 'repo'), rootKey };
+    const repo = { root: path.join(mycoHome, 'repo'), rootKey, serverUrl: 'https://s' };
     const event = { envelope: { eventId: '00000000-0000-4000-8000-000000000001', sessionId: 's', kind: 'session.start', createdAt: 1, channel: 'cli', producer: { adapter: 'claude-code', version: '1' }, payload: {} } } as never;
     const appendHolder = await holdPendingLock(mycoHome, rootKey, 1_500);
     const appendStarted = Date.now();
@@ -94,7 +94,7 @@ describe('a repository\'s pending lock', () => {
     expect(Date.now() - appendStarted).toBeGreaterThanOrEqual(1_000);
     await appendHolder.exited;
 
-    const target = new MemberSpool('proj_1', { mycoHome });
+    const target = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const migrationHolder = await holdPendingLock(mycoHome, rootKey, 1_500);
     const migrationStarted = Date.now();
     expect(flushPending(rootKey, target, { mycoHome, now: Date.now() })).toBe(0);

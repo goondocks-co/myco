@@ -43,7 +43,7 @@ const prompts = (ctx: EnvelopeContext, n: number) => Array.from({ length: n }, (
 describe('member spool', () => {
   it('appends before sending and the wire carries only the seven envelope fields — never a sidecar or the buffer timestamp', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-wire');
     const big = promptEvent(ctx, { promptId: mintId(), text: 'z'.repeat(300_000) });
     spool.append('sess-wire', big);
@@ -72,7 +72,7 @@ describe('member spool', () => {
 
   it('advances the high-water on acked and on a refusal final for the record, logs refusals without payloads, and deletes the file only when all are acknowledged', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-hw');
     const [a, b, c] = prompts(ctx, 3);
     b.envelope.eventId = 'not an id'; // a refusal of the record itself, in the middle
@@ -90,7 +90,7 @@ describe('member spool', () => {
 
   it('a pass that ends on retry leaves the tail spooled, sets the latch, and the next pass (probe) resumes from the high-water without duplicates', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-retry');
     for (const e of prompts(ctx, 5)) spool.append('sess-retry', e);
     let calls = 0;
@@ -115,7 +115,7 @@ describe('member spool', () => {
   });
 
   it('the latch backs off 30 s → ×2 → 10 min and honours a longer retry-after', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     let t = 0;
     let backoff = OFFLINE_BACKOFF_INITIAL_MS;
     for (let i = 0; i < 8; i++) {
@@ -136,7 +136,7 @@ describe('member spool', () => {
   it('parked on an older server\'s quota ends the pass with the quota line on stderr and keeps every event spooled; nothing reaches refused.jsonl', async () => {
     const rig = await memberRig();
     const older = olderServerAtQuota(rig.fetch);
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-parked');
     for (const e of prompts(ctx, 3)) spool.append('sess-parked', e);
     const r = await spool.drainSession('sess-parked', clientFor(rig, older.fetch), unboundedBudget());
@@ -149,7 +149,7 @@ describe('member spool', () => {
     const rig = await memberRig();
     rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, rig.tokenId);
     const older = olderServerAtQuota(rig.fetch);
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-parked-drains');
     for (const e of prompts(ctx, 3)) spool.append('sess-parked-drains', e);
     expect(await spool.drainSession('sess-parked-drains', clientFor(rig, older.fetch), unboundedBudget())).toMatchObject({ remaining: 3, endedBy: 'parked' });
@@ -165,7 +165,7 @@ describe('member spool', () => {
 
   it('a 401 without the header ends the pass as unauthorized; a 429 without the header after a 401 in the same pass is unauthorized too', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-401');
     for (const e of prompts(ctx, 2)) spool.append('sess-401', e);
     const r = await spool.drainSession('sess-401', clientFor(rig, rig.fetch, 'x'.repeat(43)), unboundedBudget());
@@ -197,7 +197,7 @@ describe('member spool', () => {
 
   it('a protocol mismatch on a spool record is a named diagnostic and is not drained; a 409 names the server window', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-proto');
     const [e] = prompts(ctx, 1);
     spool.append('sess-proto', e);
@@ -215,7 +215,7 @@ describe('member spool', () => {
 
   it('two concurrent drains of one session: the lease admits one; every event is sent once', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-lease');
     for (const e of prompts(ctx, 6)) spool.append('sess-lease', e);
     const posts = new Map<string, number>();
@@ -242,7 +242,7 @@ describe('member spool', () => {
   });
 
   it('the refused log holds {eventId, sessionId, kind, code, reason, at} only and stays under its cap', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const big = 'r'.repeat(4096);
     for (let i = 0; i < 400; i++) spool.appendRefused({ eventId: mintId(), sessionId: 's', kind: 'prompt', code: 'refused', reason: big, at: i });
     const file = path.join(spool.dir, 'refused.jsonl');
@@ -254,7 +254,7 @@ describe('member spool', () => {
 
   it('the transcript-segment path ends its passes through the same policy: route_missing latches and names itself', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s/v9' }, { mycoHome });
     const sessionId = 'sess-ship';
     const file = path.join(mycoHome, 'ship.jsonl');
     fs.writeFileSync(file, '{"type":"user"}\n');
@@ -278,7 +278,7 @@ describe('member spool', () => {
     const rig = await memberRig();
     rig.env.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, rig.tokenId);
     const older = olderServerAtQuota(rig.fetch);
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-ship-parked';
     const file = path.join(mycoHome, 'ship-parked.jsonl');
     fs.writeFileSync(file, '{"type":"user"}\n{"type":"assistant"}\n');
@@ -301,7 +301,7 @@ describe('member spool', () => {
 
   it('the transcript pointer moves only its own transcript: a value committed mid-flight does not regress', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-cas-1';
     const file = path.join(mycoHome, 'cas.jsonl');
     fs.writeFileSync(file, '{"type":"user"}\n{"type":"assistant"}\n');
@@ -332,7 +332,7 @@ describe('member spool', () => {
 
   it('the transcript pointer moves only its own transcript: a rotation committed mid-flight survives untouched', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-cas-2';
     const file = path.join(mycoHome, 'cas2.jsonl');
     fs.writeFileSync(file, '{"type":"user"}\n{"type":"assistant"}\n');
@@ -360,7 +360,7 @@ describe('member spool', () => {
 
   it('the backlog walk stops at the first outcome that will answer the same way for every other session', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s/v9' }, { mycoHome });
     for (const sessionId of ['sess-a', 'sess-b', 'sess-c']) {
       spool.append(sessionId, promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'x' }));
     }
@@ -380,7 +380,7 @@ describe('member spool', () => {
 
   it('a hook budget stops the pass before the deadline and leaves the rest spooled', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-budget');
     for (const e of prompts(ctx, 4)) spool.append('sess-budget', e);
     const start = 1_000_000;

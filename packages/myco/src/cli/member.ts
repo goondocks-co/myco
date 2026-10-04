@@ -33,6 +33,8 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
 import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
+import { listLegacySpools } from '../member/spool-migration.js';
+import { listRoutingEntries } from '../member/routing.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { drainEntryBacklog, type BacklogReport } from '../member/backlog.js';
@@ -141,7 +143,7 @@ const homeChoiceFor = (deps: MemberCliDeps, cwd?: string): ResolvedMycoHome =>
 
 function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry[] {
   const mycoHome = homeFor(deps);
-  if (args.includes('--all')) return listRegistryEntries(mycoHome);
+  if (args.includes('--all')) return listRoutingEntries(mycoHome);
   const root = resolveMemberProjectRoot(deps.cwd);
   const entry = readRegistryEntry(root, mycoHome);
   if (!entry) {
@@ -828,11 +830,11 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
     relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, `${manifest.displayName}'s MCP server`, out, err);
   }
   if (!args.includes('--purge')) {
-    const depth = new MemberSpool(entry.projectId, { mycoHome }).sessionIds().length;
+    const depth = new MemberSpool(entry, { mycoHome }).sessionIds().length;
     out(`spool kept: ${depth} session file(s) — \`myco member drain\` after re-joining, or \`myco member leave --purge\` to discard`);
     return true;
   }
-  fs.rmSync(new MemberSpool(entry.projectId, { mycoHome }).dir, { recursive: true, force: true });
+  fs.rmSync(new MemberSpool(entry, { mycoHome }).dir, { recursive: true, force: true });
   out('spool discarded');
   if (clearJoinRefusals(mycoHome)) out('recorded join refusals cleared: a join code is presented again');
   for (const manifest of loadManifests()) {
@@ -861,7 +863,7 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
     for (const line of backlogLines(entry.projectId, backlog)) out(line);
     // Retention follows the drain so acknowledged archive copies can be removed.
-    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now());
+    const retention = applySpoolRetention(new MemberSpool(entry, { mycoHome }), now());
     if (retention.releasedBlobs > 0) out(`${entry.projectId}: released ${retention.releasedBlobs} staged file(s)`);
     results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
   }
@@ -952,6 +954,9 @@ function reportRefusedHooks(out: (line: string) => void, deps: MemberCliDeps): v
 function reportAutoJoin(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
   const mycoHome = homeFor(deps);
   const now = (deps.now ?? Date.now)();
+  for (const legacy of listLegacySpools(mycoHome)) {
+    out(`legacy capture: ${legacy.projectId} — ${legacy.records} event(s) in ${legacy.sessions} session(s); ${legacy.destination?.serverUrl ?? 'destination ambiguous'}; ${legacy.reason ?? 'retained locally with migration receipts'}`);
+  }
   const held = readDefaultDeployment(mycoHome);
   out(`default:    ${held === null ? 'none — `myco login` records the Deployment new repositories join' : `${held.serverUrl} (new repositories join it)`}`);
   const mine = (root: string): boolean => selection.all || (selection.root !== null && path.resolve(root) === path.resolve(selection.root));
@@ -962,10 +967,10 @@ function reportAutoJoin(out: (line: string) => void, selection: { root: string |
     out(`not joined: ${state.root} — ${why} (last tried ${when(state.attemptAt)})`);
   }
   for (const pending of listPending({ mycoHome, now }).filter((p) => mine(p.root))) {
-    out(`pending:    ${pending.root} — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`);
+    out(`pending:    ${pending.root} (${pending.serverUrl ?? 'destination unassigned'}) — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`);
   }
   for (const end of listHeldEnds(mycoHome).filter((e) => mine(e.root))) {
-    out(`held no more: ${end.root} — ${end.held === 'full' ? `the ${PENDING_MAX_RECORDS} events kept for it were reached` : `capture older than ${PENDING_TTL_MS / 86_400_000} days was discarded`} (${when(end.at)})`);
+    out(`held no more: ${end.root} (${end.serverUrl ?? 'destination unassigned'}) — ${end.held === 'full' ? `the ${PENDING_MAX_RECORDS} events kept for it were reached` : `capture older than ${PENDING_TTL_MS / 86_400_000} days was discarded`} (${when(end.at)})`);
   }
 }
 

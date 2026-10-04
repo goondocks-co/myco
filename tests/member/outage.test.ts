@@ -32,7 +32,7 @@ const SESSIONS = 8;
 describe('outage convergence', () => {
   it('1 000 events across outage/503/429/timeout and a 30-day skip → rows == events, zero duplicates', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessions = Array.from({ length: SESSIONS }, (_, i) => `sess-outage-${i}`);
     const ctxs = new Map(sessions.map((s) => [s, { agent: 'claude-code', sessionId: s, stage: spool.stagerFor(s), version: '2.0.0-test' } as EnvelopeContext]));
 

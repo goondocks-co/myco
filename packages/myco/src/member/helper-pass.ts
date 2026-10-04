@@ -7,15 +7,17 @@ import { drainEntryBacklog } from './backlog.js';
 import { deadlineBudget, type HookBudget } from './budget.js';
 import type { HelperPass } from './helper.js';
 import { prefetchContext, watchingFeatures } from './prefetch.js';
-import { refreshDue, refreshMemberCredential } from './refresh.js';
-import { listRegistryEntries, readRegistryEntry, type RegistryEntry } from './registry.js';
+import { refreshDue } from './refresh.js';
+import { type RegistryEntry } from './registry.js';
 import { applySpoolRetention } from './retention.js';
+import { liveRoutingEntry, routingEntry, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
+import { refreshMembership } from './refresh.js';
 import { MemberSpool } from './spool.js';
 import { backfillTranscriptPrompts } from './transcript-prompts.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
 /** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
-export function helperPass(projectId: string, mycoHome: string, deps: {
+export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps: {
   fetch?: FetchLike; now?: () => number;
   /** The membership to deliver under, for a credential the registry does not hold (a sandbox's environment). */
   entry?: RegistryEntry;
@@ -23,12 +25,13 @@ export function helperPass(projectId: string, mycoHome: string, deps: {
   const now = deps.now ?? Date.now;
   return async (deadline, { force }) => {
     // The project's membership: any root this home connects to it, since every root of one project shares its spool.
-    const entry = deps.entry ?? listRegistryEntries(mycoHome).find((candidate) => candidate.projectId === projectId);
-    if (entry === undefined) {
-      process.stderr.write(`[myco] helper: this home holds no membership for ${projectId}; nothing to ship\n`);
+    const entry = deps.entry ?? routingEntry(route, mycoHome);
+    if (entry == null) {
+      process.stderr.write(`[myco] helper: this home holds no membership for ${route.serverUrl}/${route.projectId}; nothing to ship\n`);
       return;
     }
-    const spool = new MemberSpool(projectId, { mycoHome });
+    if (!sameRoutingIdentity(entry, route)) throw new Error('Helper membership does not match its destination');
+    const spool = new MemberSpool(route, { mycoHome });
     const budget = deadlineBudget(deadline);
     // Every answer the Deployment gives this pass keeps the features the hooks emit by current.
     const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now });
@@ -54,6 +57,6 @@ export function helperPass(projectId: string, mycoHome: string, deps: {
 /** The membership with its credential renewed first when its window is open, as the backlog's delivery does. */
 async function liveEntry(entry: RegistryEntry, mycoHome: string, fetchImpl: FetchLike, now: () => number, budget: HookBudget): Promise<RegistryEntry> {
   if (!refreshDue(entry, now())) return entry;
-  await refreshMemberCredential(entry.root, { mycoHome, fetch: fetchImpl, now, budget });
-  return readRegistryEntry(entry.root, mycoHome) ?? entry;
+  await refreshMembership(entry.serverUrl, { mycoHome, fetch: fetchImpl, now, budget, projectId: entry.projectId });
+  return liveRoutingEntry(entry, mycoHome);
 }

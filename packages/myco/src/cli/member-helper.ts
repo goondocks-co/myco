@@ -43,8 +43,9 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
   recordStartingJob();
   const projectId = args.includes('--join') ? JOIN_BUCKET : flag(args, '--project');
   const mycoHome = flag(args, '--home');
-  if (projectId === undefined || (projectId !== JOIN_BUCKET && !isProjectId(projectId)) || mycoHome === undefined || mycoHome === '') {
-    process.stderr.write('usage: myco member helper (--project <project id> | --join) --home <MYCO_HOME>\n');
+  const serverUrl = flag(args, '--server');
+  if (projectId === undefined || (projectId !== JOIN_BUCKET && !isProjectId(projectId)) || (projectId !== JOIN_BUCKET && !serverUrl) || mycoHome === undefined || mycoHome === '') {
+    process.stderr.write('usage: myco member helper (--project <project id> --server <Deployment URL> | --join) --home <MYCO_HOME>\n');
     process.exitCode = 2;
     return null;
   }
@@ -54,21 +55,22 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
   process.env.MYCO_HOME = mycoHome;
   const restoreStderr = deps.keepStderr || args.includes('--stderr') ? () => {} : routeStderrToHelperLog(mycoHome, projectId);
   try {
-    return await helperPasses(projectId, mycoHome, args.includes('--after-failure'), deps);
+    return await helperPasses(projectId, serverUrl, mycoHome, args.includes('--after-failure'), deps);
   } finally {
     restoreStderr();
     if (priorHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = priorHome;
   }
 }
 
-async function helperPasses(projectId: string, mycoHome: string, afterFailure: boolean, deps: HelperVerbDeps): Promise<HelperRunResult> {
+async function helperPasses(projectId: string, serverUrl: string | undefined, mycoHome: string, afterFailure: boolean, deps: HelperVerbDeps): Promise<HelperRunResult> {
   const now = deps.now ?? Date.now;
   const started = now();
-  const pass = deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass(projectId, mycoHome, deps));
+  const pass = deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass({ projectId, serverUrl: serverUrl! }, mycoHome, deps));
   let result: HelperRunResult;
   try {
     result = await runHelper({
       projectId,
+      serverUrl,
       mycoHome,
       now,
       sleep: deps.sleep,
@@ -98,7 +100,7 @@ async function helperPasses(projectId: string, mycoHome: string, afterFailure: b
   process.stderr.write(`[myco] helper: ${result.passes} pass(es) in ${now() - started} ms, ended ${result.endedBy}${successor}\n`);
   // The other projects this home holds work for: their helpers start on this hook, not on their own next session.
   if (result.endedBy !== 'busy') {
-    for (const { projectId: other, outcome } of kickWaitingProjects(mycoHome, projectId, { now, spawn: deps.spawn })) {
+    for (const { projectId: other, outcome } of kickWaitingProjects(mycoHome, serverUrl === undefined ? projectId : { projectId, serverUrl }, { now, spawn: deps.spawn })) {
       process.stderr.write(`[myco] helper: kicked ${other}, which holds undelivered work (${outcome.kind})\n`);
     }
   }

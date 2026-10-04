@@ -33,7 +33,7 @@ const entry = (): RegistryEntry => ({
 function logRefusals(records: readonly Record<string, unknown>[]): RegistryEntry {
   const e = entry();
   writeRegistryEntry(e, { mycoHome });
-  const spool = new MemberSpool('proj_1', { mycoHome });
+  const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://srv.example/' }, { mycoHome });
   fs.mkdirSync(spool.dir, { recursive: true });
   fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), records.map((r) => JSON.stringify(r)).join('\n'), 'utf-8');
   return e;
@@ -91,7 +91,7 @@ describe('an offline latch the report cannot date', () => {
   it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])('reports an invalid backoff %s as unreadable', (backoffMs) => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://srv.example/' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, OFFLINE_LATCH_FILE),
       JSON.stringify({ since: NOW, nextProbeAt: NOW + 1000, backoffMs }), { mode: 0o600 });
 
@@ -104,7 +104,7 @@ describe('an offline latch the report cannot date', () => {
   it('reads as no latch rather than as one holding an instant nothing renders', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://srv.example/' }, { mycoHome });
     fs.mkdirSync(spool.dir, { recursive: true });
     fs.writeFileSync(path.join(spool.dir, OFFLINE_LATCH_FILE),
       JSON.stringify({ since: 1e20, nextProbeAt: 1e20, backoffMs: 1000 }), { mode: 0o600 });
@@ -118,7 +118,7 @@ describe('an offline latch the report cannot date', () => {
   it('keeps a latch whose instants a reader can date', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://srv.example/' }, { mycoHome });
     fs.mkdirSync(spool.dir, { recursive: true });
     fs.writeFileSync(path.join(spool.dir, OFFLINE_LATCH_FILE),
       JSON.stringify({ since: NOW, nextProbeAt: NOW + 1000, backoffMs: 1000 }), { mode: 0o600 });

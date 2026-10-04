@@ -125,7 +125,7 @@ describe('a credential used from two places', () => {
     const next = await runHook('session-start', { session_id: 'sess-owner-next', hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: spy.fetch });
     expect(next.stdout).toContain(TWO_PLACES);
     expect(next.stdout).toContain('myco login <link>');
-    expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-owner')).toBe(1);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth('sess-owner')).toBe(1);
   });
 
   it('a thief who rotated the head after the owner had, before the owner used its successor: the owner\'s passed-over successor, refused, rotates — and the lineage is revoked the same way', async () => {
@@ -183,7 +183,7 @@ describe('a member that could not deliver', () => {
     expect(segmentsOf(rig, 'sess-back')).toBe(1);
     await parseAll(rig);
     expect(prompts(rig)).toEqual(['after the holiday']);
-    expect(new MemberSpool(PROJECT, { mycoHome }).sessionIds()).toEqual([]);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).sessionIds()).toEqual([]);
   });
 
   it('renews a lapsed token of a lineage that started long past the inactivity bound but kept refreshing', async () => {
@@ -220,7 +220,7 @@ describe('a member that could not deliver', () => {
     expect(next.stdout).toContain(INACTIVE);
     expect(rig.rows('member_credentials')).toBe(1);
     expect(rig.rows('sessions')).toBe(0);
-    expect(new MemberSpool(PROJECT, { mycoHome }).depth('sess-ended')).toBe(1);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth('sess-ended')).toBe(1);
 
     // Terminal: a later hook asks the refresh route nothing, and still says so.
     const refreshes = spy.requests.filter((r) => r.path === '/tokens/refresh').length;
@@ -240,7 +240,7 @@ describe('a member that could not deliver', () => {
     expect(refused.stop.stderr).toContain(NOT_DELIVERED);
     expect(rig.rows('sessions')).toBe(0);
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     expect(spool.depth('sess-refused')).toBe(3);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-refused']);
 
@@ -290,7 +290,7 @@ describe('a member that could not deliver', () => {
         ['session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }],
         ['stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }],
       ] as const) await runHook(hook, { session_id: 'sess-early', ...raw }, { helpers: 'run', fetch: offline, now: () => longAgo });
-      const spool = new MemberSpool(PROJECT, { mycoHome });
+      const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
       expect(spool.transcriptBacklogIds()).toEqual(['sess-early']);
 
       // Still offline, 32 days on: a turn end of another session runs retention and must not quarantine what nothing could deliver.
@@ -312,7 +312,7 @@ describe('a member that could not deliver', () => {
   it('walks the session that kicked first, and leaves the backlog its pass had no time for to its successor', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     revoke(rig, rig.tokenId);
     await session(rig.fetch, 'sess-waiting', 'waiting');
     const fresh = await issueMemberToken(rig.env.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
@@ -352,7 +352,7 @@ describe('a member that could not deliver', () => {
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, `${sessionId}.jsonl`);
       fs.copyFileSync(transcript(sessionId, 'left behind'), file);
-      const spool = new MemberSpool(PROJECT, { mycoHome });
+      const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
       const inode = Number(fs.statSync(file).ino);
       updateSessionState(spool.dir, sessionId, (s) => {
         s.transcript = transcriptPointerFor(file, 'machine_1')!;
@@ -388,7 +388,7 @@ describe('the backlog walk', () => {
 
   it('leaves a session whose lease another process holds to that process, and delivers it once the lease is free', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     stranded(spool, 'sess-held');
     const spy = recordingFetch(rig.fetch);
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
@@ -406,7 +406,7 @@ describe('the backlog walk', () => {
   it('ships a turn end\'s own transcript only under the session lease', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const tx = transcript('sess-own', 'own');
     await spool.withSessionLease('sess-own', () => runHook('stop', { session_id: 'sess-own', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: rig.fetch }));
     expect(segmentsOf(rig, 'sess-own')).toBe(0);
@@ -416,7 +416,7 @@ describe('the backlog walk', () => {
   it('gives up on a transcript the Deployment refuses for good: logged once, never uploaded again, by a turn end or by `member drain`', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     stranded(spool, 'sess-refused');
     const refusing: typeof rig.fetch = async (input, init) => {
       const req = new Request(input, init);
@@ -439,7 +439,7 @@ describe('the backlog walk', () => {
 
   it('keeps and reports a session no single symbiont can be named for, and does not search for one again on every turn end', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const file = stranded(spool, 'sess-unnamed', null);
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, rig.fetch);
 
@@ -467,7 +467,7 @@ describe('the backlog walk', () => {
   it('delivers the rest of the backlog when a turn end could not deliver its own session: each session is held on its own', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     stranded(spool, 'sess-waiting');
     // The Deployment answers this turn end's own events with a reslice: nothing it cannot retry, and no latch, yet not delivered.
     const ownRefused: typeof rig.fetch = async (input, init) => {
@@ -526,7 +526,7 @@ describe('the backlog walk', () => {
 
   it('sends a transcript again after a transient refusal — one clock_skew, then a working Deployment delivers it whole — waiting out the backoff between', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const file = stranded(spool, 'sess-skew');
     const spy = recordingFetch(refusingSegments(rig, 'clock_skew', 1));
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, spy.fetch);
@@ -554,7 +554,7 @@ describe('the backlog walk', () => {
   it('never uploads a transcript refused for good again, not even from its own session\'s turn end', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const tx = transcript('sess-gone', 'refused for good');
     const spy = recordingFetch(refusingSegments(rig, 'session_tombstoned', 1));
     await runHook('stop', { session_id: 'sess-gone', hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'x' }, { helpers: 'run', fetch: spy.fetch });
@@ -569,7 +569,7 @@ describe('the backlog walk', () => {
   it('walks past a session stuck on its own records and leaves it active while delivering later sessions', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const longAgo = Date.now() - 40 * DAY_MS;
     const ctx = (sessionId: string) => ({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), now: () => longAgo });
     const { sessionStartEvent } = await import('@myco/member/envelope.js');
@@ -589,7 +589,7 @@ describe('the backlog walk', () => {
 
   it('walks the session written to last first when asked, ahead of where the last walk ended', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = (id: string) => ({ agent: 'copilot', sessionId: id, stage: spool.stagerFor(id), version: 't' });
     // The last walk ended on sess-a, so the next would start with sess-b; sess-a is the one written to last.
     spool.append('sess-b', promptEvent(ctx('sess-b'), { promptId: mintId(), text: 'b' }));
@@ -603,7 +603,7 @@ describe('the backlog walk', () => {
 
   it('starts each walk after the session the last one ended on, so a session that spends the whole budget cannot starve the ones after it', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const { sessionStartEvent } = await import('@myco/member/envelope.js');
     for (const id of ['sess-a-slow', 'sess-b']) spool.appendAndRecord(id, [sessionStartEvent({ agent: 'claude-code', sessionId: id, stage: spool.stagerFor(id) }, { startedAt: Date.now() })]);
     let t = Date.now();

@@ -67,7 +67,7 @@ const entry = (over: Partial<RegistryEntry> = {}): RegistryEntry => ({
 
 /** A refusal log written straight to disk, so a line can be malformed the way a damaged file is. */
 function writeRefusedLog(projectId: string, lines: readonly string[]): void {
-  const spool = new MemberSpool(projectId, { mycoHome });
+  const spool = new MemberSpool({ projectId: projectId, serverUrl: 'https://myco.example.com' }, { mycoHome });
   fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), lines.join('\n') + '\n', { mode: 0o600 });
 }
 
@@ -179,7 +179,7 @@ describe('the latch is reported by its own three fields', () => {
   it('carries only since, nextProbeAt and backoffMs', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     spool.markOffline(NOW);
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(Object.keys(facts.latch ?? {}).sort()).toEqual(['backoffMs', 'nextProbeAt', 'since']);
@@ -254,7 +254,7 @@ describe('a log that could not be read is not an empty one', () => {
   it('says so, rather than reporting no refusals', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     // A directory in place of the log: the read fails for a reason that is not absence.
     fs.mkdirSync(path.join(spool.dir, 'refused.jsonl'));
     const facts = projectDiagnostics(e, mycoHome, NOW);
@@ -325,7 +325,7 @@ describe('a spool a report could not read', () => {
   it('reports a session whose own file is unreadable as unknown, not as nothing pending', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.mkdirSync(spool.dir, { recursive: true });
     // A directory where the session's records belong: the read fails for a reason that is not absence.
     fs.mkdirSync(path.join(spool.dir, 'sess-a.jsonl'));
@@ -342,7 +342,7 @@ describe('a spool a report could not read', () => {
     writeRegistryEntry(e, { mycoHome });
     // A real append: it writes the records AND the session state the report
     // reads the acknowledgement from, both under the same lock.
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     const ctx: EnvelopeContext = { agent: 'claude-code', sessionId: 'sess-a', stage: spool.stagerFor('sess-a'), version: '2.0.0-test' };
     spool.append('sess-a', promptEvent(ctx, { promptId: mintId(), text: 'a turn' }));
     expect(fs.existsSync(path.join(spool.dir, 'sess-a.state.json'))).toBe(true);
@@ -368,7 +368,7 @@ describe('a spool a report could not read', () => {
   it('reports a spool directory it could not read as unknown, leaving the layout as it found it', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const broken = spoolDirFor('proj_1', mycoHome);
+    const broken = spoolDirFor({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, mycoHome);
     fs.rmSync(broken, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(broken), { recursive: true });
     // A file where the spool directory belongs: listing it fails with ENOTDIR.
@@ -386,7 +386,7 @@ describe('a spool a report could not read', () => {
   it('reads an absent spool directory as the empty one it is', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    fs.rmSync(spoolDirFor('proj_1', mycoHome), { recursive: true, force: true });
+    fs.rmSync(spoolDirFor({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, mycoHome), { recursive: true, force: true });
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.spool).toMatchObject({ readable: true, sessionFiles: 0, unacknowledgedTotal: 0 });
@@ -397,7 +397,7 @@ describe('a refusal record short of a field it is read by', () => {
   it('counts it unreadable rather than reporting a blank id at the epoch', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.mkdirSync(spool.dir, { recursive: true });
     const whole = { eventId: 'ev-1', sessionId: 'sess-a', kind: 'prompt', code: 'refused', reason: 'no', at: NOW };
     fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), [
@@ -418,7 +418,7 @@ describe('a refusal the drain raised against an unparsable spool line', () => {
   it('reaches the report naming no event and no kind, rather than counting as a damaged line', async () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), 'not json\n', 'utf-8');
     // The record never parses, so the drain refuses it without reaching a server.
     const client = { send: () => { throw new Error('a line that cannot be parsed reaches no server'); } };
@@ -436,7 +436,7 @@ describe('a session state the report could not use', () => {
   it('reports the acknowledgement unknown, and withholds a spool total that would read as the whole', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
     // Parsable JSON that is not a state: the file is there and holds nothing the report can read.
     fs.writeFileSync(path.join(spool.dir, 'sess-a.state.json'), JSON.stringify({ version: 'wrong' }), { mode: 0o600 });
@@ -453,7 +453,7 @@ describe('an offline latch the report could not use', () => {
   it('says whether this member is holding off is unknown, rather than reporting it online', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'offline.json'), JSON.stringify({ since: 'soon' }), { mode: 0o600 });
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
@@ -464,7 +464,7 @@ describe('an offline latch the report could not use', () => {
   it('says unknown for a latch file holding null, rather than throwing on its fields', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'offline.json'), 'null', { mode: 0o600 });
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
@@ -475,7 +475,7 @@ describe('an offline latch the report could not use', () => {
   it('reads an absent latch as the member being online, which it is', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    new MemberSpool('proj_1', { mycoHome });
+    new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
     expect(facts.latchReadable).toBe(true);
@@ -487,7 +487,7 @@ describe('a state file the report can reach but cannot trust', () => {
   it('leaves the pending count unknown rather than counting every record as un-acknowledged', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), ['{"a":1}', '{"a":2}'].join('\n') + '\n', 'utf-8');
     // A state whose acknowledged mark is unusable: counting from zero here would
     // report two records pending on a session that may have shipped both.
@@ -502,7 +502,7 @@ describe('a state file the report can reach but cannot trust', () => {
   it('refuses a state whose acknowledgement is not an instant, and leaves the mark the runtime keeps', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), ['{"a":1}', '{"a":2}'].join('\n') + '\n', 'utf-8');
     // A real mark, then one field beside it corrupted as the raw JSON it would arrive as.
     updateSessionState(spool.dir, 'sess-a', (state) => { state.highWater = 2; });
@@ -526,7 +526,7 @@ describe('a private file that is there and cannot be opened', () => {
   it('reads as unreadable rather than as absent', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), '', 'utf-8');
     // A directory where the state file belongs: stat succeeds, the open does not.
     fs.mkdirSync(path.join(spool.dir, 'sess-a.state.json'));

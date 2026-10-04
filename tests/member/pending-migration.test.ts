@@ -18,11 +18,11 @@ const LARGE = 'held prompt'.repeat(40_000);
 
 function fixture() {
   const mycoHome = tempMycoHome();
-  const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32) };
+  const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32), serverUrl: 'https://s' };
   fs.mkdirSync(repo.root);
   const opts = { mycoHome, now: Date.now() };
   const held = pendingSpool(repo, opts)!;
-  const live = new MemberSpool('proj_1', { mycoHome });
+  const live = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
   const context = (sessionId: string) => ({ agent: 'claude-code', sessionId, stage: held.stagerFor(sessionId), now: () => opts.now });
   return { mycoHome, repo, opts, held, live, context };
 }
@@ -95,7 +95,7 @@ describe('pending migration', () => {
     join(f);
     const read = fs.readFileSync.bind(fs);
     const fault = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
-      if (String(args[0]) === path.join(pendingDir(f.repo.rootKey, f.mycoHome), 'unreadable.jsonl')) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
+      if (String(args[0]) === path.join(pendingDir(f.repo.rootKey, f.mycoHome, 'https://s'), 'unreadable.jsonl')) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
       return Reflect.apply(read, fs, args);
     }) as typeof fs.readFileSync);
     try {
@@ -172,12 +172,12 @@ describe('pending migration', () => {
     const before = sessionStartEvent(f.context('damaged'), { startedAt: f.opts.now, originPath: f.repo.root });
     const after = sessionStartEvent(f.context('damaged'), { startedAt: f.opts.now + 1, originPath: f.repo.root });
     appendPending(f.repo, 'damaged', [before], undefined, f.opts);
-    fs.appendFileSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome), 'damaged.jsonl'), '{broken}\n');
+    fs.appendFileSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome, 'https://s'), 'damaged.jsonl'), '{broken}\n');
     appendPending(f.repo, 'damaged', [after], undefined, f.opts);
     expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(2);
     expect(f.live.readRecords('damaged').map((line) => line?.eventId)).toEqual([before.envelope.eventId, after.envelope.eventId]);
     expect(readCaptureLoss(f.live.dir)).toMatchObject({ readable: true, records: 1 });
-    expect(fs.existsSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome), 'damaged.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome, 'https://s'), 'damaged.jsonl'))).toBe(false);
     expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(0);
     expect(f.live.readRecords('damaged')).toHaveLength(2);
     expect(readCaptureLoss(f.live.dir)).toMatchObject({ readable: true, records: 1 });

@@ -59,7 +59,7 @@ function transcriptFile(name: string, lines: number): string {
 
 describe('the journal, format 2', () => {
   it('stamps every line it writes with the journal format, and keeps turn-end marks out of the journal, in a file no build lists as one', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-stamp');
     spool.append('sess-stamp', prompt(ctx));
     spool.appendTurnEnd('sess-stamp', { slot: 'primary', transcriptId: 'tx_' + 'a'.repeat(32), atSize: 10 }, undefined, 1_234);
@@ -80,7 +80,7 @@ describe('the journal, format 2', () => {
 
   it('deletes a journal once its events are delivered, and keeps an unconsumed mark in its own file until it is consumed', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-mark');
     spool.append('sess-mark', prompt(ctx));
     spool.appendTurnEnd('sess-mark', { slot: 'primary', transcriptId: 'tx_' + 'b'.repeat(32), atSize: 5 });
@@ -107,7 +107,7 @@ describe('the journal, format 2', () => {
 
   it('loses no mark to an older build that deletes the journal at its end (D8)', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-rollback');
     spool.append('sess-rollback', prompt(ctx));
     spool.appendTurnEnd('sess-rollback', { slot: 'primary', transcriptId: 'tx_' + 'c'.repeat(32), atSize: 7 });
@@ -124,7 +124,7 @@ describe('the journal, format 2', () => {
   });
 
   it('never lets a consumer holding an older marks file\'s place consume a newer file\'s mark', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'e'.repeat(32), atSize });
     spool.appendTurnEnd('sess-stale', mark(1));
     // Two consumers read the same mark; the first consumes it, and the file goes.
@@ -142,7 +142,7 @@ describe('the journal, format 2', () => {
   });
 
   it('counts nothing in a new marks file with the count kept for one that went some other way', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'g'.repeat(32), atSize });
     for (const size of [1, 2, 3]) spool.appendTurnEnd('sess-gone', mark(size));
     spool.consumeTurnEnds('sess-gone', spool.pendingTurnEnds('sess-gone')[1]);
@@ -155,7 +155,7 @@ describe('the journal, format 2', () => {
   });
 
   it('starts a fresh generation behind a first write cut off in its header, and hides no later mark', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'h'.repeat(32), atSize });
     // The hook that wrote the file's first line was killed part-way through its header.
     fs.mkdirSync(spool.dir, { recursive: true });
@@ -170,7 +170,7 @@ describe('the journal, format 2', () => {
   });
 
   it('keeps every mark when a consume is cut off part-way, and its next marks file is read from the start', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'f'.repeat(32), atSize });
     spool.appendTurnEnd('sess-cut', mark(1));
     const [first] = spool.pendingTurnEnds('sess-cut');
@@ -194,7 +194,7 @@ describe('the journal, format 2', () => {
 
   it('loses only a line a write cut off, never the record after it, and still deletes the journal once delivered (G4a)', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-torn');
     spool.append('sess-torn', prompt(ctx, 'before the crash'));
     // What a writer killed mid-line, or stopped by a full disk, leaves behind.
@@ -212,13 +212,13 @@ describe('the journal, format 2', () => {
   });
 
   it('loses no completed append across writers killed at random points mid-write (G4a)', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-killed';
     const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-journal-kill-')), 'writer.ts');
     fs.writeFileSync(script, [
       `import { MemberSpool } from ${JSON.stringify(path.join(SRC, 'member', 'spool.ts'))};`,
       `import { mintId, promptEvent } from ${JSON.stringify(path.join(SRC, 'member', 'envelope.ts'))};`,
-      `const spool = new MemberSpool('proj_1', { mycoHome: process.env.MYCO_HOME });`,
+      `const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: process.env.MYCO_HOME });`,
       `const ctx = { agent: 'claude-code', sessionId: ${JSON.stringify(sessionId)}, stage: spool.stagerFor(${JSON.stringify(sessionId)}), version: 't' };`,
       `const text = 'x'.repeat(48_000);`,
       `for (;;) { spool.append(${JSON.stringify(sessionId)}, promptEvent(ctx, { promptId: mintId(), text })); process.stdout.write('+'); }`,
@@ -270,7 +270,7 @@ describe('the two lanes (G4f)', () => {
 
   it('ships a session\'s transcript though a record of its own is held, once its start is delivered', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-lanes');
     heldSession(spool, 'sess-lanes', sessionStartEvent(ctx, { branch: 'main', startedAt: Date.now(), originPath: '/work' }));
     const report = await drainBacklog(spool, clientFor(rig), unboundedBudget(), { force: true, machineId: 'machine_1' });
@@ -282,7 +282,7 @@ describe('the two lanes (G4f)', () => {
 
   it('holds a transcript back while its session\'s start is still waiting, then ships it after the start', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-ordered');
     spool.append('sess-ordered', sessionStartEvent(ctx, { branch: 'main', startedAt: Date.now(), originPath: '/work' }));
     const file = transcriptFile('sess-ordered', 2);
@@ -317,7 +317,7 @@ describe('the two lanes past a held record (G4f)', () => {
 
   it('ships the transcript when a resume, compaction or clear writes another start behind a held record', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-compact');
     spool.append('sess-compact', startOf(ctx));
     spool.append('sess-compact', held(ctx));
@@ -335,7 +335,7 @@ describe('the two lanes past a held record (G4f)', () => {
 
   it('remembers the settled start once its journal is delivered and deleted, through a start behind a held record in the next', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-resumed');
     spool.append('sess-resumed', startOf(ctx));
     await spool.drainSession('sess-resumed', clientFor(rig), unboundedBudget());
@@ -348,7 +348,7 @@ describe('the two lanes past a held record (G4f)', () => {
 
   it('still holds the transcript for a first start that waits behind a held record', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-first');
     spool.append('sess-first', held(ctx));
     spool.append('sess-first', startOf(ctx));
@@ -360,7 +360,7 @@ describe('the two lanes past a held record (G4f)', () => {
 
   it('ships transcripts on a later walk inside the held record\'s wait, as on the walk that set it', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-wait');
     spool.append('sess-wait', startOf(ctx));
     spool.append('sess-wait', held(ctx));
@@ -385,7 +385,7 @@ describe('turn-end marks are satisfied (G4j)', () => {
     ({ t: 'te', _journal: JOURNAL_VERSION, slot: 'primary', transcriptId: pointer!.transcriptId, atSize, at: 1 });
 
   it('once the transcript reached the mark\'s size, or never will: replaced, refused, gone or cut short', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const file = transcriptFile('sess-sat', 4);
     const size = fs.statSync(file).size;
     const pointer = transcriptPointerFor(file, 'machine_1')!;
@@ -402,7 +402,7 @@ describe('turn-end marks are satisfied (G4j)', () => {
   });
 
   it('never ages out a plugin-written transcript a pointer has not shipped to its end', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const root = path.join(mycoHome, 'member', 'transcripts', 'opencode');
     fs.mkdirSync(root, { recursive: true });
     const behind = path.join(root, 'sess-behind.jsonl');
@@ -424,7 +424,7 @@ describe('turn-end marks are satisfied (G4j)', () => {
 describe('a session\'s lock file', () => {
   it('outlives its delivered journal, and is retired only with its state, under the lock, when no journal remains', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     spool.append('sess-lock', prompt(ctxFor(spool, 'sess-lock')));
     const before = fs.statSync(bufferLockPath(spool.dir, 'sess-lock')).ino;
     await spool.drainSession('sess-lock', clientFor(rig), unboundedBudget());
@@ -447,7 +447,7 @@ describe('a session\'s lock file', () => {
 
 describe('a session\'s marks file', () => {
   it('is retired with the session\'s state, which its marks are read against', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     spool.appendTurnEnd('sess-retire', { slot: 'primary', transcriptId: 'tx_' + 'd'.repeat(32), atSize: 3 });
     expect(fs.existsSync(turnsFileOf(spool.dir, 'sess-retire'))).toBe(true);
     expect(retireSessionFiles(spool.dir, 'sess-retire', () => true)).toBe(true);

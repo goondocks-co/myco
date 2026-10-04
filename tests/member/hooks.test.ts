@@ -101,7 +101,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(ups.stdout).toContain(`Session:: \`${session}\``);
     // Injection only: no prompt row, nothing spooled, no receipt for a row the parse owns.
     expect(rig.rows('prompt_batches')).toBe(0);
-    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).promptId).toBeUndefined();
+    expect(readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session).promptId).toBeUndefined();
     await run('subagent-start', { hook_event_name: 'SubagentStart', transcript_path: tx, agent_id: 'a1', agent_type: 'Explore' });
 
     await run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: 'The answer.' });
@@ -122,7 +122,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM knowledge_git_provenance WHERE session_id = ? AND capture_point = 'session_end'").get(session)).toEqual({ n: 1 });
     assertNoRetired();
     expect(new Set(dialled())).toEqual(new Set(['/events', '/context/prompt', '/context/session', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
-    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
+    expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).sessionIds()).toEqual([]);
   });
 
   it('a session-start drop rule and a user-prompt drop rule emit nothing and dial nothing', async () => {
@@ -143,7 +143,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     const r = await run('pre-tool-use', { tool_name: 'Read', tool_input: { file_path: '/x' } });
     expect(r.stdout).toBe('');
     expect(dialled()).toEqual([]);
-    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
+    expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).sessionIds()).toEqual([]);
   });
 
   it('Stop ships the delta and derives nothing itself: the parse writes the typed prompt, the queued command, the plan tag and the reply; a grown transcript ships its tail at the held offset', async () => {
@@ -188,7 +188,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
   });
 
   it('a prompt carrying sub-agent thread fields projects them — but codex, the only symbiont that declares the paths, drops those prompts first', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     const parentPromptId = mintId();
     const ctx: EnvelopeContext = { agent: 'codex', sessionId: 'sess-parent-thread', stage: spool.stagerFor('sess-parent-thread'), version: '2.0.0-test' };
     await rig.postEvent(promptEvent(ctx, { promptId: parentPromptId, text: 'parent asks' }).envelope);
@@ -272,7 +272,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     const transcripts = rig.env.sqlite.query('SELECT role, origin_path, size FROM transcripts ORDER BY role').all() as Array<{ role: string; origin_path: string; size: number }>;
     expect(transcripts.map((t) => t.role)).toEqual(['primary', 'subagent']);
     expect(transcripts[1].size).toBe(fs.statSync(sibling).size);
-    const state = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session);
+    const state = readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session);
     expect(Object.keys(state.siblings)).toEqual([sibling]);
     expect(state.siblings[sibling].nextOffset).toBe(fs.statSync(sibling).size);
     await parseAll();
@@ -301,8 +301,8 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     const fresh = after.find((t) => t.transcript_id !== held[0].transcript_id)!;
     expect(fresh.head_hash).not.toBe(held[0].head_hash);
     expect(fresh.size).toBe(fs.statSync(tx).size);
-    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).transcript?.transcriptId).toBe(fresh.transcript_id);
-    expect(new MemberSpool('proj_1', { mycoHome }).readRefused().entries).toEqual([]);
+    expect(readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session).transcript?.transcriptId).toBe(fresh.transcript_id);
+    expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).readRefused().entries).toEqual([]);
   });
 
   it('restores the session block once per compaction from the start the harness fires after compacting', async () => {
@@ -317,7 +317,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'startup' })).stdout).toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'compact' })).stdout).toContain('Keep the plan current.');
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'compact' })).stdout).toContain('Keep the plan current.');
-    expect(readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session).delivered).toEqual(['cortex', 'cortex-compact:1', 'cortex-compact:2']);
+    expect(readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session).delivered).toEqual(['cortex', 'cortex-compact:1', 'cortex-compact:2']);
     expect((await run('session-start', { transcript_path: tx, cwd: '/work/repo', source: 'resume' })).stdout).toBe('');
     expect(memberKinds().every((k) => k === 'session.start')).toBe(true);
   });
@@ -348,7 +348,7 @@ describe('member hooks through the worker: the turn-end mark', () => {
     // The turn ended an hour ago, by the hook's clock.
     const stoppedAt = Date.now() - 3_600_000;
     await runHook('stop', { session_id: 'sess-a', hook_event_name: 'Stop', transcript_path: txA, last_assistant_message: 'x' }, { helpers: 'run', fetch: offline, now: () => stoppedAt });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     expect(spool.pendingTurnEnds('sess-a').map((p) => p.mark.atSize)).toEqual([fs.statSync(txA).size]);
 
     // Back online. Session b's start runs the helper, which ships session a's segment: it reaches the mark and carries
@@ -389,7 +389,7 @@ describe('member hooks through the worker: turn ends told by the transcript alon
     const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>, now?: () => number, helpers: 'run' | 'record' = 'record') =>
       runHook(name, { session_id: id, transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers, fetch, now });
     await hook('session-start', {}, undefined, 'run');
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     // Two turns end before any helper runs: two marks a few bytes apart, inside what one segment would carry.
     const t1 = Date.now() - 60_000;
     await hook('stop', { last_assistant_message: 'x' }, () => t1);
@@ -452,7 +452,7 @@ describe('member hooks through the worker: a session its harness left without it
     const ended = fs.statSync(tx).size;
     // The next turn was under way when the harness was killed: no Stop, no SessionEnd.
     fs.appendFileSync(tx, line('two, never finished'));
-    const pass = (at: number) => runHelperVerb(['--project', 'proj_1', '--home', mycoHome], { fetch, now: () => at, lingerMs: 0, keepStderr: true });
+    const pass = (at: number) => runHelperVerb(['--project', 'proj_1', '--server', 'https://s', '--home', mycoHome], { fetch, now: () => at, lingerMs: 0, keepStderr: true });
     const ends = () => fetchSpy.requests
       .filter((r) => r.path === '/events' && r.body !== undefined)
       .map((r) => JSON.parse(r.body!) as { kind: string; sessionId: string; payload: { baseOffset: number; length: number } })
@@ -471,7 +471,7 @@ describe('member hooks through the worker: a session resumed after its end', () 
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }], 'sess-resumed');
     const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown> = {}) =>
       runHook(name, { session_id: 'sess-resumed', transcript_path: tx, cwd: '/work/repo', ...raw }, { helpers: 'record', fetch: fetchSpy.fetch });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     await hook('session-start');
     await hook('session-end');
     expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeNumber();
@@ -482,7 +482,7 @@ describe('member hooks through the worker: a session resumed after its end', () 
 
 describe('member hooks through the worker: retention and plan files', () => {
   it('prunes the state of a session delivered long ago only after a drain that ran and delivered everything; a drain another process holds the lease for delivers nothing', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     const old = 'sess-delivered-long-ago';
     const past = Date.now() - MEMBER_SESSION_STATE_RETENTION_MS - 86_400_000;
     updateSessionState(spool.dir, old, (state) => { state.delivered.push('cortex'); }, past);
@@ -519,7 +519,7 @@ describe('member hooks through the worker: retention and plan files', () => {
       await run('session-start', { transcript_path: tx, cwd: root });
       await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
       expect(rig.env.sqlite.query('SELECT title, content FROM plans').get()).toEqual({ title: 'Delegated', content: '# Delegated\n\n- [ ] by a subagent\n' });
-      const state = readSessionState(new MemberSpool('proj_1', { mycoHome }).dir, session);
+      const state = readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session);
       expect(state.siblings[sibling].parsedSize).toBe(fs.statSync(sibling).size);
       // A second Stop reads neither transcript again and ships no second plan.
       const before = captured();
@@ -537,7 +537,7 @@ describe('member hooks through the worker: retention and plan files', () => {
     // The record is half written when Stop fires: the member holds the read at the last complete line.
     fs.appendFileSync(tx, line.slice(0, 40));
     await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     expect(readSessionState(spool.dir, session).transcript?.parsedSize).toBe(fs.statSync(tx).size - 40);
     fs.appendFileSync(tx, line.slice(40));
     const out = await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
@@ -602,7 +602,7 @@ describe('member hooks through the worker: hook-source agents', () => {
     expect(r.stderr).toContain('post-tool-use dropped (no tool_name)');
     expect(dialled()).toEqual([]);
     expect(rig.rows('tool_calls')).toBe(0);
-    expect(new MemberSpool('proj_1', { mycoHome }).sessionIds()).toEqual([]);
+    expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).sessionIds()).toEqual([]);
   });
 
   it('windsurf --phases: the response phase emits only the response, the transcript phase only the transcript work', async () => {
@@ -644,7 +644,7 @@ describe('a hook command that names no harness, or no credential source (#1561)'
     const cases: Array<[string, string | null]> = [['no --symbiont', null], ['a harness no manifest knows', 'no-such-harness']];
     for (const [what, symbiont] of cases) {
       const out = await runHook('session-start', { session_id: `sess-unnamed-${String(symbiont)}`, hook_event_name: 'SessionStart', cwd: process.cwd() }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont });
-      expect({ what, refused: out.stderr.includes('hook command must declare --symbiont <harness>'), spooled: new MemberSpool('proj_1', { mycoHome }).stateSessionIds() })
+      expect({ what, refused: out.stderr.includes('hook command must declare --symbiont <harness>'), spooled: new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).stateSessionIds() })
         .toEqual({ what, refused: true, spooled: [] });
     }
     expect(dialled()).toEqual([]);

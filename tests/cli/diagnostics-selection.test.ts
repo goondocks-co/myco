@@ -166,7 +166,7 @@ describe('member status over a spool it could not read', () => {
   /** A registered project whose session has records, state, and a lock nothing can take. */
   function damaged(): { root: string; spoolDir: string } {
     const root = project('alpha', 'proj_alpha');
-    const spool = new MemberSpool('proj_alpha', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_alpha', serverUrl: 'https://s' }, { mycoHome });
     const ctx: EnvelopeContext = { agent: 'claude-code', sessionId: 'sess-a', stage: spool.stagerFor('sess-a'), version: '2.0.0-test' };
     spool.append('sess-a', promptEvent(ctx, { promptId: mintId(), text: 'a turn' }));
     const lock = path.join(spool.dir, '.sess-a.lock');

@@ -39,7 +39,7 @@ function writeLatch(spool: MemberSpool, json: string): void {
 
 describe('a latch carrying a number no report can render', () => {
   it('still holds the member off, so nothing dials while it stands', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
     writeLatch(spool, `{"since":${NOW},"nextProbeAt":1e309,"backoffMs":30000}`);
 
     expect(spool.readLatch()).toMatchObject({ since: NOW, nextProbeAt: Infinity });
@@ -50,7 +50,7 @@ describe('a latch carrying a number no report can render', () => {
   it('is what the report calls unreadable, which costs only a rendered line', () => {
     const e = entry();
     writeRegistryEntry(e, { mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
     writeLatch(spool, `{"since":${NOW},"nextProbeAt":1e309,"backoffMs":30000}`);
 
     const facts = projectDiagnostics(e, mycoHome, NOW);
@@ -59,7 +59,7 @@ describe('a latch carrying a number no report can render', () => {
   });
 
   it('dials once a probe time it can compare has come', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
     writeLatch(spool, `{"since":${NOW},"nextProbeAt":${NOW + 30_000},"backoffMs":30000}`);
 
     expect(spool.shouldDial(NOW)).toBe(false);
@@ -69,7 +69,7 @@ describe('a latch carrying a number no report can render', () => {
 
 describe('a latch the read refuses outright', () => {
   it('is one no field is a number in, and the member dials as it does with none', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
     writeLatch(spool, '{"since":"soon","nextProbeAt":"later","backoffMs":"a while"}');
 
     expect(spool.readLatch()).toBeNull();
@@ -77,7 +77,7 @@ describe('a latch the read refuses outright', () => {
   });
 
   it('reads an absent latch as the member being online', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
 
     expect(spool.readLatch()).toBeNull();
     expect(spool.shouldDial(NOW)).toBe(true);

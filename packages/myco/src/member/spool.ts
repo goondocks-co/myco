@@ -1,6 +1,6 @@
 /**
  * The member spool: a write-ahead `EventBuffer` per session under
- * `<MYCO_HOME>/member/spool/<projectId>/`, one drain implementation with a
+ * `<MYCO_HOME>/member/spool/<deploymentKey>/<projectId>/`, one drain implementation with a
  * per-session lease and a high-water mark, the per-project offline latch, and
  * the refusal diagnostic log.
  *
@@ -19,7 +19,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { canStartRequest, clippedRequestBudget, longestDeclaredHookTimeoutMs, type HookBudget } from './budget.js';
 import {
-  isProjectId, MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSAL_RETRY_MAX_MS, REFUSAL_SUBJECT, refusalPermanent,
+  MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSAL_RETRY_MAX_MS, REFUSAL_SUBJECT, refusalPermanent,
   REFUSED_LOG_MAX_BYTES, UNCLASSIFIED_REFUSAL_HOLD_HOURS, UNCLASSIFIED_REFUSAL_HOLD_MS, type MemberCode,
 } from './constants.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
@@ -29,6 +29,7 @@ import {
   writeSessionStateUnlocked, type SessionState, type SessionStateRead,
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
+import { memberRoutingIdentity, pinSpoolDestination, LEGACY_MIGRATION_FILE, ROUTING_FILE, routedSpoolDir, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
 import { publishStagedBlob } from './staged-blobs.js';
 import { payloadDisposition, type PayloadRetry } from './payload-disposition.js';
@@ -261,14 +262,8 @@ export interface DrainOptions {
  * Both hold before any directory is made, so a caller that only reads is bound
  * by the same containment as one that writes.
  */
-export function spoolDirFor(projectId: string, mycoHome: string = resolveMycoHome()): string {
-  const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
-  const dir = path.join(spoolRoot, projectId);
-  const rel = path.relative(spoolRoot, path.resolve(dir));
-  if (!isProjectId(projectId) || rel === '' || path.isAbsolute(rel) || rel.split(path.sep).length !== 1) {
-    throw new Error(`spoolDirFor: ${projectId} does not name a project's spool under ${spoolRoot}`);
-  }
-  return dir;
+export function spoolDirFor(route: MemberRoutingIdentity, mycoHome: string = resolveMycoHome()): string {
+  return routedSpoolDir(route, mycoHome);
 }
 
 /** The wire envelope of a spool record: the seven fields, nothing member-private, no buffer timestamp. */
@@ -284,6 +279,8 @@ const UNAVAILABLE_PATH = 'path unavailable';
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
 
 export class MemberSpool {
+  readonly routing: MemberRoutingIdentity | null;
+  readonly projectId: string;
   readonly dir: string;
   readonly blobsDir: string;
   /** The home this spool lives under; retention ages that home and no other. */
@@ -295,14 +292,19 @@ export class MemberSpool {
    * directory belongs — and report it. It is not a read-only spool: the writing
    * methods write and create their required directories.
    */
-  constructor(readonly projectId: string, opts: { mycoHome?: string; initialize?: boolean; dir?: string } = {}) {
+  constructor(route: MemberRoutingIdentity | null, opts: { mycoHome?: string; initialize?: boolean; dir?: string } = {}) {
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();
     // `dir` holds capture for a repository that has no project yet (`pending.ts`): a directory inside the member root.
     if (opts.dir !== undefined) assertMemberPathContained(opts.dir, this.mycoHome);
-    this.dir = opts.dir ?? spoolDirFor(projectId, this.mycoHome);
+    this.routing = route === null ? null : memberRoutingIdentity(route);
+    this.projectId = this.routing?.projectId ?? '';
+    if (this.routing === null && opts.dir === undefined) throw new Error('An unbound spool requires an explicit pending directory');
+    if (this.routing !== null && opts.dir !== undefined && path.resolve(opts.dir) !== spoolDirFor(this.routing, this.mycoHome)) throw new Error('A routed spool requires its own destination directory');
+    this.dir = opts.dir ?? spoolDirFor(this.routing!, this.mycoHome);
     this.blobsDir = path.join(this.dir, BLOBS_DIRNAME);
     if (opts.initialize === false) return;
     ensureMemberDir(this.dir, this.mycoHome);
+    if (this.routing !== null) pinSpoolDestination(this.dir, this.routing);
     ensureMemberDir(this.blobsDir, this.mycoHome);
   }
 
@@ -904,6 +906,17 @@ export class MemberSpool {
   // Drain
   // ---------------------------------------------------------------------------
 
+  /** Check the persisted spool identity and the client before any delivery. */
+  assertClientDestination(client: Pick<ServerClient, 'serverUrl' | 'projectId'>): void {
+    const destination = readPrivateJson<MemberRoutingIdentity>(path.join(this.dir, ROUTING_FILE));
+    if (!destination.ok || this.routing === null || !sameRoutingIdentity(destination.value, this.routing)) throw new Error('Member spool destination is unavailable or mismatched');
+    const migration = readPrivateJson<{ version: number; state: string; destination: MemberRoutingIdentity }>(path.join(this.dir, LEGACY_MIGRATION_FILE));
+    if (migration.ok ? migration.value?.version !== 1 || migration.value.state !== 'validated' || !migration.value.destination || !sameRoutingIdentity(migration.value.destination, this.routing) : migration.reason !== 'missing') throw new Error('Member spool migration has not been validated');
+    if (this.routing === null || client.projectId === undefined || !sameRoutingIdentity(this.routing, { serverUrl: client.serverUrl, projectId: client.projectId })) {
+      throw new Error('Member capture client does not match its buffered destination');
+    }
+  }
+
   /** Upload verified or repaired bytes; unavailable records receive their own bounded retry disposition. */
   private async uploadBlob(client: ServerClient, record: SpoolRecord, budget: HookBudget, now: () => number, uploaded: Set<string>): Promise<Outcome | 'missing' | 'unreadable'> {
     const source = record._blobSource!;
@@ -928,6 +941,7 @@ export class MemberSpool {
    * lengthens.
    */
   async drainSession(sessionId: string, client: ServerClient, budget: HookBudget, opts: DrainOptions = {}): Promise<DrainResult> {
+    this.assertClientDestination(client);
     const now = opts.now ?? Date.now;
     const result: DrainResult = { sessionId, sent: 0, acked: 0, refused: 0, remaining: 0, endedBy: 'drained' };
     if (!budget.drains) return { ...result, skipped: 'never-drains', remaining: this.depth(sessionId) };
@@ -1100,6 +1114,7 @@ export class MemberSpool {
               const fresh = await opts.onUnauthorized();
               if (fresh !== null) {
                 activeClient = opts.clientFor(fresh);
+                this.assertClientDestination(activeClient);
                 continue;
               }
             }

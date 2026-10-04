@@ -42,7 +42,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
-import { listRegistryEntries, type RegistryEntry } from './registry.js';
+import { deploymentUrl, listRegistryEntries, type RegistryEntry } from './registry.js';
 import { MemberSpool } from './spool.js';
 import { legacySessionsToLeaveOut } from './legacy-ledger.js';
 import { readSessionState } from './session-state.js';
@@ -213,7 +213,7 @@ function deploymentForRoot(entries: readonly RegistryEntry[], cwd: string | unde
 function bindingsFor(serverUrl: string, mycoHome: string): Map<string, RegistryEntry> {
   const bound = new Map<string, RegistryEntry>();
   for (const entry of listRegistryEntries(mycoHome)) {
-    if (entry.serverUrl !== serverUrl) continue;
+    if (deploymentUrl(entry.serverUrl) !== deploymentUrl(serverUrl)) continue;
     if (entry.root === undefined) continue;
     bound.set(entry.root, entry);
   }
@@ -331,7 +331,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   // from it imports into whichever Deployment that hash happened to sort
   // first — a machine joined to two would import nothing for the one it just
   // joined, and report every transcript as belonging to no Project.
-  const deployments = [...new Set(entries.map((e) => e.serverUrl))];
+  const deployments = [...new Set(entries.map((e) => deploymentUrl(e.serverUrl)))];
   const named = opts.serverUrl ?? (deployments.length === 1 ? deployments[0] : deploymentForRoot(entries, deps.cwd));
   if (named === null) return refusedReport(`this machine belongs to ${deployments.length} Deployments; name one with --server`);
   const bound = bindingsFor(named, mycoHome);
@@ -404,7 +404,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
 
     const answers = Array.isArray(answer.body.candidates) ? answer.body.candidates as Array<Record<string, unknown>> : [];
     const decisions = new Map(answers.map((a) => [String(a.transcriptId), a]));
-    const spool = new MemberSpool(projectId, { mycoHome });
+    const spool = new MemberSpool(entry, { mycoHome });
     let endedBy: string | undefined;
 
     for (const candidate of offered) {
@@ -447,6 +447,7 @@ export async function shipSession(
   candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
   opts: { facts?: boolean } = {},
 ): Promise<string> {
+  spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
   // Imported events are dated when the work happened, not when it was fetched:
   // the file's modification time is the only instant a member can know without

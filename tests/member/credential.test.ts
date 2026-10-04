@@ -37,15 +37,15 @@ const captureStderr = () => {
 };
 
 describe('the MCP bridge started outside the project', () => {
-  it('resolves the one membership the home holds, says so, and never does this for a hook', () => {
+  it('requires an explicit repository binding even when the home holds one membership', () => {
     captureStderr();
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-not-a-project-'));
     const root = path.join(mycoHome, 'the-project');
     fs.mkdirSync(root, { recursive: true });
     registerTestMember({ mycoHome, token: mintMemberToken(), projectId: 'proj_only', root });
     const bridge = resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'mcp' });
-    expect(bridge?.projectId).toBe('proj_only');
-    expect(stderrLines.join('')).toContain(`serving the one membership this machine holds (${root})`);
+    expect(bridge).toBeNull();
+    expect(stderrLines.join('')).toContain('no registry entry');
     // A hook in an unjoined directory finds nothing: its session must not land in another project.
     stderrLines.length = 0;
     expect(resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'hook stop' })).toBeNull();
@@ -61,7 +61,7 @@ describe('the MCP bridge started outside the project', () => {
       registerTestMember({ mycoHome, token: mintMemberToken(), projectId: `proj_${name}`, root });
     }
     expect(resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'mcp' })).toBeNull();
-    expect(stderrLines.join('')).toContain('none of the 2 joined projects');
+    expect(stderrLines.join('')).toContain('no registry entry');
   });
 });
 

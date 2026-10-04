@@ -350,6 +350,7 @@ export async function shipTranscriptSegments(
     holdTail?: boolean;
   } = {},
 ): Promise<ShipResult> {
+  spool.assertClientDestination(client);
   const now = opts.now ?? Date.now;
   const slot = opts.slot ?? PRIMARY_SLOT;
   const { sessionId } = ctx;
@@ -512,6 +513,7 @@ export async function shipSessionTranscripts(
   ctx: EnvelopeContext, spool: MemberSpool, client: ServerClient, budget: HookBudget,
   opts: { now?: () => number; until?: number; machineId: string; turnEnds?: readonly TurnEndAt[]; holdTail?: boolean },
 ): Promise<ShipResult> {
+  spool.assertClientDestination(client);
   const now = opts.now ?? Date.now;
   // The one order the transcript lane keeps with the event lane: the session's start first.
   if (spool.sessionStartPending(ctx.sessionId)) {
