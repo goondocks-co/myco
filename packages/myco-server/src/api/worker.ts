@@ -163,10 +163,13 @@ export async function handleWorkerRepository(env: ServerEnv, ctx: DeploymentCont
   const run = named(asked);
   if (run === null) return ok({ persisted: false, code: 'parse', reason: 'repository names a projectId and a runId' });
   try {
-    const result = await prepareWorkerRepository(env, { tokenId: ctx.tokenId, clock: ctx.clock }, { ...run, body: asked });
+    const { attemptId } = parseWorkerAccounting({ attemptId: asked.attemptId });
+    const result = await prepareWorkerRepository(env, { tokenId: ctx.tokenId, clock: ctx.clock }, {
+      ...run, ...(attemptId === undefined ? {} : { attemptId }), body: asked,
+    });
     return Response.json({ persisted: true, ...result }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
-    if (error instanceof RepositoryInputError) return ok({ persisted: false, code: 'parse', reason: error.message });
+    if (error instanceof RepositoryInputError || error instanceof WorkerUsageError) return ok({ persisted: false, code: 'parse', reason: error.message });
     throw error;
   }
 }

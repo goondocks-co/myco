@@ -14,13 +14,13 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
  * credential entirely, scoped to its one run, and reaches only the MCP surface.
  *
  * The lease is what makes a worker's disappearance survivable. It is renewed on
- * a timer while a run is driven, and a renewal the Deployment declines says
+ * a timer through harness disposal and the terminal request, and a renewal the Deployment declines says
  * another worker holds the run now: the child is stopped and nothing is written,
  * so two workers never both report an outcome for one run.
  *
  * A machine that sleeps is a worker that disappears for as long as it sleeps,
  * so a worker claims only once its machine has stayed awake (`wake.ts`), holds
- * the machine awake while it drives a run where the platform allows
+ * the machine awake until its terminal request settles where the platform allows
  * (`keep-awake.ts`), and on waking from a sleep that outlasted its lease stops
  * the harness at once rather than spend a session on a run it no longer holds.
  */
@@ -31,6 +31,7 @@ import { detectHarnesses, offerOf, WITHHELD_REASON } from './detect.js';
 import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
 import { harnessById, offerable } from './harnesses.js';
+import { recoverAbandonedRunDirectories } from './run-directory.js';
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
@@ -115,7 +116,7 @@ export interface WorkerOptions {
   clock?: () => number;
   /** How long the machine must have been awake since it last slept before this worker claims, and how far that grows. Defaults to `WAKE_SETTLE_MS` and `WAKE_SETTLE_MAX_MS`. */
   wakeSettle?: WakeSettle;
-  /** Held while a run is driven, so the machine does not sleep under it. Nothing is held when omitted. */
+  /** Held until the terminal request settles. Nothing is held when omitted. */
   keepAwake?: KeepAwake;
   /** Lists the models of the harnesses this worker offers, for a Deployment that stores them. Defaults to each manifest's listing (`models.ts`). */
   listModels?: ListModels;
@@ -322,6 +323,76 @@ const asRun = (value: unknown): ClaimedRun | null => {
   return { ...run, repository, instructions: typeof run.instructions === 'string' ? run.instructions : null };
 };
 
+interface AttemptLease {
+  readonly deadline: number;
+  readonly lost: boolean;
+  signal: AbortSignal;
+  release(): void;
+}
+
+/** Hold renewal and wake protection until the attempt's terminal request settles. */
+function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: number, initialDeadline: number, wake: WakeWatch): AttemptLease {
+  const clock = options.clock ?? Date.now;
+  const stopping = new AbortController();
+  const renewals = new AbortController();
+  let deadline = initialDeadline;
+  let lost = false;
+  let unreachable = false;
+  const onAbort = (): void => stopping.abort();
+  options.signal.addEventListener('abort', onAbort, { once: true });
+  if (options.signal.aborted) onAbort();
+  const losing = (line: string): void => {
+    if (lost) return;
+    lost = true;
+    options.log(line);
+    stopping.abort();
+  };
+  const renew = (): void => {
+    if (lost || renewals.signal.aborted) return;
+    const sentAt = clock();
+    void post({ ...options, signal: within(renewals.signal, heartbeatMs) }, '/worker/lease', {
+      projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }),
+    }).then((answer) => {
+      if (renewals.signal.aborted) return;
+      if (answer.kind === 'unreachable') {
+        if (!unreachable) { unreachable = true; options.log(`cannot renew the lease on ${run.id}: ${answer.detail}`); }
+        return;
+      }
+      unreachable = false;
+      if (answer.kind === 'answered' && answer.body.held === true) {
+        const renewed = leaseDeadline(sentAt, answer.body.leaseMs);
+        deadline = deadline === Number.POSITIVE_INFINITY ? renewed : Math.max(deadline, renewed);
+        return;
+      }
+      losing(answer.kind === 'refused'
+        ? `the Deployment refused the lease on ${run.id}: ${answer.code}`
+        : `lease lost on ${run.id}: ${typeof answer.body.reason === 'string' ? answer.body.reason : 'the Deployment no longer holds it for this worker'}`);
+    }).catch((error: unknown) => {
+      if (!renewals.signal.aborted) options.log(`could not renew the lease on ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  };
+  const releaseAwake = options.keepAwake?.() ?? (() => {});
+  let beat = wake.begin(heartbeatMs);
+  const heartbeat = setInterval(() => {
+    const slept = beat();
+    beat = wake.begin(heartbeatMs);
+    if (slept && clock() >= deadline) losing(`this machine slept past its lease on ${run.id}; stopping the harness`);
+    else renew();
+  }, heartbeatMs);
+  wake.driving(true);
+  return {
+    get deadline() { return deadline; }, get lost() { return lost; }, signal: stopping.signal,
+    release() {
+      clearInterval(heartbeat);
+      renewals.abort();
+      stopping.abort();
+      options.signal.removeEventListener('abort', onAbort);
+      wake.driving(false);
+      releaseAwake();
+    },
+  };
+}
+
 /**
  * Drive one claimed run to its end.
  *
@@ -331,17 +402,14 @@ const asRun = (value: unknown): ClaimedRun | null => {
  * success.
  */
 async function drive(
-  options: WorkerOptions, run: ClaimedRun, lease: { heartbeatMs: number; deadline: number }, wake: WakeWatch, keepsSteps: boolean,
+  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean,
 ): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal } | { status: 'lost'; error: null }> {
-  const { heartbeatMs } = lease;
   const clock = options.clock ?? Date.now;
-  /** When the lease this worker holds lapses unless renewed, on this machine's clock. */
-  let deadline = lease.deadline;
   // A claim answered after its own lease ran out — its answer held up by a
   // machine that slept, or a network that stalled — is another worker's run
   // already. No harness is started and nothing is written about it.
   const lapsedBeforeStart = (): { status: 'lost'; error: null } | null => {
-    if (clock() < deadline) return null;
+    if (clock() < lease.deadline) return null;
     options.log(`the lease on ${run.id} lapsed before its harness started; leaving the run to the Deployment`);
     return { status: 'lost', error: null };
   };
@@ -369,14 +437,13 @@ async function drive(
   mkdirSync(options.runRoot, { recursive: true, mode: 0o700 });
   const { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
     serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
-  }, run.instructions);
+  }, run.instructions, run.attemptId);
 
   const stopping = new AbortController();
   const onAbort = (): void => { stopping.abort(); };
   options.signal.addEventListener('abort', onAbort, { once: true });
   if (options.signal.aborted) stopping.abort();
   let lost = false;
-  let unreachable = false;
   let overran = false;
   /**
    * The budget, settled by the timer rather than by the harness.
@@ -396,57 +463,6 @@ async function drive(
     stopping.abort();
     budgetReached();
   }, run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS);
-  /** Ended with the drive, so an answer that arrives after it says nothing about a run this worker has let go. */
-  const renewals = new AbortController();
-  const losing = (line: string): void => {
-    if (lost) return;
-    lost = true;
-    options.log(line);
-    stopping.abort();
-  };
-  const renew = (): void => {
-    if (lost || renewals.signal.aborted) return;
-    const sentAt = clock();
-    // Bounded by the cadence: the next renewal is due by then anyway.
-    void post({ ...options, signal: within(renewals.signal, heartbeatMs) }, '/worker/lease', {
-      projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }),
-    }).then((answer) => {
-      if (renewals.signal.aborted) return;
-      // A renewal that never arrived is not a renewal declined. The Deployment's
-      // own sweep gives the run to another worker once the lease runs out, and
-      // it refuses an outcome from a worker that no longer holds it, so a
-      // network blip leaves the child running rather than killing the run.
-      if (answer.kind === 'unreachable') {
-        if (!unreachable) { unreachable = true; options.log(`cannot renew the lease on ${run.id}: ${answer.detail}`); }
-        return;
-      }
-      unreachable = false;
-      if (answer.kind === 'answered' && answer.body.held === true) {
-        // Renewals can be answered out of order: an earlier one answered late never takes a later deadline back.
-        const renewed = leaseDeadline(sentAt, answer.body.leaseMs);
-        deadline = deadline === Number.POSITIVE_INFINITY ? renewed : Math.max(deadline, renewed);
-        return;
-      }
-      losing(answer.kind === 'refused'
-        ? `the Deployment refused the lease on ${run.id}: ${answer.code}`
-        : `lease lost on ${run.id}: ${typeof answer.body.reason === 'string' ? answer.body.reason : 'the Deployment no longer holds it for this worker'}`);
-    });
-  };
-  let beat = wake.begin(heartbeatMs);
-  const heartbeat = setInterval(() => {
-    const slept = beat();
-    beat = wake.begin(heartbeatMs);
-    // A machine that slept knows on waking whether its lease outlived the
-    // sleep, from the lease's remaining time counted on its own clock. One that
-    // lapsed is another worker's to take, so the harness is stopped now rather
-    // than left spending a session until a renewal is answered, which on a
-    // network still coming back may be never. One that did not is renewed.
-    if (slept && clock() >= deadline) losing(`this machine slept past its lease on ${run.id}; stopping the harness`);
-    else renew();
-  }, heartbeatMs);
-  wake.driving(true);
-  const releaseAwake = options.keepAwake?.() ?? (() => {});
-
   const events: RunEvent[] = [];
   const accounting = new ExecutionAccounting(named?.accounting.primarySources);
   // A Deployment that stores step logs is sent this attempt's; the log is kept from the harness's own events.
@@ -459,7 +475,7 @@ async function drive(
     if (run.repository !== undefined) {
       preparing = true;
       checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
-        const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id });
+        const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
         if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
         if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
@@ -469,7 +485,7 @@ async function drive(
       preparing = false;
     }
     stopping.signal.throwIfAborted();
-    if (clock() >= deadline) losing(`the lease on ${run.id} lapsed before its harness started; leaving the run to the Deployment`);
+    if (clock() >= lease.deadline) { lost = true; stopping.abort(); }
     stopping.signal.throwIfAborted();
     const toolUse = runToolUse(named.steps, checkout !== undefined);
     stream = driver.run({
@@ -501,26 +517,24 @@ async function drive(
   } catch (error) {
     failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error) };
   } finally {
-    clearInterval(heartbeat);
-    renewals.abort();
-    wake.driving(false);
-    releaseAwake();
     clearTimeout(budget);
     options.signal.removeEventListener('abort', onAbort);
-    // Closing the stream runs the driver's own cleanup, which stops the child.
-    // Not awaited: the driver may be blocked on the very read the budget gave up
-    // on, and a worker that waited here would be held by it all over again.
-    void Promise.resolve(stream?.return?.()).catch(() => undefined);
-    // The step log is written before the scratch directory goes, so a worker stopped from here on still delivers it.
-    if (stepLog !== null) keepStepLog(options, run, stepLog, clock());
-    try { await checkout?.dispose(); } finally { discardRunDir(scratchDir); }
+    stopping.abort();
+    try {
+      await stream?.return?.();
+    } catch (error) {
+      failure ??= { code: 'worker_error', words: error instanceof Error ? error.message : String(error) };
+    } finally {
+      if (stepLog !== null) keepStepLog(options, run, stepLog, clock());
+      try { await checkout?.dispose(); } finally { discardRunDir(scratchDir); }
+    }
   }
 
   // A lost lease is decided before anything else, including an overrun: a worker
   // that no longer holds the run writes NOTHING about it, and a run that both
   // overran and changed hands belongs to whoever holds it now. Reporting the
   // overrun instead would have this worker account for a run it does not own.
-  if (lost) return { status: 'lost', error: null };
+  if (lost || lease.lost) return { status: 'lost', error: null };
   // A harness driven to its end with the lease held: the machine stayed up for
   // a whole run, and the settle returns to its base. A run that ended before
   // its harness started says nothing about whether the machine stays up.
@@ -664,6 +678,8 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
   const instance = await becomeInstance(options);
   if (instance === null) return { driven: 0, refused: null };
   try {
+    const recovery = recoverAbandonedRunDirectories(options.runRoot);
+    if (recovery.recovered > 0) options.log(`reclaimed ${recovery.recovered} abandoned run directories`);
     return await claimUntilStopped(options, watchWake(options.clock, options.wakeSettle));
   } finally {
     instance.release();
@@ -696,13 +712,7 @@ async function becomeInstance(options: WorkerOptions): Promise<{ release: () => 
 }
 
 async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promise<WorkerOutcome> {
-  const { offered: harnesses, withheld } = offerOf(detectHarnesses(options.only));
-  for (const id of withheld) options.log(`not offering ${id}: ${WITHHELD_REASON}`);
-  const ready = harnesses.filter((h) => h.authenticated).map((h) => h.id);
-  options.log(ready.length === 0
-    ? `no harness on this machine is logged in; nothing can be claimed (found: ${harnesses.map((h) => h.id).join(', ') || 'none'})`
-    : `offering ${ready.join(', ')}`);
-
+  let offerSignature: string | null = null;
   let driven = 0;
   let unreachable = false;
   let attached = false;
@@ -731,7 +741,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
   const catalogs = modelCatalogs({
-    harnesses: ready,
+    harnesses: [],
     list: options.listModels ?? ((ids, signal) => listModels(ids, options.runRoot, signal, clock)),
     send: (catalog) => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/models', { catalog }),
     log: options.log,
@@ -740,7 +750,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   try {
     return await claimLoop();
   } finally {
-    catalogs.stop();
+    await catalogs.stop();
   }
 
   async function claimLoop(): Promise<WorkerOutcome> {
@@ -762,6 +772,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
       }
       settling = false;
       // Compatibility is checked on a read before the queue can be claimed.
+      let advertisesCatalog = false;
       {
         const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/members/status', {}));
         if (compatibility.kind === 'refused') {
@@ -778,10 +789,22 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
           await pause(options.pollIdleMs);
           continue;
         }
-        if (compatibility.modelCatalog) catalogs.due();
+        advertisesCatalog = compatibility.modelCatalog;
         await deliverStepLogs(options, compatibility.steps, requestMs);
         if (!wake.settled()) continue;
       }
+      const { offered: harnesses, withheld } = offerOf(detectHarnesses(options.only));
+      const ready = harnesses.filter((h) => h.installed && h.authenticated).map((h) => h.id);
+      catalogs.reconcile(ready);
+      const signature = JSON.stringify({ harnesses, withheld });
+      if (signature !== offerSignature) {
+        offerSignature = signature;
+        for (const id of withheld) options.log(`not offering ${id}: ${WITHHELD_REASON}`);
+        options.log(ready.length === 0
+          ? `no harness on this machine is logged in; nothing can be claimed (found: ${harnesses.map((h) => h.id).join(', ') || 'none'})`
+          : `offering ${ready.join(', ')}`);
+      }
+      if (advertisesCatalog) catalogs.due();
       const claimSentAt = (options.clock ?? Date.now)();
       const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
       if (answer.kind === 'refused') {
@@ -819,44 +842,53 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
       options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
       // The cadence and the lease are the Deployment's, carried on the claim it answered.
       requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);
-      const outcome = await drive(options, run, { heartbeatMs: requestMs, deadline: leaseDeadline(claimSentAt, claim.leaseMs) }, wake, answer.steps);
-      // The attempt's step log goes ahead of its outcome, so a run is closed with the log its worker kept already held.
-      await deliverStepLogs(options, answer.steps, requestMs);
-      // A worker that lost its lease writes nothing: the run belongs to whoever
-      // holds it now, and a late outcome would be one worker reporting on
-      // another's run. The Deployment refuses such a write anyway; not making it
-      // is what keeps the two accounts of a run from disagreeing.
-      if (outcome.status !== 'lost') {
-        const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
-        const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
-          attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: answer.profileOutcome ? outcome.identity : withoutProfileOutcome(outcome.identity),
-        } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
-        const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
-          ...accounting,
-          ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
-        }));
-        if (ended.kind === 'refused') {
-          options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
-          return { driven, refused: ended.code };
+      const lease = holdAttemptLease(options, run, requestMs, leaseDeadline(claimSentAt, claim.leaseMs), wake);
+      try {
+        let outcome: Awaited<ReturnType<typeof drive>>;
+        try {
+          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps);
+        } catch (error) {
+          const coded = workerFailedError('worker_error');
+          keepRunDiagnostic(options, run, coded, error instanceof Error ? error.message : String(error));
+          outcome = { status: 'failed', error: coded, identity: { status: 'unknown', reason: 'worker_failure' } };
         }
-        // An outcome that never arrived leaves the run to the Deployment's sweep,
-        // which is what owns a run no worker reports on. Saying so is what makes
-        // the difference visible between that and a run nobody ever claimed.
-        if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
-        // The worker reports what the harness did; the Deployment records what the
-        // task actually left behind, and the two differ whenever a harness ends its
-        // turn having done none of the work. A worker that logged only its own
-        // report would show a clean drive against a run the Deployment failed.
-        if (ended.kind === 'answered' && ended.body.ended === false) {
-          options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
-        }
-        if (ended.kind === 'answered') {
-          const recorded = ended.body.status;
-          if (typeof recorded === 'string' && recorded !== outcome.status) {
-            options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);
+        // A worker that lost its lease writes nothing: the run belongs to whoever
+        // holds it now, and a late outcome would be one worker reporting on
+        // another's run. The Deployment refuses such a write anyway; not making it
+        // is what keeps the two accounts of a run from disagreeing.
+        if (outcome.status !== 'lost' && !lease.lost) {
+          const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
+          const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
+            attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: answer.profileOutcome ? outcome.identity : withoutProfileOutcome(outcome.identity),
+          } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
+          const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
+            ...accounting,
+            ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
+          }));
+          if (ended.kind === 'refused') {
+            options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
+            return { driven, refused: ended.code };
+          }
+          // An outcome that never arrived leaves the run to the Deployment's sweep,
+          // which is what owns a run no worker reports on. Saying so is what makes
+          // the difference visible between that and a run nobody ever claimed.
+          if (ended.kind === 'unreachable') options.log(`could not report the outcome of ${run.id}: ${ended.detail}`);
+          // The worker reports what the harness did; the Deployment records what the
+          // task actually left behind, and the two differ whenever a harness ends its
+          // turn having done none of the work. A worker that logged only its own
+          // report would show a clean drive against a run the Deployment failed.
+          if (ended.kind === 'answered' && ended.body.ended === false) {
+            options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
+          }
+          if (ended.kind === 'answered') {
+            const recorded = ended.body.status;
+            if (typeof recorded === 'string' && recorded !== outcome.status) {
+              options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);
+            }
           }
         }
-      }
+      } finally { lease.release(); }
+      await deliverStepLogs(options, answer.steps, requestMs);
       driven += 1;
       if (options.once === true) return { driven, refused: null };
     }

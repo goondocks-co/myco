@@ -18,8 +18,10 @@ export type ListModels = (harnesses: readonly string[], signal: AbortSignal) => 
 export interface CatalogReporter {
   /** Start a listing that is due, or send a report that is waiting; never waits for either. */
   due(): void;
+  /** Replace the authenticated harness set and invalidate listings from an older set. */
+  reconcile(harnesses: readonly string[]): void;
   /** Stop any listing in flight. */
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export function modelCatalogs(options: {
@@ -30,6 +32,10 @@ export function modelCatalogs(options: {
   clock: () => number;
 }): CatalogReporter {
   const stopping = new AbortController();
+  let harnesses = [...options.harnesses];
+  let generation = 0;
+  let listingStop = new AbortController();
+  const activeListings = new Set<Promise<void>>();
   let listedAt: number | null = null;
   let listing = false;
   let sending = false;
@@ -40,7 +46,9 @@ export function modelCatalogs(options: {
 
   const listNow = (): void => {
     listing = true;
-    void options.list(options.harnesses, stopping.signal).then((listed) => {
+    const revision = generation;
+    const work = options.list(harnesses, listingStop.signal).then((listed) => {
+      if (revision !== generation || stopping.signal.aborted) return;
       const catalogs: ModelCatalog[] = [];
       for (const result of listed) {
         if (result.ok) { catalogs.push(result.catalog); failed.delete(result.catalog.harness); continue; }
@@ -49,11 +57,15 @@ export function modelCatalogs(options: {
       }
       waiting = catalogs;
     }, (error: unknown) => {
+      if (revision !== generation || stopping.signal.aborted) return;
       options.log(`could not list models: ${error instanceof Error ? error.message : String(error)}`);
     }).finally(() => {
+      if (revision !== generation) return;
       listedAt = options.clock();
       listing = false;
     });
+    activeListings.add(work);
+    void work.finally(() => { activeListings.delete(work); });
   };
 
   const sendNow = (catalog: ModelCatalog): void => {
@@ -68,12 +80,23 @@ export function modelCatalogs(options: {
 
   return {
     due() {
-      if (stopping.signal.aborted || options.harnesses.length === 0) return;
+      if (stopping.signal.aborted || harnesses.length === 0) return;
       if (sending) return;
       const next = waiting[0];
       if (next !== undefined) { sendNow(next); return; }
       if (!listing && (listedAt === null || options.clock() - listedAt >= MODEL_CATALOG_REFRESH_MS)) listNow();
     },
-    stop() { stopping.abort(); },
+    reconcile(next) {
+      if (harnesses.length === next.length && harnesses.every((id, index) => id === next[index])) return;
+      generation += 1;
+      listingStop.abort();
+      listingStop = new AbortController();
+      harnesses = [...next];
+      waiting = [];
+      failed.clear();
+      listedAt = null;
+      listing = false;
+    },
+    async stop() { stopping.abort(); listingStop.abort(); await Promise.all(activeListings); },
   };
 }

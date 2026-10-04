@@ -38,7 +38,7 @@ type Handler = (body: Record<string, unknown>, signal: AbortSignal | undefined) 
  * default answers; `skewMs` sets the worker's clock that far ahead of the
  * Deployment's.
  */
-function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?: Handler; once?: boolean } = {}) {
+function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?: Handler; once?: boolean; keepAwake?: () => () => void } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'myco-lease-clock-'));
   const release = join(dir, 'release');
   const spawned = join(dir, 'spawned');
@@ -75,7 +75,7 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
     serverUrl: SERVER_URL, token: 'x'.repeat(43), lockDir: null,
     runRoot: mkdtempSync(join(tmpdir(), 'myco-lease-clock-runs-')),
     only: [PROFILE_STUB_HARNESS], once: options.once ?? true, pollIdleMs: 50,
-    log: (line) => { lines.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal, clock: workerClock,
+    log: (line) => { lines.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal, clock: workerClock, keepAwake: options.keepAwake,
   }));
   return {
     sent, lines, start, stopping, run,
@@ -89,6 +89,32 @@ function rig(options: { skewMs?: number; lease?: Handler; claim?: Handler; end?:
 }
 
 describe('the lease a worker holds', () => {
+  it('holds renewal and wake protection until the terminal request settles', async () => {
+    let protectedNow = false;
+    let leasesDuringEnd = 0;
+    let ending = false;
+    const r = rig({
+      keepAwake: () => { protectedNow = true; return () => { protectedNow = false; }; },
+      lease: () => {
+        if (ending) leasesDuringEnd += 1;
+        return Response.json({ persisted: true, held: true, leaseMs: LEASE_MS });
+      },
+      end: async (body) => {
+        ending = true;
+        expect(protectedNow).toBe(true);
+        await wait(HEARTBEAT_MS * 3);
+        expect(protectedNow).toBe(true);
+        return Response.json({ persisted: true, ended: true, status: body.status });
+      },
+    });
+    try {
+      r.release();
+      expect(await r.start()).toEqual({ driven: 1, refused: null });
+      expect(leasesDuringEnd).toBeGreaterThanOrEqual(2);
+      expect(protectedNow).toBe(false);
+    } finally { r.release(); r.stopping.abort(); }
+  });
+
   it('starts no harness and reports nothing for a claim whose answer lands after its lease ran out', async () => {
     let r: ReturnType<typeof rig>;
     let answered = false;

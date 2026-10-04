@@ -20,9 +20,10 @@
  * travel as a file rather than as a second message.
  */
 import nodeFs from 'node:fs';
-const { chmodSync, mkdtempSync, rmSync, writeFileSync } = nodeFs;
+const { chmodSync, writeFileSync } = nodeFs;
 import { join } from 'node:path';
 import { memberHeaders } from '../member/constants.js';
+import { allocateRunDirectory, discardOwnedRunDirectory } from './run-directory.js';
 
 /** The name a harness sees for the Deployment's tools. */
 export const MCP_SERVER_NAME = 'myco';
@@ -58,9 +59,8 @@ export function mcpConfigOf(connection: RunConnection): Record<string, unknown> 
  * the user the worker runs as. Everything in it goes with `discardRunDir` when
  * the run ends, whatever the run's outcome.
  */
-export function writeRunDir(root: string, runId: string, connection: RunConnection, instructions: string | null = null): { scratchDir: string; mcpConfigPath: string } {
-  if (!/^[A-Za-z0-9._-]{1,128}$/.test(runId)) throw new Error('Invalid run directory identity.');
-  const scratchDir = mkdtempSync(join(root, `${runId}-`));
+export function writeRunDir(root: string, runId: string, connection: RunConnection, instructions: string | null = null, attemptId?: string): { scratchDir: string; mcpConfigPath: string } {
+  const scratchDir = allocateRunDirectory(root, { purpose: 'attempt', runId, attemptId, projectId: connection.projectId, serverUrl: connection.serverUrl });
   try {
     const mcpConfigPath = join(scratchDir, 'mcp.json');
     writeFileSync(mcpConfigPath, JSON.stringify(mcpConfigOf(connection), null, 2), { mode: 0o600 });
@@ -77,5 +77,5 @@ export function writeRunDir(root: string, runId: string, connection: RunConnecti
 
 /** Remove a run's directory and the credential it holds. */
 export function discardRunDir(scratchDir: string): void {
-  rmSync(scratchDir, { recursive: true, force: true });
+  discardOwnedRunDirectory(scratchDir);
 }

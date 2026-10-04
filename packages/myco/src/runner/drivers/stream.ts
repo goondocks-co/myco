@@ -10,7 +10,7 @@
  * leads a process group of its own (`process-group.ts`): stopping it, and its
  * exit, end every helper it started.
  */
-import { spawnGroup, stopGroup } from '../process-group.js';
+import { spawnOwnedGroup } from '../process-group.js';
 
 export interface Started {
   /** Every complete line the harness wrote to stdout, in order. */
@@ -21,6 +21,7 @@ export interface Started {
   /** The signal that ended the harness, once it has exited on one; null otherwise. */
   signal: () => string | null;
   kill: () => void;
+  dispose: () => Promise<void>;
 }
 
 /** How much of what a harness writes to stderr a worker holds. */
@@ -37,40 +38,39 @@ export function launchEnvironment(env: Record<string, string>, omitInherited: re
 }
 
 export function startHarness(command: string, args: readonly string[], options: { cwd: string; env: Record<string, string>; signal: AbortSignal; omitInherited?: readonly string[] }): Started {
-  const child = spawnGroup(command, args, {
+  const owner = spawnOwnedGroup(command, args, {
     cwd: options.cwd,
     env: launchEnvironment(options.env, options.omitInherited),
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }, options.signal);
+  const { child, exit, dispose } = owner;
   let errors = '';
   let ended: string | null = null;
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => { errors = heldStderr(errors, chunk); });
-  const kill = (): void => { void stopGroup(child); };
-  options.signal.addEventListener('abort', kill, { once: true });
-
-  const exit = new Promise<number>((resolve) => {
-    child.once('close', (code, signal) => { ended = signal; options.signal.removeEventListener('abort', kill); void stopGroup(child); resolve(code ?? -1); });
-    child.once('error', () => { options.signal.removeEventListener('abort', kill); resolve(-1); });
-  });
+  const kill = (): void => { void dispose(); };
+  child.once('exit', (_code, signal) => { ended = signal; });
 
   async function* lines(): AsyncIterable<string> {
     let held = '';
     child.stdout?.setEncoding('utf8');
-    for await (const chunk of child.stdout ?? []) {
-      held += chunk as string;
-      let at = held.indexOf('\n');
-      while (at >= 0) {
-        const line = held.slice(0, at).trim();
-        held = held.slice(at + 1);
-        if (line.length > 0) yield line;
-        at = held.indexOf('\n');
+    try {
+      owner.assertStarted();
+      for await (const chunk of child.stdout ?? []) {
+        held += chunk as string;
+        let at = held.indexOf('\n');
+        while (at >= 0) {
+          const line = held.slice(0, at).trim();
+          held = held.slice(at + 1);
+          if (line.length > 0) yield line;
+          at = held.indexOf('\n');
+        }
       }
-    }
-    if (held.trim().length > 0) yield held.trim();
+      if (held.trim().length > 0) yield held.trim();
+    } finally { await dispose(); }
   }
 
-  return { lines: lines(), errorText: () => errors, exit, signal: () => ended, kill };
+  return { lines: lines(), errorText: () => errors, exit, signal: () => ended, kill, dispose };
 }
 
 /** One JSON value per line, skipping anything a harness writes that is not one. */
