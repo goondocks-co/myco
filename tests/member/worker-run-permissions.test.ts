@@ -311,7 +311,8 @@ describe('the run\'s own git', () => {
     for (const id of ['cursor', 'antigravity']) {
       const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, harnessById(id)!);
       expect({ id, git: grant.rules.filter((rule) => rule.startsWith(`${SHELL_TOOL}(`)) }).toEqual({ id, git: [] });
-      expect(grant.rules).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep']));
+      expect(grant.rules.some((rule) => ['Read', 'Glob', 'Grep'].includes(rule))).toBe(false);
+      expect(grant.source?.root).toBe(realpathSync(join(run.scratchDir, 'repo')));
       expect({ id, env: grant.env, shellSetup: grant.shellSetup, written: existsSync(join(run.scratchDir, 'bin', 'git')) }).toEqual({ id, env: {}, shellSetup: null, written: false });
     }
     const shim = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, { ...harnessById('cursor')!, sourceGit: 'shim' });

@@ -1,3 +1,4 @@
+import { stubClaudeSource } from '../helpers/stub-claude-source.js';
 import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * Each driver run against its harness's real stream, and the protocol client
@@ -212,14 +213,14 @@ describe('the Claude Code driver', () => {
   });
 
   it('allows source history commands with relative, absolute and current-directory paths', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'myco-stub-'));
-    writeFileSync(join(dir, 'claude'), `#!/bin/sh\nprintf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\nprintf '%s\\n' '${RESULT_SUCCESS}'\n`, { mode: 0o755 });
+    const dir = stubClaudeSource([RESULT_SUCCESS]);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const run = runDir();
     const repo = join(run.scratchDir, 'repo');
     mkdirSync(repo);
     await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
-    const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
+    const args = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
+    const argv = args[args.indexOf('--allowedTools') + 1]!.split(',');
     expect(argv).toContain('Bash(git log:*)');
     expect(argv).toContain('Bash(git -C repo rev-list:*)');
     expect(argv).not.toContain('Bash(git -C repo grep:*)');
@@ -330,13 +331,14 @@ describe('the Claude Code driver', () => {
   it('reads a refused history command in a source run as outside its grant, and a refused file read as the run kept from its work', async () => {
     const run = runDir();
     mkdirSync(join(run.scratchDir, 'repo'));
+    writeFileSync(join(run.scratchDir, 'repo', 'README.md'), 'source');
     const result = (denials: string): string => `{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"permission_denials":[${denials}]}`;
     const shell = '{"tool_name":"Bash","tool_use_id":"tu_1","tool_input":{"command":"git log | head"}}';
-    process.env.PATH = `${stubHarness('claude', [result(shell)])}:${process.env.PATH ?? ''}`;
+    process.env.PATH = `${stubClaudeSource([result(shell)])}:${process.env.PATH ?? ''}`;
     const scoped = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
     expect(scoped.at(-1)).toEqual({ kind: 'ended', stop: 'end_turn', detail: null });
 
-    process.env.PATH = `${stubHarness('claude', [result(`${shell},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"repo/README.md"}}`)])}:${process.env.PATH ?? ''}`;
+    process.env.PATH = `${stubClaudeSource([result(`${shell},{"tool_name":"Read","tool_use_id":"tu_2","tool_input":{"file_path":"repo/README.md"}}`)])}:${process.env.PATH ?? ''}`;
     const granted = await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
     expect(granted.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'permission refused for Read', code: 'permission_refused', names: ['Read'] });
   });
@@ -503,6 +505,7 @@ describe('the developer directory a Codex source run may read (#1475)', () => {
 
   it('is read by a source run alone, whatever directory is handed to the profile', () => {
     const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
     const home = mkdtempSync(join(tmpdir(), 'myco-codex-home-'));
     const spec = { ...run, prompt: 'p', credentialEnv: {} };
     const access = (filesystem: Record<string, string>): string | null => filesystem[TOOLS] ?? null;
@@ -604,6 +607,7 @@ describe('the Codex driver', () => {
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     for (const sourceReadOnly of [true, false]) {
       const run = runDir();
+      mkdirSync(join(run.scratchDir, 'repo'));
       await collect(codexDriverWith(fakeMac()).run({ ...run, sourceReadOnly, prompt: 'read source', credentialEnv: {} }, new AbortController().signal));
       const home = join(run.scratchDir, 'codex-home');
       const config = parse(readFileSync(join(home, 'config.toml'), 'utf8')) as Record<string, unknown>;
@@ -629,11 +633,12 @@ describe('the Codex driver', () => {
               ':slash_tmp': 'deny',
               ':tmpdir': 'deny',
               // The harness runs a helper of its own program in the sandbox, by the path PATH gave it.
-              [dir]: 'read',
-              [realpathSync(dir)]: 'read',
+              [join(dir, 'codex')]: 'read',
+              [realpathSync(join(dir, 'codex'))]: 'read',
               // Only a source run runs `git`, so only a source run reads the developer directory.
               ...(sourceReadOnly ? { [TOOLS]: 'read' } : {}),
-              [realpathSync(run.scratchDir)]: sourceReadOnly ? 'read' : 'write',
+              [realpathSync(run.scratchDir)]: sourceReadOnly ? 'deny' : 'write',
+              ...(sourceReadOnly ? { [realpathSync(join(run.scratchDir, 'repo'))]: 'read' } : {}),
               [realpathSync(home)]: 'deny',
               [realpathSync(run.mcpConfigPath)]: 'deny',
             },
@@ -690,6 +695,7 @@ describe('the Codex driver', () => {
     const dir = stubHarness('codex', ['{"type":"turn.completed","usage":{}}']);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const run = runDir();
+    mkdirSync(join(run.scratchDir, 'repo'));
     // A developer directory another user owns is one nobody here chose to show the run.
     const logged: string[] = [];
     await collect(codexDriverWith(fakeMac({ paths: { [TOOLS]: { uid: 502, mode: 0o40755, kind: 'dir' }, [join(TOOLS, 'usr', 'bin', 'git')]: { uid: 0, mode: 0o100755, kind: 'file' } } }), (line) => { logged.push(line); })
@@ -721,6 +727,7 @@ describe('the Codex driver', () => {
     process.env.PATH = `${stubCodexReadingItsHome()}:${process.env.PATH ?? ''}`;
     try {
       const run = runDir();
+      mkdirSync(join(run.scratchDir, 'repo'));
       await collect(codexDriver.run({ ...run, sourceReadOnly: true, prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
       const read = parse(readFileSync(join(run.scratchDir, 'codex-home', 'config.toml'), 'utf8')) as Record<string, unknown>;
       expect({
@@ -1457,6 +1464,7 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
   it('answers from the same grant a Claude Code run holds: a source run\'s reads and scoped history commands, the run\'s listed tools, and nothing past them', async () => {
     const run = runDir();
     mkdirSync(join(run.scratchDir, 'repo'));
+    writeFileSync(join(run.scratchDir, 'repo', 'README.md'), 'source');
     const answerFor = async (toolCall: Record<string, unknown>, sourceReadOnly: boolean): Promise<string | null> => {
       let chosen: string | null = null;
       const channel = askingAgent(async (agent) => {
@@ -1475,8 +1483,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       [{ kind: 'other', title: 'myco_dev_search' }, false, 'reject'],
       [{ kind: 'other', title: 'mcp__mycox__foo' }, false, 'reject'],
       [{ kind: 'other', title: 'mycox_foo' }, false, 'reject'],
-      [{ kind: 'read', title: 'repo/README.md' }, false, 'reject'],
-      [{ kind: 'read', title: 'repo/README.md' }, true, 'once'],
+      [{ kind: 'read', title: 'repo/README.md', rawInput: { filePath: 'repo/README.md' } }, false, 'reject'],
+      [{ kind: 'read', title: 'repo/README.md', rawInput: { filePath: 'repo/README.md' } }, true, 'once'],
       [shell('git -C repo log --oneline'), true, 'once'],
       [shell('git -C repo log --oneline'), false, 'reject'],
       [shell('git log | head'), true, 'reject'],
@@ -1491,8 +1499,8 @@ describe('the agent-protocol driver answering what the agent asks of it', () => 
       [{ kind: 'other', title: 'myco: myco_run', rawInput: { providerIdentifier: 'myco', toolName: 'myco_run' } }, false, 'once'],
       [{ kind: 'other', title: 'myco: unlisted', rawInput: { providerIdentifier: 'myco', toolName: 'unlisted' } }, false, 'reject'],
       [{ kind: 'other', title: 'myco-dev: myco_run', rawInput: { providerIdentifier: 'myco-dev', toolName: 'myco_run' } }, false, 'reject'],
-      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO' } }, true, 'once'],
-      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO' } }, false, 'reject'],
+      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO', path: 'repo' } }, true, 'once'],
+      [{ kind: 'search', title: 'TODO', rawInput: { pattern: 'TODO', path: 'repo' } }, false, 'reject'],
       [{ kind: 'search', title: 'react hooks', rawInput: { query: 'react hooks' } }, true, 'reject'],
       [{ kind: 'search', title: 'context7_resolve_library_id', rawInput: { libraryName: 'react' } }, true, 'reject'],
     ];

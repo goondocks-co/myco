@@ -1,3 +1,4 @@
+import { sourceAccess } from './source-access.js';
 import { accountingEvents } from '../accounting.js';
 /**
  * Codex, driven natively.
@@ -182,13 +183,13 @@ export const RUN_PERMISSIONS = 'myco_run';
  *
  * This harness never asks before a call and the run's grant does not reach it,
  * so the sandbox is the run's whole bound: a command reads the system's own
- * minimal set and the run's directory, and writes nothing (a source run) or
+ * minimal set and the declared source inputs, and writes nothing (a source run) or
  * only the run's directory; the temporary directories every command could
  * otherwise read and write are closed. Within the run's directory, the run's
  * configuration home and its MCP configuration are closed as well: they hold
  * the run's credentials, which are the harness's to read and not its
- * commands'. The harness's own program is readable, in the directory PATH
- * finds it in and the one it is installed in, since the harness runs a helper
+ * commands'. The harness's own program is readable at the path PATH
+ * finds it at and its physical installed path, since the harness runs a helper
  * of its own inside the same sandbox, by the path PATH gave it, to read the
  * run's instructions. A source run on macOS reads the active developer
  * directory as well, since the system's `git` runs from it
@@ -198,13 +199,15 @@ export const RUN_PERMISSIONS = 'myco_run';
  */
 export function runFilesystem(spec: LaunchSpec, home: string, installed: string | null, developerDir: string | null): Record<string, string> {
   const source = spec.sourceReadOnly === true;
+  const inputs = source ? sourceAccess(spec.scratchDir) : null;
   return {
     ':minimal': 'read',
     ':slash_tmp': 'deny',
     ':tmpdir': 'deny',
-    ...(installed === null ? {} : { [dirname(installed)]: 'read', [dirname(realpathSync(installed))]: 'read' }),
+    ...(installed === null ? {} : { [installed]: 'read', [realpathSync(installed)]: 'read' }),
     ...(source && developerDir !== null ? { [developerDir]: 'read' } : {}),
-    [realpathSync(spec.scratchDir)]: source ? 'read' : 'write',
+    [realpathSync(spec.scratchDir)]: source ? 'deny' : 'write',
+    ...(inputs === null ? {} : { [inputs.root]: 'read', ...Object.fromEntries(inputs.files.map((file) => [file, 'read'])) }),
     [realpathSync(home)]: 'deny',
     ...(spec.mcpConfigPath === undefined ? {} : { [realpathSync(spec.mcpConfigPath)]: 'deny' }),
   };
