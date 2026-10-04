@@ -196,6 +196,7 @@ describe('the Claude Code driver', () => {
       const argv = readFileSync(join(dir, 'argv.txt'), 'utf8').trim().split('\n');
       expect(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 4)).toEqual(['--model', 'haiku', '--effort', 'low']);
       expect(argv.slice(argv.indexOf('--setting-sources'), argv.indexOf('--setting-sources') + 2)).toEqual(['--setting-sources', 'project,local']);
+      expect(argv).toContain('--no-session-persistence');
       const env = readFileSync(join(dir, 'env.txt'), 'utf8');
       expect(env).toContain('CLAUDE_CODE_OAUTH_TOKEN=injected-oauth');
       expect(env).not.toContain('ANTHROPIC_API_KEY=');

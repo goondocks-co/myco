@@ -44,6 +44,8 @@ export type RunEvent =
 
 /** What every driver is given, and the only thing it needs to start a harness. */
 export interface RunSpec {
+  /** Observe a created session before profile or permission admission, including a session that cannot be prompted. */
+  sessionOpened?: (sessionId: string) => void;
   /** The prompt the server built, carried on the run's row. */
   prompt: string;
   /** A directory of this run's own: the MCP configuration and anything the harness writes. */

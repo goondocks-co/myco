@@ -22,9 +22,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Antigravity.app"
       ],
       "activityLocations": [
-        "~/.gemini/antigravity/brain",
-        "~/.gemini/antigravity-cli/brain",
-        "~/.gemini/antigravity-ide/brain"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "ANTIGRAVITY_PLUGIN_ROOT",
@@ -335,7 +333,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Claude.app"
       ],
       "activityLocations": [
-        "~/.claude/projects"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
@@ -976,7 +974,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.cline"
       ],
       "activityLocations": [
-        "~/.cline/data/tasks"
+        "~/.cline/data/tasks/{sessionId}/api_conversation_history.json"
       ]
     },
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
@@ -1149,7 +1147,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Codex.app"
       ],
       "activityLocations": [
-        "~/.codex/sessions"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
@@ -1624,7 +1622,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.copilot"
       ],
       "activityLocations": [
-        "~/.copilot/session-state"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
@@ -1920,7 +1918,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Cursor.app"
       ],
       "activityLocations": [
-        "~/.cursor/projects"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
@@ -2278,9 +2276,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.config/opencode"
       ],
       "activityLocations": [
-        "~/.local/share/opencode/storage/session",
-        "~/.local/share/opencode/opencode.db",
-        "~/.local/share/opencode/opencode.db-wal"
+        "~/.local/share/opencode/storage/session/*/{sessionId}.json"
       ]
     },
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
@@ -2630,7 +2626,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/.pi"
       ],
       "activityLocations": [
-        "~/.pi/agent/sessions"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
@@ -2754,8 +2750,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "~/Applications/Windsurf.app"
       ],
       "activityLocations": [
-        "~/.windsurf/transcripts",
-        "~/.codeium/windsurf/cascade"
+        "@transcripts"
       ]
     },
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",

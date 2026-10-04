@@ -152,6 +152,7 @@ function walk(
   sessionIdSoFar: string | null,
   out: DiscoveredTranscript[],
   limit: number,
+  strictErrors = false,
 ): void {
   if (out.length >= limit) return;
 
@@ -162,7 +163,8 @@ function walk(
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (strictErrors && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return; // root or intermediate directory absent — not an error
   }
 
@@ -180,7 +182,7 @@ function walk(
     }
 
     if (!entry.isDirectory()) continue;
-    walk(path.join(dir, entry.name), segments, index + 1, captured, out, limit);
+    walk(path.join(dir, entry.name), segments, index + 1, captured, out, limit, strictErrors);
   }
 }
 
@@ -293,4 +295,21 @@ export function sessionIdFromStoredId(discovery: TranscriptDiscovery | undefined
   if (!discovery?.sessionIdPattern) return null;
   const match = new RegExp(`(?:^|[^0-9A-Za-z])(${discovery.sessionIdPattern})$`).exec(storedId);
   return match?.[1] ?? null;
+}
+
+/** Enumerate session records at one absolute layout, surfacing unreadable directories. */
+export function enumerateSessionRecords(location: string, sessionIdPattern = DEFAULT_SESSION_ID_PATTERN): DiscoveredTranscript[] {
+  const found: DiscoveredTranscript[] = [];
+  const absolute = path.resolve(location);
+  const volume = path.parse(absolute).root;
+  const segments = absolute.slice(volume.length).split(path.sep);
+  const firstPattern = segments.findIndex((segment) => segment.includes('*') || segment.includes(SESSION_ID_TOKEN));
+  if (firstPattern < 0) return found;
+  const root = path.join(volume, ...segments.slice(0, firstPattern));
+  try { if (!fs.lstatSync(root).isDirectory()) return found; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return found;
+    throw error;
+  }
+  walk(root, patternSegments(segments.slice(firstPattern).join('/'), null, sessionIdPattern), 0, null, found, Infinity, true);
+  return found;
 }

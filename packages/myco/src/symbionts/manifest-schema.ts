@@ -953,6 +953,7 @@ export const SymbiontManifestSchema = z.object({
   detectionDir: z.string().nullable().optional(),
   health: z.object({
     installLocations: z.array(z.string()),
+    /** Session-record layouts with {sessionId}, or @transcripts for the canonical capture layouts. */
     activityLocations: z.array(z.string()),
   }).optional(),
   pluginRootEnvVar: z.string(),
