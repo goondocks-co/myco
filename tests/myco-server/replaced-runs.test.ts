@@ -175,7 +175,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     f.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id = 'run_live'`);
     const post = async (path: string, body: unknown): Promise<Record<string, unknown>> =>
       await (await worker.fetch(memberPost(minted.token, body, path), f.bindings as never)).json() as Record<string, unknown>;
-    return { ...f, post };
+    return { ...f, post, minted };
   }
 
   it('adds `replaced` to the context through the failure it posts, and the run it stands in for is queued', async () => {
@@ -191,10 +191,13 @@ describe('what a runtime may add to a run it did not dispatch', () => {
   });
 
   it('may not move the hash the dispatcher filed, with or without the word it may add', async () => {
-    const { post, contextOf } = await runtime();
-    expect(await post('/runs/update', { runId: 'run_live', replaced: true, update: { status: 'failed', run_context: '{"input_hash":"mine"}' } }))
-      .toMatchObject({ persisted: false, code: 'field_retired' });
-    expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h' });
+    const { post, contextOf, minted } = await runtime();
+    const refusal = await post('/runs/update', { runId: 'run_live', replaced: true, update: { status: 'failed', run_context: '{"input_hash":"mine"}' } });
+    expect({ ...refusal }).toMatchObject({ persisted: false, code: 'field_retired', refusalId: expect.any(String) });
+    expect(contextOf('run_live')).toEqual({
+      timeoutSeconds: 120, input_hash: 'h',
+      runControlRefusals: { field_retired: { tokenId: minted.tokenId, code: 'field_retired', id: refusal.refusalId } },
+    });
   });
 
   it('leaves a scalar context alone and queues nothing behind it', async () => {

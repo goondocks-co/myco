@@ -587,7 +587,7 @@ export async function liveRunsOfCredential(db: RelationalStore, tokenId: string)
 /** Record a server refusal receipt for the unique open run dispatched under this credential. */
 export async function recordRunControlRefusal(db: RelationalStore, tokenId: string, code: RunControlRefusalCode): Promise<string | null> {
   const { results } = await db.prepare(`SELECT project_id AS projectId, id FROM agent_runs
-    WHERE dispatched_by = ? AND status IN ('pending', 'running')`).bind(tokenId).all<{ projectId: string; id: string }>();
+    WHERE dispatched_by = ? AND ${LIVE_RUN_STATUSES}`).bind(tokenId).all<{ projectId: string; id: string }>();
   if (results.length !== 1) return null;
   const run = results[0]!;
   const key = `runControlRefusals.${code}`;
@@ -598,7 +598,7 @@ export async function recordRunControlRefusal(db: RelationalStore, tokenId: stri
     WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
     ELSE json_object('unparsedRunContext', run_context) END, '$.${key}',
       CASE WHEN ${contextValue(`${key}.tokenId`)} = ? THEN ${contextValue(key)} ELSE json(?) END)
-    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN ('pending', 'running')
+    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND ${LIVE_RUN_STATUSES}
     RETURNING ${contextValue(`${key}.id`)} AS refusalId`)
     .bind(tokenId, JSON.stringify({ tokenId, code, id: crypto.randomUUID() }), run.projectId, run.id, tokenId).first<{ refusalId: string }>();
   return row?.refusalId ?? null;
