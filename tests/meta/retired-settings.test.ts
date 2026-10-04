@@ -1,13 +1,10 @@
-/**
- * Retired editable contracts have no direct consumer except the named runtime probe.
- * Its reader refuses every ordinary worker outcome. Derived views and stored-history
- * inspection do not admit writes. A new direct consumer changes this set and fails.
- */
+/** The active contract names no leaf without a consumer. */
 import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS, executionProfileLeafDefault } from '@myco-server-worker/core/settings.js';
+import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
 import { runtimeProbePreferences } from '@myco-server-worker/core/runtime-probe.js';
 import { OUTCOME_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
@@ -31,26 +28,24 @@ const sources = (dir: string): string[] => {
   });
 };
 
-const PROBE = join(SERVER, 'core', 'runtime-probe.ts');
-const PROBE_LEAVES = ['agent.provider.type', 'agent.provider.model', 'agent.provider.base_url'];
 const SERVER_TEXT = sources(SERVER).map((file) => readFileSync(file, 'utf8'));
 const MEMBER_TEXT = MEMBER.flatMap(sources).map((file) => readFileSync(file, 'utf8'));
 const named = (texts: readonly string[], needle: string): boolean => texts.some((text) => text.includes(needle));
 const namedLeaf = (texts: readonly string[], leaf: string): boolean => texts.some((text) =>
   [`'${leaf}'`, `"${leaf}"`, `\`${leaf}\``].some((literal) => text.includes(literal)));
 
-describe('retired settings', () => {
-  it('marks retired exactly the leaves with no direct reader outside the metadata owner', () => {
+describe('settings retirement', () => {
+  it('keeps the retired leaves out of the active contract and admits no unread leaf', () => {
     expect(SERVER_TEXT.length).toBeGreaterThan(100);
     expect(MEMBER_TEXT.length).toBeGreaterThan(50);
     const unread = DEPLOYMENT_LEAVES.filter((leaf) => executionProfileLeafDefault(leaf, 'deployment') === null
-      && (PROBE_LEAVES.includes(leaf) || !namedLeaf(SERVER_TEXT, leaf)) && !namedLeaf(MEMBER_TEXT, leaf)).sort();
-    expect([...RETIRED_LEAVES].sort()).toEqual(unread);
-    // A leaf the Deployment does not hold is never marked.
-    for (const leaf of RETIRED_LEAVES) expect({ leaf, held: DEPLOYMENT_LEAVES.includes(leaf) }).toEqual({ leaf, held: true });
+      && !namedLeaf(SERVER_TEXT, leaf) && !namedLeaf(MEMBER_TEXT, leaf)).sort();
+    expect(unread).toEqual([]);
+    expect([...RETIRED_LEAVES]).toEqual([]);
+    for (const leaf of V68_RETIRED_SETTINGS) expect(DEPLOYMENT_LEAVES).not.toContain(leaf);
   });
 
-  it('refuses archived provider preferences for every ordinary worker outcome', async () => {
+  it('limits provider preferences to the container probe', async () => {
     const { db } = sqliteEnv();
     for (const task of OUTCOME_TASKS) {
       await expect(runtimeProbePreferences(db, task)).rejects.toThrow('only for the retained container probe');
@@ -62,12 +57,4 @@ describe('retired settings', () => {
     const unread = SECRET_SLOT_NAMES.filter((slot) => !named(SERVER_TEXT, `'${slot}'`) && harnessesReading(slot).length === 0).sort();
     expect([...RETIRED_SECRET_SLOTS].sort()).toEqual(unread);
   });
-});
-
-
-it('sees the probe as the sole direct consumer of archived provider leaves', () => {
-  for (const leaf of RETIRED_LEAVES) {
-    const readers = [...sources(SERVER), ...MEMBER.flatMap(sources)].filter((file) => namedLeaf([readFileSync(file, 'utf8')], leaf));
-    expect({ leaf, readers }).toEqual({ leaf, readers: PROBE_LEAVES.includes(leaf) ? [PROBE] : [] });
-  }
 });

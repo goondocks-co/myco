@@ -204,9 +204,9 @@ describe('the deployment leaf registry', () => {
     expect(deployment.size).toBeGreaterThan(20);
     // Both directions: the runtime cannot accept a leaf the ledger did not assign
     // here, and cannot silently ignore one it did.
-    const historical = DEPLOYMENT_LEAVES.filter((leaf) => dropped.has(leaf));
-    expect(historical.every((leaf) => RETIRED_LEAVES.has(leaf))).toBe(true);
-    expect(DEPLOYMENT_LEAVES.filter((leaf) => !dropped.has(leaf)).sort()).toEqual([...deployment].sort());
+    expect(DEPLOYMENT_LEAVES.filter((leaf) => dropped.has(leaf))).toEqual([]);
+    expect([...RETIRED_LEAVES]).toEqual([]);
+    expect([...DEPLOYMENT_LEAVES].sort()).toEqual([...deployment].sort());
   });
 });
 
@@ -291,14 +291,14 @@ describe('retired per-task provider preferences', () => {
 });
 
 
-it('keeps every container probe override read-only and refuses echoed retired provider keys', async () => {
+it('keeps container preferences intact while accepting unchanged historical provider keys', async () => {
   const r = rig();
   const historic = { 'container-smoke': { harness: 'claude-code', model: 'haiku' }, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
   r.sqlite.run(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(historic)]);
   expect(await r.w.setLeaf('agent.tasks', { ...historic, 'container-smoke': { harness: 'claude-code', model: 'sonnet' } }, 'mem_1', 2)).toMatchObject({ applied: false });
-  expect(await r.w.setLeaf('agent.tasks', { 'title-summary': historic['title-summary'] }, 'mem_1', 2)).toMatchObject({ applied: false });
+  expect(await r.w.setLeaf('agent.tasks', { 'title-summary': historic['title-summary'] }, 'mem_1', 2)).toMatchObject({ applied: true });
   expect(await r.w.setLeaf('agent.tasks', { 'title-summary': { reasoningLevel: 'high' } }, 'mem_1', 2)).toEqual({ applied: true });
   expect((await r.w.leaves())['agent.tasks'].value).toEqual({ ...historic, 'title-summary': { provider: 'anthropic', reasoningLevel: 'high' } });
   await r.w.resetLeaf('agent.tasks', 'mem_1', 3);
-  expect((await r.w.leaves())['agent.tasks'].value).toEqual({ 'container-smoke': historic['container-smoke'], 'title-summary': { provider: 'anthropic' } });
+  expect((await r.w.leaves())['agent.tasks']).toBeUndefined();
 });

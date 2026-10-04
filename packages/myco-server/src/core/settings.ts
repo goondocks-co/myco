@@ -1,9 +1,8 @@
-import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { OUTCOME_TASKS } from './task-catalogue.js';
+import { OUTCOME_TASKS, RETAINED_TASKS } from './task-catalogue.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import {
@@ -34,8 +33,7 @@ export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution'] as c
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 
 /**
- * The rule a leaf's value satisfies at write, or `{}` for a retired leaf, whose
- * writes are refused whatever they carry.
+ * The rule a leaf's value satisfies at write.
  *
  * Declarative data rather than a validator function: a gate reads it, and the
  * settings surface reports a stored value that breaks it as invalid, with its
@@ -69,6 +67,9 @@ export type LeafSpec =
   | { readonly type: 'profile-model'; readonly harness: keyof typeof PROFILE_HARNESSES }
   | { readonly type: 'profile-effort'; readonly harness: keyof typeof PROFILE_HARNESSES }
   | { readonly type: 'credential-source' }
+  | { readonly type: 'probe-provider' }
+  | { readonly type: 'probe-model' }
+  | { readonly type: 'probe-base-url' }
   /**
    * A list of paths, without control characters: plan folders, each absolute, `~/`, or relative to wherever it is
    * resolved (`planFolderRefusal`); or, with `folders: 'capture'`, capture folders (`captureFolderRefusal`).
@@ -91,31 +92,12 @@ const LIMIT_SPEC: LeafSpec = { type: 'integer', min: 1, max: 10_000, nullable: t
  */
 export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.cold_project_threshold_days': { type: 'integer', min: 0, max: 365 },
-  'agent.event_tasks_enabled': {},
-  // Preserved for stored-history inspection; writes to retired leaves are refused.
-  'agent.harness': {},
   'agent.limits.concurrent_runs': LIMIT_SPEC,
   'agent.limits.task_concurrent_runs': LIMIT_SPEC,
   'agent.limits.task_runs_per_hour': LIMIT_SPEC,
-  'agent.model': {},
-  'agent.provider.base_url': {},
-  'agent.provider.context_length': {},
-  'agent.provider.effort_map.default.effort': {},
-  'agent.provider.effort_map.default.verbosity': {},
-  'agent.provider.effort_map.high.effort': {},
-  'agent.provider.effort_map.high.verbosity': {},
-  'agent.provider.effort_map.low.effort': {},
-  'agent.provider.effort_map.low.verbosity': {},
-  'agent.provider.local_backend': {},
-  'agent.provider.model': {},
-  'agent.provider.reasoning_map.default': {},
-  'agent.provider.reasoning_map.high': {},
-  'agent.provider.reasoning_map.low': {},
-  'agent.provider.thinking_budget_map.default': {},
-  'agent.provider.thinking_budget_map.high': {},
-  'agent.provider.thinking_budget_map.low': {},
-  'agent.provider.type': {},
-  'agent.reasoningLevel': {},
+  'agent.provider.base_url': { type: 'probe-base-url' },
+  'agent.provider.model': { type: 'probe-model' },
+  'agent.provider.type': { type: 'probe-provider' },
   ...Object.fromEntries(CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.map((tier) => [`agent.reasoning_map.${harness}.${tier}`, { type: 'profile-model', harness }]),
     ...REASONING_TIERS.map((tier) => [`agent.effort_map.${harness}.${tier}`, { type: 'profile-effort', harness }]),
@@ -124,8 +106,6 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.run_retention_days': { type: 'integer', min: 1, max: 365 },
   'agent.scheduled_tasks_active_window_days': { type: 'integer', min: 0, max: 365 },
   'agent.scheduled_tasks_enabled': BOOLEAN_SPEC,
-  'agent.semantic_write_check_enabled': {},
-  'agent.summary_batch_interval': {},
   'agent.tasks': { type: 'task-overrides' },
   'backup.auto_interval_hours': { type: 'integer', min: 1, max: 720 },
   // #1547: whether a member's machine may create a project for a repository it meets that no project holds. Absent
@@ -134,12 +114,9 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'backup.recovery.keep_stagings': { type: 'integer', min: 1, max: 30 },
   'backup.retention.keep_daily': { type: 'integer', min: 1, max: 365 },
   'backup.retention.keep_weekly': { type: 'integer', min: 0, max: 52 },
-  'cortex.canopy.exclude.default_patterns': {},
   'cortex.canopy.exclude.patterns': { type: 'pattern-list', maxItems: 100, maxChars: 256 },
   'cortex.canopy.refresh.background_enabled': BOOLEAN_SPEC,
   'cortex.canopy.refresh.background_period_minutes': { type: 'integer', min: 1, max: 10_080 },
-  'cortex.digest.inject_on_session_start': {},
-  'cortex.digest.tier': {},
   'cortex.instructions.inject_on_session_start': BOOLEAN_SPEC,
   'cortex.instructions.inject_on_subagent_start': BOOLEAN_SPEC,
   'cortex.plans.inject_intent_nudge_on_prompt_submit': BOOLEAN_SPEC,
@@ -160,67 +137,24 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'maintenance.auto_integrity_check_interval_hours': { type: 'integer', min: 1, max: 8760 },
   'maintenance.auto_optimize': BOOLEAN_SPEC,
   'maintenance.auto_optimize_interval_hours': { type: 'integer', min: 1, max: 720 },
-  'notifications.retention_days': {},
   'release_provenance.reconcile_interval_minutes': { type: 'integer', min: 1, max: 1440 },
   // #1147 — transcript-first ingest. Unset or 0 keeps raw transcripts forever.
   // A window prunes only processed raw bytes (`ingest/retention.ts`), and is how
   // a Deployment manages storage: capture is never refused (#1416).
   'retention.transcripts': { type: 'integer', min: 0, max: 3650 },
-  'skills.confidence_threshold': {},
-  'skills.usage_stale_days': {},
   // #1151 — worker mode: the harness a worker prefers and the order it falls back through.
   'worker.harness': { type: 'agent' },
   'worker.harness_fallback': { type: 'agent-list' },
 };
 
-/**
- * Retired editable contracts retained for inspection and recovery. Ordinary worker outcomes do not read them.
- * The retained runtime probe is the sole consumer of archived provider preferences.
- * The writer refuses mutations and the API reports stored rows as retired metadata.
- */
-export const RETIRED_LEAVES: ReadonlySet<string> = new Set([
-  'agent.event_tasks_enabled',
-  'agent.harness',
-  'agent.provider.type',
-  'agent.provider.model',
-  'agent.provider.base_url',
-  'agent.provider.context_length',
-  'agent.provider.effort_map.default.effort',
-  'agent.provider.effort_map.default.verbosity',
-  'agent.provider.effort_map.high.effort',
-  'agent.provider.effort_map.high.verbosity',
-  'agent.provider.effort_map.low.effort',
-  'agent.provider.effort_map.low.verbosity',
-  'agent.provider.local_backend',
-  'agent.model',
-  'agent.provider.reasoning_map.default',
-  'agent.provider.reasoning_map.high',
-  'agent.provider.reasoning_map.low',
-  'agent.provider.thinking_budget_map.default',
-  'agent.provider.thinking_budget_map.high',
-  'agent.provider.thinking_budget_map.low',
-  'agent.reasoningLevel',
-  'agent.semantic_write_check_enabled',
-  'agent.summary_batch_interval',
-  'cortex.canopy.exclude.default_patterns',
-  'cortex.digest.inject_on_session_start',
-  'cortex.digest.tier',
-  'notifications.retention_days',
-  'skills.confidence_threshold',
-  'skills.usage_stale_days',
-]);
+/** No retired Deployment leaf remains in the active contract. */
+export const RETIRED_LEAVES: ReadonlySet<string> = new Set();
 
-/** Secret slots the Deployment still stores that nothing reads. Held to its readers by the same gate as `RETIRED_LEAVES`. */
+/** Secret slots the Deployment still stores that nothing reads. */
 export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
 
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
-
-/** Derived settings metadata, independent of any stored retired override. */
-export function derivedLeafMetadata(leaf: string): { effectiveValue: unknown; source: 'derived' } | null {
-  return leaf === 'cortex.canopy.exclude.default_patterns'
-    ? { effectiveValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS, source: 'derived' } : null;
-}
 
 /** The built-in value of one execution profile leaf on this Deployment. */
 export function executionProfileLeafDefault(leaf: string, credentialSource: 'deployment' | 'worker-login'): { present: boolean; value: string | null } | null {
@@ -243,28 +177,62 @@ const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
 
 /** Any ASCII control character but newline and tab; a stored setting is text a person edits, not a control stream. */
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const PROBE_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** Live task controls and their preserved read-only preferences. */
-export function taskOverridesMetadata(value: unknown): { editableValue: unknown; retiredValue: Record<string, unknown> } {
-  if (!isRecord(value)) return { editableValue: value, retiredValue: {} };
-  const editableValue: Record<string, unknown> = {};
-  const retiredValue: Record<string, unknown> = {};
+/** The fields each retained task's consumers read. */
+const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
+const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
+
+/** Stored task fields that apply, and the named reasons other fields do not. */
+export function taskOverridesResolution(value: unknown): { effective: unknown; reasons: string[]; invalid: boolean } {
+  if (!isRecord(value)) return { effective: null, reasons: ['Expected an object of task overrides. Worker tasks wait for a valid object; scheduling uses the declared task defaults.'], invalid: true };
+  const effective: Record<string, unknown> = {};
+  const reasons: string[] = [];
+  let invalid = false;
   for (const [task, entry] of Object.entries(value)) {
-    if (task === 'container-smoke') { retiredValue[task] = entry; continue; }
-    if (!isRecord(entry)) { editableValue[task] = entry; continue; }
-    const { provider, ...live } = entry;
-    editableValue[task] = live;
-    if (Object.hasOwn(entry, 'provider')) retiredValue[task] = { provider };
+    if (!(RETAINED_TASKS as readonly string[]).includes(task)) { reasons.push(`${task}: this task no longer exists; its stored override is not used.`); continue; }
+    if (!isRecord(entry)) { effective[task] = null; invalid = true; reasons.push(`${task}: the stored entry is not an object; this task waits for a valid override.`); continue; }
+    const applied: Record<string, unknown> = {};
+    const fields: readonly string[] = task === 'container-smoke' ? ['provider', 'model', 'schedule'] : task === 'embedding-reconcile' ? ['schedule'] : TASK_FIELDS;
+    for (const [field, held] of Object.entries(entry)) {
+      const path = `${task}.${field}`;
+      if (!fields.includes(field)) { reasons.push(`${path}: no consumer uses this field; it does not apply.`); continue; }
+      if (field === 'harness' && (typeof held !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, held))) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: ${JSON.stringify(held)} is not a supported agent; the worker cannot choose it.`); continue;
+      }
+      if (field === 'reasoningLevel' && !isReasoningTier(held)) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: this tier is invalid; the task waits until it is corrected.`); continue;
+      }
+      if (field === 'model' && task !== 'container-smoke' && (typeof entry.harness !== 'string' || modelRefusal(entry.harness, held) !== null)) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: this model cannot be applied by the stored agent; the task waits for a supported execution profile.`); continue;
+      }
+      if (field === 'schedule') {
+        if (!isRecord(held)) { invalid = true; reasons.push(`${path}: not a schedule object; the declared schedule applies.`); continue; }
+        const schedule: Record<string, unknown> = {};
+        for (const [key, setting] of Object.entries(held)) {
+          if (!(SCHEDULE_FIELDS as readonly string[]).includes(key)) { reasons.push(`${path}.${key}: no scheduling consumer uses this field.`); continue; }
+          schedule[key] = setting;
+        }
+        applied[field] = schedule;
+      } else applied[field] = held;
+    }
+    if (Object.keys(applied).length > 0) effective[task] = applied;
   }
-  return { editableValue, retiredValue };
+  return { effective, reasons, invalid };
+}
+
+/** The complete stored document remains editable until the user clears or repairs it. */
+export function taskOverridesMetadata(value: unknown): { editableValue: unknown; retiredValue: Record<string, unknown> } {
+  return { editableValue: value, retiredValue: {} };
 }
 
 /** Retired preferences survive replacement of the live overrides document. */
 function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknown {
   if (!isRecord(value)) return value;
-  const { retiredValue } = taskOverridesMetadata(previous);
+  const retiredValue = isRecord(previous) ? Object.fromEntries(Object.entries(previous).flatMap(([task, entry]) =>
+    task === 'container-smoke' ? [[task, entry]] : isRecord(entry) && Object.hasOwn(entry, 'provider') ? [[task, { provider: entry.provider }]] : [])) : {};
   const merged = { ...value };
   for (const [task, archived] of Object.entries(retiredValue)) {
     merged[task] = task === 'container-smoke' ? archived
@@ -285,8 +253,18 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
   const prior = isRecord(previous) ? previous : {};
   for (const [task, override] of Object.entries(value)) {
     const before = prior[task];
+    const unchanged = JSON.stringify(before) === JSON.stringify(override);
+    if (unchanged) continue;
+    if (!(RETAINED_TASKS as readonly string[]).includes(task)) return `${task}: unknown task`;
+    if (isRecord(override)) {
+      const oldEntry = isRecord(before) ? before : {};
+      for (const field of Object.keys(override)) {
+        if (!(TASK_FIELDS as readonly string[]).includes(field) && JSON.stringify(override[field]) !== JSON.stringify(oldEntry[field])) return `${task}.${field}: field is not used by this task`;
+      }
+      if (override.harness !== undefined && override.harness !== oldEntry.harness && (typeof override.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, override.harness))) return `${task} agent choice: expected a supported agent`;
+    }
     if (previous !== undefined && task === 'container-smoke') return `${task}: retired task overrides are read-only`;
-    if (previous !== undefined && isRecord(override) && Object.hasOwn(override, 'provider')) return `${task}.provider: provider preferences are retired; choose an execution profile`;
+    if (previous !== undefined && isRecord(override) && Object.hasOwn(override, 'provider') && JSON.stringify(override.provider) !== JSON.stringify(isRecord(before) ? before.provider : undefined)) return `${task}.provider: provider preferences are retired; choose an execution profile`;
     if (override === before) continue;
     if (!isRecord(override)) return `${task}: expected an object of task overrides`;
     const old = isRecord(before) ? before : {};
@@ -384,6 +362,14 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unk
   if (spec.type === 'profile-model') return modelRefusal(spec.harness, value);
   if (spec.type === 'profile-effort') return effortRefusal(spec.harness, value);
   if (spec.type === 'credential-source') return value === 'deployment' || value === 'worker-login' ? null : 'choose the server login or worker login';
+  if (spec.type === 'probe-provider') return value === 'anthropic' || value === 'openai-compatible' ? null : 'choose Anthropic or an OpenAI-compatible endpoint for the container smoke test';
+  if (spec.type === 'probe-model') return typeof value === 'string' && value.trim() !== '' && !PROBE_CONTROL_CHARACTERS.test(value)
+    ? null : 'enter a model for the container smoke test';
+  if (spec.type === 'probe-base-url') {
+    if (typeof value !== 'string' || value.trim() === '' || PROBE_CONTROL_CHARACTERS.test(value)) return 'enter an HTTP endpoint for the container smoke test';
+    try { return ['http:', 'https:'].includes(new URL(value).protocol) ? null : 'enter an HTTP endpoint for the container smoke test'; }
+    catch { return 'enter an HTTP endpoint for the container smoke test'; }
+  }
   if (spec.type === 'path-list') return pathListViolation(spec, value);
   if (spec.type === 'root-map') return rootMapViolation(spec, value);
   if (spec.type === 'agent') return value === null || (typeof value === 'string' && Object.hasOwn(HARNESS_CREDENTIALS, value)) ? null : 'expected an agent a machine can run, or none';
@@ -818,18 +804,7 @@ export function settingsWriter(
           if (written.applied) await rearm({ leaf });
           return written;
         }
-        const held = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
-        let previous: unknown;
-        if (held !== undefined) {
-          try { previous = JSON.parse(held); }
-          catch (error) { if (!(error instanceof SyntaxError)) throw error; }
-        }
-        const archived = taskOverridesMetadata(previous).retiredValue;
-        const reset = Object.keys(archived).length === 0
-          ? db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf)
-          : db.prepare(`UPDATE deployment_settings SET value = ?, updated_at = ?, updated_by = ? WHERE leaf = ?`)
-            .bind(JSON.stringify(archived), nowMs, actor, leaf);
-        await db.batch([reset, resetRecord(leaf, actor, nowMs)]);
+        await db.batch([db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf), resetRecord(leaf, actor, nowMs)]);
         await rearm({ leaf });
         return { applied: true };
       });

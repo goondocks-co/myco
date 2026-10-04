@@ -43,7 +43,7 @@ export function TaskTiers({ tiers }: { tiers: readonly TaskTierRow[] }) {
               label={label}
               htmlFor={`task-tier-${task}`}
               status={error?.task === task ? error.message : source === 'invalid' ? row.remedy : source === 'task-override' ? 'Task override' : 'Task default'}
-              refused={error?.task === task || source === 'invalid'}
+              refused={error?.task === task}
               control={<div className="flex w-full items-center gap-s2">
                 <Select
                   id={`task-tier-${task}`}

@@ -136,7 +136,7 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
   const [served, machine] = await Promise.all([
     composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now }, { preview }),
     // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
-    machineBlockFor(env.db, ctx.memberId, ctx.machineId),
+    machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx),
   ]);
   return Response.json({ persisted: true, ...served, ...(machine === null ? {} : { machine }) });
 }

@@ -23,7 +23,10 @@ import { LIVE_LEAVES, SETTING_POLICIES } from '@myco-server-worker/core/settings
 import { DEPLOYMENT_LEAF_SPECS, settingTexts } from '@myco-server-worker/core/settings.js';
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
+import { taskFactsKey } from '@myco-server-worker/core/runs.js';
+import { titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
+import { CLAIM_SETTING_LEAVES, dispatchTask, prepareDispatch, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
+import { runtimeProbePreferences } from '@myco-server-worker/core/runtime-probe.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';
 import { mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
 import { reconcileReleaseProvenance, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
@@ -137,6 +140,8 @@ interface BehaviorCase {
   notOn?: readonly DeploymentTarget[];
   /** A stored value the rule refuses holds the consumer's work, which says why, rather than falling back to the default. */
   invalidHolds?: true;
+  /** The document has no effective overrides, though the clock still uses its declared task schedules. */
+  invalidDocument?: true;
   /**
    * What a stored value the rule refuses means, where it is not the default: the same as this valid value, or this
    * observation. Retention and backups keep everything, clamp or hold rather than delete or stop more.
@@ -155,6 +160,15 @@ const at = (module: string, fn: (...args: never[]) => unknown): Consumer => ({ m
 
 /** The extraction schedule a Project twenty days quiet meets, decided against the leaves as the clock reads them. */
 const quietDecision = async (r: Rig) => decideTask(r.env, 'proj_1', NOW - 20 * DAY, 'extract-curate', scheduleFor('extract-curate', TASK_SCHEDULE['extract-curate']!, {}), 'idle', await scheduleLeaves(r.env), NOW);
+const extractionDecision = async (r: Rig, lastEntryAt: number | null) => {
+  const leaves = await scheduleLeaves(r.env);
+  const facts = {
+    runs: new Map([[taskFactsKey('proj_1', 'extract-curate'), { live: false, lastEntryAt, entriesSince: lastEntryAt === null ? 0 : 1 }]]),
+    capabilities: new Set([taskFactsKey('proj_1', 'vault_evolution')]),
+  };
+  return decideTask(r.env, 'proj_1', NOW - 3_600_000, 'extract-curate',
+    scheduleFor('extract-curate', TASK_SCHEDULE['extract-curate']!, leaves.overrides), 'idle', leaves, NOW, facts);
+};
 /** Runs the clock dispatched at this wake; each is removed again so the next read starts from the same state. */
 async function dispatched(r: Rig): Promise<number> {
   const report = await runScheduledTasks(r.env, 'idle', NOW, ORIGIN);
@@ -186,6 +200,14 @@ const workerLogin = (harness: string): Array<[string, unknown]> => [[`agent.harn
 const modelFor = (harness: string, tier: ReasoningTier): Array<[string, unknown]> =>
   PROFILE_HARNESSES[harness]!.models[tier] === null ? [[`agent.reasoning_map.${harness}.${tier}`, MODEL_SAMPLES[harness]!]] : [];
 const harnessModule = 'core/harness.ts';
+const probeEndpoint = 'http://models.internal/v1';
+
+async function probeDispatch(r: Rig): Promise<unknown> {
+  const outcome = await prepareDispatch(r.env, 'container-smoke', 'proj_1');
+  return outcome.ok
+    ? { providerType: outcome.prepared.providerType, model: outcome.prepared.model, provider: outcome.prepared.provider }
+    : { reason: outcome.refusal };
+}
 
 function profileCases(): Record<string, BehaviorCase> {
   const out: Record<string, BehaviorCase> = {};
@@ -215,6 +237,18 @@ function profileCases(): Record<string, BehaviorCase> {
 
 /** Every live Deployment leaf's consumer and behavior case. Each invalid sample changes the result a read that ignored the leaf's rule would act on. */
 const CASES: Readonly<Record<string, BehaviorCase>> = {
+  'agent.provider.type': {
+    consumer: at(harnessModule, prepareDispatch), setup: () => [['agent.provider.base_url', probeEndpoint]],
+    value: () => 'openai-compatible', invalid: () => 42, invalidHolds: true, observe: probeDispatch,
+  },
+  'agent.provider.model': {
+    consumer: at(harnessModule, prepareDispatch), setup: () => [['agent.provider.type', 'openai-compatible'], ['agent.provider.base_url', probeEndpoint]],
+    value: () => 'probe-model', invalid: () => 42, observe: probeDispatch,
+  },
+  'agent.provider.base_url': {
+    consumer: at(harnessModule, prepareDispatch), setup: () => [['agent.provider.type', 'openai-compatible']],
+    value: () => probeEndpoint, invalid: () => 42, invalidHolds: true, observe: probeDispatch,
+  },
   'agent.scheduled_tasks_enabled': { consumer: at('core/scheduled-tasks.ts', runScheduledTasks), value: () => true, invalid: () => 1, observe: dispatched },
   'agent.scheduled_tasks_active_window_days': {
     consumer: at('core/scheduled-tasks.ts', decideTask), setup: () => [['agent.scheduled_tasks_enabled', true]],
@@ -225,14 +259,15 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     value: () => 30, invalid: () => 30.5, observe: quietDecision,
   },
   'cortex.canopy.refresh.background_enabled': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => true, invalid: () => 1, observe: async (r) => (await mapSchedule(r))?.enabled ?? null,
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
+    value: () => true, invalid: () => 1, observe: async (r) => (await mapSchedule(r))?.enabled ?? null,
   },
   'cortex.canopy.refresh.background_period_minutes': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['cortex.canopy.refresh.background_enabled', true]],
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true], ['cortex.canopy.refresh.background_enabled', true]],
     value: () => 30, invalid: () => 20_000, invalidMeans: { value: 10_080 }, observe: async (r) => (await mapSchedule(r))?.intervalSeconds ?? null,
   },
   'agent.tasks': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'extract-curate': { schedule: { intervalSeconds: 600 } } }), invalid: () => [],
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'extract-curate': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
     observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'extract-curate')?.schedule.intervalSeconds,
   },
   ...Object.fromEntries((['concurrent_runs', 'task_concurrent_runs', 'task_runs_per_hour'] as const).map((limit) => [`agent.limits.${limit}`, {
@@ -402,7 +437,8 @@ describe('the settings contract', () => {
     expect(new Set(bound).size).toBe(bound.length);
   });
 
-  it('gives every live leaf a typed rule and a behavior case', () => {
+  it('gives every Deployment leaf a typed rule and a behavior case', () => {
+    expect(Object.keys(DEPLOYMENT_LEAF_SPECS).sort()).toEqual([...LIVE_LEAVES].sort());
     for (const leaf of LIVE_LEAVES) {
       expect({ leaf, typed: 'type' in DEPLOYMENT_LEAF_SPECS[leaf]! }).toEqual({ leaf, typed: true });
       expect({ leaf, cased: CASES[leaf] !== undefined }).toEqual({ leaf, cased: true });
@@ -443,6 +479,12 @@ describe('the settings contract', () => {
           const refused = await put(r, leaf, value);
           expect(refused.status).toBe(400);
           expect(await row(r, leaf)).toMatchObject({ configured: false, appliesTo: expect.not.arrayContaining([target]) });
+          const before = await behavior.observe(r);
+          storedRaw(r, leaf, JSON.stringify(value));
+          const mismatched = await row(r, leaf);
+          expect(mismatched).toMatchObject({ stored: value, storedApplies: false, state: 'not-applicable', reason: expect.any(String) });
+          expect(mismatched.effective).not.toEqual(value);
+          expect(await behavior.observe(r)).toEqual(before);
           return;
         }
         const before = await behavior.observe(r);
@@ -454,7 +496,7 @@ describe('the settings contract', () => {
         const after = await behavior.observe(r);
         expect({ leaf, moved: JSON.stringify(after) !== JSON.stringify(before), before, after }).toMatchObject({ leaf, moved: true });
         const configured = await row(r, leaf);
-        expect(configured).toMatchObject({ configured: true, stored: value, effective: value, source: expect.stringMatching(/^(configured|task-override)$/) });
+        expect(configured).toMatchObject({ configured: true, stored: value, effective: value, storedApplies: true, source: expect.stringMatching(/^(configured|task-override)$/) });
         expect(String(configured.revision)).toStartWith('w');
 
         const refused = await put(r, leaf, behavior.invalid(target));
@@ -463,15 +505,24 @@ describe('the settings contract', () => {
 
         storedRaw(r, leaf, JSON.stringify(behavior.invalid(target)));
         const invalid = await row(r, leaf);
-        expect({ leaf, state: invalid.state, reason: typeof invalid.reason }).toEqual({ leaf, state: expect.stringMatching(/^(invalid|not-applicable)$/), reason: 'string' });
+        expect({ leaf, state: invalid.state, applies: invalid.storedApplies, reason: typeof invalid.reason })
+          .toEqual({ leaf, state: expect.stringMatching(/^(invalid|not-applicable)$/), applies: false, reason: 'string' });
+        expect(invalid.effective).not.toEqual(invalid.stored);
         const held = await behavior.observe(r);
         const means = behavior.invalidMeans;
-        if (behavior.invalidHolds) expect({ leaf, held }).toEqual({ leaf, held: expect.objectContaining({ reason: expect.any(String) }) });
-        else if (means === undefined) expect({ leaf, held }).toEqual({ leaf, held: before });
+        if (behavior.invalidHolds) {
+          expect(invalid.effective).toBeNull();
+          expect({ leaf, held }).toEqual({ leaf, held: expect.objectContaining({ reason: expect.any(String) }) });
+        } else if (means === undefined) {
+          expect({ leaf, reportedFallback: invalid.effective, consumerFallback: unset.effective })
+            .toEqual({ leaf, reportedFallback: behavior.invalidDocument ? null : unset.effective, consumerFallback: unset.effective });
+          expect({ leaf, held }).toEqual({ leaf, held: before });
+        }
         else if ('observed' in means) expect({ leaf, held }).toEqual({ leaf, held: means.observed });
         else {
           expect({ leaf, held: JSON.stringify(held) === JSON.stringify(before) }).toEqual({ leaf, held: false });
           expect((await put(r, leaf, means.value)).status).toBe(200);
+          expect({ leaf, reportedFallback: invalid.effective }).toEqual({ leaf, reportedFallback: means.value });
           expect({ leaf, held }).toEqual({ leaf, held: await behavior.observe(r) });
         }
 
@@ -480,6 +531,166 @@ describe('the settings contract', () => {
         const restored = await row(r, leaf);
         expect(restored).toMatchObject({ configured: false, effective: unset.effective, source: unset.source });
         expect(String(restored.revision)).toStartWith('r');
+      });
+    }
+  }
+});
+
+describe('stored settings that do not apply', () => {
+  for (const target of DEPLOYMENT_TARGETS) {
+    it(`a malformed task document holds worker selection on ${target} while the clock keeps declared schedules`, async () => {
+      const r = rigFor(target);
+      for (const [leaf, value] of [...workerLogin('claude-code'), ...modelFor('claude-code', 'low')]) {
+        expect((await put(r, leaf, value)).status).toBe(200);
+      }
+      const before = await selection(r, 'title-summary', [offer('claude-code')]);
+      expect(before).toMatchObject({ harness: 'claude-code' });
+      const clockBefore = scheduledTasks((await scheduleLeaves(r.env)).overrides).map(({ task, schedule }) => ({ task, schedule }));
+      storedRaw(r, 'agent.tasks', JSON.stringify([]));
+      expect(await row(r, 'agent.tasks')).toMatchObject({ storedApplies: false, effective: null, state: 'invalid', reason: expect.any(String) });
+      expect(await selection(r, 'title-summary', [offer('claude-code')])).toMatchObject({ reason: expect.any(String) });
+      expect(scheduledTasks((await scheduleLeaves(r.env)).overrides).map(({ task, schedule }) => ({ task, schedule }))).toEqual(clockBefore);
+    });
+
+    it(`names stale task and field overrides on ${target}, while the clock uses only live tasks`, async () => {
+      const r = rigFor(target);
+      const held = {
+        'cortex-instructions': { schedule: { enabled: false } },
+        'title-summary': { schedule: { enabled: true }, forgottenField: 'old value' },
+      };
+      storedRaw(r, 'agent.tasks', JSON.stringify(held));
+      const answer = await row(r, 'agent.tasks');
+      const reason = String(answer.reason);
+      expect(answer).toMatchObject({ stored: held, storedApplies: false, reason: expect.any(String) });
+      expect(answer.effective).toEqual({ 'title-summary': { schedule: { enabled: true } } });
+      expect(reason).toContain('cortex-instructions');
+      expect(reason).toContain('forgottenField');
+      expect(scheduledTasks((await scheduleLeaves(r.env)).overrides).some((task) => task.task === 'cortex-instructions')).toBe(false);
+    });
+
+    it(`explains an unknown task harness on ${target}, while a real worker cannot use it`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'title-summary': { harness: 'vanished-harness' } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('vanished-harness') });
+      expect(answer.effective).toEqual({ 'title-summary': { harness: null } });
+      const selected = await selection(r, 'title-summary', [offer('claude-code')]);
+      expect(selected).toMatchObject({ reason: expect.any(String) });
+    });
+
+    it(`reports an unknown accelerator while the extraction clock keeps its ordinary interval on ${target}`, async () => {
+      const r = rigFor(target);
+      const accelerator = { name: 'vanished-accelerator', thresholds: { steady: 0, accelerated: 1 } };
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: { accelerator } } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('vanished-accelerator') });
+      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['extract-curate']?.schedule.accelerator).toBeUndefined();
+      expect(await extractionDecision(r, NOW - 1_800_000)).toBe('not_yet');
+    });
+
+    it(`reports an unknown precondition while the extraction clock holds work on ${target}`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: { preCondition: 'vanished-condition' } } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('extract-curate.schedule.preCondition') });
+      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['extract-curate']?.schedule.preCondition).toBeNull();
+      expect(await extractionDecision(r, null)).toBe('precondition');
+    });
+
+    it(`reports an unknown reserved-run precondition while the extraction clock holds reserve on ${target}`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: {
+        maxRunsPerDay: 2, reservedRunsPerDay: { count: 2, preCondition: 'vanished-reserve' },
+      } } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('extract-curate.schedule.reservedRunsPerDay.preCondition') });
+      expect(await extractionDecision(r, null)).toBe('reserved_runs_per_day');
+    });
+
+    it(`reports the title backfill schedule its separate job actually uses on ${target}`, async () => {
+      const r = rigFor(target);
+      expect((await put(r, 'agent.scheduled_tasks_enabled', true)).status).toBe(200);
+      expect((await put(r, 'agent.tasks', { 'title-summary': { schedule: { enabled: true, intervalSeconds: 60 } } })).status).toBe(200);
+      const policy = await titlingBackfillPolicy(r.env);
+      const answer = await row(r, 'agent.tasks');
+      expect(policy).toMatchObject({ scheduledTasksEnabled: true, backfillEnabled: true, enabled: true, intervalSeconds: 60 });
+      expect(answer).toMatchObject({ storedApplies: true, state: 'active', effective: {
+        'title-summary': { schedule: { enabled: policy.backfillEnabled, intervalSeconds: policy.intervalSeconds } },
+      } });
+    });
+  }
+
+  it('reports stored Ollama and an empty model as unapplied on Cloudflare while Workers AI runs bge-m3', async () => {
+    const r = rigFor('cloudflare');
+    storedRaw(r, 'embedding.provider', JSON.stringify('ollama'));
+    storedRaw(r, 'embedding.model', JSON.stringify(''));
+    const provider = await row(r, 'embedding.provider');
+    const model = await row(r, 'embedding.model');
+    const providerReason = String(provider.reason);
+    const modelReason = String(model.reason);
+    expect(provider).toMatchObject({ stored: 'ollama', effective: 'workers-ai', storedApplies: false, state: 'not-applicable', reason: expect.stringContaining('Ollama') });
+    expect(model).toMatchObject({ stored: '', effective: '@cf/baai/bge-m3', storedApplies: false, state: 'invalid', reason: expect.any(String) });
+    expect(providerReason).toMatch(/reset|clear/i);
+    expect(modelReason).toMatch(/reset|clear/i);
+    expect(await providerKey(r)).toEqual(JSON.stringify(['cloudflare', '@cf/baai/bge-m3']));
+  });
+
+  for (const target of DEPLOYMENT_TARGETS) {
+    it(`probe preferences reported by Settings are the values the runtime dispatch uses on ${target}`, async () => {
+      const r = rigFor(target);
+      for (const [leaf, value] of [
+        ['agent.provider.type', 'openai-compatible'],
+        ['agent.provider.model', 'probe-model'],
+        ['agent.provider.base_url', probeEndpoint],
+      ] as const) expect((await put(r, leaf, value)).status).toBe(200);
+      const preferences = await runtimeProbePreferences(r.env.db, 'container-smoke');
+      expect(preferences).toEqual({ type: 'openai-compatible', model: 'probe-model', baseUrl: probeEndpoint });
+      for (const [leaf, actual] of [
+        ['agent.provider.type', preferences.type],
+        ['agent.provider.model', preferences.model],
+        ['agent.provider.base_url', preferences.baseUrl],
+      ] as const) expect((await row(r, leaf)).effective).toEqual(actual);
+      expect(await probeDispatch(r)).toEqual({ providerType: preferences.type, model: preferences.model,
+        provider: { type: preferences.type, model: preferences.model, baseUrl: preferences.baseUrl } });
+    });
+
+    it(`probe fields without their provider prerequisites do not claim to run on ${target}`, async () => {
+      const r = rigFor(target);
+      expect((await put(r, 'agent.provider.model', 'orphan-model')).status).toBe(200);
+      expect((await put(r, 'agent.provider.base_url', probeEndpoint)).status).toBe(200);
+      const model = await row(r, 'agent.provider.model');
+      const endpoint = await row(r, 'agent.provider.base_url');
+      expect(model).toMatchObject({ stored: 'orphan-model', effective: null, storedApplies: false, state: 'inactive' });
+      expect(endpoint).toMatchObject({ stored: probeEndpoint, effective: null, storedApplies: false, state: 'inactive' });
+      expect(await probeDispatch(r)).toEqual({ reason: 'probe_preferences_invalid' });
+    });
+
+    it(`reports an obsolete container provider and the dispatch refusal on ${target}`, async () => {
+      const r = rigFor(target);
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'container-smoke': { provider: 'retired-runtime' } }));
+      const answer = await row(r, 'agent.tasks');
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('container-smoke.provider') });
+      expect((answer.effective as Record<string, { provider: unknown }>)['container-smoke']?.provider).toBeNull();
+      expect(await probeDispatch(r)).toEqual({ reason: 'probe_preferences_invalid' });
+    });
+
+    for (const [label, storedModel, actualModel] of [
+      ['blank', '', null],
+      ['trimmed', '  probe-model  ', 'probe-model'],
+    ] as const) {
+      it(`reports a ${label} container model as the value dispatch actually uses on ${target}`, async () => {
+        const r = rigFor(target);
+        for (const [leaf, value] of [
+          ['agent.provider.type', 'openai-compatible'],
+          ['agent.provider.base_url', probeEndpoint],
+        ] as const) expect((await put(r, leaf, value)).status).toBe(200);
+        storedRaw(r, 'agent.tasks', JSON.stringify({ 'container-smoke': { model: storedModel } }));
+        const answer = await row(r, 'agent.tasks');
+        expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('container-smoke.model') });
+        expect((answer.effective as Record<string, { model: unknown }>)['container-smoke']?.model).toEqual(actualModel);
+        const preferences = await runtimeProbePreferences(r.env.db, 'container-smoke');
+        expect(preferences.model).toEqual(actualModel);
+        expect(await probeDispatch(r)).toMatchObject({ providerType: preferences.type, model: actualModel });
       });
     }
   }

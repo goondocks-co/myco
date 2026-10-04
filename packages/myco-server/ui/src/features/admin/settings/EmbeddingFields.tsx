@@ -140,7 +140,7 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
   };
 
   const notInUse = row !== undefined && row.state !== 'active';
-  const refused = error !== null || row?.state === 'invalid' || row?.state === 'not-applicable';
+  const refused = error !== null;
   let status: string | null = error ?? (notInUse ? row!.reason : null);
   let control;
   let stacked = false;
@@ -263,13 +263,13 @@ export function EmbeddingRow({ field, row }: { field: LeafField; row: LeafRow | 
       label={field.label}
       htmlFor={labelled ? id : undefined}
       note={field.note}
-      status={status}
+      status={[status, (field.kind === 'embedding-provider' || notInUse) && status !== inUseWords(choices) ? inUseWords(choices) : null, row?.configured && row.storedApplies === false ? `Stored: ${JSON.stringify(row.stored)}.` : null].filter(Boolean).join(' ')}
       refused={refused}
       stacked={stacked || row?.configured === true}
       control={(
         <div className={`flex w-full items-center gap-s2${stacked || row?.configured === true ? ' max-w-measure' : ''}`}>
           {control}
-          {row?.configured === true && !locked && choices.switch === null && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={busy} onClick={reset}>Reset</Button>}
+          {row?.configured === true && !locked && choices.switch === null && <Button size="sm" aria-label={`Clear the stored value for ${field.label}`} disabled={busy} onClick={reset}>Clear the stored value</Button>}
         </div>
       )}
     />

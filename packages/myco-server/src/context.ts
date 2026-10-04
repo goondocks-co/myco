@@ -48,13 +48,18 @@ export interface RouteContext {
   origin: string;
   /** Whether the request is a member's turn-end hook shipping its own session's transcript (`TURN_END_HEADER`). */
   turnEnd?: boolean;
+  /** Machine contract support and the revision this member has durably cached. */
+  machineSettingsFeature?: boolean;
+  machineSettingsRevision?: string;
+  machineSettingsOrder?: number;
+  machineSettingsInvalidated?: boolean;
 }
 
 /** An authenticated member request with no default Project. */
-export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now'>;
+export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated'>;
 
 /** A request answered on the presented credential alone: that credential, and the body. */
-export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now'>;
+export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated'>;
 
 /**
  * Context for a Deployment-scoped route: a worker's claim, lease and end.

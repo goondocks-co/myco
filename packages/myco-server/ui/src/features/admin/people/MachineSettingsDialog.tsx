@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { captureFolderRefusal, planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
 import { Button, Dialog, DialogContent, DialogFooter, IconButton, Input } from '../../../design';
 import { ApiError, fetchJson, putJson } from '../../../lib/api';
+import type { EffectiveSetting } from '@goondocks/myco-shared/settings-contract';
 import { X } from 'lucide-react';
 import { useMemberNames } from '../members';
 import { ago } from '../../today/words';
@@ -12,7 +13,7 @@ export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
 /** The folders whose repositories a machine captures as soon as an agent works in one. */
 export const AUTO_JOIN_ROOTS_LEAF = 'capture.auto_join_roots';
 
-interface MachineLeaf { leaf: string; configured: boolean; value: unknown; updatedAt: number | null; updatedBy: string | null }
+interface MachineLeaf extends Partial<EffectiveSetting> { leaf: string; configured: boolean; value: unknown; updatedAt: number | null; updatedBy: string | null; application?: 'applied' | 'pending' | 'unreported'; appliedValue?: unknown; nextEffective?: unknown; nextSource?: EffectiveSetting['source'] }
 
 const settingsPath = (machineId: string) => `/api/machines/${encodeURIComponent(machineId)}/settings`;
 
@@ -72,8 +73,8 @@ export function MachineSettingsDialog({ machine, onClose }: { machine: { id: str
   );
 }
 
-function FolderList({ field, stored, folders, refusedSave, onChange }: {
-  field: FolderField; stored: MachineLeaf; folders: string[]; refusedSave: string | null; onChange: (next: string[]) => void;
+function FolderList({ field, stored, folders, refusedSave, onChange, onClear }: {
+  field: FolderField; stored: MachineLeaf; folders: string[]; refusedSave: string | null; onChange: (next: string[]) => void; onClear: () => void;
 }) {
   const nameOf = useMemberNames();
   const [draft, setDraft] = useState('');
@@ -110,6 +111,11 @@ function FolderList({ field, stored, folders, refusedSave, onChange }: {
       </form>
       {refused !== null && <p role="alert" className="t-small text-bad">That folder can’t be used: {refused}.</p>}
       {refusedSave !== null && <p role="alert" className="t-small text-bad">Not saved: {refusedSave}</p>}
+      {(stored.nextSource ?? stored.source) === 'default' && <p className="t-small text-muted">Using Myco’s default.</p>}
+      {stored.reason && <p className="t-small text-muted">{stored.reason}</p>}
+      {stored.application === 'pending' && <p className="t-small text-muted">Currently cached on this machine: {JSON.stringify(stored.effective ?? stored.appliedValue)}.</p>}
+      {(stored.nextSource ?? stored.source) === 'invalid' && <p className="t-small text-muted break-all">Stored value: {JSON.stringify(stored.stored ?? stored.value)}.</p>}
+      {(stored.nextSource ?? stored.source) === 'invalid' && <Button variant="ghost" onClick={onClear}>Clear the stored value</Button>}
       {stored.configured && stored.updatedAt !== null && (
         <p className="t-meta text-faint">Changed{changedBy === null ? '' : ` by ${changedBy}`} {ago(stored.updatedAt, Date.now())}.</p>
       )}
@@ -131,8 +137,8 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
   // Unsaved edits, by leaf: each stays until its own save is accepted, whatever another list's save is answered.
   const [edits, setEdits] = useState<Record<string, string[]>>({});
   const [refusals, setRefusals] = useState<Record<string, string>>({});
-  const foldersOf = (leaf: string, stored: MachineLeaf) => edits[leaf] ?? asFolders(stored.value);
-  const changed = fields.filter(({ field, stored }) => JSON.stringify(foldersOf(field.leaf, stored)) !== JSON.stringify(asFolders(stored.value)));
+  const foldersOf = (leaf: string, stored: MachineLeaf) => edits[leaf] ?? asFolders(Object.hasOwn(stored, 'nextEffective') ? stored.nextEffective : Object.hasOwn(stored, 'effective') ? stored.effective : stored.value);
+  const changed = fields.filter(({ field, stored }) => JSON.stringify(foldersOf(field.leaf, stored)) !== JSON.stringify(asFolders(Object.hasOwn(stored, 'nextEffective') ? stored.nextEffective : Object.hasOwn(stored, 'effective') ? stored.effective : stored.value)));
   const save = useMutation({
     mutationFn: async (writes: Array<{ leaf: string; value: string[] }>) => {
       const answers: Array<{ leaf: string; refused: string | null }> = [];
@@ -155,6 +161,12 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
     },
   });
 
+  const clear = useMutation({
+    mutationFn: (leaf: string) => putJson(`${settingsPath(machine.id)}/${leaf}`, { value: null, reset: true }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['machine-settings', machine.id] }),
+  });
+  const connections = settings.data?.leaves.find((leaf) => leaf.leaf === 'capture.connect_roots');
+
   return (
     <DialogContent title={`Settings for ${machine.name}`} description="This machine picks up a change at its next session start.">
       {settings.error ? <p role="alert" className="t-small text-bad">{refusalWords(settings.error)}</p> : (
@@ -167,8 +179,18 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
               folders={foldersOf(field.leaf, stored)}
               refusedSave={refusals[field.leaf] ?? null}
               onChange={(next) => setEdits({ ...edits, [field.leaf]: next })}
+              onClear={() => clear.mutate(field.leaf)}
             />
           ))}
+          {connections && <section aria-label="Connected repositories" className="flex flex-col gap-s2">
+            <span className="t-body font-medium text-ink">Connected repositories</span>
+            <p className="t-small text-muted">{Object.keys((connections.nextEffective ?? connections.effective ?? connections.value ?? {}) as object).length} repositories connected from Needs you.</p>
+            {connections.reason && <p className="t-small text-muted">{connections.reason}</p>}
+            {connections.application === 'pending' && <p className="t-small text-muted">Currently cached on this machine: {JSON.stringify(connections.effective ?? connections.appliedValue)}.</p>}
+            {(connections.nextSource ?? connections.source) === 'invalid' && <p className="t-small text-muted break-all">Stored value: {JSON.stringify(connections.stored ?? connections.value)}.</p>}
+            {(connections.nextSource ?? connections.source) === 'invalid' && <Button variant="ghost" pending={clear.isPending} onClick={() => clear.mutate(connections.leaf)}>Clear the stored value</Button>}
+          </section>}
+          {clear.error && <p role="alert" className="t-small text-bad">Not cleared: {refusalWords(clear.error)}</p>}
           <DialogFooter>
             <Button variant="ghost" onClick={onClose}>Close</Button>
             <Button

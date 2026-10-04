@@ -9,7 +9,7 @@ import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
-import { defaultWords, savedWords } from './LeafControl';
+import { effectiveWords } from './LeafControl';
 import type { LeafRow, SettingsModelCatalog } from './wire';
 
 /** The provider filter's value for every provider. */
@@ -48,7 +48,7 @@ export function modelWords(model: CatalogModel, harness: string): string {
 
 /** The agent's sign-in runs use, as Settings holds it: the server's login, or the worker machine's own. */
 function runSignIn(rows: readonly LeafRow[] | undefined, harness: string): unknown {
-  return rows?.find((row) => row.leaf === `agent.harnesses.${harness}.credential`)?.effectiveValue;
+  return rows?.find((row) => row.leaf === `agent.harnesses.${harness}.credential`)?.effective;
 }
 
 /**
@@ -87,8 +87,7 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
   const nameOf = useMemberNames();
   const [error, setError] = useState<string | null>(null);
   const harness = field.harness ?? '';
-  const stored = row?.configured === true && typeof row.value === 'string' ? row.value : null;
-  const current = stored ?? (typeof row?.effectiveValue === 'string' ? row.effectiveValue : null);
+  const current = typeof row?.effective === 'string' ? row.effective : null;
   const known = current === null ? undefined : listed.models.find((model) => model.id === current);
   const [provider, setProvider] = useState<string>(known?.provider ?? ALL_PROVIDERS);
   const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending;
@@ -116,12 +115,10 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
   const agent = harnessLabel(harness);
   const statusWords = (): string => {
     if (error !== null) return error;
-    if ((row?.state === 'invalid' || row?.state === 'not-applicable') && (row.remedy ?? row.reason) != null) return (row.remedy ?? row.reason)!;
-    if (current !== null && known === undefined) return `${current} is not among the models your machines listed for ${agent}. Check the name, or choose a listed model.`;
-    if (known?.upgrade !== undefined) return `${agent} names ${successor?.label ?? known.upgrade} as the successor to ${known.label}.`;
-    if (row?.configured !== true && field.unsetStatus !== undefined) return field.unsetStatus;
-    const applied = row?.source === 'default' && known !== undefined ? modelWords(known, harness) : defaultWords(field);
-    return savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), applied);
+    const effective = effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null);
+    if (current !== null && known === undefined) return `${effective} ${current} is not among the models your machines listed for ${agent}.`;
+    if (known?.upgrade !== undefined) return `${effective} ${agent} names ${successor?.label ?? known.upgrade} as the successor to ${known.label}.`;
+    return effective;
   };
 
   return (
@@ -130,7 +127,7 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
       label={field.label}
       htmlFor={id}
       status={statusWords()}
-      refused={error !== null || row?.state === 'invalid' || row?.state === 'not-applicable'}
+      refused={error !== null}
       stacked
       control={(
         <div className="flex w-full flex-col gap-s2" data-model-picker={harness}>
@@ -157,7 +154,7 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
                 onValueChange={save}
               />
             </div>
-            {row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}
+            {row?.configured === true && !locked && <Button size="sm" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button>}
           </div>
           {!locked && (
             <div className="flex flex-wrap gap-s2">

@@ -8,7 +8,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, derivedLeafMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
@@ -86,12 +86,6 @@ function effectiveTaskTiers(value: unknown): TaskTierRow[] {
   });
 }
 
-/** A derived leaf's row: the constant its consumer applies, shown and never written. */
-function derivedRow(leaf: string): Partial<SettingsLeafRow> {
-  const derived = derivedLeafMetadata(leaf);
-  return derived === null ? {} : { ...derived, effective: derived.effectiveValue, state: 'active', reason: 'Built into Myco', appliesTo: DEPLOYMENT_TARGETS };
-}
-
 /** One leaf of `GET /api/settings`: what is stored, who wrote it, and the effective answer of its policy. */
 export type SettingsLeafRow = {
   leaf: string;
@@ -131,7 +125,6 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
       retired,
       ...answer,
       effectiveValue: answer.effective,
-      ...derivedRow(leaf),
       ...(leaf === 'agent.tasks' && held !== undefined ? taskOverridesMetadata(held.value) : {}),
       ...(invalid ? { error: 'invalid_value' as const, remedy: answer.reason ?? 'Correct this setting or reset it.', ...(held?.malformed ? { repair: 'reset-leaf' as const } : {}) } : {}),
     };
@@ -182,7 +175,7 @@ const withoutUrlSecrets = (value: string): string =>
 export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: CredentialContext) => {
   // The asking machine's own settings, where its member claims it: what `myco login`, `member join` and `cutover` cache.
   // Read first and apart: a Deployment leaf that cannot be described never keeps a machine from its own settings.
-  const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId);
+  const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx);
   const deployment = await deploymentSettings(env, true).then((answer) => ({ persisted: true, ...answer })).catch((error: unknown) => {
     emit({ kind: 'member_settings_unreadable', error_class: classify(error) });
     return { persisted: true, leaves: [], taskTiers: [], embedding: null, unreadable: true };

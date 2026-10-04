@@ -1,6 +1,6 @@
 import { Fragment, type ReactElement } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
-import { Disclosure, ErrorState, LoadingState, TabLinks } from '../../../design';
+import { ErrorState, LoadingState, TabLinks } from '../../../design';
 import { useSettings } from '../../../hooks/use-settings';
 import { SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, RowCard, useAnchorScroll } from '../AdminFrame';
@@ -65,16 +65,8 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
   );
 }
 
-/**
- * A section's groups, each showing the settings that still do something, as
- * the server marks them. A group whose settings are all retired is left out; a
- * retired setting with a
- * value stored is listed, read-only, under "Older settings" at the section's
- * foot, so what an older Deployment stored stays visible.
- */
+/** The live settings groups, with every control reading its consumer's effective answer. */
 function SectionGroups({ groups, rows, tiers }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow>; tiers: readonly TaskTierRow[] }) {
-  const older = groups.some((group) => group.id === 'scheduling')
-    ? [...rows.values()].filter((row) => row.retired && row.configured) : [];
   return (
     <>
       {groups.map((group) => {
@@ -94,16 +86,7 @@ function SectionGroups({ groups, rows, tiers }: { groups: readonly LeafGroup[]; 
           </Fragment>
         );
       })}
-      {older.length > 0 && (
-        <section aria-label="Older settings" data-older-settings="">
-          <Disclosure summary={`Older settings (${older.length})`}>
-            <p className="max-w-measure t-small text-muted">Values an earlier version of Myco stored. These editable contracts are retired.</p>
-            <RowCard label="Older settings">
-              {older.map((row) => <div key={row.leaf} data-retired-setting={row.leaf} className="p-s4"><p className="t-small">{row.leaf}</p><pre className="t-mono whitespace-pre-wrap break-all">{JSON.stringify(row.value, null, 2)}</pre></div>)}
-            </RowCard>
-          </Disclosure>
-        </section>
-      )}
+
     </>
   );
 }

@@ -9,7 +9,6 @@ import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
-import { LEAF_DEFAULTS } from './defaults';
 import { isRetired } from './retired';
 import { EmbeddingRow } from './EmbeddingFields';
 import { ModelRow } from './ModelPicker';
@@ -38,19 +37,21 @@ function valueWords(field: LeafField, value: unknown): string {
   return `${field.optionLabels?.[String(value)] ?? String(value)}${field.unit !== undefined ? ` ${field.unit}` : ''}`;
 }
 
-/** What the server applies while nothing is stored, in the words a row's status line uses. */
-export function defaultWords(field: LeafField): string | null {
-  const entry = LEAF_DEFAULTS[field.leaf];
-  if (entry === undefined) return null;
-  return 'value' in entry ? valueWords(field, entry.value) : entry.unset.charAt(0).toLowerCase() + entry.unset.slice(1);
+/** The effective value a blank override leaves in use. */
+function emptyText(field: LeafField, row: LeafRow | undefined): string {
+  if (row === undefined || row.state === 'unknown') return 'Not known';
+  if (row.effective === null) return row.reason ?? 'Not set';
+  return valueWords(field, row.effective).replace(field.unit === undefined ? '' : ` ${field.unit}`, '');
 }
 
-/** The short text an empty field shows: the default value itself, or what unset means. */
-function emptyText(field: LeafField): string {
-  const entry = LEAF_DEFAULTS[field.leaf];
-  if (entry === undefined) return 'Not set';
-  if ('unset' in entry) return entry.unset;
-  return valueWords(field, entry.value) === 'none' ? 'None' : valueWords(field, entry.value).replace(field.unit === undefined ? '' : ` ${field.unit}`, '');
+/** The consumer's value and source, followed by its reason and the saved override's attribution. */
+export function effectiveWords(field: LeafField, row: LeafRow | undefined, name: string | null = null): string {
+  if (row === undefined) return 'Myco has not reported what this setting uses.';
+  const sources = { configured: 'stored value', default: 'server default', 'task-override': 'per-task override', platform: 'platform', derived: 'built into Myco', unset: 'not set', invalid: 'stored value does not apply', 'member-cache': 'confirmed by the machine' };
+  const active = row.state === 'unknown' ? 'Effective value not known' : `${row.state === 'inactive' ? 'When active' : 'In use'}: ${valueWords(field, row.effective)} · ${sources[row.source]}`;
+  const held = row.configured && (row.storedApplies === false || row.state === 'invalid' || row.state === 'not-applicable' || row.source === 'task-override')
+    ? `Stored: ${typeof row.stored === 'object' ? JSON.stringify(row.stored) : String(row.stored)}.` : null;
+  return [active, held, row.reason, row.configured ? savedWords(row, name) : null].filter(Boolean).join(' ');
 }
 
 /** A leaf's value in its editable text form. */
@@ -94,16 +95,13 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
   const actions = useSettingsActions();
   const admin = useIsAdmin();
   const retired = isRetired(field, row);
-  const locked = field.readOnly === true || retired || !admin;
+  const locked = field.readOnly === true || retired || !admin || row === undefined || row.state === 'unknown';
   const nameOf = useMemberNames();
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const entry = LEAF_DEFAULTS[field.leaf];
-  const fallback = row?.source === 'default' || row?.source === 'derived' ? row.effectiveValue : entry !== undefined && 'value' in entry ? entry.value : null;
-  // A setting kept by Myco shows Myco's own value; any other shows what is stored, else what the server applies.
-  const value = field.readOnly === true && fallback !== null ? fallback : row?.configured ? (row.editableValue ?? row.value) : fallback;
-  // A field typed into shows only what is stored; with nothing stored it stays empty and shows the default as its hint.
-  const shown = draft ?? textOf(field, row?.configured === true || field.readOnly === true ? value : null);
+  const value = row?.effective ?? null;
+  const editable = row?.configured ? (row.editableValue ?? row.stored) : null;
+  const shown = draft ?? textOf(field, field.readOnly === true ? value : editable);
   const id = `leaf-${field.leaf}`;
   const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending;
 
@@ -140,9 +138,11 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
     }
   };
 
-  const placeholder = emptyText(field);
+  const placeholder = emptyText(field, row);
   let control;
-  if (field.kind === 'toggle') {
+  if (row === undefined || row.state === 'unknown') {
+    control = <p className="t-small text-muted">Effective value not known.</p>;
+  } else if (field.kind === 'toggle') {
     control = (
       <Switch id={id} aria-label={field.label} checked={value === true} disabled={pending || locked} onCheckedChange={(checked) => save(checked)} />
     );
@@ -230,11 +230,11 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
         if (refusal !== null) { setError(refusal); return; }
         save(next);
       }} />
-      : <p role="alert" className="t-small text-bad">The stored value must be a list of agents.</p>;
+      : <p className="t-small text-muted">No effective agent list is available.</p>;
   } else {
     control = Array.isArray(value) && value.every((item) => typeof item === 'string')
       ? <PatternsField label={field.label} patterns={value} readOnly={locked} pending={pending} onSave={save} />
-      : <p role="alert" className="t-small text-bad">The stored value must be a list of paths.</p>;
+      : <p className="t-small text-muted">No effective path list is available.</p>;
   }
 
   return (
@@ -243,18 +243,11 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       label={field.label}
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
-      status={error ?? (retired ? 'Nothing on this server reads it any more.'
-        : row?.state === 'invalid' || row?.state === 'not-applicable' ? row.remedy ?? row.reason
-        : row?.configured !== true && field.unsetStatus !== undefined ? field.unsetStatus
-        // A setting Myco keeps shows its value in full; a status would only repeat it.
-        : field.readOnly === true ? undefined
-        // An empty field or select already shows the default in words, so the status names it only for a switch.
-        : savedWords(row, row?.configured ? nameOf(row.updatedBy) : null, Date.now(), field.resettable && row?.source === 'default'
-          ? valueWords(field, row.effectiveValue) : field.kind === 'toggle' || field.resettable ? defaultWords(field) : null))}
-      refused={error !== null || row?.state === 'invalid' || row?.state === 'not-applicable'}
+      status={error ?? (retired ? 'Nothing on this server reads it any more.' : effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null))}
+      refused={error !== null}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}
-      control={field.resettable || row?.repair === 'reset-leaf' ? <div className="flex w-full items-center gap-s2">{control}{row?.configured === true && !locked && <Button size="sm" aria-label={`Reset ${field.label}`} disabled={pending} onClick={reset}>Reset</Button>}</div> : control}
+      control={row?.configured === true ? <div className="flex w-full min-w-0 flex-col gap-s2"><div className="flex w-full min-w-0 items-center gap-s2">{control}</div>{row?.configured === true && !locked && <Button size="sm" className="self-end" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button>}</div> : control}
     />
   );
 }

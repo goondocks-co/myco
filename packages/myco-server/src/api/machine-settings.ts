@@ -5,7 +5,7 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { machineAccess, readMachineSettings, setMachineLeaf } from '../core/machine-settings.js';
+import { machineAccess, readMachineSettings, setMachineLeaf, resetMachineLeaf } from '../core/machine-settings.js';
 import { notFound, ok, readJsonObject } from './scope.js';
 
 const forbidden = (): Response => Response.json({ applied: false, reason: 'forbidden', detail: 'only the member this machine belongs to reaches its settings' }, { status: 403 });
@@ -27,7 +27,9 @@ export async function handleSetMachineSetting(env: ServerEnv, ctx: OwnerContext)
   if (access === 'forbidden') return forbidden();
   const body = await readJsonObject(ctx.request);
   if (body === null || !('value' in body)) return Response.json({ applied: false, reason: 'malformed', detail: 'body must be a JSON object carrying a value' }, { status: 400 });
-  const written = await setMachineLeaf(env.db, machineId, ctx.params.leaf!, body.value, ctx.member.id, ctx.now);
+  const written = body.reset === true
+    ? await resetMachineLeaf(env.db, machineId, ctx.params.leaf!, ctx.member.id, ctx.now)
+    : await setMachineLeaf(env.db, machineId, ctx.params.leaf!, body.value, ctx.member.id, ctx.now);
   if (written.applied) return ok({ applied: true });
   if (written.reason === 'absent') return notFound();
   return Response.json(written, { status: 400 });
