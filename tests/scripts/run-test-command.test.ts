@@ -35,6 +35,41 @@ describe('non-Bun test command temp boundary', () => {
     });
   }
 
+  it.skipIf(process.platform === 'win32')('removes the root even when process-tree termination fails', () => {
+    const parent = fs.mkdtempSync(path.join(scratch, 'kill-fault-'));
+    const preload = path.join(scratch, 'kill-fault.mjs');
+    fs.writeFileSync(preload, `
+      const original = process.kill;
+      process.kill = (pid, signal) => {
+        if (pid < 0 && signal === 'SIGKILL') throw Object.assign(new Error('fixture signal refused'), { code: 'EPERM' });
+        return original(pid, signal);
+      };
+    `);
+    const result = spawnSync('node', ['--import', preload, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
+      env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, encoding: 'utf8',
+    });
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 1, stderr: expect.stringContaining('fixture signal refused') });
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+
+  it('surfaces a Windows tree-kill refusal while still removing the root', () => {
+    const parent = fs.mkdtempSync(path.join(scratch, 'windows-kill-fault-'));
+    const preload = path.join(scratch, 'windows-kill-fault.mjs');
+    fs.writeFileSync(preload, `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.kill = () => true;
+      cp.spawnSync = () => ({ status: 5 });
+      syncBuiltinESMExports();
+    `);
+    const result = spawnSync('node', ['--import', preload, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
+      env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, encoding: 'utf8',
+    });
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 1, stderr: expect.stringContaining('taskkill failed for test command PID') });
+    expect(fs.readdirSync(parent)).toEqual([]);
+  });
+
   it.skipIf(process.platform === 'win32')('stops command descendants before removing their temp root on termination', async () => {
     const parent = fs.mkdtempSync(path.join(scratch, 'signal-'));
     const ready = path.join(scratch, 'descendants.json');

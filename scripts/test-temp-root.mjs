@@ -107,3 +107,17 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
     },
   };
 }
+
+// Exit-listener exceptions need an explicit failing status in Node.
+export function finishTestTempRun(run, beforeCleanup = () => {}) {
+  try {
+    try {
+      beforeCleanup();
+    } finally {
+      if (run.finish().length > 0 && !process.exitCode) process.exitCode = 1;
+    }
+  } catch (error) {
+    process.exitCode ||= 1;
+    throw error;
+  }
+}

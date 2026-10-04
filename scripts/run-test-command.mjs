@@ -1,24 +1,16 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from 'node:child_process';
-import { createTestTempRun } from './test-temp-root.mjs';
+import { spawn } from 'node:child_process';
+import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
+import { stopTestProcessGroup } from './test-process-tree.mjs';
 
 const run = createTestTempRun();
 let child;
 function stopTree(signal) {
   if (!child?.pid) return;
-  if (process.platform === 'win32') {
-    const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-    if (result.error) throw result.error;
-    return;
-  }
-  try { process.kill(-child.pid, signal); }
-  catch (error) { if (error.code !== 'ESRCH') throw error; }
+  stopTestProcessGroup(child.pid, signal);
 }
-process.on('exit', () => {
-  stopTree('SIGKILL');
-  if (run.finish().length > 0 && !process.exitCode) process.exitCode = 1;
-});
+process.on('exit', () => finishTestTempRun(run, () => stopTree('SIGKILL')));
 sandboxTestHome(run.root);
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error('A test command is required');

@@ -6,3 +6,4 @@ export function createTestTempRun(options?: { parent?: string; directories?: str
   root: string;
   finish(): string[];
 };
+export function finishTestTempRun(run: { finish(): string[] }, beforeCleanup?: () => void): void;

@@ -23,7 +23,8 @@ import {
 } from '@myco/service/windows.js';
 import type { ServiceSpec } from '@myco/service/types.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
-import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import { resolveWindowsLockRootFromProfile } from '@myco/utils/user-lock-root.js';
+import { resolveWindowsNativeProfile } from '@myco/utils/windows-native-profile.js';
 import { moveFileReplaceWriteThrough } from '@myco/utils/windows-atomic-replace.js';
 import { isProcessAlive, waitForProcessExit } from '@goondocks/myco-shared';
 
@@ -283,7 +284,7 @@ async function proveNativeLockRoot(scratch: string): Promise<void> {
   assertCondition(typeof secondRoot === 'string', 'second child did not report a lock root');
   assertCondition(windowsPathEqual(firstRoot, secondRoot), 'divergent environments resolved different lock roots');
   assertCondition(
-    windowsPathEqual(firstRoot, resolvePerUserLocksDir()),
+    windowsPathEqual(firstRoot, resolveWindowsLockRootFromProfile(resolveWindowsNativeProfile())),
     'child lock root did not match the parent native lock root',
   );
 }
@@ -664,7 +665,7 @@ async function runParentContract(): Promise<void> {
 }
 
 function runLockRootChild(): void {
-  process.stdout.write(JSON.stringify({ lockRoot: resolvePerUserLocksDir() }));
+  process.stdout.write(JSON.stringify({ lockRoot: resolveWindowsLockRootFromProfile(resolveWindowsNativeProfile()) }));
 }
 
 function runLockHolderChild(lockPath: string | undefined): void {

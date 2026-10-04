@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
-import { createTestTempRun } from './test-temp-root.mjs';
+import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
+import { stopTestProcessGroup } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
@@ -32,8 +33,7 @@ let restoreSwappedBunfig = null;
 process.on('exit', () => {
   try { killActiveGroup?.('SIGKILL'); } catch { /* best-effort */ }
   try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
-  const leaks = tempRun.finish();
-  if (leaks.length > 0 && !process.exitCode) process.exitCode = 1;
+  finishTestTempRun(tempRun);
 });
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
   process.on(signal, () => process.exit(128 + number));
@@ -1086,59 +1086,14 @@ function parseFailuresFromJunit(file) {
   return failures;
 }
 
-/**
- * Run a subprocess synchronously while teeing stdout+stderr to both the
- * terminal (so live progress is preserved) and a log file (so a
- * post-run scanner can find failure context that the JUnit reporter
- * silently drops).
- *
- * Implemented with synchronous spawnSync + a child that writes to a pipe
- * to `tee` via shell — simplest cross-platform path that preserves exit
- * code without requiring Node's async event loop in this script.
- *
- * Explicit `/bin/bash` invocation: `set -o pipefail` is a bash-only
- * feature. Ubuntu CI runners ship dash as `/bin/sh`, which rejects it
- * with "Illegal option -o pipefail" and aborts before any tests run.
- * bash is reliably present on every CI runner and on macOS.
- */
-function runWithTee(command, args, teeFile) {
-  const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
-  const teePath = teeFile.replace(/'/g, `'\\''`);
-  const shellCmd = `set -o pipefail; ${command} ${escaped} 2>&1 | tee -a '${teePath}'`;
-  const result = spawnSync('/bin/bash', ['-c', shellCmd], {
-    cwd: REPO,
-    stdio: 'inherit',
-    env: process.env,
-  });
-  return result.status ?? 1;
-}
-
-/**
- * Async variant of `runWithTee` with a quiet-line watchdog. Pipes child
- * stdout/stderr through Node so we can:
- *   - tee to the terminal (preserves live progress in CI logs)
- *   - tee to the per-phase log file (preserves the existing artifact)
- *   - track the last non-empty line and timestamp
- *
- * Every `WATCHDOG_INTERVAL_MS` we check whether the child has produced
- * output recently. If `WATCHDOG_QUIET_MS` has passed since the last
- * non-empty line, we emit a heartbeat that includes that last line —
- * which is usually a Bun test name. This makes hangs grepable: after
- * the run, `grep STILL RUNNING <log>` points straight at the file/test
- * that was stuck.
- *
- * Behavior is otherwise identical to `runWithTee` — same shell command,
- * same pipefail handling, same exit-code semantics.
- */
+/** Run a command directly, tee its output, and enforce quiet and wall-clock budgets. */
 async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineMs, hangFile }) {
-  const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
-  const shellCmd = `set -o pipefail; ${command} ${escaped}`;
   const startMs = Date.now();
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
   return new Promise((resolve) => {
     // `detached: true` puts the child in its own process group so a hard
-    // phase-kill can signal the WHOLE tree (bash + bun + bun's isolate
+    // phase-kill can signal the WHOLE tree (bun + bun's isolate
     // workers) via the negative pid. Without this, killing only the bash
     // wrapper would leave the spinning bun worker (and the test ports it
     // holds) orphaned — the exact failure that poisons subsequent runs.
@@ -1146,7 +1101,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     // stdin is /dev/null, never the runner's own: a test that reads fd 0
     // gets EOF at once, as in CI, instead of blocking on a terminal or an
     // agent harness's socket that never ends.
-    const child = spawn('/bin/bash', ['-c', shellCmd], {
+    const child = spawn(command, args, {
       cwd: REPO,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1171,6 +1126,10 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     // it. A pid reused by an unrelated process is never signalled, and a
     // process group id cannot be reused while a member lives.
     function killPhaseTree(signal) {
+      if (process.platform === 'win32') {
+        stopTestProcessGroup(child.pid, signal);
+        return;
+      }
       const table = readProcessTable();
       if (table === null) {
         // No process table to read: the process group is all that can be named.
