@@ -12,11 +12,11 @@ const SRC = path.join(ROOT, 'packages/myco-server/src');
 
 /** Exact diagnostic text allowed at a non-dashboard seam, with its purpose. */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'core/settings.ts:deployment': 'Settings wire enum; the editor supplies a user-facing label.',
   'core/recovery-hold.ts:producer': 'Operator recovery hold wire state; never a dashboard diagnostic.',
   '../../myco-shared/src/run-text.ts:the harness stopped': 'Worker diagnostic code prefix; the dashboard renders reader code words.',
   'core/settings.ts:agent.harnesses. … .credential': 'Settings leaf address; the editor supplies a user-facing label.',
   'core/settings.ts:credential-source': 'Validation descriptor tag; the editor supplies a user-facing label.',
+  'core/runtime-probe.ts:The runtime probe model is only for the retained container probe': 'Programmer guard for a task-local resolver; the dashboard never renders it.',
   'core/worker-selection.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
   'core/worker-selection.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
   'core/settings-policies.ts:agent.harnesses. … .credential': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
@@ -38,6 +38,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'api/harness.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
   'api/access.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
   'api/settings.ts:body must be a JSON object carrying a value': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/settings.ts:body must be an empty JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
   'api/machine-settings.ts:body must be a JSON object carrying a value': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
   'api/worker.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
 };
@@ -133,6 +134,19 @@ describe('server reader vocabulary', () => {
       for (const [text, banned] of [['runtime stopped', true], ['The machine stopped responding', false]] as const) {
         fs.writeFileSync(server, `const o = { readerNote: ${JSON.stringify(text)} };`);
         expect(serverReaderStrings([server], fields).some((entry) => MECHANISM_WORDS.test(entry.text))).toBe(banned);
+      }
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('checks displayed branches without treating their selection condition as displayed prose', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reader-words-'));
+    try {
+      const file = path.join(dir, 'api.ts');
+      fs.writeFileSync(file, "const select = (value: string) => value.length > 0; const o = { reason: select('runtime digest') ? 'The machine is ready' : 'The machine is waiting' };");
+      expect(serverReaderStrings([file]).some((entry) => MECHANISM_WORDS.test(entry.text))).toBe(false);
+      for (const expression of ["true ? 'runtime stopped' : 'The machine is ready'", "true ? 'The machine is ready' : 'runtime stopped'"]) {
+        fs.writeFileSync(file, `const o = { reason: ${expression} };`);
+        expect(serverReaderStrings([file]).some((entry) => MECHANISM_WORDS.test(entry.text))).toBe(true);
       }
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });

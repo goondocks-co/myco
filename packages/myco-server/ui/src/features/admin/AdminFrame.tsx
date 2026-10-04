@@ -79,6 +79,7 @@ export interface SettingRowProps {
   status?: ReactNode;
   /** Status reads as a refusal. */
   refused?: boolean;
+  details?: ReactNode;
   control: ReactNode;
   /** Puts the control under the words at full width, for a text box, a list or a document. */
   stacked?: boolean;
@@ -93,7 +94,7 @@ export interface SettingRowProps {
  * control at the right, or under the words for a control that needs the width.
  * Rows stack into one column on a phone.
  */
-export function SettingRow({ label, htmlFor, note, status, refused = false, control, stacked = false, inline = false, setting }: SettingRowProps) {
+export function SettingRow({ label, htmlFor, note, status, refused = false, details, control, stacked = false, inline = false, setting }: SettingRowProps) {
   const words = (
     <div className="flex min-w-0 flex-col gap-s1">
       {htmlFor != null
@@ -105,6 +106,7 @@ export function SettingRow({ label, htmlFor, note, status, refused = false, cont
           {status}
         </p>
       )}
+      {details}
     </div>
   );
   return (

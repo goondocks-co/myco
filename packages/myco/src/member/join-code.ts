@@ -275,7 +275,10 @@ export async function ensureJoinedFromCode(
     lock.lock.release();
   }
   // The session this hook starts is served the Project's whole block: it is cached now, inside the hook's budget.
-  if (joined !== null) await warmProjectContext(joined, { mycoHome, fetch: opts.fetch, budget: opts.budget, now: opts.now });
+  if (joined !== null) {
+    try { await warmProjectContext(joined, { mycoHome, fetch: opts.fetch, budget: opts.budget, now: opts.now }); }
+    catch (error) { stderr(`Project context warmup failed: ${error instanceof Error ? error.message : String(error)}`); }
+  }
 }
 
 /** Where this home stands for a join code at `root`. */

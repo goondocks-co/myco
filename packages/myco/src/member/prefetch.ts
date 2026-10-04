@@ -14,7 +14,7 @@
  * the Deployment offline (#1559): a capture request decides that. An ask the Deployment answered, or refused for good,
  * is done; one it did not answer stays for the next pass.
  */
-import { cacheMachineSettings } from './machine-settings.js';
+import { cacheMachineSettings, machineSettingsHeaders, beginMachineSettingsRequest } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
@@ -93,10 +93,11 @@ export async function prefetchContext(opts: {
     for (const ask of asks) {
       if (!canStartRequest(opts.budget, now())) { report.stoppedBy = 'budget'; return report; }
       const request = requestFor(sessionId, ask);
+      const machineOrder = ask.kind === 'prompt' ? undefined : beginMachineSettingsRequest(opts.serverUrl, opts.mycoHome);
       report.asked += 1;
       const answer = classifyEventAnswer(await client.request('POST', request.path, {
         body: JSON.stringify(request.body),
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...machineSettingsHeaders(opts.serverUrl, opts.mycoHome) },
         budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, now()),
       }));
       if (answer.class === 'refused' && refusalPermanent(answer.code)) {
@@ -126,7 +127,7 @@ export async function prefetchContext(opts: {
           else if (skipped.some((s) => WITHDRAWN.includes(s))) delete cache.blocks[kind];
         });
         // The machine's own settings ride a session's answer.
-        try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome); } catch { /* the last cache stands */ }
+        try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome, machineOrder); } catch { /* the last cache stands */ }
       }
       settleAsk(spool, sessionId, ask, now());
     }
@@ -184,11 +185,12 @@ export async function warmProjectContext(
   for (const kind of WARMED) {
     if (readProjectContext(spoolDir).blocks[kind] !== undefined) continue;
     if (!canStartRequest(budget, now())) break;
+    const machineOrder = beginMachineSettingsRequest(membership.serverUrl, opts.mycoHome);
     let answer: ReturnType<typeof classifyEventAnswer>;
     try {
       answer = classifyEventAnswer(await client.request('POST', SESSION_PATH, {
         body: JSON.stringify({ kind, preview: true }),
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...machineSettingsHeaders(membership.serverUrl, opts.mycoHome) },
         budget: subRequestBudget(budget, CONTEXT_CAP_MS, now()),
       }));
     } catch {
@@ -198,7 +200,7 @@ export async function warmProjectContext(
     const context = typeof answer.body.context === 'string' ? answer.body.context : '';
     if (context.length === 0) continue;
     updateProjectContext(spoolDir, opts.mycoHome, (cache) => { cache.blocks[kind] = { context, at: now() }; });
-    try { cacheMachineSettings(membership.serverUrl, answer.body.machine, opts.mycoHome); } catch { /* the last cache stands */ }
+    try { cacheMachineSettings(membership.serverUrl, answer.body.machine, opts.mycoHome, machineOrder); } catch { /* the last cache stands */ }
     cached += 1;
   }
   return cached;

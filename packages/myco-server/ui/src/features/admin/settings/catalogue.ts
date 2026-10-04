@@ -40,8 +40,6 @@ export interface LeafField {
   resettable?: boolean;
   /** The agent whose model a `model` field chooses. */
   harness?: string;
-  /** What a row says while nothing is stored, where unset means more than the server's default. */
-  unsetStatus?: string;
 }
 
 export interface LeafGroup {
@@ -58,16 +56,12 @@ export interface LeafGroup {
 
 const SIGN_IN_OPTIONS = { deployment: 'Server login', 'worker-login': 'Worker login' } as const;
 
-/** What a tier with no model of its own says, where its agent has no default for it. */
-export const UNSET_TIER_MODEL = 'Not set. Runs at this tier wait until you choose a model.';
-
 const tierWords = (tier: string): string => `${tier.charAt(0).toUpperCase()}${tier.slice(1)} tier`;
 
 const profileFields = (harness: string): LeafField[] => [
   ...REASONING_TIERS.flatMap((tier) => [
     { leaf: `agent.reasoning_map.${harness}.${tier}`, label: `${tierWords(tier)} model`, kind: 'model' as const, resettable: true, harness,
-      note: PROFILE_HARNESSES[harness]!.modelHint,
-      ...(PROFILE_HARNESSES[harness]!.models[tier] === null ? { unsetStatus: UNSET_TIER_MODEL } : {}) },
+      note: PROFILE_HARNESSES[harness]!.modelHint },
     { leaf: `agent.effort_map.${harness}.${tier}`, label: `${tierWords(tier)} effort`, kind: 'select' as const,
       options: PROFILE_HARNESSES[harness]!.allowedEfforts, resettable: true },
   ]),
@@ -133,7 +127,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'cortex.canopy.refresh.background_enabled', label: 'Update the map on its own', kind: 'toggle', note: 'Needs work on a schedule and the project’s Code map switch in its project settings. Task limits also apply.' },
       { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Update every', kind: 'number', min: 1, unit: 'minutes' },
       { leaf: 'cortex.canopy.exclude.patterns', label: 'Paths left out', kind: 'patterns', note: 'Paths the map leaves out, beside the built-in ones. The map reads committed files only, so ignored files never reach it.' },
-      { leaf: 'cortex.canopy.exclude.default_patterns', label: 'Paths always left out', kind: 'patterns', readOnly: true, note: 'Derived from Myco’s built-in code map patterns. Add your own above.' },
     ],
   },
   {
@@ -207,8 +200,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'What Myco keeps',
     note: 'How long this server keeps raw transcripts and its own records.',
     leaves: [
-      // 0 keeps transcripts forever. A setting cannot be cleared once written, so
-      // 0 is how a server returns to keeping everything, and the minimum stays 0.
       { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Removes raw transcript bytes already read into sessions once they are older than this. Bytes not yet read are kept whatever their age, and sessions, prompts, replies, tool calls and plans are never removed. Unset or 0 keeps raw transcripts forever. Capture is never refused for the space it takes.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
     ],

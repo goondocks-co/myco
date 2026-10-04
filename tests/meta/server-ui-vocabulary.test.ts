@@ -45,8 +45,6 @@ const SHARED_SRC = path.join(REPO_ROOT, 'packages', 'myco-shared', 'src');
 const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
   'features/admin/settings/catalogue.ts:agent.harnesses. … .credential':
     'A setting key assembled for the API, never shown as page copy',
-  'features/admin/settings/defaults.ts:agent.harnesses. … .credential':
-    'A setting key assembled for the default map, never shown as page copy',
   'myco-shared/member-protocol.ts:ask a Deployment admin for an invitation for your existing member':
     'REJOIN_HINT is the CLI\'s line, printed in a terminal; the dashboard imports only the controls it names',
   'myco-shared/member-protocol.ts:A machine belongs to one member of a Deployment: every home on it signs in as the same machine':

@@ -1,3 +1,4 @@
+import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { TURN_END_HEADER } from './ingest/turns.js';
 import { stampRequest } from './core/activity.js';
@@ -260,6 +261,18 @@ function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err: unkno
   const errorClass = classify(err, errorClassifierOf(env));
   emit({ kind: shape === 'stored' ? 'blob_error' : shape === 'refreshed' ? 'refresh_error' : shape === 'answered' ? 'mcp_error' : 'ingest_error', memberId: auth.memberId, tokenId: auth.tokenId, error_class: errorClass });
   return unavailableFor(route);
+}
+
+function machineContractHeaders(request: Request): { machineSettingsFeature?: true; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: true } {
+  if (request.headers.get(MACHINE_SETTINGS_HEADER) !== MACHINE_SETTINGS_FEATURE) return {};
+  const revision = request.headers.get(MACHINE_SETTINGS_REVISION_HEADER);
+  const order = request.headers.get(MACHINE_SETTINGS_ORDER_HEADER);
+  return {
+    machineSettingsFeature: true,
+    ...(isMachineSettingsRevision(revision) ? { machineSettingsRevision: revision } : {}),
+    ...(order !== null && /^[0-9]+$/.test(order) && Number.isSafeInteger(Number(order)) ? { machineSettingsOrder: Number(order) } : {}),
+    ...(request.headers.get(MACHINE_SETTINGS_INVALIDATED_HEADER) === '1' ? { machineSettingsInvalidated: true } : {}),
+  };
 }
 
 /** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → project header (a request naming no Project in grammar is refused before its body is read) → body (json routes: bounded read; stream routes: content-length required and capped, body left to the handler) → project resolution (the first write on the path, so it runs after every refusal the caller cannot retry into success; a Deployment at its Project ceiling answers 503 with retry-after rather than a refusal: nothing the caller sends differs next time) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
@@ -552,7 +565,7 @@ export function createServer(deps: ServerDeps) {
       const answered = await route.handler(env, {
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
-        body: body.text, bodyBytes: body.bytes, now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
+        ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
       });
       if (drivesRun) await recordRunRoute(env, auth, route.path, answered, heldBefore, now);
       return answered;
@@ -568,7 +581,7 @@ export function createServer(deps: ServerDeps) {
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       return await route.credential(env, {
         memberId: auth.memberId, machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
-        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, body: body.text, now,
+        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now,
       });
     } catch (err) {
       return failed(env, auth, route, err);

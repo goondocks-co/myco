@@ -21,21 +21,17 @@ export const replacedRun: ParityScenario = {
   async run(target: ParityTarget) {
     const now = Date.now();
     const stamp = String(now);
-    const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    for (const [name, value] of [
-      ['agent.provider.type', 'openai-compatible'],
-      ['agent.provider.model', 'parity-model'],
-      ['agent.provider.base_url', 'http://models.internal/v1'],
-    ] as const) await leaf(name, value);
+    const secret = (method: 'PUT' | 'DELETE') => fetch(`${target.url}/api/secrets/anthropic`, {
+      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+      ...(method === 'PUT' ? { body: JSON.stringify({ value: 'sk-ant-oat-parity-test-token' }) } : {}),
+    });
+    expect((await secret('PUT')).status).toBe(200);
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
     // A clean board: nothing another scenario left holds a place, no limit holds
     // a dispatch, and no earlier run of this task has spent the day.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
     await target.sql(`DELETE FROM agent_runs WHERE task = 'container-smoke'`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
-    // One run of this task a day, so the ceiling is a single row: what the
-    // replaced run costs the day is then visible in one dispatch.
-    await leaf('agent.tasks', { 'container-smoke': { schedule: { maxRunsPerDay: 1 } } });
 
     const dispatch = async () => {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
@@ -96,7 +92,7 @@ export const replacedRun: ParityScenario = {
       expect(await jsonBody(res)).toEqual({ persisted: true, changed: 1, applied: true });
     };
 
-    // Ad-hoc requests remain available with an automatic daily ceiling of one.
+    // Ad-hoc requests remain available while replacement retries have their own daily ceiling.
     const first = await dispatch();
     expect(first.status).toBe(200);
     const firstRunId = String(first.body.runId);
@@ -138,7 +134,7 @@ export const replacedRun: ParityScenario = {
 
     // Leave the board as the next scenario expects it.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE status IN ('pending', 'running', 'queued')`);
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.tasks'`);
+    expect((await secret('DELETE')).status).toBe(200);
     await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id IN (${minted.map(lit).join(', ')})`);
   },
 };

@@ -8,7 +8,7 @@ export function openProviderCredential(db: RelationalStore, key: SecretWrappingK
 }
 
 /** Whether a fixed provider's slot holds a key this server can open, read without opening it. */
-export async function providerCredentialReady(db: RelationalStore, key: SecretWrappingKey, provider: 'openai' | 'openrouter'): Promise<boolean> {
+export async function providerCredentialReady(db: RelationalStore, key: SecretWrappingKey, provider: 'anthropic' | 'openai' | 'openrouter'): Promise<boolean> {
   const described = await deploymentSecretStore(db, key).describe(provider);
   return described.configured && described.readable;
 }

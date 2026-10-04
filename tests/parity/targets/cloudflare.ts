@@ -5,6 +5,7 @@ import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cook
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
 
 const SERVER_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'packages', 'myco-server');
+const WRANGLER = path.resolve(SERVER_DIR, '..', '..', 'node_modules', '.bin', 'wrangler');
 
 // Every spawned process, killed at exit: a beforeAll timeout aborts the hook
 // without running the target's stop(), and a live wrangler dev with piped
@@ -113,7 +114,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     // carries the variable; the `d1 execute --json` calls do not.
     const providerLog = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-provider.log`);
     proc = Bun.spawn([
-      'npx', '--no-install', 'wrangler', 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir, '--test-scheduled',
+      WRANGLER, 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir, '--test-scheduled',
       '--var', `SESSION_SECRET:${SESSION_SECRET}`, '--var', 'GITHUB_CLIENT_ID:parity-client', '--var', 'GITHUB_CLIENT_SECRET:parity-secret', '--var', 'HARNESS_LAUNCH_MODE:record', '--var', 'CLOCK_MODE:manual', '--var', `MYCO_ORIGIN:http://127.0.0.1:${port}`,
     ], {
       cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe',
@@ -203,7 +204,6 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
         devProc.kill();
         await Promise.race([devProc.exited, Bun.sleep(5_000)]);
         SPAWNED.delete(devProc);
-        Bun.spawnSync(['pkill', '-f', `parity-${tag}`]);
         await Promise.race([drained, Bun.sleep(1_000)]);
         // A log sink that failed while every scenario passed is reported here, once.
         if (logFailure !== null) console.error(`the cloudflare runtime log sink failed: ${logFailure}`);
@@ -213,7 +213,6 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   } catch (error) {
     proc?.kill();
     if (proc !== null) SPAWNED.delete(proc);
-    Bun.spawnSync(['pkill', '-f', `parity-${tag}`]);
     cleanup();
     throw error;
   }

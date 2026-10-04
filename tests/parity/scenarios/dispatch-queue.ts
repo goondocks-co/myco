@@ -15,11 +15,11 @@ export const dispatchQueue: ParityScenario = {
   async run(target: ParityTarget) {
     const now = Date.now();
     const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    for (const [name, value] of [
-      ['agent.provider.type', 'openai-compatible'],
-      ['agent.provider.model', 'parity-model'],
-      ['agent.provider.base_url', 'http://models.internal/v1'],
-    ] as const) await leaf(name, value);
+    const secret = (method: 'PUT' | 'DELETE') => fetch(`${target.url}/api/secrets/anthropic`, {
+      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+      ...(method === 'PUT' ? { body: JSON.stringify({ value: 'sk-ant-oat-parity-test-token' }) } : {}),
+    });
+    expect((await secret('PUT')).status).toBe(200);
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
     // An outcome task is queued only where the Project has turned its capability on.
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
@@ -87,8 +87,8 @@ export const dispatchQueue: ParityScenario = {
       VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'container-smoke', 'queued', ${now}, 'runtime',
               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))}, ${lit(credential)})`);
 
-    // Invalid archived probe preferences end the run and revoke its credential.
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
+    // A missing Anthropic key ends the run and revokes its credential.
+    expect((await secret('DELETE')).status).toBe(200);
     try {
       await wake();
       expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
@@ -102,11 +102,11 @@ export const dispatchQueue: ParityScenario = {
       expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
         .toEqual([{ revoked: 1 }]);
     } finally {
-      // Runtime probe dispatch requires its archived provider preferences.
-      await leaf('agent.provider.type', 'openai-compatible');
+      expect((await secret('PUT')).status).toBe(200);
     }
 
     // Nothing this scenario launched stays live for the next one to count.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${[a.runId, b.runId].map(lit).join(', ')})`);
+    expect((await secret('DELETE')).status).toBe(200);
   },
 };

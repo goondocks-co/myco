@@ -29,9 +29,6 @@ function rig() {
   const env: ServerEnv = { ...withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } }), origin: ORIGIN, wake: async () => {} };
   const setting = (leaf: string, value: unknown) =>
     e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
-  setting('agent.provider.type', 'openai-compatible');
-  setting('agent.provider.model', 'm');
-  setting('agent.provider.base_url', 'http://models.internal/v1');
   /** An ended session with one inline user prompt and one transcript; by default imported and parsed. */
   const session = (id: string, over: { project?: string; endedAt?: number; imported?: boolean; parsed?: boolean; title?: string; material?: boolean; transcript?: boolean } = {}) => {
     const project = over.project ?? 'proj_1';

@@ -24,7 +24,7 @@ import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-b
 import { handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleMemberSettings, handleResetSetting, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
+  handleMemberSettings, handleRepairTaskDocument, handleResetSetting, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
@@ -273,6 +273,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },
   { method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._-]{1,96})$/, auth: 'session', authority: 'admin', handler: handleSetSetting },
+  { method: 'POST', path: '/api/settings/agent.tasks/repair', auth: 'session', authority: 'admin', handler: handleRepairTaskDocument },
   { method: 'PATCH', path: '/api/settings/agent.tasks', auth: 'session', authority: 'admin', handler: handleSetTaskTier },
   { method: 'PUT', path: '/api/embedding', auth: 'session', authority: 'admin', handler: handleSetEmbedding },
   { method: 'GET', path: '/api/embedding/switch', auth: 'session', authority: 'member', handler: handleEmbeddingSwitch },

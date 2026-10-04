@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 
 /**
@@ -13,14 +13,6 @@ import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 export const sessionsTitling: ParityScenario = {
   name: 'sessions and titling: capture, the unbound-runtime fallback, label, MCP, an owner\'s ask',
   async run(target: ParityTarget) {
-    for (const [leaf, value] of [
-      ['agent.provider.type', 'openai-compatible'],
-      ['agent.provider.model', 'parity-model'],
-      ['agent.provider.base_url', 'http://models.internal/v1'],
-    ] as const) {
-      await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(leaf)}, ${lit(JSON.stringify(value))}, 1, ${lit(MEMBER_ID)})`);
-    }
-
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
       const res = await fetch(`${target.url}/events`, {
         method: 'POST',

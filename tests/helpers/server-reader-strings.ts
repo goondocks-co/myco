@@ -90,6 +90,7 @@ export function serverReaderStrings(files: readonly string[], renderedFields: Re
       return;
     }
     if (ts.isElementAccessExpression(node)) { flow(node.expression); return; }
+    if (ts.isConditionalExpression(node)) { flow(node.whenTrue); flow(node.whenFalse); return; }
     if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
       const symbol = symbolOf(ts.isPropertyAccessExpression(node) ? node.name : node);
       for (const input of symbol === undefined ? [] : [...(parameterInputs.get(symbol) ?? []), ...(assignments.get(symbol) ?? [])]) flow(input);

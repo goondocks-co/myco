@@ -1,3 +1,4 @@
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 /**
  * A run a deployment ended, and what the Deployment does about it.
  *
@@ -17,26 +18,26 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
 import { memberPost, sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
+const WRAPPING_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
 const ORIGIN = 'https://s';
 const SCOPE = { projectId: 'proj_1' };
 type Launch = { runId: string; timeoutSeconds: number; envVars: Record<string, string> };
 
-function fixture() {
+async function fixture() {
   const e = sqliteEnv();
   turnOnGatedCapabilities(e.sqlite);
   const launches: Launch[] = [];
   // The entry maps its own deployment, so a launch reaches it only as the
   // recording runtime: the successor is queued and marked, and starts nothing.
-  const bindings = { ...e.env, HARNESS_LAUNCH_MODE: 'record' };
-  const base = withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
+  const bindings = { ...e.env, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAPPING_KEY } };
+  const sealed = serverEnvFromBindings(bindings);
+  await deploymentSecretStore(e.db, sealed.wrappingKey).put('anthropic', 'sk-ant-oat-replacement-test', 'test', NOW);
+  const base = withHarness(() => sealed, { launch: async (spec) => { launches.push(spec); } });
   const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) => e.sqlite.run(
     `INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
-  setting('agent.provider.type', 'openai-compatible');
-  setting('agent.provider.model', 'm');
-  setting('agent.provider.base_url', 'http://models.internal/v1');
   e.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(NOW);
   e.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`).run(NOW);
   e.sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'test')`).run(NOW);
@@ -49,7 +50,7 @@ function fixture() {
 }
 
 /** A dispatched run of a task, recorded the way the dispatcher records one. */
-async function dispatched(f: ReturnType<typeof fixture>, id: string, task: string, context: Record<string, unknown>, at = NOW): Promise<void> {
+async function dispatched(f: Awaited<ReturnType<typeof fixture>>, id: string, task: string, context: Record<string, unknown>, at = NOW): Promise<void> {
   await ensureMember(f.db, HARNESS_MEMBER_ID, at, 'member', 'harness runtime');
   const minted = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, at);
   await recordDispatch(f.db, SCOPE, {
@@ -61,7 +62,7 @@ async function dispatched(f: ReturnType<typeof fixture>, id: string, task: strin
 
 describe('what a replaced run costs the day', () => {
   it('excludes a replaced run from the task\'s count, and counts every other', async () => {
-    const f = fixture();
+    const f = await fixture();
     await dispatched(f, 'run_a', 'container-smoke', { timeoutSeconds: 120 });
     await dispatched(f, 'run_b', 'container-smoke', { timeoutSeconds: 120 });
     expect(await taskEntriesSince(f.db, SCOPE, 'container-smoke', NOW - DAY)).toBe(2);
@@ -73,7 +74,7 @@ describe('what a replaced run costs the day', () => {
   });
 
   it('marks no context that is not an object, and counts the run either way', async () => {
-    const f = fixture();
+    const f = await fixture();
     // Neither of these is a context the dispatcher writes. The first is no JSON
     // at all; the second is valid JSON whose root is a scalar, which a naive
     // guard admits and a key-set then overwrites whole.
@@ -89,7 +90,7 @@ describe('what a replaced run costs the day', () => {
 
 describe('the run that stands in for a replaced one', () => {
   it('queues the same task once, naming the run it replaces and carrying that run\'s parameters', async () => {
-    const f = fixture();
+    const f = await fixture();
     await dispatched(f, 'run_a', 'title-summary', { session_id: 'sess_1', mode: 'claim', timeoutSeconds: 900, input_hash: 'h', fresh: true });
     await markRunReplaced(f.db, SCOPE, 'run_a');
     const run = (await getRun(f.db, SCOPE, 'run_a'))!;
@@ -113,7 +114,7 @@ describe('the run that stands in for a replaced one', () => {
   });
 
   it.each(['clock', null])('keeps automatic accounting for a replacement with original actor %s', async (actor) => {
-    const f = fixture();
+    const f = await fixture();
     await dispatched(f, 'scheduled', 'extract-curate', { timeoutSeconds: 900 });
     f.sqlite.run(`UPDATE agent_runs SET dispatch_spec = ? WHERE id = 'scheduled'`, [actor === null ? null : JSON.stringify({ actor })]);
     await markRunReplaced(f.db, SCOPE, 'scheduled');
@@ -124,7 +125,7 @@ describe('the run that stands in for a replaced one', () => {
   });
 
   it('builds an extraction successor afresh, carrying the bound and the from-scratch ask of the run it stands in for', async () => {
-    const f = fixture();
+    const f = await fixture();
     await dispatched(f, 'run_a', 'extract-curate', { timeoutSeconds: 900, fresh: true });
     await markRunReplaced(f.db, SCOPE, 'run_a');
     const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
@@ -137,7 +138,7 @@ describe('the run that stands in for a replaced one', () => {
   });
 
   it('stops at the day\'s cap on re-queues of one task, and the cap is a named number', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect(REPLACED_REQUEUES_PER_DAY).toBe(2);
     const replaced: string[] = [];
     for (let i = 0; i < REPLACED_REQUEUES_PER_DAY + 1; i += 1) {
@@ -164,7 +165,7 @@ describe('the run that stands in for a replaced one', () => {
 
 describe('what a runtime may add to a run it did not dispatch', () => {
   async function runtime() {
-    const f = fixture();
+    const f = await fixture();
     await ensureMember(f.db, HARNESS_MEMBER_ID, NOW, 'member', 'harness runtime');
     const minted = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
     await recordDispatch(f.db, SCOPE, {

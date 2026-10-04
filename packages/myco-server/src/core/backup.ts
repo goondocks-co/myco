@@ -71,11 +71,12 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
-  'deployment_settings', 'deployment_setting_resets', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
+  'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
-  'worker_contacts', 'worker_model_catalogs', 'machine_harness_reports',
+  'worker_contacts', 'worker_model_catalogs', 'machine_harness_reports', 'machine_settings_snapshots',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
+  '_v68_guard_retired_settings',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
   '_v48_credential_rows', '_v48_guard_rows_kept',
 ]);
@@ -172,6 +173,13 @@ const tableCount = async (db: RelationalStore, table: string): Promise<number> =
   return row?.c ?? 0;
 };
 
+const MACHINE_REPORT_COLUMNS = new Set(['settings_cached_revision', 'settings_cached_values', 'settings_report_order', 'settings_contract_supported']);
+
+/** Portable machine identities carry no confirmation of the attached member's current cache. */
+function portableRow(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  return table === 'machine_claims' ? Object.fromEntries(Object.entries(row).filter(([column]) => !MACHINE_REPORT_COLUMNS.has(column))) : row;
+}
+
 /** Create one backup artifact and its index row; answers the index row written. */
 export async function createBackup(
   db: RelationalStore, blobs: BlobStore, opts: { producer: string; now: number },
@@ -192,7 +200,7 @@ export async function createBackup(
       for (const row of results) {
         cursor = row.__rid as number;
         const { __rid, ...columns } = row;
-        const line = JSON.stringify({ t: table, r: columns });
+        const line = JSON.stringify({ t: table, r: portableRow(table, columns) });
         bytes = assertBackupSize(`${line}\n`, bytes);
         lines.push(line);
         counts[table] = counts[table]! + 1;
@@ -354,7 +362,7 @@ export async function restoreArtifact(
     const parsed = JSON.parse(line) as { t: string; r: Record<string, unknown> };
     if (!BACKUP_TABLES.includes(parsed.t)) continue;
     const rows = byTable.get(parsed.t) ?? [];
-    rows.push(parsed.r);
+    rows.push(portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
   }
 

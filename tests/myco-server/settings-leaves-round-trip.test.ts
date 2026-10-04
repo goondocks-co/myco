@@ -12,8 +12,7 @@
  * validated operation and the store are all in the path a form actually takes.
  */
 import { describe, expect, it } from 'bun:test';
-import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
-import { RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
+import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
@@ -107,40 +106,33 @@ describe('the Settings leaves the dashboard exposes', () => {
 });
 
 describe('obsolete settings contracts', () => {
-  it('refuses every retired PUT and preserves stored history and live siblings', async () => {
-    const { sqlite, put, stored } = await harness();
-    for (const leaf of RETIRED_LEAVES) sqlite.run(
-      `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'historic')`, [leaf, JSON.stringify('historic')]);
+  it('refuses every retired PUT and preserves live siblings', async () => {
+    const { put, stored } = await harness();
     await put('instructions.template', 'kept');
     const before = Object.fromEntries(await stored());
-    for (const leaf of RETIRED_LEAVES) {
-      expect({ leaf, ...await put(leaf, 'replacement') }).toEqual({ leaf, status: 400, body: { applied: false, reason: 'retired', leaf } });
+    for (const leaf of V68_RETIRED_SETTINGS) {
+      expect({ leaf, ...await put(leaf, 'replacement') }).toEqual({ leaf, status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf } });
     }
     expect(Object.fromEntries(await stored())).toEqual(before);
   });
 
-  it('reports every obsolete stored contract as retired metadata', async () => {
+  it('omits obsolete rows even if one reaches the active table after migration', async () => {
     const { sqlite, env } = await harness();
-    const obsolete = ['agent.harness', 'agent.event_tasks_enabled', 'agent.semantic_write_check_enabled',
-      'agent.summary_batch_interval', 'agent.provider.type', 'agent.provider.model', 'agent.provider.base_url',
-      'cortex.digest.tier', 'cortex.digest.inject_on_session_start', 'skills.confidence_threshold',
-      'skills.usage_stale_days', 'notifications.retention_days', 'cortex.canopy.exclude.default_patterns'];
-    for (const leaf of obsolete) sqlite.run(
+    for (const leaf of V68_RETIRED_SETTINGS) sqlite.run(
       `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'historic')`, [leaf, JSON.stringify('historic')]);
     const res = await worker.fetch(await asOwner('/api/settings'), env);
-    const body = await res.json() as { leaves: Array<{ leaf: string; configured: boolean; value: unknown; retired: boolean }> };
-    expect(body.leaves.filter((row) => obsolete.includes(row.leaf)).map(({ leaf, configured, value, retired }) => ({ leaf, configured, value, retired })).sort((a, b) => a.leaf.localeCompare(b.leaf)))
-      .toEqual(obsolete.map((leaf) => ({ leaf, configured: true, value: 'historic', retired: true })).sort((a, b) => a.leaf.localeCompare(b.leaf)));
+    const body = await res.json() as { leaves: Array<{ leaf: string }> };
+    expect(body.leaves.filter((row) => V68_RETIRED_SETTINGS.includes(row.leaf as typeof V68_RETIRED_SETTINGS[number]))).toEqual([]);
   });
 });
 
 describe('derived Canopy metadata', () => {
-  it('reports built-in patterns independently of a retired stored override', async () => {
+  it('does not expose the retired writable patterns leaf', async () => {
     const { sqlite, env } = await harness();
     sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('cortex.canopy.exclude.default_patterns', '["stale"]', 1, 'historic')`);
     const res = await worker.fetch(await asOwner('/api/settings'), env);
-    const body = await res.json() as { leaves: Array<{ leaf: string; value: unknown; source?: string; effectiveValue?: unknown }> };
+    const body = await res.json() as { leaves: Array<{ leaf: string }> };
     const row = body.leaves.find((row) => row.leaf === 'cortex.canopy.exclude.default_patterns');
-    expect(row).toMatchObject({ value: ['stale'], source: 'derived', effectiveValue: CANOPY_DEFAULT_EXCLUDE_PATTERNS });
+    expect(row).toBeUndefined();
   });
 });
