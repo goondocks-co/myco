@@ -9,7 +9,7 @@ import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { recordTaskHolder } from '@myco-server-worker/core/runs.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
-import { PROFILE_HOLD_PREFIXES, credentialUnavailable, holdSentence, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
+import { PROFILE_HOLD_PREFIXES, sourceReadUnavailable, credentialUnavailable, holdSentence, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { MODEL_CATALOG_FRESH_MS, PROFILE_HARNESSES, REASONING_TIERS, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
@@ -43,6 +43,7 @@ describe('task execution profiles', () => {
       ['invalid_tier', invalidTaskTier('extract-curate'), 'This task’s tier setting isn’t valid. Correct it in Settings, or reset the task’s tier.'],
       ['missing_model', noModelForTier('opencode', 'high'), 'OpenCode has no model chosen for the high tier. Choose one in Settings.'],
       ['missing_credential', credentialUnavailable('claude-code'), 'Claude Code has no sign-in this server can use. Add one in Settings.'],
+      ['unbounded_source', sourceReadUnavailable('cursor'), 'Cursor cannot safely read repository source. Choose another agent for this task.'],
     ] as const;
     expect(PROFILE_HOLD_PREFIXES).toHaveLength(cases.length);
     for (const [id, holder, words] of cases) {
