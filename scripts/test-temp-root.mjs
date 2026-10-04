@@ -14,7 +14,11 @@ function ownerPid(root) {
     const pid = Number(fs.readFileSync(path.join(root, '.owner'), 'utf8').trim());
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch (error) {
-    if (typeof error.code === 'string') return null;
+    if (['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EISDIR'].includes(error.code)) return null;
+    if (typeof error.code === 'string') {
+      console.warn(`[run-bun-tests] cannot read temp-root owner ${root} (${error.code}): ${error.message}`);
+      return null;
+    }
     throw error;
   }
 }
@@ -24,6 +28,7 @@ function alive(pid) {
   catch (error) {
     if (error.code === 'ESRCH') return false;
     if (error.code === 'EPERM') return true;
+    console.warn(`[run-bun-tests] cannot judge temp-root owner PID ${pid} (${error.code ?? 'unknown'}): ${error.message}`);
     return null;
   }
 }

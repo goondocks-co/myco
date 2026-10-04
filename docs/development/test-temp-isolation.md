@@ -54,6 +54,7 @@ remain available for diagnosis. Pre-existing names and live sibling runner
 roots (identified by their `.owner` PID) do not count. Stale-root cleanup
 removes only directories with a valid, provably dead owner PID; files,
 symlinks, missing or unreadable owners, and unknown liveness are retained.
+Unexpected owner-read or PID-check failures are reported as warnings.
 
 There is no portable creator-PID metadata for an arbitrary closed file or
 directory. The local snapshot therefore reports observations rather than

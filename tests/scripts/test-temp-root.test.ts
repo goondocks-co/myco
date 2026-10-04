@@ -45,11 +45,12 @@ describe('system temp leak snapshot', () => {
     const dead = spawnSync(process.execPath, ['-e', '0']);
     expect(dead.status).toBe(0);
     fs.writeFileSync(path.join(fixture, 'mt-file00'), 'retain');
-    for (const name of ['mt-dead00', 'mt-noown0', 'mt-badown', 'mt-denied', 'mt-noperm', 'mt-unknow']) fs.mkdirSync(path.join(fixture, name));
+    for (const name of ['mt-dead00', 'mt-noown0', 'mt-badown', 'mt-denied', 'mt-noperm', 'mt-iofail', 'mt-unknow']) fs.mkdirSync(path.join(fixture, name));
     fs.writeFileSync(path.join(fixture, 'mt-dead00', '.owner'), `${dead.pid}\n`);
     fs.writeFileSync(path.join(fixture, 'mt-badown', '.owner'), 'invalid');
     fs.writeFileSync(path.join(fixture, 'mt-denied', '.owner'), `${dead.pid}\n`);
     fs.writeFileSync(path.join(fixture, 'mt-noperm', '.owner'), `${dead.pid}\n`);
+    fs.writeFileSync(path.join(fixture, 'mt-iofail', '.owner'), `${dead.pid}\n`);
     fs.writeFileSync(path.join(fixture, 'mt-unknow', '.owner'), `${process.pid}\n`);
     const aliasTarget = path.join(fixture, 'alias-target');
     fs.mkdirSync(aliasTarget);
@@ -62,18 +63,27 @@ describe('system temp leak snapshot', () => {
     const readSpy = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
       if (String(file) === path.join(fixture, 'mt-denied', '.owner')) throw Object.assign(new Error('cannot read owner'), { code: 'EACCES' });
       if (String(file) === path.join(fixture, 'mt-noperm', '.owner')) throw Object.assign(new Error('cannot read owner'), { code: 'EPERM' });
+      if (String(file) === path.join(fixture, 'mt-iofail', '.owner')) throw Object.assign(new Error('owner read failed'), { code: 'EIO' });
       return (read as (...args: unknown[]) => unknown)(file, ...args);
     }) as typeof fs.readFileSync);
     const killSpy = spyOn(process, 'kill').mockImplementation((pid, signal) => {
       if (pid === process.pid && signal === 0) throw Object.assign(new Error('cannot judge owner'), { code: 'EIO' });
       return kill(pid, signal);
     });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(sweepStaleRunRoots(fixture)).toBe(1);
-      expect(fs.readdirSync(fixture).sort()).toEqual(['alias-target', 'mt-badown', 'mt-denied', 'mt-file00', 'mt-link00', 'mt-noown0', 'mt-noperm', 'mt-unknow']);
+      expect(fs.readdirSync(fixture).sort()).toEqual(['alias-target', 'mt-badown', 'mt-denied', 'mt-file00', 'mt-iofail', 'mt-link00', 'mt-noown0', 'mt-noperm', 'mt-unknow']);
+      const warnings = warnSpy.mock.calls.map(([message]) => String(message));
+      expect(warnings).toHaveLength(2);
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.stringMatching(/cannot read temp-root owner.*EIO/),
+        expect.stringMatching(/cannot judge temp-root owner PID.*EIO/),
+      ]));
     } finally {
       readSpy.mockRestore();
       killSpy.mockRestore();
+      warnSpy.mockRestore();
       fs.rmSync(fixture, { recursive: true, force: true });
     }
   });
