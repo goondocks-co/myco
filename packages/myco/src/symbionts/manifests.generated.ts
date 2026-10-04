@@ -2105,7 +2105,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "order": 4,
       "asking": {
         "kind": "run-home",
-        "env": "CURSOR_CONFIG_DIR"
+        "env": "CURSOR_CONFIG_DIR",
+        "sourceReads": "unheld"
       },
       "credential": {
         "provider": "anthropic",
@@ -2431,6 +2432,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "env": "OPENCODE_CONFIG_CONTENT",
         "extensionsOff": {
           "OPENCODE_PURE": "1"
+        },
+        "sourceReads": {
+          "read": "ask",
+          "glob": "ask",
+          "grep": "ask",
+          "list": "ask",
+          "external_directory": "ask"
         }
       },
       "credential": {

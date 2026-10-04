@@ -846,8 +846,8 @@ const RunnerManifestSchema = z.object({
   asking: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('native') }).strict(),
     z.object({ kind: z.literal('sandbox') }).strict(),
-    z.object({ kind: z.literal('run-agent'), env: z.string().min(1), extensionsOff: z.record(z.string(), z.string()) }).strict(),
-    z.object({ kind: z.literal('run-home'), env: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal('run-agent'), env: z.string().min(1), extensionsOff: z.record(z.string(), z.string()), sourceReads: z.record(z.string(), z.literal('ask')).optional() }).strict(),
+    z.object({ kind: z.literal('run-home'), env: z.string().min(1), sourceReads: z.literal('unheld').optional() }).strict(),
     z.object({ kind: z.literal('unheld') }).strict(),
   ]),
   credential: z.object({

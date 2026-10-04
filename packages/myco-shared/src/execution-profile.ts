@@ -355,8 +355,8 @@ export function offeredPresets(harness: string, catalogs: readonly Pick<ModelCat
 export type Asking =
   | { kind: 'native' }
   | { kind: 'sandbox' }
-  | { kind: 'run-agent'; env: string; extensionsOff: Readonly<Record<string, string>> }
-  | { kind: 'run-home'; env: string }
+  | { kind: 'run-agent'; env: string; extensionsOff: Readonly<Record<string, string>>; sourceReads?: Readonly<Record<string, 'ask'>> }
+  | { kind: 'run-home'; env: string; sourceReads?: 'unheld' }
   | { kind: 'unheld' };
 
 /** The boundary each worker applies when it offers this agent, from its manifest's `runner.asking`. */
@@ -367,3 +367,7 @@ export const HARNESS_ASKING: Readonly<Record<string, Asking>> = Object.fromEntri
 /** A worker offers only agents whose runs can be bounded. */
 export const canOfferHarness = (asking: Asking): boolean => asking.kind !== 'unheld';
 export const OFFERABLE_PROFILE_HARNESSES = Object.keys(HARNESS_ASKING).filter((id) => canOfferHarness(HARNESS_ASKING[id]!));
+
+/** A source harness must bound native reads independently of its ordinary auto-approval policy. */
+export const canReadSource = (asking: Asking | undefined): boolean => asking?.kind === 'native' || asking?.kind === 'sandbox'
+  || asking?.kind === 'run-agent' && ['read', 'glob', 'grep', 'list', 'external_directory'].every((tool) => asking.sourceReads?.[tool] === 'ask');

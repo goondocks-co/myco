@@ -24,11 +24,12 @@
  *   `<server>_<tool>` OpenCode gives an MCP tool.
  * Nothing else is in the grant.
  */
-import { existsSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { MycoCallNames } from '../harnesses.js';
 import { mycoToolNamed } from './acp-myco.js';
 import { grantsCall, SERVER_GRANT, SHELL_TOOL, type RunGrant } from './grant.js';
+import { sourceToolAllows } from './source-access.js';
 import { recordOf, stringOf } from './stream.js';
 
 /** The protocol's kind for a call it has no narrower kind for, which is the kind an MCP tool's call carries. */
@@ -82,19 +83,23 @@ export class ToolCalls {
 const present = (record: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined && value !== null));
 
-/** The physical path, where it exists. */
-const physical = (path: string): string => (existsSync(path) ? realpathSync(path) : path);
+/** A working directory must have a physical target. */
+const physical = (path: string): string => realpathSync(path);
 
 /** Whether every working directory a command's input names is inside the run's directory. */
 function runsInside(toolCall: Record<string, unknown>, runDir: string): boolean {
   const input = recordOf(toolCall.rawInput);
-  const root = physical(runDir);
-  return WORKING_DIRECTORY_FIELDS.every((field) => {
-    const named = stringOf(input?.[field]);
-    if (named === null) return true;
-    const path = relative(root, physical(resolve(root, named)));
-    return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-  });
+  try {
+    const root = physical(runDir);
+    return WORKING_DIRECTORY_FIELDS.every((field) => {
+      const named = stringOf(input?.[field]);
+      if (named === null) return true;
+      const path = relative(root, physical(resolve(root, named)));
+      return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a search call searches files for a pattern, rather than the web or a service for a query. */
@@ -107,11 +112,9 @@ function searchesFiles(toolCall: Record<string, unknown>): boolean {
 /** A call as the grant names it, or why it names nothing the grant can hold. */
 function grantCallOf(toolCall: Record<string, unknown>, tools: ReadonlySet<string>, runDir: string, mycoCalls: MycoCallNames | undefined): { tool: string; command: string | null } | { unnamed: string } {
   switch (stringOf(toolCall.kind) ?? UNKINDED) {
-    case 'read': return { tool: 'Read', command: null };
     case 'execute':
       if (!runsInside(toolCall, runDir)) return { unnamed: OUTSIDE_RUN_DIR };
       return { tool: SHELL_TOOL, command: stringOf(stringOf(recordOf(toolCall.rawInput)?.command)?.trim()) };
-    case 'search': return searchesFiles(toolCall) ? { tool: 'Grep', command: null } : { unnamed: OUTSIDE_GRANT };
     case UNKINDED: {
       const tool = mycoToolNamed(toolCall, tools, mycoCalls);
       return tool === null ? { unnamed: OUTSIDE_GRANT } : { tool: `${SERVER_GRANT}__${tool}`, command: null };
@@ -135,7 +138,7 @@ function optionOf(options: unknown, kind: string): string | null {
  * cancels the request when the agent offers none.
  */
 export function answerPermission(
-  grant: Pick<RunGrant, 'rules' | 'runDir'>,
+  grant: Pick<RunGrant, 'rules' | 'runDir' | 'source'>,
   tools: ReadonlySet<string>,
   sessionId: string | null,
   params: Record<string, unknown>,
@@ -144,6 +147,11 @@ export function answerPermission(
 ): { outcome: PermissionOutcome; refusal: string | null } {
   const refusal = ((): string | null => {
     if (sessionId === null || params.sessionId !== sessionId) return OUTSIDE_GRANT;
+    const kind = stringOf(toolCall.kind);
+    if (kind === 'read' || kind === 'search') {
+      if (grant.source === null || (kind === 'search' && !searchesFiles(toolCall)) || !sourceToolAllows(grant.source, kind === 'read' ? 'Read' : 'Search', recordOf(toolCall.rawInput) ?? {}, toolCall.locations)) return OUTSIDE_GRANT;
+      return optionOf(params.options, ALLOW_ONCE) === null ? NO_ALLOW_ONCE : null;
+    }
     const call = grantCallOf(toolCall, tools, grant.runDir, mycoCalls);
     if ('unnamed' in call) return call.unnamed;
     if (!grantsCall(grant.rules, call.tool, call.command)) return OUTSIDE_GRANT;

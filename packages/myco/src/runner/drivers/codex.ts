@@ -1,3 +1,4 @@
+import { sourceAccess } from './source-access.js';
 import { accountingEvents } from '../accounting.js';
 /**
  * Codex, driven natively.
@@ -21,9 +22,9 @@ import type { WorkerUsage } from '@goondocks/myco-shared/worker-usage';
 import { codexLaunchIdentity, codexSessionIdentity } from './codex-session.js';
 import { execFileSync } from 'node:child_process';
 import nodeFs from 'node:fs';
-const { existsSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } = nodeFs;
-import { homedir } from 'node:os';
-import { delimiter, dirname, join, sep } from 'node:path';
+const { existsSync, lstatSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } = nodeFs;
+import { homedir, tmpdir } from 'node:os';
+import { basename, delimiter, dirname, join, sep } from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { locate } from '../detect.js';
@@ -33,7 +34,7 @@ import { MCP_SERVER_NAME } from '../mcp-config.js';
 import { workerLogLine } from '../log.js';
 import { freshRunHome } from './run-home.js';
 import { confinedGitEnv } from './source-git.js';
-import { resolveMycoHome } from '../../paths/home.js';
+import { resolveHomeDir, resolveMycoHome } from '../../paths/home.js';
 import { jsonLines, numberOf, recordOf, startHarness, stringOf } from './stream.js';
 
 /** The table every MCP server this harness reads is declared under. */
@@ -177,18 +178,47 @@ export function activeDeveloperDir(runDir: string, probe: DeveloperDirProbe = SY
 /** The permission profile a run's commands run under, and the only one its configuration defines. */
 export const RUN_PERMISSIONS = 'myco_run';
 
+/** An intended path retains its physical existing ancestors; dangling links are refused. */
+function intendedPhysicalPath(path: string): string {
+  try { return realpathSync(path); } catch (error) {
+    if (recordOf(error)?.code !== 'ENOENT' || dirname(path) === path) throw error;
+    try { lstatSync(path); } catch (missing) {
+      if (recordOf(missing)?.code !== 'ENOENT') throw missing;
+      return join(intendedPhysicalPath(dirname(path)), basename(path));
+    }
+    throw error;
+  }
+}
+
+/** The executable and its physical runtime files, including npm's package beside a bin shim. */
+function installationReads(installed: string | null, run: string, home: string): Record<string, string> {
+  if (installed === null) return {};
+  const executable = realpathSync(installed);
+  const directory = dirname(executable);
+  const packageRoot = dirname(directory);
+  const manifest = join(packageRoot, 'package.json');
+  const packageInstall = existsSync(manifest) && recordOf(JSON.parse(readFileSync(manifest, 'utf8')))?.name === '@openai/codex';
+  const directories = [directory, ...(packageInstall ? [realpathSync(packageRoot)] : [])];
+  const protectedHomes = [...SYSTEM_DEVELOPER_DIR_PROBE.closed, home].map(intendedPhysicalPath);
+  const systemTemps = process.platform === 'win32' ? [] : ['/tmp', '/var/tmp'].filter(existsSync);
+  const ancestors = [resolveHomeDir(), run, home, tmpdir(), ...systemTemps].map((path) => realpathSync(path));
+  if (directories.some((dir) => dir === sep || ancestors.some((path) => within(path, dir))
+    || protectedHomes.some((path) => within(path, dir) || within(dir, path)))) throw new Error('Unsafe Codex installation directory');
+  return { [installed]: 'read', [executable]: 'read', [directory]: 'read', ...(packageInstall ? { [realpathSync(packageRoot)]: 'read' } : {}) };
+}
+
 /**
  * What a run's commands may touch, as the harness's sandbox holds them to it.
  *
  * This harness never asks before a call and the run's grant does not reach it,
  * so the sandbox is the run's whole bound: a command reads the system's own
- * minimal set and the run's directory, and writes nothing (a source run) or
+ * minimal set and the declared source inputs, and writes nothing (a source run) or
  * only the run's directory; the temporary directories every command could
  * otherwise read and write are closed. Within the run's directory, the run's
  * configuration home and its MCP configuration are closed as well: they hold
  * the run's credentials, which are the harness's to read and not its
- * commands'. The harness's own program is readable, in the directory PATH
- * finds it in and the one it is installed in, since the harness runs a helper
+ * commands'. The harness's own program is readable at the path PATH
+ * finds it at and its physical installed path, since the harness runs a helper
  * of its own inside the same sandbox, by the path PATH gave it, to read the
  * run's instructions. A source run on macOS reads the active developer
  * directory as well, since the system's `git` runs from it
@@ -196,15 +226,18 @@ export const RUN_PERMISSIONS = 'myco_run';
  * A command reaches no network. Paths are physical, since the sandbox judges
  * the path a file really has.
  */
+
 export function runFilesystem(spec: LaunchSpec, home: string, installed: string | null, developerDir: string | null): Record<string, string> {
   const source = spec.sourceReadOnly === true;
+  const inputs = source ? sourceAccess(spec.scratchDir) : null;
   return {
     ':minimal': 'read',
     ':slash_tmp': 'deny',
     ':tmpdir': 'deny',
-    ...(installed === null ? {} : { [dirname(installed)]: 'read', [dirname(realpathSync(installed))]: 'read' }),
+    ...installationReads(installed, spec.scratchDir, home),
     ...(source && developerDir !== null ? { [developerDir]: 'read' } : {}),
-    [realpathSync(spec.scratchDir)]: source ? 'read' : 'write',
+    [realpathSync(spec.scratchDir)]: source ? 'deny' : 'write',
+    ...(inputs === null ? {} : { [inputs.root]: 'read', ...Object.fromEntries(inputs.files.map((file) => [file, 'read'])) }),
     [realpathSync(home)]: 'deny',
     ...(spec.mcpConfigPath === undefined ? {} : { [realpathSync(spec.mcpConfigPath)]: 'deny' }),
   };

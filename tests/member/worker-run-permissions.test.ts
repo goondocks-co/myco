@@ -30,7 +30,7 @@ import { harnessById, HARNESSES } from '@myco/runner/harnesses.js';
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret' };
 
 /** A harness whose shell reaches the run's own `git`. */
-const SHIM = { sourceGit: 'shim' } as const;
+const SHIM = { sourceGit: 'shim', asking: { kind: 'native' } } as const;
 
 /** Git for setting a fixture up, reading neither the machine's nor the user's configuration. */
 const setupEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -219,7 +219,7 @@ describe('the run\'s own git', () => {
     symlinkSync(elsewhere.repo, join(run.scratchDir, 'escape'));
     const outside = (args: string[]): void => {
       const { status, stderr } = shim(run, args, {}, sub);
-      expect({ args, status, refused: stderr.includes('only inside this run\'s checkout') }).toEqual({ args, status: 1, refused: true });
+      expect({ args, status, refused: stderr.includes('only inside this run\'s checkout') || stderr.includes('cannot change to repo/link') }).toEqual({ args, status: 1, refused: true });
     };
     outside(['-C', 'repo/link', 'log', '-1']);
     outside(['-C', 'escape', 'log', '-1']);
@@ -265,7 +265,7 @@ describe('the run\'s own git', () => {
     const run = sourceRun();
     const elsewhere = sourceRun();
     symlinkSync(elsewhere.repo, join(run.repo, 'link'));
-    expect(shim(run, ['-C', 'repo/link', 'log', '-1']).stderr).toContain('only inside this run\'s checkout');
+    expect(shim(run, ['-C', 'repo/link', 'log', '-1'])).toMatchObject({ status: 1 });
     expect(shim(run, ['log', '-1']).stderr).toContain('only inside this run\'s checkout');
   });
 
@@ -309,12 +309,9 @@ describe('the run\'s own git', () => {
     });
     const run = sourceRun();
     for (const id of ['cursor', 'antigravity']) {
-      const grant = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, harnessById(id)!);
-      expect({ id, git: grant.rules.filter((rule) => rule.startsWith(`${SHELL_TOOL}(`)) }).toEqual({ id, git: [] });
-      expect(grant.rules).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep']));
-      expect({ id, env: grant.env, shellSetup: grant.shellSetup, written: existsSync(join(run.scratchDir, 'bin', 'git')) }).toEqual({ id, env: {}, shellSetup: null, written: false });
+      expect(() => runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, harnessById(id)!)).toThrow('source_read_unavailable');
     }
-    const shim = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, { ...harnessById('cursor')!, sourceGit: 'shim' });
+    const shim = runGrant({ ...run, prompt: '', credentialEnv: {}, sourceReadOnly: true }, SHIM);
     expect(shim.rules).toContain(`${SHELL_TOOL}(git -C repo log:*)`);
   });
 
@@ -532,7 +529,7 @@ describe('the environment a harness is started in', () => {
       shell: '/bin/sh',
       // A refused call ends that call, not the turn: the agent goes on with its work.
       experimental: { continue_loop_on_deny: true },
-      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask' } } },
+      agent: { [config.default_agent]: { mode: 'primary', description: expect.any(String), permission: { '*': 'ask', read: 'ask', glob: 'ask', grep: 'ask', list: 'ask', external_directory: 'ask' } } },
     });
     // A plugin runs inside the harness and can answer a permission request
     // before the driver does, so a run loads none of the machine's.

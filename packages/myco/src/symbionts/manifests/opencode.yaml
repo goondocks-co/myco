@@ -114,7 +114,7 @@ runner:
   order: 3
   # Its default configuration allows every tool without asking, and a plugin it loads can answer a permission request
   # before the driver does.
-  asking: { kind: run-agent, env: OPENCODE_CONFIG_CONTENT, extensionsOff: { OPENCODE_PURE: '1' } }
+  asking: { kind: run-agent, env: OPENCODE_CONFIG_CONTENT, extensionsOff: { OPENCODE_PURE: '1' }, sourceReads: { read: ask, glob: ask, grep: ask, list: ask, external_directory: ask } }
   credential:
     provider: anthropic
     slot: anthropic

@@ -80,8 +80,10 @@ while IFS= read -r line; do
   printf '{"jsonrpc":"2.0","id":%s,"result":%s}\\n' "$id" "$result"
 done`;
     }
-    writeFileSync(join(root, harness.binary), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
-    process.env.PATH = `${root}:${path ?? ''}`;
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, harness.binary), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    process.env.PATH = `${bin}:${path ?? ''}`;
     let report: Record<string, unknown> | undefined;
     const features = [EXECUTION_PROFILE_FEATURE, ...(options.features === null ? [] : (options.features ?? 'turn,worker-accounting-v1').split(','))].join(',');
     const fetchImpl = (async (_url: unknown, init?: RequestInit) => {

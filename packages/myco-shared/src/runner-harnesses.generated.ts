@@ -127,6 +127,13 @@ export const RUNNER_HARNESSES = [
       "env": "OPENCODE_CONFIG_CONTENT",
       "extensionsOff": {
         "OPENCODE_PURE": "1"
+      },
+      "sourceReads": {
+        "read": "ask",
+        "glob": "ask",
+        "grep": "ask",
+        "list": "ask",
+        "external_directory": "ask"
       }
     },
     "credential": {
@@ -196,7 +203,8 @@ export const RUNNER_HARNESSES = [
     "name": "Cursor",
     "asking": {
       "kind": "run-home",
-      "env": "CURSOR_CONFIG_DIR"
+      "env": "CURSOR_CONFIG_DIR",
+      "sourceReads": "unheld"
     },
     "credential": {
       "provider": "anthropic",

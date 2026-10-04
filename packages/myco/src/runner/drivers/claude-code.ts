@@ -1,3 +1,5 @@
+import { sourceToolAllows } from './source-access.js';
+import { startClaudeSource } from './claude-source-permission.js';
 import { ClaudeAccounting } from './claude-accounting.js';
 /**
  * Claude Code, driven natively.
@@ -92,12 +94,12 @@ const shapeOf = (line: Record<string, unknown>): string => {
 const callOf = (id: string | null): { callId?: string } => (id === null ? {} : { callId: id });
 
 /** The calls a turn's result says were refused: the tool each named, and its call id where it carries one. */
-function refusalsOf(result: Record<string, unknown>): { tool: string; id: string | null }[] {
+function refusalsOf(result: Record<string, unknown>): { tool: string; id: string | null; input: Record<string, unknown> | null }[] {
   const denials = Array.isArray(result.permission_denials) ? result.permission_denials : [];
   return denials.flatMap((d) => {
     const denial = recordOf(d);
     const tool = stringOf(denial?.tool_name);
-    return tool === null ? [] : [{ tool, id: stringOf(denial?.tool_use_id) }];
+    return tool === null ? [] : [{ tool, id: stringOf(denial?.tool_use_id), input: recordOf(denial?.tool_input) }];
   });
 }
 
@@ -118,10 +120,12 @@ export const claudeCodeDriver: Driver = {
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
-    const { rules: grant, env, shellSetup } = runGrant(spec, harness);
+    const permissions = runGrant(spec, harness);
+    const { rules: grant, env, shellSetup } = permissions;
     const launch = claudeLaunch(spec);
     const omitInherited = launch.omitInherited;
-    const started = startHarness(harness.binary, [
+    const harnessEnv = { ...launch.env, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) };
+    const started = permissions.source === null ? startHarness(harness.binary, [
       '-p', spec.prompt,
       ...(spec.profile === undefined ? [] : ['--model', spec.profile.model, ...(spec.profile.effort === null ? [] : ['--effort', spec.profile.effort])]),
       '--setting-sources', 'project,local',
@@ -132,7 +136,7 @@ export const claudeCodeDriver: Driver = {
       ...isolation,
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
-    ], { cwd: spec.scratchDir, env: { ...launch.env, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) }, signal, omitInherited });
+    ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);
 
     const accountingEnv = launchEnvironment({ ...launch.env, ...env }, omitInherited);
     const accounting = new ClaudeAccounting(harness, accountingEnv);
@@ -193,14 +197,13 @@ export const claudeCodeDriver: Driver = {
         // A refused call outside the grant is the harness keeping the run to
         // its tools, and is reported as that call's failure. A refusal of a
         // granted tool is the run kept from its own work, and ends the run.
-        // The harness refuses a call of a tool held only by scoped rules when
-        // the call is outside every one of them, so only a tool granted whole
-        // is judged granted here.
+        // File calls are classified by their physical targets; shell rules
+        // leave argument refusals to the run's Git boundary.
         const refusals = refusalsOf(line);
         for (const { tool, id } of refusals) {
           if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error', refused: true, ...callOf(id) };
         }
-        const refused = refusals.filter(({ tool }) => grantsWhole(grant, tool)).map(({ tool }) => tool);
+        const refused = refusals.filter(({ tool, input }) => grantsWhole(grant, tool) || (permissions.source !== null && sourceToolAllows(permissions.source, tool, input ?? {}))).map(({ tool }) => tool);
         if (refused.length > 0) {
           const names = [...new Set(refused)];
           yield { kind: 'ended', stop: 'error', detail: `permission refused for ${names.join(', ')}`, code: 'permission_refused', names };
