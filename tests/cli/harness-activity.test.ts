@@ -107,28 +107,29 @@ it('shared databases, caches, project metadata and session auxiliary files are n
 it.skipIf(process.platform === 'win32')('OpenCode listings and runs get private data/cache/state through the same launch path', async () => {
   const bin = path.join(home, 'bin');
   fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'opencode'), `#!/bin/sh\nmkdir -p "$XDG_DATA_HOME/opencode/storage/session/global" "$XDG_CACHE_HOME/opencode" "$XDG_STATE_HOME/opencode"\nprintf '{}' > "$XDG_DATA_HOME/opencode/opencode.db"\nprintf '{}' > "$XDG_DATA_HOME/opencode/storage/session/global/listing.json"\nprintf '%s\\n' openrouter/model\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'opencode'), `#!/bin/sh\nlisting_data="\${XDG_DATA_HOME:-$HOME/.local/share}"\nlisting_cache="\${XDG_CACHE_HOME:-$HOME/.cache}"\nlisting_state="\${XDG_STATE_HOME:-$HOME/.local/state}"\nmkdir -p "$listing_data/opencode/storage/session/global" "$listing_cache/opencode" "$listing_state/opencode"\nprintf '{}' > "$listing_data/opencode/opencode.db"\nprintf '{}' > "$listing_data/opencode/storage/session/global/listing.json"\nprintf '%s\\n' openrouter/model\n`, { mode: 0o755 });
   process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
   const manifest = loadManifests().find((m) => m.name === 'opencode')!;
+  const old = Date.now() - 2 * 24 * 60 * 60_000;
   const legacyUser = recordPath(recordLocations(manifest)[0]!, USER);
-  touch(legacyUser, OLD);
+  touch(legacyUser, old);
   const runs = path.join(home, 'runs');
   expect(await listHarnessModels('opencode', runs, new AbortController().signal)).toMatchObject({ ok: true });
   expect(fs.readdirSync(runs)).toEqual([]);
-  expect(harnessRanAt(manifest, mycoHome)).toBe(OLD);
+  expect(harnessRanAt(manifest, mycoHome)).toBe(old);
   process.env.XDG_DATA_HOME = path.join(home, 'custom-data');
   const login = path.join(home, '.local', 'share', 'opencode', 'auth.json');
-  touch(login, OLD);
+  touch(login, old);
   const launch = driverFor('opencode')!.launch({ scratchDir: runs, credentialEnv: {} });
   expect(launch.env.XDG_DATA_HOME).not.toBe(process.env.XDG_DATA_HOME);
   expect(fs.readlinkSync(path.join(launch.env.XDG_DATA_HOME!, 'opencode', 'auth.json'))).toBe(login);
   for (const key of ['XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) expect(launch.env[key]).toStartWith(runs);
   const customLogin = path.join(home, 'custom-login.json');
-  touch(customLogin, OLD);
+  touch(customLogin, old);
   const custom = opencodeLaunchHome(runs, { ...harnessById('opencode')!, credential: { kind: 'file', path: customLogin, requires: [] } });
   expect(fs.readlinkSync(path.join(custom.XDG_DATA_HOME!, 'opencode', 'auth.json'))).toBe(customLogin);
   touch(path.join(launch.env.XDG_DATA_HOME!, 'opencode', 'storage', 'session', 'global', `${WORKER}.json`), NOW);
-  expect(harnessRanAt(manifest, mycoHome)).toBe(OLD);
+  expect(harnessRanAt(manifest, mycoHome)).toBe(old);
 });
 
 it.skipIf(process.platform === 'win32')('the registered worker driver records its session before the caller receives it', async () => {
