@@ -6,7 +6,7 @@ const REGISTRY_NAME = '.test-processes';
 const PROCESS_QUERY_TIMEOUT_MS = 15_000;
 const PROCESS_EXIT_TIMEOUT_MS = 10_000;
 
-function windowsProcess(pid, action = '$p.StartTime.ToUniversalTime().Ticks.ToString()') {
+function windowsProcess(pid, action = '$p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()') {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('Test process PID must be positive');
   const command = `$ErrorActionPreference = 'Stop'; try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}) } catch [System.ArgumentException] { exit 0 }; try { $null = $p.Handle; ${action} } finally { $p.Dispose() }`;
   const result = spawnSync(process.env.MYCO_TEST_PWSH_EXECUTABLE ?? 'pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: PROCESS_QUERY_TIMEOUT_MS });
@@ -21,13 +21,21 @@ function windowsIdentity(pid) {
   return identity || null;
 }
 
+let identityReader = windowsIdentity;
+
+export function useTestProcessIdentityReader(reader) {
+  const previous = identityReader;
+  identityReader = reader ?? windowsIdentity;
+  return () => { identityReader = previous; };
+}
+
 // Registration either records the live child or stops that child before failing.
 export function registerTestProcess(child, root = process.env.MYCO_TEST_RUN_ROOT) {
   if (process.platform !== 'win32' || !child.pid) return;
   const pid = child.pid;
   try {
     if (!root) throw new Error('Test process registration requires a run root');
-    const identity = windowsIdentity(pid);
+    const identity = identityReader(pid);
     if (identity === null) {
       try { process.kill(pid, 0); }
       catch (error) { if (error.code === 'ESRCH') return; throw error; }
@@ -57,7 +65,7 @@ export function stopRegisteredTestProcesses(root = process.env.MYCO_TEST_RUN_ROO
         const record = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
         if (!/^\d+$/.test(record.identity)) throw new Error('Invalid registered Windows process identity');
         // Handle acquisition precedes identity validation and termination.
-        windowsProcess(record.pid, `if ($p.StartTime.ToUniversalTime().Ticks.ToString() -eq '${record.identity}') { $p.Kill($true); if (!$p.WaitForExit(${PROCESS_EXIT_TIMEOUT_MS})) { throw 'Test process did not exit' } }`);
+        windowsProcess(record.pid, `if ($p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -eq '${record.identity}') { $p.Kill($true); if (!$p.WaitForExit(${PROCESS_EXIT_TIMEOUT_MS})) { throw 'Test process did not exit' } }`);
       } catch (error) { errors.push(error); }
     }
     if (errors.length) throw new AggregateError(errors, 'Windows test process cleanup failed');

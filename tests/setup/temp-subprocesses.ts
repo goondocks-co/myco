@@ -1,4 +1,5 @@
 import { TEST_TEMP_ROOT } from './temp-root.js';
+import './windows-process-identity.js';
 import path from 'node:path';
 import { registerTestProcess } from '../../scripts/test-process-tree.mjs';
 

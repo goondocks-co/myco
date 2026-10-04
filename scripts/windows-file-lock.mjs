@@ -39,7 +39,11 @@ public static class MycoTestFileLock {
     } finally { Check(RmEndSession(session)); }
   }
 }
-'@; [MycoTestFileLock]::Owners(${literal}) | ForEach-Object { 'PID=' + $_.process.pid + ' app=' + $_.app };`;
+'@; [MycoTestFileLock]::Owners(${literal}) | ForEach-Object {
+  $owner = [System.Diagnostics.Process]::GetProcessById($_.process.pid);
+  try { 'PID=' + $_.process.pid + ' app=' + $_.app + ' name=' + $owner.ProcessName + ' executable=' + $owner.MainModule.FileName + ' started=' + $owner.StartTime.ToUniversalTime().ToString('o') }
+  finally { $owner.Dispose() }
+};`;
   const result = spawnSync(process.env.MYCO_TEST_PWSH_EXECUTABLE ?? 'pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: 15_000 });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`File-lock inspection failed: ${result.stderr}`);

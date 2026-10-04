@@ -4,11 +4,29 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { useTestProcessIdentityReader } from '../../scripts/test-process-tree.mjs';
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-command-gate-'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
 describe('non-Bun test command temp boundary', () => {
+  it.skipIf(process.platform !== 'win32')('registers test children natively and catches removal of the native reader', async () => {
+    const saved = process.env.MYCO_TEST_PWSH_EXECUTABLE;
+    process.env.MYCO_TEST_PWSH_EXECUTABLE = path.join(scratch, 'missing-pwsh.exe');
+    let child;
+    try {
+      child = Bun.spawn([process.execPath, '-e', 'setTimeout(()=>{},60000)'], { stdout: 'ignore', stderr: 'ignore' });
+      const record = JSON.parse(fs.readFileSync(path.join(process.env.MYCO_TEST_RUN_ROOT!, '.test-processes', `${child.pid}.json`), 'utf8')) as { identity: string };
+      expect(record.identity).toMatch(/^\d+$/);
+      const restore = useTestProcessIdentityReader();
+      try { expect(() => Bun.spawn([process.execPath, '-e', 'setTimeout(()=>{},60000)'], { stdout: 'ignore', stderr: 'ignore' })).toThrow(); }
+      finally { restore(); }
+    } finally {
+      if (child) { child.kill(9); await child.exited; }
+      if (saved === undefined) delete process.env.MYCO_TEST_PWSH_EXECUTABLE;
+      else process.env.MYCO_TEST_PWSH_EXECUTABLE = saved;
+    }
+  });
   it.skipIf(process.platform !== 'win32')('waits for a Windows file lock and rejects the shorter cleanup budget mutation', async () => {
     for (const mutation of [false, true]) {
       const parent = fs.mkdtempSync(path.join(scratch, 'locked-root-'));
