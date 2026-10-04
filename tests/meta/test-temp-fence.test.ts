@@ -136,16 +136,22 @@ describe('process-owned test temp fence', () => {
     expect(() => fs.mkdirSync(nested, { recursive: true })).toThrow('outside the run root');
     await expect(Promise.resolve().then(() => Bun.write(nested, 'blocked'))).rejects.toThrow('outside the run root');
     const existing = path.join(enclosing, 'myco-existing');
+    const runnerReports = path.join(system, 'mt-existing');
     fence.dispose();
     fs.mkdirSync(existing);
+    fs.mkdirSync(runnerReports);
     const restored = installTestTempFence(root, [system]);
     try {
-      const report = path.join(existing, 'report');
-      fs.writeFileSync(report, 'allowed');
-      expect(fs.readFileSync(report, 'utf8')).toBe('allowed');
+      for (const directory of [existing, runnerReports]) {
+        const report = path.join(directory, 'report');
+        fs.writeFileSync(report, 'allowed');
+        expect(fs.readFileSync(report, 'utf8')).toBe('allowed');
+        expect(() => fs.mkdirSync(path.join(directory, 'myco-new'))).toThrow('outside the run root');
+      }
     } finally {
       restored.dispose();
       fs.rmSync(enclosing, { recursive: true, force: true });
+      fs.rmSync(runnerReports, { recursive: true, force: true });
     }
   });
 });

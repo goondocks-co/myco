@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
       - run: npm run lint
-      - run: node scripts/check-test-shards.mjs
+      - run: node scripts/run-test-command.mjs node scripts/check-test-shards.mjs
 
   build:
     runs-on: ubuntu-latest

@@ -51,9 +51,8 @@ import { recallGold } from './scenarios/recall-gold.ts';
 import { embeddingSwitch } from './scenarios/embedding-switch.ts';
 import { modelCatalogs } from './scenarios/model-catalogs.ts';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
-import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
+import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
-import { writeFileSync } from "../support/fenced-fs.mjs";
 
 const scenarios = [restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
@@ -63,8 +62,8 @@ if (!process.env.MYCO_PARITY) {
 } else {
   const weights: Record<string, number> = durations.parity;
   const selected = selectShard(scenarios, parseShard(process.env.MYCO_PARITY_SHARD), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
-  if (process.env.MYCO_PARITY_PLAN_FILE) {
-    writeFileSync(process.env.MYCO_PARITY_PLAN_FILE, JSON.stringify(selected.map((scenario) => scenario.name)));
+  if (process.env.MYCO_PARITY_PLAN === '1') {
+    console.log(PARITY_PLAN_PREFIX + JSON.stringify(selected.map((scenario) => scenario.name)));
     test.skip('parity shard manifest', () => {});
   } else {
     // A self-hosted scenario that queries vectors loads sqlite-vec, which needs an extension-enabled SQLite registered

@@ -75,7 +75,7 @@ function offending(p: unknown, includesParents = false): FenceHit | null {
         if (!within(target, dir)) continue;
         const names = path.relative(dir, target).split(path.sep);
         for (const [index, name] of names.entries()) {
-          if (TEST_TEMP_NAME.test(name) && (index === 0 || index === names.length - 1
+          if (TEST_TEMP_NAME.test(name) && (index === names.length - 1
             || !originalExists(path.join(dir, ...names.slice(0, index + 1))))) {
             return { path: s, boundary: 'temp' };
           }

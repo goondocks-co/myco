@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
+import { PARITY_PLAN_PREFIX } from './test-shards.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflow = parse(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
@@ -13,12 +14,17 @@ const manifestPath = path.join(scratch, 'manifest.json');
 const baseEnv = { ...process.env };
 for (const key of ['MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD']) delete baseEnv[key];
 
-function manifest(command, env) {
+function manifest(command, env, outputPrefix) {
   fs.rmSync(manifestPath, { force: true });
   const result = spawnSync(command[0], command.slice(1), {
     cwd: root, env: { ...baseEnv, ...env }, encoding: 'utf8', timeout: 60_000,
   });
   assert.equal(result.status, 0, `${command.join(' ')}\n${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);
+  if (outputPrefix) {
+    const line = result.stdout.split('\n').find((line) => line.startsWith(outputPrefix));
+    assert.ok(line, `Missing shard manifest from ${command.join(' ')}`);
+    return JSON.parse(line.slice(outputPrefix.length));
+  }
   return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 }
 
@@ -29,9 +35,9 @@ function testPlan(env = {}) {
 }
 
 function parityPlan(env = {}) {
-  return manifest(['bun', 'test', 'tests/parity/parity.test.ts'], {
-    MYCO_PARITY: '1', MYCO_PARITY_PLAN_FILE: manifestPath, ...env,
-  });
+  return manifest(['node', 'scripts/run-bun-tests.mjs', 'tests/parity/parity.test.ts'], {
+    MYCO_PARITY: '1', MYCO_PARITY_PLAN: '1', ...env,
+  }, PARITY_PLAN_PREFIX);
 }
 
 function exactlyOnce(actual, expected, label) {

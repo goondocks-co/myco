@@ -43,6 +43,10 @@ describe('test temp boundary', () => {
     }
     const ci = fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
     expect(ci).not.toMatch(/\bbun test\b/);
+    expect(ci).toContain('node scripts/run-test-command.mjs node scripts/check-test-shards.mjs');
+    const audit = fs.readFileSync(new URL('../../scripts/check-test-shards.mjs', import.meta.url), 'utf8');
+    expect(audit).not.toMatch(/\['bun', 'test'/);
+    expect(audit).toContain("['node', 'scripts/run-bun-tests.mjs', 'tests/parity/parity.test.ts']");
     expect(ci).toContain('PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright-browsers');
     expect(ci).toContain('path: target/playwright-browsers');
     const runner = fs.readFileSync(new URL('../../scripts/run-bun-tests.mjs', import.meta.url), 'utf8');

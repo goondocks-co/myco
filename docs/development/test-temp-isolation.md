@@ -9,6 +9,8 @@ tests. CI installs and caches Chromium at `target/playwright-browsers` with
 that explicit setting; browser lookup does not depend on the sandbox home.
 The retained `tests/setup/vitest.ts` is loaded by the Bun jsdom setup; there
 is no separate active Vitest runner in this checkout.
+CI shard discovery uses the command wrapper; parity manifests return on
+stdout through the Bun runner rather than writing into another run's root.
 
 The runner creates one `mt-*` root before starting any test runtime. Its
 preloads establish a fallback root before sandbox creation for direct test
@@ -22,9 +24,9 @@ load, using system directories captured by the runner before it changes
 `TMPDIR`. Its shared fs/Bun mutation guard refuses creating `myco-*` and `mt-*`
 entries under a system temp directory outside that process's run root,
 including recursive parent creation and symlink aliases. Existing enclosing
-scratch directories can hold explicitly addressed report files. Mutations
-within matching entries directly below a system temp directory are also
-blocked. The exception identifies the API, path and caller stack.
+scratch directories, including enclosing runner roots, can hold explicitly
+addressed ordinary report files. Matching leaf entries and missing matching
+parents remain blocked. The exception identifies the API, path and caller stack.
 Standalone native-lock test children install the same guard.
 Native per-user lock tests inject the existing lock namespace; the preload
 fences the fixed POSIX native lock root. Native path assertions verify a
