@@ -130,8 +130,8 @@ describe('worker repository checkout over the Deployment wire', () => {
         expect(observed.rules).toContain('# Myco seeding run');
         // A seeding run grounds nothing in digests, so its checkout hashes nothing.
         expect(observed.listing).toBeNull();
-        expect(observed.args).toContain('Bash(git -C repo log:*)');
         const args = observed.args as string[];
+        expect(args[args.indexOf('--allowedTools') + 1]!.split(',')).toContain('Bash(git -C repo log:*)');
         expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'sonnet']);
         expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual(['--effort', 'medium']);
         expect(JSON.stringify(observed)).not.toContain(GIT_READ_CREDENTIAL.token);
