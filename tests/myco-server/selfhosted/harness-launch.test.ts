@@ -1,3 +1,5 @@
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 /**
  * The self-hosted launch seam, end to end and in one process.
  *
@@ -84,12 +86,8 @@ async function boot(): Promise<Seam> {
   await linkStatement(db, MEMBER_ID, GITHUB_SUB).run();
   await issueMemberToken(db, { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());
   const now = Date.now();
-  for (const [leaf, value] of [
-    ['agent.provider.type', 'openai-compatible'],
-    ['agent.provider.model', 'seam-model'],
-    ['agent.provider.base_url', 'http://models.internal/v1'],
-  ] as const) sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)`)
-    .run(leaf, JSON.stringify(value), now, MEMBER_ID);
+  const wrappingText = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+  await deploymentSecretStore(db, wrappingKeyFromText(async () => wrappingText, 'seam')).put('anthropic', 'sk-ant-oat-seam-test-token', MEMBER_ID, now);
   sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, ?)`)
     .run(PROJECT_ID, now, MEMBER_ID);
   sqlite.close();
@@ -135,7 +133,7 @@ async function boot(): Promise<Seam> {
     sourceFrom: 'socket',
     wakeLoop: false,
     SESSION_SECRET,
-    SECRET_WRAP_KEY: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))),
+    SECRET_WRAP_KEY: wrappingText,
     GITHUB_CLIENT_ID: 'seam-client',
     GITHUB_CLIENT_SECRET: 'seam-secret',
   });

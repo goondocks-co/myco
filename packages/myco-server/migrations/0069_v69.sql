@@ -8,10 +8,13 @@ ALTER TABLE machine_claims ADD COLUMN settings_cached_values TEXT;
 
 ALTER TABLE machine_claims ADD COLUMN settings_report_order INTEGER NOT NULL DEFAULT -1;
 
+ALTER TABLE machine_claims ADD COLUMN settings_contract_supported INTEGER NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS machine_settings_snapshots (
      machine_id TEXT NOT NULL REFERENCES machine_claims(machine_id) ON DELETE CASCADE,
      revision TEXT NOT NULL,
      leaves TEXT NOT NULL,
+     sent_order INTEGER NOT NULL,
      PRIMARY KEY (machine_id, revision));
 
 CREATE TRIGGER IF NOT EXISTS machine_settings_insert_revision AFTER INSERT ON machine_settings BEGIN

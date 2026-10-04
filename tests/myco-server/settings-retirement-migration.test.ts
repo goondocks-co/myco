@@ -7,11 +7,10 @@ import { applySchemaSteps } from './helpers/migrate.js';
 
 const step68 = SCHEMA_STEPS.find((step) => step.version === 68)!;
 const retained = [
-  ['agent.provider.type', 'anthropic'],
-  ['agent.provider.model', 'claude-sonnet'],
-  ['agent.provider.base_url', null],
   ['instructions.template', '# Keep'],
 ] as const;
+const retiredValue = (leaf: string, index: number): unknown => leaf === 'agent.provider.type' ? 'anthropic'
+  : leaf === 'agent.provider.model' ? '' : leaf === 'agent.provider.base_url' ? null : { original: leaf, index };
 
 function beforeRetirement(): Database {
   const sqlite = new Database(':memory:');
@@ -20,7 +19,7 @@ function beforeRetirement(): Database {
   }
   for (const [index, leaf] of V68_RETIRED_SETTINGS.entries()) {
     sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)`)
-      .run(leaf, JSON.stringify({ original: leaf, index }), index + 1, `mem_${index}`);
+      .run(leaf, JSON.stringify(retiredValue(leaf, index)), index + 1, `mem_${index}`);
   }
   for (const [leaf, value] of retained) {
     sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 100, 'mem_live')`)
@@ -42,10 +41,11 @@ describe('Deployment setting retirement', () => {
     const d1 = beforeRetirement();
     const native = beforeRetirement();
     try {
-      const original = d1.query(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings WHERE leaf NOT IN ('agent.provider.type', 'agent.provider.model', 'agent.provider.base_url', 'instructions.template') ORDER BY leaf`).all() as Array<{
+      const original = d1.query(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings WHERE leaf != 'instructions.template' ORDER BY leaf`).all() as Array<{
         leaf: string; value: string; updated_at: number; updated_by: string;
       }>;
       expect(original).toHaveLength(V68_RETIRED_SETTINGS.length);
+      expect(V68_RETIRED_SETTINGS).toEqual(expect.arrayContaining(['agent.provider.type', 'agent.provider.model', 'agent.provider.base_url']));
 
       expect(await applySchemaSteps(sqliteD1(d1), [step68])).toEqual([68]);
       native.exec('BEGIN IMMEDIATE');

@@ -104,6 +104,11 @@ export function useSettingsActions() {
       mutationFn: (v: { leaf: string }) => deleteJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}`),
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
+    repairDocument: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { leaf: string }) => postJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}/repair`, {}),
+      onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
+    }),
     setEmbedding: useMutation({
       gcTime: 0,
       mutationFn: (v: { provider: string; model?: string; endpoint?: string }) => putJson<{ applied: true }>('/api/embedding', v),

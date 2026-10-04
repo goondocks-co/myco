@@ -43,7 +43,7 @@ describe('POST /api/harness/dispatch', () => {
   it('admits ad-hoc work with no automatic budget and keeps normal concurrency limits', async () => {
     const { env, sqlite, db } = setup();
     seedProvider(sqlite, {
-      'agent.provider.type': 'openai-compatible', 'agent.provider.model': 'm', 'agent.provider.base_url': 'http://models.internal/v1',
+      'agent.reasoning_map.claude-code.default': 'claude-opus-5',
       'agent.tasks': { 'container-smoke': { schedule: { maxRunsPerDay: 0 } } },
       'agent.limits.concurrent_runs': 1,
     });
@@ -59,7 +59,7 @@ describe('POST /api/harness/dispatch', () => {
 
   it('launches with the whole dispatch as environment: a minted member credential that actually claims, the subscription token under its own variable, and the provider config', async () => {
     const { env, sqlite, db } = setup();
-    seedProvider(sqlite, { 'agent.provider.type': 'anthropic', 'agent.provider.model': 'claude-opus-5' });
+    seedProvider(sqlite, { 'agent.reasoning_map.claude-code.default': 'claude-opus-5' });
     await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
 
     // The environment is read off the dispatcher: no target hands a runtime to
@@ -103,7 +103,7 @@ describe('POST /api/harness/dispatch', () => {
 
   it('ensures the runtime agent row on dispatch, and never edits one an owner registered', async () => {
     const { env, sqlite, db } = setup();
-    seedProvider(sqlite, { 'agent.provider.type': 'anthropic', 'agent.provider.model': 'claude-opus-5' });
+    seedProvider(sqlite, { 'agent.reasoning_map.claude-code.default': 'claude-opus-5' });
     await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
     const bound = { ...env, HARNESS_LAUNCH_MODE: 'record' };
 

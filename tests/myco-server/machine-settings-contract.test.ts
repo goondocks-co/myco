@@ -4,7 +4,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { DEPLOYMENT_TARGETS, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, parseMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
-import { MACHINE_LEAF_SPECS, type MachineLeaf } from '@myco-server-worker/core/machine-settings.js';
+import { MACHINE_LEAF_SPECS, MACHINE_SETTINGS_SNAPSHOT_LIMIT, type MachineLeaf } from '@myco-server-worker/core/machine-settings.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -101,7 +101,7 @@ describe('machine settings effective contract', () => {
         r.sqlite.run(`UPDATE machine_settings SET value = ? WHERE machine_id = 'machine_1' AND leaf = ?`, [JSON.stringify(behavior.invalid), leaf]);
         const invalid = await row();
         expect(invalid).toMatchObject({ stored: behavior.invalid, state: 'invalid', nextSource: 'invalid', storedApplies: false });
-        expect(invalid.reason).toContain('Clear the stored value');
+        expect(invalid.reason).toContain(MACHINE_LEAF_SPECS[leaf]!.serverWritten ? 'Remove entries that no longer apply' : 'Clear the stored value');
         if (MACHINE_LEAF_SPECS[leaf]!.serverWritten) expect(invalid.reason).toContain('Valid connections are kept');
         await r.sync();
         await r.sync();
@@ -119,6 +119,61 @@ describe('machine settings effective contract', () => {
       });
     }
 
+    it(`${target}: bounds snapshots per machine while retaining the latest delivered revisions`, async () => {
+      const r = await rig(target);
+      r.sqlite.run(`INSERT INTO machine_claims(machine_id, member_id, claimed_at) VALUES ('machine_other', 'mem_machine_1', 1)`);
+      r.sqlite.run(`INSERT INTO machine_settings_snapshots(machine_id, revision, leaves, sent_order) VALUES ('machine_other', 'other', '{}', 1)`);
+      const revisions: string[] = [];
+      for (let index = 0; index < MACHINE_SETTINGS_SNAPSHOT_LIMIT + 3; index += 1) {
+        expect((await r.set('capture.plan_dirs', [`plans/${index}`])).status).toBe(200);
+        const response = await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE }));
+        expect(response.status).toBe(200);
+        revisions.push((await response.json() as { machine: { revision: string } }).machine.revision);
+      }
+      const retained = r.sqlite.query(`SELECT revision FROM machine_settings_snapshots WHERE machine_id = 'machine_1' ORDER BY sent_order`).all() as Array<{ revision: string }>;
+      expect(retained.map((row) => row.revision)).toEqual(revisions.slice(-MACHINE_SETTINGS_SNAPSHOT_LIMIT));
+      expect(r.sqlite.query(`SELECT COUNT(*) AS count FROM machine_settings_snapshots WHERE machine_id = 'machine_other'`).get()).toEqual({ count: 1 });
+      const report = async (revision: string, order: number) => r.request(memberPost(r.token, {}, '/members/settings', {
+        [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE, [MACHINE_SETTINGS_REVISION_HEADER]: revision, [MACHINE_SETTINGS_ORDER_HEADER]: String(order),
+      }));
+      expect((await report(revisions.at(-1)!, 1)).status).toBe(200);
+      expect((await r.rows())[0]!.application).toBe('applied');
+      expect((await report(revisions[0]!, 2)).status).toBe(200);
+      expect((await r.rows())[0]!.application).toBe('unreported');
+      expect((await report(revisions.at(-1)!, 3)).status).toBe(200);
+      expect((await r.rows())[0]!.application).toBe('applied');
+    });
+
+    it(`${target}: retains confirmed cached values after their sent snapshot is pruned`, async () => {
+      const r = await rig(target);
+      expect((await r.set('capture.plan_dirs', ['confirmed/plans'])).status).toBe(200);
+      await r.sync();
+      await r.sync();
+      const confirmed = (await r.rows()).find((row) => row.leaf === 'capture.plan_dirs')!;
+      for (let index = 0; index <= MACHINE_SETTINGS_SNAPSHOT_LIMIT; index += 1) {
+        expect((await r.set('capture.plan_dirs', [`changed/${index}`])).status).toBe(200);
+        expect((await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE }))).status).toBe(200);
+      }
+      expect(r.sqlite.query(`SELECT COUNT(*) AS count FROM machine_settings_snapshots WHERE machine_id = 'machine_1' AND revision = ?`).get(confirmed.appliedRevision)).toEqual({ count: 0 });
+      expect((await r.request(memberPost(r.token, {}, '/members/settings', machineSettingsHeaders('https://s', r.home)))).status).toBe(200);
+      const reported = (await r.rows()).find((row) => row.leaf === 'capture.plan_dirs')!;
+      expect(reported).toMatchObject({ application: 'pending', appliedRevision: confirmed.appliedRevision, storedApplies: false });
+      expect(reported.effective).toEqual(machinePlanDirs('https://s', r.home));
+    });
+
+    it(`${target}: explains a member without revision support without promising a future report`, async () => {
+      const r = await rig(target);
+      expect((await r.request(memberPost(r.token, {}, '/members/settings'))).status).toBe(200);
+      for (const row of await r.rows()) {
+        expect(row.application).toBe('unreported');
+        expect(row.reason).toBe('Applies at the next session start. This machine’s Myco doesn’t report when it applied.');
+      }
+      await r.sync();
+      expect((await r.rows())[0]!.reason).toContain('not confirmed');
+      await r.sync();
+      expect((await r.rows())[0]!.application).toBe('applied');
+    });
+
     it(`${target}: negotiates the contract both ways and never confirms a revision a machine was not served`, async () => {
       const r = await rig(target);
       const legacy = await r.request(memberPost(r.token, {}, '/members/settings'));
@@ -130,7 +185,10 @@ describe('machine settings effective contract', () => {
       const revision = (await r.rows())[0]!.revision;
       await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_REVISION_HEADER]: revision }));
       expect((await r.rows())[0]!.application).toBe('unreported');
-      await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE, [MACHINE_SETTINGS_REVISION_HEADER]: `m999-${'f'.repeat(64)}`, [MACHINE_SETTINGS_ORDER_HEADER]: '1' }));
+      const unknownOrder = Number(machineSettingsHeaders('https://s', r.home)[MACHINE_SETTINGS_ORDER_HEADER]) + 1;
+      await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE, [MACHINE_SETTINGS_REVISION_HEADER]: `m999-${'f'.repeat(64)}`, [MACHINE_SETTINGS_ORDER_HEADER]: String(unknownOrder) }));
+      expect((await r.rows())[0]!.application).toBe('unreported');
+      await r.sync();
       expect((await r.rows())[0]!.application).toBe('unreported');
       await r.sync();
       expect((await r.rows())[0]!.application).toBe('applied');

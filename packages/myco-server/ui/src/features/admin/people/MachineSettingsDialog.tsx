@@ -7,6 +7,7 @@ import type { EffectiveSetting } from '@goondocks/myco-shared/settings-contract'
 import { X } from 'lucide-react';
 import { useMemberNames } from '../members';
 import { ago } from '../../today/words';
+import { StoredValue } from '../StoredValue';
 
 /** The extra folders a machine's agents write plans to. */
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
@@ -111,13 +112,14 @@ function FolderList({ field, stored, folders, refusedSave, onChange, onClear }: 
       </form>
       {refused !== null && <p role="alert" className="t-small text-bad">That folder can’t be used: {refused}.</p>}
       {refusedSave !== null && <p role="alert" className="t-small text-bad">Not saved: {refusedSave}</p>}
-      {(stored.nextSource ?? stored.source) === 'default' && <p className="t-small text-muted">Using Myco’s default.</p>}
+      {(stored.nextSource ?? stored.source) === 'default' && <p className="t-small text-muted">The next session uses Myco’s default.</p>}
       {stored.reason && <p className="t-small text-muted">{stored.reason}</p>}
-      {stored.application === 'pending' && <p className="t-small text-muted">Currently cached on this machine: {JSON.stringify(stored.effective ?? stored.appliedValue)}.</p>}
-      {(stored.nextSource ?? stored.source) === 'invalid' && <p className="t-small text-muted break-all">Stored value: {JSON.stringify(stored.stored ?? stored.value)}.</p>}
+      {stored.application === 'pending' && <p className="t-small text-muted">This machine currently uses these folders: {asFolders(stored.effective ?? stored.appliedValue).join(', ') || 'none'}.</p>}
+      {stored.configured && <StoredValue value={stored.stored ?? stored.value} />}
       {(stored.nextSource ?? stored.source) === 'invalid' && <Button variant="ghost" onClick={onClear}>Clear the stored value</Button>}
+      {(stored.nextSource ?? stored.source) === 'invalid' && <p className="t-meta text-muted">Clearing restores Myco’s default folders.</p>}
       {stored.configured && stored.updatedAt !== null && (
-        <p className="t-meta text-faint">Changed{changedBy === null ? '' : ` by ${changedBy}`} {ago(stored.updatedAt, Date.now())}.</p>
+        <p className="t-meta text-faint">This value was changed{changedBy === null ? '' : ` by ${changedBy}`} {ago(stored.updatedAt, Date.now())}.</p>
       )}
     </section>
   );
@@ -166,6 +168,8 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
     onSuccess: () => client.invalidateQueries({ queryKey: ['machine-settings', machine.id] }),
   });
   const connections = settings.data?.leaves.find((leaf) => leaf.leaf === 'capture.connect_roots');
+  const connectedCount = Object.keys((connections?.nextEffective ?? connections?.effective ?? connections?.value ?? {}) as object).length;
+  const cachedCount = Object.keys((connections?.effective ?? connections?.appliedValue ?? {}) as object).length;
 
   return (
     <DialogContent title={`Settings for ${machine.name}`} description="This machine picks up a change at its next session start.">
@@ -184,11 +188,13 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
           ))}
           {connections && <section aria-label="Connected repositories" className="flex flex-col gap-s2">
             <span className="t-body font-medium text-ink">Connected repositories</span>
-            <p className="t-small text-muted">{Object.keys((connections.nextEffective ?? connections.effective ?? connections.value ?? {}) as object).length} repositories connected from Needs you.</p>
+            <p className="t-small text-muted">{connectedCount} {connectedCount === 1 ? 'repository is' : 'repositories are'} configured from Needs you.</p>
             {connections.reason && <p className="t-small text-muted">{connections.reason}</p>}
-            {connections.application === 'pending' && <p className="t-small text-muted">Currently cached on this machine: {JSON.stringify(connections.effective ?? connections.appliedValue)}.</p>}
-            {(connections.nextSource ?? connections.source) === 'invalid' && <p className="t-small text-muted break-all">Stored value: {JSON.stringify(connections.stored ?? connections.value)}.</p>}
-            {(connections.nextSource ?? connections.source) === 'invalid' && <Button variant="ghost" pending={clear.isPending} onClick={() => clear.mutate(connections.leaf)}>Clear the stored value</Button>}
+            {connections.application === 'pending' && <p className="t-small text-muted">Myco currently uses {cachedCount} cached {cachedCount === 1 ? 'connection' : 'connections'}.</p>}
+            {connections.configured && <StoredValue value={connections.stored ?? connections.value} />}
+            <StoredValue summary="At next session start" value={connections.nextEffective ?? connections.effective ?? connections.value} />
+            {connections.application !== 'unreported' && connections.appliedValue !== undefined && <StoredValue summary="Currently applied connections" value={connections.effective ?? connections.appliedValue} />}
+            {(connections.nextSource ?? connections.source) === 'invalid' && <Button variant="ghost" pending={clear.isPending} onClick={() => clear.mutate(connections.leaf)}>Remove entries that no longer apply</Button>}
           </section>}
           {clear.error && <p role="alert" className="t-small text-bad">Not cleared: {refusalWords(clear.error)}</p>}
           <DialogFooter>

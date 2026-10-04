@@ -69,7 +69,6 @@ beforeEach(() => { logged.length = 0; console.log = (...args: unknown[]) => { lo
 afterEach(() => { console.log = originalLog; });
 
 const seedAnthropic = async (h: ReturnType<typeof harness>, key = KEY) => {
-  h.setting('agent.provider.type', 'anthropic');
   await h.secrets.put('anthropic', key, 'mem_1', NOW);
 };
 const untouched = { title: null, summary: null, titled_at: null, titled_by: null };
@@ -148,20 +147,19 @@ describe('titleSession', () => {
     expect(logged.join('\n')).not.toContain(OAT);
   });
 
-  it('runs the retained probe with its Deployment login and archived per-task provider preferences', async () => {
+  it('runs the retained probe with its Deployment login and current Claude Code default-tier model', async () => {
     const h = harness();
     await seedAnthropic(h);
-    h.setting('agent.provider.model', 'claude-default');
-    h.setting('agent.tasks', { 'container-smoke': { provider: 'anthropic', model: 'claude-for-titles' } });
+    h.setting('agent.reasoning_map.claude-code.default', 'opus');
     expect(await dispatchTask(h.env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
     const vars = h.launches[0]!.envVars;
-    expect({ apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, model: 'claude-for-titles' });
+    expect({ apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, model: 'opus' });
     expect(vars.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'claude-for-titles' });
+    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'opus' });
     expect(logged.join('\n')).not.toContain(KEY);
 
     // A titling dispatch reads none of it: the harness that runs the run, and the credential that harness reads, are the worker's to resolve at the claim.
-    h.setting('agent.tasks', { 'title-summary': { provider: 'anthropic', model: 'claude-for-titles' } });
+    h.setting('agent.tasks', { 'title-summary': { provider: 'anthropic' } });
     h.session('s1');
     h.prompt('s1', 'p1', 'hello', NOW - 9000);
     const titling = await h.title('s1');
@@ -209,23 +207,21 @@ describe('titleSession', () => {
     expect(h.runRows().map((r) => ({ status: r.status, task: r.task, held: r.held_by, credential: r.dispatched_by }))).toEqual([waiting, waiting]);
   });
 
-  it('queues session titles independently of obsolete provider settings', async () => {
+  it('queues session titles independently of the probe credential and model', async () => {
     const h = harness();
     expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'probe_preferences_invalid' });
 
     // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
-    const sessions = ['unserved', 'none', 'uncredentialed', 'endpointless'];
+    const sessions = ['unserved', 'none', 'uncredentialed', 'bad-model'];
     for (const id of sessions) {
       h.session(id);
       h.prompt(id, `p_${id}`, 'hello', NOW - 9000);
     }
     expect((await h.ask('unserved')).outcome).toBe('queued');
-    h.sqlite.run(`DELETE FROM deployment_settings WHERE leaf = 'agent.provider.type'`);
     expect((await h.title('none')).outcome).toBe('queued');
-    h.setting('agent.provider.type', 'anthropic');
     expect((await h.title('uncredentialed')).outcome).toBe('queued');
-    h.setting('agent.provider.type', 'openai-compatible');
-    expect((await h.title('endpointless')).outcome).toBe('queued');
+    h.setting('agent.reasoning_map.claude-code.default', '!! invalid');
+    expect((await h.title('bad-model')).outcome).toBe('queued');
 
     expect(sessions.map((id) => h.row(id))).toEqual(sessions.map(() => ({ ...untouched, titled_at: NOW })));
     expect(h.launches).toHaveLength(0);
@@ -235,9 +231,6 @@ describe('titleSession', () => {
 
   it('queues nothing and stamps nothing for an empty session, and carries no endpoint or credential on the run it does queue', async () => {
     const h = harness();
-    h.setting('agent.provider.type', 'openai-compatible');
-    h.setting('agent.provider.model', 'local-model');
-    h.setting('agent.provider.base_url', 'http://models.internal/v1');
     h.session('empty');
     expect((await h.title('empty')).outcome).toBe('no_material');
     expect((await h.ask('empty')).outcome).toBe('no_material');

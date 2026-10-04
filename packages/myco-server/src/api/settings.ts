@@ -8,7 +8,7 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import { cleanTaskDocument, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
@@ -99,7 +99,7 @@ export type SettingsLeafRow = {
   retiredValue?: Record<string, unknown>;
   error?: 'invalid_value';
   remedy?: string;
-  repair?: 'reset-leaf';
+  repair?: 'reset-leaf' | 'clean-document';
 } & EffectiveSetting;
 
 /**
@@ -116,6 +116,8 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
     const retired = RETIRED_LEAVES.has(leaf);
     const answer = effective.get(leaf) ?? retiredAnswer(held);
     const invalid = answer.state === 'invalid';
+    const cleaned = leaf === 'agent.tasks' && held !== undefined ? cleanTaskDocument(held.value) : null;
+    const canClean = cleaned !== null && held !== undefined && JSON.stringify(cleaned) !== JSON.stringify(held.value);
     return {
       leaf,
       configured: held !== undefined,
@@ -126,7 +128,8 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
       ...answer,
       effectiveValue: answer.effective,
       ...(leaf === 'agent.tasks' && held !== undefined ? taskOverridesMetadata(held.value) : {}),
-      ...(invalid ? { error: 'invalid_value' as const, remedy: answer.reason ?? 'Correct this setting or reset it.', ...(held?.malformed ? { repair: 'reset-leaf' as const } : {}) } : {}),
+      ...(invalid ? { error: 'invalid_value' as const, remedy: answer.reason ?? 'Correct this setting or reset it.' } : {}),
+      ...(canClean ? { repair: 'clean-document' as const } : held?.malformed && invalid ? { repair: 'reset-leaf' as const } : {}),
     };
   });
   const taskTiers = effectiveTaskTiers(stored['agent.tasks']?.value);
@@ -257,6 +260,14 @@ export async function handleResumeEmbeddingSwitch(env: ServerEnv, ctx: OwnerCont
 /** Clear one configured leaf so its built-in value applies. */
 export async function handleResetSetting(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id, ctx.now);
+  return result.applied ? ok({ applied: true }) : refused(result.refusal);
+}
+
+/** Remove task override entries and fields that no longer have a Deployment consumer. */
+export async function handleRepairTaskDocument(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const body = await readJsonObject(ctx.request);
+  if (body === null || Object.keys(body).length !== 0) return malformed('agent.tasks', 'body must be an empty JSON object');
+  const result = await writerFor(env).repairTaskDocument(ctx.member.id, ctx.now);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 

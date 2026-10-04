@@ -7,6 +7,7 @@ import { settingsRefusalText, useSettingsActions } from '../../../hooks/use-sett
 import { harnessLabel } from '../../../lib/harness';
 import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
+import { StoredValue } from '../StoredValue';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
 import { isRetired } from './retired';
@@ -33,14 +34,14 @@ function valueWords(field: LeafField, value: unknown): string {
     return Array.isArray(value) && value.length > 0 ? value.map((v) => (field.kind === 'agents' ? harnessLabel(String(v)) : String(v))).join(', ') : 'none';
   }
   if (value === null || value === undefined || value === '') return 'none';
-  if (typeof value === 'object') return Object.keys(value).length === 0 ? 'none' : 'set';
+  if (typeof value === 'object') return Object.keys(value).length === 0 ? 'none' : `overrides for ${Object.keys(value).join(', ')}`;
   return `${field.optionLabels?.[String(value)] ?? String(value)}${field.unit !== undefined ? ` ${field.unit}` : ''}`;
 }
 
 /** The effective value a blank override leaves in use. */
 function emptyText(field: LeafField, row: LeafRow | undefined): string {
   if (row === undefined || row.state === 'unknown') return 'Not known';
-  if (row.effective === null) return row.reason ?? 'Not set';
+  if (row.effective === null) return 'Not set';
   return valueWords(field, row.effective).replace(field.unit === undefined ? '' : ` ${field.unit}`, '');
 }
 
@@ -48,10 +49,10 @@ function emptyText(field: LeafField, row: LeafRow | undefined): string {
 export function effectiveWords(field: LeafField, row: LeafRow | undefined, name: string | null = null): string {
   if (row === undefined) return 'Myco has not reported what this setting uses.';
   const sources = { configured: 'stored value', default: 'server default', 'task-override': 'per-task override', platform: 'platform', derived: 'built into Myco', unset: 'not set', invalid: 'stored value does not apply', 'member-cache': 'confirmed by the machine' };
-  const active = row.state === 'unknown' ? 'Effective value not known' : `${row.state === 'inactive' ? 'When active' : 'In use'}: ${valueWords(field, row.effective)} · ${sources[row.source]}`;
-  const held = row.configured && (row.storedApplies === false || row.state === 'invalid' || row.state === 'not-applicable' || row.source === 'task-override')
-    ? `Stored: ${typeof row.stored === 'object' ? JSON.stringify(row.stored) : String(row.stored)}.` : null;
-  return [active, held, row.reason, row.configured ? savedWords(row, name) : null].filter(Boolean).join(' ');
+  const inactive = row.state === 'inactive';
+  const verb = field.kind === 'toggle' ? `${inactive ? 'this' : 'This'} setting is` : 'Myco uses';
+  const active = row.state === 'unknown' ? 'The effective value is not known.' : `${inactive ? 'When active, ' : ''}${verb} ${valueWords(field, row.effective)} (${sources[row.source]}).`;
+  return [active, row.reason, row.configured ? `It was ${savedWords(row, name).replace(/^Saved/, 'saved')}.` : null].filter(Boolean).join(' ');
 }
 
 /** A leaf's value in its editable text form. */
@@ -103,7 +104,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
   const editable = row?.configured ? (row.editableValue ?? row.stored) : null;
   const shown = draft ?? textOf(field, field.readOnly === true ? value : editable);
   const id = `leaf-${field.leaf}`;
-  const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending;
+  const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending || actions.repairDocument.isPending;
 
   const save = (next: unknown) => {
     setError(null);
@@ -194,12 +195,6 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
           placeholder={placeholder}
           onChange={(e) => setDraft(e.target.value)}
         />
-        {row?.retiredValue !== undefined && Object.keys(row.retiredValue).length > 0 && (
-          <div data-testid="retired-task-overrides" className="t-small text-muted">
-            <p>Retired task preferences (read-only)</p>
-            <pre className="t-mono whitespace-pre-wrap break-all">{JSON.stringify(row.retiredValue, null, 2)}</pre>
-          </div>
-        )}
         {!locked && (
           <Button size="sm" className="self-end" disabled={draft === null} pending={pending && draft !== null} onClick={commitText}>Save</Button>
         )}
@@ -244,10 +239,21 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
       status={error ?? (retired ? 'Nothing on this server reads it any more.' : effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null))}
+      details={row?.configured ? <>
+        <StoredValue value={row.stored} />
+        {field.kind === 'json' && JSON.stringify(row.stored) !== JSON.stringify(row.effective) && <StoredValue summary="Effective value" value={row.effective} />}
+      </> : undefined}
       refused={error !== null}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}
-      control={row?.configured === true ? <div className="flex w-full min-w-0 flex-col gap-s2"><div className="flex w-full min-w-0 items-center gap-s2">{control}</div>{row?.configured === true && !locked && <Button size="sm" className="self-end" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button>}</div> : control}
+      control={row?.configured === true ? <div className="flex w-full min-w-0 flex-col gap-s2">
+        <div className="flex w-full min-w-0 items-center gap-s2">{control}</div>
+        {!locked && row.repair === 'clean-document' && <Button size="sm" className="self-end" disabled={pending} onClick={() => {
+          setError(null);
+          actions.repairDocument.mutate({ leaf: field.leaf }, { onError: (err) => setError(settingsRefusalText(err)), onSuccess: () => setDraft(null) });
+        }}>Remove entries that no longer apply</Button>}
+        {!locked && <><Button size="sm" className="self-end" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button><p className="t-meta text-muted">{field.leaf === 'agent.tasks' ? 'Clearing resets every task override, including imported-session titling.' : 'Clearing restores the server’s default for this setting.'}</p></>}
+      </div> : control}
     />
   );
 }

@@ -48,10 +48,10 @@ describe('portable machine identities', () => {
     const target = seeded();
     try {
       source.sqlite.query(`INSERT INTO members (id, label, created_at) VALUES ('mem_backup_cache', 'Machine owner', 1)`).run();
-      source.sqlite.query(`INSERT INTO machine_claims (machine_id, member_id, claimed_at, settings_cached_revision, settings_cached_values, settings_report_order)
-        VALUES ('machine_backup_cache', 'mem_backup_cache', 1, 'm1', '{"capture.plan_dirs":["notes"]}', 5)`).run();
-      source.sqlite.query(`INSERT INTO machine_settings_snapshots (machine_id, revision, leaves)
-        VALUES ('machine_backup_cache', 'm1', '{"capture.plan_dirs":["notes"]}')`).run();
+      source.sqlite.query(`INSERT INTO machine_claims (machine_id, member_id, claimed_at, settings_cached_revision, settings_cached_values, settings_report_order, settings_contract_supported)
+        VALUES ('machine_backup_cache', 'mem_backup_cache', 1, 'm1', '{"capture.plan_dirs":["notes"]}', 5, 1)`).run();
+      source.sqlite.query(`INSERT INTO machine_settings_snapshots (machine_id, revision, leaves, sent_order)
+        VALUES ('machine_backup_cache', 'm1', '{"capture.plan_dirs":["notes"]}', 1)`).run();
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       const lines = artifact.text.trim().split('\n').map((line) => JSON.parse(line) as { t?: string; r?: Record<string, unknown> });
@@ -59,11 +59,12 @@ describe('portable machine identities', () => {
       expect(identity.r).not.toHaveProperty('settings_cached_values');
       expect(identity.r).not.toHaveProperty('settings_cached_revision');
       expect(identity.r).not.toHaveProperty('settings_report_order');
+      expect(identity.r).not.toHaveProperty('settings_contract_supported');
       expect(lines.some((line) => line.t === 'machine_settings_snapshots')).toBe(false);
-      identity.r = { ...identity.r, settings_cached_revision: 'm1', settings_cached_values: '{"capture.plan_dirs":["notes"]}', settings_report_order: 5 };
+      identity.r = { ...identity.r, settings_cached_revision: 'm1', settings_cached_values: '{"capture.plan_dirs":["notes"]}', settings_report_order: 5, settings_contract_supported: 1 };
       await restoreArtifact(target.db, { text: lines.map((line) => JSON.stringify(line)).join('\n'), allowForeignLineage: true });
-      expect(target.sqlite.query(`SELECT settings_cached_revision, settings_cached_values, settings_report_order FROM machine_claims WHERE machine_id = 'machine_backup_cache'`).get())
-        .toEqual({ settings_cached_revision: null, settings_cached_values: null, settings_report_order: -1 });
+      expect(target.sqlite.query(`SELECT settings_cached_revision, settings_cached_values, settings_report_order, settings_contract_supported FROM machine_claims WHERE machine_id = 'machine_backup_cache'`).get())
+        .toEqual({ settings_cached_revision: null, settings_cached_values: null, settings_report_order: -1, settings_contract_supported: 0 });
       expect(target.sqlite.query(`SELECT * FROM machine_settings_snapshots WHERE machine_id = 'machine_backup_cache'`).all()).toEqual([]);
     } finally { source.sqlite.close(); target.sqlite.close(); }
   });

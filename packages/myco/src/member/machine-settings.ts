@@ -27,30 +27,98 @@ export function machineBlockOf(value: unknown): { leaves: Record<string, unknown
 }
 
 interface MachineAnswerOrder { issued: number; received: number }
+const ORDER_CLOCK_SCALE = 1_000;
+const orderDiagnostics = new Map<string, string>();
+const volatileOrders = new Map<string, MachineAnswerOrder>();
 
-function withMachineSettings<T>(serverUrl: string, mycoHome: string, apply: (file: string, order: MachineAnswerOrder) => T): T {
+/** Allocate a stamp above previous requests and the clock's current millisecond. */
+function nextMachineAnswerOrder(order: MachineAnswerOrder): number {
+  const stamp = Math.max(order.issued + 1, Date.now() * ORDER_CLOCK_SCALE);
+  if (!Number.isSafeInteger(stamp)) throw new Error('Machine settings answer order exhausted.');
+  order.issued = stamp;
+  return stamp;
+}
+
+/** Report an advisory order-file state once until its state changes. */
+function orderDiagnostic(orderFile: string, state: string): void {
+  const diagnosticFile = `${orderFile}-diagnostic`;
+  let changed = orderDiagnostics.get(orderFile) !== state;
+  try {
+    const read = readPrivateJson<{ state: string }>(diagnosticFile);
+    if (state === '' && !read.ok && read.reason === 'missing') {
+      orderDiagnostics.set(orderFile, state);
+      return;
+    }
+    changed = read.ok ? read.value?.state !== state : orderDiagnostics.get(orderFile) !== state;
+    if (changed || !read.ok) writePrivateFileAtomic(diagnosticFile, `${JSON.stringify({ state })}\n`);
+  } catch { /* keep the process-local deduplication when diagnostics cannot be persisted */ }
+  orderDiagnostics.set(orderFile, state);
+  if (changed && state !== '') process.stderr.write(`[myco] member: machine settings answer order reset (${state}) ${orderFile}\n`);
+}
+
+/** The order file only sequences answers; its cached generation survives a damaged sidecar. */
+function readMachineAnswerOrder(orderFile: string): { order: MachineAnswerOrder; state: string } {
+  let state = '';
+  try {
+    const stat = fs.lstatSync(orderFile);
+    if (!stat.isFile()) state = 'not a regular file';
+    else if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) state = 'foreign-owner';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') state = (error as NodeJS.ErrnoException).code ?? 'unreadable';
+    else return { order: { issued: 0, received: 0 }, state: '' };
+  }
+  if (state === '') {
+    const read = readPrivateJson<MachineAnswerOrder>(orderFile);
+    if (!read.ok) state = read.reason === 'unreadable' ? `${read.reason}:${read.detail ?? 'unknown'}` : read.reason;
+    else if (read.value === null || typeof read.value !== 'object'
+      || !Number.isSafeInteger(read.value.issued) || read.value.issued < 0
+      || !Number.isSafeInteger(read.value.received) || read.value.received < 0
+      || read.value.received > read.value.issued) state = 'invalid';
+    else {
+      return { order: read.value, state: '' };
+    }
+  }
+  return { order: { issued: 0, received: 0 }, state };
+}
+
+function withMachineSettings<T>(serverUrl: string, mycoHome: string, apply: (file: string, order: MachineAnswerOrder) => T, requireDurableIssue = false): T {
   ensureMemberDir(deploymentsDir(mycoHome), mycoHome);
   const file = machineSettingsPath(serverUrl, mycoHome);
   const orderFile = `${file}.order`;
+  const checkpointFile = `${orderFile}-checkpoint`;
   const lockFile = `${file}.lock`;
   ensurePrivateFile(lockFile);
   return withFileLockSync(lockFile, () => {
-    const read = fs.existsSync(orderFile) ? readPrivateJson<MachineAnswerOrder>(orderFile) : null;
-    if (read !== null && (!read.ok || !Number.isSafeInteger(read.value?.issued) || !Number.isSafeInteger(read.value?.received))) throw new Error('Cannot read machine settings answer order.');
-    const order = read?.ok ? read.value : { issued: 0, received: 0 };
+    const primary = readMachineAnswerOrder(orderFile);
+    const checkpoint = readMachineAnswerOrder(checkpointFile);
+    const order = primary.order;
+    const state = [primary.state, checkpoint.state === '' ? '' : `checkpoint:${checkpoint.state}`].filter(Boolean).join('; ');
     const cached = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
     const cachedOrder = cached?.ok ? machineBlockOf(cached.value)?.cachedOrder ?? 0 : 0;
-    order.issued = Math.max(order.issued, cachedOrder);
-    order.received = Math.max(order.received, cachedOrder);
-    const result = apply(file, order);
-    writePrivateFileAtomic(orderFile, `${JSON.stringify(order)}\n`);
+    const volatile = volatileOrders.get(orderFile);
+    order.issued = Math.max(order.issued, checkpoint.order.issued, cachedOrder, volatile?.issued ?? 0);
+    order.received = Math.max(order.received, checkpoint.order.received, cachedOrder, volatile?.received ?? 0);
+    let result: T;
+    try { result = apply(file, order); }
+    catch (error) { orderDiagnostic(orderFile, state); throw error; }
+    order.issued = Math.max(order.issued, order.received);
+    volatileOrders.set(orderFile, { ...order });
+    const content = `${JSON.stringify(order)}\n`;
+    const persist = (target: string): string | null => {
+      try { writePrivateFileAtomic(target, content); return null; }
+      catch (error) { return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'unavailable'; }
+    };
+    const checkpointError = persist(checkpointFile);
+    const orderError = persist(orderFile);
+    orderDiagnostic(orderFile, [state, checkpointError === null ? '' : `checkpoint-write:${checkpointError}`, orderError === null ? '' : `write:${orderError}`].filter(Boolean).join('; '));
+    if (requireDurableIssue && checkpointError !== null && orderError !== null) throw new Error('Cannot persist machine settings request order.');
     return result;
   });
 }
 
 /** Allocate a machine-settings answer's stamp before its request, shared across project helpers. */
 export function beginMachineSettingsRequest(serverUrl: string, mycoHome: string): number {
-  return withMachineSettings(serverUrl, mycoHome, (_file, order) => ++order.issued);
+  return withMachineSettings(serverUrl, mycoHome, (_file, order) => nextMachineAnswerOrder(order), true);
 }
 
 /**
@@ -62,7 +130,7 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
   const block = machineBlockOf(answered);
   if (block === null) return false;
   return withMachineSettings(serverUrl, mycoHome, (file, order) => {
-    const stamp = requestOrder ?? ++order.issued;
+    const stamp = requestOrder ?? nextMachineAnswerOrder(order);
     if (stamp < order.received) return false;
     order.received = stamp;
     writePrivateFileAtomic(file, `${JSON.stringify({ ...block, cachedOrder: stamp })}\n`);
@@ -108,7 +176,7 @@ export function forgetConnectRoot(serverUrl: string, rootKey: string, mycoHome: 
     const connect = block?.leaves[CONNECT_ROOTS_LEAF];
     if (block === null || typeof connect !== 'object' || connect === null || !Object.prototype.hasOwnProperty.call(connect, rootKey)) return;
     const kept = Object.fromEntries(Object.entries(connect as Record<string, unknown>).filter(([key]) => key !== rootKey));
-    order.received = ++order.issued;
+    order.received = nextMachineAnswerOrder(order);
     writePrivateFileAtomic(file, `${JSON.stringify({ cachedOrder: order.received, leaves: { ...block.leaves, [CONNECT_ROOTS_LEAF]: kept }, ...(block.feature === MACHINE_SETTINGS_FEATURE ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true } : {}) })}\n`);
   });
 }

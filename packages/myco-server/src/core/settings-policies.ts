@@ -25,12 +25,10 @@ import { scheduleLeaves, scheduleFor, memberRunsPerDay } from './scheduled-tasks
 import { TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE } from './jobs.js';
 import { readDispatchLimits, LIMIT_LEAVES } from './limits.js';
 import { workerPreference } from './harness.js';
-import { runtimeProbeResolution } from './runtime-probe.js';
 import { readRecallLeaves } from './recall.js';
 import { readMapSettings } from './canopy.js';
 import { ACCELERATORS, PRE_CONDITIONS } from './schedule-rules.js';
 import { TITLING_TASK } from './task-catalogue.js';
-import { providerCredentialReady } from './provider-credentials.js';
 import { reconcileIntervalMinutes } from './release-provenance.js';
 import { runRetentionDays } from './jobs-run.js';
 import { scheduledIntervalHours } from './recovery-schedule.js';
@@ -69,30 +67,6 @@ export interface SettingPolicy {
 
 const SCHEDULE_OFF = 'Work on a schedule is off, so this waits until it is turned on.';
 
-const runtimeProbe: SettingPolicy = {
-  id: 'runtime-probe',
-  owners: ['core/runtime-probe.ts'],
-  leaves: ['agent.provider.type', 'agent.provider.model', 'agent.provider.base_url'],
-  async resolve(env) {
-    const resolution = await runtimeProbeResolution(env.db);
-    const resolved = resolution.preferences;
-    const overrides = resolution.overrides;
-    const note = 'Used only by the container smoke test. Worker tasks use their agent and effort settings.';
-    const overridden = (key: string) => typeof overrides[key] === 'string' && (overrides[key] as string).trim() !== ''
-      ? { source: 'task-override' as const, state: 'inactive' as const, reason: `The container-smoke task override supplies this value. ${note}` } : { reason: note };
-    const unavailable = resolved.type === 'anthropic' && !await providerCredentialReady(env.db, env.wrappingKey, 'anthropic')
-      ? 'The container smoke test waits for an Anthropic key.' : resolved.type === 'openai-compatible' && resolved.baseUrl === null
-        ? 'The container smoke test waits for an HTTP endpoint.' : resolved.type === null ? 'No valid provider is configured for the container smoke test.' : null;
-    const readiness = unavailable === null ? {} : { state: 'inactive' as const, reason: `${unavailable} ${note}` };
-    return {
-      'agent.provider.type': { effective: resolved.type, ...overridden('provider'), ...readiness },
-      'agent.provider.model': { effective: resolved.model, ...overridden('model'), ...readiness, ...(resolved.type === null ? { state: 'inactive' as const, reason: `No provider is configured for the container smoke test, so no model runs. ${note}` } : {}) },
-      'agent.provider.base_url': { effective: resolved.baseUrl, ...(resolved.type === 'openai-compatible'
-        ? { reason: note } : { state: 'inactive' as const, reason: `The container smoke test uses an endpoint only with an OpenAI-compatible provider. ${note}` }) },
-    };
-  },
-};
-
 /** The embedding platform a Deployment resolves against. */
 export const embeddingPlatformOf = (env: ServerEnv): EmbeddingPlatform => env.embeddingPlatform ?? { target: env.platform.name };
 
@@ -127,7 +101,7 @@ const limits: SettingPolicy = {
   leaves: Object.values(LIMIT_LEAVES),
   async resolve(env) {
     const set = await readDispatchLimits(env);
-    const answer = (n: number | null): LeafAnswer => ({ effective: n, meanwhile: 'No limit applies', ...(n === null ? { reason: 'No limit' } : {}) });
+    const answer = (n: number | null): LeafAnswer => ({ effective: n, meanwhile: 'No limit applies', ...(n === null ? { reason: 'No limit applies.' } : {}) });
     return {
       [LIMIT_LEAVES.concurrent_runs]: answer(set.concurrent_runs),
       [LIMIT_LEAVES.task_concurrent_runs]: answer(set.task_concurrent_runs),
@@ -143,7 +117,7 @@ const workers: SettingPolicy = {
   async resolve(env) {
     const { preferred, fallback } = await workerPreference(env);
     return {
-      'worker.harness': { effective: preferred, ...(preferred === null ? { reason: 'The first agent a machine is signed in to' } : {}) },
+      'worker.harness': { effective: preferred, ...(preferred === null ? { reason: 'Myco uses the first agent this machine is signed in to.' } : {}) },
       'worker.harness_fallback': { effective: fallback },
     };
   },
@@ -196,7 +170,7 @@ const records: SettingPolicy = {
     const days = await runRetentionDays(env);
     return {
       'agent.run_retention_days': { effective: days, meanwhile: `Task records are kept for ${days} days` },
-      'retention.transcripts': fact.state === 'days' ? { effective: fact.days } : { effective: null, reason: 'Kept forever', meanwhile: 'Nothing is removed' },
+      'retention.transcripts': fact.state === 'days' ? { effective: fact.days } : { effective: null, reason: 'Transcripts are kept forever.', meanwhile: 'Nothing is removed' },
     };
   },
 };
@@ -212,7 +186,7 @@ const backups: SettingPolicy = {
     const kept = await keptStagings(env.db);
     const off = retention.keepDaily < 1 ? { effective: null, meanwhile: 'No manual export is removed' } : null;
     return {
-      'backup.auto_interval_hours': { effective: interval, meanwhile: `Backups run every ${interval} hours`, ...(interval === null ? { reason: 'Off' } : {}), ...noProducer },
+      'backup.auto_interval_hours': { effective: interval, meanwhile: `Backups run every ${interval} hours`, ...(interval === null ? { reason: 'Automatic backups are off.' } : {}), ...noProducer },
       'backup.recovery.keep_stagings': { effective: kept, meanwhile: 'No recovery copy is released', ...noProducer },
       'backup.retention.keep_daily': off ?? { effective: retention.keepDaily },
       'backup.retention.keep_weekly': off ?? { effective: retention.keepWeekly },
@@ -281,7 +255,7 @@ const embedding: SettingPolicy = {
 /** Execution profiles hold the task they name while a stored value is unusable, so they report it as nothing in effect. */
 const executionProfiles: SettingPolicy = {
   id: 'execution-profiles',
-  owners: ['core/worker-selection.ts'],
+  owners: ['core/worker-selection.ts', 'core/runtime-probe.ts'],
   leaves: CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.flatMap((tier) => [`agent.reasoning_map.${harness}.${tier}`, `agent.effort_map.${harness}.${tier}`]),
     `agent.harnesses.${harness}.credential`,
@@ -310,7 +284,7 @@ const taskOverrides: SettingPolicy = {
   selfJudged: true,
   async resolve(env) {
     const held = (await settingsWriter(env.db).leaves())['agent.tasks'];
-    if (held === undefined) return { 'agent.tasks': { effective: {}, source: 'default', state: 'active', reason: 'No overrides' } };
+    if (held === undefined) return { 'agent.tasks': { effective: {}, source: 'default', state: 'active', reason: 'No task overrides are stored.' } };
     if (held.malformed) return { 'agent.tasks': { effective: null, source: 'invalid', state: 'invalid', reason: 'The stored value does not read. Worker tasks wait for a valid overrides object; scheduling uses the declared task defaults. Clear or reset the stored value to restore defaults.' } };
     const resolution = taskOverridesResolution(held.value);
     if (resolution.effective !== null && typeof resolution.effective === 'object') {
@@ -356,16 +330,6 @@ const taskOverrides: SettingPolicy = {
         }
       }
     }
-    if (resolution.effective !== null && typeof resolution.effective === 'object') {
-      const tasks = resolution.effective as Record<string, Record<string, unknown> | null>;
-      const probe = tasks['container-smoke'];
-      if (probe !== null && probe !== undefined) {
-        const actual = await runtimeProbeResolution(env.db);
-        Object.assign(probe, actual.overrides);
-        resolution.reasons.push(...actual.reasons);
-        resolution.invalid ||= actual.invalid;
-      }
-    }
     return { 'agent.tasks': { effective: resolution.effective, source: resolution.invalid ? 'invalid' : 'configured', state: resolution.invalid ? 'invalid' : resolution.reasons.length > 0 ? 'not-applicable' : 'active',
       reason: resolution.reasons.length > 0 ? resolution.reasons.join(' ') : null } };
   },
@@ -373,7 +337,7 @@ const taskOverrides: SettingPolicy = {
 
 /** Every live leaf's policy. A leaf belongs to exactly one, and every live leaf to one: the contract gate holds both. */
 export const SETTING_POLICIES: readonly SettingPolicy[] = [
-  scheduling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides, runtimeProbe,
+  scheduling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
 ];
 
 /** The live leaves: every Deployment leaf not retired. */
@@ -424,7 +388,7 @@ export async function effectiveSettings(env: ServerEnv): Promise<Map<string, Eff
     const applies = held === undefined ? null : answer.source === 'configured'
       && answer.state === 'active' && JSON.stringify(held.value) === JSON.stringify(answer.effective);
     out.set(leaf, { ...answer, storedApplies: applies, reason: held !== undefined && JSON.stringify(held.value) !== JSON.stringify(answer.effective)
-      ? `${answer.reason ?? 'The stored value does not apply.'} Effective value: ${JSON.stringify(answer.effective)}.` : answer.reason });
+      ? `${answer.reason ?? 'The stored value does not apply.'} The effective value is shown by this control.` : answer.reason });
   }
   return out;
 }

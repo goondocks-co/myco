@@ -173,7 +173,7 @@ const tableCount = async (db: RelationalStore, table: string): Promise<number> =
   return row?.c ?? 0;
 };
 
-const MACHINE_REPORT_COLUMNS = new Set(['settings_cached_revision', 'settings_cached_values', 'settings_report_order']);
+const MACHINE_REPORT_COLUMNS = new Set(['settings_cached_revision', 'settings_cached_values', 'settings_report_order', 'settings_contract_supported']);
 
 /** Portable machine identities carry no confirmation of the attached member's current cache. */
 function portableRow(table: string, row: Record<string, unknown>): Record<string, unknown> {

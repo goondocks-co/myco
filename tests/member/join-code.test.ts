@@ -7,7 +7,7 @@
  * hooks starting together must BOTH capture, on one credential, from one
  * single-use code.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -242,6 +242,23 @@ describe('a hook on a machine holding only a join code', () => {
       .toEqual([first, second].sort());
     expect(rig.rows('member_credentials')).toBe(1);
     for (const tx of [txA, txB]) fs.rmSync(path.dirname(tx), { recursive: true, force: true });
+  });
+
+  it('delivers the joining hook when optional context warmup cannot write its order', async () => {
+    const session = 'sess-join-warmup-fails';
+    const tx = transcriptWithPlan(session);
+    const realRename = fs.renameSync;
+    const rename = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).endsWith('.machine-settings.order')) throw new Error('warmup order unavailable');
+      return realRename(from, to);
+    });
+    try {
+      await runHook('session-start', { session_id: session, transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: rig.fetch });
+    } finally {
+      rename.mockRestore();
+      fs.rmSync(path.dirname(tx), { recursive: true, force: true });
+    }
+    expect(rig.env.sqlite.query(`SELECT project_id FROM sessions WHERE session_id = ?`).get(session)).toEqual({ project_id: 'proj_1' });
   });
 
   it('lands nothing when the code is refused: no credential, no session, and the hook stays silent on stdout', async () => {

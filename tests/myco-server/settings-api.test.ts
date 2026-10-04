@@ -377,9 +377,6 @@ function sampleFor(leaf: string): unknown {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec !== undefined && 'type' in spec) {
     if (spec.type === 'integer') return spec.min;
-    if (spec.type === 'probe-base-url') return 'https://probe.example';
-    if (spec.type === 'probe-model') return 'probe-model';
-    if (spec.type === 'probe-provider') return 'openai-compatible';
     if (spec.type === 'task-overrides') return { 'title-summary': { harness: 'claude-code', model: 'sonnet', schedule: { maxRunsPerDay: 0 } } };
     if (spec.type === 'profile-model') return spec.harness === 'opencode' ? 'openai/gpt-5' : spec.harness === 'claude-code' ? 'sonnet' : 'gpt-5';
     if (spec.type === 'profile-effort') return 'high';
@@ -456,4 +453,22 @@ it('surfaces ignored task fields, preserves them during sibling edits, and clear
   expect(await row()).toMatchObject({ editableValue: { ...archived, 'title-summary': { ...archived['title-summary'], ...live['title-summary'] } }, retiredValue: {} });
   expect((await worker.fetch(await remove('/api/settings/agent.tasks'), e.all)).status).toBe(200);
   expect(await row()).toMatchObject({ configured: false, stored: null, effective: {} });
+});
+
+it('repairs stale task fields through the authenticated Settings operation and preserves live siblings', async () => {
+  const e = env();
+  const stale = {
+    'cortex-instructions': { schedule: { maxRunsPerDay: 3 } },
+    'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high', retiredField: 'old' },
+  };
+  e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stale)]);
+  const path = '/api/settings/agent.tasks/repair';
+  const malformed = await worker.fetch(await asOwnerPost(path, { value: stale }), e.all);
+  expect(malformed.status).toBe(400);
+  expect((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value).toBe(JSON.stringify(stale));
+  const repaired = await worker.fetch(await asOwnerPost(path, {}), e.all);
+  expect({ status: repaired.status, body: await json(repaired) }).toEqual({ status: 200, body: { applied: true } });
+  const saved = e.sqlite.query(`SELECT value, updated_by FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string; updated_by: string };
+  expect(JSON.parse(saved.value)).toEqual({ 'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' } });
+  expect(saved.updated_by).toBe('mem_machine_1');
 });

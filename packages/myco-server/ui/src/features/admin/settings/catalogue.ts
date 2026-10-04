@@ -154,17 +154,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     harness: 'opencode',
   },
   {
-    id: 'container-smoke-test',
-    section: 'models',
-    label: 'Container smoke test',
-    note: 'Used only by the container smoke test. Myco’s worker tasks use the agent tiers above.',
-    leaves: [
-      { leaf: 'agent.provider.type', label: 'Smoke test provider', kind: 'select', options: ['anthropic', 'openai-compatible'], optionLabels: { anthropic: 'Anthropic', 'openai-compatible': 'OpenAI-compatible server' } },
-      { leaf: 'agent.provider.model', label: 'Smoke test model', kind: 'text' },
-      { leaf: 'agent.provider.base_url', label: 'Smoke test endpoint', kind: 'text' },
-    ],
-  },
-  {
     id: 'embedding',
     section: 'models',
     label: 'Search embeddings',

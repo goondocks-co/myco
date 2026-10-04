@@ -417,7 +417,6 @@ describe('archival refuses capture the same on both stores', () => {
         await t.env.db.prepare(`DELETE FROM deployment_settings`).run();
         for (const [leaf, value] of rows) await t.env.db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'mem_1')`).bind(leaf, JSON.stringify(value)).run();
       };
-      await settings([['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'local-model'], ['agent.provider.base_url', 'http://titles.internal/v1']]);
 
       expect((await post({ eventId: uuid(300), sessionId: 'sess_t', kind: 'session.start', payload: { agent: 'claude-code', branch: 'main', startedAt: 1_000 } })).persisted).toBe(true);
       expect((await post({ eventId: uuid(301), sessionId: 'sess_t', payload: { promptId: uuid(310), text: 'Add a retry to the runner\nplease', origin: 'user' } })).persisted).toBe(true);

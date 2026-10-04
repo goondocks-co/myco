@@ -183,9 +183,6 @@ function sampleFor(leaf: string): unknown {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf] as Record<string, unknown>;
   if (leaf === 'embedding.model') return '@cf/baai/bge-large-en-v1.5';
   if (leaf === 'embedding.provider') return 'openrouter';
-  if (spec.type === 'probe-provider') return 'openai-compatible';
-  if (spec.type === 'probe-model') return 'my-model';
-  if (spec.type === 'probe-base-url') return 'http://models.internal/v1';
   if (spec.type === 'integer') return spec.max;
   if (spec.type === 'boolean') return true;
   if (spec.type === 'agent') return 'codex';

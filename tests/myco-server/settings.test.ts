@@ -130,6 +130,64 @@ describe('deployment settings', () => {
   });
 });
 
+describe('task document repair', () => {
+  const stored = {
+    'cortex-instructions': { schedule: { maxRunsPerDay: 3 } },
+    'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high', forgottenField: 'old' },
+    'extract-curate': { harness: 'missing-harness', model: 'missing-model', schedule: { intervalSeconds: 600, forgottenScheduleField: 1 } },
+    'container-smoke': { provider: 'anthropic', model: 'old-probe-model' },
+  };
+
+  it('clears only fields without consumers, records the actor, rearms once, and then stays idle', async () => {
+    const rearmed: string[] = [];
+    const r = rig({ rearm: async ({ leaf }) => { rearmed.push(leaf); } });
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+    expect(await r.w.repairTaskDocument('mem_repair', 2)).toEqual({ applied: true });
+    expect((await r.w.leaves())['agent.tasks']).toEqual({ value: {
+      'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' },
+      'extract-curate': { schedule: { intervalSeconds: 600 } },
+    }, updatedAt: 2, updatedBy: 'mem_repair' });
+    expect(rearmed).toEqual(['agent.tasks']);
+    expect(await r.w.repairTaskDocument('mem_repair_again', 3)).toEqual({ applied: true });
+    expect((await r.w.leaves())['agent.tasks']?.updatedBy).toBe('mem_repair');
+    expect(rearmed).toEqual(['agent.tasks']);
+  });
+
+  it('refuses unauthorized and malformed repair without touching the row', async () => {
+    const r = rig({ authorize: async () => false });
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+    expect(await r.w.repairTaskDocument('mem_unauthorized', 2)).toEqual({ applied: false, refusal: { reason: 'unauthorized', leaf: 'agent.tasks' } });
+    expect((await r.w.leaves())['agent.tasks']?.value).toEqual(stored);
+    r.sqlite.run(`UPDATE deployment_settings SET value = '[]' WHERE leaf = 'agent.tasks'`);
+    expect(await settingsWriter(r.db).repairTaskDocument('mem_repair', 3))
+      .toEqual({ applied: false, refusal: { reason: 'invalid_value', leaf: 'agent.tasks', detail: 'the task overrides held by the server are not an object' } });
+    expect((await r.w.leaves())['agent.tasks']?.value).toEqual([]);
+  });
+
+  it('refuses a race and keeps the concurrently written sibling document', async () => {
+    const r = rig();
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
+    const latest = { ...stored, 'title-summary': { schedule: { enabled: true, intervalSeconds: 60 }, reasoningLevel: 'low' } };
+    let raced = false;
+    const db = {
+      prepare: (sql: string) => {
+        if (!raced && sql.startsWith('UPDATE deployment_settings SET value = ?')) {
+          raced = true;
+          r.sqlite.run(`UPDATE deployment_settings SET value = ?, updated_at = 2, updated_by = 'mem_sibling' WHERE leaf = 'agent.tasks'`, [JSON.stringify(latest)]);
+        }
+        return r.db.prepare(sql);
+      },
+      batch: r.db.batch,
+    };
+    const rearmed: string[] = [];
+    expect(await settingsWriter(db, { rearm: async ({ leaf }) => { rearmed.push(leaf); } }).repairTaskDocument('mem_repair', 3))
+      .toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks' } });
+    expect(raced).toBe(true);
+    expect((await r.w.leaves())['agent.tasks']).toEqual({ value: latest, updatedAt: 2, updatedBy: 'mem_sibling' });
+    expect(rearmed).toEqual([]);
+  });
+});
+
 describe('project capability admission', () => {
   it('reads every capability OFF for a Project nothing has admitted', async () => {
     const r = rig();

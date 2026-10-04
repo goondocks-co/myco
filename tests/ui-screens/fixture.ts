@@ -432,7 +432,9 @@ function seedUnappliedSettings(databasePath: string, now: number): void {
     sqlite.query(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('import.window_days', '"old-value"', ?, ?)
       ON CONFLICT(leaf) DO UPDATE SET value = excluded.value`).run(now, OWNER.id);
     sqlite.query(`UPDATE deployment_settings SET value = json_set(value, '$."cortex-instructions"', json(?)) WHERE leaf = 'agent.tasks'`)
-      .run(JSON.stringify({ reasoningLevel: 'high' }));
+      .run(JSON.stringify({ schedule: { maxRunsPerDay: 3 } }));
+    sqlite.query(`INSERT INTO machine_settings(machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.connect_roots', ?, ?, ?)` )
+      .run(MACHINE_IDS.buildbox, JSON.stringify({ ['a'.repeat(64)]: PROJECTS[0].projectId, stale: 7 }), now, READER.id);
   } finally { sqlite.close(); }
 }
 

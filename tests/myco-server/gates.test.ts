@@ -1336,6 +1336,7 @@ describe('gates', () => {
       'session:admin POST /api/projects/{projectId}/unarchive',
       'session:admin POST /api/recovery/exports',
       'session:admin POST /api/recovery/exports/forget-unsettled',
+      'session:admin POST /api/settings/agent.tasks/repair',
       'session:admin POST /api/transcripts/reread',
       'session:admin POST /api/wake',
       'session:admin PUT /api/agents/{agentId}',

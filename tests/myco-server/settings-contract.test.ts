@@ -25,8 +25,7 @@ import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, schedule
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { taskFactsKey } from '@myco-server-worker/core/runs.js';
 import { titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
-import { CLAIM_SETTING_LEAVES, dispatchTask, prepareDispatch, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
-import { runtimeProbePreferences } from '@myco-server-worker/core/runtime-probe.js';
+import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';
 import { mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
 import { reconcileReleaseProvenance, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
@@ -200,14 +199,6 @@ const workerLogin = (harness: string): Array<[string, unknown]> => [[`agent.harn
 const modelFor = (harness: string, tier: ReasoningTier): Array<[string, unknown]> =>
   PROFILE_HARNESSES[harness]!.models[tier] === null ? [[`agent.reasoning_map.${harness}.${tier}`, MODEL_SAMPLES[harness]!]] : [];
 const harnessModule = 'core/harness.ts';
-const probeEndpoint = 'http://models.internal/v1';
-
-async function probeDispatch(r: Rig): Promise<unknown> {
-  const outcome = await prepareDispatch(r.env, 'container-smoke', 'proj_1');
-  return outcome.ok
-    ? { providerType: outcome.prepared.providerType, model: outcome.prepared.model, provider: outcome.prepared.provider }
-    : { reason: outcome.refusal };
-}
 
 function profileCases(): Record<string, BehaviorCase> {
   const out: Record<string, BehaviorCase> = {};
@@ -237,18 +228,6 @@ function profileCases(): Record<string, BehaviorCase> {
 
 /** Every live Deployment leaf's consumer and behavior case. Each invalid sample changes the result a read that ignored the leaf's rule would act on. */
 const CASES: Readonly<Record<string, BehaviorCase>> = {
-  'agent.provider.type': {
-    consumer: at(harnessModule, prepareDispatch), setup: () => [['agent.provider.base_url', probeEndpoint]],
-    value: () => 'openai-compatible', invalid: () => 42, invalidHolds: true, observe: probeDispatch,
-  },
-  'agent.provider.model': {
-    consumer: at(harnessModule, prepareDispatch), setup: () => [['agent.provider.type', 'openai-compatible'], ['agent.provider.base_url', probeEndpoint]],
-    value: () => 'probe-model', invalid: () => 42, observe: probeDispatch,
-  },
-  'agent.provider.base_url': {
-    consumer: at(harnessModule, prepareDispatch), setup: () => [['agent.provider.type', 'openai-compatible']],
-    value: () => probeEndpoint, invalid: () => 42, invalidHolds: true, observe: probeDispatch,
-  },
   'agent.scheduled_tasks_enabled': { consumer: at('core/scheduled-tasks.ts', runScheduledTasks), value: () => true, invalid: () => 1, observe: dispatched },
   'agent.scheduled_tasks_active_window_days': {
     consumer: at('core/scheduled-tasks.ts', decideTask), setup: () => [['agent.scheduled_tasks_enabled', true]],
@@ -435,6 +414,7 @@ describe('the settings contract', () => {
     const bound = SETTING_POLICIES.flatMap((policy) => policy.leaves);
     expect([...bound].sort()).toEqual([...LIVE_LEAVES].sort());
     expect(new Set(bound).size).toBe(bound.length);
+    expect(SETTING_POLICIES.find((policy) => policy.id === 'execution-profiles')?.owners).toContain('core/runtime-probe.ts');
   });
 
   it('gives every Deployment leaf a typed rule and a behavior case', () => {
@@ -514,8 +494,7 @@ describe('the settings contract', () => {
           expect(invalid.effective).toBeNull();
           expect({ leaf, held }).toEqual({ leaf, held: expect.objectContaining({ reason: expect.any(String) }) });
         } else if (means === undefined) {
-          expect({ leaf, reportedFallback: invalid.effective, consumerFallback: unset.effective })
-            .toEqual({ leaf, reportedFallback: behavior.invalidDocument ? null : unset.effective, consumerFallback: unset.effective });
+          if (behavior.invalidDocument) expect(invalid.effective).toBeNull();
           expect({ leaf, held }).toEqual({ leaf, held: before });
         }
         else if ('observed' in means) expect({ leaf, held }).toEqual({ leaf, held: means.observed });
@@ -524,6 +503,10 @@ describe('the settings contract', () => {
           expect((await put(r, leaf, means.value)).status).toBe(200);
           expect({ leaf, reportedFallback: invalid.effective }).toEqual({ leaf, reportedFallback: means.value });
           expect({ leaf, held }).toEqual({ leaf, held: await behavior.observe(r) });
+        }
+        if (!behavior.invalidHolds && !behavior.invalidDocument && invalid.effective !== null) {
+          expect({ leaf, fallbackWrite: (await put(r, leaf, invalid.effective)).status }).toEqual({ leaf, fallbackWrite: 200 });
+          expect({ leaf, reportedFallbackRuns: await behavior.observe(r) }).toEqual({ leaf, reportedFallbackRuns: held });
         }
 
         expect({ leaf, reset: await json(await reset(r, leaf)) }).toEqual({ leaf, reset: { applied: true } });
@@ -636,63 +619,22 @@ describe('stored settings that do not apply', () => {
   });
 
   for (const target of DEPLOYMENT_TARGETS) {
-    it(`probe preferences reported by Settings are the values the runtime dispatch uses on ${target}`, async () => {
+    it(`repairs the production stale task while retaining the live title backfill on ${target}`, async () => {
       const r = rigFor(target);
-      for (const [leaf, value] of [
-        ['agent.provider.type', 'openai-compatible'],
-        ['agent.provider.model', 'probe-model'],
-        ['agent.provider.base_url', probeEndpoint],
-      ] as const) expect((await put(r, leaf, value)).status).toBe(200);
-      const preferences = await runtimeProbePreferences(r.env.db, 'container-smoke');
-      expect(preferences).toEqual({ type: 'openai-compatible', model: 'probe-model', baseUrl: probeEndpoint });
-      for (const [leaf, actual] of [
-        ['agent.provider.type', preferences.type],
-        ['agent.provider.model', preferences.model],
-        ['agent.provider.base_url', preferences.baseUrl],
-      ] as const) expect((await row(r, leaf)).effective).toEqual(actual);
-      expect(await probeDispatch(r)).toEqual({ providerType: preferences.type, model: preferences.model,
-        provider: { type: preferences.type, model: preferences.model, baseUrl: preferences.baseUrl } });
+      expect((await put(r, 'agent.scheduled_tasks_enabled', true)).status).toBe(200);
+      const stored = {
+        'cortex-instructions': { schedule: { maxRunsPerDay: 3 } },
+        'title-summary': { schedule: { enabled: true } },
+      };
+      storedRaw(r, 'agent.tasks', JSON.stringify(stored));
+      expect(await row(r, 'agent.tasks')).toMatchObject({ stored, storedApplies: false, repair: 'clean-document' });
+      expect(await json(await r.fetch(await asOwnerPost('/api/settings/agent.tasks/repair', {})))).toEqual({ applied: true });
+      expect(await row(r, 'agent.tasks')).toMatchObject({ stored: { 'title-summary': { schedule: { enabled: true } } },
+        effective: { 'title-summary': { schedule: { enabled: true } } }, storedApplies: true });
+      expect((await row(r, 'agent.tasks')).repair).toBeUndefined();
+      expect(await titlingBackfillPolicy(r.env)).toMatchObject({ scheduledTasksEnabled: true, backfillEnabled: true, enabled: true });
+      expect((r.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { updated_by: string }).updated_by).toBe('mem_machine_1');
     });
-
-    it(`probe fields without their provider prerequisites do not claim to run on ${target}`, async () => {
-      const r = rigFor(target);
-      expect((await put(r, 'agent.provider.model', 'orphan-model')).status).toBe(200);
-      expect((await put(r, 'agent.provider.base_url', probeEndpoint)).status).toBe(200);
-      const model = await row(r, 'agent.provider.model');
-      const endpoint = await row(r, 'agent.provider.base_url');
-      expect(model).toMatchObject({ stored: 'orphan-model', effective: null, storedApplies: false, state: 'inactive' });
-      expect(endpoint).toMatchObject({ stored: probeEndpoint, effective: null, storedApplies: false, state: 'inactive' });
-      expect(await probeDispatch(r)).toEqual({ reason: 'probe_preferences_invalid' });
-    });
-
-    it(`reports an obsolete container provider and the dispatch refusal on ${target}`, async () => {
-      const r = rigFor(target);
-      storedRaw(r, 'agent.tasks', JSON.stringify({ 'container-smoke': { provider: 'retired-runtime' } }));
-      const answer = await row(r, 'agent.tasks');
-      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('container-smoke.provider') });
-      expect((answer.effective as Record<string, { provider: unknown }>)['container-smoke']?.provider).toBeNull();
-      expect(await probeDispatch(r)).toEqual({ reason: 'probe_preferences_invalid' });
-    });
-
-    for (const [label, storedModel, actualModel] of [
-      ['blank', '', null],
-      ['trimmed', '  probe-model  ', 'probe-model'],
-    ] as const) {
-      it(`reports a ${label} container model as the value dispatch actually uses on ${target}`, async () => {
-        const r = rigFor(target);
-        for (const [leaf, value] of [
-          ['agent.provider.type', 'openai-compatible'],
-          ['agent.provider.base_url', probeEndpoint],
-        ] as const) expect((await put(r, leaf, value)).status).toBe(200);
-        storedRaw(r, 'agent.tasks', JSON.stringify({ 'container-smoke': { model: storedModel } }));
-        const answer = await row(r, 'agent.tasks');
-        expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('container-smoke.model') });
-        expect((answer.effective as Record<string, { model: unknown }>)['container-smoke']?.model).toEqual(actualModel);
-        const preferences = await runtimeProbePreferences(r.env.db, 'container-smoke');
-        expect(preferences.model).toEqual(actualModel);
-        expect(await probeDispatch(r)).toMatchObject({ providerType: preferences.type, model: actualModel });
-      });
-    }
   }
 });
 

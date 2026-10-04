@@ -95,6 +95,8 @@ async function expectModels(page: Page): Promise<void> {
   const overrides = page.locator('[data-setting="agent.tasks"]');
   await expect(overrides).toContainText('cortex-instructions: this task no longer exists');
   await expect(overrides.getByRole('button', { name: 'Clear the stored value for Task overrides' })).toBeVisible();
+  await expect(overrides.getByRole('button', { name: 'Remove entries that no longer apply' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Container smoke test' })).toHaveCount(0);
   await expect(overrides.locator('[role="alert"]')).toHaveCount(0);
   // The switch to nomic-embed-text under way: its progress, what search uses meanwhile, and the admin's way out.
   const rebuild = page.locator('[data-embedding-switch="building"]');
@@ -117,8 +119,9 @@ async function expectCaptureSettings(page: Page): Promise<void> {
   await expect(page.getByRole('switch', { name: 'Create a project for it' })).toBeVisible();
   if (onFixture()) {
     const window = page.locator('[data-setting="import.window_days"]');
-    await expect(window).toContainText('In use: 30 days');
-    await expect(window).toContainText('Stored: old-value');
+    await expect(window).toContainText('Myco uses 30 days');
+    await expect(window.locator('pre')).toHaveCount(0);
+    await expect(window.getByRole('button', { name: 'Stored value', exact: true })).toBeVisible();
     await expect(window.getByRole('button', { name: 'Clear the stored value for Reach back at most' })).toBeVisible();
     await expect(window.locator('[role="alert"]')).toHaveCount(0);
   }
@@ -245,6 +248,15 @@ test.describe('My machines and the admin pages, as a member', () => {
         await expect(captured.getByRole('list', { name: 'Folders it captures' })).toHaveText('~/Repos');
         await expect(captured.getByRole('textbox', { name: 'Folder to capture' })).toBeVisible();
         await expect(dialog.getByRole('region', { name: 'Extra plan folders' })).toBeVisible();
+        const connections = dialog.getByRole('region', { name: 'Connected repositories' });
+        await expect(connections).toContainText('1 repository is configured');
+        await expect(connections.getByRole('button', { name: 'Remove entries that no longer apply' })).toBeVisible();
+        await expect(connections.locator('pre')).toHaveCount(0);
+        await connections.getByRole('button', { name: 'At next session start' }).click();
+        await expect(connections.locator('pre')).toContainText(fixtureProject().projectId);
+        await expect(connections.locator('pre')).not.toContainText('stale');
+        await connections.getByRole('button', { name: 'At next session start' }).click();
+        await expect(connections).toContainText('Myco doesn’t report when it applied.');
         await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);

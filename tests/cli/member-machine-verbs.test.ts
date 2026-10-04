@@ -135,9 +135,9 @@ describe('a joined member with no 1.4 vault', () => {
     leaf(rig, 'agent.limits.concurrent_runs', 2.5);
     const one = await verb('config', ['get', 'agent.limits.concurrent_runs'], rig.fetch);
     expect(one.answered).toBe(true);
-    expect(one.stdout.split('\n')).toEqual(['2.5', '(invalid: Expected a whole number. No limit applies until it is corrected or reset. No limit Effective value: null.)']);
+    expect(one.stdout.split('\n')).toEqual(['2.5', '(invalid: Expected a whole number. No limit applies until it is corrected or reset. No limit applies. The effective value is shown by this control.)']);
     const all = await verb('config', ['get'], rig.fetch);
-    expect(all.stdout).toContain('agent.limits.concurrent_runs = 2.5  (invalid: Expected a whole number. No limit applies until it is corrected or reset. No limit Effective value: null.)');
+    expect(all.stdout).toContain('agent.limits.concurrent_runs = 2.5  (invalid: Expected a whole number. No limit applies until it is corrected or reset. No limit applies. The effective value is shown by this control.)');
   });
 
   it('config refuses a Member leaf on get and set, and a Deployment write, and writes nothing', async () => {
@@ -200,7 +200,6 @@ describe('a joined member with no 1.4 vault', () => {
     const rig = await memberRig();
     join(rig);
     const shapes: Record<string, [string, string]> = {
-      'agent.provider.base_url': ['https://reader:hunter2@llm.example/v1?api_key=sk-inline#frag', 'https://llm.example/v1'],
       'embedding.base_url': ['reader:hunter2@llm.internal:8080/v1?key=sk-inline', 'llm.internal:8080/v1'],
       'embedding.provider': ['//reader:hunter2@h.example/p?q=sk-inline', '//h.example/p'],
       'instructions.template': [
@@ -218,13 +217,15 @@ describe('a joined member with no 1.4 vault', () => {
     for (const [name, [, shown]] of Object.entries(shapes)) {
       expect({ name, value: leaves.find((l) => l.leaf === name)?.value }).toEqual({ name, value: shown });
     }
-    expect(leaves.find((l) => l.leaf === 'agent.provider.base_url')?.updatedBy).toBe('mem_machine_1');
+    expect(leaves.some((l) => l.leaf.startsWith('agent.provider.'))).toBe(false);
+    expect(leaves.find((l) => l.leaf === 'embedding.base_url')?.updatedBy).toBe('mem_machine_1');
     for (const hidden of ['hunter2', 'reader', 'sk-inline', 'frag']) expect(text).not.toContain(hidden);
     expect(rig.rows('projects')).toBe(projects);
     expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM projects WHERE project_id = 'proj_never_seen'").get()).toEqual({ n: 0 });
 
-    const shown = await verb('config', ['get', 'agent.provider.base_url'], rig.fetch);
-    expect(shown.stdout).toBe('https://llm.example/v1');
+    const shown = await verb('config', ['get', 'embedding.base_url'], rig.fetch);
+    expect(shown.stdout.split('\n')[0]).toBe('llm.internal:8080/v1');
+    expect(shown.stdout).not.toContain('hunter2');
   });
 
   it('doctor reports the membership, the Deployment, the credential and the spool, and fails naming the missing capture', async () => {

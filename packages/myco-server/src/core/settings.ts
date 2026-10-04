@@ -2,7 +2,8 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { OUTCOME_TASKS, RETAINED_TASKS } from './task-catalogue.js';
+import { OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from './task-catalogue.js';
+import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import {
@@ -67,9 +68,6 @@ export type LeafSpec =
   | { readonly type: 'profile-model'; readonly harness: keyof typeof PROFILE_HARNESSES }
   | { readonly type: 'profile-effort'; readonly harness: keyof typeof PROFILE_HARNESSES }
   | { readonly type: 'credential-source' }
-  | { readonly type: 'probe-provider' }
-  | { readonly type: 'probe-model' }
-  | { readonly type: 'probe-base-url' }
   /**
    * A list of paths, without control characters: plan folders, each absolute, `~/`, or relative to wherever it is
    * resolved (`planFolderRefusal`); or, with `folders: 'capture'`, capture folders (`captureFolderRefusal`).
@@ -95,9 +93,6 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.limits.concurrent_runs': LIMIT_SPEC,
   'agent.limits.task_concurrent_runs': LIMIT_SPEC,
   'agent.limits.task_runs_per_hour': LIMIT_SPEC,
-  'agent.provider.base_url': { type: 'probe-base-url' },
-  'agent.provider.model': { type: 'probe-model' },
-  'agent.provider.type': { type: 'probe-provider' },
   ...Object.fromEntries(CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.map((tier) => [`agent.reasoning_map.${harness}.${tier}`, { type: 'profile-model', harness }]),
     ...REASONING_TIERS.map((tier) => [`agent.effort_map.${harness}.${tier}`, { type: 'profile-effort', harness }]),
@@ -177,13 +172,35 @@ const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
 
 /** Any ASCII control character but newline and tab; a stored setting is text a person edits, not a control stream. */
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
-const PROBE_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/;
-
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 /** The fields each retained task's consumers read. */
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
 const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
+const consumedTaskFields = (task: string): readonly string[] => {
+  if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
+  return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
+};
+
+/** Keep every live task field the Deployment can use, including values that hold its work pending correction. */
+export function cleanTaskDocument(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return Object.fromEntries(Object.entries(value).flatMap(([task, entry]) => {
+    if (!(RETAINED_TASKS as readonly string[]).includes(task)) return [];
+    if (!isRecord(entry)) return [[task, entry]];
+    const fields = consumedTaskFields(task);
+    const kept = Object.fromEntries(Object.entries(entry).flatMap(([field, held]) => {
+      if (!fields.includes(field)) return [];
+      if (field === 'harness' && (typeof held !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, held))) return [];
+      if (field === 'model' && (typeof entry.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, entry.harness))) return [];
+      if (field === 'schedule' && isRecord(held)) {
+        return [[field, Object.fromEntries(Object.entries(held).filter(([key]) => (SCHEDULE_FIELDS as readonly string[]).includes(key)))]];
+      }
+      return [[field, held]];
+    }));
+    return Object.keys(kept).length === 0 ? [] : [[task, kept]];
+  }));
+}
 
 /** Stored task fields that apply, and the named reasons other fields do not. */
 export function taskOverridesResolution(value: unknown): { effective: unknown; reasons: string[]; invalid: boolean } {
@@ -195,12 +212,12 @@ export function taskOverridesResolution(value: unknown): { effective: unknown; r
     if (!(RETAINED_TASKS as readonly string[]).includes(task)) { reasons.push(`${task}: this task no longer exists; its stored override is not used.`); continue; }
     if (!isRecord(entry)) { effective[task] = null; invalid = true; reasons.push(`${task}: the stored entry is not an object; this task waits for a valid override.`); continue; }
     const applied: Record<string, unknown> = {};
-    const fields: readonly string[] = task === 'container-smoke' ? ['provider', 'model', 'schedule'] : task === 'embedding-reconcile' ? ['schedule'] : TASK_FIELDS;
+    const fields = consumedTaskFields(task);
     for (const [field, held] of Object.entries(entry)) {
       const path = `${task}.${field}`;
       if (!fields.includes(field)) { reasons.push(`${path}: no consumer uses this field; it does not apply.`); continue; }
       if (field === 'harness' && (typeof held !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, held))) {
-        applied[field] = null; invalid = true; reasons.push(`${path}: ${JSON.stringify(held)} is not a supported agent; the worker cannot choose it.`); continue;
+        applied[field] = null; invalid = true; reasons.push(`${path}: the stored agent${typeof held === 'string' ? ` "${held}"` : ''} is not supported; the worker cannot choose it.`); continue;
       }
       if (field === 'reasoningLevel' && !isReasoningTier(held)) {
         applied[field] = null; invalid = true; reasons.push(`${path}: this tier is invalid; the task waits until it is corrected.`); continue;
@@ -259,7 +276,7 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
     if (isRecord(override)) {
       const oldEntry = isRecord(before) ? before : {};
       for (const field of Object.keys(override)) {
-        if (!(TASK_FIELDS as readonly string[]).includes(field) && JSON.stringify(override[field]) !== JSON.stringify(oldEntry[field])) return `${task}.${field}: field is not used by this task`;
+        if (!consumedTaskFields(task).includes(field) && JSON.stringify(override[field]) !== JSON.stringify(oldEntry[field])) return `${task}.${field}: field is not used by this task`;
       }
       if (override.harness !== undefined && override.harness !== oldEntry.harness && (typeof override.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, override.harness))) return `${task} agent choice: expected a supported agent`;
     }
@@ -362,14 +379,6 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unk
   if (spec.type === 'profile-model') return modelRefusal(spec.harness, value);
   if (spec.type === 'profile-effort') return effortRefusal(spec.harness, value);
   if (spec.type === 'credential-source') return value === 'deployment' || value === 'worker-login' ? null : 'choose the server login or worker login';
-  if (spec.type === 'probe-provider') return value === 'anthropic' || value === 'openai-compatible' ? null : 'choose Anthropic or an OpenAI-compatible endpoint for the container smoke test';
-  if (spec.type === 'probe-model') return typeof value === 'string' && value.trim() !== '' && !PROBE_CONTROL_CHARACTERS.test(value)
-    ? null : 'enter a model for the container smoke test';
-  if (spec.type === 'probe-base-url') {
-    if (typeof value !== 'string' || value.trim() === '' || PROBE_CONTROL_CHARACTERS.test(value)) return 'enter an HTTP endpoint for the container smoke test';
-    try { return ['http:', 'https:'].includes(new URL(value).protocol) ? null : 'enter an HTTP endpoint for the container smoke test'; }
-    catch { return 'enter an HTTP endpoint for the container smoke test'; }
-  }
   if (spec.type === 'path-list') return pathListViolation(spec, value);
   if (spec.type === 'root-map') return rootMapViolation(spec, value);
   if (spec.type === 'agent') return value === null || (typeof value === 'string' && Object.hasOwn(HARNESS_CREDENTIALS, value)) ? null : 'expected an agent a machine can run, or none';
@@ -440,6 +449,8 @@ export interface SettingsWriter {
   setEmbedding(choice: EmbeddingChoice, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Remove one configured leaf so its built-in value applies. */
   resetLeaf(leaf: string, actor: string, nowMs?: number): Promise<SettingsResult>;
+  /** Clear task entries and fields that have no consumer, while preserving the current live document. */
+  repairTaskDocument(actor: string, nowMs: number): Promise<SettingsResult>;
   /**
    * Set one task's schedule switch in the task overrides document, keeping every other field. An absent task entry or
    * schedule is created; a stored document, entry or schedule that is present and not an object is refused.
@@ -805,6 +816,32 @@ export function settingsWriter(
           return written;
         }
         await db.batch([db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf), resetRecord(leaf, actor, nowMs)]);
+        await rearm({ leaf });
+        return { applied: true };
+      });
+    },
+
+    async repairTaskDocument(actor, nowMs) {
+      const leaf = 'agent.tasks';
+      return withLeafWrite({ leaf, actor }, async () => {
+        const current = await db.prepare(`SELECT value, updated_at, updated_by FROM deployment_settings WHERE leaf = ?`)
+          .bind(leaf).first<{ value: string; updated_at: number; updated_by: string }>();
+        if (current === null) return { applied: true };
+        let stored: unknown;
+        try { stored = JSON.parse(current.value); }
+        catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the task overrides held by the server cannot be read' } };
+        }
+        const cleaned = cleanTaskDocument(stored);
+        if (cleaned === null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the task overrides held by the server are not an object' } };
+        if (JSON.stringify(cleaned) === JSON.stringify(stored)) return { applied: true };
+        const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, cleaned, stored);
+        if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+        const written = await db.prepare(`UPDATE deployment_settings SET value = ?, updated_at = ?, updated_by = ?
+          WHERE leaf = ? AND value = ? AND updated_at = ? AND updated_by = ?`)
+          .bind(JSON.stringify(cleaned), nowMs, actor, leaf, current.value, current.updated_at, current.updated_by).run();
+        if (written.meta.changes !== 1) return { applied: false, refusal: { reason: 'conflict', leaf } };
         await rearm({ leaf });
         return { applied: true };
       });

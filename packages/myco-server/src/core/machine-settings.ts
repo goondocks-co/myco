@@ -33,6 +33,7 @@ export const MACHINE_LEAF_SPECS: Readonly<Record<string, { spec: LeafSpec; defau
 
 export const MACHINE_LEAVES: readonly string[] = Object.keys(MACHINE_LEAF_SPECS);
 const MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS = 3;
+export const MACHINE_SETTINGS_SNAPSHOT_LIMIT = 5;
 
 /** One machine leaf as the dashboard reads it. */
 export interface MachineLeaf extends EffectiveSetting {
@@ -57,13 +58,13 @@ export async function machineAccess(db: RelationalStore, actorId: string, machin
 
 interface MachineSettingRow {
   leaf: string | null; value: string | null; updated_at: number | null; updated_by: string | null;
-  settings_revision: number; settings_cached_revision: string | null; settings_cached_values: string | null;
+  settings_revision: number; settings_cached_revision: string | null; settings_cached_values: string | null; settings_contract_supported: number;
 }
 
 /** Stored values and the revision their member last confirmed, read in one database snapshot. */
 export async function readMachineSettings(db: RelationalStore, machineId: string): Promise<MachineLeaf[]> {
   const { results } = await db.prepare(
-    `SELECT s.leaf, s.value, s.updated_at, s.updated_by, c.settings_revision, c.settings_cached_revision, c.settings_cached_values
+    `SELECT s.leaf, s.value, s.updated_at, s.updated_by, c.settings_revision, c.settings_cached_revision, c.settings_cached_values, c.settings_contract_supported
        FROM machine_claims c LEFT JOIN machine_settings s ON s.machine_id = c.machine_id WHERE c.machine_id = ?`,
   ).bind(machineId).all<MachineSettingRow>();
   const stored = new Map((results ?? []).filter((row) => row.leaf !== null).map((row) => [row.leaf, row]));
@@ -81,23 +82,23 @@ export async function readMachineSettings(db: RelationalStore, machineId: string
     const violation = row === undefined ? null : malformed ? 'The stored value cannot be read.' : leafRuleViolation(declared.spec, value);
     const invalid = violation !== null;
     const nextSource: SettingSource = invalid ? 'invalid' : row === undefined ? 'default' : 'configured';
-    const clearReason = declared.serverWritten === true ? 'Clear the stored value to remove unusable entries. Valid connections are kept.' : 'Clear the stored value to restore the default.';
+    const clearReason = declared.serverWritten === true ? 'Remove entries that no longer apply. Valid connections are kept.' : 'Clear the stored value to restore the default.';
     return { leaf, row, declared, value, resolved, violation, invalid, nextSource, clearReason };
   });
   const resolvedLeaves = Object.fromEntries(resolvedSettings.map(({ leaf, resolved }) => [leaf, resolved.effective]));
   const revision = `m${Number(claim?.settings_revision ?? 0)}-${await sha256Hex(JSON.stringify(resolvedLeaves))}`;
-  const appliedRevision = claim?.settings_cached_revision ?? null;
-  const appliedValues = claim?.settings_cached_values === null || claim?.settings_cached_values === undefined ? null : JSON.parse(claim.settings_cached_values) as Record<string, unknown>;
+  const supported = claim?.settings_contract_supported === 1;
+  const appliedRevision = supported ? claim?.settings_cached_revision ?? null : null;
+  const appliedValues = !supported || claim?.settings_cached_values === null || claim?.settings_cached_values === undefined ? null : JSON.parse(claim.settings_cached_values) as Record<string, unknown>;
   const application = appliedRevision === null ? 'unreported' : appliedRevision === revision ? 'applied' : 'pending';
-  const usage = application === 'applied' ? 'The machine uses' : 'The next session uses';
-  const applicationReason = application === 'applied' ? 'Applied by this machine.' : application === 'pending' ? 'Saved. Applies at the next session start.' : 'Applies at the next session start. This machine has not reported its cached settings yet.';
+  const applicationReason = application === 'applied' ? 'Applied by this machine.' : application === 'pending' ? 'Saved. Applies at the next session start.' : supported ? 'Applies at the next session start. This machine’s current cached settings are not confirmed.' : 'Applies at the next session start. This machine’s Myco doesn’t report when it applied.';
   return resolvedSettings.map(({ leaf, row, value, resolved, violation, invalid, nextSource, clearReason }) => {
     return {
       leaf, configured: row !== undefined, value, updatedAt: row?.updated_at === undefined ? null : Number(row.updated_at), updatedBy: row?.updated_by ?? null,
       stored: row === undefined ? null : value, effective: appliedValues?.[leaf] ?? null, nextEffective: resolved.effective, nextSource,
       source: application === 'unreported' ? 'unset' : application === 'pending' ? 'member-cache' : nextSource,
       state: invalid ? 'invalid' : application === 'applied' ? 'active' : 'inactive', storedApplies: row === undefined ? null : !invalid && application === 'applied',
-      reason: invalid ? `${resolved.refusal ?? violation} ${usage} ${JSON.stringify(resolved.effective)}. ${clearReason} ${applicationReason}` : applicationReason,
+      reason: invalid ? `${(resolved.refusal ?? violation ?? 'The stored value does not apply').replace(/[.!?]$/, '')}. The next session uses the valid entries or the default. ${clearReason} ${applicationReason}` : applicationReason,
       appliesTo: DEPLOYMENT_TARGETS, revision, application, appliedRevision,
       appliedValue: appliedValues?.[leaf] ?? null,
     };
@@ -166,6 +167,10 @@ export async function machineBlockFor(
 ): Promise<{ leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string } | null> {
   const claimed = await db.prepare(`SELECT 1 AS held FROM machine_claims WHERE machine_id = ? AND member_id = ?`).bind(machineId, memberId).first<{ held: number }>();
   if (claimed === null) return null;
+  if (support.machineSettingsFeature === true) {
+    await db.prepare(`UPDATE machine_claims SET settings_contract_supported = 1 WHERE machine_id = ? AND member_id = ?`)
+      .bind(machineId, memberId).run();
+  }
   const reportOrder = support.machineSettingsOrder;
   const ordered = support.machineSettingsFeature === true && reportOrder !== undefined && Number.isSafeInteger(reportOrder) && reportOrder >= 0;
   if (ordered && support.machineSettingsInvalidated === true) {
@@ -180,24 +185,34 @@ export async function machineBlockFor(
   } else if (ordered && isMachineSettingsRevision(support.machineSettingsRevision)) {
     const revision = support.machineSettingsRevision;
     await db.prepare(
-      `UPDATE machine_claims SET settings_cached_revision = ?, settings_cached_values = (
-         SELECT leaves FROM machine_settings_snapshots WHERE machine_id = ? AND revision = ?), settings_report_order = ?
-        WHERE machine_id = ? AND member_id = ? AND EXISTS (
-          SELECT 1 FROM machine_settings_snapshots WHERE machine_id = ? AND revision = ?)
+      `WITH reported AS (
+         SELECT COALESCE((SELECT leaves FROM machine_settings_snapshots WHERE machine_id = ? AND revision = ?),
+           CASE WHEN settings_cached_revision = ? THEN settings_cached_values ELSE NULL END) AS leaves
+           FROM machine_claims WHERE machine_id = ? AND member_id = ?)
+       UPDATE machine_claims SET settings_cached_revision = CASE WHEN (SELECT leaves FROM reported) IS NULL THEN NULL ELSE ? END,
+         settings_cached_values = (SELECT leaves FROM reported), settings_report_order = ?
+        WHERE machine_id = ? AND member_id = ?
           AND (settings_report_order < ? OR (settings_report_order = ? AND settings_cached_revision = ?))`,
-    ).bind(revision, machineId, revision, reportOrder, machineId, memberId, machineId, revision, reportOrder, reportOrder, revision).run();
+    ).bind(machineId, revision, revision, machineId, memberId, revision, reportOrder, machineId, memberId, reportOrder, reportOrder, revision).run();
   }
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt += 1) {
     const settings = await readMachineSettings(db, machineId);
     const leaves = Object.fromEntries(settings.map((leaf) => [leaf.leaf, leaf.nextEffective]));
     if (support.machineSettingsFeature !== true) return { leaves };
     const revision = settings[0]!.revision;
-    const sent = await db.prepare(
-      `INSERT INTO machine_settings_snapshots (machine_id, revision, leaves)
-         SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ? AND settings_revision = ?)
-         ON CONFLICT (machine_id, revision) DO UPDATE SET leaves = excluded.leaves`,
-    ).bind(machineId, revision, JSON.stringify(leaves), machineId, memberId, parseMachineSettingsRevision(revision)!.counter).run();
-    if (sent.meta.changes === 1) return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision };
+    const [sent] = await db.batch([
+      db.prepare(
+        `INSERT INTO machine_settings_snapshots (machine_id, revision, leaves, sent_order)
+           SELECT ?, ?, ?, COALESCE((SELECT MAX(sent_order) FROM machine_settings_snapshots WHERE machine_id = ?), 0) + 1
+             WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ? AND settings_revision = ?)
+           ON CONFLICT (machine_id, revision) DO UPDATE SET leaves = excluded.leaves, sent_order = excluded.sent_order`,
+      ).bind(machineId, revision, JSON.stringify(leaves), machineId, machineId, memberId, parseMachineSettingsRevision(revision)!.counter),
+      db.prepare(`DELETE FROM machine_settings_snapshots WHERE machine_id = ? AND revision NOT IN (
+          SELECT revision FROM machine_settings_snapshots WHERE machine_id = ? ORDER BY sent_order DESC LIMIT ?)
+          AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)`)
+        .bind(machineId, machineId, MACHINE_SETTINGS_SNAPSHOT_LIMIT, machineId, memberId),
+    ]);
+    if (sent!.meta.changes === 1) return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision };
   }
   throw new Error('Machine settings changed while preparing their revision.');
 }

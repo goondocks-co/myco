@@ -252,10 +252,10 @@ describe('Settings, in five sections', () => {
     const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
     expect(spores.getAttribute('aria-checked')).toBe('true');
     for (const [label, leaf, words] of [
-      ['Myco’s work', 'cortex.spores.inject_on_prompt_submit', 'In use: on'],
-      ['Models and keys', 'agent.reasoning_map.claude-code.low', 'In use: haiku'],
-      ['Capture and retention', 'import.window_days', 'When active: 7 days'],
-      ['Backups', 'backup.auto_interval_hours', 'In use: 6 hours'],
+      ['Myco’s work', 'cortex.spores.inject_on_prompt_submit', 'This setting is on'],
+      ['Models and keys', 'agent.reasoning_map.claude-code.low', 'Myco uses haiku'],
+      ['Capture and retention', 'import.window_days', 'When active, Myco uses 7 days'],
+      ['Backups', 'backup.auto_interval_hours', 'Myco uses 6 hours'],
     ]) {
       await section(label!);
       await waitFor(() => expect(statusOf(leaf!)).toContain(words!));
@@ -281,7 +281,7 @@ describe('Settings, in five sections', () => {
     mount('/settings/models');
     const claude = within(await group('Claude Code tiers'));
     expect(claude.getByLabelText('Sign in with')).toBeTruthy();
-    expect(statusOf(leaf)).toBe('In use: Server login · server default');
+    expect(statusOf(leaf)).toBe('Myco uses Server login (server default).');
     fireEvent.click(claude.getByLabelText('Sign in with'));
     fireEvent.click(await screen.findByRole('option', { name: 'Worker login' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -394,9 +394,9 @@ describe('Settings, in five sections', () => {
     await section('Myco’s work');
     await group('What sessions receive');
     // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
-    expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('In use: on · server default');
-    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('In use: 14 days · server default');
-    expect(statusOf('agent.limits.concurrent_runs')).toBe('In use: none · not set');
+    expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('This setting is on (server default).');
+    expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Myco uses 14 days (server default).');
+    expect(statusOf('agent.limits.concurrent_runs')).toBe('Myco uses none (not set).');
     expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('Not set');
     expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
@@ -432,7 +432,7 @@ describe('Settings, in five sections', () => {
     }));
     mount('/settings/models');
     await screen.findByLabelText('Embedding provider');
-    await waitFor(() => expect(statusOf('embedding.provider')).toBe('In use: Cloudflare Workers AI · bge-m3 (1024 dimensions)'));
+    await waitFor(() => expect(statusOf('embedding.provider')).toBe('Search uses Cloudflare Workers AI with bge-m3 (1024 dimensions).'));
     expect(screen.queryByLabelText('Embedding endpoint')).toBeNull();
     await pick('Embedding provider', 'OpenRouter');
     await waitFor(() => expect(statusOf('embedding.provider')).toContain('Choose a model below to switch search to OpenRouter.'));
@@ -567,7 +567,7 @@ describe('Settings, in five sections', () => {
     mount('/settings/models');
     await waitFor(() => expect(statusOf('embedding.provider')).toContain('Reset the provider'));
     expect(screen.getByRole('button', { name: 'Clear the stored value for Embedding provider' })).toBeTruthy();
-    expect(statusOf('embedding.provider')).toContain('In use: Cloudflare Workers AI · bge-m3');
+    expect(statusOf('embedding.provider')).toContain('Search uses Cloudflare Workers AI with bge-m3');
     expect(document.querySelector('[data-setting="embedding.provider"] [role="alert"]')).toBeNull();
   });
 
@@ -578,7 +578,7 @@ describe('Settings, in five sections', () => {
         : row) }),
     }));
     mount('/settings/models');
-    await waitFor(() => expect(statusOf('embedding.model')).toContain('In use: Cloudflare Workers AI · bge-m3'));
+    await waitFor(() => expect(statusOf('embedding.model')).toContain('Search uses Cloudflare Workers AI with bge-m3'));
     expect(statusOf('embedding.model')).toContain('blank stored model');
     expect(document.querySelector('[data-setting="embedding.model"] [role="alert"]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Embedding model' }));
@@ -627,7 +627,7 @@ describe('Settings, in five sections', () => {
       '/api/settings/worker.harness': (init) => { held = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
     }));
     mount('/settings');
-    await waitFor(() => expect(statusOf('worker.harness')).toBe('In use: none · not set'));
+    await waitFor(() => expect(statusOf('worker.harness')).toBe('Myco uses none (not set).'));
     await pick('Preferred agent', 'Codex');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: 'codex' } });
@@ -796,8 +796,8 @@ describe('Settings, in five sections', () => {
       const toggle = await screen.findByRole('switch', { name: label });
       expect({ label, on: toggle.getAttribute('aria-checked') === 'true' }).toEqual({ label, on });
     }
-    expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('In use: on · server default');
-    expect(statusOf('agent.scheduled_tasks_enabled')).toBe('In use: off · server default');
+    expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('This setting is on (server default).');
+    expect(statusOf('agent.scheduled_tasks_enabled')).toBe('This setting is off (server default).');
   });
 
   it('says what the server said was wrong with a value it refused', async () => {
@@ -1028,8 +1028,10 @@ it('shows retired task preferences as metadata outside the task-overrides editor
   const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
   expect((editor as HTMLTextAreaElement).value).not.toContain('provider');
   expect((editor as HTMLTextAreaElement).value).not.toContain('container-smoke');
-  expect(screen.getByTestId('retired-task-overrides').textContent).toContain('container-smoke');
-  expect(screen.getByTestId('retired-task-overrides').querySelectorAll('input,textarea,button')).toHaveLength(0);
+  const taskRow = editor.closest('[data-setting]') as HTMLElement;
+  expect(taskRow.querySelector('pre') === null).toBe(true);
+  fireEvent.click(within(taskRow).getByRole('button', { name: 'Stored value' }));
+  expect(taskRow.querySelector('pre')?.textContent).toContain('container-smoke');
 });
 it('describes weekly retention by the most recent weeks containing exports', () => {
   const field = LEAF_FIELDS.find(({ leaf }) => leaf === 'backup.retention.keep_weekly')!;
@@ -1064,7 +1066,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     const claude = within(await group('Claude Code tiers'));
     expect(claude.getAllByText(/^Models listed by your machines/)).toHaveLength(1);
     expect(document.querySelector('[data-model-listing="claude-code"]')?.textContent).toContain('Models listed by your machines 1 h ago, each with its own sign-in to Claude Code.');
-    expect(statusOf(leaf)).toBe('In use: haiku · server default');
+    expect(statusOf(leaf)).toBe('Myco uses haiku (server default).');
     fireEvent.click(claude.getByLabelText('Low tier model'));
     expect(await optionWords()).toEqual(['haiku: newest Haiku (now Haiku 4.5)', 'sonnet: newest Sonnet (now Sonnet 5.5)', 'Opus 4.8 (claude-opus-4-8)']);
     fireEvent.click(await screen.findByRole('option', { name: 'sonnet: newest Sonnet (now Sonnet 5.5)' }));
@@ -1123,7 +1125,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([CODEX]) }));
     mount('/settings/models');
     await group('Codex tiers');
-    expect(statusOf('agent.reasoning_map.codex.low')).toContain('In use: none');
+    expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
     fireEvent.click(within(await group('Codex tiers')).getByLabelText('Low tier model'));
     expect((await optionWords())[0]).toBe('GPT-6.1-Sol (gpt-6.1-sol), Codex’s default');
   });
@@ -1132,7 +1134,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([]) }));
     mount('/settings/models');
     await group('Codex tiers');
-    expect(statusOf('agent.reasoning_map.codex.low')).toContain('In use: none');
+    expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
   });
 
   it('offers a preset in plain words where a machine lists all its models, and applies it tier by tier through the same write', async () => {
@@ -1170,4 +1172,48 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     fireEvent.click(claude.getAllByRole('button', { name: 'Type a model name' })[0]!);
     expect(claude.getByLabelText('Low tier model').tagName).toBe('INPUT');
   });
+});
+
+
+it('repairs non-applying task entries separately from clearing all overrides', async () => {
+  const historic = { 'cortex-instructions': { schedule: { maxRunsPerDay: 3 } }, 'title-summary': { schedule: { enabled: true, intervalSeconds: 900, maxRunsPerDay: 24 } } };
+  let repaired = false;
+  const { sent } = server(base({
+    '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === 'agent.tasks' ? {
+      ...row, configured: true, stored: repaired ? { 'title-summary': historic['title-summary'] } : historic,
+      editableValue: repaired ? { 'title-summary': historic['title-summary'] } : historic,
+      effective: { 'title-summary': historic['title-summary'] }, repair: repaired ? undefined : 'clean-document', storedApplies: repaired,
+      reason: repaired ? null : 'The cortex-instructions task no longer exists.',
+    } : row) }),
+    '/api/settings/agent.tasks/repair': () => { repaired = true; return Response.json({ applied: true }); },
+  }));
+  mount('/settings/models');
+  const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
+  const row = within(editor.closest('[data-setting]') as HTMLElement);
+  expect((editor.closest('[data-setting]') as HTMLElement).querySelector('pre') === null).toBe(true);
+  expect(row.getByText('Clearing resets every task override, including imported-session titling.')).toBeTruthy();
+  fireEvent.click(row.getByRole('button', { name: 'Effective value' }));
+  const effectiveDisplay = (editor.closest('[data-setting]') as HTMLElement).querySelector('pre')!;
+  expect(effectiveDisplay.textContent).toContain('title-summary');
+  expect(effectiveDisplay.textContent).toContain('"enabled": true');
+  expect(effectiveDisplay.textContent).not.toContain('cortex-instructions');
+  fireEvent.click(row.getByRole('button', { name: 'Stored value' }));
+  expect((editor.closest('[data-setting]') as HTMLElement).textContent).toContain('cortex-instructions');
+  fireEvent.click(row.getByRole('button', { name: 'Remove entries that no longer apply' }));
+  await waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0]).toMatchObject({ method: 'POST', path: '/api/settings/agent.tasks/repair', body: {} });
+  await waitFor(() => expect((editor as HTMLTextAreaElement).value).not.toContain('cortex-instructions'));
+  expect((editor as HTMLTextAreaElement).value).toContain('"enabled": true');
+  expect(row.getByRole('button', { name: 'Clear the stored value for Task overrides' })).toBeTruthy();
+});
+
+it('keeps blank-input placeholders short and the reason in the status sentence', async () => {
+  const leaf = 'agent.limits.concurrent_runs';
+  const reason = 'No limit applies.';
+  server(base({ '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === leaf ? { ...row, effective: null, reason } : row) }) }));
+  mount('/settings');
+  await waitFor(() => expect(statusOf(leaf)).toContain(reason));
+  expect((screen.getByRole('spinbutton', { name: 'Tasks at once' }) as HTMLInputElement).placeholder).toBe('Not set');
+  expect(statusOf(leaf)).toContain('Myco uses none (not set).');
+  expect(screen.queryByRole('heading', { name: 'Container smoke test' })).toBeNull();
 });

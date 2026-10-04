@@ -7,6 +7,7 @@ import { harnessLabel } from '../../../lib/harness';
 import { providerLabel } from '../../../lib/providers';
 import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
+import { StoredValue } from '../StoredValue';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
 import { effectiveWords } from './LeafControl';
@@ -127,6 +128,7 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
       label={field.label}
       htmlFor={id}
       status={statusWords()}
+      details={row?.configured ? <StoredValue value={row.stored} /> : undefined}
       refused={error !== null}
       stacked
       control={(
@@ -156,6 +158,7 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
             </div>
             {row?.configured === true && !locked && <Button size="sm" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button>}
           </div>
+          {row?.configured && !locked && <p className="t-meta text-muted">Clearing restores this tier’s default model.</p>}
           {!locked && (
             <div className="flex flex-wrap gap-s2">
               {known?.upgrade !== undefined && (
