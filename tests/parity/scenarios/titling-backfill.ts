@@ -37,9 +37,7 @@ export const titlingBackfill: ParityScenario = {
     };
     const backfillRuns = () => target.sql(`SELECT status, json_extract(run_context, '$.session_id') AS sessionId, json_extract(run_context, '$.mode') AS mode
       FROM agent_runs WHERE task = 'title-summary' AND json_extract(dispatch_spec, '$.actor') = 'backfill' ORDER BY COALESCE(queued_at, started_at)`);
-    for (const [leaf, value] of [['agent.provider.type', 'openai-compatible'], ['agent.provider.model', 'parity-model'], ['agent.provider.base_url', 'http://models.internal/v1'], ['agent.scheduled_tasks_enabled', true]] as const) {
-      await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(leaf)}, ${lit(JSON.stringify(value))}, ${stamp}, ${lit(MEMBER_ID)})`);
-    }
+    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', ${stamp}, ${lit(MEMBER_ID)})`);
 
     // An import: one transcript segment holding a user prompt, and the closed session around it, all on the import channel.
     const session = `parity-backfill-${stamp}`;
