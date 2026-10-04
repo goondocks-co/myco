@@ -1,3 +1,4 @@
+import { isMemberOwnedTranscriptPath } from './transcript-routing.js';
 /**
  * Per-session member state under the spool dir: the spool high-water, the
  * current prompt, the prompts already captured, the transcript pointer, and
@@ -78,6 +79,8 @@ export interface SessionState {
   /** sha256(text) → promptId for every prompt this session has captured. */
   prompts: Record<string, string>;
   transcript?: TranscriptPointer;
+  /** Prior managed transcript files for the same primary session, keyed by path. */
+  continuations?: Record<string, TranscriptPointer>;
   /** The subagent transcripts found beside the session's own, keyed by path; each ships under its own pointer with role `subagent`. */
   siblings: Record<string, TranscriptPointer>;
   /** sha256(content) → planKey for every plan this session has emitted. */
@@ -148,7 +151,7 @@ export interface SessionState {
 
 /** Every transcript pointer a session holds: its own, then the subagent transcripts beside it. */
 export const pointersOf = (state: SessionState): TranscriptPointer[] =>
-  [...(state.transcript ? [state.transcript] : []), ...Object.values(state.siblings)];
+  [...(state.transcript ? [state.transcript] : []), ...Object.values(state.continuations ?? {}), ...Object.values(state.siblings)];
 
 /** Whether a transcript holds bytes on disk past what the Deployment acknowledged, and may still be sent them. */
 export function pointerBehind(pointer: TranscriptPointer): boolean {
@@ -179,6 +182,41 @@ export function turnsFileOf(spoolDir: string, sessionId: string): string {
 /** The buffer lock companion `EventBuffer` serializes appends on; session-state shares it. */
 export function bufferLockPath(spoolDir: string, sessionId: string): string {
   return path.join(spoolDir, `.${sessionId}.lock`);
+}
+
+/** Durable acknowledgement evidence for events copied from a legacy Project-only spool. */
+export function migrationSettledPath(spoolDir: string, sessionId: string): string {
+  return path.join(spoolDir, `.${sessionId}.migration-settled.json`);
+}
+
+export type MigrationSettledRead =
+  | { ok: true; eventIds: readonly string[] }
+  | { ok: false; reason: 'missing' | 'unreadable' | 'invalid' };
+
+/** Caller holds the session's buffer lock. Invalid evidence never reads as an empty ledger. */
+export function readMigrationSettledUnlocked(spoolDir: string, sessionId: string): MigrationSettledRead {
+  const read = readPrivateJson<{ version: number; eventIds: string[] }>(migrationSettledPath(spoolDir, sessionId));
+  if (!read.ok) return { ok: false, reason: read.reason === 'missing' ? 'missing' : 'unreadable' };
+  const ledger = read.value;
+  if (ledger?.version !== 1 || !Array.isArray(ledger.eventIds) || ledger.eventIds.some((id) => typeof id !== 'string' || id === '') ||
+      new Set(ledger.eventIds).size !== ledger.eventIds.length) return { ok: false, reason: 'invalid' };
+  return { ok: true, eventIds: ledger.eventIds };
+}
+
+/** Record settled migrated events before their journal can be deleted. Caller holds the buffer lock. */
+export function recordMigrationSettledUnlocked(spoolDir: string, sessionId: string, additions: readonly string[]): void {
+  if (additions.length === 0) return;
+  const read = readMigrationSettledUnlocked(spoolDir, sessionId);
+  if (!read.ok && read.reason !== 'missing') throw new Error(`Migration settlement ledger is ${read.reason}: ${sessionId}`);
+  const eventIds = read.ok ? [...read.eventIds] : [];
+  const seen = new Set(eventIds);
+  for (const eventId of additions) {
+    if (seen.has(eventId)) continue;
+    seen.add(eventId);
+    eventIds.push(eventId);
+  }
+  if (read.ok && eventIds.length === read.eventIds.length) return;
+  writePrivateFileAtomic(migrationSettledPath(spoolDir, sessionId), `${JSON.stringify({ version: 1, eventIds })}\n`);
 }
 
 function isState(value: unknown): value is SessionState {
@@ -254,6 +292,12 @@ export function writeSessionStateUnlocked(spoolDir: string, sessionId: string, s
   if (state.pendingLosses !== undefined) {
     new CaptureLossLedger(spoolDir).record(state.pendingLosses);
     delete state.pendingLosses;
+  }
+  const previous = readSessionStateResultUnlocked(spoolDir, sessionId);
+  const prior = previous.ok ? previous.state.transcript : undefined;
+  if (prior !== undefined && state.transcript !== undefined && prior.path !== state.transcript.path &&
+      isMemberOwnedTranscriptPath(prior.path)) {
+    state.continuations = { ...(previous.ok ? previous.state.continuations : {}), ...state.continuations, [prior.path]: prior };
   }
   trimTracked(state);
   state.updatedAt = now;

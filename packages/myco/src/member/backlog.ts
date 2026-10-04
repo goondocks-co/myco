@@ -23,7 +23,7 @@ import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import type { TranscriptDiscovery } from '../symbionts/manifest-schema.js';
-import { resolveTranscriptPath } from '../symbionts/transcript-discovery.js';
+import { sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
 import { clearNonRotatingRefusal, refreshDue, refreshMembership, rotatedCredential } from './refresh.js';
 import { type RegistryEntry } from './registry.js';
@@ -148,8 +148,7 @@ export function agentOfSession(
   if (file === undefined) return null;
   const target = path.resolve(file);
   const matches = manifests.filter((manifest) => {
-    const found = resolveTranscriptPath(manifest.capture?.transcriptDiscovery, sessionId);
-    return found !== null && path.resolve(found) === target;
+    return sessionIdFromTranscriptPath(manifest.capture?.transcriptDiscovery, target) === sessionId;
   });
   return matches.length === 1 ? matches[0].name : null;
 }
@@ -304,6 +303,7 @@ export async function drainEntryBacklog(
   entry: RegistryEntry,
   opts: {
     mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
+    credentialSource?: 'registry' | 'env';
     /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
     force?: boolean;
     /**
@@ -318,8 +318,9 @@ export async function drainEntryBacklog(
 ): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
+  const registryCredential = opts.credentialSource !== 'env';
   let current = entry;
-  if (refreshDue(entry, now())) {
+  if (registryCredential && refreshDue(entry, now())) {
     await refreshMembership(entry.serverUrl, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: opts.budget ?? unboundedBudget(), projectId: entry.projectId });
     current = liveRoutingEntry(entry, opts.mycoHome);
   }
@@ -334,14 +335,14 @@ export async function drainEntryBacklog(
     force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst,
     // A 401 on a live send: another process may have rotated this root's token, so the registry is re-read and the
     // record retried once.
-    onUnauthorized: async () => rotatedCredential(current.root, current, opts.mycoHome),
+    onUnauthorized: registryCredential ? async () => rotatedCredential(current.root, current, opts.mycoHome) : undefined,
     clientFor: (record) => new ServerClient(record, fetchImpl),
   });
   // A refused token is asked once whether it still rotates, so a refusal that is final is recorded and said.
-  if (report.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
+  if (registryCredential && report.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
     await refreshMembership(current.serverUrl, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget, force: true, projectId: current.projectId });
   }
   // An acknowledged send is the Deployment accepting this token after all: a refusal recorded against it no longer holds.
-  if (report.sessions.some((s) => (s.events?.acked ?? 0) > 0)) clearNonRotatingRefusal(current.serverUrl, current.token, opts.mycoHome, now);
+  if (registryCredential && report.sessions.some((s) => (s.events?.acked ?? 0) > 0)) clearNonRotatingRefusal(current.serverUrl, current.token, opts.mycoHome, now);
   return report;
 }

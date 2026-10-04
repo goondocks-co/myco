@@ -10,22 +10,22 @@
  * first record is older than `PENDING_TTL_MS` is discarded. Either end is recorded beside the spool (`HeldEnd`), so
  * the person is told, `myco member status` lists it, and the Deployment's "Needs you" row says it.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type TurnEndMark } from './spool.js';
-import { readRegistryEntry, readRegistryEntryResult } from './registry.js';
-import { readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
+import { deploymentKeyFor, deploymentUrl, readRegistryEntry, readRegistryEntryResult } from './registry.js';
+import { memberRoutingIdentity, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
+import { pointersOf, readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
 import { isProjectId } from './constants.js';
 import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
-import { ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
-import { deploymentKeyFor, deploymentUrl } from './registry.js';
+import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { admitMemberServerUrl } from './server-url.js';
-import { assertMemberPathContained } from './store.js';
+import { adoptPendingTranscript } from './transcript-routing.js';
 
 export const PENDING_DIRNAME = 'pending';
 /** How long capture waits for its repository to join before it is discarded. */
@@ -33,6 +33,8 @@ export const PENDING_TTL_MS = HELD_CAPTURE_TTL_MS;
 /** The most records one repository's pending spool holds; a hook past it spools nothing more. */
 export const PENDING_MAX_RECORDS = 2000;
 const META_FILE = 'pending.json';
+const ASSIGNMENT_FILE = 'assignment.json';
+const ASSIGNMENT_MARKER_FILE = 'legacy-assignment.json';
 const META_VERSION = 2;
 const ROOT_KEY = /^[0-9a-f]{16,64}$/;
 const DEPLOYMENT_KEY = /^[0-9a-f]{16,64}$/;
@@ -62,9 +64,15 @@ export interface PendingSummary {
   rootKey: string;
   root: string;
   serverUrl?: string;
+  assignedTo?: MemberRoutingIdentity;
   createdAt: number;
   sessions: number;
   records: number;
+}
+
+interface LegacyAssignment extends MemberRoutingIdentity {
+  rootKey: string;
+  at: number;
 }
 
 export function pendingRoot(mycoHome: string = resolveMycoHome()): string {
@@ -84,17 +92,49 @@ export function pendingDir(rootKey: string, mycoHome: string = resolveMycoHome()
 }
 
 function readMeta(dir: string): PendingMeta | null {
-  const read = readPrivateJson<PendingMeta>(path.join(dir, META_FILE));
-  if (!read.ok) return null;
+  const file = path.join(dir, META_FILE);
+  const read = readPrivateJson<PendingMeta>(file);
+  if (!read.ok) {
+    if (read.reason === 'missing') return null;
+    throw new Error(`Pending capture metadata unavailable (${read.reason}${read.detail ? `: ${read.detail}` : ''}): ${file}`);
+  }
   const value = read.value;
-  if (value === null || typeof value.root !== 'string' || !ROOT_KEY.test(value.rootKey) || typeof value.createdAt !== 'number') return null;
+  const invalid = (): never => { throw new Error(`Pending capture metadata invalid: ${file}`); };
+  if (value === null || typeof value.root !== 'string' || !ROOT_KEY.test(value.rootKey) || typeof value.createdAt !== 'number') return invalid();
   if (value.version === 1 && value.serverUrl === undefined && path.basename(dir) === value.rootKey && path.basename(path.dirname(dir)) === PENDING_DIRNAME) return value;
-  if (value.version !== META_VERSION || typeof value.serverUrl !== 'string') return null;
-  try {
-    return path.basename(dir) === value.rootKey && path.basename(path.dirname(dir)) === deploymentKeyFor(value.serverUrl)
-      && path.basename(path.dirname(path.dirname(dir))) === PENDING_DIRNAME
-      && value.serverUrl === normalizedServerUrl(value.serverUrl) ? value : null;
-  } catch { return null; }
+  if (value.version !== META_VERSION || typeof value.serverUrl !== 'string') return invalid();
+  const valid = path.basename(dir) === value.rootKey && path.basename(path.dirname(dir)) === deploymentKeyFor(value.serverUrl)
+    && path.basename(path.dirname(path.dirname(dir))) === PENDING_DIRNAME
+    && value.serverUrl === normalizedServerUrl(value.serverUrl);
+  return valid ? value : invalid();
+}
+
+function readDirectory(dir: string): string[] | null {
+  try { return fs.readdirSync(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir)) return null;
+    throw error;
+  }
+}
+
+function lstatEntry(file: string): fs.Stats | null {
+  try { return fs.lstatSync(file); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file)) return null;
+    throw error;
+  }
+}
+
+function readLegacyAssignment(file: string): LegacyAssignment | null {
+  const read = readPrivateJson<LegacyAssignment>(file);
+  if (!read.ok) {
+    if (read.reason === 'missing') return null;
+    throw new Error(`Legacy pending assignment unavailable (${read.reason}${read.detail ? `: ${read.detail}` : ''}): ${file}`);
+  }
+  const value = read.value;
+  if (value === null || !ROOT_KEY.test(value.rootKey) || typeof value.at !== 'number'
+    || typeof value.serverUrl !== 'string' || typeof value.projectId !== 'string') throw new Error(`Legacy pending assignment invalid: ${file}`);
+  const route = memberRoutingIdentity(value);
+  if (route.serverUrl !== value.serverUrl) throw new Error(`Legacy pending assignment invalid: ${file}`);
+  return value;
 }
 
 /** A pending obligation remains until its metadata is verifiably absent. */
@@ -114,13 +154,19 @@ const endedPath = (rootKey: string, mycoHome: string, serverUrl?: string): strin
 
 /** Where a repository's held capture ended, or null while it is held or was never held. */
 export function readHeldEnd(rootKey: string, mycoHome: string, serverUrl?: string): HeldEnd | null {
-  const read = readPrivateJson<HeldEnd>(endedPath(rootKey, mycoHome, serverUrl));
-  if (!read.ok) return null;
+  const file = endedPath(rootKey, mycoHome, serverUrl);
+  const read = readPrivateJson<HeldEnd>(file);
+  if (!read.ok) {
+    if (read.reason === 'missing') return null;
+    throw new Error(`Pending capture end unavailable (${read.reason}${read.detail ? `: ${read.detail}` : ''}): ${file}`);
+  }
   const value = read.value;
-  if (value?.held !== 'full' && value?.held !== 'expired') return null;
-  if (value.rootKey !== rootKey || typeof value.root !== 'string' || typeof value.at !== 'number') return null;
-  if (serverUrl === undefined) return value.version === 1 && value.serverUrl === undefined ? value : null;
-  return value.version === META_VERSION && value.serverUrl === normalizedServerUrl(serverUrl) ? value : null;
+  if (value?.held !== 'full' && value?.held !== 'expired') throw new Error(`Pending capture end invalid: ${file}`);
+  if (value.rootKey !== rootKey || typeof value.root !== 'string' || typeof value.at !== 'number') throw new Error(`Pending capture end invalid: ${file}`);
+  if (serverUrl === undefined) {
+    if (value.version !== 1 || value.serverUrl !== undefined) throw new Error(`Pending capture end invalid: ${file}`);
+  } else if (value.version !== META_VERSION || value.serverUrl !== normalizedServerUrl(serverUrl)) throw new Error(`Pending capture end invalid: ${file}`);
+  return value;
 }
 
 /** Record that a repository's capture is held no more, keeping the first such record until the capture is held again. */
@@ -147,8 +193,8 @@ export function listHeldEnds(mycoHome: string): HeldEnd[] {
 
 function pendingLocations(mycoHome: string, ended = false): Array<{ rootKey: string; serverUrl?: string; dir: string }> {
   const root = pendingRoot(mycoHome);
-  let names: string[];
-  try { names = fs.readdirSync(root); } catch { return []; }
+  const names = readDirectory(root);
+  if (names === null) return [];
   const suffix = ended ? '.ended.json' : '';
   const locations: Array<{ rootKey: string; serverUrl?: string; dir: string }> = [];
   for (const name of names) {
@@ -159,44 +205,66 @@ function pendingLocations(mycoHome: string, ended = false): Array<{ rootKey: str
     }
     if (!DEPLOYMENT_KEY.test(name)) continue;
     const directory = path.join(root, name);
-    try { if (!fs.statSync(directory).isDirectory()) continue; } catch { continue; }
+    const parent = lstatEntry(directory);
+    if (parent === null) continue;
+    if (!parent.isDirectory()) throw new Error(`Pending capture directory unavailable: ${directory}`);
     if (!ended && readMeta(directory)?.version === 1) {
       locations.push({ rootKey: name, dir: directory });
       continue;
     }
-    let nested: string[];
-    try { nested = fs.readdirSync(directory); } catch { continue; }
+    const nested = readDirectory(directory);
+    if (nested === null) continue;
     let foundNested = false;
     for (const leaf of nested) {
+      if (ended && !leaf.endsWith(suffix)) continue;
       const rootKey = suffix ? leaf.endsWith(suffix) ? leaf.slice(0, -suffix.length) : '' : leaf;
       if (!ROOT_KEY.test(rootKey)) continue;
       const file = path.join(directory, leaf);
       if (!ended) {
-        try { if (!fs.lstatSync(file).isDirectory()) continue; } catch { continue; }
+        const entry = lstatEntry(file);
+        if (entry === null) continue;
+        if (!entry.isDirectory()) throw new Error(`Pending capture directory unavailable: ${file}`);
       }
       foundNested = true;
-      const value = ended ? readPrivateJson<HeldEnd>(file) : readPrivateJson<PendingMeta>(path.join(file, META_FILE));
-      const serverUrl = value.ok ? value.value?.serverUrl : undefined;
-      locations.push({ rootKey, dir: ended ? path.join(directory, rootKey) : file,
-        ...(typeof serverUrl === 'string' && deploymentKeyFor(serverUrl) === name ? { serverUrl } : {}) });
+      if (ended) {
+        const read = readPrivateJson<HeldEnd>(file);
+        if (!read.ok) {
+          if (read.reason === 'missing') continue;
+          throw new Error(`Pending capture end unavailable (${read.reason}${read.detail ? `: ${read.detail}` : ''}): ${file}`);
+        }
+        const serverUrl = read.value?.serverUrl;
+        if (typeof serverUrl !== 'string' || deploymentKeyFor(serverUrl) !== name || serverUrl !== normalizedServerUrl(serverUrl)) {
+          throw new Error(`Pending capture end invalid: ${file}`);
+        }
+        locations.push({ rootKey, dir: path.join(directory, rootKey), serverUrl });
+      } else {
+        const meta = readMeta(file);
+        locations.push({ rootKey, dir: file, ...(meta === null ? {} : { serverUrl: meta.serverUrl }) });
+      }
     }
-    if (!ended && !foundNested && nested.includes(BLOBS_DIRNAME)) locations.push({ rootKey: name, dir: directory });
+    if (!ended && !foundNested && nested.some((leaf) => !leaf.endsWith('.ended.json'))) locations.push({ rootKey: name, dir: directory });
   }
   return locations;
 }
 
 function pendingPathsFor(rootKey: string, mycoHome: string): string[] {
   const root = pendingRoot(mycoHome);
-  let names: string[];
-  try { names = fs.readdirSync(root); } catch { return []; }
+  const names = readDirectory(root);
+  if (names === null) return [];
   const dirs: string[] = [];
   const add = (dir: string): void => {
-    try { if (fs.lstatSync(dir).isDirectory()) dirs.push(dir); } catch { /* absent */ }
+    const entry = lstatEntry(dir);
+    if (entry === null) return;
+    if (!entry.isDirectory()) throw new Error(`Pending capture directory unavailable: ${dir}`);
+    dirs.push(dir);
   };
   add(path.join(root, rootKey));
   for (const name of names) if (DEPLOYMENT_KEY.test(name)) {
     const parent = path.join(root, name);
-    try { if (fs.lstatSync(parent).isDirectory()) add(path.join(parent, rootKey)); } catch { /* absent */ }
+    const entry = lstatEntry(parent);
+    if (entry === null) continue;
+    if (!entry.isDirectory()) throw new Error(`Pending capture directory unavailable: ${parent}`);
+    add(path.join(parent, rootKey));
   }
   return [...new Set(dirs)];
 }
@@ -235,6 +303,59 @@ function ensurePendingMeta(repo: { root: string; rootKey: string; serverUrl?: st
   writePrivateFileAtomic(path.join(dir, META_FILE), `${JSON.stringify(meta)}\n`);
   clearHeldEnd(repo.rootKey, opts.mycoHome, repo.serverUrl);
   return dir;
+}
+
+/** Assign legacy held capture to one explicit Project route, leaving its original spool and receipt in place. */
+export function assignLegacyPending(
+  rootKey: string, route: MemberRoutingIdentity, opts: { mycoHome: string; now: number },
+): boolean {
+  const identity = memberRoutingIdentity(route);
+  return withPendingLock(rootKey, opts.mycoHome, () => {
+    const source = pendingDir(rootKey, opts.mycoHome);
+    assertMemberPathContained(source, opts.mycoHome);
+    const meta = readMeta(source);
+    if (meta === null) {
+      const entries = readDirectory(source);
+      if (entries === null || entries.length === 0) return false;
+      throw new Error(`Legacy pending capture metadata missing while capture remains held: ${source}`);
+    }
+    if (meta.version !== 1 || meta.rootKey !== rootKey) throw new Error('Legacy pending capture has no assignable source');
+    const receiptFile = path.join(source, ASSIGNMENT_FILE);
+    const receipt = readLegacyAssignment(receiptFile);
+    if (receipt !== null) {
+      if (receipt.rootKey !== rootKey || !sameRoutingIdentity(receipt, identity)) throw new Error('Legacy pending capture is assigned to another destination');
+      return false;
+    }
+
+    const destination = pendingDir(rootKey, opts.mycoHome, identity.serverUrl);
+    assertMemberPathContained(destination, opts.mycoHome);
+    const markerFile = path.join(destination, ASSIGNMENT_MARKER_FILE);
+    if (lstatEntry(destination) !== null) {
+      const marker = readLegacyAssignment(markerFile);
+      if (marker === null || marker.rootKey !== rootKey || !sameRoutingIdentity(marker, identity)) {
+        throw new Error('Pending destination already holds unrelated capture');
+      }
+      const copied = readMeta(destination);
+      if (copied === null || copied.root !== meta.root || copied.createdAt !== meta.createdAt) throw new Error('Pending assignment copy is incomplete');
+    } else {
+      const parent = path.dirname(destination);
+      ensureMemberDir(parent, opts.mycoHome);
+      const temporary = path.join(parent, `.assign-${rootKey}-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+      try {
+        fs.cpSync(source, temporary, { recursive: true, force: false, errorOnExist: true });
+        const pinned: PendingMeta = { version: META_VERSION, root: meta.root, rootKey, serverUrl: identity.serverUrl, createdAt: meta.createdAt };
+        writePrivateFileAtomic(path.join(temporary, META_FILE), `${JSON.stringify(pinned)}\n`);
+        const marker: LegacyAssignment = { ...identity, rootKey, at: opts.now };
+        writePrivateFileAtomic(path.join(temporary, ASSIGNMENT_MARKER_FILE), `${JSON.stringify(marker)}\n`);
+        fs.renameSync(temporary, destination);
+      } finally {
+        fs.rmSync(temporary, { recursive: true, force: true });
+      }
+    }
+    const assigned: LegacyAssignment = { ...identity, rootKey, at: opts.now };
+    writePrivateFileAtomic(receiptFile, `${JSON.stringify(assigned)}\n`);
+    return true;
+  });
 }
 
 function recordsIn(spool: MemberSpool): number {
@@ -338,6 +459,9 @@ function expireOne(rootKey: string, opts: { mycoHome: string; now: number; serve
 
 function expirePath(dir: string, opts: { mycoHome: string; now: number }): boolean {
   assertMemberPathContained(dir, opts.mycoHome);
+  // A repository-only legacy directory names no provable Deployment and remains held until explicit disposal.
+  if (path.dirname(dir) === pendingRoot(opts.mycoHome)) return false;
+  if (readLegacyAssignment(path.join(dir, ASSIGNMENT_MARKER_FILE)) !== null) return false;
   const meta = readMeta(dir);
   let since: number;
   if (meta !== null) {
@@ -346,7 +470,12 @@ function expirePath(dir: string, opts: { mycoHome: string; now: number }): boole
   }
   else {
     if (hasPendingCaptureAt(dir, opts.mycoHome)) return false;
-    try { since = fs.statSync(dir).mtimeMs; } catch { return false; }
+    const entries = readDirectory(dir);
+    if (entries === null) return false;
+    if (entries.some((entry) => entry !== BLOBS_DIRNAME)) throw new Error(`Pending capture metadata missing while capture remains held: ${dir}`);
+    const stat = lstatEntry(dir);
+    if (stat === null) return false;
+    since = stat.mtimeMs;
   }
   if (opts.now - since < PENDING_TTL_MS) return false;
   if (liveReferencesPending(dir, opts.mycoHome)) return false;
@@ -408,7 +537,9 @@ export function discardPending(rootKey: string, mycoHome: string): void {
     fs.rmSync(endedPath(rootKey, mycoHome), { force: true });
     for (const name of fs.readdirSync(root)) if (DEPLOYMENT_KEY.test(name)) {
       const parent = path.join(root, name);
-      try { if (!fs.lstatSync(parent).isDirectory()) continue; } catch { continue; }
+      const entry = lstatEntry(parent);
+      if (entry === null) continue;
+      if (!entry.isDirectory()) throw new Error(`Pending capture directory unavailable: ${parent}`);
       const file = path.join(parent, `${rootKey}.ended.json`);
       assertMemberPathContained(file, mycoHome);
       fs.rmSync(file, { force: true });
@@ -423,10 +554,16 @@ export function listPending(opts: { mycoHome: string; now: number }): PendingSum
     withPendingLock(rootKey, opts.mycoHome, () => {
       if (expirePath(dir, opts)) return;
       const meta = readMeta(dir);
-      if (meta === null) return;
+      if (meta === null) {
+        const entries = readDirectory(dir);
+        if (entries === null || (path.dirname(dir) !== pendingRoot(opts.mycoHome) && entries.every((entry) => entry === BLOBS_DIRNAME))) return;
+        throw new Error(`Pending capture metadata missing while capture remains held: ${dir}`);
+      }
       const spool = new MemberSpool(null, { mycoHome: opts.mycoHome, dir, initialize: false });
       const sessions = spool.sessionIds();
+      const assigned = serverUrl === undefined ? readLegacyAssignment(path.join(dir, ASSIGNMENT_FILE)) : null;
       found.push({ rootKey, root: meta.root, ...(serverUrl === undefined ? {} : { serverUrl }), createdAt: meta.createdAt,
+        ...(assigned === null ? {} : { assignedTo: { serverUrl: assigned.serverUrl, projectId: assigned.projectId } }),
         sessions: sessions.length, records: sessions.reduce((n, id) => n + spool.readRecords(id).length, 0) });
     });
   }
@@ -455,6 +592,12 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
   const dir = pendingDir(rootKey, opts.mycoHome, route.serverUrl);
   const meta = readMeta(dir);
   if (meta === null || meta.serverUrl !== normalizedServerUrl(route.serverUrl)) return 0;
+  const marker = readLegacyAssignment(path.join(dir, ASSIGNMENT_MARKER_FILE));
+  if (marker !== null) {
+    const receipt = readLegacyAssignment(path.join(pendingDir(rootKey, opts.mycoHome), ASSIGNMENT_FILE));
+    if (receipt === null || marker.rootKey !== rootKey || receipt.rootKey !== rootKey
+      || !sameRoutingIdentity(marker, route) || !sameRoutingIdentity(receipt, route)) return 0;
+  }
   const held = new MemberSpool(null, { mycoHome: opts.mycoHome, dir, initialize: false });
   let moved = 0;
   let blocked = false;
@@ -500,6 +643,13 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
       continue;
     }
     const heldState = state.ok ? state.state : readSessionState(dir, sessionId);
+    try {
+      for (const pointer of pointersOf(heldState)) adoptPendingTranscript(pointer.path, route, opts.mycoHome, rootKey);
+    } catch (err) {
+      process.stderr.write(`[myco] member: pending transcript ${sessionId} unavailable (${(err as Error).message}) — kept for retry\n`);
+      blocked = true;
+      continue;
+    }
     if (run.length > 0 && !into.prependRecovered(sessionId, run, opts.now)) {
       blocked = true;
       continue;
@@ -545,8 +695,12 @@ function removeEmpty(dir: string): void {
  * recorded stands, and what only the held state recorded is added.
  */
 export function mergeHeldState(target: SessionState, held: SessionState): void {
+  if (held.transcript !== undefined && target.transcript !== undefined && held.transcript.path !== target.transcript.path) {
+    (target.continuations ??= {})[held.transcript.path] = held.transcript;
+  }
   target.transcript ??= held.transcript;
   target.siblings = { ...held.siblings, ...target.siblings };
+  target.continuations = { ...held.continuations, ...target.continuations };
   target.prompts = { ...held.prompts, ...target.prompts };
   target.promptId ??= held.promptId;
   target.planHashes = { ...held.planHashes, ...target.planHashes };

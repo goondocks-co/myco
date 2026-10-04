@@ -28,7 +28,7 @@ import { isSafeProjectRoot } from '../project-root.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { runGitAnswer } from '../utils/git.js';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
-import { assertMemberPathContained, ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
@@ -52,6 +52,23 @@ const IMPORTS_DIRNAME = 'imports';
 const ROOT_KEY_PATTERN = /^[0-9a-f]{16,64}$/;
 const DEPLOYMENT_KEY_PATTERN = /^[0-9a-f]{16,64}$/;
 
+function readDirectoryIfPresent(dir: string): string[] | null {
+  try { return fs.readdirSync(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir)) return null;
+    throw error;
+  }
+}
+
+function directoryPresent(dir: string): boolean {
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir)) return false;
+    throw error;
+  }
+  if (!stat.isDirectory()) throw new Error(`Auto-join directory unavailable: ${dir}`);
+  return true;
+}
+
 function scopedFile(bucket: string, rootKey: string, mycoHome: string, serverUrl?: string, projectId?: string): string {
   if (!ROOT_KEY_PATTERN.test(rootKey)) throw new Error('Invalid auto-join repository key');
   if (projectId !== undefined && !isProjectId(projectId)) throw new Error('Invalid auto-join project id');
@@ -60,18 +77,21 @@ function scopedFile(bucket: string, rootKey: string, mycoHome: string, serverUrl
 }
 
 function scopedFiles(bucket: string, rootKey: string, mycoHome: string, projects = false): string[] {
+  if (!ROOT_KEY_PATTERN.test(rootKey)) throw new Error('Invalid auto-join repository key');
   const base = path.join(autoJoinDir(mycoHome), bucket);
-  let deployments: string[];
-  try { deployments = fs.readdirSync(base).filter((name) => DEPLOYMENT_KEY_PATTERN.test(name)); } catch { return []; }
+  const names = readDirectoryIfPresent(base);
+  if (names === null) return [];
+  const deployments = names.filter((name) => DEPLOYMENT_KEY_PATTERN.test(name));
   const files: string[] = [];
   for (const deployment of deployments) {
     const dir = path.join(base, deployment);
-    try { if (!fs.lstatSync(dir).isDirectory()) continue; } catch { continue; }
+    if (!directoryPresent(dir)) continue;
     if (!projects) { files.push(path.join(dir, `${rootKey}.json`)); continue; }
-    let projectIds: string[];
-    try { projectIds = fs.readdirSync(dir).filter(isProjectId); } catch { continue; }
+    const leaves = readDirectoryIfPresent(dir);
+    if (leaves === null) continue;
+    const projectIds = leaves.filter(isProjectId);
     for (const projectId of projectIds) {
-      try { if (fs.lstatSync(path.join(dir, projectId)).isDirectory()) files.push(path.join(dir, projectId, `${rootKey}.json`)); } catch { /* absent */ }
+      if (directoryPresent(path.join(dir, projectId))) files.push(path.join(dir, projectId, `${rootKey}.json`));
     }
   }
   for (const file of files) assertMemberPathContained(file, mycoHome);
@@ -91,8 +111,8 @@ function latestByRoute<T extends { rootKey: string; serverUrl?: string; projectI
 
 function listedFiles(bucket: string, mycoHome: string, projects = false): string[] {
   const base = path.join(autoJoinDir(mycoHome), bucket);
-  let names: string[];
-  try { names = fs.readdirSync(base); } catch { return []; }
+  const names = readDirectoryIfPresent(base);
+  if (names === null) return [];
   const files: string[] = [];
   for (const name of names) {
     if (ROOT_KEY_PATTERN.test(name.slice(0, -'.json'.length)) && name.endsWith('.json')) {
@@ -101,13 +121,16 @@ function listedFiles(bucket: string, mycoHome: string, projects = false): string
     }
     if (!DEPLOYMENT_KEY_PATTERN.test(name)) continue;
     const dir = path.join(base, name);
-    let leaves: string[];
-    try { if (!fs.lstatSync(dir).isDirectory()) continue; leaves = fs.readdirSync(dir); } catch { continue; }
+    if (!directoryPresent(dir)) continue;
+    const leaves = readDirectoryIfPresent(dir);
+    if (leaves === null) continue;
     for (const leaf of leaves) {
       if (projects) {
         if (!isProjectId(leaf)) continue;
-        let nested: string[];
-        try { if (!fs.lstatSync(path.join(dir, leaf)).isDirectory()) continue; nested = fs.readdirSync(path.join(dir, leaf)); } catch { continue; }
+        const projectDir = path.join(dir, leaf);
+        if (!directoryPresent(projectDir)) continue;
+        const nested = readDirectoryIfPresent(projectDir);
+        if (nested === null) continue;
         for (const file of nested) if (ROOT_KEY_PATTERN.test(file.slice(0, -'.json'.length)) && file.endsWith('.json')) files.push(path.join(dir, leaf, file));
       } else if (ROOT_KEY_PATTERN.test(leaf.slice(0, -'.json'.length)) && leaf.endsWith('.json')) files.push(path.join(dir, leaf));
     }
@@ -311,10 +334,15 @@ export function placeRepository(
 
 function readStateFile(file: string): AutoJoinState | null {
   const read = readPrivateJson<AutoJoinState>(file);
-  if (!read.ok) return null;
+  if (!read.ok) {
+    if (read.reason !== 'missing') reportSkippedPrivateFile('auto-join state', file, read);
+    return null;
+  }
   const value = read.value;
-  return value?.version === STATE_VERSION && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
-    && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey) ? value : null;
+  if (value?.version === STATE_VERSION && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
+    && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)) return value;
+  reportSkippedPrivateFile('auto-join state', file, { reason: 'invalid' });
+  return null;
 }
 
 export function readAutoJoinState(rootKey: string, mycoHome: string, serverUrl?: string): AutoJoinState | null {
@@ -347,8 +375,8 @@ export function forgetAutoJoinState(rootKey: string, mycoHome: string): void {
 
 /** Every repository auto-join has tried, newest attempt first. */
 export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
-  let legacy: string[];
-  try { legacy = fs.readdirSync(autoJoinDir(mycoHome)).filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)).map((name) => path.join(autoJoinDir(mycoHome), name)); } catch { legacy = []; }
+  const legacy = (readDirectoryIfPresent(autoJoinDir(mycoHome)) ?? [])
+    .filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)).map((name) => path.join(autoJoinDir(mycoHome), name));
   const byRoute = new Map<string, AutoJoinState>();
   for (const file of [...legacy, ...listedFiles('states', mycoHome)]) {
     const state = readStateFile(file);
@@ -431,12 +459,22 @@ export function requestJoin(root: string, rootKey: string, serverUrl: string, my
 /** Every repository waiting for an attempt, the oldest asked first. */
 export function listJoinRequests(mycoHome: string): JoinRequest[] {
   const rows = listedFiles(REQUESTS_DIRNAME, mycoHome)
-    .map((file) => ({ file, read: readPrivateJson<JoinRequest>(file) }))
-    .flatMap(({ file, read }) => (read.ok && typeof read.value?.root === 'string' && ROOT_KEY_PATTERN.test(read.value.rootKey)
-      && typeof read.value.at === 'number' && path.basename(file) === `${read.value.rootKey}.json`
-      && (read.value.serverUrl === undefined || typeof read.value.serverUrl === 'string')
-      && (path.dirname(file) === path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME)
-        || (read.value.serverUrl !== undefined && path.basename(path.dirname(file)) === deploymentKeyFor(read.value.serverUrl))) ? [read.value] : []));
+    .map((file) => {
+      const read = readPrivateJson<JoinRequest>(file);
+      if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('auto-join request', file, read);
+      return { file, read };
+    })
+    .flatMap(({ file, read }) => {
+      if (!read.ok) return [];
+      const value = read.value;
+      if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+        && typeof value.at === 'number' && path.basename(file) === `${value.rootKey}.json`
+        && (value.serverUrl === undefined || typeof value.serverUrl === 'string')
+        && (path.dirname(file) === path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME)
+          || (value.serverUrl !== undefined && path.basename(path.dirname(file)) === deploymentKeyFor(value.serverUrl)))) return [value];
+      reportSkippedPrivateFile('auto-join request', file, { reason: 'invalid' });
+      return [];
+    });
   return latestByRoute(rows, false);
 }
 
@@ -477,13 +515,23 @@ export function queueImport(record: PendingImport, mycoHome: string): void {
 /** Every joined repository whose past sessions are still to bring, the oldest joined first. */
 export function listPendingImports(mycoHome: string): PendingImport[] {
   const rows = listedFiles(IMPORTS_DIRNAME, mycoHome, true)
-    .map((file) => ({ file, read: readPrivateJson<PendingImport>(file) }))
-    .flatMap(({ file, read }) => (read.ok && typeof read.value?.root === 'string' && ROOT_KEY_PATTERN.test(read.value.rootKey)
-      && isProjectId(read.value.projectId) && typeof read.value.serverUrl === 'string' && typeof read.value.at === 'number'
-      && path.basename(file) === `${read.value.rootKey}.json`
-      && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
-        || (path.basename(path.dirname(file)) === read.value.projectId
-          && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(read.value.serverUrl))) ? [read.value] : []));
+    .map((file) => {
+      const read = readPrivateJson<PendingImport>(file);
+      if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('pending import', file, read);
+      return { file, read };
+    })
+    .flatMap(({ file, read }) => {
+      if (!read.ok) return [];
+      const value = read.value;
+      if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+        && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
+        && path.basename(file) === `${value.rootKey}.json`
+        && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
+          || (path.basename(path.dirname(file)) === value.projectId
+            && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) return [value];
+      reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
+      return [];
+    });
   return latestByRoute(rows, true);
 }
 
@@ -539,7 +587,9 @@ const seenPath = (rootKey: string, mycoHome: string, serverUrl?: string): string
   : scopedFile('sessions', rootKey, mycoHome, serverUrl);
 
 function readSeen(rootKey: string, mycoHome: string, serverUrl?: string): SeenSessions {
-  const read = readPrivateJson<SeenSessions>(seenPath(rootKey, mycoHome, serverUrl));
+  const file = seenPath(rootKey, mycoHome, serverUrl);
+  const read = readPrivateJson<SeenSessions>(file);
+  if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('auto-join sessions', file, read);
   return read.ok && Array.isArray(read.value?.seen) && typeof read.value.unreported === 'number' ? read.value : { seen: [], unreported: 0 };
 }
 

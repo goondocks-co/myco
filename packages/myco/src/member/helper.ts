@@ -23,7 +23,8 @@ import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { selfExec } from '../runtime/self-exec.js';
 import { spawnDetached, startedContained, type DetachedSpawn, type DetachedStart } from '../runtime/spawn-detached.js';
 import { ensureMemberDir } from './store.js';
-import { spoolDirFor } from './spool.js';
+import { MemberSpool, spoolDirFor } from './spool.js';
+import { deploymentUrl } from './registry.js';
 import { autoJoinDir, JOIN_BUCKET } from './auto-join.js';
 
 export const HELPER_LOCK_FILE = 'helper.lock';
@@ -65,6 +66,13 @@ export function helperPaths(projectId: string, mycoHome: string, serverUrl?: str
     probe: path.join(dir, HELPER_PROBE_FILE),
     starting: path.join(dir, HELPER_STARTING_FILE),
   };
+}
+
+function initializedHelperPaths(opts: { projectId: string; serverUrl?: string; mycoHome: string }): HelperPaths {
+  if (opts.projectId !== JOIN_BUCKET) new MemberSpool({ projectId: opts.projectId, serverUrl: opts.serverUrl ?? '' }, { mycoHome: opts.mycoHome });
+  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
+  ensureMemberDir(path.dirname(paths.dirty), opts.mycoHome);
+  return paths;
 }
 
 /**
@@ -115,7 +123,7 @@ export function kickHelper(opts: { projectId: string; serverUrl?: string; mycoHo
  * itself. A running helper still sees the marks; one started later reads them.
  */
 export function markWork(opts: { projectId: string; serverUrl?: string; mycoHome: string; reason?: KickReason }): void {
-  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
+  const paths = initializedHelperPaths(opts);
   ensureMemberDir(path.dirname(paths.dirty), opts.mycoHome);
   fs.writeFileSync(paths.dirty, '', { mode: 0o600 });
   if (opts.reason === 'turn-end' || opts.reason === 'session-end') fs.writeFileSync(paths.probe, '', { mode: 0o600 });
@@ -131,7 +139,7 @@ function startHelper(opts: {
   why: string; fallback: string;
 }): KickOutcome {
   const now = opts.now ?? Date.now;
-  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
+  const paths = initializedHelperPaths(opts);
   const probe = LifecycleLock.acquire(paths.lock, { command: 'myco member helper (probe)' });
   if (!probe.acquired) return { kind: 'running', contained: probe.holder?.contained === true };
   probe.lock.release();
@@ -148,12 +156,12 @@ function startHelper(opts: {
   }
   if (!start.started) {
     try { fs.unlinkSync(paths.starting); } catch { /* not claimed */ }
-    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} could not start a helper; ${opts.fallback}`);
+    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} could not start a helper; ${opts.fallback}`, opts.serverUrl);
     return { kind: 'failed' };
   }
   writeStart(paths.starting, { at: now(), pid: start.pid, ...(start.contained ? { contained: true } : {}) });
   if (start.contained) {
-    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} started a helper inside the caller's Job Object, which ends it with the caller; ${opts.fallback}`);
+    appendHelperLog(opts.mycoHome, opts.projectId, `[myco] helper: ${opts.why} started a helper inside the caller's Job Object, which ends it with the caller; ${opts.fallback}`, opts.serverUrl);
     return { kind: 'started', contained: true };
   }
   return { kind: 'started', contained: false };
@@ -294,7 +302,7 @@ export async function runHelper(opts: HelperRunOptions): Promise<HelperRunResult
   const deadline = now() + (opts.deadlineMs ?? HELPER_DEADLINE_MS);
   const linger = opts.lingerMs ?? HELPER_LINGER_MS;
   const poll = opts.pollMs ?? HELPER_POLL_MS;
-  const paths = helperPaths(opts.projectId, opts.mycoHome, opts.serverUrl);
+  const paths = initializedHelperPaths(opts);
   ensureMemberDir(path.dirname(paths.lock), opts.mycoHome);
   const dirty = (): boolean => fs.existsSync(paths.dirty);
   /** Remove a mark, answering whether it was there: a kick after the removal writes it again, for the next look. */
@@ -386,14 +394,14 @@ export function helperLogPath(mycoHome: string): string {
  * there is a line someone reading `myco member status` or a bug report needs. The log is rotated once past
  * `HELPER_LOG_MAX_BYTES`, keeping one older file. Answers the call that puts stderr back.
  */
-export function routeStderrToHelperLog(mycoHome: string, projectId: string): () => void {
+export function routeStderrToHelperLog(mycoHome: string, projectId: string, serverUrl?: string): () => void {
   const file = helperLogPath(mycoHome);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   try {
     if (fs.statSync(file).size > HELPER_LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`);
   } catch { /* no log yet */ }
   const write = (chunk: unknown): boolean => {
-    appendHelperLog(mycoHome, projectId, String(chunk));
+    appendHelperLog(mycoHome, projectId, String(chunk), serverUrl);
     return true;
   };
   const stream = process.stderr as unknown as { write: (chunk: unknown) => boolean };
@@ -402,11 +410,11 @@ export function routeStderrToHelperLog(mycoHome: string, projectId: string): () 
   return () => { stream.write = original; };
 }
 
-/** One line in the helper's log, stamped with the time and the project. A log that cannot be written costs the line. */
-export function appendHelperLog(mycoHome: string, projectId: string, line: string): void {
+/** One line in the helper's log, stamped with the time and buffered destination. A log that cannot be written costs the line. */
+export function appendHelperLog(mycoHome: string, projectId: string, line: string, serverUrl?: string): void {
   const file = helperLogPath(mycoHome);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, `${new Date().toISOString()} ${projectId} ${line}${line.endsWith('\n') ? '' : '\n'}`);
+    fs.appendFileSync(file, `${new Date().toISOString()} ${serverUrl === undefined ? projectId : `${deploymentUrl(serverUrl)} ${projectId}`} ${line}${line.endsWith('\n') ? '' : '\n'}`);
   } catch { /* a log that cannot be written costs the line, never the work */ }
 }

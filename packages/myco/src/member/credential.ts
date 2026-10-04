@@ -13,7 +13,7 @@ import { memberHomeFor } from './home-for-folder.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
 import { JOIN_CODE_REFUSALS, parseJoinCode } from './join-code.js';
-import { deploymentUrl, readRegistryEntry, type RegistryEntry } from './registry.js';
+import { deploymentUrl, readRegistryEntryResult, type RegistryEntry } from './registry.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 
 export { CREDENTIAL_FLAG, type CredentialSource };
@@ -105,10 +105,15 @@ export function resolveCredential(
   const cwd = opts.cwd ?? process.cwd();
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? memberHomeFor(cwd, opts.env).home;
-  const entry = readRegistryEntry(root, mycoHome);
+  const lookup = readRegistryEntryResult(root, mycoHome);
+  const entry = lookup.status === 'present' ? lookup.entry : null;
   if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {
-    if (opts.claimsUnconnected?.(root) === true) return null;
+    if (lookup.status === 'missing' && opts.claimsUnconnected?.(root) === true) return null;
+    if (lookup.status === 'unavailable') {
+      stderr(`registry binding for ${root} is unavailable — no capture; restore its Deployment membership`);
+      return null;
+    }
     // The hook still exits 0 — a non-zero hook breaks the harness — so the
     // miss is counted under the home this invocation resolved, where
     // `myco member status` reads it back.

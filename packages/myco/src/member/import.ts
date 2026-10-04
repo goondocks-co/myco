@@ -1,3 +1,5 @@
+import { defaultMembership } from './default-deployment.js';
+import { assertMemberTranscriptDestination, TranscriptDestinationError } from './transcript-routing.js';
 /**
  * Bringing a machine's existing agent history to a Deployment (#1148).
  *
@@ -42,7 +44,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import { unboundedBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
-import { deploymentUrl, listRegistryEntries, type RegistryEntry } from './registry.js';
+import { deploymentUrl, listRegistryEntries, readRegistryEntryResult, type RegistryEntry } from './registry.js';
 import { MemberSpool } from './spool.js';
 import { legacySessionsToLeaveOut } from './legacy-ledger.js';
 import { readSessionState } from './session-state.js';
@@ -196,19 +198,6 @@ function agentsWithStores(only: string | undefined): string[] {
     .sort();
 }
 
-/**
- * The Deployment of the checkout the caller is standing in, or null when that
- * does not name one.
- *
- * The fallback for a machine holding several memberships: the working directory
- * is the only thing that distinguishes them without asking.
- */
-function deploymentForRoot(entries: readonly RegistryEntry[], cwd: string | undefined): string | null {
-  let root: string;
-  try { root = resolveMemberProjectRoot(cwd); } catch { return null; }
-  return entries.find((e) => e.root === root)?.serverUrl ?? null;
-}
-
 /** The Project bindings this Deployment holds on this machine, by project root. */
 function bindingsFor(serverUrl: string, mycoHome: string): Map<string, RegistryEntry> {
   const bound = new Map<string, RegistryEntry>();
@@ -269,7 +258,11 @@ export function droppedByCaptureRules(agent: string, filePath: string): boolean 
  */
 export function collectCandidates(
   agents: readonly string[], roots: Iterable<string>, machineId: string, mycoHome: string,
-  now: number = Date.now(), opts: { mappings?: readonly DirectoryMapping[]; exclude?: ReadonlySet<string> } = {},
+  now: number = Date.now(), opts: {
+    mappings?: readonly DirectoryMapping[];
+    exclude?: ReadonlySet<string>;
+    destinationForRoot?: (root: string) => RegistryEntry | undefined;
+  } = {},
 ): CollectedCandidates {
   const place = transcriptPlacer(roots, { mappings: opts.mappings });
   const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, active: 0, dropped: 0, excluded: 0 };
@@ -281,10 +274,8 @@ export function collectCandidates(
     // directory order, so a cap applied during it keeps whatever the
     // filesystem listed first — which on a real store is neither the newest
     // nor anything a person could predict.
-    for (const discovered of enumerateTranscripts(discovery, ENUMERATION_CEILING)) {
+    for (const discovered of enumerateTranscripts(discovery, ENUMERATION_CEILING, mycoHome)) {
       if (isMemberStatePath(discovered.filePath, mycoHome)) continue;
-      out.found[agent] = (out.found[agent] ?? 0) + 1;
-      if (opts.exclude?.has(discovered.sessionId)) { out.excluded += 1; continue; }
       const placed = place(agent, discovered.filePath);
       // Three outcomes, three counts. A transcript naming a directory this
       // Deployment holds no Project for is a different thing from one naming
@@ -295,6 +286,16 @@ export function collectCandidates(
         continue;
       }
       if (placed.kind === 'unknown') { out.unattributable += 1; continue; }
+      const destination = opts.destinationForRoot?.(placed.root);
+      if (destination !== undefined) {
+        try { assertMemberTranscriptDestination(discovered.filePath, destination, mycoHome); }
+        catch (error) {
+          if (error instanceof TranscriptDestinationError && error.kind === 'mismatch') continue;
+          throw error;
+        }
+      }
+      out.found[agent] = (out.found[agent] ?? 0) + 1;
+      if (opts.exclude?.has(discovered.sessionId)) { out.excluded += 1; continue; }
       if (droppedByCaptureRules(agent, discovered.filePath)) { out.dropped += 1; continue; }
       const candidate = transcriptCandidate(agent, discovered.sessionId, discovered.filePath, placed.root, machineId, now);
       if (candidate === 'active') { out.active += 1; continue; }
@@ -332,14 +333,18 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   // first — a machine joined to two would import nothing for the one it just
   // joined, and report every transcript as belonging to no Project.
   const deployments = [...new Set(entries.map((e) => deploymentUrl(e.serverUrl)))];
-  const named = opts.serverUrl ?? (deployments.length === 1 ? deployments[0] : deploymentForRoot(entries, deps.cwd));
+  const lookup = readRegistryEntryResult(resolveMemberProjectRoot(deps.cwd), mycoHome);
+  if (opts.serverUrl === undefined && lookup.status === 'unavailable') return refusedReport('the explicit Project binding is unavailable; restore its Deployment membership');
+  const named = opts.serverUrl ?? (lookup.status === 'present' ? lookup.entry.serverUrl : defaultMembership(mycoHome)?.serverUrl ?? null);
   if (named === null) return refusedReport(`this machine belongs to ${deployments.length} Deployments; name one with --server`);
   const bound = bindingsFor(named, mycoHome);
   if (bound.size === 0) return refusedReport(`no project on this machine is bound to ${named}`);
 
   const agents = agentsWithStores(opts.agent);
   const exclude = new Set([...(opts.exclude ?? []), ...legacySessionsToLeaveOut(mycoHome, named)]);
-  const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), { mappings: opts.mappings, exclude });
+  const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), {
+    mappings: opts.mappings, exclude, destinationForRoot: (root) => bound.get(root),
+  });
   const { candidates, unattributable, active } = collected;
 
   const byProject = new Map<string, Candidate[]>();
@@ -449,6 +454,7 @@ export async function shipSession(
 ): Promise<string> {
   spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
+  assertMemberTranscriptDestination(filePath, spool.routing!, spool.mycoHome);
   // Imported events are dated when the work happened, not when it was fetched:
   // the file's modification time is the only instant a member can know without
   // parsing, and parsing is the Deployment's half of transcript-first.

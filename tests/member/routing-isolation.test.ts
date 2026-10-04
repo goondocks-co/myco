@@ -1,3 +1,10 @@
+import { locateTranscript } from '@myco/member/legacy-import.js';
+import { prunePluginTranscripts } from '@myco/member/retention.js';
+import { rootKeyFor } from '@myco/member/auto-join.js';
+import { pendingSpool, appendPending, flushPending } from '@myco/member/pending.js';
+import { transcriptPointerFor, shipSessionTranscripts } from '@myco/member/transcript.js';
+import { memberTranscriptRoutingKey, assertMemberTranscriptDestination } from '@myco/member/transcript-routing.js';
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +14,7 @@ import { helperPass } from '@myco/member/helper-pass.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { kickWaitingProjects } from '@myco/member/sweep.js';
 import { routingEntry, sameRoutingIdentity } from '@myco/member/routing.js';
-import { readDeploymentMembership, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { deploymentPath, readDeploymentMembership, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { rotatedCredential } from '@myco/member/refresh.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { promptEvent, mintId } from '@myco/member/envelope.js';
@@ -29,9 +36,9 @@ let priorHome: string | undefined;
 beforeEach(() => { priorHome = process.env.MYCO_HOME; mycoHome = tempMycoHome(); process.env.MYCO_HOME = mycoHome; });
 afterEach(() => { if (priorHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = priorHome; });
 
-async function pair() {
-  const a = await memberRig({ projectId: PROJECT });
-  const b = await memberRig({ projectId: PROJECT });
+async function pair(now: number = Date.now()) {
+  const a = await memberRig({ projectId: PROJECT, now });
+  const b = await memberRig({ projectId: PROJECT, now });
   const roots = [path.join(mycoHome, 'repo-a'), path.join(mycoHome, 'repo-b')];
   for (const root of roots) { fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]); }
   const entries = [
@@ -47,7 +54,7 @@ async function pair() {
     const membership = readDeploymentMembership(destination, mycoHome)!;
     // Credential comparison stays inside the assertion and never enters the capture log.
     expect(req.headers.get('authorization') === `Bearer ${membership.token}`).toBe(true);
-    if (new URL(req.url).pathname !== '/members/refresh' && !new URL(req.url).pathname.startsWith('/worker/')) expect(req.headers.get('x-myco-project')).toBe(PROJECT);
+    if (new URL(req.url).pathname !== '/tokens/refresh' && !new URL(req.url).pathname.startsWith('/worker/')) expect(req.headers.get('x-myco-project')).toBe(PROJECT);
     calls.push({ url: req.url, destination });
     if (offline) throw new Error('offline scratch Deployment');
     return (destination === A ? a : b).fetch(input, init);
@@ -94,6 +101,109 @@ describe('Deployment and Project member routing', () => {
     expect(new Set(rig.calls.map((call) => call.destination))).toEqual(new Set([A, B]));
   });
 
+  it('pins plugin transcript storage and refuses bytes from a different destination', async () => {
+    const rig = await pair();
+    const keys = rig.entries.map((entry) => memberTranscriptRoutingKey('registry', entry.root, mycoHome, process.env));
+    expect(keys[0]).not.toBe(keys[1]);
+    const files = keys.map((key, index) => {
+      const file = path.join(mycoHome, 'member', 'transcripts', key, 'opencode', `${SESSION}.jsonl`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ type: 'user', cwd: rig.entries[index].root, message: { role: 'user', content: rig.entries[index].serverUrl } }) + '\n');
+      return file;
+    });
+    expect(() => assertMemberTranscriptDestination(files[0], rig.entries[1], mycoHome)).toThrow('does not match');
+    expect(() => assertMemberTranscriptDestination(files[0], rig.entries[0], path.join(mycoHome, 'foreign-home'))).toThrow('another member home');
+    expect(() => assertMemberTranscriptDestination(path.join(rig.entries[0].root, 'member', 'transcripts', 'ordinary.jsonl'), rig.entries[0], mycoHome)).not.toThrow();
+    expect(locateTranscript('opencode', SESSION, null, { route: rig.entries[0], mycoHome })?.file).toBe(files[0]);
+    expect(locateTranscript('opencode', SESSION, null, { route: rig.entries[1], mycoHome })?.file).toBe(files[1]);
+    expect(locateTranscript('opencode', SESSION, null)).toBeNull();
+    const spool = new MemberSpool(rig.entries[1], { mycoHome });
+    const candidate: Candidate = { agent: 'opencode', sessionId: SESSION, transcriptId: 'unused', filePath: files[0], root: rig.entries[0].root, sizeBytes: fs.statSync(files[0]).size, modifiedAt: Date.now(), headHash: 'unused' };
+    await expect(shipSession(candidate, 0, new ServerClient(rig.entries[1], rig.fetch), spool, 'machine_1', Date.now)).rejects.toThrow('does not match');
+    expect(rig.calls).toHaveLength(0);
+    writeRegistryEntry({ ...rig.entries[1], root: rig.entries[0].root }, { mycoHome });
+    expect(memberTranscriptRoutingKey('registry', rig.entries[0].root, mycoHome, process.env)).toBe(keys[1]);
+    expect(() => assertMemberTranscriptDestination(files[0], rig.entries[0], mycoHome)).not.toThrow();
+    expect(fs.readFileSync(files[0], 'utf8')).toContain(A);
+    const unknownRoot = path.join(mycoHome, 'unbound');
+    fs.mkdirSync(unknownRoot); execFileSync('git', ['init', '-q', unknownRoot]);
+    expect(() => memberTranscriptRoutingKey('registry', unknownRoot, mycoHome, process.env)).toThrow('default Deployment');
+    recordDefaultDeployment(A, { mycoHome });
+    const pendingA = memberTranscriptRoutingKey('registry', unknownRoot, mycoHome, process.env);
+    recordDefaultDeployment(B, { mycoHome, replace: true });
+    expect(memberTranscriptRoutingKey('registry', unknownRoot, mycoHome, process.env)).not.toBe(pendingA);
+  });
+
+  it('adopts pending transcript bytes once and drains both primary files across joining', async () => {
+    const rig = await pair();
+    const root = path.join(mycoHome, 'joining');
+    fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+    recordDefaultDeployment(A, { mycoHome });
+    const key = memberTranscriptRoutingKey('registry', root, mycoHome, process.env);
+    const pendingFile = path.join(mycoHome, 'member', 'transcripts', key, 'opencode', `${SESSION}.jsonl`);
+    fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
+    fs.writeFileSync(pendingFile, JSON.stringify({ type: 'user', message: { role: 'user', content: 'before joining' } }) + '\n');
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: A };
+    expect(() => assertMemberTranscriptDestination(pendingFile, rig.entries[0], mycoHome)).toThrow('adoption');
+    expect(() => assertMemberTranscriptDestination(pendingFile, { serverUrl: A, projectId: '' }, mycoHome, 'different-root')).toThrow('does not match');
+    const held = pendingSpool(repo, { mycoHome, now: Date.now() })!;
+    appendPending(repo, SESSION, [], (state) => { state.transcript = transcriptPointerFor(pendingFile, 'machine_1')!; }, { mycoHome, now: Date.now() });
+    expect(held.stateSessionIds()).toContain(SESSION);
+    writeRegistryEntry({ ...rig.entries[0], root }, { mycoHome });
+    const spool = new MemberSpool(rig.entries[0], { mycoHome });
+    flushPending(repo.rootKey, spool, { mycoHome, now: Date.now() });
+    const nextKey = memberTranscriptRoutingKey('registry', root, mycoHome, process.env);
+    const nextFile = path.join(mycoHome, 'member', 'transcripts', nextKey, 'opencode', `${SESSION}.jsonl`);
+    fs.mkdirSync(path.dirname(nextFile), { recursive: true });
+    fs.writeFileSync(nextFile, JSON.stringify({ type: 'user', message: { role: 'user', content: 'after joining' } }) + '\n');
+    updateSessionState(spool.dir, SESSION, (state) => { state.transcript = transcriptPointerFor(nextFile, 'machine_1')!; });
+    expect(readSessionState(spool.dir, SESSION).continuations?.[pendingFile].nextOffset).toBe(0);
+    const ctx = { agent: 'opencode', sessionId: SESSION, stage: spool.stagerFor(SESSION) };
+    const result = await shipSessionTranscripts(ctx, spool, new ServerClient(rig.entries[0], rig.fetch), unboundedBudget(), { machineId: 'machine_1' });
+    expect(result).toEqual({ shipped: 2, endedBy: 'done' });
+    const state = readSessionState(spool.dir, SESSION);
+    expect(state.continuations?.[pendingFile].nextOffset).toBe(fs.statSync(pendingFile).size);
+    expect(state.transcript?.nextOffset).toBe(fs.statSync(nextFile).size);
+    expect((await shipSessionTranscripts(ctx, spool, new ServerClient(rig.entries[0], rig.fetch), unboundedBudget(), { machineId: 'machine_1' })).shipped).toBe(0);
+    expect(() => assertMemberTranscriptDestination(pendingFile, { serverUrl: A, projectId: 'different-project' }, mycoHome)).toThrow('adoption');
+    expect(rig.b.rows('events')).toBe(0);
+  });
+
+  it('holds an unavailable explicit binding instead of routing capture to the default', async () => {
+    const rig = await pair();
+    recordDefaultDeployment(B, { mycoHome });
+    fs.unlinkSync(deploymentPath(A, mycoHome));
+    expect(() => memberTranscriptRoutingKey('registry', rig.entries[0].root, mycoHome, process.env)).toThrow('Explicit Project binding');
+    const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: rig.entries[0].root, prompt: 'held for A' }, { symbiont: 'copilot', fetch: rig.fetch });
+    expect(hook.stderr).toContain('binding');
+    expect(hook.stderr).toContain('unavailable');
+    expect(rig.calls).toHaveLength(0);
+    expect(hook.starts).toHaveLength(0);
+    expect(fs.existsSync(path.join(mycoHome, 'member', 'pending'))).toBe(false);
+  });
+
+  it('holds legacy raw transcripts when one Deployment has multiple Project routes', async () => {
+    const rig = await pair();
+    writeRegistryEntry({ ...rig.entries[0], root: rig.entries[1].root, projectId: 'other-project' }, { mycoHome });
+    fs.unlinkSync(deploymentPath(B, mycoHome));
+    const file = path.join(mycoHome, 'member', 'transcripts', 'opencode', `${SESSION}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '{}\n');
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000); fs.utimesSync(file, old, old);
+    expect(() => assertMemberTranscriptDestination(file, rig.entries[0], mycoHome)).toThrow('ambiguous');
+    expect(prunePluginTranscripts(Date.now(), process.env, mycoHome)).toBe(0);
+    expect(fs.existsSync(file)).toBe(true);
+  });
+
+  it('refuses uniqueness proof from an unreadable second Deployment membership', async () => {
+    const rig = await pair();
+    writeRegistryEntry({ ...rig.entries[0], root: rig.entries[1].root }, { mycoHome });
+    fs.writeFileSync(deploymentPath(B, mycoHome), '{}', { mode: 0o600 });
+    const file = path.join(mycoHome, 'member', 'transcripts', 'opencode', `${SESSION}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '{}\n');
+    expect(() => assertMemberTranscriptDestination(file, rig.entries[0], mycoHome)).toThrow('ambiguous');
+    expect(fs.existsSync(`${file}.destination.json`)).toBe(false);
+  });
+
   it('refuses mismatched delivery and refresh clients before any outbound request', async () => {
     const rig = await pair();
     const spool = new MemberSpool(rig.entries[0], { mycoHome });
@@ -108,6 +218,21 @@ describe('Deployment and Project member routing', () => {
     const rotated = rotatedCredential(expected.root, expected, mycoHome)!;
     expect(sameRoutingIdentity(rotated, expected)).toBe(true);
     expect(rotated.token === 'synthetic-rotated-a').toBe(true);
+  });
+
+  it('refreshes each original destination before replay after a rebind', async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const rig = await pair(Date.now() - 6.5 * DAY_MS);
+    const predecessorTokens = rig.entries.map((entry) => entry.token);
+    for (const entry of rig.entries) {
+      const spool = new MemberSpool(entry, { mycoHome });
+      spool.append(SESSION, promptEvent({ sessionId: SESSION, agent: 'copilot', stage: spool.stagerFor(SESSION) }, { promptId: mintId(), text: entry.serverUrl }));
+    }
+    writeRegistryEntry({ ...rig.entries[1], root: rig.entries[0].root }, { mycoHome });
+    for (const entry of rig.entries) await helperPass(entry, mycoHome, { fetch: rig.fetch })(Date.now() + 5000, { force: true });
+    expect(rig.entries.map((entry, index) => readDeploymentMembership(entry.serverUrl, mycoHome)!.token !== predecessorTokens[index])).toEqual([true, true]);
+    expect(rig.calls.filter((call) => call.url.endsWith('/tokens/refresh')).map((call) => call.destination)).toEqual([A, B]);
+    expect([rig.a.rows('events'), rig.b.rows('events')]).toEqual([1, 1]);
   });
 
   it('keeps old buffered capture deliverable after its last repository rebinds', async () => {

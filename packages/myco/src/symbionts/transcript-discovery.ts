@@ -28,8 +28,8 @@ export function manifestTranscriptDiscovery(agent: string): TranscriptDiscovery 
 }
 
 /** Locate a transcript using the agent's manifest-declared layout. */
-export function findTranscriptFor(agent: string, sessionId: string): string | null {
-  return resolveTranscriptPath(manifestTranscriptDiscovery(agent), sessionId);
+export function findTranscriptFor(agent: string, sessionId: string, mycoHome?: string): string | null {
+  return resolveTranscriptPath(manifestTranscriptDiscovery(agent), sessionId, mycoHome);
 }
 
 /**
@@ -140,6 +140,17 @@ export interface DiscoveredTranscript {
   filePath: string;
 }
 
+/** Member-owned stores keep identical session ids separate by destination. */
+function enumerationKey(discovery: TranscriptDiscovery, root: string, item: DiscoveredTranscript): string {
+  if (discovery.retention === 'member') {
+    const parts = path.relative(root, item.filePath).split(path.sep);
+    if (parts.length >= 4 && /^[0-9a-f]{16}$/.test(parts[0] ?? '') && parts[1]) {
+      return JSON.stringify(['member', parts[0], parts[1], item.sessionId]);
+    }
+  }
+  return JSON.stringify(['legacy', item.sessionId]);
+}
+
 /**
  * Walk `root` against compiled segments. Intermediate segments must be
  * directories and the final segment a file, so a directory sharing a
@@ -208,6 +219,7 @@ function patternSegments(
 export function resolveTranscriptPath(
   discovery: TranscriptDiscovery | undefined,
   sessionId: string,
+  mycoHome?: string,
 ): string | null {
   if (!discovery || !sessionId) return null;
 
@@ -215,7 +227,7 @@ export function resolveTranscriptPath(
   for (const pattern of discovery.patterns) {
     for (const root of discovery.roots) {
       const found: DiscoveredTranscript[] = [];
-      walk(expandRoot(root), patternSegments(pattern, sessionId, idPattern), 0, sessionId, found, 1);
+      walk(expandRoot(root, process.env, mycoHome), patternSegments(pattern, sessionId, idPattern), 0, sessionId, found, 1);
       if (found[0]) return found[0].filePath;
     }
   }
@@ -232,6 +244,7 @@ export function resolveTranscriptPath(
 export function enumerateTranscripts(
   discovery: TranscriptDiscovery | undefined,
   limit = 5000,
+  mycoHome?: string,
 ): DiscoveredTranscript[] {
   if (!discovery) return [];
 
@@ -244,10 +257,14 @@ export function enumerateTranscripts(
       const remaining = limit - seen.size;
       if (remaining <= 0) return [...seen.values()];
 
+      const expanded = expandRoot(root, process.env, mycoHome);
       const found: DiscoveredTranscript[] = [];
-      walk(expandRoot(root), patternSegments(pattern, null, idPattern), 0, null, found, remaining);
+      walk(expanded, patternSegments(pattern, null, idPattern), 0, null, found, remaining);
       // Earlier patterns win, matching resolveTranscriptPath's precedence.
-      for (const item of found) if (!seen.has(item.sessionId)) seen.set(item.sessionId, item);
+      for (const item of found) {
+        const key = enumerationKey(discovery, expanded, item);
+        if (!seen.has(key)) seen.set(key, item);
+      }
     }
   }
   return [...seen.values()];
@@ -263,12 +280,13 @@ export function sessionIdFromTranscriptPath(
   discovery: TranscriptDiscovery | undefined,
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
+  mycoHome?: string,
 ): string | null {
   if (!discovery) return null;
   const idPattern = discovery.sessionIdPattern ?? DEFAULT_SESSION_ID_PATTERN;
   for (const pattern of discovery.patterns) {
     for (const root of discovery.roots) {
-      const relative = path.relative(expandRoot(root, env), filePath);
+      const relative = path.relative(expandRoot(root, env, mycoHome), filePath);
       if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) continue;
       const names = relative.split(path.sep);
       const segments = patternSegments(pattern, null, idPattern);

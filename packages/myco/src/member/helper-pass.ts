@@ -7,11 +7,10 @@ import { drainEntryBacklog } from './backlog.js';
 import { deadlineBudget, type HookBudget } from './budget.js';
 import type { HelperPass } from './helper.js';
 import { prefetchContext, watchingFeatures } from './prefetch.js';
-import { refreshDue } from './refresh.js';
-import { type RegistryEntry } from './registry.js';
+import { refreshDue, refreshMembership } from './refresh.js';
+import type { RegistryEntry } from './registry.js';
 import { applySpoolRetention } from './retention.js';
 import { liveRoutingEntry, routingEntry, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { refreshMembership } from './refresh.js';
 import { MemberSpool } from './spool.js';
 import { backfillTranscriptPrompts } from './transcript-prompts.js';
 import { ServerClient, type FetchLike } from './transport.js';
@@ -24,7 +23,7 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
 } = {}): HelperPass {
   const now = deps.now ?? Date.now;
   return async (deadline, { force }) => {
-    // The project's membership: any root this home connects to it, since every root of one project shares its spool.
+    // Roots bound to one Deployment and Project share the same spool.
     const entry = deps.entry ?? routingEntry(route, mycoHome);
     if (entry == null) {
       process.stderr.write(`[myco] helper: this home holds no membership for ${route.serverUrl}/${route.projectId}; nothing to ship\n`);
@@ -36,11 +35,11 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
     // Every answer the Deployment gives this pass keeps the features the hooks emit by current.
     const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now });
     const prefetch = async () => spool.shouldDial(now(), force)
-      ? prefetchContext({ spool, client: new ServerClient(await liveEntry(entry, mycoHome, fetchImpl, now, budget), fetchImpl), serverUrl: entry.serverUrl, mycoHome, budget, now })
+      ? prefetchContext({ spool, client: new ServerClient(deps.entry === undefined ? await liveEntry(entry, mycoHome, fetchImpl, now, budget) : entry, fetchImpl), serverUrl: entry.serverUrl, mycoHome, budget, now })
       : null;
     // Prompts a harness writes only to its transcript, appended before the drain that delivers them.
     backfillTranscriptPrompts(spool, now);
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, rescan: false, newestFirst: true });
+    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' });
     let prefetched: Awaited<ReturnType<typeof prefetch>> = null;
     try { prefetched = await prefetch(); }
     catch (error) { process.stderr.write(`[myco] helper: context prefetch failed: ${error instanceof Error ? error.message : String(error)}\n`); }

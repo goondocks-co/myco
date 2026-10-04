@@ -25,7 +25,7 @@ import {
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import {
-  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateUnlocked, retryWaiting, sessionStatePath, turnsFileOf, updateSessionState,
+  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateUnlocked, recordMigrationSettledUnlocked, retryWaiting, sessionStatePath, turnsFileOf, updateSessionState,
   writeSessionStateUnlocked, type SessionState, type SessionStateRead,
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
@@ -61,6 +61,8 @@ export interface SpoolRecord extends MemberEnvelope {
   _blobSource?: BlobSource;
   _journal?: number;
   _payloadRetry?: PayloadRetry;
+  /** Member-private evidence that this record was copied from a legacy spool. */
+  _legacyMigration?: 1;
 }
 
 /**
@@ -106,7 +108,9 @@ export const isTurnEndMark = (line: unknown): line is TurnEndMark =>
  * names (cut short or rotated under its name).
  */
 export function turnEndSatisfied(mark: TurnEndMark, state: SessionState): boolean {
-  const pointer = mark.slot === 'primary' ? state.transcript : state.siblings[mark.slot.subagent];
+  const pointer = mark.slot === 'primary'
+    ? [state.transcript, ...Object.values(state.continuations ?? {})].find((candidate) => candidate?.transcriptId === mark.transcriptId)
+    : state.siblings[mark.slot.subagent];
   if (pointer === undefined || pointer.transcriptId !== mark.transcriptId) return true;
   if (pointer.refused !== undefined) return true;
   if (pointer.nextOffset >= mark.atSize) return true;
@@ -998,6 +1002,7 @@ export class MemberSpool {
       const persist = (highWater: number, acked?: boolean, passed?: SpoolRecord) => updateSessionState(this.dir, sessionId, (s) => {
         if (contiguous) s.highWater = highWater;
         s.lastAccountedAt = now();
+        if (passed?._legacyMigration === 1) recordMigrationSettledUnlocked(this.dir, sessionId, [passed.eventId]);
         if (acked) {
           s.lastAckAt = now();
           s.lastDeliveryAt = now();

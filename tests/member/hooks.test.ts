@@ -452,7 +452,7 @@ describe('member hooks through the worker: a session its harness left without it
     const ended = fs.statSync(tx).size;
     // The next turn was under way when the harness was killed: no Stop, no SessionEnd.
     fs.appendFileSync(tx, line('two, never finished'));
-    const pass = (at: number) => runHelperVerb(['--project', 'proj_1', '--server', 'https://s', '--home', mycoHome], { fetch, now: () => at, lingerMs: 0, keepStderr: true });
+    const pass = (at: number) => runHelperVerb(['--project', 'proj_1', '--server', 'https://member-test.invalid', '--home', mycoHome], { fetch, now: () => at, lingerMs: 0, keepStderr: true });
     const ends = () => fetchSpy.requests
       .filter((r) => r.path === '/events' && r.body !== undefined)
       .map((r) => JSON.parse(r.body!) as { kind: string; sessionId: string; payload: { baseOffset: number; length: number } })

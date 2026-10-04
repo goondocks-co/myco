@@ -1,3 +1,6 @@
+import { defaultMembership } from './default-deployment.js';
+import { assertMemberTranscriptDestination, isMemberOwnedTranscriptPath, TranscriptDestinationError } from './transcript-routing.js';
+import type { MemberRoutingIdentity } from './routing.js';
 /**
  * Bringing a 1.4 vault's history to a Deployment.
  *
@@ -290,15 +293,25 @@ export const legacySessionId = (agent: string, storedId: string, transcriptPath:
   legacyIdentity(agent, storedId, transcriptPath).sessionId;
 
 /** The transcript on disk for a session, under the harness that wrote it: the recorded path when it names this session, else wherever any harness's layout puts it. */
-export function locateTranscript(agent: string, sessionId: string, recordedPath: string | null): { agent: string; file: string } | null {
-  if (recordedPath !== null && fs.existsSync(recordedPath)) {
+export function locateTranscript(agent: string, sessionId: string, recordedPath: string | null, destination?: { route: MemberRoutingIdentity; mycoHome: string }): { agent: string; file: string } | null {
+  const accepts = (file: string): boolean => {
+    if (!isMemberOwnedTranscriptPath(file, destination?.mycoHome ?? resolveMycoHome())) return true;
+    if (destination === undefined) return false;
+    try { assertMemberTranscriptDestination(file, destination.route, destination.mycoHome); return true; }
+    catch (error) { if (error instanceof TranscriptDestinationError && error.kind === 'mismatch') return false; throw error; }
+  };
+  if (recordedPath !== null && fs.existsSync(recordedPath) && accepts(recordedPath)) {
     for (const harness of harnessesFrom(agent)) {
-      if (sessionIdFromTranscriptPath(manifestTranscriptDiscovery(harness), recordedPath) === sessionId) return { agent: harness, file: recordedPath };
+      if (sessionIdFromTranscriptPath(manifestTranscriptDiscovery(harness), recordedPath, process.env, destination?.mycoHome) === sessionId) return { agent: harness, file: recordedPath };
     }
   }
   for (const harness of harnessesFrom(agent)) {
-    const file = findTranscriptFor(harness, sessionId);
-    if (file !== null) return { agent: harness, file };
+    const file = findTranscriptFor(harness, sessionId, destination?.mycoHome);
+    if (file !== null && accepts(file)) return { agent: harness, file };
+    if (file !== null && destination !== undefined) {
+      const scoped = enumerateTranscripts(manifestTranscriptDiscovery(harness), undefined, destination?.mycoHome).find((item) => item.sessionId === sessionId && accepts(item.filePath));
+      if (scoped !== undefined) return { agent: harness, file: scoped.filePath };
+    }
   }
   return null;
 }
@@ -430,7 +443,7 @@ export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap
  * with more than one, is reported and keeps its id: a guess would merge two
  * sessions.
  */
-export function aliasByTranscriptTime(project: LegacyProject, root: string | null): { aliases: Map<string, string>; matched: string[]; unmatched: string[] } {
+export function aliasByTranscriptTime(project: LegacyProject, root: string | null, mycoHome: string = resolveMycoHome()): { aliases: Map<string, string>; matched: string[]; unmatched: string[] } {
   const aliases = new Map<string, string>();
   const matched: string[] = [];
   const unmatched: string[] = [];
@@ -442,8 +455,8 @@ export function aliasByTranscriptTime(project: LegacyProject, root: string | nul
     let index = indexes.get(agent);
     if (index !== undefined) return index;
     index = [];
-    for (const t of enumerateTranscripts(manifestTranscriptDiscovery(agent), 100_000)) {
-      if (claimed.has(t.sessionId)) continue;
+    for (const t of enumerateTranscripts(manifestTranscriptDiscovery(agent), 100_000, mycoHome)) {
+      if (claimed.has(t.sessionId) || isMemberOwnedTranscriptPath(t.filePath, mycoHome)) continue;
       const placed = place(agent, t.filePath);
       if (placed.kind !== 'bound') continue;
       const span = transcriptTimeSpan(t.filePath);
@@ -605,7 +618,8 @@ function membershipFor(mycoHome: string, serverUrl: string | undefined): Deploym
   if (serverUrl !== undefined) {
     return memberships.find((m) => deploymentUrl(m.serverUrl) === deploymentUrl(serverUrl)) ?? `this machine holds no membership of ${serverUrl}`;
   }
-  if (memberships.length === 1) return memberships[0];
+  const selected = defaultMembership(mycoHome);
+  if (selected !== null) return selected;
   return memberships.length === 0 ? 'no Deployment membership on this machine' : `this machine belongs to ${memberships.length} Deployments; name one with --server`;
 }
 
@@ -621,14 +635,14 @@ interface Prepared extends LegacyGrouping {
 }
 
 /** Read, identify and group every project the sources hold, as `machineId` imports them. */
-function prepare(opts: LegacyImportOptions, machineId: string): Prepared[] | string {
+function prepare(opts: LegacyImportOptions, machineId: string, mycoHome: string): Prepared[] | string {
   const files = [...new Set(opts.sources.flatMap(legacyVaultFiles))];
   if (files.length === 0) return `no 1.4 vault found in ${opts.sources.join(', ')}`;
   return files.flatMap(readLegacyVault)
     .filter((p) => opts.project === undefined || p.projectId === opts.project)
     .map((project) => {
       const root = rootOf(project);
-      const { aliases, matched, unmatched } = aliasByTranscriptTime(project, root);
+      const { aliases, matched, unmatched } = aliasByTranscriptTime(project, root, mycoHome);
       return { project, root, matched, unmatched, ...groupLegacySessions(project, aliases, machineId) };
     });
 }
@@ -649,7 +663,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
   const progress = deps.progress ?? (() => {});
 
-  const prepared = prepare(opts, deps.machineId);
+  const prepared = prepare(opts, deps.machineId, mycoHome);
   if (typeof prepared === 'string') return { serverUrl: null, projects: [], deleted: [], refused: prepared };
   const report: LegacyImportReport = { serverUrl: null, projects: [], deleted: [...new Set(prepared.flatMap((g) => [...g.deleted]))].sort() };
 
@@ -846,7 +860,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     async function importSession(group: SessionGroup): Promise<StepEnd> {
       const s = group.winner;
       const client = clientFor(projectId);
-      const located = locateTranscript(group.agent, group.sessionId, s.transcriptPath);
+      const located = locateTranscript(group.agent, group.sessionId, s.transcriptPath, { route: { serverUrl, projectId }, mycoHome });
       const agent = located?.agent ?? group.agent;
       const candidate = located === null ? null : transcriptCandidate(agent, group.sessionId, located.file, root ?? '', deps.machineId, now());
       const planned = candidate === null || candidate === 'active' ? null : await planTranscript(candidate, client);

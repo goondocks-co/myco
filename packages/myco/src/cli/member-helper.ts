@@ -53,7 +53,7 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
   // carries the starter's original environment, and a wrapper's default home must not stand in for this one.
   const priorHome = process.env.MYCO_HOME;
   process.env.MYCO_HOME = mycoHome;
-  const restoreStderr = deps.keepStderr || args.includes('--stderr') ? () => {} : routeStderrToHelperLog(mycoHome, projectId);
+  const restoreStderr = deps.keepStderr || args.includes('--stderr') ? () => {} : routeStderrToHelperLog(mycoHome, projectId, serverUrl);
   try {
     return await helperPasses(projectId, serverUrl, mycoHome, args.includes('--after-failure'), deps);
   } finally {

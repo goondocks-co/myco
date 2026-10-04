@@ -100,7 +100,7 @@ describe('no hook waits on the network (G1)', () => {
       if (source === 'env') expect(kicks).toEqual([]);
       else if (leftWork) {
         expect(kicks.length).toBeGreaterThan(0);
-        expect(kicks[0].slice(-6)).toEqual(['member', 'helper', '--project', 'proj_1', '--server', 'https://s', '--home', mycoHome]);
+        expect(kicks[0].slice(-8)).toEqual(['member', 'helper', '--project', 'proj_1', '--server', 'https://member-test.invalid', '--home', mycoHome]);
       }
     }, 30_000);
   }

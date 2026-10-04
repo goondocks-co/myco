@@ -645,21 +645,35 @@ export function readRegistryEntryResult(root: string, mycoHome: string = resolve
 
 /** Every Deployment this home holds a membership of, whether or not a project is bound to it. Reads only. */
 export function listDeploymentMemberships(mycoHome: string = resolveMycoHome()): DeploymentMembership[] {
+  return membershipListing(mycoHome, true).memberships;
+}
+
+/** A complete membership listing for decisions that require proof of unique ownership. */
+export function listDeploymentMembershipsResult(mycoHome: string = resolveMycoHome()): { memberships: DeploymentMembership[]; readable: boolean; unavailableEntries: number } {
+  return membershipListing(mycoHome, false);
+}
+
+function membershipListing(mycoHome: string, report: boolean): ReturnType<typeof listDeploymentMembershipsResult> {
   const dir = deploymentsDir(mycoHome);
-  if (!fs.existsSync(dir)) return [];
+  let names: string[];
+  try { names = fs.readdirSync(dir).sort(); }
+  catch (error) {
+    const absent = (error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir);
+    if (report && !absent) throw error;
+    return { memberships: [], readable: absent, unavailableEntries: 0 };
+  }
   const memberships: DeploymentMembership[] = [];
-  for (const name of fs.readdirSync(dir).sort()) {
-    if (!name.endsWith('.json')) continue;
-    const file = path.join(dir, name);
-    const read = readPrivateJson<DeploymentMembership>(file);
-    if (!read.ok) {
-      if (read.reason !== 'missing') reportSkippedPrivateFile('deployment membership', file, read);
+  let unavailableEntries = 0;
+  for (const name of names.filter((name) => name.endsWith('.json'))) {
+    const read = readPrivateJson<DeploymentMembership>(path.join(dir, name));
+    if (!read.ok || !isMembership(read.value) || `${deploymentKeyFor(read.value.serverUrl)}.json` !== name) {
+      unavailableEntries += 1;
+      if (report) reportSkippedPrivateFile('deployment membership', path.join(dir, name), read.ok ? { reason: 'malformed', detail: 'not a deployment membership at its URL key' } : read);
       continue;
     }
-    if (isMembership(read.value)) memberships.push(read.value);
-    else reportSkippedPrivateFile('deployment membership', file, { reason: 'malformed', detail: 'not a deployment membership' });
+    memberships.push(read.value);
   }
-  return memberships;
+  return { memberships, readable: true, unavailableEntries };
 }
 
 /** A Deployment membership as a reader that must tell absence from damage sees it. */

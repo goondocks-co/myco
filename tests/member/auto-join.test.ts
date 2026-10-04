@@ -1169,7 +1169,8 @@ describe('a hook whose join cannot be asked for (#1595 review)', () => {
     fs.writeFileSync(path.join(autoJoinDir(mycoHome), 'requests'), '');
     const hook = await runHook('session-start', { session_id: 'sess-unwritable', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-unwritable'), cwd: root }, { fetch: rig.fetch, helperSpawn: spawn });
     // The capture is held, the helper still kicked, and the hook ends as any other.
-    expect({ records: listPending({ mycoHome, now: Date.now() }).map((p) => p.records), requested: requested(), kicked: spawned.map((k) => k.args.slice(-5)), stderr: hook.stderr })
-      .toEqual({ records: [1], requested: [], kicked: [joinKick()], stderr: '' });
+    expect(() => requested()).toThrow('ENOTDIR');
+    expect({ records: listPending({ mycoHome, now: Date.now() }).map((p) => p.records), kicked: spawned.map((k) => k.args.slice(-5)), stderr: hook.stderr })
+      .toEqual({ records: [1], kicked: [joinKick()], stderr: '' });
   });
 });

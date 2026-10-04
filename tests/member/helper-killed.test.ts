@@ -94,8 +94,9 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
         },
       });
       try {
-        registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: `http://127.0.0.1:${server.port}` });
-        const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
+        const serverUrl = `http://127.0.0.1:${server.port}`;
+        registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl });
+        const spool = new MemberSpool({ projectId: PROJECT, serverUrl }, { mycoHome });
         const ctx = { agent: 'claude-code', sessionId: SESSION, stage: spool.stagerFor(SESSION), version: 't' };
         spool.append(SESSION, sessionStartEvent(ctx, { branch: 'main', startedAt: Date.now(), originPath: '/work' }));
         // Prompts, every third one too long to travel inline, so it uploads its bytes first.
@@ -114,7 +115,7 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
         spool.markTranscriptBacklog(SESSION);
 
         const cwd = scratch('myco-killed-cwd-');
-        const child = spawn(process.execPath, [CLI, 'member', 'helper', '--project', PROJECT, '--server', 'https://s', '--home', mycoHome], {
+        const child = spawn(process.execPath, [CLI, 'member', 'helper', '--project', PROJECT, '--server', serverUrl, '--home', mycoHome], {
           cwd, env: { ...process.env, MYCO_HOME: mycoHome }, stdio: 'ignore',
         });
         const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()));
@@ -126,12 +127,12 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
         killing = false;
 
         // The operating system let go of the dead helper's lock.
-        const lock = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome, 'https://s').lock);
+        const lock = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome, serverUrl).lock);
         expect(lock.acquired).toBe(true);
         if (lock.acquired) lock.lock.release();
 
         // The next helper finishes the work.
-        const result = await runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { lingerMs: 0, keepStderr: true });
+        const result = await runHelperVerb(['--project', PROJECT, '--server', serverUrl, '--home', mycoHome], { lingerMs: 0, keepStderr: true });
         expect(result?.endedBy).toBe('idle');
         const held = rig.env.sqlite.query(`SELECT event_id FROM events WHERE session_id = ? AND kind = 'prompt'`).all(SESSION) as Array<{ event_id: string }>;
         expect(held.map((r) => r.event_id).sort()).toEqual([...ids].sort());

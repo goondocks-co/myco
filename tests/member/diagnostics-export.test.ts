@@ -421,7 +421,7 @@ describe('a refusal the drain raised against an unparsable spool line', () => {
     const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://myco.example.com' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-a.jsonl'), 'not json\n', 'utf-8');
     // The record never parses, so the drain refuses it without reaching a server.
-    const client = { send: () => { throw new Error('a line that cannot be parsed reaches no server'); } };
+    const client = { serverUrl: e.serverUrl, projectId: e.projectId, send: () => { throw new Error('a line that cannot be parsed reaches no server'); } };
     const budget = { deadline: NOW + 60_000, connectTimeoutMs: 1_000, drains: true } as never;
     const result = await spool.drainSession('sess-a', client as never, budget, { now: () => NOW });
     expect(result.refused).toBe(1);

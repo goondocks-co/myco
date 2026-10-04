@@ -1,3 +1,4 @@
+import { rootKeyFor } from './auto-join.js';
 /**
  * The one capture path every hook runs (#1561): read the normalized input, resolve the declared credential, build the
  * envelope(s), append them to the session spool, render the hook's answer from what this machine holds, kick the
@@ -25,6 +26,7 @@ import { appendPending, appendPendingTurnEnd } from './pending.js';
 import { restoreHeldReceiptsForHook } from './held.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
+import { assertMemberTranscriptDestination } from './transcript-routing.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
 import { hookDelivered, type HookAppended } from './backlog.js';
 import { helperPass } from './helper-pass.js';
@@ -259,6 +261,7 @@ export async function runMemberHook(
       ...(pending !== null ? { pending: true } : {}),
     };
 
+    if (input.transcriptPath !== undefined) assertMemberTranscriptDestination(input.transcriptPath, credential, mycoHome, rootKeyFor(resolveMemberProjectRoot(cwd), mycoHome));
     const outcome = await handle(run);
     response = outcome.response ?? {};
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);

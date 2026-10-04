@@ -9,7 +9,7 @@ import {
   noticeOnce, queueImport, readAutoJoinState, recordSessionSeen, requestJoin, unreportedSessions, writeAutoJoinState,
 } from '@myco/member/auto-join.js';
 import { flushHeldCapture } from '@myco/member/held.js';
-import { appendPending, flushPending, listHeldEnds, listPending, pendingDir, pendingSpool, PENDING_TTL_MS } from '@myco/member/pending.js';
+import { appendPending, appendPendingTurnEnd, assignLegacyPending, expirePending, flushPending, listHeldEnds, listPending, pendingDir, pendingSpool, PENDING_TTL_MS } from '@myco/member/pending.js';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -79,8 +79,36 @@ describe('pending capture destination', () => {
     for (const [serverUrl, sessionId] of [[FIRST, 'first'], [SECOND, 'second']] as const) {
       appendPending({ ...repo, serverUrl }, sessionId, [event(sessionId)], undefined, { mycoHome, now: 1 });
     }
-    expect(listPending({ mycoHome, now }).map((entry) => entry.serverUrl)).toEqual([]);
-    expect(listHeldEnds(mycoHome).map((entry) => entry.serverUrl).sort()).toEqual([FIRST, SECOND, undefined].sort());
+    expect(listPending({ mycoHome, now }).map((entry) => entry.serverUrl)).toEqual([undefined]);
+    expect(listHeldEnds(mycoHome).map((entry) => entry.serverUrl).sort()).toEqual([FIRST, SECOND]);
+    expect(fs.existsSync(pendingDir(repo.rootKey, mycoHome))).toBe(true);
+  });
+
+  it('assigns legacy capture explicitly with a durable receipt and preserves its original records', () => {
+    const mycoHome = home();
+    const source = pendingSpool(repo, { mycoHome, now: 1 })!;
+    const blobSource = source.stagerFor('legacy')(Buffer.from('legacy bytes'), 'text/plain');
+    appendPending(repo, 'legacy', [{ ...event('legacy'), blobSource }], (state) => { state.promptId = 'legacy-prompt'; }, { mycoHome, now: 2 });
+    appendPendingTurnEnd(repo, 'legacy', { slot: 'primary', transcriptId: 'legacy-transcript', atSize: 9 }, undefined, { mycoHome, now: 3 });
+    const original = fs.readFileSync(path.join(source.dir, 'legacy.jsonl'));
+    const route = { serverUrl: FIRST, projectId: 'project' };
+    const assignmentAt = PENDING_TTL_MS + 4;
+
+    expect(assignLegacyPending(repo.rootKey, route, { mycoHome, now: assignmentAt })).toBe(true);
+    const into = new MemberSpool(route, { mycoHome });
+    expect(expirePending(repo.rootKey, { mycoHome, now: assignmentAt + 1, serverUrl: FIRST })).toBe(false);
+    fs.rmSync(path.join(source.dir, 'assignment.json'));
+    expect(flushPending(repo.rootKey, into, { mycoHome, now: assignmentAt + 1 })).toBe(0);
+    expect(assignLegacyPending(repo.rootKey, route, { mycoHome, now: assignmentAt + 2 })).toBe(true);
+    expect(flushPending(repo.rootKey, into, { mycoHome, now: assignmentAt + 3 })).toBe(1);
+    expect(assignLegacyPending(repo.rootKey, route, { mycoHome, now: assignmentAt + 4 })).toBe(false);
+    expect(() => assignLegacyPending(repo.rootKey, { serverUrl: SECOND, projectId: 'other' }, { mycoHome, now: assignmentAt + 5 })).toThrow();
+    expect(fs.readFileSync(path.join(source.dir, 'legacy.jsonl'))).toEqual(original);
+    expect(fs.readFileSync(blobSource.path, 'utf8')).toBe('legacy bytes');
+    expect(fs.readFileSync(into.readRecords('legacy')[0]!._blobSource!.path, 'utf8')).toBe('legacy bytes');
+    expect(readSessionState(into.dir, 'legacy').promptId).toBe('legacy-prompt');
+    expect(into.pendingTurnEnds('legacy').map((pending) => pending.mark.atSize)).toEqual([9]);
+    expect(listPending({ mycoHome, now: PENDING_TTL_MS + 100 }).map((entry) => entry.assignedTo)).toEqual([route]);
   });
 });
 

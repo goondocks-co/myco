@@ -14,7 +14,7 @@ import { seedMachineSettings } from '../member/machine-settings.js';
 import { listAutoJoinStates } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
-import { listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
+import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DoctorCheck } from './doctor.js';
@@ -33,9 +33,10 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
 import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
-import { listLegacySpools } from '../member/spool-migration.js';
-import { listRoutingEntries } from '../member/routing.js';
+import { assignLegacySpoolDestination, listLegacySpools } from '../member/spool-migration.js';
+import { listRoutingEntries, routingEntry } from '../member/routing.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
+import { memberTranscriptRoutingKey } from '../member/transcript-routing.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { drainEntryBacklog, type BacklogReport } from '../member/backlog.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
@@ -72,7 +73,11 @@ Ops:
                      --purge is given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
-  helper --project <id> --home <dir>
+  drain --assign-legacy --server <url> --project <id>
+                     Assign held Project-only capture to the named destination, then migrate and drain it.
+  drain --assign-pending --root-key <key> --server <url> --project <id>
+                     Assign legacy pending capture to the named destination, then drain it.
+  helper --project <id> --server <url> --home <dir>
                      The project's helper: ships its spool in passes under the helper lock until nothing is
                      left, then exits (at most 120 s). Hooks start it detached; its log is
                      <home>/logs/helper.log (\`--stderr\` keeps it on stderr).
@@ -859,7 +864,43 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   const now = deps.now ?? Date.now;
   const mycoHome = homeFor(deps);
   const results: DrainResult[] = [];
-  for (const entry of entriesFor(args, deps)) {
+  let entries: RegistryEntry[];
+  const serverAt = args.indexOf('--server');
+  const projectAt = args.indexOf('--project');
+  if (serverAt >= 0 || projectAt >= 0 || args.includes('--assign-legacy') || args.includes('--assign-pending')) {
+    const serverUrl = serverAt < 0 ? undefined : args[serverAt + 1];
+    const projectId = projectAt < 0 ? undefined : args[projectAt + 1];
+    if (serverUrl === undefined || projectId === undefined || !isProjectId(projectId) || serverUrl.startsWith('--')) {
+      (deps.stderr ?? console.error)('myco member drain: name both --server <url> and --project <id>');
+      process.exitCode = 2;
+      return [];
+    }
+    const entry = routingEntry({ serverUrl, projectId }, mycoHome);
+    if (entry === null) {
+      (deps.stderr ?? console.error)('myco member drain: this home holds no membership for the named Deployment');
+      process.exitCode = 2;
+      return [];
+    }
+    if (args.includes('--assign-legacy')) {
+      const assignment = assignLegacySpoolDestination(entry, mycoHome);
+      out(`legacy ${projectId}: ${assignment.status} to ${deploymentUrl(serverUrl)} — ${assignment.records} record(s) in ${assignment.sessions} session(s)${assignment.reason ? ` (${assignment.reason})` : ''}`);
+      if (assignment.status === 'held') { process.exitCode = 2; return []; }
+    }
+    if (args.includes('--assign-pending')) {
+      const rootAt = args.indexOf('--root-key');
+      const rootKey = rootAt < 0 ? undefined : args[rootAt + 1];
+      if (rootKey === undefined || !/^[0-9a-f]{16,64}$/.test(rootKey)) {
+        (deps.stderr ?? console.error)('myco member drain: name --root-key <key> for the held pending capture');
+        process.exitCode = 2;
+        return [];
+      }
+      assignLegacyPending(rootKey, entry, { mycoHome, now: now() });
+      const copied = flushPending(rootKey, new MemberSpool(entry, { mycoHome }), { mycoHome, now: now() });
+      out(`legacy pending ${rootKey}: assigned to ${deploymentUrl(serverUrl)}/${projectId} — ${copied} record(s) moved`);
+    }
+    entries = [entry];
+  } else entries = entriesFor(args, deps);
+  for (const entry of entries) {
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
     for (const line of backlogLines(entry.projectId, backlog)) out(line);
     // Retention follows the drain so acknowledged archive copies can be removed.
@@ -967,7 +1008,7 @@ function reportAutoJoin(out: (line: string) => void, selection: { root: string |
     out(`not joined: ${state.root} — ${why} (last tried ${when(state.attemptAt)})`);
   }
   for (const pending of listPending({ mycoHome, now }).filter((p) => mine(p.root))) {
-    out(`pending:    ${pending.root} (${pending.serverUrl ?? 'destination unassigned'}) — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`);
+    out(`pending:    ${pending.root} (${pending.serverUrl ?? 'destination unassigned'}) — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; ${pending.assignedTo ? `assigned copy retained for ${pending.assignedTo.serverUrl}/${pending.assignedTo.projectId}` : pending.serverUrl === undefined ? `held until explicitly assigned with --root-key ${pending.rootKey} or discarded` : `discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`}`);
   }
   for (const end of listHeldEnds(mycoHome).filter((e) => mine(e.root))) {
     out(`held no more: ${end.root} (${end.serverUrl ?? 'destination unassigned'}) — ${end.held === 'full' ? `the ${PENDING_MAX_RECORDS} events kept for it were reached` : `capture older than ${PENDING_TTL_MS / 86_400_000} days was discarded`} (${when(end.at)})`);
@@ -1303,6 +1344,16 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
   switch (op) {
     case 'join': await runJoin(rest, deps); return;
     case 'leave': runLeave(rest, deps); return;
+    case 'routing-key': {
+      const source = parseCredentialFlag(rest);
+      if (source === null) { (deps.stderr ?? console.error)('myco member routing-key: declare --credential registry|env'); process.exitCode = 2; return; }
+      const rootAt = rest.indexOf('--root');
+      const cwd = rootAt >= 0 ? rest[rootAt + 1] : deps.cwd ?? process.cwd();
+      if (cwd === undefined) { process.exitCode = 2; return; }
+      try { (deps.stdout ?? console.log)(memberTranscriptRoutingKey(source, cwd, homeFor(deps, cwd), deps.env ?? process.env)); }
+      catch (error) { (deps.stderr ?? console.error)(`myco member routing-key: ${(error as Error).message}`); process.exitCode = 1; }
+      return;
+    }
     case 'drain': await runDrain(rest, deps); return;
     case 'helper': await (await import('./member-helper.js')).runHelperVerb(rest, { fetch: deps.fetch, now: deps.now }); return;
     case 'status': runStatus(rest, deps); return;

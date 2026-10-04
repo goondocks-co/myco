@@ -415,6 +415,7 @@ describe('turn-end marks are satisfied (G4j)', () => {
     });
     const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
     for (const file of [behind, shipped]) fs.utimesSync(file, old, old);
+    fs.writeFileSync(`${shipped}.destination.json`, JSON.stringify({ serverUrl: 'https://s', projectId: 'proj_1' }), { mode: 0o600 });
     expect(prunePluginTranscripts(Date.now(), process.env, mycoHome)).toBe(1);
     expect(fs.existsSync(behind)).toBe(true);
     expect(fs.existsSync(shipped)).toBe(false);

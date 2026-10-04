@@ -4,7 +4,7 @@
  * Cline rewrites two whole-file JSON documents per session in place, so no
  * byte offset survives a turn and its own store cannot be shipped as a delta.
  * This plugin writes an append-only transcript instead, at
- * `<MYCO_HOME>/member/transcripts/cline/<sessionId>.jsonl`, and the Myco
+ * `<MYCO_HOME>/member/transcripts/<routing-key>/cline/<sessionId>.jsonl`, and the Myco
  * binary ships it like any other harness's.
  *
  * The plugin makes no network call. It writes lines and it runs `myco hook
@@ -205,12 +205,38 @@ function resolveMycoBinary(directory: string): string {
 
 /**
  * Where this agent's plugin-written transcript lives. Must agree with the
- * agent's manifest `transcriptDiscovery` root, which declares the same
- * directory as `@memberHome/member/transcripts/<agent>`; a gate resolves both
- * and compares them.
+ * agent's manifest `transcriptDiscovery` pattern, which names the same
+ * routing key and agent beneath `@memberHome/member/transcripts`.
  */
-function transcriptPathFor(directory: string, agent: string, sessionId: string): string {
-  return join(resolveMycoHome(directory), "member", "transcripts", agent, `${sessionId}.jsonl`);
+const verifiedRoutingKeys = new Map<string, string>();
+
+function routingKeyFor(directory: string, refresh = true): string | null {
+  const held = verifiedRoutingKeys.get(directory);
+  if (!refresh && held !== undefined) return held;
+  try {
+    const run = spawnSync(
+      resolveMycoBinary(directory),
+      ["member", "routing-key", "--credential", MYCO_CREDENTIAL_SOURCE, "--root", directory],
+      {
+        cwd: directory,
+        env: { ...process.env, MYCO_HOME: resolveMycoHome(directory) },
+        timeout: MYCO_HOOK_TIMEOUT_MS,
+        maxBuffer: 1024,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    const key = typeof run.stdout === "string" ? run.stdout.trim() : "";
+    if (run.status === 0 && /^[0-9a-f]{16}\/(?:[A-Za-z0-9._-]{1,64}|~pending-[0-9a-f]{32})$/.test(key)
+      && !key.endsWith("/.") && !key.endsWith("/..")) { verifiedRoutingKeys.set(directory, key); return key; }
+  } catch { /* An unavailable binary cannot name a capture destination. */ }
+  if (held !== undefined) return held;
+  noteOnce(`routing-${directory}`, `${directory}: could not resolve the member routing key — this session is not captured`);
+  return null;
+}
+
+function transcriptPathFor(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory)): string | null {
+  return routingKey === null ? null : join(resolveMycoHome(directory), "member", "transcripts", routingKey, agent, `${sessionId}.jsonl`);
 }
 
 /**
@@ -232,10 +258,10 @@ const CLAIM_TOUCH_MS = 30 * 1000;
  * Where a session's writer records that it holds the session.
  *
  * Beside the transcripts rather than among them: a lock is not a transcript
- * and must not be discovered, parsed or aged as one.
+ * and must not be discovered or parsed as one.
  */
-function claimPathFor(directory: string, agent: string, sessionId: string): string {
-  return join(resolveMycoHome(directory), "member", "claims", `${agent}-${sessionId}.lock`);
+function claimPathFor(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory)): string | null {
+  return routingKey === null ? null : join(resolveMycoHome(directory), "member", "claims", routingKey, `${agent}-${sessionId}.lock`);
 }
 
 /**
@@ -311,11 +337,12 @@ function takeClaim(claimPath: string): boolean {
   }
 }
 
-function holdsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
-  const key = `${agent}-${sessionId}`;
+function holdsSessionClaim(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory)): boolean {
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
+  if (claimPath === null) return false;
+  const key = claimPath;
   const held = claimedSessions.get(key);
   if (held !== undefined) return held;
-  const claimPath = claimPathFor(directory, agent, sessionId);
   let claimed = false;
   try {
     mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
@@ -380,10 +407,10 @@ function releaseClaimsWhenProcessEnds(): void {
  * go on writing and injecting for the rest of the interval, which is the
  * window this exists to close.
  */
-function keepsSessionClaim(directory: string, agent: string, sessionId: string): boolean {
-  if (!holdsSessionClaim(directory, agent, sessionId)) return false;
-  const key = `${agent}-${sessionId}`;
-  const claimPath = claimPathFor(directory, agent, sessionId);
+function keepsSessionClaim(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory)): boolean {
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
+  if (claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return false;
+  const key = claimPath;
   const holder = claimHolder(claimPath);
   if (holder !== null && holder.instance !== MYCO_INSTANCE_ID) {
     claimedSessions.set(key, false);
@@ -407,17 +434,18 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string):
  * again later decides afresh.
  */
 function releaseSessionClaim(directory: string, agent: string, sessionId: string): void {
-  const key = `${agent}-${sessionId}`;
-  claimedSessions.delete(key);
-  claimTouchedAt.delete(key);
-  heldClaimPaths.delete(key);
-  const claimPath = claimPathFor(directory, agent, sessionId);
-  if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) return;
-  try {
-    unlinkSync(claimPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
-    noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+  for (const [key, claimPath] of heldClaimPaths) {
+    if (!claimPath.endsWith(`/${agent}-${sessionId}.lock`) && !claimPath.endsWith(`\\${agent}-${sessionId}.lock`)) continue;
+    claimedSessions.delete(key);
+    claimTouchedAt.delete(key);
+    heldClaimPaths.delete(key);
+    if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) continue;
+    try {
+      unlinkSync(claimPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
+      noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
+    }
   }
 }
 
@@ -455,8 +483,10 @@ function appendTranscriptLine(
   sessionId: string,
   record: Record<string, unknown>,
 ): void {
-  if (!keepsSessionClaim(directory, agent, sessionId)) return;
-  const filePath = transcriptPathFor(directory, agent, sessionId);
+  const routingKey = routingKeyFor(directory, false);
+  if (routingKey === null || !keepsSessionClaim(directory, agent, sessionId, routingKey)) return;
+  const filePath = transcriptPathFor(directory, agent, sessionId, routingKey);
+  if (filePath === null) return;
   try {
     mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
     appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
@@ -504,7 +534,16 @@ function runMycoHook(
   // taken before it lost the session — and an agent whose transcript it never
   // writes, like Pi, would reach that state on every session, since a claim
   // taken once and never touched goes stale on its own.
-  if (!keepsSessionClaim(directory, agent, sessionId)) return null;
+  const routingKey = routingKeyFor(directory);
+  if (routingKey === null || !keepsSessionClaim(directory, agent, sessionId, routingKey)) return null;
+  const pluginRoot = join(resolveMycoHome(directory), "member", "transcripts");
+  const transcriptPath = payload.transcript_path;
+  const withinPluginRoot = typeof transcriptPath === "string"
+    && (transcriptPath.startsWith(`${pluginRoot}/`) || transcriptPath.startsWith(`${pluginRoot}\\`));
+  if (withinPluginRoot && transcriptPath !== transcriptPathFor(directory, agent, sessionId, routingKey)) {
+    noteOnce(`route-changed-${agent}-${sessionId}`, `${agent} session ${sessionId}: routing changed during capture — this hook waits for the next action`);
+    return null;
+  }
   try {
     const run = spawnSync(
       resolveMycoBinary(directory),

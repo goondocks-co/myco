@@ -1,3 +1,4 @@
+import { assertMemberTranscriptDestination } from './transcript-routing.js';
 /**
  * The transcript as the member ships it: bytes from the server-held offset, in
  * segments, for the session's own file and for the subagent transcripts found
@@ -317,14 +318,15 @@ export interface TurnEndAt {
 }
 
 /** Which of a session's transcripts a pass ships: the session's own, or the subagent transcript at a path. */
-export type TranscriptSlot = { role: 'primary' } | { role: 'subagent'; path: string };
+export type TranscriptSlot = { role: 'primary' } | { role: 'continuation'; path: string } | { role: 'subagent'; path: string };
 export const PRIMARY_SLOT: TranscriptSlot = { role: 'primary' };
 
 const slotPointer = (state: SessionState, slot: TranscriptSlot): TranscriptPointer | undefined =>
-  slot.role === 'primary' ? state.transcript : state.siblings[slot.path];
+  slot.role === 'primary' ? state.transcript : slot.role === 'continuation' ? state.continuations?.[slot.path] : state.siblings[slot.path];
 
 const setSlotPointer = (state: SessionState, slot: TranscriptSlot, pointer: TranscriptPointer): void => {
   if (slot.role === 'primary') state.transcript = pointer;
+  else if (slot.role === 'continuation') (state.continuations ??= {})[slot.path] = pointer;
   else state.siblings[slot.path] = pointer;
 };
 
@@ -356,6 +358,7 @@ export async function shipTranscriptSegments(
   const { sessionId } = ctx;
   let pointer = slotPointer(readSessionState(spool.dir, sessionId), slot);
   if (!pointer) return { shipped: 0, endedBy: 'absent' };
+  assertMemberTranscriptDestination(pointer.path, spool.routing!, spool.mycoHome);
   if (pointer.refused !== undefined) return { shipped: 0, endedBy: 'rejected' };
   /**
    * Move THIS transcript's offset, computed under the lock against what is
@@ -431,7 +434,7 @@ export async function shipTranscriptSegments(
     // Built before the upload so both refusal paths can name the segment they lost.
     const event = transcriptSegmentEvent(segmentCtx, {
       transcriptId: pointer.transcriptId, baseOffset: offset, blobSource: source, originPath: pointer.path,
-      headHash: opts.headHash ?? pointer.headHash, role: slot.role,
+      headHash: opts.headHash ?? pointer.headHash, role: slot.role === 'subagent' ? 'subagent' : 'primary',
     });
     // Every refusal is logged. One that is permanent for these bytes is also
     // recorded on the pointer, so no later pass uploads this transcript again;
@@ -524,11 +527,11 @@ export async function shipSessionTranscripts(
   let refusedForNow = false;
   let held = false;
   const state = readSessionState(spool.dir, ctx.sessionId);
-  const slots: TranscriptSlot[] = [PRIMARY_SLOT, ...Object.keys(state.siblings).sort().map((p): TranscriptSlot => ({ role: 'subagent', path: p }))];
+  const slots: TranscriptSlot[] = [...Object.keys(state.continuations ?? {}).sort().map((p): TranscriptSlot => ({ role: 'continuation', path: p })), PRIMARY_SLOT, ...Object.keys(state.siblings).sort().map((p): TranscriptSlot => ({ role: 'subagent', path: p }))];
   for (const slot of slots) {
     // Turn-end marks name the session's own transcript: only it waits on a turn's end.
-    const primary = slot.role === 'primary';
-    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot, turnEnds: primary ? opts.turnEnds : undefined, holdTail: primary && opts.holdTail === true });
+    const primary = slot.role !== 'subagent';
+    const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot, turnEnds: primary ? opts.turnEnds : undefined, holdTail: slot.role === 'primary' && opts.holdTail === true });
     shipped += result.shipped;
     if (result.endedBy === 'refused') { refusedForNow = true; continue; }
     if (result.endedBy === 'held') { held = true; continue; }
