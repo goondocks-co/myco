@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs, { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from '../support/fenced-fs.mjs';
 import type { PathLike } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, win32 } from 'node:path';
+import { basename, join, win32 } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { sourceAccess, sourceAccessAllows, sourceToolAllows } from '@myco/runner/drivers/source-access.js';
 import { claudeCodeDriver } from '@myco/runner/drivers/claude-code.js';
@@ -144,7 +144,7 @@ describe('source containment corrections', () => {
     mkdirSync(join(operator, 'bin'));
     writeFileSync(join(operator, 'package.json'), '{"name":"@openai/codex"}');
     writeFileSync(join(operator, '.codex', 'package.json'), '{"name":"@openai/codex"}');
-    const temporary = join(tmpdir(), 'codex-source-install-fixture');
+    const temporary = removeWhenTestsEnd(join(tmpdir(), `codex-install-${basename(spec.scratchDir)}`));
     writeFileSync(temporary, 'synthetic executable');
     expect(() => runFilesystem(spec, redirected, temporary, null)).toThrow('Unsafe Codex installation directory');
     const previous = process.env.HOME;
