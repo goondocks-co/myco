@@ -79,7 +79,7 @@ export function stubProfileHarness(options: StubOptions = {}): { detected: Detec
     mcpRead,
     hold,
     `printf '%s\\n' '{"type":"system","subtype":"init","session_id":"sess_stub","model":"claude-sonnet-5-5"}'`,
-    ...(options.lines ?? []).map((line) => `printf '%s\\n' ${quote(line)}`),
+    ...(options.lines ?? ['{"type":"assistant","message":{"content":[{"type":"tool_use","id":"stub_myco","name":"mcp__myco__myco_run","input":{"op":"report"}}]}}']).map((line) => `printf '%s\\n' ${quote(line)}`),
     `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}'`,
   ].join('\n');
   writeFileSync(binary, script, { mode: 0o755 });

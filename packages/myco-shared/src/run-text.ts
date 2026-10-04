@@ -41,7 +41,7 @@ export const PATTERNED_DIAGNOSTIC_CODES = ['login_missing', 'rate_limited', 'mod
  */
 export const RUN_DIAGNOSTIC_CODES = [
   ...PATTERNED_DIAGNOSTIC_CODES,
-  'crashed', 'permission_refused', 'profile_unapplied', 'tools_unlisted', 'session_unasked', 'protocol_error', 'launch_failed', 'harness_error',
+  'crashed', 'permission_refused', 'profile_unapplied', 'tools_unlisted', 'tools_unused', 'session_unasked', 'protocol_error', 'launch_failed', 'harness_error',
 ] as const;
 export type RunDiagnosticCode = (typeof RUN_DIAGNOSTIC_CODES)[number];
 export type PatternedDiagnosticCode = (typeof PATTERNED_DIAGNOSTIC_CODES)[number];

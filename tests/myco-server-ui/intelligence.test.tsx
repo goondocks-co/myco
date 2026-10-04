@@ -546,6 +546,7 @@ for (const [code, sentence] of [
   ['agent_protocol_error', 'The agent answered in a way the machine couldn’t read, so the task stopped.'],
   ['agent_permission_refused', 'The agent was refused a tool the task needs.'],
   ['agent_tools_unlisted', 'The machine couldn’t list the task’s tools for the agent.'],
+  ['agent_tools_unused', 'The agent didn’t use Myco’s tools.'],
   ['run_failed', 'The task stopped before it could finish.'],
   [undefined, 'The task stopped before it could finish.'],
   ['unknown_code', 'The task stopped before it could finish.'],

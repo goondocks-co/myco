@@ -20,16 +20,19 @@ const PARK_MS = 3_600_000;
 const HEARTBEAT_MS = 1_000;
 /** How many renewals, each answered held, the run must see while it is driven. */
 const RENEWALS = 3;
-/** Two calls in the stub's stream, and the steps its worker keeps of them. */
+/** Three calls in the stub's stream, and the steps its worker keeps of them. */
 const STEP_LINES = [
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_material","name":"mcp__myco__myco_run_sessions","input":{"op":"material"}}]}}',
+  '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_material","content":"material"}]}}',
   '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Read","input":{"file_path":"AGENTS.md"}}]}}',
   '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"# rules"}]}}',
   '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_2","name":"Bash","input":{"command":"ls -la"}}]}}',
   '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_2","content":"total 0"}]}}',
 ];
 const STEPS_KEPT = [
-  { seq: 0, callId: 'tu_1', kind: 'read', tool: 'Read', target: 'AGENTS.md', outcome: 'ok' },
-  { seq: 1, callId: 'tu_2', kind: 'command', tool: 'Bash', target: 'ls -l…', outcome: 'ok' },
+  { seq: 0, callId: 'tu_material', kind: 'myco', tool: 'mcp__myco__myco_run_sessions', target: 'material', outcome: 'ok' },
+  { seq: 1, callId: 'tu_1', kind: 'read', tool: 'Read', target: 'AGENTS.md', outcome: 'ok' },
+  { seq: 2, callId: 'tu_2', kind: 'command', tool: 'Bash', target: 'ls -l…', outcome: 'ok' },
 ];
 
 /**
@@ -198,7 +201,7 @@ export const workerWire: ParityScenario = {
         .toBe(`${target.name} ended: failed — ${RUN_CLOSE_ERROR}`);
       // The attempt's step log went ahead of its end, and is filed under the attempt the claim recorded.
       expect(await target.sql(`SELECT attempt_id AS attemptId, steps_total AS total, steps_overflow AS overflow FROM agent_run_attempts WHERE run_id = ${lit(runId)}`))
-        .toEqual([{ attemptId: minted, total: 2, overflow: 0 }]);
+        .toEqual([{ attemptId: minted, total: 3, overflow: 0 }]);
       expect(await target.sql(`SELECT seq, call_id AS callId, kind, tool, target, outcome FROM agent_run_steps WHERE run_id = ${lit(runId)} ORDER BY seq`))
         .toEqual(STEPS_KEPT);
       expect(await target.sql(

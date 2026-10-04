@@ -37,6 +37,8 @@ function homeResolvingScripts(): string[] {
     .filter((f) => f !== 'smoke-worker-service.ts')
     // The installer smoke test uses an ephemeral home and must not follow a live installation's pin.
     .filter((f) => f !== 'smoke-member-global.ts')
+    // The native title smoke requires every harness home inside an explicit scratch root.
+    .filter((f) => f !== 'smoke-titling-tools.ts')
     .filter((f) => {
       const source = fs.readFileSync(path.join(SCRIPTS_DIR, f), 'utf8');
       return (
