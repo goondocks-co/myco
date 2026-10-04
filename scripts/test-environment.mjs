@@ -38,6 +38,7 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
       catch { return false; }
     });
     if (executable) {
+      if (name === 'pwsh') process.env.MYCO_TEST_PWSH_EXECUTABLE = fs.realpathSync(executable);
       const suffix = process.platform === 'win32' ? path.extname(executable) : '';
       fs.symlinkSync(executable, path.join(bin, name + suffix), 'file');
     }

@@ -112,7 +112,9 @@ describe('non-Bun test command temp boundary', () => {
       Object.defineProperty(process, 'platform', { value: 'win32' });
       let changed = false;
       const killed = [];
+      process.env.MYCO_TEST_PWSH_EXECUTABLE = 'fixture-pwsh';
       cp.spawnSync = (command, args) => {
+        if (command !== 'fixture-pwsh') return { status: 5, stdout: '', stderr: 'wrong PowerShell executable' };
         if (!args.at(-1).includes('.Kill(')) {
           const pid = Number(args.at(-1).match(/GetProcessById\\((\\d+)\\)/)[1]);
           return { status: 0, stdout: pid === 101 && changed ? '' : pid === 103 && changed ? '999' : '123', stderr: '' };

@@ -9,7 +9,7 @@ const PROCESS_EXIT_TIMEOUT_MS = 10_000;
 function windowsProcess(pid, action = '$p.StartTime.ToUniversalTime().Ticks.ToString()') {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('Test process PID must be positive');
   const command = `$ErrorActionPreference = 'Stop'; try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}) } catch [System.ArgumentException] { exit 0 }; try { $null = $p.Handle; ${action} } finally { $p.Dispose() }`;
-  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: PROCESS_QUERY_TIMEOUT_MS });
+  const result = spawnSync(process.env.MYCO_TEST_PWSH_EXECUTABLE ?? 'pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: PROCESS_QUERY_TIMEOUT_MS });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Windows test process operation failed for PID ${pid} (exit ${result.status}): ${result.stderr}`);
   return result.stdout.trim();
@@ -45,7 +45,7 @@ export function registerTestProcess(child, root = process.env.MYCO_TEST_RUN_ROOT
   }
 }
 
-export function stopTestProcessGroup(pid, signal, root = process.env.MYCO_TEST_RUN_ROOT) {
+export function stopRegisteredTestProcesses(root = process.env.MYCO_TEST_RUN_ROOT) {
   if (process.platform === 'win32') {
     const dir = path.join(root, REGISTRY_NAME);
     let files;
@@ -63,6 +63,10 @@ export function stopTestProcessGroup(pid, signal, root = process.env.MYCO_TEST_R
     if (errors.length) throw new AggregateError(errors, 'Windows test process cleanup failed');
     return;
   }
+}
+
+export function stopTestProcessGroup(pid, signal, root = process.env.MYCO_TEST_RUN_ROOT) {
+  if (process.platform === 'win32') return stopRegisteredTestProcesses(root);
   try { process.kill(-pid, signal); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }
 }

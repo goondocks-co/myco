@@ -17,7 +17,7 @@ import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { redactSecrets } from '../../scripts/redact-secrets.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -162,6 +162,29 @@ async function waitFor(condition: () => boolean, boundMs: number, what: string):
 }
 
 describe('run-bun-tests temp containment', () => {
+  test('surfaces a process-tree cleanup error after a passing Bun phase', () => withRunDirs(async ({ reports, tempDir }) => {
+    const preload = path.join(path.dirname(tempDir), 'windows-cleanup-fault.mjs');
+    fs.writeFileSync(preload, `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const original = cp.spawnSync;
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.kill = () => true;
+      cp.spawnSync = (command, args, options) => {
+        if (args.includes('-NonInteractive')) return args.at(-1).includes('.Kill(')
+          ? { status: 5, stdout: '', stderr: 'fixture Bun cleanup refused' }
+          : { status: 0, stdout: '123456', stderr: '' };
+        return original(command, args, options);
+      };
+      syncBuiltinESMExports();
+    `);
+    const result = spawnSync('node', ['--import', pathToFileURL(preload).href, 'scripts/run-bun-tests.mjs', STDIN_FIXTURE], {
+      env: { ...process.env, ...tempDirEnv(tempDir), MYCO_RUNNER_REPORT_DIR: reports, MYCO_TEST_SHARD: '1/1', MYCO_TEST_KIND: 'all' }, encoding: 'utf8',
+    });
+    expect({ status: result.status, output: result.stderr }).toEqual({ status: 1, output: expect.stringContaining('fixture Bun cleanup refused') });
+    expect(result.stderr).toContain(' 0 fail');
+    expect(entries(tempDir)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
   for (const target of [TEMP_BOUNDARY_FIXTURE, 'tests/fixtures/runner/temp_dom_boundary_test.tsx']) {
     test(`contains module-load and subprocess temp paths through ${target}`, () => withRunDirs(async ({ reports, tempDir }) => {
       const result = await runRunner(target, {

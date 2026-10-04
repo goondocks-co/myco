@@ -12,7 +12,7 @@ import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
-import { registerTestProcess, stopTestProcessGroup } from './test-process-tree.mjs';
+import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
@@ -30,11 +30,13 @@ let restoreSwappedBunfig = null;
 // However the runner exits (the end of the run, a signal, an uncaught error),
 // the group it was running dies with it, the bunfig is put back and the root
 // goes.
-process.on('exit', () => {
-  try { killActiveGroup?.('SIGKILL'); } catch { /* best-effort */ }
-  try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
-  finishTestTempRun(tempRun);
-});
+process.on('exit', () => finishTestTempRun(tempRun, () => {
+  try { killActiveGroup?.('SIGKILL'); }
+  finally {
+    try { stopRegisteredTestProcesses(RUN_ROOT); }
+    finally { restoreSwappedBunfig?.(); }
+  }
+}));
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
   process.on(signal, () => process.exit(128 + number));
 }
