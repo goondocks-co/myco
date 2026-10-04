@@ -1231,6 +1231,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     let settled = false;
     function settle(code) {
       if (settled) return;
+      if (process.platform !== 'win32' && child.pid) stopTestProcessGroup(child.pid, 'SIGKILL');
       settled = true;
       killActiveGroup = null;
       clearInterval(watchdog);

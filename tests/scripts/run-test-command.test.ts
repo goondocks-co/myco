@@ -9,6 +9,50 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-command-gate-'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
 describe('non-Bun test command temp boundary', () => {
+  it.skipIf(process.platform !== 'win32')('waits for a Windows file lock and rejects the shorter cleanup budget mutation', async () => {
+    for (const mutation of [false, true]) {
+      const parent = fs.mkdtempSync(path.join(scratch, 'locked-root-'));
+      const ready = path.join(parent, 'ready.json');
+      const held = path.join(parent, 'held');
+      const preload = path.join(parent, 'cleanup-budget.mjs');
+      fs.writeFileSync(preload, `
+        import fs from 'node:fs';
+        const rm = fs.rmSync;
+        fs.rmSync = (target, options) => rm(target, { ...options, maxRetries: 10 });
+      `);
+      const script = `
+        const fs = require('node:fs'), path = require('node:path');
+        const file = path.join(process.env.TMPDIR, 'locked.tmp');
+        fs.writeFileSync(file, 'lock probe');
+        fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify(file));
+        const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(held)})) clearInterval(timer); }, 20);
+      `;
+      const args = [...(mutation ? ['--import', pathToFileURL(preload).href] : []), 'scripts/run-test-command.mjs', 'node', '-e', script];
+      const wrapper = spawn('node', args, { env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stderr = '';
+      wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
+      const exited = new Promise((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
+      let holder;
+      try {
+        const deadline = Date.now() + 20_000;
+        while (!fs.existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
+        const file = JSON.parse(fs.readFileSync(ready, 'utf8')) as string;
+        const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+        holder = spawn(process.env.MYCO_TEST_PWSH_EXECUTABLE!, ['-NoProfile', '-NonInteractive', '-Command', `
+          $ErrorActionPreference = 'Stop';
+          $handle = [IO.File]::Open(${quote(file)}, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None);
+          try { [IO.File]::WriteAllText(${quote(held)}, 'held'); Start-Sleep -Milliseconds 7000 } finally { $handle.Dispose() }
+        `], { stdio: 'ignore' });
+        const released = new Promise((resolve, reject) => { holder!.on('error', reject); holder!.on('close', resolve); });
+        expect({ status: await exited, stderr }).toEqual({ status: mutation ? 1 : 0, stderr: mutation ? expect.stringContaining('EBUSY') : '' });
+        expect(await released).toBe(0);
+        expect(fs.existsSync(path.dirname(file))).toBe(mutation);
+      } finally {
+        if (wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill('SIGKILL');
+        if (holder?.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+      }
+    }
+  }, 60_000);
   for (const escape of [false, true]) {
     it(`contains command fixtures and ${escape ? 'fails escaped entries' : 'removes its root'}`, () => {
       const parent = fs.mkdtempSync(path.join(scratch, 'parent-'));

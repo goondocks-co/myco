@@ -162,6 +162,21 @@ async function waitFor(condition: () => boolean, boundMs: number, what: string):
 }
 
 describe('run-bun-tests temp containment', () => {
+  test.skipIf(process.platform === 'win32')('stops an unrefed child after a passing phase before removing its root', () => withRunDirs(async ({ reports, tempDir }) => {
+    const ready = path.join(path.dirname(tempDir), 'settled-child.pid');
+    let pid: number | undefined;
+    try {
+      const result = await runRunner('tests/fixtures/runner/settled_child_test.ts', {
+        MYCO_RUNNER_SETTLED_CHILD_FILE: ready, MYCO_RUNNER_REPORT_DIR: reports, ...tempDirEnv(tempDir),
+      });
+      pid = Number(fs.readFileSync(ready, 'utf8'));
+      expect({ status: result.status, output: result.output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
+      await waitFor(() => !alive(pid!), 5000, 'the settled phase child to exit');
+      expect(entries(tempDir)).toEqual([]);
+    } finally {
+      if (pid && alive(pid)) process.kill(pid, 'SIGKILL');
+    }
+  }), RUN_BOUND_MS + 10_000);
   test('surfaces a process-tree cleanup error after a passing Bun phase', () => withRunDirs(async ({ reports, tempDir }) => {
     const preload = path.join(path.dirname(tempDir), 'windows-cleanup-fault.mjs');
     fs.writeFileSync(preload, `

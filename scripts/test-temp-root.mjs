@@ -7,7 +7,7 @@ const ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const TEST_NAME = /^(?:myco-|mt-)/;
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
 const OWNERLESS_GRACE_MS = 60 * 60 * 1000;
-const CLEANUP_RETRIES = 10;
+const CLEANUP_RETRIES = 30;
 
 function ownerPid(root) {
   try {
