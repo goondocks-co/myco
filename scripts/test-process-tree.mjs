@@ -3,30 +3,46 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const REGISTRY_NAME = '.test-processes';
+const PROCESS_QUERY_TIMEOUT_MS = 15_000;
+const PROCESS_EXIT_TIMEOUT_MS = 10_000;
+
+function windowsProcess(pid, action = '$p.StartTime.ToUniversalTime().Ticks.ToString()') {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error('Test process PID must be positive');
+  const command = `$ErrorActionPreference = 'Stop'; try { $p = [System.Diagnostics.Process]::GetProcessById(${pid}) } catch [System.ArgumentException] { exit 0 }; try { $null = $p.Handle; ${action} } finally { $p.Dispose() }`;
+  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', timeout: PROCESS_QUERY_TIMEOUT_MS });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Windows test process operation failed for PID ${pid} (exit ${result.status}): ${result.stderr}`);
+  return result.stdout.trim();
+}
 
 function windowsIdentity(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error('Test process PID must be positive');
-  const command = `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; if ($p) { $p.CreationDate.ToUniversalTime().Ticks.ToString() }`;
-  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Cannot read Windows test process identity (exit ${result.status}): ${result.stderr}`);
-  const identity = result.stdout.trim();
+  const identity = windowsProcess(pid);
   if (identity && !/^\d+$/.test(identity)) throw new Error('Invalid Windows test process identity');
   return identity || null;
 }
 
-// Long-lived test descendants register while their process identity is live.
-export function registerTestProcess(pid, root = process.env.MYCO_TEST_RUN_ROOT) {
-  if (process.platform !== 'win32') return;
-  if (!root) throw new Error('Test process registration requires a run root');
-  const identity = windowsIdentity(pid);
-  if (identity === null) return;
-  const dir = path.join(root, REGISTRY_NAME);
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${pid}.json`);
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify({ pid, identity }));
-  fs.renameSync(temporary, file);
+// Registration either records the live child or stops that child before failing.
+export function registerTestProcess(child, root = process.env.MYCO_TEST_RUN_ROOT) {
+  if (process.platform !== 'win32' || !child.pid) return;
+  const pid = child.pid;
+  try {
+    if (!root) throw new Error('Test process registration requires a run root');
+    const identity = windowsIdentity(pid);
+    if (identity === null) {
+      try { process.kill(pid, 0); }
+      catch (error) { if (error.code === 'ESRCH') return; throw error; }
+      throw new Error(`Cannot register live Windows test process PID ${pid}`);
+    }
+    const dir = path.join(root, REGISTRY_NAME);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${pid}.json`);
+    const temporary = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ pid, identity }));
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    child.kill('SIGKILL');
+    throw error;
+  }
 }
 
 export function stopTestProcessGroup(pid, signal, root = process.env.MYCO_TEST_RUN_ROOT) {
@@ -35,15 +51,16 @@ export function stopTestProcessGroup(pid, signal, root = process.env.MYCO_TEST_R
     let files;
     try { files = fs.readdirSync(dir).filter((name) => name.endsWith('.json')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; files = []; }
+    const errors = [];
     for (const file of files) {
-      const record = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-      if (windowsIdentity(record.pid) !== record.identity) continue;
-      const result = spawnSync('taskkill', ['/PID', String(record.pid), '/T', '/F'], { stdio: 'ignore' });
-      if (result.error) throw result.error;
-      if (result.status !== 0 && windowsIdentity(record.pid) === record.identity) {
-        throw new Error(`taskkill failed for test command PID ${record.pid} (exit ${result.status})`);
-      }
+      try {
+        const record = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+        if (!/^\d+$/.test(record.identity)) throw new Error('Invalid registered Windows process identity');
+        // Handle acquisition precedes identity validation and termination.
+        windowsProcess(record.pid, `if ($p.StartTime.ToUniversalTime().Ticks.ToString() -eq '${record.identity}') { $p.Kill($true); if (!$p.WaitForExit(${PROCESS_EXIT_TIMEOUT_MS})) { throw 'Test process did not exit' } }`);
+      } catch (error) { errors.push(error); }
     }
+    if (errors.length) throw new AggregateError(errors, 'Windows test process cleanup failed');
     return;
   }
   try { process.kill(-pid, signal); }

@@ -28,7 +28,7 @@ export default async function globalSetup(): Promise<void> {
   }
 
   const child = spawn('bun', ['tests/ui-screens/serve.ts'], { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'] });
-  registerTestProcess(child.pid!);
+  registerTestProcess(child);
   process.env[SCREENS_ENV.pid] = String(child.pid);
 
   const info = await new Promise<LaunchInfo>((resolve, reject) => {

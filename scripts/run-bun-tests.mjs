@@ -1102,7 +1102,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     });
 
     killActiveGroup = (signal) => killPhaseTree(signal);
-    if (child.pid) registerTestProcess(child.pid, tempRun.root);
+    if (child.pid) registerTestProcess(child, tempRun.root);
 
     let killedForHang = false;
     let killedForBudget = false;

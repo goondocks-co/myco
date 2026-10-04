@@ -15,7 +15,7 @@ sandboxTestHome(run.root);
 const [command, ...args] = process.argv.slice(2);
 if (!command) throw new Error('A test command is required');
 child = spawn(command, args, { env: process.env, stdio: 'inherit', detached: process.platform !== 'win32' });
-if (child.pid) registerTestProcess(child.pid, run.root);
+if (child.pid) registerTestProcess(child, run.root);
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     stopTree(signal);

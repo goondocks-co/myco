@@ -9,6 +9,7 @@ import './sandbox-environment.js';
 import { afterAll } from 'bun:test';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { nativeLockRoots } from './native-lock-fence.js';
 import { installFilesystemFence } from './filesystem-fence.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,8 +31,7 @@ if (OWN_LOCKS_ROOT !== null) process.env[LOCKS_ROOT_ENV] = OWN_LOCKS_ROOT;
 const realHome = process.env.MYCO_TEST_REAL_HOME
   ?? execFileSync('node', ['-e', 'process.stdout.write(require("node:os").userInfo().homedir)'], { encoding: 'utf8' });
 delete process.env.MYCO_TEST_REAL_HOME;
-installFilesystemFence(realHome, process.platform !== 'win32' && process.getuid
-  ? [path.join('/var/tmp', `myco-locks-${process.getuid()}`)] : []);
+installFilesystemFence(realHome, nativeLockRoots());
 
 // Cleanup retains the filesystem guard.
 const origRmSync = fs.rmSync.bind(fs);

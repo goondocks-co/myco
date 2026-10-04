@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-command-gate-'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
@@ -45,7 +46,7 @@ describe('non-Bun test command temp boundary', () => {
         return original(pid, signal);
       };
     `);
-    const result = spawnSync('node', ['--import', preload, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
+    const result = spawnSync('node', ['--import', pathToFileURL(preload).href, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
       env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, encoding: 'utf8',
     });
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 1, stderr: expect.stringContaining('fixture signal refused') });
@@ -60,13 +61,13 @@ describe('non-Bun test command temp boundary', () => {
       import { syncBuiltinESMExports } from 'node:module';
       Object.defineProperty(process, 'platform', { value: 'win32' });
       process.kill = () => true;
-      cp.spawnSync = (command) => command === 'powershell' ? { status: 0, stdout: '123456', stderr: '' } : { status: 5 };
+      cp.spawnSync = (command, args) => args.at(-1).includes('.Kill(') ? { status: 5, stdout: '', stderr: 'fixture kill refused' } : { status: 0, stdout: '123456', stderr: '' };
       syncBuiltinESMExports();
     `);
-    const result = spawnSync('node', ['--import', preload, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
+    const result = spawnSync('node', ['--import', pathToFileURL(preload).href, 'scripts/run-test-command.mjs', 'node', '-e', '0'], {
       env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, encoding: 'utf8',
     });
-    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 1, stderr: expect.stringContaining('taskkill failed for test command PID') });
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 1, stderr: expect.stringContaining('fixture kill refused') });
     expect(fs.readdirSync(parent)).toEqual([]);
   });
 
@@ -112,16 +113,17 @@ describe('non-Bun test command temp boundary', () => {
       let changed = false;
       const killed = [];
       cp.spawnSync = (command, args) => {
-        if (command === 'powershell') {
-          const pid = Number(args.at(-1).match(/ProcessId = (\\d+)/)[1]);
+        if (!args.at(-1).includes('.Kill(')) {
+          const pid = Number(args.at(-1).match(/GetProcessById\\((\\d+)\\)/)[1]);
           return { status: 0, stdout: pid === 101 && changed ? '' : pid === 103 && changed ? '999' : '123', stderr: '' };
         }
-        killed.push(Number(args[1]));
-        return { status: 0 };
+        const pid = Number(args.at(-1).match(/GetProcessById\\((\\d+)\\)/)[1]);
+        if (pid === 102 || !args.at(-1).includes("-eq '123'")) killed.push(pid);
+        return { status: 0, stdout: '', stderr: '' };
       };
       syncBuiltinESMExports();
       const { registerTestProcess, stopTestProcessGroup } = await import(${JSON.stringify(module)});
-      for (const pid of [101, 102, 103]) registerTestProcess(pid, ${JSON.stringify(root)});
+      for (const pid of [101, 102, 103]) registerTestProcess({ pid, kill() { throw new Error('unexpected registration failure'); } }, ${JSON.stringify(root)});
       changed = true;
       stopTestProcessGroup(101, 'SIGKILL', ${JSON.stringify(root)});
       console.log(JSON.stringify(killed));
@@ -130,6 +132,29 @@ describe('non-Bun test command temp boundary', () => {
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
     expect(JSON.parse(result.stdout)).toEqual([102]);
   });
+
+  for (const fault of ['missing', 'refused']) {
+    it(`stops a fresh Windows child when registration is ${fault}`, () => {
+      const root = fs.mkdtempSync(path.join(scratch, 'registration-fault-'));
+      const file = path.join(root, 'probe.mjs');
+      const module = new URL('../../scripts/test-process-tree.mjs', import.meta.url).href;
+      fs.writeFileSync(file, `
+        import cp from 'node:child_process';
+        import { syncBuiltinESMExports } from 'node:module';
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        process.kill = () => true;
+        cp.spawnSync = () => ({ status: ${fault === 'missing' ? 0 : 5}, stdout: '', stderr: 'refused' });
+        syncBuiltinESMExports();
+        const { registerTestProcess } = await import(${JSON.stringify(module)});
+        const killed = [];
+        try { registerTestProcess({ pid: 101, kill(signal) { killed.push(signal); } }, ${JSON.stringify(root)}); }
+        catch (error) { console.log(JSON.stringify({ killed, error: error.message })); }
+      `);
+      const result = spawnSync('node', [file], { encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ killed: ['SIGKILL'], error: expect.any(String) });
+    });
+  }
 
   it.skipIf(process.platform !== 'win32')('ends a registered native Windows child after the command exits', async () => {
     const parent = fs.mkdtempSync(path.join(scratch, 'native-windows-'));
@@ -140,7 +165,7 @@ describe('non-Bun test command temp boundary', () => {
       const fs = require('node:fs');
       const child = cp.spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
       import(${JSON.stringify(module)}).then(({ registerTestProcess }) => {
-        registerTestProcess(child.pid);
+        registerTestProcess(child);
         fs.writeFileSync(${JSON.stringify(ready)}, String(child.pid));
         child.unref();
       });

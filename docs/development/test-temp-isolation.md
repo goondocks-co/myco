@@ -21,8 +21,9 @@ Native per-user lock tests inject the existing lock namespace; the preload
 fences the fixed POSIX native lock root. Native path assertions verify a
 runner-owned filesystem fixture.
 
-On Windows, runner children and the long-lived screen server register their
-PID and creation identity under the root. Cleanup checks that identity before
+On Windows, PowerShell 7 (`pwsh`) records runner children, test subprocesses
+and the long-lived screen server with their PID and creation identity under
+the root. Cleanup holds a process handle and checks that identity before
 terminating a registered process tree, including a server whose parent has
 exited. Arbitrary unregistered descendants of an already-exited Windows
 parent cannot be proven owned from reused parent PIDs. Raw Bun fallback

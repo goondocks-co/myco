@@ -7,7 +7,7 @@ export function sandboxTestHome(root) {
   process.env.USERPROFILE = home;
   process.env.CODEX_HOME = path.join(home, '.codex');
   process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
-  process.env.MYCO_HOME ??= path.join(home, '.myco');
+  process.env.MYCO_HOME = path.join(home, '.myco');
   process.env.MYCO_TEST_RUN_HOME = home;
   process.env.PATH = sandboxPath(home);
   return home;

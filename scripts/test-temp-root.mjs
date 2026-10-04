@@ -7,6 +7,7 @@ const ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const TEST_NAME = /^(?:myco-|mt-)/;
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
 const OWNERLESS_GRACE_MS = 60 * 60 * 1000;
+const CLEANUP_RETRIES = 10;
 
 function ownerPid(root) {
   try {
@@ -101,7 +102,7 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
         if (leaks.length) console.error('[run-bun-tests] FAIL: test temp entries escaped the run root');
         return leaks;
       } finally {
-        fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: CLEANUP_RETRIES });
         finished = true;
       }
     },

@@ -1,5 +1,6 @@
 import { TEST_TEMP_ROOT } from './temp-root.js';
 import path from 'node:path';
+import { registerTestProcess } from '../../scripts/test-process-tree.mjs';
 
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
 const HOME_ENV_NAMES = ['HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'];
@@ -18,7 +19,7 @@ function tempEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
 }
 
 type Operation = (...args: unknown[]) => unknown;
-function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) => number): Operation {
+function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) => number, tracksChild = false): Operation {
   return function (this: unknown, ...args: unknown[]) {
     const index = optionsIndex(args);
     const options = args[index];
@@ -26,7 +27,9 @@ function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) =
     const isolated = { ...object, env: tempEnvironment(object.env) };
     if (typeof options === 'function') args.splice(index, 0, isolated);
     else args[index] = isolated;
-    return operation.apply(this, args);
+    const child = operation.apply(this, args);
+    if (tracksChild) registerTestProcess(child as { pid?: number; kill(signal: NodeJS.Signals): unknown });
+    return child;
   };
 }
 
@@ -34,9 +37,9 @@ function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) =
 const childProcess = require('node:child_process') as Record<string, Operation>;
 for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'exec', 'execSync']) {
   const index = name === 'exec' || name === 'execSync' ? () => 1 : (args: unknown[]) => Array.isArray(args[1]) ? 2 : 1;
-  childProcess[name] = withTempOptions(childProcess[name]!, index);
+  childProcess[name] = withTempOptions(childProcess[name]!, index, name === 'spawn' || name === 'fork');
 }
 const bunProcess = Bun as unknown as Record<string, Operation>;
 for (const name of ['spawn', 'spawnSync']) {
-  bunProcess[name] = withTempOptions(bunProcess[name]!, (args) => Array.isArray(args[0]) ? 1 : 0);
+  bunProcess[name] = withTempOptions(bunProcess[name]!, (args) => Array.isArray(args[0]) ? 1 : 0, name === 'spawn');
 }

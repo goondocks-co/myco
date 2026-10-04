@@ -10,6 +10,7 @@ describe('test temp boundary', () => {
     expect(os.tmpdir()).toBe(root);
     for (const key of ['TMPDIR', 'TEMP', 'TMP']) expect(process.env[key]).toBe(root);
     expect(path.relative(root, os.homedir())).not.toMatch(/^\.\.(?:[/\\]|$)/);
+    expect(path.relative(root, process.env.MYCO_HOME!)).not.toMatch(/^\.\.(?:[/\\]|$)/);
   });
 
   it('routes every active Bun test script and the Windows CI contracts through the runner', () => {
@@ -28,6 +29,6 @@ describe('test temp boundary', () => {
     expect(runner.indexOf('createTestTempRun();')).toBeLessThan(runner.indexOf('gen-worker-bundle.ts'));
     expect(runner).toContain("['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']");
     const screens = fs.readFileSync(new URL('../ui-screens/global-setup.ts', import.meta.url), 'utf8');
-    expect(screens).toContain('registerTestProcess(child.pid!)');
+    expect(screens).toContain('registerTestProcess(child)');
   });
 });
