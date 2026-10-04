@@ -111,7 +111,7 @@ export interface RunStore {
   ): Promise<{ claimed: true } | { claimed: false; running: RunningRunRef }>;
   getRun(runId: string): Promise<RunRow | null>;
   getRunningRunForTask(task: string, maxAgeSeconds?: number): Promise<RunningRunRef | null>;
-  updateRunStatus(runId: string, status: string, completion?: RunUpdate): Promise<RunStatusOutcome>;
+  updateRunStatus(runId: string, status: string, completion?: RunUpdate, refusalId?: string): Promise<RunStatusOutcome>;
   applyRunUpdate(runId: string, update: RunUpdate): Promise<void>;
   supersedeEquivalentResumableRuns(
     excludeRunId: string,

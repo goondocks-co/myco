@@ -19,7 +19,7 @@ export type EmbeddingSelectionLeaf = typeof EMBEDDING_SELECTION_LEAVES[number];
 
 /** The longest model id a leaf holds. */
 const MODEL_MAX_CHARS = 256;
-const CONTROL = /[\u0000-\u001F\u007F]/;
+const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
 
 /** What computes vectors: a provider, its model, and where requests go. */
 export interface EmbeddingSelection {

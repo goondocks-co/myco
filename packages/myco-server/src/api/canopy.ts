@@ -1,3 +1,4 @@
+import { readRunFields } from './run-fields.js';
 import { MAP_TASK, MapArtifactError, parseMapSourcePin } from '@goondocks/myco-shared/canopy';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
@@ -5,7 +6,7 @@ import { readCanopyMap } from '../read/canopy.js';
 import { readMapSettings, writeCanopyMap } from '../core/canopy.js';
 import { mapSourcePinOfRun, pinMapSourceForRun, repositoryPinOfRun } from '../core/runs.js';
 import { heldRun } from './run-admission.js';
-import { notFound, ok, parseJsonObject, resolveProjectScope } from './scope.js';
+import { notFound, ok, resolveProjectScope } from './scope.js';
 import { refused } from '../ingest/events.js';
 import { refusal } from '../telemetry.js';
 
@@ -20,8 +21,8 @@ export async function handleProjectMap(env: ServerEnv, ctx: OwnerContext): Promi
  * input is pinned with its commit and its map lands through `myco_run_map`.
  */
 export async function handleRunMap(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = parseJsonObject(ctx.body);
-  if (body === null || typeof body.runId !== 'string' || !body.runId || body.runId.length > 192) {
+  const body = readRunFields(ctx.body, '/runs/canopy-map');
+  if (body === null || body.runId === null) {
     return Response.json(refused(ctx, refusal('runId is required', 'parse')));
   }
   const run = await heldRun(env, ctx, body.runId, [MAP_TASK]);

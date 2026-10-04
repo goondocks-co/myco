@@ -49,6 +49,15 @@ async function harness() {
 const window = `since=${SINCE}&until=${NOW}`;
 
 describe('Myco\'s work', () => {
+  it('labels a partition model in work reads', async () => {
+    const { sqlite, run, get } = await harness();
+    try {
+      run('proj_1', 'partition', { task: 'canopy-map', status: 'failed', at: NOW - HOUR });
+      sqlite.query("UPDATE agent_runs SET model = ? WHERE id = 'partition'").run(JSON.stringify(['cloudflare', '@cf/baai/bge-m3']));
+      expect((await get(`/api/work?${window}`)).body.runs[0].model).toBe('@cf/baai/bge-m3');
+    } finally { sqlite.close(); }
+  });
+
   it('reads recorded failure codes before prose and admits legacy capability-held expiries', async () => {
     const { sqlite, run, get } = await harness();
     try {
@@ -128,6 +137,15 @@ describe('Myco\'s work', () => {
     expect(body.runs.map((r: any) => r.id).sort()).toEqual(['run_m1', 'run_m2', 'run_t1']);
   });
 
+  it('links the failure that ended most recently, including a run that started earlier', async () => {
+    const { sqlite, run, get } = await harness();
+    try {
+      run('proj_1', 'ended-last', { task: 'embedding-reconcile', status: 'failed', at: NOW - 2 * HOUR, durationMs: HOUR + 1000 });
+      run('proj_1', 'started-last', { task: 'embedding-reconcile', status: 'failed', at: NOW - HOUR, durationMs: 500 });
+      expect((await get(`/api/work?${window}`)).body.upkeep.unrecovered.latestFailure).toMatchObject({ runId: 'ended-last', at: NOW - HOUR + 1000 });
+    } finally { sqlite.close(); }
+  });
+
   it('summarises the search index\'s upkeep: a failure a later success followed is a retry, one after the last success is unrecovered', async () => {
     const { run, get } = await harness();
     run('proj_1', 'run_e1', { task: 'embedding-reconcile', status: 'failed', at: NOW - 5 * HOUR });
@@ -138,7 +156,7 @@ describe('Myco\'s work', () => {
     run('proj_1', 'run_e4', { task: 'embedding-reconcile', status: 'failed', at: NOW - 2 * HOUR });
     run('proj_1', 'run_e5', { task: 'embedding-reconcile', status: 'failed', at: NOW - HOUR });
     const { body } = await get(`/api/work?${window}`);
-    expect(body.upkeep).toEqual({ task: 'embedding-reconcile', lastSuccessAt: NOW - 3 * HOUR, failedInWindow: 3, unrecovered: { runs: 2, since: NOW - 2 * HOUR } });
+    expect(body.upkeep).toEqual({ task: 'embedding-reconcile', lastSuccessAt: NOW - 3 * HOUR, failedInWindow: 3, unrecovered: { runs: 2, since: NOW - 2 * HOUR, latestFailure: { projectId: 'proj_1', runId: 'run_e5', at: NOW - HOUR + 1000, code: null } } });
     // Upkeep is never listed nor counted as an outcome.
     expect(body.outcomes).toEqual([]);
     expect(body.runs).toEqual([]);

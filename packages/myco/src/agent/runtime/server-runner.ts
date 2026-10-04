@@ -39,7 +39,7 @@ import type { ProviderConfig } from '../types.js';
 import { MAX_RUN_ERROR_CHARS, type RunStatusOutcome, type RunStore } from './run-store.js';
 
 export { MAX_RUN_ERROR_CHARS } from './run-store.js';
-import { createHttpRunStore, NoProviderConfiguredError, postRunControl, ProjectNotAdmittedError, type RunClaimAdmission } from './run-store-http.js';
+import { createHttpRunStore, RunControlError, NoProviderConfiguredError, postRunControl, ProjectNotAdmittedError, type RunClaimAdmission } from './run-store-http.js';
 import { INSTRUCTED_TASKS, materializedToolsForTask, type ServerToolContext } from './server-tools.js';
 import { onStopSignals, type ProcessEvents } from './process-signals.js';
 import { EMBEDDING_TASK, embeddingTask, executeEmbeddingRun } from './server-embedding.js';
@@ -98,6 +98,8 @@ export interface ServerTaskOptions {
   timeoutSeconds?: number;
   provider?: ProviderConfig;
   model?: string;
+  /** The embedding model label dispatch supplies for the bounded claim. */
+  claimModel?: string;
   instruction?: string;
   /** The task's parameters, as the dispatcher handed them; interpolated into the prompt and recorded on the run as its context. */
   params?: Record<string, string>;
@@ -147,20 +149,20 @@ export function claimAdmission(admission: string | undefined): RunClaimAdmission
 }
 
 /**
- * Offer one terminal status to the Deployment, twice.
+ * Offer a terminal status, retrying transport failures within the closing bound.
  *
  * The status is the only thing that tells a reader a run ended for a reason
- * rather than went away, and a single refused request would turn a named
- * failure into the stale sweep's silence.
+ * rather than went away. A terminal server refusal ends the attempt; a transport
+ * failure may be retried.
  */
 async function recordTerminal(
-  store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>, attempts = TERMINAL_UPDATE_ATTEMPTS,
+  store: RunStore, runId: string, status: 'completed' | 'failed', completion: Record<string, unknown>, attempts = TERMINAL_UPDATE_ATTEMPTS, refusalId?: string,
 ): Promise<RunStatusOutcome> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await store.updateRunStatus(runId, status, completion as never);
+      return await store.updateRunStatus(runId, status, completion as never, refusalId);
     } catch (error) {
-      if (attempt >= attempts) throw error;
+      if (error instanceof RunControlError && error.code !== null || attempt >= attempts) throw error;
     }
   }
 }
@@ -350,7 +352,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
           status: 'running',
           harness: taskName === EMBEDDING_TASK ? 'deterministic' : harnessId,
           provider: options.provider?.type ?? null,
-          model: taskName === EMBEDDING_TASK ? options.model ?? null : model,
+          model: taskName === EMBEDDING_TASK ? options.claimModel ?? null : model,
           run_context: options.params === undefined ? null : JSON.stringify(options.params),
         },
         { taskName, maxAgeSeconds: 0 },
@@ -473,7 +475,7 @@ export async function runServerTask(options: ServerTaskOptions): Promise<ServerT
     try {
       options.onClosing?.();
       refused = refusalOf(await recordTerminal(store, runId, 'failed', { completed_at: Date.now(), error: message,
-        ...(costInput === undefined ? {} : { tokens_used: costInput.usage.totalTokens ?? null }), ...accounting }));
+        ...(costInput === undefined ? {} : { tokens_used: costInput.usage.totalTokens ?? null }), ...accounting }, TERMINAL_UPDATE_ATTEMPTS, error instanceof RunControlError ? error.refusalId ?? undefined : undefined));
       if (refused === undefined) ending = 'posted';
     } catch {
       // The terminal update is best-effort: the stale sweep closes the row
