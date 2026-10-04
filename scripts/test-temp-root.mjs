@@ -79,6 +79,8 @@ export function newTestTemps(before, startedAt, root) {
 }
 
 export function createTestTempRun({ parent = os.tmpdir(), directories = systemTempDirectories() } = {}) {
+  const swept = sweepStaleRunRoots(parent);
+  if (swept > 0) console.log(`[run-bun-tests] removed ${swept} temp root(s) left by earlier runs`);
   const startedAt = Date.now();
   const before = snapshotTestTemps(directories);
   const root = fs.realpathSync(fs.mkdtempSync(path.join(parent, 'mt-')));

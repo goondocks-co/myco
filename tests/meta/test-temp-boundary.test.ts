@@ -22,6 +22,8 @@ describe('test temp boundary', () => {
     }
     const ci = fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
     expect(ci).not.toMatch(/\bbun test\b/);
+    expect(ci).toContain('PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright-browsers');
+    expect(ci).toContain('path: target/playwright-browsers');
     const runner = fs.readFileSync(new URL('../../scripts/run-bun-tests.mjs', import.meta.url), 'utf8');
     expect(runner.indexOf('createTestTempRun();')).toBeLessThan(runner.indexOf('gen-worker-bundle.ts'));
     expect(runner).toContain("['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']");

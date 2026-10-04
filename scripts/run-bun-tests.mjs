@@ -11,15 +11,13 @@ import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
-import { createTestTempRun, sweepStaleRunRoots } from './test-temp-root.mjs';
+import { createTestTempRun } from './test-temp-root.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
 // ---------------------------------------------------------------------------
 // The runner owns the root before loading test modules or starting subprocesses.
 const PARENT_TMPDIR = os.tmpdir();
-const sweptRunRoots = sweepStaleRunRoots(PARENT_TMPDIR);
-if (sweptRunRoots > 0) console.log(`[run-bun-tests] removed ${sweptRunRoots} temp root(s) left by earlier runs`);
 const tempRun = createTestTempRun();
 const RUN_ROOT = tempRun.root;
 process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;

@@ -184,6 +184,8 @@ jobs:
   ui-screens:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright-browsers
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
@@ -192,7 +194,7 @@ jobs:
         id: playwright-cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ms-playwright
+          path: target/playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install --with-deps chromium
