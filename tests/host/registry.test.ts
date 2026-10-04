@@ -21,9 +21,6 @@ import {
   ProjectAttachedToOtherHostError,
   type HostRecord,
   quarantinedHostMemberships,
-  readHostMembershipSnapshots,
-  reconcileHostRollbackBearers,
-  getHostMembershipSnapshot,
 } from '@myco/host/registry';
 import { createHostOperationLock } from '@myco/host/operation-lock';
 import { HOST_PROTOCOL_VERSION } from '@myco/constants.js';
@@ -41,6 +38,9 @@ const {
   getHost,
   persistEnrollmentMembership,
   readHostRegistry,
+  readHostMembershipSnapshots,
+  reconcileHostRollbackBearers,
+  getHostMembershipSnapshot,
   readHostSecrets,
   recordHostProtocolVersion,
   reserveHostEnrollment,

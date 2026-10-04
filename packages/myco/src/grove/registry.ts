@@ -956,6 +956,7 @@ export function pauseProject(
    */
   evidence: LeaseEvidence | null,
   mycoHome = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   // groveId no longer selects storage — the lease is held on the PROJECT, so it
   // survives the deregistration a move or a residency transition performs
@@ -967,7 +968,7 @@ export function pauseProject(
   if (!getRegisteredProjectInGrove(groveId, projectId, mycoHome)) {
     throw new Error(`Project ${projectId} is not registered in Grove ${groveId}`);
   }
-  acquireProjectLease(projectId, ownerOp, reason, evidence, mycoHome);
+  acquireProjectLease(projectId, ownerOp, reason, evidence, mycoHome, lockNamespace);
 }
 
 /**
@@ -979,9 +980,10 @@ export function resumeProject(
   projectId: string,
   ownerOp: string,
   mycoHome = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   if (!loadGroveRecord(groveId, mycoHome)) throw new Error(`Unknown Grove: ${groveId}`);
-  releaseProjectLease(projectId, ownerOp, mycoHome);
+  releaseProjectLease(projectId, ownerOp, mycoHome, lockNamespace);
 }
 
 /**
@@ -996,9 +998,10 @@ export function forceResumeProject(
   groveId: string,
   projectId: string,
   mycoHome = resolveMycoHome(),
+  lockNamespace: PerUserLockNamespace = nativePerUserLockNamespace,
 ): void {
   if (!loadGroveRecord(groveId, mycoHome)) throw new Error(`Unknown Grove: ${groveId}`);
-  forceReleaseProjectLease(projectId, mycoHome);
+  forceReleaseProjectLease(projectId, mycoHome, lockNamespace);
 }
 
 /**

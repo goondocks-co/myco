@@ -26,6 +26,8 @@ import { MOVE_TERMINAL_PHASES } from '@myco/grove/lease-evidence.js';
 import { assertGroveProjectId } from '@myco/grove/ids.js';
 
 const PROJECT = assertGroveProjectId('proj_' + 'f'.repeat(32));
+const LOCK_NAMESPACE = path.resolve('tests/helpers/per-user-lock-namespace.ts');
+const LOCK_FENCE = path.resolve('tests/helpers/native-lock-fence.ts');
 const SRC = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src');
 
 describe('W4 — a REAL dead holder in the same boot', () => {
@@ -41,9 +43,10 @@ describe('W4 — a REAL dead holder in the same boot', () => {
     fs.writeFileSync(
       childScript,
       `const { acquireProjectLease } = await import(${JSON.stringify(`${SRC}/grove/project-lease.ts`)});\n`
+      + `const { testPerUserLockNamespace } = await import(${JSON.stringify(LOCK_NAMESPACE)});\n`
       + 'const [, , home, projectId, evidenceJson] = process.argv;\n'
       + "acquireProjectLease(projectId, 'residency-detach', 'detaching', "
-      + "evidenceJson === 'null' ? null : JSON.parse(evidenceJson), home);\n"
+      + "evidenceJson === 'null' ? null : JSON.parse(evidenceJson), home, testPerUserLockNamespace);\n"
       + "console.log('ACQUIRED');\n"
       + 'setInterval(() => {}, 1000);\n',
       'utf-8',
@@ -56,13 +59,14 @@ describe('W4 — a REAL dead holder in the same boot', () => {
   /** Spawn a holder, wait for its lease, and return a kill handle. */
   async function spawnHolder(evidence: LeaseEvidence | null): Promise<{ kill: () => void; pid: number }> {
     const child = Bun.spawn(
-      ['bun', 'run', childScript, mycoHome, PROJECT, evidence === null ? 'null' : JSON.stringify(evidence)],
+      ['bun', 'run', '--preload', LOCK_FENCE, childScript, mycoHome, PROJECT, evidence === null ? 'null' : JSON.stringify(evidence)],
       { stdout: 'pipe', stderr: 'pipe' },
     );
     const leaseFile = path.join(mycoHome, 'leases', `${PROJECT}.json`);
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       if (fs.existsSync(leaseFile)) break;
+      if (child.exitCode !== null) break;
       await Bun.sleep(50);
     }
     if (!fs.existsSync(leaseFile)) {
@@ -145,9 +149,10 @@ describe('W3 (grove-move) — a dead holder with a move-marker at each phase', (
     fs.writeFileSync(
       childScript,
       `const { acquireProjectLease } = await import(${JSON.stringify(`${SRC}/grove/project-lease.ts`)});\n`
+      + `const { testPerUserLockNamespace } = await import(${JSON.stringify(LOCK_NAMESPACE)});\n`
       + 'const [, , home, projectId, evidenceJson] = process.argv;\n'
       + "acquireProjectLease(projectId, 'grove-move', 'moving between groves', "
-      + "evidenceJson === 'null' ? null : JSON.parse(evidenceJson), home);\n"
+      + "evidenceJson === 'null' ? null : JSON.parse(evidenceJson), home, testPerUserLockNamespace);\n"
       + "console.log('ACQUIRED');\n"
       + 'setInterval(() => {}, 1000);\n',
       'utf-8',
@@ -159,13 +164,14 @@ describe('W3 (grove-move) — a dead holder with a move-marker at each phase', (
 
   async function spawnMoveHolder(): Promise<{ pid: number; exited: Promise<number>; kill: () => void }> {
     const child = Bun.spawn(
-      ['bun', 'run', childScript, mycoHome, PROJECT, JSON.stringify({ kind: 'move-marker', path: markerPath })],
+      ['bun', 'run', '--preload', LOCK_FENCE, childScript, mycoHome, PROJECT, JSON.stringify({ kind: 'move-marker', path: markerPath })],
       { stdout: 'pipe', stderr: 'pipe' },
     );
     const leaseFile = path.join(mycoHome, 'leases', `${PROJECT}.json`);
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       if (fs.existsSync(leaseFile)) break;
+      if (child.exitCode !== null) break;
       await Bun.sleep(50);
     }
     if (!fs.existsSync(leaseFile)) throw new Error(`holder never acquired: ${await new Response(child.stderr).text()}`);

@@ -11,6 +11,7 @@ import {
   readSecrets,
 } from '@myco/config/secrets';
 import { resolvePerUserLocksDir } from '@myco/utils/user-lock-root.js';
+import { withSandboxedNativeLockRoot } from '../helpers/sandbox-native-lock-root.js';
 import { secretStoreLockKeys } from '@myco/config/secret-store-lock.js';
 import { physicalPathLockIdentities } from '@myco/utils/physical-path-identity.js';
 import {
@@ -496,14 +497,16 @@ describe('secrets', () => {
 
   describe.skipIf(process.platform === 'win32')('cross-process secret-store transaction', () => {
     it('uses a private, real, uid-owned lock root outside HOME and TMPDIR', () => {
-      const lockRoot = resolvePerUserLocksDir();
-      const stat = fs.lstatSync(lockRoot);
+      withSandboxedNativeLockRoot(testPerUserLocksRoot, () => {
+        const lockRoot = resolvePerUserLocksDir();
+        const stat = fs.lstatSync(lockRoot);
 
-      expect(lockRoot).toBe(`/var/tmp/myco-locks-${process.getuid!()}`);
-      expect(stat.isDirectory()).toBe(true);
-      expect(stat.isSymbolicLink()).toBe(false);
-      expect(stat.uid).toBe(process.getuid!());
-      expect(stat.mode & 0o777).toBe(0o700);
+        expect(lockRoot).toBe(`/var/tmp/myco-locks-${process.getuid!()}`);
+        expect(stat.isDirectory()).toBe(true);
+        expect(stat.isSymbolicLink()).toBe(false);
+        expect(stat.uid).toBe(process.getuid!());
+        expect(stat.mode & 0o777).toBe(0o700);
+      });
     });
 
     it.skipIf(!CASE_SENSITIVE_TMP)(

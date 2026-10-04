@@ -1,4 +1,5 @@
 const MAX_SHARDS = 256;
+export const PARITY_PLAN_PREFIX = '[myco-parity-plan] ';
 
 export function parseShard(value) {
   if (value === undefined) return { index: 1, count: 1 };

@@ -8,7 +8,7 @@
  * fall back to git, and answer the same.
  */
 import { describe, expect, it } from 'bun:test';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,13 +16,12 @@ import { gitHead } from '@myco/member/git-facts.js';
 import { isSafeProjectRoot, resolveMainRepoRoot, resolveWorktreeRoot } from '@myco/project-root.js';
 import { readRepoHead, readRepoLayout, UNUSUAL } from '@myco/utils/git-files.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
+import { supportsGitReftable } from '../helpers/git-capabilities.ts';
 
 const IDENTITY = ['-c', 'user.name=t', '-c', 'user.email=t@example.com'];
 const git = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 const tryGit = (cwd: string, ...args: string[]): string | undefined => { try { return git(cwd, ...args); } catch { return undefined; } };
-const supportsReftable = spawnSync('git', ['init', '--help'], { encoding: 'utf-8' }).stdout?.includes('ref-format')
-  && spawnSync('git', ['init', '-q', '--ref-format=reftable', path.join(os.tmpdir(), `myco-reftable-probe-${process.pid}`)]).status === 0;
-if (supportsReftable) fs.rmSync(path.join(os.tmpdir(), `myco-reftable-probe-${process.pid}`), { recursive: true, force: true });
+const supportsReftable = supportsGitReftable();
 
 const base = (): string => removeWhenTestsEnd(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-git-files-'))));
 

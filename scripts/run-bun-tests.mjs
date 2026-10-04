@@ -10,87 +10,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
-import { sandboxPath } from './test-environment.mjs';
+import { sandboxTestHome } from './test-environment.mjs';
+import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
+import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
 // ---------------------------------------------------------------------------
-// Every temp file the run creates lands under one root that the runner owns:
-// TMPDIR (TEMP/TMP on Windows) points there for the runner itself and every
-// process it spawns, so os.tmpdir() in a test, a preload, a spawned binary or
-// a grandchild resolves inside it, whatever cleanup that code does or skips.
-// The root is removed when the runner exits, on an error or a signal too. A
-// runner killed outright cannot remove its root; the next run sweeps every
-// root whose owning runner is no longer alive. The name is short: socket paths
-// tests derive from os.tmpdir() must stay under the 104-byte limit.
-const RUN_ROOT_PREFIX = 'mt-';
-/** A run root as mkdtemp names it, or as a sweep renames it to claim it. */
-const RUN_ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
-const RUN_ROOT_OWNER_FILE = '.owner';
-/** A root with no readable owner is swept once it is this old. */
-const OWNERLESS_ROOT_GRACE_MS = 60 * 60 * 1000;
-const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
-
-function pidIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === 'EPERM';
-  }
-}
-
-function runRootOwnerPid(root) {
-  try {
-    const pid = Number.parseInt(fs.readFileSync(path.join(root, RUN_ROOT_OWNER_FILE), 'utf8').trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
-function runRootIsStale(root) {
-  const pid = runRootOwnerPid(root);
-  if (pid !== null) return !pidIsAlive(pid);
-  try {
-    return Date.now() - fs.statSync(root).mtimeMs > OWNERLESS_ROOT_GRACE_MS;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Remove every run root in `parent` left by a runner that is no longer
- * alive. A stale root is first renamed to a name of this runner's own, so two
- * runners sweeping at once never delete the same tree; the renamed root
- * keeps the dead owner's file, so a sweep interrupted mid-delete is finished
- * by the next one.
- */
-function sweepStaleRunRoots(parent) {
-  let names;
-  try { names = fs.readdirSync(parent); } catch { return 0; }
-  let swept = 0;
-  for (const name of names) {
-    if (!RUN_ROOT_NAME.test(name)) continue;
-    const root = path.join(parent, name);
-    if (!runRootIsStale(root)) continue;
-    const claimed = path.join(parent, `${RUN_ROOT_PREFIX}sweep-${process.pid}-${swept}`);
-    try { fs.renameSync(root, claimed); } catch { continue; }
-    try { fs.rmSync(claimed, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next sweep retries */ }
-    swept += 1;
-  }
-  return swept;
-}
-
+// The runner owns the root before loading test modules or starting subprocesses.
 const PARENT_TMPDIR = os.tmpdir();
-const sweptRunRoots = sweepStaleRunRoots(PARENT_TMPDIR);
-if (sweptRunRoots > 0) console.log(`[run-bun-tests] removed ${sweptRunRoots} temp root(s) left by earlier runs`);
-let parentTmpdirBefore;
-try { parentTmpdirBefore = new Set(fs.readdirSync(PARENT_TMPDIR)); } catch { parentTmpdirBefore = null; }
-const RUN_ROOT = fs.mkdtempSync(path.join(PARENT_TMPDIR, RUN_ROOT_PREFIX));
-fs.writeFileSync(path.join(RUN_ROOT, RUN_ROOT_OWNER_FILE), `${process.pid}\n`);
-for (const name of TEMP_ENV_NAMES) process.env[name] = RUN_ROOT;
-// The directory the root sits in, for tests that measure paths a run builds under it.
+const tempRun = createTestTempRun();
+const RUN_ROOT = tempRun.root;
 process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;
 
 /** Kills the running group's process tree; null between groups. */
@@ -100,41 +30,22 @@ let restoreSwappedBunfig = null;
 // However the runner exits (the end of the run, a signal, an uncaught error),
 // the group it was running dies with it, the bunfig is put back and the root
 // goes.
-process.on('exit', () => {
-  try { killActiveGroup?.('SIGKILL'); } catch { /* best-effort */ }
-  try { restoreSwappedBunfig?.(); } catch { /* best-effort */ }
-  try { fs.rmSync(RUN_ROOT, { recursive: true, force: true, maxRetries: 3 }); } catch { /* the next run sweeps it */ }
-});
+process.on('exit', () => finishTestTempRun(tempRun, () => {
+  try { killActiveGroup?.('SIGKILL'); }
+  finally {
+    try { stopRegisteredTestProcesses(RUN_ROOT); }
+    finally { restoreSwappedBunfig?.(); }
+  }
+}));
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
   process.on(signal, () => process.exit(128 + number));
-}
-
-/**
- * Print how many entries appeared in the parent temp directory while this
- * run was going: anything a test wrote around the run root rather than into
- * it. Other processes writing there at the same time are counted too; other
- * runners' roots are not.
- */
-function reportParentTmpdirLeftovers() {
-  if (parentTmpdirBefore === null) return;
-  let after;
-  try { after = fs.readdirSync(PARENT_TMPDIR); } catch { return; }
-  const left = after.filter((name) => !parentTmpdirBefore.has(name) && !RUN_ROOT_NAME.test(name));
-  const sample = left.slice(0, 10).join(', ');
-  console.log(`[run-bun-tests] temp entries left in ${PARENT_TMPDIR}: ${left.length}${left.length > 0 ? ` (${sample}${left.length > 10 ? ', ...' : ''})` : ''}`);
 }
 
 // Node reads the account home independently of HOME; Bun's userInfo follows HOME.
 process.env.MYCO_TEST_REAL_HOME = os.userInfo().homedir;
 
 // Child runtimes receive home and PATH isolation before any preload executes.
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'h-'));
-process.env.HOME = TEST_HOME;
-process.env.USERPROFILE = TEST_HOME;
-process.env.CODEX_HOME = path.join(TEST_HOME, '.codex');
-process.env.CLAUDE_CONFIG_DIR = path.join(TEST_HOME, '.claude');
-process.env.MYCO_TEST_RUN_HOME = TEST_HOME;
-process.env.PATH = sandboxPath(TEST_HOME);
+sandboxTestHome(RUN_ROOT);
 
 // ---------------------------------------------------------------------------
 // Hermetic MYCO_HOME
@@ -240,6 +151,13 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Test prerequisites share the run's temp root and leak gate.
+const generated = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'], {
+  cwd: REPO, env: process.env, stdio: 'inherit',
+});
+if (generated.error) throw generated.error;
+if (generated.status !== 0) process.exit(generated.status ?? 1);
 
 /**
  * Warn when the Bun running the suite is not the Bun that ships.
@@ -1170,67 +1088,15 @@ function parseFailuresFromJunit(file) {
   return failures;
 }
 
-/**
- * Run a subprocess synchronously while teeing stdout+stderr to both the
- * terminal (so live progress is preserved) and a log file (so a
- * post-run scanner can find failure context that the JUnit reporter
- * silently drops).
- *
- * Implemented with synchronous spawnSync + a child that writes to a pipe
- * to `tee` via shell — simplest cross-platform path that preserves exit
- * code without requiring Node's async event loop in this script.
- *
- * Explicit `/bin/bash` invocation: `set -o pipefail` is a bash-only
- * feature. Ubuntu CI runners ship dash as `/bin/sh`, which rejects it
- * with "Illegal option -o pipefail" and aborts before any tests run.
- * bash is reliably present on every CI runner and on macOS.
- */
-function runWithTee(command, args, teeFile) {
-  const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
-  const teePath = teeFile.replace(/'/g, `'\\''`);
-  const shellCmd = `set -o pipefail; ${command} ${escaped} 2>&1 | tee -a '${teePath}'`;
-  const result = spawnSync('/bin/bash', ['-c', shellCmd], {
-    cwd: REPO,
-    stdio: 'inherit',
-    env: process.env,
-  });
-  return result.status ?? 1;
-}
-
-/**
- * Async variant of `runWithTee` with a quiet-line watchdog. Pipes child
- * stdout/stderr through Node so we can:
- *   - tee to the terminal (preserves live progress in CI logs)
- *   - tee to the per-phase log file (preserves the existing artifact)
- *   - track the last non-empty line and timestamp
- *
- * Every `WATCHDOG_INTERVAL_MS` we check whether the child has produced
- * output recently. If `WATCHDOG_QUIET_MS` has passed since the last
- * non-empty line, we emit a heartbeat that includes that last line —
- * which is usually a Bun test name. This makes hangs grepable: after
- * the run, `grep STILL RUNNING <log>` points straight at the file/test
- * that was stuck.
- *
- * Behavior is otherwise identical to `runWithTee` — same shell command,
- * same pipefail handling, same exit-code semantics.
- */
+/** Run a command directly, tee its output, and enforce quiet and wall-clock budgets. */
 async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineMs, hangFile }) {
-  const escaped = args.map((a) => `'${String(a).replace(/'/g, `'\\''`)}'`).join(' ');
-  const shellCmd = `set -o pipefail; ${command} ${escaped}`;
   const startMs = Date.now();
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
   return new Promise((resolve) => {
-    // `detached: true` puts the child in its own process group so a hard
-    // phase-kill can signal the WHOLE tree (bash + bun + bun's isolate
-    // workers) via the negative pid. Without this, killing only the bash
-    // wrapper would leave the spinning bun worker (and the test ports it
-    // holds) orphaned — the exact failure that poisons subsequent runs.
-    //
-    // stdin is /dev/null, never the runner's own: a test that reads fd 0
-    // gets EOF at once, as in CI, instead of blocking on a terminal or an
-    // agent harness's socket that never ends.
-    const child = spawn('/bin/bash', ['-c', shellCmd], {
+    // POSIX phase termination signals the detached process group and its workers.
+    // Tests reading stdin receive EOF.
+    const child = spawn(command, args, {
       cwd: REPO,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1238,6 +1104,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     });
 
     killActiveGroup = (signal) => killPhaseTree(signal);
+    if (child.pid) registerTestProcess(child, tempRun.root);
 
     let killedForHang = false;
     let killedForBudget = false;
@@ -1255,6 +1122,10 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     // it. A pid reused by an unrelated process is never signalled, and a
     // process group id cannot be reused while a member lives.
     function killPhaseTree(signal) {
+      if (process.platform === 'win32') {
+        stopTestProcessGroup(child.pid, signal);
+        return;
+      }
       const table = readProcessTable();
       if (table === null) {
         // No process table to read: the process group is all that can be named.
@@ -1360,6 +1231,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     let settled = false;
     function settle(code) {
       if (settled) return;
+      if (process.platform !== 'win32' && child.pid) stopTestProcessGroup(child.pid, 'SIGKILL');
       settled = true;
       killActiveGroup = null;
       clearInterval(watchdog);
@@ -1697,5 +1569,4 @@ if (exitCode !== 0) {
   printFailureSummary(phaseReports);
   printOverBudgetSummary();
 }
-reportParentTmpdirLeftovers();
 process.exit(exitCode);

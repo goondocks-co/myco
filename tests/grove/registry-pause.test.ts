@@ -12,6 +12,7 @@ import {
   resumeProject,
 } from '@myco/grove/registry.js';
 import { createProjectId } from '@myco/grove/ids.js';
+import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 import { readProjectLease } from '@myco/grove/project-lease.js';
 
 let home: string;
@@ -49,7 +50,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
 
     const status = isProjectPaused(PROJECT_A, home);
     expect(status.paused).toBe(true);
@@ -71,12 +72,12 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
     const first = isProjectPaused(PROJECT_A, home);
     if (!first.paused) throw new Error('expected paused');
     await new Promise((resolve) => setTimeout(resolve, 1100));
 
-    expect(() => pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home)).not.toThrow();
+    expect(() => pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace)).not.toThrow();
     const second = isProjectPaused(PROJECT_A, home);
     if (!second.paused) throw new Error('expected paused');
     expect(second.since).toBeGreaterThanOrEqual(first.since);
@@ -90,16 +91,16 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
     expect(() =>
-      pauseProject(grove.id, PROJECT_A, 'vacuum', 'op-2', null, home),
+      pauseProject(grove.id, PROJECT_A, 'vacuum', 'op-2', null, home, testPerUserLockNamespace),
     ).toThrow(/op-1/);
   });
 
   it('throws when called for an unregistered project', () => {
     const grove = createGrove('Test', home);
     expect(() =>
-      pauseProject(grove.id, createProjectId(), 'grove-move', 'op-1', null, home),
+      pauseProject(grove.id, createProjectId(), 'grove-move', 'op-1', null, home, testPerUserLockNamespace),
     ).toThrow(/not registered/);
   });
 
@@ -111,8 +112,8 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
-    resumeProject(grove.id, PROJECT_A, 'op-1', home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
+    resumeProject(grove.id, PROJECT_A, 'op-1', home, testPerUserLockNamespace);
 
     expect(isProjectPaused(PROJECT_A, home).paused).toBe(false);
     expect(readPauseFromDisk(grove.id, PROJECT_A)).toBeUndefined();
@@ -126,8 +127,8 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
-    expect(() => resumeProject(grove.id, PROJECT_A, 'op-2', home)).toThrow(/op-1/);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
+    expect(() => resumeProject(grove.id, PROJECT_A, 'op-2', home, testPerUserLockNamespace)).toThrow(/op-1/);
   });
 
   it('is idempotent on resumeProject when project is not paused', () => {
@@ -138,7 +139,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    expect(() => resumeProject(grove.id, PROJECT_A, 'op-1', home)).not.toThrow();
+    expect(() => resumeProject(grove.id, PROJECT_A, 'op-1', home, testPerUserLockNamespace)).not.toThrow();
     expect(isProjectPaused(PROJECT_A, home).paused).toBe(false);
   });
 
@@ -161,7 +162,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/b',
     }, home);
 
-    pauseProject(groveB.id, PROJECT_B, 'grove-move', 'op-2', null, home);
+    pauseProject(groveB.id, PROJECT_B, 'grove-move', 'op-2', null, home, testPerUserLockNamespace);
 
     const status = isProjectPaused(PROJECT_B, home);
     expect(status.paused).toBe(true);
@@ -177,9 +178,9 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
     expect(() =>
-      forceResumeProject(grove.id, PROJECT_A, home),
+      forceResumeProject(grove.id, PROJECT_A, home, testPerUserLockNamespace),
     ).not.toThrow();
     expect(isProjectPaused(PROJECT_A, home).paused).toBe(false);
   });
@@ -192,7 +193,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home);
+    pauseProject(grove.id, PROJECT_A, 'grove-move', 'op-1', null, home, testPerUserLockNamespace);
     clearGroveRegistryCaches();
 
     const status = isProjectPaused(PROJECT_A, home);
@@ -224,7 +225,7 @@ describe('Grove registry pause primitive', () => {
       projectRoot: '/fixture/demo',
     }, home);
 
-    pauseProject(target.id, PROJECT_A, 'grove-move', 'op-move', null, home);
+    pauseProject(target.id, PROJECT_A, 'grove-move', 'op-move', null, home, testPerUserLockNamespace);
 
     const status = isProjectPaused(PROJECT_A, home);
     expect(status.paused).toBe(true);
