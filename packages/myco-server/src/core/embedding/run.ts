@@ -1,4 +1,4 @@
-import type { RunControl } from '@goondocks/myco-shared/run-control';
+import { RunControlError, type RunControl } from '@goondocks/myco-shared/run-control';
 import type { ServerEnv } from '../adapters.js';
 import { HARNESS_AGENT_ID } from '../harness.js';
 import type { MissingSporeVectors } from './hubness.js';
@@ -64,15 +64,15 @@ export async function executeEmbeddingRun(
 ): Promise<void> {
   const control = (path: string, payload: unknown) => request(path, payload,
     AbortSignal.any([options.signal, AbortSignal.timeout(CONTROL_TIMEOUT_MS)]));
-  const close = async (status: 'completed' | 'failed', error?: string) => {
+  const close = async (status: 'completed' | 'failed', error?: string, refusalId?: string) => {
     const result = await request('/runs/update', {
-      runId: spec.runId, update: { status, completed_at: Date.now(), tokens_used: 0, ...(error === undefined ? {} : { error }) },
+      runId: spec.runId, ...(refusalId === undefined ? {} : { refusalId }), update: { status, completed_at: Date.now(), tokens_used: 0, ...(error === undefined ? {} : { error }) },
     }, AbortSignal.timeout(CLOSE_TIMEOUT_MS));
     if (result.applied !== true) throw new Error(`embedding close refused: ${String(result.reason ?? 'not applied')}`);
   };
   try {
     const claimed = await control('/runs/claim', { id: spec.runId, agentId: HARNESS_AGENT_ID, task: spec.envVars.MYCO_TASK,
-      captureDriven: true, startedAt: Date.now(), provider: 'embedding', model: spec.envVars.MYCO_MODEL });
+      captureDriven: true, startedAt: Date.now(), provider: 'embedding', model: spec.envVars.MYCO_CLAIM_MODEL });
     if (claimed.claimed !== true) throw new Error('embedding run claim refused');
     const result = await runEmbeddingSteps(() => control('/runs/embedding-step', { runId: spec.runId }),
       options.signal, options.deadline, options.closeReserveMs);
@@ -80,7 +80,7 @@ export async function executeEmbeddingRun(
     await close('completed');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    try { await close('failed', message); }
+    try { await close('failed', message, error instanceof RunControlError ? error.refusalId ?? undefined : undefined); }
     catch (closeError) { throw new AggregateError([error, closeError], 'embedding failed and its terminal update was not accepted'); }
     throw error;
   }

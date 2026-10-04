@@ -1,3 +1,4 @@
+import { RUN_CONTROL_REFUSAL_WORDS, type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 /**
  * The agent run control plane, server-side.
  *
@@ -583,6 +584,26 @@ export async function liveRunsOfCredential(db: RelationalStore, tokenId: string)
   return results;
 }
 
+/** Record a server refusal receipt for the unique open run dispatched under this credential. */
+export async function recordRunControlRefusal(db: RelationalStore, tokenId: string, code: RunControlRefusalCode): Promise<string | null> {
+  const { results } = await db.prepare(`SELECT project_id AS projectId, id FROM agent_runs
+    WHERE dispatched_by = ? AND ${LIVE_RUN_STATUSES}`).bind(tokenId).all<{ projectId: string; id: string }>();
+  if (results.length !== 1) return null;
+  const run = results[0]!;
+  const key = `runControlRefusals.${code}`;
+  // A non-object context is retained verbatim under unparsedRunContext.
+  // One receipt per code bounds the record; repeated refusals of that code share it.
+  const row = await db.prepare(`UPDATE agent_runs SET run_context = json_set(CASE
+    WHEN run_context IS NULL THEN '{}'
+    WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
+    ELSE json_object('unparsedRunContext', run_context) END, '$.${key}',
+      CASE WHEN ${contextValue(`${key}.tokenId`)} = ? THEN ${contextValue(key)} ELSE json(?) END)
+    WHERE project_id = ? AND id = ? AND dispatched_by = ? AND ${LIVE_RUN_STATUSES}
+    RETURNING ${contextValue(`${key}.id`)} AS refusalId`)
+    .bind(tokenId, JSON.stringify({ tokenId, code, id: crypto.randomUUID() }), run.projectId, run.id, tokenId).first<{ refusalId: string }>();
+  return row?.refusalId ?? null;
+}
+
 /** The session a run's recorded context names, or null when it names none. */
 export function sessionNamedByRun(run: RunRow): string | null {
   if (run.runContext === null) return null;
@@ -648,6 +669,7 @@ export async function applyRunUpdate(
   lease?: RunLease & { dispatchedBy: string },
   errorCode: RunErrorCode = 'run_failed',
   context?: Readonly<Record<string, string>>,
+  caller?: { tokenId: string; refusalId?: string },
 ): Promise<number> {
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return 0;
@@ -659,13 +681,21 @@ export async function applyRunUpdate(
   // machine, ran it. Only a live lease has an expiry, and the sweep reads that.
   const release = isTerminalRunStatus(update.status) ? ', lease_expires_at = NULL' : '';
   const coded = 'error' in update;
-  const codeSet = coded ? ', error_code = ?' : '';
+  const receipt = contextValue('runControlRefusals');
+  const usesReceipt = caller?.refusalId !== undefined && update.status === 'failed' && update.error != null;
+  const issuedCode = !usesReceipt ? '?' : `COALESCE((SELECT json_extract(value, '$.code')
+    FROM json_each(CASE WHEN json_valid(${receipt}) THEN ${receipt} ELSE '{}' END)
+    WHERE CASE WHEN type = 'object' THEN json_extract(value, '$.tokenId') END = ?
+      AND CASE WHEN type = 'object' THEN json_extract(value, '$.id') END = ?
+      AND CASE WHEN type = 'object' THEN json_extract(value, '$.code') END IN (${Object.keys(RUN_CONTROL_REFUSAL_WORDS).map((code) => `'${code}'`).join(', ')}) LIMIT 1), ?)`;
+  const codeSet = coded ? `, error_code = ${issuedCode}` : '';
+  const callerGuard = caller === undefined ? '' : ' AND dispatched_by = ?';
   // Keys merged into the run's context; a context the store did not write as JSON is left as it is.
   const contextSet = context === undefined ? '' : `, run_context = CASE WHEN run_context IS NULL OR json_valid(run_context) THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`;
   const result = await db
-    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}`)
-    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [update.error == null ? null : errorCode] : []), ...(context === undefined ? [] : [JSON.stringify(context)]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
-      ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]))
+    .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard}`)
+    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(context === undefined ? [] : [JSON.stringify(context)]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
+      ...(lease === undefined ? [] : [lease.tokenId, lease.dispatchedBy, lease.now]), ...(caller === undefined ? [] : [caller.tokenId]))
     .run();
   return result.meta.changes;
 }

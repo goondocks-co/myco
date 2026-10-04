@@ -124,6 +124,7 @@ async function executeFromEnv(): Promise<void> {
     timeoutSeconds: Number.isFinite(Number(env('MYCO_TIMEOUT_SECONDS'))) ? Number(env('MYCO_TIMEOUT_SECONDS')) : 300,
     provider,
     model: env('MYCO_MODEL'),
+    claimModel: env('MYCO_CLAIM_MODEL'),
     instruction: env('MYCO_INSTRUCTION'),
     params,
     admission: env('MYCO_TASK_ADMISSION'),

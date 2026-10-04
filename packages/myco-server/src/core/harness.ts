@@ -1,3 +1,4 @@
+import { heldPartition } from './embedding/policy.js';
 import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
@@ -638,6 +639,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       MYCO_TIMEOUT_SECONDS: String(timeoutSeconds),
       MYCO_PROVIDER_JSON: JSON.stringify(prepared.provider),
       ...(prepared.model === null ? {} : { MYCO_MODEL: prepared.model }),
+      ...(prepared.task === 'embedding-reconcile' && prepared.model !== null ? { MYCO_CLAIM_MODEL: heldPartition(prepared.model).label } : {}),
       ...(runContext === null ? {} : { MYCO_TASK_PARAMS: runContext }),
       ...prepared.credentialEnv,
     },

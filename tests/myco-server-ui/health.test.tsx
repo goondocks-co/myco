@@ -202,6 +202,16 @@ describe('Health', () => {
     expect(Number(params.get('until')) - Number(params.get('since'))).toBeGreaterThanOrEqual(24 * 3_600_000);
   });
 
+  it('names the server refusal in Search and links its latest failed run', async () => {
+    server(routes({ '/api/work': () => Response.json({ window: { since: 0, until: NOW }, outcomes: [], runs: [], truncated: false,
+      upkeep: { task: 'embedding-reconcile', lastSuccessAt: null, failedInWindow: 3,
+        unrecovered: { runs: 3, since: NOW - 3_600_000, latestFailure: { projectId: MYCO, runId: 'failed-search', at: NOW - 1000, code: 'parse' } } } }) }));
+    mount();
+    const upkeep = await screen.findByRole('region', { name: 'Upkeep' });
+    await waitFor(() => expect(upkeep.textContent).toContain('The server refused the task’s request because its format was invalid.'));
+    expect(within(upkeep).getByRole('link', { name: 'See the latest failed run' }).getAttribute('href')).toContain('/runs/failed-search');
+  });
+
   it('names each worker by its machine, never by an id, and says what it runs where', async () => {
     server(routes());
     mount();

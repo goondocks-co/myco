@@ -1,3 +1,4 @@
+import { heldPartition } from '../core/embedding/policy.js';
 import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
@@ -250,7 +251,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     status: row.status as string,
     ...runAccounting(row.usage_data, row.cost_provenance),
     provider: text(row.provider),
-    model: text(row.model),
+    model: row.model == null ? null : heldPartition(String(row.model)).label,
     startedAt: num(row.started_at),
     resumedAt: num(row.resumed_at),
     completedAt: num(row.completed_at),

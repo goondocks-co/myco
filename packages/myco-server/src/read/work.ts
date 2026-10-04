@@ -1,3 +1,4 @@
+import { heldPartition } from '../core/embedding/policy.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { requestedProfileValue } from '../db/run-profile.js';
 import { contextValue, FAILURE_REASON_KEY } from '../db/run-context.js';
@@ -115,7 +116,7 @@ export interface Upkeep {
   /** Upkeep runs started inside the window that failed, retries included. */
   failedInWindow: number;
   /** Upkeep runs that failed after the last success, and the first of them: the ones no success has answered yet. */
-  unrecovered: { runs: number; since: number } | null;
+  unrecovered: { runs: number; since: number; latestFailure?: { projectId: string; runId: string; at: number; code: string | null } } | null;
 }
 
 export interface WorkAnswer {
@@ -155,13 +156,14 @@ function upkeepStatement(db: RelationalStore, set: ProjectSet, since: number, un
   return db.prepare(
     `SELECT u.project_id, u.last_success, u.failed_in_window,
             (SELECT COUNT(*) ${failedAfter('COALESCE(u.last_success, -1)')}) AS unrecovered,
-            (SELECT MIN(r.started_at) ${failedAfter('COALESCE(u.last_success, -1)')}) AS unrecovered_since
+            (SELECT MIN(r.started_at) ${failedAfter('COALESCE(u.last_success, -1)')}) AS unrecovered_since,
+            (SELECT json_object('projectId', r.project_id, 'runId', r.id, 'at', COALESCE(r.completed_at, r.started_at), 'code', r.error_code, 'error', r.error) ${failedAfter('COALESCE(u.last_success, -1)')} ORDER BY COALESCE(r.completed_at, r.started_at) DESC, r.id DESC LIMIT 1) AS latest_failure
        FROM (SELECT p.project_id,
                     (SELECT MAX(r.started_at) FROM agent_runs r WHERE r.project_id = p.project_id AND r.task = ? AND r.status = 'completed') AS last_success,
                     (SELECT COUNT(*) FROM agent_runs r WHERE r.project_id = p.project_id AND r.task = ? AND r.status = 'failed'
                        AND r.started_at >= ? AND r.started_at < ?) AS failed_in_window
                FROM projects p WHERE ${projects.sql}) u`,
-  ).bind(EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, since, until, ...projects.params);
+  ).bind(EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, EMBEDDING_TASK, since, until, ...projects.params);
 }
 
 /** The upkeep rows of the upkeep statement, summed over the Projects. */
@@ -170,16 +172,23 @@ function upkeepOf(rows: readonly Record<string, unknown>[]): Upkeep {
   let failedInWindow = 0;
   let unrecovered = 0;
   let since: number | null = null;
+  let latestFailure: NonNullable<Upkeep['unrecovered']>['latestFailure'];
   for (const row of rows) {
     const last = orNull(row.last_success);
     if (last !== null && (lastSuccessAt === null || last > lastSuccessAt)) lastSuccessAt = last;
     failedInWindow += num(row.failed_in_window);
     const open = num(row.unrecovered);
     unrecovered += open;
+    if (typeof row.latest_failure === 'string') {
+      const latest = JSON.parse(row.latest_failure) as { projectId: string; runId: string; at: number; code: string | null; error: string | null };
+      if (latestFailure === undefined || latest.at > latestFailure.at || (latest.at === latestFailure.at && latest.runId > latestFailure.runId)) {
+        latestFailure = { projectId: latest.projectId, runId: latest.runId, at: latest.at, code: runErrorCode(latest.error, latest.code) };
+      }
+    }
     const first = orNull(row.unrecovered_since);
     if (open > 0 && first !== null && (since === null || first < since)) since = first;
   }
-  return { task: EMBEDDING_TASK, lastSuccessAt, failedInWindow, unrecovered: unrecovered > 0 && since !== null ? { runs: unrecovered, since } : null };
+  return { task: EMBEDDING_TASK, lastSuccessAt, failedInWindow, unrecovered: unrecovered > 0 && since !== null ? { runs: unrecovered, since, ...(latestFailure === undefined ? {} : { latestFailure }) } : null };
 }
 
 /** The search index's upkeep over the set's Projects and the window. */
@@ -307,7 +316,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
       requested: requestedProfile(row.requested_profile),
       queuedAt: orNull(row.queued_at), startedAt: orNull(row.started_at), completedAt: orNull(row.completed_at),
       harness: row.harness == null ? null : String(row.harness),
-      model: row.model == null ? null : String(row.model),
+      model: row.model == null ? null : heldPartition(String(row.model)).label,
       provider: row.provider == null ? null : String(row.provider),
       id: String(row.id),
       projectId: String(row.project_id),

@@ -1,3 +1,4 @@
+import { runControlRefusalCode } from '@goondocks/myco-shared/run-control';
 import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { TURN_END_HEADER } from './ingest/turns.js';
@@ -5,7 +6,7 @@ import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { heldRunOfCredential } from './api/run-admission.js';
-import { recordRunCall, type HeldRun } from './core/runs.js';
+import { recordRunCall, recordRunControlRefusal, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
 import { forbiddenToMember, isAdmin } from './auth/roles.js';
@@ -447,7 +448,16 @@ export function createServer(deps: ServerDeps) {
   /** Every failure after authentication answers in the route's shape once the route is known, and carries the protocol number; only what `admitted` returns leaves here. */
   async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
     try {
-      return await admitted(request, env, auth, matched, url, now);
+      const answered = await admitted(request, env, auth, matched, url, now);
+      if (auth.memberId === HARNESS_MEMBER_ID && matched?.route.auth === 'member' && matched.route.legacyRunRoute === true && answered.status === 200) {
+        const result: unknown = await answered.clone().json();
+        if (typeof result === 'object' && result !== null && 'persisted' in result && result.persisted === false) {
+          const code = runControlRefusalCode('code' in result ? result.code : null) ?? 'refused';
+          const refusalId = await recordRunControlRefusal(env.db, auth.tokenId, code);
+          if (refusalId !== null) return Response.json({ ...result, refusalId }, { status: answered.status, headers: answered.headers });
+        }
+      }
+      return answered;
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), memberId: auth.memberId, tokenId: auth.tokenId });
       return matched && matched.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();

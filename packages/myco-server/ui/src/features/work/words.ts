@@ -1,3 +1,4 @@
+import { RUN_CONTROL_REFUSAL_WORDS } from '@goondocks/myco-shared/run-control';
 /**
  * Myco's work in words: every sentence the page and the run panel show, built
  * from the numbers the server answers. A run reads as what it came to, a
@@ -333,6 +334,7 @@ export function ranOn(worker: RunWorker | null, name: (id: string) => string | n
  */
 export function runErrorWords(code: string | null | undefined, reason: string | null = null): string {
   const words: Readonly<Record<string, string>> = {
+    ...RUN_CONTROL_REFUSAL_WORDS,
     machine_did_not_start: 'No machine started the task within a day.',
     machine_unresponsive: 'The machine running it stopped responding.',
     task_start_failed: 'The machine could not start the task.',
