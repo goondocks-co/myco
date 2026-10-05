@@ -20,11 +20,12 @@ import { drainObjectReleases } from '@myco-server-worker/core/object-release.js'
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, eventGroups, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
-  TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT,
-  TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES,
+  AWAITING_BYTES, eventGroups, TRANSCRIPT_PRODUCER, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_REPAIRS_PER_WAKE,
+  TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES, TRANSCRIPT_IDLE_MS,
 } from '@myco-server-worker/ingest/parse.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { freeOrphanedBlobs, TOMBSTONE_SWEEP_GRACE_MS, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { blobHeld } from '@myco-server-worker/core/blob-references.js';
@@ -41,7 +42,7 @@ import { sqliteEnv, count, registeredObject, uuid } from './helpers/fixtures.js'
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { sha256HexOf } from '@myco-server-worker/hash.js';
+import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
 import { checkProject, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { REPO, X, fakeGithub } from './helpers/github-fake.js';
@@ -99,9 +100,134 @@ const target = (sqlite: Database) => {
 
 /** The calls one direct pass may spend in these cases, and no deadline: what `parseTranscripts` hands a pass from its budget. */
 const PASS_CALLS = 12;
-const LIMITS = { calls: PASS_CALLS, deadline: Number.POSITIVE_INFINITY, clock: () => 0 };
+const LIMITS = { calls: PASS_CALLS, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true };
 /** How many transcripts still owe a pass. */
-const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0]): Promise<number> => (await pendingTranscripts(db)).transcripts;
+const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0], now = NOW): Promise<number> => (await pendingTranscripts(db, now)).transcripts;
+
+describe('bounded parser upgrade repair', () => {
+  it('wakes for an older flat-context EOF cursor, resumes after rewind, and repairs plans and failed calls once', async () => {
+    const text = line({ type: 'user', promptId: uuid(1), message: { content: 'start' } })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># First</ultraplan>' }, { type: 'tool_use', id: 'old-call', name: 'Read', input: { path: 'a' } }] } })
+      + line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'old-call', content: 'ok' }] } })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># Second</ultraplan>' }] } })
+      + line({ type: 'user', promptId: uuid(2), message: { content: 'next' } });
+    const { sqlite, serverEnv, tokenId } = await rig(text);
+    const toolCallId = await uuidv5('tool-call', SESSION, 'old-call');
+    await ingestEvent(serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId, now: NOW, bodyBytes: 0 }, {
+      eventId: uuid(100), sessionId: SESSION, kind: 'tool.failure', channel: 'cli', createdAt: NOW,
+      producer: TRANSCRIPT_PRODUCER, payload: { toolCallId, toolName: 'Read', input: { path: 'a' }, success: false, errorMessage: 'tool call has no result in the transcript' },
+    });
+    sqlite.run("UPDATE transcripts SET parsed_offset = size, parser_version = 3, parser_context = '{\"source\":\"cli\"}'");
+    expect((await pendingTranscripts(serverEnv.db, NOW)).transcripts).toBe(1);
+    const first = await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    expect({ cursor: target(sqlite).parsed_offset, more: first.more }).toEqual({ cursor: 0, more: true });
+    for (let wake = 0; wake < 20 && (await pendingTranscripts(serverEnv.db, NOW)).transcripts > 0; wake += 1)
+      await parseTranscripts(serverEnv, NOW, { budget: { calls: 4, wallMs: 1000 }, clock: () => 0 });
+    expect(sqlite.query('SELECT title FROM plans ORDER BY title').all()).toEqual([{ title: 'First' }, { title: 'Second' }]);
+    expect(sqlite.query('SELECT tool_call_id, input, success, output_preview, error_message FROM tool_calls').all())
+      .toEqual([{ tool_call_id: toolCallId, input: '{"path":"a"}', success: 1, output_preview: 'ok', error_message: null }]);
+    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context).mycoParserMeta)
+      .toEqual({ source: 'cli' });
+    const counts = sqlite.query('SELECT (SELECT COUNT(*) FROM events) AS events, (SELECT COUNT(*) FROM plans) AS plans').get();
+    await parseTranscripts(serverEnv, NOW);
+    expect(sqlite.query('SELECT (SELECT COUNT(*) FROM events) AS events, (SELECT COUNT(*) FROM plans) AS plans').get()).toEqual(counts);
+    expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
+  });
+
+  it('records missing raw bytes as a repair omission once and does not keep the Deployment awake', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    sqlite.run('DELETE FROM transcript_segments');
+    sqlite.run('UPDATE transcripts SET parsed_offset = size, parser_version = 3');
+    await parseTranscripts(serverEnv, NOW);
+    const stored = sqlite.query('SELECT parser_version, parser_context FROM transcripts').get() as { parser_version: number; parser_context: string };
+    expect(JSON.parse(stored.parser_context).mycoParserRepair.status).toBe('raw_absent');
+    expect((await pendingTranscripts(serverEnv.db, NOW)).transcripts).toBe(0);
+    await parseTranscripts(serverEnv, NOW);
+    expect(sqlite.query('SELECT parser_version, parser_context FROM transcripts').get()).toEqual(stored);
+  });
+
+  it('keeps a partial older cursor\'s raw-absent repair reason when the unavailable prefix is skipped', async () => {
+    const text = body(2);
+    const { sqlite, serverEnv } = await rig(text);
+    sqlite.run('UPDATE transcripts SET parsed_offset = ?, parser_version = 3', [Buffer.byteLength(body(1))]);
+    sqlite.run('DELETE FROM transcript_segments');
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    const repair = () => {
+      const row = sqlite.query('SELECT parsed_offset, parser_version, parser_context FROM transcripts').get() as
+        { parsed_offset: number; parser_version: number; parser_context: string };
+      return { cursor: row.parsed_offset, version: row.parser_version, status: JSON.parse(row.parser_context).mycoParserRepair?.status };
+    };
+    expect(repair()).toEqual({ cursor: Buffer.byteLength(body(1)), version: PARSER_VERSION, status: 'raw_absent' });
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 4, wallMs: 1000 }, clock: () => 0 });
+    expect(repair()).toEqual({ cursor: Buffer.byteLength(text), version: PARSER_VERSION, status: 'raw_absent' });
+    expect(await pendingCount(serverEnv.db)).toBe(0);
+  });
+
+  it('clears stale checkpoint chunks when repair or a manual reread rewinds their cursor', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    const chunked = JSON.stringify({ source: 'cli', mycoParserState: { chunked: true, digest: 'old-checkpoint' }, mycoParserUnfinished: 1 });
+    const insertChunk = () => sqlite.run(`INSERT INTO transcript_parser_state_chunks
+      (project_id, transcript_id, cursor_offset, chunk_index, chunk_count, payload) VALUES (?, ?, ?, 0, 1, '{}')`,
+    [PROJECT, TRANSCRIPT, target(sqlite).parsed_offset]);
+    const chunks = () => count(sqlite, 'transcript_parser_state_chunks');
+    sqlite.run('UPDATE transcripts SET parsed_offset = size, parser_version = 3, parser_context = ?', [chunked]);
+    insertChunk();
+    expect(chunks()).toBe(1);
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    expect(target(sqlite).parsed_offset).toBe(0);
+    expect(chunks()).toBe(0);
+
+    sqlite.run('UPDATE transcripts SET parsed_offset = size, parser_version = ?, parser_context = ?', [PARSER_VERSION, chunked]);
+    insertChunk();
+    expect(chunks()).toBe(1);
+    expect(await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION })).toBe(1);
+    expect(target(sqlite).parsed_offset).toBe(0);
+    expect(chunks()).toBe(0);
+  });
+
+  it('prepares at most four older cursors per wake before parsing their bytes', async () => {
+    const { sqlite, serverEnv } = await rig(body(1));
+    sqlite.run("UPDATE transcripts SET parsed_offset = size, parser_version = 3, parser_context = '{\"source\":\"cli\"}'");
+    for (let index = 1; index <= TRANSCRIPT_REPAIRS_PER_WAKE; index += 1) {
+      const transcriptId = `tx_repair_${index}`;
+      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count,
+        first_received_at, last_received_at, token_id, parsed_offset, parser_version, parser_context)
+        SELECT project_id, ?, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at,
+          token_id, parsed_offset, parser_version, parser_context FROM transcripts WHERE transcript_id = ?`, [transcriptId, TRANSCRIPT]);
+      sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
+        SELECT project_id, ?, base_offset, length, blob_key, event_id, created_at, received_at, token_id
+          FROM transcript_segments WHERE transcript_id = ?`, [transcriptId, TRANSCRIPT]);
+    }
+    const repairRows = () => sqlite.query(`SELECT transcript_id, parsed_offset, parser_version, parser_context
+      FROM transcripts ORDER BY transcript_id`).all() as Array<{ transcript_id: string; parsed_offset: number; parser_version: number; parser_context: string }>;
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    const first = repairRows();
+    expect(first.filter((row) => JSON.parse(row.parser_context).mycoParserRepair?.status === 'replaying')).toHaveLength(TRANSCRIPT_REPAIRS_PER_WAKE);
+    expect(first.filter((row) => row.parser_version === 3 && row.parsed_offset > 0)).toHaveLength(1);
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    expect(repairRows().every((row) => row.parsed_offset === 0
+      && JSON.parse(row.parser_context).mycoParserRepair?.status === 'replaying')).toBe(true);
+  });
+
+  it.each([
+    { removed: 'first', status: 'raw_prefix_pruned' },
+    { removed: 'last', status: 'raw_gap' },
+  ])('names a $status omission when the $removed source segment is gone', async ({ removed, status }) => {
+    const text = body(2);
+    const { sqlite, serverEnv } = await rig(text, Buffer.byteLength(body(1)));
+    sqlite.run('UPDATE transcripts SET parsed_offset = size, parser_version = 3');
+    sqlite.run(`DELETE FROM transcript_segments WHERE base_offset ${removed === 'first' ? '=' : '>'} 0`);
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    const row = sqlite.query('SELECT parsed_offset, size, parser_version, parser_context FROM transcripts').get() as
+      { parsed_offset: number; size: number; parser_version: number; parser_context: string };
+    expect({ cursor: row.parsed_offset, size: row.size, version: row.parser_version,
+      status: JSON.parse(row.parser_context).mycoParserRepair.status }).toEqual({ cursor: row.size, size: Buffer.byteLength(text), version: PARSER_VERSION, status });
+    expect(await pendingCount(serverEnv.db)).toBe(0);
+    await parseTranscripts(serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+    expect(sqlite.query('SELECT parsed_offset, parser_version, parser_context FROM transcripts').get())
+      .toEqual({ parsed_offset: row.parsed_offset, parser_version: row.parser_version, parser_context: row.parser_context });
+  });
+});
 
 /** Drives passes to completion, counting database calls so the bound can be asserted. */
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
@@ -282,7 +408,7 @@ describe('parsing a held transcript', () => {
     expect(await drain(env, sqlite)).toBeGreaterThan(1);
     expect(target(sqlite).parsed_offset).toBe(Buffer.byteLength(text));
     expect(count(sqlite, 'prompt_batches')).toBe(0);
-    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context)).toEqual({ source });
+    expect(JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context).mycoParserMeta).toEqual({ source });
   });
 
   it('recovers a header before continuing an existing cursor without rewriting prior rows', async () => {
@@ -291,7 +417,7 @@ describe('parsing a held transcript', () => {
     const text = header + prior + codexMessage('user', 'new exec request');
     const { sqlite, serverEnv } = await rig(text, 2048, { agent: 'codex' });
     const cursor = Buffer.byteLength(header + prior);
-    sqlite.run('UPDATE transcripts SET parsed_offset = ?, parser_version = 1', [cursor]);
+    sqlite.run('UPDATE transcripts SET parsed_offset = ?, parser_version = ?', [cursor, PARSER_VERSION]);
     await parseTranscripts(serverEnv, NOW);
     expect(target(sqlite).parsed_offset).toBe(cursor);
     expect(count(sqlite, 'events')).toBe(0);
@@ -463,20 +589,25 @@ describe('parsing a held transcript', () => {
       prepare: (sql: string) => counted(serverEnv.db.prepare(sql), sql),
       batch: (statements: PreparedStatement[]) => { trips += 1; batches += 1; return serverEnv.db.batch(statements); },
     };
-    await parseTranscripts({ ...serverEnv, db }, NOW, { budget: { calls: 100, wallMs: 60_000 } });
+    await parseTranscripts({ ...serverEnv, db }, NOW + TRANSCRIPT_IDLE_MS, { budget: { calls: 100, wallMs: 60_000 } });
     expect(target(sqlite).parsed_offset).toBe(target(sqlite).size);
     const events = count(sqlite, 'events');
     // No read of the segments apart from the selection, and no advance of the cursor apart from the batch that wrote.
     expect(alone.filter((sql) => /FROM transcript_segments s/.test(sql) && !/FROM transcripts/.test(sql))).toEqual([]);
     expect(alone.filter((sql) => /UPDATE transcripts SET parse_segment_lines/.test(sql))).toEqual([]);
-    expect(batches).toBe(Math.ceil(events / TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
-    // The live selection that found it and the two, one per half, that found none.
-    expect(trips).toBe(batches + 3);
+    // The open final reply lands in its own terminal batch after the byte-reading pass.
+    expect(batches).toBe(Math.ceil((events - 1) / TRANSCRIPT_PARSE_EVENTS_PER_BATCH) + 1);
+    // The terminal wake adds one selection to the bounded continuation reads and empty half-scans.
+    expect(trips).toBe(batches + 6);
   });
 
   it('keeps the cursor advance under the hosted parameter ceiling when it rides a batch of the most events one may hold', async () => {
-    // Every turn derives the same events, so as many turns as a batch holds events fill the last batch exactly.
-    const { sqlite, serverEnv } = await rig(body(TRANSCRIPT_PARSE_EVENTS_PER_BATCH));
+    // Two closing prompts flush the final replies while leaving the last batch at exactly its event limit.
+    const text = body(TRANSCRIPT_PARSE_EVENTS_PER_BATCH - 1)
+      + line({ type: 'user', promptId: uuid(1000), message: { content: 'next' } })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'reply' }] } })
+      + line({ type: 'user', promptId: uuid(1001), message: { content: 'finish' } });
+    const { sqlite, serverEnv } = await rig(text);
     const advances: number[] = [];
     const observed = (statement: PreparedStatement, sql: string): PreparedStatement => ({
       ...statement,
@@ -1178,7 +1309,7 @@ describe('reading a stored transcript again', () => {
     expect(sqlite.query('SELECT text FROM prompt_batches').all()).toEqual([
       { text: 'List the files in this directory and say how many there are. Do not modify anything.' },
     ]);
-    expect(count(sqlite, 'responses')).toBe(1);
+    expect((sqlite.query('SELECT text FROM responses ORDER BY created_at, response_id').all() as { text: string }[]).map((row) => row.text).join('\n\n')).toContain('Nothing was modified.');
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
   });
 
@@ -1193,6 +1324,50 @@ describe('reading a stored transcript again', () => {
 
     expect(rowCounts(sqlite)).toEqual(before);
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
+  });
+
+  it('rereads joined legacy replies across windows and retries without duplicating their text', async () => {
+    const replies = ['first reply ' + 'a'.repeat(120_000) + ' ', ' second reply ' + 'b'.repeat(120_000) + ' ', ' third reply'];
+    const prefix = line({ type: 'user', promptId: uuid(70), message: { content: 'legacy prompt' } });
+    const firstOffset = new TextEncoder().encode(prefix).length;
+    const spacer = line({ type: 'system', text: 's'.repeat(400_000) });
+    const text = prefix + line({ type: 'assistant', message: { content: [{ type: 'text', text: replies[0] }] } }) + spacer
+      + replies.slice(1).map((reply) => line({ type: 'assistant', message: { content: [{ type: 'text', text: reply }] } })).join('')
+      + line({ type: 'user', promptId: uuid(72), message: { content: 'later turn' } });
+    const later = line({ type: 'assistant', message: { content: [{ type: 'text', text: 'later appended reply' }] } });
+    const { sqlite, serverEnv, tokenId } = await rig(text + later, 300_000);
+    // A stored joined reply uses the identity of its first assistant record.
+    const first = (await PARSERS['claude-code'].parse({ lines: [{ value: JSON.parse(text.split('\n')[1]), offset: firstOffset }], sessionId: SESSION, now: NOW }))[0];
+    const oldText = replies.join('\n\n');
+    expect((await ingestEvent(serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId, now: NOW, bodyBytes: 0, writeOrigin: 'server' }, {
+      eventId: await uuidv5('transcript-event', TRANSCRIPT, 'response', String(first.payload.responseId)), sessionId: SESSION, kind: 'response', createdAt: NOW, channel: 'cli', producer: TRANSCRIPT_PRODUCER,
+      payload: { ...first.payload, promptId: uuid(70), text: oldText },
+    })).persisted).toBe(true);
+    sqlite.run('UPDATE transcripts SET parsed_offset = ?, parser_version = 3', [Buffer.byteLength(text)]);
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION });
+      await drain({ db: serverEnv.db, blobs: serverEnv.blobs }, sqlite);
+      expect(sqlite.query('SELECT text FROM responses ORDER BY rowid').all()).toEqual([{ text: oldText }, { text: 'later appended reply' }]);
+      expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
+    }
+  });
+
+  it('preserves Codex header metadata when rereading after its header segment was retained away', async () => {
+    const header = line({ type: 'session_meta', payload: { source: 'cli', marker: 'retained-header-context' } });
+    const user = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'human question' }] } });
+    const reply = line({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] } });
+    const { sqlite, serverEnv, env } = await rig(header + user + reply, Buffer.byteLength(header), { agent: 'codex' });
+    const context = () => JSON.parse((sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string }).parser_context);
+    await drain(env, sqlite);
+    expect(context()).toMatchObject({ source: 'cli', marker: 'retained-header-context' });
+    const before = rowCounts(sqlite);
+    sqlite.run('DELETE FROM transcript_segments WHERE base_offset = 0');
+    await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION });
+    await drain(env, sqlite);
+    expect(context()).toMatchObject({ source: 'cli', marker: 'retained-header-context',
+      mycoParserMeta: { source: 'cli', marker: 'retained-header-context' } });
+    expect(rowCounts(sqlite)).toEqual(before);
+    expect(target(sqlite).parse_error).toBeNull();
   });
 
   it('clears a recorded failure, so a transcript a parser stopped on is read again under the fixed one', async () => {
@@ -1215,7 +1390,7 @@ describe('reading a stored transcript again', () => {
     // One segment per turn, and one cut across lines: both must name every row at its own offset.
     for (const slice of [pair, 100]) {
       const { sqlite, serverEnv } = await rig(text, slice, { agent: 'cursor' });
-      for (let pass = 0; pass < 20 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
+      for (let pass = 0; pass < 20 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS);
       expect({ slice, prompts: texts(sqlite, 'prompt_batches') }).toEqual({ slice, prompts: ['q1', 'q2', 'q3', 'q4'] });
       // Retention prunes read segments oldest first.
       const firstKept = slice === pair ? pair * 2 : 300;
@@ -1224,7 +1399,8 @@ describe('reading a stored transcript again', () => {
 
       expect(await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION })).toBe(1);
       expect(target(sqlite).parsed_offset).toBe(heldFrom);
-      for (let pass = 0; pass < 20 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW + 1000);
+      for (let pass = 0; pass < 20 && (await pendingCount(serverEnv.db, NOW + TRANSCRIPT_IDLE_MS + 1000)) > 0; pass += 1)
+        await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS + 1000);
       expect({ slice, prompts: texts(sqlite, 'prompt_batches'), responses: texts(sqlite, 'responses') })
         .toEqual({ slice, prompts: ['q1', 'q2', 'q3', 'q4'], responses: ['a1', 'a2', 'a3', 'a4'] });
       expect(target(sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
@@ -1290,6 +1466,8 @@ describe('a transcript that cannot move yet', () => {
     await parseTranscripts(serverEnv, NOW);
     expect(target(sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
     expect(promptTexts(sqlite)).toEqual(['first', 'second']);
+    expect(count(sqlite, 'responses')).toBe(1);
+    await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS);
     expect(count(sqlite, 'responses')).toBe(2);
   });
 
@@ -1330,6 +1508,8 @@ describe('a transcript that cannot move yet', () => {
     expect(await pendingCount(serverEnv.db)).toBe(1);
     await parseTranscripts(serverEnv, NOW + 5);
     expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
+    expect(count(sqlite, 'responses')).toBe(0);
+    await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS + 5);
     expect(count(sqlite, 'responses')).toBe(2);
   });
 
@@ -1347,6 +1527,8 @@ describe('a transcript that cannot move yet', () => {
     await parseTranscripts(racing, NOW);
     expect(landedDuringPass).toBe(true);
     expect(target(sqlite)).toMatchObject({ parsed_offset: target(sqlite).size, parse_error: null });
+    expect(count(sqlite, 'responses')).toBe(0);
+    await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS);
     expect(count(sqlite, 'responses')).toBe(1);
   });
 
@@ -1359,6 +1541,8 @@ describe('a transcript that cannot move yet', () => {
     await appendSegment(sqlite, serverEnv, tokenId, TRANSCRIPT, `${whole.slice(20)}\n`, NOW - 5_000);
     expect(await pendingCount(serverEnv.db)).toBe(1);
     await parseTranscripts(serverEnv, NOW);
+    expect(count(sqlite, 'responses')).toBe(0);
+    await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS);
     expect(count(sqlite, 'responses')).toBe(1);
   });
 
@@ -1404,7 +1588,8 @@ describe('a turn whose reply is longer than one response holds', () => {
     it(`${agent}: reads to the end with every part of the reply landed`, async () => {
       expect(whole.length).toBeGreaterThan(262_144);
       const { sqlite, serverEnv } = await rig(text, 1 << 20, { agent });
-      for (let pass = 0; pass < 10 && (await pendingCount(serverEnv.db)) > 0; pass += 1) await parseTranscripts(serverEnv, NOW);
+      for (let pass = 0; pass < 10 && (await pendingCount(serverEnv.db, NOW + TRANSCRIPT_IDLE_MS)) > 0; pass += 1)
+        await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS);
       expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(text) });
       const landed = responses(sqlite);
       expect(landed.length).toBeGreaterThan(1);
@@ -1418,16 +1603,17 @@ describe('a turn whose reply is longer than one response holds', () => {
     // Version 2 stopped the Codex Desktop transcripts whose turns ran past one response.
     sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = 2");
     expect(await pendingCount(serverEnv.db)).toBe(1);
-    await parseTranscripts(serverEnv, NOW);
+    await parseTranscripts(serverEnv, NOW + TRANSCRIPT_IDLE_MS);
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(codex) });
     expect(responses(sqlite).length).toBeGreaterThan(1);
   });
 
-  it('stops with event_refused, not parse, when the catalogue refuses an event the parser derived', async () => {
+  it('admits an oversized derived prompt and advances instead of stopping capture', async () => {
     const tooLong = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x'.repeat(300_000) }] } });
     const { sqlite, serverEnv } = await rig(tooLong, 1 << 20, { agent: 'codex' });
     await parseTranscripts(serverEnv, NOW);
-    expect(target(sqlite)).toMatchObject({ parse_error: 'event_refused', parsed_offset: 0 });
+    expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(tooLong) });
+    expect((sqlite.query('SELECT text FROM prompt_batches').get() as { text: string }).text).toContain('not kept');
   });
 });
 
@@ -1456,5 +1642,70 @@ describe('the groups a pass writes', () => {
   it('writes an event larger than a call alone rather than dropping it', () => {
     const events = [event(0, 'x'.repeat(TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)), event(1, 'small')];
     expect(eventGroups(events).map((g) => g.length)).toEqual([1, 1]);
+  });
+});
+
+
+describe('durable parser continuation at the read floor', () => {
+  const rows = (sqlite: Database) => Object.fromEntries([
+    ['prompt_batches', 'prompt_id, text, origin, prompt_kind, created_at'],
+    ['responses', 'response_id, prompt_id, text, created_at'],
+    ['tool_calls', 'tool_call_id, prompt_id, tool_name, input, success, output_preview, error_message, created_at'],
+    ['plans', 'plan_key, prompt_id, title, content, status, origin_path, source, created_at'],
+  ].map(([table, columns]) => [table, sqlite.query(`SELECT ${columns} FROM ${table} ORDER BY created_at, 1`).all()]));
+
+  it('retains successful tool results and both plans across read windows and a serialized restart', async () => {
+    const at = '2026-09-01T10:00:00Z';
+    const prefix = line({ type: 'user', promptId: uuid(1), message: { content: 'start' }, timestamp: at })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># First plan</ultraplan>' },
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/a.ts' } }] }, timestamp: at })
+      + line({ type: 'file-history-snapshot', padding: 'x'.repeat(TRANSCRIPT_PARSE_BYTES_PER_READ) });
+    const suffix = line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] }, timestamp: at })
+      + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># Second plan</ultraplan>' }] }, timestamp: at })
+      + line({ type: 'user', promptId: uuid(2), message: { content: 'later' }, timestamp: at });
+    const text = prefix + suffix;
+    const whole = await rig(text, text.length);
+    await drain(whole.env, whole.sqlite);
+    const split = await rig(text, Buffer.byteLength(prefix));
+    await parseTranscripts(split.serverEnv, NOW, { budget: { calls: 3, wallMs: 60_000 } });
+    expect(target(split.sqlite).parsed_offset).toBe(Buffer.byteLength(prefix));
+    expect(count(split.sqlite, 'tool_calls')).toBe(0);
+    const persisted = split.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+    expect(JSON.parse(persisted.parser_context).mycoParserState.planPosition).toBe(1);
+    await drain(split.env, split.sqlite);
+    expect(target(split.sqlite)).toMatchObject({ parse_error: null, parsed_offset: Buffer.byteLength(text) });
+    expect(rows(split.sqlite)).toEqual(rows(whole.sqlite));
+    expect(split.sqlite.query('SELECT success, output_preview FROM tool_calls').all()).toEqual([{ success: 1, output_preview: 'ok' }]);
+    expect(count(split.sqlite, 'plans')).toBe(2);
+  });
+
+  it('cursor-budget checkpoints retain only the plan ordinal and pending calls before the cursor', async () => {
+    const text = Array.from({ length: 70 }, (_, i) => line({ type: 'assistant', timestamp: '2026-09-01T10:00:00Z',
+      message: { content: [{ type: 'text', text: `<ultraplan># Plan ${i}</ultraplan>` }] } })).join('');
+    const whole = await rig(text);
+    await drain(whole.env, whole.sqlite);
+    const split = await rig(text);
+    for (let pass = 0; pass < 20 && target(split.sqlite).parsed_offset < target(split.sqlite).size; pass += 1)
+      await parseTranscripts(split.serverEnv, NOW, { budget: { calls: 3, wallMs: 60_000 } });
+    expect(target(split.sqlite).parsed_offset).toBe(Buffer.byteLength(text));
+    expect(count(split.sqlite, 'responses')).toBe(0);
+    await parseTranscripts(split.serverEnv, NOW + TRANSCRIPT_IDLE_MS);
+    expect(rows(split.sqlite)).toEqual(rows(whole.sqlite));
+    expect(count(split.sqlite, 'plans')).toBe(70);
+  });
+
+  it('an oversized Claude reply followed by a valid turn is admitted and capture completes', async () => {
+    for (const oversized of ['a'.repeat(300_000), '😀'.repeat(100_000), '\\"\n'.repeat(100_000)]) {
+      const text = line({ type: 'user', promptId: uuid(1), message: { content: 'start' } })
+        + line({ type: 'assistant', message: { content: [{ type: 'text', text: oversized }] } })
+        + line({ type: 'user', promptId: uuid(2), message: { content: 'later valid turn' } })
+        + line({ type: 'assistant', message: { content: [{ type: 'text', text: 'later valid reply' }] } });
+      const { sqlite, env } = await rig(text);
+      await drain(env, sqlite);
+      expect(target(sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+      expect(sqlite.query("SELECT text FROM prompt_batches WHERE text = 'later valid turn'").get()).toEqual({ text: 'later valid turn' });
+      expect(sqlite.query("SELECT text FROM responses WHERE text = 'later valid reply'").get()).toEqual({ text: 'later valid reply' });
+      expect((sqlite.query('SELECT text FROM responses WHERE text <> ?').get('later valid reply') as { text: string }).text).toContain('not kept');
+    }
   });
 });

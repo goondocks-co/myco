@@ -13,7 +13,7 @@ import { uuidv5 } from '../../hash.js';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import {
-  blocksOf, isBlock, lineTime, plansInText, replyChunks, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -37,14 +37,7 @@ const promptIdAt = (sessionId: string, offset: number): Promise<string> => uuidv
 const responseIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
 const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uuidv5('tool-call', sessionId, callId);
 
-interface PendingCall {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-  promptId?: string;
-  createdAt: number;
-  offset: number;
-}
+
 
 /** A function call's arguments, which Codex ships as a JSON string. */
 function argumentsOf(raw: unknown): unknown {
@@ -64,19 +57,21 @@ export const codexParser: TranscriptParser = {
   planTags: ['proposed_plan'],
   headerContext: codexHeaderContext,
 
-  async parse({ lines, sessionId, now, openPromptId, transcriptMeta }: ParserInput): Promise<DerivedEvent[]> {
+  async parse(input: ParserInput): Promise<DerivedEvent[]> {
+    const { lines, sessionId, now, openPromptId, transcriptMeta } = input;
     const events: DerivedEvent[] = [];
-    const pending = new Map<string, PendingCall>();
+    const continuation = parserContinuation(input);
+    const pending = continuation.pending;
     let promptId: string | undefined = openPromptId;
     let reply: { parts: ReplyPart[]; promptId?: string } | null = null;
-    let planPosition = 0;
+    let planPosition = continuation.position;
     const metadata = transcriptMeta ?? codexHeaderContext(lines);
 
     const flushReply = async (): Promise<void> => {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      for (const chunk of replyChunks(held.parts)) {
+      for (const chunk of held.parts) {
         events.push({
           kind: 'response',
           payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
@@ -113,7 +108,7 @@ export const codexParser: TranscriptParser = {
         const plans = await plansInText(text, codexParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
         events.push(...plans.events);
         planPosition = plans.next;
-        continue;
+          continue;
       }
 
       if (kind === 'function_call' || kind === 'custom_tool_call') {
@@ -133,9 +128,8 @@ export const codexParser: TranscriptParser = {
 
       if (kind === 'function_call_output' || kind === 'custom_tool_call_output') {
         const callId = str(payload.call_id);
-        const call = callId === undefined ? undefined : pending.get(callId);
-        if (call === undefined || callId === undefined) continue;
-        pending.delete(callId);
+        if (callId === undefined) continue;
+        const call = await callForResult(sessionId, callId, pending, { promptId, createdAt, offset });
         const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
         const failed = payload.success === false;
         events.push({
@@ -150,29 +144,15 @@ export const codexParser: TranscriptParser = {
             ...(failed ? { errorMessage: output === '' ? 'tool failed' : output } : {}),
           },
           createdAt: call.createdAt,
-          offset: call.offset,
+          offset: input.state === undefined ? call.offset : offset,
         });
       }
     }
 
     await flushReply();
 
-    for (const call of pending.values()) {
-      events.push({
-        kind: 'tool.failure',
-        payload: {
-          toolCallId: call.toolCallId,
-          promptId: call.promptId,
-          toolName: call.toolName,
-          input: call.input,
-          success: false,
-          errorMessage: 'tool call has no result in the transcript',
-        },
-        createdAt: call.createdAt,
-        offset: call.offset,
-      });
-    }
 
+    continuation.save(planPosition);
     return events.sort((a, b) => a.offset - b.offset);
   },
 };

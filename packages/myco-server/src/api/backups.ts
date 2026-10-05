@@ -8,7 +8,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
-  BackupApplyError, backupArtifact, BackupIntegrityError, BackupObjectsMissingError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
+  BackupAdmissionError, BackupApplyError, backupArtifact, BackupIntegrityError, BackupObjectsMissingError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
   assertBackupSize, createBackup, listBackups, previewRestore, pruneBackups,
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
@@ -31,7 +31,7 @@ export async function handleCreateBackup(env: ServerEnv, ctx: OwnerContext): Pro
     const pruned = await pruneBackups(env.db, policy, ctx.now);
     return ok({ backup, pruned: pruned.pruned });
   } catch (err) {
-    if (err instanceof BackupTooLargeError) return badRequest(err.message);
+    if (err instanceof BackupTooLargeError || err instanceof BackupAdmissionError) return badRequest(err.message);
     throw err;
   }
 }

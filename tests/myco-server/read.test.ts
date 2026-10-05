@@ -579,6 +579,7 @@ describe('read/transcript', () => {
       name.endsWith('_at') || name.includes('size') || name.includes('offset') || name.includes('bytes') ? '1'
       : name === 'project_id' ? `'proj_1'`
       : name === 'session_id' ? `'s1'`
+      : name === 'parser_context' ? `'{}'`
       : name === 'transcript_id' ? `'tr1'`
       : `'x'`;
     sqlite.run(`INSERT INTO transcripts (${cols.map((c) => c.name).join(',')}) VALUES (${cols.map((c) => value(c.name)).join(',')})`);

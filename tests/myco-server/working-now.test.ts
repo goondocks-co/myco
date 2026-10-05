@@ -200,7 +200,9 @@ describe('a session working now', () => {
     ];
     await r.segment('sess_1', at + 10_000, false, 'cli', lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
     for (let pass = 0; pass < 5; pass += 1) if ((await parseTranscripts(r.e.serverEnv, Date.now())).changed === 0) break;
-    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM responses WHERE session_id = 'sess_1'`).get()).toEqual({ n: 1 });
+    expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM responses WHERE session_id = 'sess_1'`).get()).toEqual({ n: 0 });
+    const checkpoint = r.e.sqlite.query<{ parser_context: string }, []>('SELECT parser_context FROM transcripts').get();
+    expect(JSON.parse(checkpoint!.parser_context).mycoParserState.reply.parts[0].text).toBe('Running the loop now.');
     expect(r.workingSince('sess_1')).toBe(at);
   });
 

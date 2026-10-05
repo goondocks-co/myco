@@ -19,7 +19,7 @@ export const transcriptReread: ParityScenario = {
     const sessionId = `cursor-reread-${crypto.randomUUID()}`;
     const transcriptId = `tx_${crypto.randomUUID().replaceAll('-', '')}`;
     await target.sql(`INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES (${lit(target.projectId)},'Cursor re-read',${Date.now()})`);
-    const text = cursorLine('user', '<timestamp>t</timestamp>\n<user_query>\nparity prompt\n</user_query>') + cursorLine('assistant', 'parity [REDACTED] reply');
+    const text = cursorLine('user', '<timestamp>t</timestamp>\n<user_query>\nparity prompt\n</user_query>') + cursorLine('assistant', 'parity [REDACTED] reply') + cursorLine('assistant', 'parity follow-up');
     const cut = text.length - 12;
     const sentAt = Date.now() - 60_000;
 
@@ -69,7 +69,15 @@ export const transcriptReread: ParityScenario = {
     expect(Number(await pending())).toBe(1);
     await settle();
     expect(await state()).toMatchObject({ parsed_offset: bytes.byteLength, size: bytes.byteLength, parse_error: null, parse_awaited_size: null });
-    expect(await rows()).toEqual([{ prompt: 'parity prompt', prompt_at: sentAt, response: 'parity reply' }]);
+    expect(await rows()).toEqual([{ prompt: 'parity prompt', prompt_at: sentAt, response: null }]);
+
+    // A declared turn boundary closes text retained across transcript windows.
+    const boundary = new TextEncoder().encode(`${JSON.stringify({ type: 'turn_ended' })}\n`);
+    await ship(boundary, bytes.byteLength, sentAt + 2_000);
+    await settle();
+    const fileSize = bytes.byteLength + boundary.byteLength;
+    expect(await state()).toMatchObject({ parsed_offset: fileSize, size: fileSize, parse_error: null });
+    expect(await rows()).toEqual([{ prompt: 'parity prompt', prompt_at: sentAt, response: 'parity reply\n\nparity follow-up' }]);
 
     // An owner reads it again: by session in a Project it can see, not in one that does not exist, and by agent.
     const reread = async (body: unknown) => {
@@ -86,7 +94,7 @@ export const transcriptReread: ParityScenario = {
     expect(byAgent.status).toBe(200);
     expect((byAgent.body as { reread: number }).reread).toBeGreaterThanOrEqual(1);
     await settle();
-    expect(await state()).toMatchObject({ parsed_offset: bytes.byteLength, parse_error: null });
-    expect(await rows()).toEqual([{ prompt: 'parity prompt', prompt_at: sentAt, response: 'parity reply' }]);
+    expect(await state()).toMatchObject({ parsed_offset: fileSize, parse_error: null });
+    expect(await rows()).toEqual([{ prompt: 'parity prompt', prompt_at: sentAt, response: 'parity reply\n\nparity follow-up' }]);
   },
 };
