@@ -12,6 +12,7 @@
 // Wired into `npm run codegen`.
 
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { walk, readTextFile, emitBundle } from './codegen-bundle.mjs';
 
@@ -19,6 +20,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = path.resolve(__dirname, '..');
 const TEMPLATES_DIR = path.resolve(PKG_ROOT, 'src/symbionts/templates');
 const OUTPUT = path.resolve(PKG_ROOT, 'src/symbionts/templates.generated.ts');
+
+/** Keep every native plugin's inline helper block equal to the shared source. */
+function syncSharedPluginHelpers() {
+  const snippet = readTextFile(path.join(TEMPLATES_DIR, '_shared/plugin-helpers.ts.snippet')).trim();
+  const startMarker = '// <myco:shared-helpers>';
+  const endMarker = '// </myco:shared-helpers>';
+  for (const file of walk(TEMPLATES_DIR).filter((file) => path.basename(file) === 'plugin.ts')) {
+    const source = readTextFile(file);
+    const start = source.indexOf(startMarker);
+    const end = source.indexOf(endMarker, start);
+    if (start < 0 || end < start) throw new Error(`Missing shared helper markers in ${file}`);
+    const rendered = source.slice(0, start + startMarker.length) + `\n${snippet}\n` + source.slice(end);
+    if (source === rendered) continue;
+    if (process.argv.includes('--check')) throw new Error(`Stale shared helper block in ${file}; run npm run codegen`);
+    fs.writeFileSync(file, rendered, 'utf-8');
+  }
+}
 
 /**
  * Build the templates.generated.ts content in memory. Both the write mode and
@@ -49,6 +67,7 @@ ${serialized}
   return { content, count: entries.length };
 }
 
+syncSharedPluginHelpers();
 const { content, count } = buildBundle();
 emitBundle({
   outputPath: OUTPUT,
