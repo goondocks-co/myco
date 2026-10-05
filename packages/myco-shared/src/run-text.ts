@@ -9,11 +9,12 @@
  *   alone (`RunDiagnosticCode`), with the exit code and signal where the process gave them and, for a refused call,
  *   the tool identifiers it named. The code is read from structured fields first, then from the harness's own words
  *   by the patterns its manifest declares (`runner.diagnostics`), then from its exit status. The words themselves are
- *   kept only in the worker's local diagnostics log, never sent. The Deployment keeps a run error only where it parses
- *   as a sentence this module writes (`shapeRunError`), and codes anything else again from its words.
+ *   projected to bounded masked detail in the worker's local diagnostics log, never sent. The Deployment keeps a run
+ *   error only where it parses as a sentence this module writes (`shapeRunError`), and codes anything else again from its words.
  * - **Agent prose** — a report's summary and details, and an audit's steps, reasoning and failures — is the agent's
  *   own account of its work, the point of the audit, so it cannot be allow-listed. It is stored bounded and masked
- *   (`agentProse`): code-fence and here-document bodies read `…`; a URL reads as its scheme and host; a `NAME=value`
+ *   (`agentProse`): code-fence, indented-block, quoted-output, structured JSON and here-document bodies read `…`;
+ *   a URL reads as its scheme and host; a `NAME=value`
  *   assignment, a key-like or UUID-like word, credentials before an `@`, and the word after a secret-named flag or
  *   label read `…`; known access-key shapes are masked (`redactSecrets`). What is left is the agent's own words,
  *   stored with the run and kept as long as the run is.
@@ -21,6 +22,7 @@
 
 import { commandShape, identifierShape, keyLike, urlShape, ZERO_WIDTH } from './command-shape.js';
 import { redactSecrets } from './redact-secrets.js';
+import { isSecretFlag, isSecretLabel, maskSecretLabels } from './secret-labels.js';
 import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 
 const ELIDED = '…';
@@ -70,7 +72,7 @@ export interface RunDiagnostic {
 export interface HarnessEnding {
   code?: RunDiagnosticCode;
   names?: readonly string[];
-  /** The harness's own words; read for a code here and kept only in the worker's local log. */
+  /** The harness's own words, read for a code and projected before local logging. */
   detail?: string | null;
   exitCode?: number | null;
   signal?: string | null;
@@ -360,25 +362,27 @@ const HEREDOC = /<<-?(?:[ \t]*(["'])([A-Za-z_][A-Za-z0-9_]*)\1|([A-Za-z_][A-Za-z
 const HERESTRING = /<<<[ \t]*\S+/g;
 /** An inline code span, which may run across lines; an unmatched backtick pairs with the next one, and what lies between is shaped. */
 const INLINE_CODE = /`([^`]{1,4000})`/g;
+/** An indented Markdown block or a blockquote, including quoted command output. */
+const OUTPUT_LINE = /^(?: {4,}| *\t| {0,3}>)[^\n]*(?:\n|$)/gm;
+/** An object property or a text-bearing array opening structured output. */
+const STRUCTURED_START = /\{\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*:|\[\s*(?:\{|\[|["']|true\b|false\b|null\b|-?\d)/g;
 const URL_START = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const FLAG_ASSIGNMENT = /^(--?[A-Za-z][A-Za-z0-9-]{0,40})=/;
-/** A flag whose name says the word after it carries a secret. */
-const SECRET_FLAG = /^--?[A-Za-z0-9-]*(?:token|secret|pass|key|auth|credential)[A-Za-z0-9-]*$/i;
-/** A label whose name says the word after it, past `is`, `was`, `=` or `:`, carries a secret. */
-const SECRET_LABEL = /^(?:[A-Za-z0-9]+[_-])*(?:password|passwd|passphrase|passcode|secret|token|api[_-]?key|credentials?|creds)$/i;
-/**
- * A label naming a secret, with what joins it to its value (`is`, `was`, `are`, `=`, `:` or a table's `|`), and the
- * value: a quoted span to its closing quote, or everything to the next table cell or the end of the line.
- */
-const LABELED_VALUE = /(\b(?:[A-Za-z0-9]+[_-])*(?:password|passwd|passphrase|passcode|pass|pwd|pw|pin|secret|token|api[_-]?key|credentials?|creds)\b["']?)([ \t]*(?:\b(?:is|was|are)\b|=|:|\|)[ \t]*)("[^"\n]*"?|'[^'\n]*'?|[^|\n]*)/gi;
 /** A line shaped like a record of `/etc/passwd` or `/etc/shadow`: a user name and six or more `:`-separated fields. */
 const ACCOUNT_LINE = /^[ \t]*[A-Za-z_][A-Za-z0-9._-]*(?::[^:\n]*){6,}[ \t]*$/gm;
 /** Three or more `*` in a row: a key echoed with its middle masked. */
 const MASKED_ECHO = /\*{3,}/;
 const CONNECTORS: ReadonlySet<string> = new Set(['is', 'was', 'were', 'are', '=', ':', '|', 'of', 'as', 'to']);
 const LEADING = /^[("'`<[{*_]+/;
-const TRAILING = /[)"'`>\]}.,;:!?*_]+$/;
+const TRAILING_CHAR = /^[)"'`>\]}.,;:!?*_]$/;
+
+/** A word's trailing punctuation, scanned from its end. */
+function trailing(word: string, colon = true): string {
+  let at = word.length;
+  while (at > 0 && TRAILING_CHAR.test(word[at - 1]!) && (colon || word[at - 1] !== ':')) at -= 1;
+  return word.slice(at);
+}
 
 /** Every here-document's body read as `…`, its opener and delimiter kept; a body that never closes runs to the end. */
 function collapseHeredocs(text: string): string {
@@ -402,11 +406,39 @@ function collapseHeredocs(text: string): string {
   return out + text.slice(at);
 }
 
+/** Structured output through its balanced close, or to the end when it never closes, read as `…`. */
+function collapseStructuredOutput(text: string): string {
+  let out = '';
+  let at = 0;
+  STRUCTURED_START.lastIndex = 0;
+  for (let found = STRUCTURED_START.exec(text); found !== null; found = STRUCTURED_START.exec(text)) {
+    let depth = 0;
+    let quote: string | null = null;
+    let end = found.index;
+    for (; end < text.length; end += 1) {
+      const char = text[end]!;
+      if (quote !== null) {
+        if (char === '\\') end += 1;
+        else if (char === quote) quote = null;
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === '{' || char === '[') depth += 1;
+      else if (char === '}' || char === ']') {
+        depth -= 1;
+        if (depth === 0) { end += 1; break; }
+      }
+    }
+    out += `${text.slice(at, found.index)}${ELIDED}`;
+    at = end;
+    STRUCTURED_START.lastIndex = end;
+  }
+  return out + text.slice(at);
+}
+
 /** A word read as `…`, the punctuation around it kept. */
 function elided(word: string): string {
   const lead = LEADING.exec(word)?.[0] ?? '';
   const rest = word.slice(lead.length);
-  const trail = TRAILING.exec(rest)?.[0] ?? '';
+  const trail = trailing(rest);
   return rest.length === trail.length ? word : `${lead}${ELIDED}${trail}`;
 }
 
@@ -415,7 +447,7 @@ function maskWord(word: string): string {
   if (MASKED_ECHO.test(word) && /[A-Za-z0-9]/.test(word)) return elided(word.replace(/\*/g, 'x'));
   const lead = LEADING.exec(word)?.[0] ?? '';
   const rest = word.slice(lead.length);
-  const trail = TRAILING.exec(rest)?.[0] ?? '';
+  const trail = trailing(rest);
   const core = rest.slice(0, rest.length - trail.length);
   if (core === '' || core === ELIDED || core === '[REDACTED]') return word;
   // A word of six or more `:`-separated fields is a password-file record, wherever it stands.
@@ -427,16 +459,17 @@ function maskWord(word: string): string {
   // Credentials before an @, and the local part of an address, are never kept; a scope such as `@org/pkg` is.
   if (/^[^@]+@/.test(core)) return `${lead}${ELIDED}${trail}`;
   const colon = core.indexOf(':');
-  if (colon > 0 && SECRET_LABEL.test(core.slice(0, colon).replace(/^-+/, '')) && colon < core.length - 1) return `${lead}${ELIDED}${trail}`;
+  if (colon > 0 && isSecretLabel(core.slice(0, colon).replace(/^-+/, '')) && colon < core.length - 1) return `${lead}${ELIDED}${trail}`;
   if (colon > 0 && /^(?:pass|key|auth|bearer)$/i.test(core.slice(0, colon)) && colon < core.length - 1) return `${lead}${ELIDED}${trail}`;
   return keyLike(core) ? `${lead}${ELIDED}${trail}` : word;
 }
 
 /** Whether the word after this one carries a secret by what this one says, and how many connecting words may come between. */
 function secretNext(word: string): boolean {
-  const core = word.replace(LEADING, '').replace(/[)"'`>\]}.,;!?*_]+$/, '');
-  if (SECRET_FLAG.test(core) && !core.includes('=')) return true;
-  return SECRET_LABEL.test(core.replace(/:$/, ''));
+  const bare = word.replace(LEADING, '');
+  const core = bare.slice(0, bare.length - trailing(bare, false).length);
+  if (core.startsWith('-') && !core.includes('=')) return isSecretFlag(core);
+  return !core.includes('=') && isSecretLabel(core.replace(/:$/, ''));
 }
 
 /** Every word in its stored shape, the word after a secret-named flag or label read `…`. */
@@ -463,12 +496,7 @@ function maskWords(text: string): string {
 
 /** A labeled secret's whole value read as `…`: a quoted value keeps its quotes, a table cell its closing space. */
 function maskLabeledValues(text: string): string {
-  return text.replace(LABELED_VALUE, (_match, label: string, joint: string, value: string) => {
-    if (value.trim() === '' || value.trim() === ELIDED) return `${label}${joint}${value}`;
-    const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
-    if (quote !== '') return `${label}${joint}${quote}${ELIDED}${value.length > 1 && value.endsWith(quote) ? quote : ''}`;
-    return `${label}${joint}${ELIDED}${/\s$/.test(value) ? ' ' : ''}`;
-  });
+  return maskSecretLabels(text, ELIDED, { unquoted: 'line', keepQuotes: true });
 }
 
 /** An inline code span: a command shaped as one (`commandShape`), a single word masked as a word is. */
@@ -479,25 +507,34 @@ function inlineCode(_span: string, body: string): string {
 
 /**
  * Agent prose as a run stores it: zero-width characters dropped, line breaks made `\n` (or a space where `singleLine`),
- * other control characters a space; code-fence bodies `…`; a line shaped like a password-file record `…`; an inline code span holding a command in the allowed shape of a command; here-document
+ * other control characters a space; fenced, indented and quoted blocks and structured JSON `…`; a line shaped like a
+ * password-file record `…`; an inline code span holding a command in the allowed shape of a command; here-document
  * bodies `…`; a here-string's word `…`; every other word masked (`maskWord`), with the word after a secret-named flag or
  * label `…`; a secret label's whole value `…` (to its closing quote, the next table cell or the end of the line); a
  * word holding a masked echo (`***`) `…`; known access-key shapes masked (`redactSecrets`); and the whole cut to `max` characters. Null where
  * nothing is left.
  */
 export function agentProse(value: string, max: number, options: { singleLine?: boolean } = {}): string | null {
-  let text = value.replace(ZERO_WIDTH, '').replace(LINE_BREAKS, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f\t]+/g, ' ');
+  let text = value.replace(ZERO_WIDTH, '').replace(LINE_BREAKS, '\n').replace(/[\u0000-\u0008\u000e-\u001f\u007f]+/g, ' ');
   text = text.replace(FENCE, ELIDED);
   text = text.replace(ACCOUNT_LINE, ELIDED);
   // Inline code is shaped before here-documents are read, so a here-document quoted inline never runs past its span.
   text = text.replace(INLINE_CODE, inlineCode);
   text = collapseHeredocs(text);
-  text = text.replace(HERESTRING, `<<< ${ELIDED}`);
-  text = maskWords(text);
   text = maskLabeledValues(text);
+  text = text.replace(HERESTRING, `<<< ${ELIDED}`);
+  text = text.replace(OUTPUT_LINE, (line) => line.trim() === '' ? line : `${ELIDED}\n`);
+  text = collapseStructuredOutput(text);
+  text = text.replace(/\t+/g, ' ');
+  text = maskWords(text);
   text = redactSecrets(text);
-  if (options.singleLine === true) text = text.replace(/ *\n[\n ]*/g, ' ');
+  if (options.singleLine === true) text = text.split('\n').map((line) => line.trim()).filter((line) => line !== '').join(' ');
   text = text.trim();
   if (text === '') return null;
   return text.length > max ? `${text.slice(0, max - 1)}${ELIDED}` : text;
+}
+
+/** Arbitrary diagnostic words are omitted; the caller's structured code, status and retry fields carry the reason. */
+export function diagnosticDetail(value: string, max: number): string {
+  return value.trim() === '' || max <= 0 ? '' : ELIDED;
 }

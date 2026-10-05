@@ -17,7 +17,7 @@ import { heldPartitions, judgeEmbeddingChoice, storedEmbedding, writeSwitchedEmb
 import { resolveSemanticSearch } from '../search.js';
 import { deploymentLatestTaskRun } from '../runs.js';
 import { listProjects } from '../../read/sessions.js';
-import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable, inputRefusal, type EmbeddingProvider } from './provider.js';
+import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable, embeddingDiagnostic, inputRefusal, type EmbeddingProvider } from './provider.js';
 import { ANY_MODEL, passedOverSources, type PassedOverSource } from './reconcile.js';
 import { SWITCH_REFUSAL, heldPartition, resolveEmbedding, selectionChangeRefusal, type EmbeddingSelection, type StoredEmbedding } from './policy.js';
 import { calibrationPending } from './hubness.js';
@@ -85,23 +85,22 @@ export function switchFailureAction(error: unknown, failures: number, now: numbe
   if (refused !== null) return { action: 'skip', reason: refused };
   if (error instanceof EmbeddingUnavailable) {
     const failure = error.failure;
+    const diagnostic = ` (${embeddingDiagnostic(failure)})`;
     switch (failure.kind) {
       case 'input':
         return { action: 'skip', reason: 'the model refused its text' };
       case 'quota':
-        return later(`The new model's daily allowance is used up (“${failure.detail}”). Myco tries again when it renews.`, failure.resetsAt);
+        return later(`The new model's daily allowance is used up${diagnostic}. Myco tries again when it renews.`, failure.resetsAt);
       case 'timeout':
-        return later('The new model\'s provider did not answer in time. Myco tries again shortly.');
+        return later(`The new model's provider did not answer in time${diagnostic}. Myco tries again shortly.`);
       case 'unreachable':
-        return later(failure.detail === null
-          ? 'Myco could not reach the new model\'s provider. It tries again shortly.'
-          : `The new model's provider could not answer (“${failure.detail}”). Myco tries again shortly.`);
+        return later(`Myco could not reach the new model's provider${diagnostic}. It tries again shortly.`);
       case 'http': {
         const { status } = failure;
-        if (status === 401 || status === 403) return pause(`The new model's provider turned down its key (HTTP ${status}). Check the key under Provider keys, then resume.`);
-        if (status === 429) return later('The new model\'s provider asked Myco to slow down (HTTP 429). Myco tries again when it allows more.', now + Math.max(backoff(failures), failure.retryAfterMs ?? 0));
-        if (status >= 500 || status === 408) return later(`The new model's provider had a problem (HTTP ${status}). Myco tries again shortly.`);
-        return pause(`The new model's provider refused the request (HTTP ${status}). Check the model name and the server it runs on, then resume.`);
+        if (status === 401 || status === 403) return pause(`The new model's provider turned down its key (HTTP ${status})${diagnostic}. Check the key under Provider keys, then resume.`);
+        if (status === 429) return later(`The new model's provider asked Myco to slow down (HTTP 429)${diagnostic}. Myco tries again when it allows more.`, now + Math.max(backoff(failures), failure.retryAfterMs ?? 0));
+        if (status >= 500 || status === 408) return later(`The new model's provider had a problem (HTTP ${status})${diagnostic}. Myco tries again shortly.`);
+        return pause(`The new model's provider refused the request (HTTP ${status})${diagnostic}. Check the model name and the server it runs on, then resume.`);
       }
     }
   }

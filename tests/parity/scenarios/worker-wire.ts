@@ -32,7 +32,7 @@ const STEP_LINES = [
 const STEPS_KEPT = [
   { seq: 0, callId: 'tu_material', kind: 'myco', tool: 'mcp__myco__myco_run_sessions', target: 'material', outcome: 'ok' },
   { seq: 1, callId: 'tu_1', kind: 'read', tool: 'Read', target: 'AGENTS.md', outcome: 'ok' },
-  { seq: 2, callId: 'tu_2', kind: 'command', tool: 'Bash', target: 'ls -l…', outcome: 'ok' },
+  { seq: 2, callId: 'tu_2', kind: 'command', tool: 'Bash', target: 'ls -la', outcome: 'ok' },
 ];
 
 /**

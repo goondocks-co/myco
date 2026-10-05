@@ -17,12 +17,12 @@ import type { RunTools } from '@myco/runner/drivers/run-tools.js';
 import { harnessById } from '@myco/runner/harnesses.js';
 import { writeRunDir } from '@myco/runner/mcp-config.js';
 import { runWorker } from '@myco/runner/loop.js';
-import { diagnosticLogPath, keepDiagnostic, MAX_BACKUPS, MAX_ENTRY_CHARS, MAX_LOG_AGE_MS } from '@myco/runner/diagnostic-log.js';
+import { diagnosticLogPath, keepDiagnostic, maskedDetail, MAX_BACKUPS, MAX_ENTRY_CHARS, MAX_LOG_AGE_MS } from '@myco/runner/diagnostic-log.js';
 import type { RunEvent } from '@myco/runner/events.js';
 import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 import { STUB_PROFILE } from '../helpers/stub-profile-harness.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
-import { AWS_SECRET, CORPUS, OPENAI_KEY } from '../helpers/secret-corpus.ts';
+import { AWS_SECRET, CORPUS, OPENAI_KEY, DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 
 const CASES = ['login_missing', 'rate_limited', 'timed_out', 'crashed'] as const;
 type Case = (typeof CASES)[number];
@@ -137,7 +137,7 @@ describe('the agent-protocol driver\'s stops, read as coded reasons', () => {
 });
 
 describe('a worker driving a harness that fails', () => {
-  it('reports the coded reason alone, and keeps what the harness said in its local diagnostics log', async () => {
+  it('reports the coded reason alone, and projects local diagnostic detail before writing it', async () => {
     const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-worker-diagnostics-')));
     const ends: Array<Record<string, unknown>> = [];
     // The run's credential, which a harness may echo, is masked wherever it appears.
@@ -166,7 +166,7 @@ describe('a worker driving a harness that fails', () => {
     expect(leaked).toEqual([]);
     const kept = readFileSync(diagnosticLogPath(join(scratch, 'diagnostics')), 'utf8');
     expect(JSON.parse(kept.trim())).toMatchObject({ runId: 'run_said', harness: 'claude-code', error: 'the harness stopped: error (crashed; exit code 3)' });
-    expect(kept).toContain('hunter22');
+    expect(kept).not.toContain('hunter22');
     expect(kept).not.toContain(credential);
     expect(kept).not.toContain(OPENAI_KEY);
     expect(statSync(diagnosticLogPath(join(scratch, 'diagnostics'))).mode & 0o777).toBe(0o600);
@@ -176,11 +176,12 @@ describe('a worker driving a harness that fails', () => {
 describe('the local diagnostics log', () => {
   it('bounds each entry and rotates the file, keeping a bounded number of earlier files', () => {
     const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-diagnostic-log-')));
-    for (let i = 0; i < 8; i += 1) keepDiagnostic(dir, { runId: `run_${i}`, harness: 'codex', error: 'e', detail: 'x'.repeat(MAX_ENTRY_CHARS * 2) }, 1, { maxBytes: 1_000 });
+    for (let i = 0; i < 8; i += 1) keepDiagnostic(dir, { runId: `run_${i}`, harness: 'codex', error: 'e', detail: 'x'.repeat(MAX_ENTRY_CHARS * 2) }, 1, { maxBytes: 100 });
     const live = diagnosticLogPath(dir);
     const entry = JSON.parse(readFileSync(live, 'utf8').trim()) as { runId: string; detail: string };
     expect(entry.runId).toBe('run_7');
-    expect(entry.detail).toHaveLength(MAX_ENTRY_CHARS + 1);
+    expect(entry.detail.length).toBeLessThanOrEqual(MAX_ENTRY_CHARS);
+    expect(entry.detail).toBe('…');
     for (let n = 1; n <= MAX_BACKUPS; n += 1) expect(existsSync(`${live}.${n}`)).toBe(true);
     expect(existsSync(`${live}.${MAX_BACKUPS + 1}`)).toBe(false);
   });
@@ -212,7 +213,19 @@ describe('the local diagnostics log', () => {
     keepDiagnostic(dir, { runId: 'run_1', harness: 'codex', error: 'e', detail: `auth with plainCredentialValue1, then ${OPENAI_KEY} and Bearer ${AWS_SECRET}` }, Date.now(), { secrets: ['plainCredentialValue1', 'x'] });
     const kept = readFileSync(diagnosticLogPath(dir), 'utf8');
     for (const secret of ['plainCredentialValue1', OPENAI_KEY, AWS_SECRET]) expect(kept).not.toContain(secret);
-    // A value too short to be a credential is left alone rather than masked through every word.
-    expect(kept).toContain('auth with');
+    expect(kept).not.toContain('auth with');
+    expect(maskedDetail('the harness stopped: error (timed_out)')).toBe('…');
   });
+});
+
+
+describe('diagnostic payload privacy', () => {
+  for (const leak of DIAGNOSTIC_PAYLOADS) {
+    it(`omits ${leak.name} before writing the local artifact`, () => {
+      const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-diagnostic-payload-')));
+      keepDiagnostic(dir, { runId: 'run_1', harness: 'codex', error: 'the harness stopped: error (harness_error)', detail: leak.command });
+      const stored = readFileSync(diagnosticLogPath(dir), 'utf8');
+      for (const secret of leak.secrets) expect(stored).not.toContain(secret);
+    });
+  }
 });

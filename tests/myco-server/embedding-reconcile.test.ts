@@ -1,3 +1,4 @@
+import { DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
@@ -179,3 +180,16 @@ test('calibrates in bounded operations, waits for vector visibility, and takes a
   }
   expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 1000)).toBe(false);
 });
+
+for (const leak of DIAGNOSTIC_PAYLOADS) {
+  test(`source failure storage omits ${leak.name} and retains the HTTP status`, async () => {
+    const f = fixture();
+    f.spore('refused', 'source knowledge');
+    f.context.provider = { ...f.provider, embed: async () => { throw new EmbeddingUnavailable('failed', { kind: 'http', status: 400, retryAfterMs: null, detail: leak.command }); } };
+    expect(await f.step()).toEqual({ phase: 'passed-over', processed: 1 });
+    const stored = JSON.stringify(f.sqlite.query('SELECT reason FROM embedding_source_failures').all());
+    expect(stored).toContain('HTTP 400');
+    for (const secret of leak.secrets) expect(stored).not.toContain(secret);
+    expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
+  });
+}

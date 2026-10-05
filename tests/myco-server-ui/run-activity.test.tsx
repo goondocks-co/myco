@@ -415,7 +415,8 @@ describe('commands compared only where provably different', () => {
   it('matches a claim found among a command’s words in order: a claim may leave out flags and paths', () => {
     expect(compareCommand('npm test', 'npm test -- tests/a.test.ts')).toBe('same');
     expect(compareCommand('git log', 'git log --oneline -- src/')).toBe('same');
-    expect(compareCommand('npm run build', 'npm test -- tests/a.test.ts')).toBe('different');
+    expect(compareCommand('npm run build', 'npm test -- tests/a.test.ts')).toBe('unsettled');
+    expect(compareCommand('npm run build', 'npm test')).toBe('different');
   });
 
   it('can’t compare a command whose later lines were dropped, and never flags a claim they could hold', () => {
