@@ -40,7 +40,7 @@ import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
 import { workerLeaseAuthority } from './worker-lease.js';
-import { runDeadlineSql } from './run-deadline.js';
+import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
 export const INPUT_UNCHANGED = 'input_unchanged';
@@ -610,8 +610,9 @@ export async function recordRunControlRefusal(db: RelationalStore, tokenId: stri
     ELSE json_object('unparsedRunContext', run_context) END, '$.${key}',
       CASE WHEN ${contextValue(`${key}.tokenId`)} = ? THEN ${contextValue(key)} ELSE json(?) END)
     WHERE project_id = ? AND id = ? AND dispatched_by = ? AND ${LIVE_RUN_STATUSES}${guard.sql}
+      AND (SELECT COUNT(*) FROM agent_runs WHERE dispatched_by = ? AND ${LIVE_RUN_STATUSES}) = 1
     RETURNING ${contextValue(`${key}.id`)} AS refusalId`)
-    .bind(tokenId, JSON.stringify({ tokenId, code, id: crypto.randomUUID() }), run.projectId, run.id, tokenId, ...guard.params).first<{ refusalId: string }>();
+    .bind(tokenId, JSON.stringify({ tokenId, code, id: crypto.randomUUID() }), run.projectId, run.id, tokenId, ...guard.params, tokenId).first<{ refusalId: string }>();
   return row?.refusalId ?? null;
 }
 
@@ -658,13 +659,21 @@ export interface RunCaller { tokenId: string; now: number; deadline: number; clo
 /** Runtime writes require the same dispatch and an unexpired open attempt. */
 export function runCallerGuard(caller: RunCaller | undefined, statuses = LIVE_RUN_STATUSES): { sql: string; params: (string | number)[] } {
   if (caller === undefined) return { sql: '', params: [] };
-  const now = caller.clock?.() ?? caller.now;
   return {
-    sql: ` AND dispatched_by = ? AND ${statuses} AND (lease_expires_at IS NULL OR lease_expires_at > ?) AND ? > ?
+    sql: ` AND dispatched_by = ? AND ${statuses} AND (lease_expires_at IS NULL OR lease_expires_at > ${SQL_NOW_MS}) AND ? > ${SQL_NOW_MS}
+      AND ${runDeadlineSql()} > ${SQL_NOW_MS}
       AND EXISTS (SELECT 1 FROM member_credentials c JOIN members m ON m.id = c.member_id
-        WHERE c.id = ? AND c.revoked_at IS NULL AND c.expires_at > ? AND m.revoked_at IS NULL)`,
-    params: [caller.tokenId, now, caller.deadline, now, caller.tokenId, now],
+        WHERE c.id = ? AND c.revoked_at IS NULL AND c.expires_at > ${SQL_NOW_MS} AND m.revoked_at IS NULL)`,
+    params: [caller.tokenId, caller.deadline, caller.tokenId],
   };
+}
+
+/** The current attempt's remaining authority, measured by the database clock. */
+export async function runRemainingMs(db: RelationalStore, scope: ReadScope, runId: string): Promise<number> {
+  const row = await db.prepare(`SELECT MAX(0, ${runDeadlineSql()} - ${SQL_NOW_MS}) AS remaining FROM agent_runs WHERE project_id = ? AND id = ?`)
+    .bind(scope.projectId, runId).first<{ remaining: number }>();
+  if (row === null) throw new Error('launch holds no run');
+  return row.remaining;
 }
 
 /**
@@ -849,17 +858,38 @@ export async function runRecordedWrite(db: RelationalStore, scope: ReadScope, ru
   return row !== null;
 }
 
-/** Record one landed write against the run that made it. */
-export async function recordRunWrite(
-  db: RelationalStore,
-  scope: ReadScope,
-  write: { runId: string; toolName: string; op: string; recordedAt: number; detail?: Record<string, unknown> },
-): Promise<void> {
+export interface RunWrite {
+  runId: string;
+  toolName: string;
+  op: string;
+  recordedAt: number;
+  detail?: Record<string, unknown>;
+}
+
+/** Record attribution for a write whose domain row already names its run. */
+export async function recordRunWrite(db: RelationalStore, scope: ReadScope, write: RunWrite): Promise<void> {
   await recordRunEvents(db, scope, [{
     runId: write.runId, phaseName: null, eventType: RUN_WRITE_EVENT, toolName: write.toolName,
     outcome: 'written', durationMs: null,
     payload: JSON.stringify({ op: write.op, ...(write.detail ?? {}) }), recordedAt: write.recordedAt,
   }]);
+}
+
+/** A domain mutation and its run attribution commit together; a no-op records nothing. */
+export async function commitAttributedWrite(
+  db: RelationalStore,
+  scope: ReadScope,
+  mutation: PreparedStatement,
+  write?: RunWrite,
+): Promise<import('./adapters.js').RunResult> {
+  if (write === undefined) return mutation.run();
+  const [result] = await db.batch([mutation,
+    db.prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
+      SELECT ?, ?, NULL, ?, ?, 'written', NULL, ?, ? WHERE changes() > 0`)
+      .bind(scope.projectId, write.runId, RUN_WRITE_EVENT, write.toolName,
+        JSON.stringify({ op: write.op, ...(write.detail ?? {}) }), write.recordedAt),
+  ]);
+  return result!;
 }
 
 /**

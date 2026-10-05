@@ -34,8 +34,8 @@ export const BACKSTOP_RETRY_MS = 5_000;
  */
 export const CHILD_OVERRUN_MARGIN_MS = 120_000;
 
-/** Time reserved for child exit and the supervisor's bounded close request. */
-export const CHILD_CLOSE_RESERVE_MS = 10_000;
+/** Time reserved for launch transport, child exit and the bounded close request. */
+export const CHILD_CLOSE_RESERVE_MS = 20_000;
 
 /** What the supervisor knows about itself when a decision is asked of it. */
 export interface SupervisorState {
@@ -58,11 +58,11 @@ export function decideLaunch(state: SupervisorState, runId: unknown): LaunchDeci
 }
 
 /** When a child that started at `startedAt` is killed, whatever it is doing. */
-export function childDeadline(startedAt: number, timeoutSeconds: number, marginMs: number = CHILD_OVERRUN_MARGIN_MS, serverDeadline?: number): number {
+export function childDeadline(startedAt: number, timeoutSeconds: number, marginMs: number = CHILD_OVERRUN_MARGIN_MS, remainingMs?: number): number {
   const bound = Number.isFinite(timeoutSeconds) ? Math.max(0, timeoutSeconds) : 0;
   const local = startedAt + bound * 1000 + Math.max(0, marginMs);
-  return serverDeadline !== undefined && Number.isFinite(serverDeadline) && serverDeadline > 0
-    ? Math.min(local, serverDeadline - CHILD_CLOSE_RESERVE_MS) : local;
+  return remainingMs !== undefined && Number.isFinite(remainingMs) && remainingMs >= 0
+    ? Math.min(local, startedAt + Math.max(0, remainingMs - CHILD_CLOSE_RESERVE_MS)) : local;
 }
 
 /** What is left, and whether the process leaves now, once a child has gone. */

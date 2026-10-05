@@ -11,7 +11,6 @@
  * A page with bodies is recorded as the run's read of each session it carries.
  */
 import { listUnprocessedPrompts, markPromptProcessed } from '../../read/prompts.js';
-import { recordRunWrite } from '../../core/runs.js';
 import { PROMPT_MARK_TOOL } from '../../core/tool-catalogue.js';
 import { failure, noteRunReads, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
@@ -31,11 +30,7 @@ export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Prom
   if (input.op === 'mark_processed') {
     const promptId = str(input.prompt_id, MAX_ID_CHARS);
     if (promptId === undefined) return failure('prompt_id is required for op: mark_processed');
-    const marked = await markPromptProcessed(db, scope, promptId);
-    // A mark that took is the run's own record of having read the prompt, and
-    // the row the close rule holds an extraction pass to. A mark of a prompt the
-    // Project does not hold moves nothing and records nothing.
-    if (marked) await recordRunWrite(db, scope, { runId: run.runId, toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: ctx.now, detail: { prompt_id: promptId } });
+    const marked = await markPromptProcessed(db, scope, promptId, { runId: run.runId, toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: ctx.now, detail: { prompt_id: promptId } });
     return { prompt_id: promptId, marked };
   }
 

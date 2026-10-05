@@ -417,6 +417,7 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
   };
 
   async function launch(request: Request): Promise<Response> {
+    const receivedAt = performance.now();
     // The token before the body: an unauthenticated caller's body is never read
     // at all, whatever length it declares or declines to.
     if (!bearerMatches(request.headers.get('authorization'), options.token)) return new Response(null, { status: 401 });
@@ -474,7 +475,7 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
       }, Math.max(0, delay));
       (backstop as { unref?: () => void }).unref?.();
     };
-    arm(childDeadline(startedAt, timeoutSeconds, options.overrunMarginMs, Number(envVars.MYCO_RUN_DEADLINE)) - startedAt);
+    arm(childDeadline(receivedAt, timeoutSeconds, options.overrunMarginMs, Number(envVars.MYCO_RUN_REMAINING_MS)) - performance.now());
 
     children.set(runId, {
       pid: child.pid,

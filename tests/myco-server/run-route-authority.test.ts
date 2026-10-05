@@ -147,7 +147,10 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
     } }, true);
     try {
       if (bound === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10]);
-      advance = () => f.advanceClock(f.now + (bound === 'lease' ? 20 : 1_000_000));
+      advance = () => {
+        f.advanceClock(f.now + (bound === 'lease' ? 20 : 1_000_000));
+        f.sqlite.run(bound === 'lease' ? "UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'" : "UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
+      };
       armed = true;
       const answer = await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS]);
       expect(answer.body.applied).not.toBe(true);
@@ -179,7 +182,7 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
         expect(f.sqlite.query("SELECT tokens_used FROM agent_runs WHERE id = 'target'").get()).toEqual({ tokens_used: null });
         expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_reports').get()).toEqual({ n: 0 });
         expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_run_events').get()).toEqual({ n: 0 });
-        expect(f.sqlite.query("SELECT run_context AS context FROM agent_runs WHERE id = 'target'").get()).toEqual({ context: JSON.stringify({ timeoutSeconds: 120 }) });
+        expect(f.sqlite.query("SELECT json_remove(run_context, '$.runControlRefusals') AS context FROM agent_runs WHERE id = 'target'").get()).toEqual({ context: JSON.stringify({ timeoutSeconds: 120 }) });
       } finally { f.sqlite.close(); }
     });
   }

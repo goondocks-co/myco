@@ -1,5 +1,4 @@
 import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
-import { runDeadlineSql } from './run-deadline.js';
 import { runCallerGuard, type RunCaller } from './runs.js';
 import { significantStatement } from './sql-statements.js';
 
@@ -13,13 +12,12 @@ export class RunWriteExpired extends Error {
 export function runWriteStore(db: RelationalStore, projectId: string, runId: string, caller: RunCaller): RelationalStore {
   const underlying = new WeakMap<PreparedStatement, { statement: PreparedStatement; writes: boolean }>();
   const assertion = (): PreparedStatement => {
-    const now = caller.clock?.() ?? caller.now;
-    const guard = runCallerGuard({ ...caller, now, clock: undefined }, "status = 'running'");
+    const guard = runCallerGuard(caller, "status = 'running'");
     // An invalid JSON path aborts the transaction with a named authority failure.
     return db.prepare(`SELECT CASE WHEN EXISTS (
-      SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?${guard.sql} AND ${runDeadlineSql()} > ?
+      SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?${guard.sql}
     ) THEN 1 ELSE json_extract('[]', ?) END AS admitted`)
-      .bind(projectId, runId, ...guard.params, now, EXPIRED_PATH);
+      .bind(projectId, runId, ...guard.params, EXPIRED_PATH);
   };
   const execute = async (statements: PreparedStatement[]): Promise<RunResult[]> => {
     try {

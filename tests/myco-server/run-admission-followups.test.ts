@@ -29,6 +29,25 @@ async function setup(onSql?: Parameters<typeof sqliteEnv>[0]) {
   return { ...f, holder, now };
 }
 
+it('a healthy child finishing near its granted timer bound is not killed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'myco-admission-'));
+  let killed = false;
+  let finish: (code: number) => void = () => {};
+  const exited = new Promise<number>(resolve => { finish = resolve; });
+  const supervisor = startSupervisor({ token: 'launch', entry: '/unused', workDir: root, port: 0, hostname: '127.0.0.1',
+    events: { on: () => {} }, exit: () => {}, spawn: () => ({ pid: 0, exited, kill: () => { killed = true; finish(-1); } }),
+  });
+  try {
+    const answer = await fetch(`http://127.0.0.1:${supervisor.port}/launch`, { method: 'POST', headers: { authorization: 'Bearer launch' },
+      body: JSON.stringify({ runId: 'healthy', timeoutSeconds: 300, envVars: { MYCO_RUN_REMAINING_MS: String(CHILD_CLOSE_RESERVE_MS + 300) } }) });
+    expect(answer.status).toBe(202);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    finish(RUNTIME_EXIT.ran);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(killed).toBe(false);
+  } finally { finish(RUNTIME_EXIT.ran); await supervisor.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 for (const replaced of [false, true]) it(`an overrunning child closes before server expiry and preserves replaced=${replaced}`, async () => {
   const f = await setup();
   const root = mkdtempSync(join(tmpdir(), 'myco-admission-'));
@@ -55,7 +74,7 @@ for (const replaced of [false, true]) it(`an overrunning child closes before ser
   try {
     const launch = await fetch(`http://127.0.0.1:${supervisor.port}/launch`, { method: 'POST', headers: { authorization: 'Bearer launch' },
       body: JSON.stringify({ runId: 'target', timeoutSeconds: 300, envVars: { MYCO_SERVER_URL: `http://127.0.0.1:${server.port}`,
-        MYCO_MEMBER_TOKEN: f.holder.token, MYCO_PROJECT: 'proj_1', MYCO_TASK: 'container-smoke', MYCO_RUN_DEADLINE: String(deadline) } }),
+        MYCO_MEMBER_TOKEN: f.holder.token, MYCO_PROJECT: 'proj_1', MYCO_TASK: 'container-smoke', MYCO_RUN_REMAINING_MS: String(deadline - Date.now()) } }),
     });
     expect(launch.status).toBe(202);
     if (replaced) events.get('SIGTERM')!();
@@ -82,7 +101,7 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: MCP
         if (!armed || !trigger) return;
         armed = false;
         if (bound === 'lease') sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
-        if (bound === 'deadline') now += 500_000;
+        if (bound === 'deadline') sqlite.run("UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
         if (bound === 'credential') sqlite.run("UPDATE agent_runs SET dispatched_by = NULL WHERE id = 'target'");
         if (bound === 'terminal') sqlite.run("UPDATE agent_runs SET status = 'failed' WHERE id = 'target'");
         if (bound === 'revocation') sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [f.holder.tokenId]);

@@ -1,5 +1,4 @@
 import { heldPartition } from './embedding/policy.js';
-import { staleAfter } from './run-deadline.js';
 import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
@@ -36,7 +35,7 @@ import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@g
 import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, workerRunLeaseExpiry, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
-import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { runRemainingMs, applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { runtimeProbeModel } from './runtime-probe.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
@@ -637,7 +636,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
       MYCO_TASK: prepared.task,
       MYCO_TASK_ADMISSION: prepared.admission,
       MYCO_TIMEOUT_SECONDS: String(timeoutSeconds),
-      MYCO_RUN_DEADLINE: String(staleAfter(now, runContext)),
+      MYCO_RUN_REMAINING_MS: String(await runRemainingMs(env.db, { projectId: prepared.projectId }, runId)),
       MYCO_PROVIDER_JSON: JSON.stringify(prepared.provider),
       ...(prepared.model === null ? {} : { MYCO_MODEL: prepared.model }),
       ...(prepared.task === 'embedding-reconcile' && prepared.model !== null ? { MYCO_CLAIM_MODEL: heldPartition(prepared.model).label } : {}),

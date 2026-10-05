@@ -533,13 +533,13 @@ describe('a run whose runtime died before it ended', () => {
     return { url: `http://127.0.0.1:${server.port}`, posts, stop: () => { server.stop(true); } };
   }
 
-  it('kills a real overrunning child before the absolute server deadline and posts its ending', async () => {
+  it('kills a real overrunning child inside the remaining authority and posts its ending', async () => {
     const s = boot();
     const deploy = deployment();
     const deadline = Date.now() + CHILD_CLOSE_RESERVE_MS + 400;
     try {
       expect((await s.launch({ runId: 'absolute_overrun', timeoutSeconds: 300,
-        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_absolute', MYCO_PROJECT: 'proj_1', MYCO_RUN_DEADLINE: String(deadline) },
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_absolute', MYCO_PROJECT: 'proj_1', MYCO_RUN_REMAINING_MS: String(CHILD_CLOSE_RESERVE_MS + 400) },
       })).status).toBe(202);
       await until(() => deploy.posts.length > 0, 'the overrunning child ending', 5_000);
       expect(Date.now()).toBeLessThan(deadline);

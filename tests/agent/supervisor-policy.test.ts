@@ -16,10 +16,10 @@ const idle: SupervisorState = { draining: false, running: [] };
 const holding = (...running: string[]): SupervisorState => ({ draining: false, running });
 const draining = (...running: string[]): SupervisorState => ({ draining: true, running });
 
-it('kills against the server deadline with time left for the close', () => {
-  const serverDeadline = 100_000;
-  expect(childDeadline(50_000, 300, undefined, serverDeadline)).toBe(serverDeadline - CHILD_CLOSE_RESERVE_MS);
-  expect(childDeadline(50_000, 0, 10, serverDeadline)).toBe(50_010);
+it('kills against the remaining authority with time left for the close', () => {
+  const remainingMs = 100_000;
+  expect(childDeadline(50_000, 300, undefined, remainingMs)).toBe(50_000 + remainingMs - CHILD_CLOSE_RESERVE_MS);
+  expect(childDeadline(50_000, 0, 10, remainingMs)).toBe(50_010);
   expect(childDeadline(50_000, 300, undefined, NaN)).toBe(childDeadline(50_000, 300));
 });
 
@@ -174,4 +174,13 @@ describe('whether the launch token is withheld from a child', () => {
     // Owned by the child's own user.
     expect(readableBy({ mode: 0o100600, uid: 1000, gid: 0 }, bun)).toBe(true);
   });
+});
+
+for (const skew of [-30_000, 180_000]) it(`machine clock skew ${skew} preserves the granted task budget and closes early`, () => {
+  const serverNow = 1_000_000;
+  const remaining = 420_000;
+  const localNow = serverNow + skew;
+  const delay = childDeadline(localNow, 300, undefined, remaining) - localNow;
+  expect(delay).toBeGreaterThanOrEqual(300_000);
+  expect(serverNow + delay).toBeLessThan(serverNow + remaining);
 });
