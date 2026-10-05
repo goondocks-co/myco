@@ -4,10 +4,10 @@
  *
  * The shell is the nav column on a desktop, and the header, bottom bar and nav
  * drawer on a phone. Each check opens a project's Sessions page inside it and
- * asserts the shell's key content (the pages and no list of projects, the
- * admin foot for the owner only, search and the account), and the page's
- * scope switcher beside its title, that nothing scrolls sideways, that no raw id reaches the shell's
- * text, and that axe-core finds nothing serious or critical in the shell. The
+ * asserts the shell's pages, People link, owner-only admin links, search,
+ * account, and no project list. It checks the page's scope switcher beside
+ * its title, sideways scrolling, raw ids in shell text, and serious or
+ * critical axe-core findings. The
  * pages inside keep their own checks: they are rebuilt, and held to account,
  * in later phases.
  *
@@ -30,8 +30,8 @@ const ROLES = [
   { role: 'member', cookie: 'memberCookie', name: 'Lin' },
 ] as const;
 
-/** The admin foot. Health's name carries the count of what needs an admin, so it is matched by its start. */
-const ADMIN_PAGES = [INVITE_CONTROLS.page, 'Settings', /^Health/] as const;
+/** Health's name carries the count of what needs an admin, so it is matched by its start. */
+const ADMIN_PAGES = ['Settings', /^Health/] as const;
 const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Myco’s work'];
 
 /** The project the checks open: the fixture's first, or on a real deployment the first the Projects page lists. */
@@ -66,14 +66,20 @@ async function expectScopeInHeader(page: Page): Promise<void> {
   if (project !== null) await expect(scope.locator('[data-scope-current]')).toHaveText(project.name);
 }
 
-/** The pages, the admin foot (for an admin) and the account are all on screen, whatever the project list holds. */
+/** The pages, the role's nav foot and the account are all on screen, whatever the project list holds. */
 async function expectNavInView(scope: ReturnType<Page['locator']>, role: 'admin' | 'member'): Promise<void> {
   const pages = scope.getByRole('navigation', { name: 'Pages' });
   for (const label of PAGES_NAV) await expect(pages.getByRole('link', { name: label })).toBeInViewport();
   await expect(pages.getByRole('link', { name: 'Project settings' })).toHaveCount(role === 'admin' ? 1 : 0);
   const admin = scope.getByRole('navigation', { name: 'Admin' });
-  if (role === 'admin') for (const label of ADMIN_PAGES) await expect(admin.getByRole('link', { name: label })).toBeInViewport();
-  else await expect(admin).toHaveCount(0);
+  if (role === 'admin') {
+    await expect(admin.getByRole('link', { name: INVITE_CONTROLS.page })).toBeInViewport();
+    for (const label of ADMIN_PAGES) await expect(admin.getByRole('link', { name: label })).toBeInViewport();
+    await expect(scope.getByRole('navigation', { name: 'People' })).toHaveCount(0);
+  } else {
+    await expect(admin).toHaveCount(0);
+    await expect(scope.getByRole('navigation', { name: 'People' }).getByRole('link', { name: INVITE_CONTROLS.page })).toBeInViewport();
+  }
   await expect(scope.getByRole('button', { name: /^Account and appearance for / })).toBeInViewport();
 }
 
@@ -117,7 +123,7 @@ test.describe('dashboard shell', () => {
         await shoot(page, `shell-${role}`, viewport, mode);
 
         if (viewport !== 'desktop') {
-          // The phone's More, and the tablet's header button, open the nav: Myco's work, and for an admin the admin pages.
+          // The phone's More and the tablet's header button open the nav links.
           const opener = viewport === 'phone'
             ? page.getByRole('navigation', { name: 'Main pages' }).getByRole('button', { name: 'More' })
             : page.getByRole('banner').getByRole('button', { name: 'Open navigation' });
@@ -125,6 +131,7 @@ test.describe('dashboard shell', () => {
           const drawer = page.getByRole('dialog', { name: 'Navigation' });
           await expect(drawer).toBeVisible();
           await expect(drawer.getByRole('link', { name: 'Myco’s work' })).toBeVisible();
+          await expect(drawer.getByRole('link', { name: INVITE_CONTROLS.page, exact: true })).toHaveCount(1);
           for (const label of ADMIN_PAGES) await expect(drawer.getByRole('link', { name: label, exact: typeof label === 'string' })).toHaveCount(role === 'admin' ? 1 : 0);
           await expectNavInView(drawer, role);
           await expectNoProjectList(drawer);
