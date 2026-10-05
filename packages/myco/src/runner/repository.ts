@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
 /** The digest listing's text: `sha256sum` lines, one per listed file. */
@@ -29,6 +30,7 @@ export async function prepareWorkerCheckout(
     url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
     credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
+    removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
     pin: async (commit) => {
       const result = await request({ url: spec.url, branch: spec.branch, commit }, checkoutSignal);
       const pin = result.pin as { url?: unknown; branch?: unknown; commit?: unknown } | null;

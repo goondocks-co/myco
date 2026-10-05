@@ -114,6 +114,51 @@ describe('reporting what was listed', () => {
   const ANSWERED: WorkerAnswer = { kind: 'answered', body: { persisted: true, recorded: true }, accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true, steps: true };
   const settle = () => Bun.sleep(5);
 
+  it('waits for a stopped listing to dispose before shutdown settles', async () => {
+    let disposed = false;
+    const reporter = modelCatalogs({
+      harnesses: ['codex'], clock: () => 1, log: () => {},
+      list: (_ids, signal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => {
+          setTimeout(() => { disposed = true; resolve([]); }, 20);
+        }, { once: true });
+      }),
+      send: async () => ANSWERED,
+    });
+    reporter.due();
+    await reporter.stop();
+    expect(disposed).toBe(true);
+  });
+
+  it('aborts an obsolete listing and never publishes its late result after the ready set changes', async () => {
+    let completeOld: (value: HarnessListing[]) => void = () => {};
+    let oldSignal: AbortSignal | undefined;
+    const sent: string[] = [];
+    const reporter = modelCatalogs({
+      harnesses: ['codex'], clock: () => 1, log: () => {},
+      list: (ids, signal) => {
+        if (ids.includes('codex')) {
+          oldSignal = signal;
+          return new Promise((resolve) => { completeOld = resolve; });
+        }
+        return Promise.resolve([{ ok: true, catalog: catalog('opencode') }]);
+      },
+      send: async (value) => { sent.push(value.harness); return ANSWERED; },
+    });
+    try {
+      reporter.due();
+      reporter.reconcile(['opencode']);
+      expect(oldSignal?.aborted).toBe(true);
+      reporter.due();
+      await settle();
+      completeOld([{ ok: true, catalog: catalog('codex') }]);
+      await settle();
+      reporter.due();
+      await settle();
+      expect(sent).toEqual(['opencode']);
+    } finally { reporter.stop(); }
+  });
+
   function rig(answers: WorkerAnswer[], listed: HarnessListing[] = [{ ok: true, catalog: catalog('codex') }, { ok: true, catalog: catalog('opencode') }]) {
     let now = 0;
     const sent: string[] = [];

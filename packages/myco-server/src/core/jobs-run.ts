@@ -10,7 +10,9 @@ import { STALE_RUN_ERROR, STALE_PENDING_REASON } from './reader-codes.js';
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, endQueuedRun, expireLeases, HARNESS_MEMBER_ID, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { endQueuedRun, expireLeases, HARNESS_MEMBER_ID } from './harness.js';
+import { staleAfter } from './run-deadline.js';
+export { staleAfter, timeoutSecondsOf } from './run-deadline.js';
 import { classify, emit } from '../telemetry.js';
 import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
 import { storedSettings } from './settings.js';
@@ -126,23 +128,6 @@ export async function agentRunRetention(env: ServerEnv, now: number): Promise<nu
   const cutoff = now - (await runRetentionDays(env)) * DAY_MS;
   const runs = await pruneTerminalRuns(env.db, cutoff, JOB_BATCH);
   return runs + await pruneRevokedCredentials(env.db, HARNESS_MEMBER_ID, cutoff, JOB_BATCH);
-}
-
-/** The bound a dispatched run carries in its context, or the dispatcher's default when it carries none. */
-export function timeoutSecondsOf(runContext: string | null): number {
-  if (runContext === null) return DEFAULT_DISPATCH_TIMEOUT_SECONDS;
-  try {
-    const parsed: unknown = JSON.parse(runContext);
-    const value = typeof parsed === 'object' && parsed !== null ? (parsed as { timeoutSeconds?: unknown }).timeoutSeconds : undefined;
-    return typeof value === 'number' && value > 0 ? value : DEFAULT_DISPATCH_TIMEOUT_SECONDS;
-  } catch {
-    return DEFAULT_DISPATCH_TIMEOUT_SECONDS;
-  }
-}
-
-/** The instant past which a live run's runtime is taken to have gone away: its own bound, plus the margin the container hold allows past it. */
-export function staleAfter(startedAt: number, runContext: string | null): number {
-  return startedAt + timeoutSecondsOf(runContext) * 1000 + RUN_OVERRUN_MARGIN_MS;
 }
 
 export { STALE_RUN_ERROR } from './reader-codes.js';

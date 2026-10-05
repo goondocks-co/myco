@@ -12,13 +12,13 @@
  * (`parseModelCatalog`): a model the harness's settings would refuse is not offered, and a list past the bound is cut.
  */
 import nodeFs from 'node:fs';
-const { mkdirSync, mkdtempSync, rmSync } = nodeFs;
-import { join } from 'node:path';
+const { mkdirSync } = nodeFs;
 import { parseModelCatalog, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { harnessById, type ModelListing } from './harnesses.js';
 import { driverFor } from './drivers/registry.js';
 import { launchEnvironment, recordOf } from './drivers/stream.js';
-import { spawnGroup, stopGroup } from './process-group.js';
+import { spawnOwnedGroup } from './process-group.js';
+import { allocateRunDirectory, discardOwnedRunDirectory } from './run-directory.js';
 
 /** How long one harness's listing may take before it is stopped and reported as failed. */
 export const MODEL_LISTING_TIMEOUT_MS = 30_000;
@@ -88,23 +88,25 @@ export interface ListingOptions { cwd: string; env: NodeJS.ProcessEnv; signal: A
 
 /**
  * Run one listing and answer the raw entries it listed, or throw saying why it could not. The process leads a group
- * of its own, and the whole group is stopped (`stopGroup`) once it answers, on the timeout, or when `signal` aborts,
+ * of its own, and the whole group is stopped once it answers, on the timeout, or when `signal` aborts,
  * and is gone before this answers.
  */
 export async function runListing(binary: string, listing: ModelListing, options: ListingOptions): Promise<Record<string, unknown>[]> {
-  const child = spawnGroup(binary, listing.args, {
+  const timeoutMs = options.timeoutMs ?? MODEL_LISTING_TIMEOUT_MS;
+  const deadline = AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
+  const owned = spawnOwnedGroup(binary, listing.args, {
     cwd: options.cwd,
     env: options.env,
     stdio: [listing.kind === 'exchange' ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-  });
-  const timeoutMs = options.timeoutMs ?? MODEL_LISTING_TIMEOUT_MS;
-  const deadline = AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
+  }, deadline);
+  const { child } = owned;
   let errors = '';
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => { if (errors.length < 2000) errors += chunk; });
   child.stdin?.on('error', () => undefined);
   let expired: (() => void) | undefined;
   try {
+    owned.assertStarted();
     return await new Promise<Record<string, unknown>[]>((resolve, reject) => {
       let held = '';
       let read = 0;
@@ -145,7 +147,7 @@ export async function runListing(binary: string, listing: ModelListing, options:
       if (deadline.aborted) expired();
       else deadline.addEventListener('abort', expired, { once: true });
       child.once('error', (error) => reject(new Error(`it could not be started: ${error.message}`)));
-      child.once('close', (code) => {
+      void owned.exit.then((code) => {
         if (held.trim().length > 0) onLine(held.trim());
         held = '';
         if (listing.kind === 'command' && code === 0) {
@@ -153,13 +155,13 @@ export async function runListing(binary: string, listing: ModelListing, options:
           return;
         }
         const said = errors.trim().split('\n').slice(-3).join(' ').slice(0, 300);
-        reject(new Error(`it exited ${code ?? 'on a signal'} without listing models${said === '' ? '' : `: ${said}`}`));
-      });
+        reject(new Error(`it exited ${code < 0 ? 'on a signal' : code} without listing models${said === '' ? '' : `: ${said}`}`));
+      }, reject);
       if (listing.kind === 'exchange') for (const message of listing.send) send(message);
     });
   } finally {
     if (expired !== undefined) deadline.removeEventListener('abort', expired);
-    await stopGroup(child);
+    await owned.dispose();
   }
 }
 
@@ -174,7 +176,7 @@ export async function listHarnessModels(id: string, root: string, signal: AbortS
   const driver = driverFor(id);
   if (driver === null) return null;
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const cwd = mkdtempSync(join(root, 'models-'));
+  const cwd = allocateRunDirectory(root, { purpose: 'model-listing', harnessId: id });
   try {
     // Started as a run on the machine's own login is: the same isolation, home and omitted variables.
     const launch = driver.launch({ scratchDir: cwd, credentialEnv: {} });
@@ -188,7 +190,7 @@ export async function listHarnessModels(id: string, root: string, signal: AbortS
   } catch (error) {
     return { ok: false, harness: id, reason: error instanceof Error ? error.message : String(error) };
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    discardOwnedRunDirectory(cwd);
   }
 }
 

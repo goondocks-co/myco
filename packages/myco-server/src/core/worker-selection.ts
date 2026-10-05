@@ -33,8 +33,7 @@ import { admissionForTask } from './task-catalogue.js';
  */
 export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', 'container-smoke'];
 
-/** How long a run may take when its caller names no bound. */
-export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
+export { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from './run-deadline.js';
 
 /** The capability a task needs turned on in a Project, or null for a task no capability gates. */
 export function capabilityOf(task: string): ProjectCapability | null {

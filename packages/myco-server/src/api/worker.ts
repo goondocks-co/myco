@@ -86,6 +86,10 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   if (asked === null) return unreadable();
   const harnesses = offered(asked.harnesses);
   const capabilities = Array.isArray(asked.capabilities) ? asked.capabilities.filter((value): value is string => typeof value === 'string') : [];
+  // Profile resolution consumes the offers admitted by this claim.
+  await recordWorkerContact(env.db, {
+    credentialId: ctx.tokenId, machineId: ctx.machineId, offers: harnesses, capabilities, now: ctx.now,
+  });
   const outcome = await claimNextRun(env, {
     tokenId: ctx.tokenId,
     machineId: ctx.machineId,
@@ -96,7 +100,7 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   // An authenticated claim is contact whatever it answers: a worker told
   // `no_work` is attached and idle, which nothing else in the schema records.
   await recordWorkerContact(env.db, {
-    credentialId: ctx.tokenId, machineId: ctx.machineId, offers: harnesses, capabilities,
+    credentialId: ctx.tokenId, machineId: ctx.machineId,
     reason: outcome.claimed ? 'claimed' : outcome.reason, now: ctx.now,
   });
   // The Deployment decides the cadence and says it on every answer: a worker
@@ -132,7 +136,7 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
   // report keeps its liveness refreshed.
   if (outcome.held) await recordWorkerContact(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now });
   return ok(outcome.held
-    ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: WORKER_LEASE_MS }
+    ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: outcome.expiresAt - ctx.now }
     : { persisted: true, held: false, reason: 'the lease is no longer held' });
 }
 
@@ -163,10 +167,13 @@ export async function handleWorkerRepository(env: ServerEnv, ctx: DeploymentCont
   const run = named(asked);
   if (run === null) return ok({ persisted: false, code: 'parse', reason: 'repository names a projectId and a runId' });
   try {
-    const result = await prepareWorkerRepository(env, { tokenId: ctx.tokenId, clock: ctx.clock }, { ...run, body: asked });
+    const { attemptId } = parseWorkerAccounting({ attemptId: asked.attemptId });
+    const result = await prepareWorkerRepository(env, { tokenId: ctx.tokenId, clock: ctx.clock }, {
+      ...run, ...(attemptId === undefined ? {} : { attemptId }), body: asked,
+    });
     return Response.json({ persisted: true, ...result }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
-    if (error instanceof RepositoryInputError) return ok({ persisted: false, code: 'parse', reason: error.message });
+    if (error instanceof RepositoryInputError || error instanceof WorkerUsageError) return ok({ persisted: false, code: 'parse', reason: error.message });
     throw error;
   }
 }

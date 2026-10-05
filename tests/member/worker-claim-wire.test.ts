@@ -21,10 +21,11 @@
  * hung test with no output at all.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "../support/fenced-fs.mjs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
+import { HARNESS_DETECTION_TTL_MS } from '@myco/runner/detect.js';
 import workerServer from '@myco-server-worker/index.js';
 import { asOwnerPost, OWNER_ENV } from '../myco-server/helpers/owner.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
@@ -77,7 +78,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
   /** Attach a worker, bounded by this test's own signal, and answer what it did with the lines it logged. */
   const attach = async (
     token: string,
-    opts: { once?: boolean; stopping?: AbortController; only?: string } = {},
+    opts: { once?: boolean; stopping?: AbortController; only?: string; clock?: () => number } = {},
   ): Promise<WorkerOutcome & { lines: string[] }> => {
     const lines: string[] = [];
     const stopping = opts.stopping ?? new AbortController();
@@ -97,6 +98,7 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
         log: (line) => { lines.push(line); },
         fetchImpl,
         signal: stopping.signal,
+        clock: opts.clock,
       }));
       return { ...outcome, lines };
     } finally {
@@ -115,6 +117,31 @@ function reportOf(what: string, attached: WorkerOutcome & { lines: string[] }, p
 }
 
 describe('a worker on the real claim wire', () => {
+  it('claims queued work after login changes while the same worker stays attached', async () => {
+    const path = process.env.PATH;
+    const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-login-transition-')));
+    writeFileSync(join(dir, 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    process.env.PATH = `${dir}:/usr/bin:/bin`;
+    let now = Date.now();
+    const r = await rig((route, n) => {
+      if (route === '/worker/claim' && n === 1) {
+        expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
+        now += HARNESS_DETECTION_TTL_MS;
+      }
+      return null;
+    });
+    try {
+      r.queueRun('run_login_transition');
+      const token = await r.member('mem_admin', 'admin');
+      const attached = await r.attach(token, { clock: () => now });
+      expect(attached.driven).toBe(1);
+      expect(attached.refused).toBeNull();
+      expect(r.sent.filter((s) => s.path === '/worker/claim')).toHaveLength(2);
+      expect(r.runRow('run_login_transition')?.status).not.toBe('queued');
+      expect(r.runRow('run_login_transition')?.status).not.toBe('running');
+    } finally { process.env.PATH = path; }
+  });
+
   it('waits for execution-profile advertisement without claiming or failing an old server run', async () => {
     expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
     const stopping = new AbortController();
@@ -230,7 +257,7 @@ describe('a worker on the real claim wire', () => {
     expect(attached.lines).toContain('reported run_wire as completed; the Deployment recorded it failed');
     // Every request the worker made declared the protocol: the header is on the
     // claim and on the end, not only on the first call.
-    expect(paths).toEqual(['/members/status', '/worker/claim', '/worker/steps', '/worker/end']);
+    expect(paths).toEqual(['/members/status', '/worker/claim', '/worker/end', '/worker/steps']);
     expect([...new Set(r.sent.map((s) => s.protocol))]).toEqual(['1']);
   }, 30_000);
 
@@ -324,8 +351,8 @@ describe('a worker on the real claim wire', () => {
     const paths = r.sent.map((s) => s.path);
     if (attached.driven !== 1 || attached.refused !== null) throw new Error(reportOf('a 503 ended the attachment', attached, paths));
     expect(r.runRow('run_after_503')).toEqual({ status: 'failed', harness: PROFILE_STUB_HARNESS, error: RUN_CLOSE_ERROR });
-    // Two claims: the faulted one and the one that was answered, then the run's step log ahead of its end. The model list it reports beside them is its own.
-    expect(paths.filter((path) => path !== '/worker/models')).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/steps', '/worker/end']);
+    // Two claims: the faulted one and the one that was answered, then its end and step log. The model list it reports beside them is its own.
+    expect(paths.filter((path) => path !== '/worker/models')).toEqual(['/members/status', '/worker/claim', '/members/status', '/worker/claim', '/worker/end', '/worker/steps']);
     expect(attached.lines.filter((l) => l.includes('cannot reach'))).toHaveLength(1);
     expect(attached.lines.filter((l) => l.includes('again'))).toHaveLength(1);
   }, 30_000);

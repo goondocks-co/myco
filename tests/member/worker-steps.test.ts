@@ -22,6 +22,7 @@ import type { RunEvent } from '@myco/runner/events.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
+import { expireLeases } from '@myco-server-worker/core/harness.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { harnessStoppedError } from '@goondocks/myco-shared/run-text';
 import { MAX_RUN_STEPS, WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
@@ -272,15 +273,19 @@ const STUB_LINES = [
   '{"type":"stream_event","event":{}}',
 ];
 
-async function wire(opts: { advertise?: boolean } = {}) {
-  expect(stubProfileHarness({ lines: STUB_LINES })).toEqual(PROFILE_STUB_DETECTED);
+async function wire(opts: { advertise?: boolean; lines?: readonly string[]; slowPages?: boolean; failure?: boolean } = {}) {
+  expect(stubProfileHarness({ lines: opts.lines ?? STUB_LINES, ...(opts.failure ? { ending: '{"type":"result","subtype":"error_during_execution","is_error":true,"stop_reason":"error","errors":["fixture failure"]}' } : {}) })).toEqual(PROFILE_STUB_DETECTED);
   const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite, ['proj_1']);
-  const server = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: (input, init) => fetch(input, init) });
+  let clock = Date.now();
+  const now = () => opts.slowPages ? clock : Date.now();
+  const server = createServer({ now, sourceOf: () => '1.2.3.4', fetchImpl: (input, init) => fetch(input, init) });
   const sent: Array<{ path: string; body: string }> = [];
   let refuseSteps = false;
   let advertising = opts.advertise !== false;
   let onClaim: (() => void) | null = null;
+  const closed: unknown[] = [];
+  let deliveryTicks = 0;
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = new Request(typeof input === 'string' || input instanceof URL ? String(input) : input.url, init);
     const path = new URL(request.url).pathname;
@@ -288,7 +293,12 @@ async function wire(opts: { advertise?: boolean } = {}) {
     sent.push({ path, body });
     if (path === '/worker/steps' && refuseSteps) return new Response('unavailable', { status: 503 });
     if (path === '/worker/claim' && onClaim !== null) onClaim();
+    if (path === '/worker/steps' && opts.slowPages) {
+      const timer = setInterval(() => { deliveryTicks += 1; }, 1);
+      try { await Bun.sleep(6); clock += 6_000; } finally { clearInterval(timer); }
+    }
     const answer = await server.handleRequest(request, e.serverEnv);
+    if (path === '/worker/end') closed.push(await answer.clone().json());
     if (advertising) return answer;
     const headers = new Headers(answer.headers);
     headers.set(FEATURES_HEADER, (headers.get(FEATURES_HEADER) ?? '').split(',').filter((feature) => feature !== WORKER_STEPS_FEATURE).join(','));
@@ -312,7 +322,7 @@ async function wire(opts: { advertise?: boolean } = {}) {
     try {
       return await withRunMcp('https://deployment.example', (request) => server.handleRequest(request, e.serverEnv), () => runWorker({
         serverUrl: 'https://deployment.example', token, lockDir: null, runRoot, stepRoot, only: [PROFILE_STUB_HARNESS], once, pollIdleMs: 50,
-        log: () => {}, fetchImpl, signal: stopping.signal,
+        log: () => {}, fetchImpl, clock: now, signal: stopping.signal,
       }));
     } finally {
       clearTimeout(bound);
@@ -325,7 +335,7 @@ async function wire(opts: { advertise?: boolean } = {}) {
   };
   const stored = () => e.sqlite.query(`SELECT seq, call_id AS callId, kind, tool, target, outcome FROM agent_run_steps WHERE run_id = 'run_steps' ORDER BY seq`).all();
   return {
-    e, sent, attach, outbox, stored, runRoot, stepRoot, server, token,
+    e, sent, attach, outbox, stored, runRoot, stepRoot, server, token, now, closed, deliveryTicks: () => deliveryTicks,
     refuse: (on: boolean) => { refuseSteps = on; }, advertise: (on: boolean) => { advertising = on; },
   };
 }
@@ -336,10 +346,46 @@ const STEPS = [
 ];
 
 describe('a step log on its way to the Deployment', () => {
-  it('goes ahead of the run\'s end, and lands under the attempt that observed it', async () => {
+  for (const failure of [false, true]) {
+    it(`closes a ${failure ? 'failed' : 'completed'} harness before slow multi-page evidence and backlog consume its lease`, async () => {
+      const lines = Array.from({ length: 2_000 }, (_, seq) => [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `c${seq}`, name: seq === 0 ? 'mcp__myco__myco_run' : 'Read', input: seq === 0 ? { op: 'report' } : { file_path: 'README.md' } }] } }),
+        JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `c${seq}`, content: 'fixture' }] } }),
+      ]).flat();
+      const w = await wire({ lines, slowPages: true, failure });
+      const at = w.now();
+      // An older log is delivered before the new attempt is claimed.
+      const backlog = writeStepOutbox(w.stepRoot, {
+        serverUrl: 'https://deployment.example', projectId: 'proj_1', runId: 'run_absent', attemptId: 'mt_absent', createdAt: at - 1,
+        steps: [], overflow: 0, unrecognized: { total: 0, shapes: {} },
+      });
+      expect(existsSync(backlog)).toBe(true);
+      expect((await w.attach(true)).driven).toBe(1);
+      const terminal = w.sent.findIndex((s) => s.path === '/worker/end');
+      const currentPages = w.sent.flatMap((s, index) => s.path === '/worker/steps' && JSON.parse(s.body).runId === 'run_steps' ? [index] : []);
+      expect(currentPages).toHaveLength(20);
+      expect(currentPages.every((index) => index > terminal)).toBe(true);
+      expect(w.now() - at).toBeGreaterThan(90_000);
+      expect(w.deliveryTicks()).toBeGreaterThan(20);
+      expect(w.closed).toEqual([expect.objectContaining({ ended: true })]);
+      expect(JSON.parse(w.sent[terminal]!.body).status).toBe(failure ? 'failed' : 'completed');
+      expect(w.sent.filter((s) => s.path === '/worker/end')).toHaveLength(1);
+      expect(w.e.sqlite.query("SELECT status FROM agent_runs WHERE id = 'run_steps'").get()).not.toEqual({ status: 'running' });
+      expect(w.stored()).toHaveLength(2_000);
+      expect(await expireLeases(w.e.serverEnv, w.now())).toBe(0);
+      expect(w.outbox()).toEqual([]);
+      const page = w.sent.find((s) => s.path === '/worker/steps' && JSON.parse(s.body).runId === 'run_steps')!;
+      const repeated = await w.server.handleRequest(new Request('https://deployment.example/worker/steps', {
+        method: 'POST', headers: { ...deploymentScopedHeaders({ token: w.token }), 'content-type': 'application/json' }, body: page.body,
+      }), w.e.serverEnv);
+      expect(await repeated.json()).toMatchObject({ stored: true, landed: 0 });
+    }, 20_000);
+  }
+
+  it('lands after the run closes under the attempt that observed it', async () => {
     const w = await wire();
     expect((await w.attach(true)).driven).toBe(1);
-    expect(w.sent.map((s) => s.path)).toEqual(['/members/status', '/worker/claim', '/worker/steps', '/worker/end']);
+    expect(w.sent.map((s) => s.path)).toEqual(['/members/status', '/worker/claim', '/worker/end', '/worker/steps']);
     expect(w.stored()).toEqual(STEPS);
     expect(w.outbox()).toEqual([]);
     const detail = await getRunDetail(w.e.db, { projectId: 'proj_1' }, 'run_steps', Date.now(), 'mem_admin');
