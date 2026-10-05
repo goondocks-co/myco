@@ -9,6 +9,45 @@ const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-temp-snapshot-'));
 afterAll(() => fs.rmSync(parent, { recursive: true, force: true }));
 
 describe('system temp leak snapshot', () => {
+  it('retries transient Windows retirement locks and surfaces permanent failures', () => {
+    const keys = ['MYCO_TEST_RUN_ROOT', 'MYCO_TEST_SYSTEM_TEMP_DIRS', 'TMPDIR', 'TEMP', 'TMP'];
+    const saved = new Map(keys.map((key) => [key, process.env[key]]));
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const fixture = fs.mkdtempSync(path.join(parent, 'locks-'));
+    const rename = fs.renameSync.bind(fs);
+    const codes = ['EPERM', 'EACCES', 'EBUSY'];
+    let attempts = 0;
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      const code = codes[attempts++];
+      if (code) throw Object.assign(new Error('fixture retirement lock'), { code });
+      rename(from, to);
+    });
+    const waitSpy = spyOn(Atomics, 'wait').mockImplementation(() => 'timed-out');
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const run = createTestTempRun({ parent: fixture, directories: [fixture] });
+      expect(run.finish()).toEqual([]);
+      expect(attempts).toBeGreaterThan(1);
+      expect(waitSpy).toHaveBeenCalled();
+      expect(fs.readdirSync(fixture)).toEqual([]);
+      renameSpy.mockImplementation(() => { throw Object.assign(new Error('fixture permanent refusal'), { code: 'EINVAL' }); });
+      waitSpy.mockClear();
+      const failed = createTestTempRun({ parent: fixture, directories: [fixture] });
+      expect(() => failed.finish()).toThrow('fixture permanent refusal');
+      expect(waitSpy).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(failed.root, '.owner'), 'utf8')).toBe(`${process.pid}\n`);
+    } finally {
+      renameSpy.mockRestore();
+      waitSpy.mockRestore();
+      Object.defineProperty(process, 'platform', platform);
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('does not report a sibling while its owner marker is removed during cleanup', () => {
     const keys = ['MYCO_TEST_RUN_ROOT', 'MYCO_TEST_SYSTEM_TEMP_DIRS', 'TMPDIR', 'TEMP', 'TMP'];
     const saved = new Map(keys.map((key) => [key, process.env[key]]));

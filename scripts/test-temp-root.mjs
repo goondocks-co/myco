@@ -8,7 +8,10 @@ const ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const RETIRED_NAME = /^\.mt-cleanup-([1-9]\d*)-mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const TEST_NAME = /^(?:myco-|mt-)/;
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
-const CLEANUP_RETRIES = 30;
+const CLEANUP_RETRIES = Number(process.env.MYCO_TEST_CLEANUP_RETRIES ?? 30);
+if (!Number.isSafeInteger(CLEANUP_RETRIES) || CLEANUP_RETRIES < 0) throw new Error('Invalid MYCO_TEST_CLEANUP_RETRIES');
+const CLEANUP_RETRY_DELAY_MS = 100;
+const cleanupWait = new Int32Array(new SharedArrayBuffer(4));
 
 function ownerPid(root) {
   try {
@@ -38,7 +41,15 @@ function alive(pid) {
 function removeRunRoot(root) {
   const retired = path.join(path.dirname(root), `.mt-cleanup-${process.pid}-${path.basename(root)}`);
   const target = RETIRED_NAME.test(path.basename(root)) ? root : retired;
-  if (target !== root) fs.renameSync(root, target);
+  if (target !== root) {
+    for (let attempt = 0; ; attempt += 1) {
+      try { fs.renameSync(root, target); break; }
+      catch (error) {
+        if (process.platform !== 'win32' || !['EBUSY', 'EPERM', 'EACCES'].includes(error.code) || attempt >= CLEANUP_RETRIES) throw error;
+        Atomics.wait(cleanupWait, 0, 0, (attempt + 1) * CLEANUP_RETRY_DELAY_MS);
+      }
+    }
+  }
   fs.rmSync(target, { recursive: true, force: true, maxRetries: CLEANUP_RETRIES });
 }
 
