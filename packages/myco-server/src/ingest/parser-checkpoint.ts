@@ -66,12 +66,15 @@ export function restoreParserCheckpointStatement(db: RelationalStore, row: Recor
     .bind(...columns.map((column) => row[column] ?? null), parent.project_id, parent.transcript_id, parent.parsed_offset, parent.parser_context);
 }
 
-interface TerminalFence extends CheckpointTarget { size: number; lastReceivedAt?: number }
+interface TerminalFence extends CheckpointTarget {
+  size: number; lastReceivedAt?: number; parserContextJson?: string | null; parserContext?: Record<string, unknown> | null;
+}
 /** Integer overflow aborts the whole transaction before a stale terminal batch writes any row. */
 export async function terminalCheckpointBatch(db: RelationalStore, target: TerminalFence, statements: PreparedStatement[]) {
   const stable = `EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ?
-    AND parsed_offset = ? AND size = ? AND last_received_at = ?)`;
-  const values = [target.projectId, target.transcriptId, target.parsedOffset, target.size, target.lastReceivedAt];
+    AND parsed_offset = ? AND size = ? AND last_received_at = ? AND parser_context IS ?)`;
+  const values = [target.projectId, target.transcriptId, target.parsedOffset, target.size, target.lastReceivedAt,
+    target.parserContextJson ?? (target.parserContext == null ? null : JSON.stringify(target.parserContext))];
   try {
     const result = await db.batch([db.prepare(`SELECT CASE WHEN ${stable} THEN 1 ELSE abs(-9223372036854775808) END AS terminal_checkpoint_stable`).bind(...values), ...statements]);
     return result.slice(1);

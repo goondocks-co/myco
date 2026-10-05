@@ -3,7 +3,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { parseTranscripts, pendingTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { parseTranscripts, pendingTranscripts, rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
 import { continuityRecords } from './continuity-records.js';
 
@@ -19,7 +19,7 @@ export async function terminalContinuationRuntime(db: RelationalStore, blobs: Bl
   const token = await issueMemberToken(db, { memberId: 'mem_terminal', machineId: 'terminal-machine' }, NOW);
   const answers = [];
   for (const agent of ['claude-code', 'codex', 'pi']) {
-    for (const ending of ['idle', 'session_end', 'upgrade', 'race', 'turn_end']) {
+    for (const ending of ['idle', 'session_end', 'upgrade', 'race', 'rewind_race', 'turn_end']) {
       const projectId = `proj_terminal_${agent.replace('-', '_')}_${ending}`;
       const sessionId = `terminal-${agent}-${ending}`;
       const transcriptId = `tx_${(await sha256HexOf(new TextEncoder().encode(sessionId))).slice(0, 32)}`;
@@ -86,13 +86,53 @@ export async function terminalContinuationRuntime(db: RelationalStore, blobs: Bl
           producer: { adapter: agent, version: 'test' }, payload: { phase: 'end' },
         });
         await parseTranscripts(env, NOW + 10);
+        if ((await db.prepare('SELECT text FROM responses WHERE project_id = ?').bind(projectId).all()).results.length !== 0)
+          throw new Error('an equal-timestamp Stop closed reply text without causal ordering');
+        await ingestEvent(db, { projectId, machineId: 'terminal-machine', tokenId: token.tokenId, now: NOW + 11, bodyBytes: 0 }, {
+          eventId: crypto.randomUUID(), sessionId, kind: 'turn', createdAt: NOW + 11, channel: 'cli',
+          producer: { adapter: agent, version: 'test' }, payload: { phase: 'end' },
+        });
+        await parseTranscripts(env, NOW + 11);
         const replies = await db.prepare('SELECT text FROM responses WHERE project_id = ?').bind(projectId).all<{ text: string }>();
         if (replies.results.length !== 1 || !replies.results[0].text.includes('\n\n') || (await tools()).results.length !== 0)
           throw new Error('a member Stop did not join the reply while retaining its unanswered call');
         if ((await pendingTranscripts(db, NOW)).transcripts !== 0) throw new Error('a finalized reply kept the turn-end queue awake');
-        await write(JSON.stringify(records[callIndex + 1]) + '\n', nextCursor, NOW + 11);
+        await write(JSON.stringify(records[callIndex + 1]) + '\n', nextCursor, NOW + 12);
         if ((await tools()).results[0]?.success !== 1 || (await tools()).results[0]?.tool_name !== 'Read')
           throw new Error('a turn end discarded its call before the result');
+        answers.push({ agent, ending, upgraded: true });
+        continue;
+      }
+      if (ending === 'rewind_race') {
+        const selected = await db.prepare('SELECT parser_context FROM transcripts WHERE project_id = ?').bind(projectId).first<{ parser_context: string }>();
+        let armed = false;
+        let replayed = false;
+        let replayContext: string | undefined;
+        const racingDb: RelationalStore = {
+          ...db,
+          prepare(sql) { if (sql.includes('terminal_checkpoint_stable')) armed = true; return db.prepare(sql); },
+          async batch(statements) {
+            if (armed && !replayed) {
+              replayed = true;
+              await rereadTranscripts(db, { projectId, sessionId });
+              await parseTranscripts(env, NOW);
+              const fresh = await db.prepare('SELECT parsed_offset, size, parser_context FROM transcripts WHERE project_id = ?')
+                .bind(projectId).first<{ parsed_offset: number; size: number; parser_context: string }>();
+              if (fresh?.parsed_offset !== cursor || fresh.size !== cursor || fresh.parser_context === selected?.parser_context)
+                throw new Error('rewind race did not replay to the same cursor with a different continuation');
+              replayContext = fresh.parser_context;
+            }
+            return db.batch(statements);
+          },
+        };
+        await parseTranscripts({ ...env, db: racingDb }, NOW + IDLE_MS);
+        const fresh = await db.prepare('SELECT parser_context FROM transcripts WHERE project_id = ?').bind(projectId).first<{ parser_context: string }>();
+        const replies = await db.prepare('SELECT text FROM responses WHERE project_id = ?').bind(projectId).all();
+        if (!replayed || (await tools()).results.length !== 0 || replies.results.length !== 0 || fresh?.parser_context !== replayContext)
+          throw new Error('stale terminal batch overwrote a replayed continuation at the same cursor');
+        await parseTranscripts(env, NOW + IDLE_MS);
+        if ((await tools()).results.length !== 1 || (await tools()).results[0].success !== 0)
+          throw new Error('replayed continuation did not resume its terminal failure');
         answers.push({ agent, ending, upgraded: true });
         continue;
       }

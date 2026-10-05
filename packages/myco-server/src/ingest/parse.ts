@@ -147,7 +147,7 @@ export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NUL
 /** A member's turn end covers the retained reply's source instants. */
 const TURN_ENDED = `EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = transcripts.project_id
   AND s.session_id = transcripts.session_id AND s.working_since IS NULL AND s.last_turn_end_at IS NOT NULL
-  AND s.last_turn_end_at >= json_extract(parser_context, '$.mycoParserReplyLatestAt'))`;
+  AND s.last_turn_end_at > json_extract(parser_context, '$.mycoParserReplyLatestAt'))`;
 
 /** A completed cursor can still owe its bounded terminal outcome. */
 function terminalWorkSql(now: number): string {
@@ -179,6 +179,7 @@ interface ParseTarget {
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
   parserContext?: Record<string, unknown> | null;
+  parserContextJson?: string | null;
   lastReceivedAt?: number;
   sessionEndedAt?: number | null;
   turnEnded?: boolean;
@@ -278,6 +279,7 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     fidelity: (row.fidelity as string | null) ?? null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     parserContext: contextFromStored(row.parser_context),
+    parserContextJson: (row.parser_context as string | null) ?? null,
     lastReceivedAt: row.last_received_at as number | undefined,
     sessionEndedAt: (row.session_ended_at as number | null) ?? null,
     turnEnded: row.turn_ended === 1,
