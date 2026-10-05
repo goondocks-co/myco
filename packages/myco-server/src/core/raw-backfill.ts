@@ -1,8 +1,11 @@
-import type { RelationalStore } from './adapters.js';
+import type { JobBudget, RelationalStore } from './adapters.js';
 import { PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
 import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from './raw-provenance.js';
 
-export const RAW_BACKFILL_BATCH = 100;
+export const RAW_BACKFILL_BATCH = 500;
+export const RAW_BACKFILL_BUDGET: Readonly<JobBudget> = { calls: 120, wallMs: 2_000 };
+/** Two reads and at most four statements in the atomic page commit. */
+const PAGE_CALLS = 6;
 const RAW_SOURCES = [
   { table: 'blobs', id: 'key', kind: 'blob' },
   { table: 'transcripts', id: 'transcript_id', kind: 'transcript' },
@@ -11,7 +14,7 @@ const RAW_SOURCES = [
 const SOURCES = [...RAW_SOURCES, ...Object.entries(PROCESSED_FIELDS).map(([kind, field]) => ({ ...field, kind }))];
 
 /** One bounded source page and its checkpoint commit together; retries retain the first attribution. */
-export async function rawBackfill(db: RelationalStore, now: number): Promise<{ changed: number; more: boolean }> {
+async function rawBackfillPage(db: RelationalStore, now: number): Promise<{ changed: number; more: boolean }> {
   const state = await db.prepare('SELECT source, cursor_project, cursor_id, complete FROM raw_provenance_backfill WHERE id = 1')
     .first<{ source: number; cursor_project: string; cursor_id: string; complete: number }>();
   if (state === null || state.complete === 1) return { changed: 0, more: false };
@@ -60,6 +63,27 @@ export async function rawBackfill(db: RelationalStore, now: number): Promise<{ c
         nextSource === SOURCES.length ? 1 : 0, now, ...guard),
   ]);
   return { changed: results[0]!.results.length, more: nextSource < SOURCES.length };
+}
+
+/** Drains independently committed pages within a store-call and elapsed-time allowance. */
+export async function rawBackfill(
+  db: RelationalStore,
+  now: number,
+  { budget = RAW_BACKFILL_BUDGET, clock = Date.now }: { budget?: Readonly<JobBudget>; clock?: () => number } = {},
+): Promise<{ changed: number; more: boolean }> {
+  const deadline = clock() + budget.wallMs;
+  let changed = 0;
+  let more = true;
+  let longestPageMs = 0;
+  for (let calls = 0; more && calls + PAGE_CALLS <= budget.calls; calls += PAGE_CALLS) {
+    const start = clock();
+    if (start + longestPageMs >= deadline) break;
+    const page = await rawBackfillPage(db, now);
+    changed += page.changed;
+    more = page.more;
+    longestPageMs = Math.max(longestPageMs, clock() - start);
+  }
+  return { changed, more };
 }
 
 export async function rawBackfillPending(db: RelationalStore): Promise<boolean> {
