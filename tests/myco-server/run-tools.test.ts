@@ -172,6 +172,7 @@ const SRC = join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'src');
 describe('the surface decision stays in one place', () => {
   it('reads the principal once, in surfaceFor, and nowhere else in the chokepoint', () => {
     const source = readFileSync(join(SRC, 'mcp', 'server.ts'), 'utf8');
+    expect(source.match(/\bctx\.principal\b/g) ?? []).toHaveLength(1);
     const before = source.slice(0, source.indexOf('export function surfaceFor'));
     const after = source.slice(source.indexOf('/** The op a run\'s call resolves to'));
     for (const [where, text] of [['before surfaceFor', before], ['after surfaceFor', after]] as const) {

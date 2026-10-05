@@ -10,7 +10,7 @@ import { NO_OP, TOOL_REGISTRY, type RegistryEntry } from '@myco-server-worker/mc
 import { RUN_TOOL_REGISTRY } from '@myco-server-worker/mcp/run-surface.js';
 import { authorizedDefinitionsFor, callTool } from '@myco-server-worker/mcp/server.js';
 import { grantToolContext, runToolContext, type ToolContext } from '@myco-server-worker/mcp/context.js';
-import { authorizeTool } from '@myco-server-worker/mcp/authorization.js';
+import { authorizeTool } from '@myco-server-worker/auth/mcp-authorization.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 async function setup() {

@@ -39,7 +39,7 @@ import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
 import { authorizeDeclaration, type AuthorizationResource } from '../auth/authorization.js';
-import { authorizeTool, toolResource, toolSubject } from './authorization.js';
+import { authorizeTool, toolResource, toolSubject } from '../auth/mcp-authorization.js';
 
 export const SERVER_NAME = 'myco';
 
@@ -168,6 +168,8 @@ async function namesBoundProject(ctx: Pick<ToolContext, 'env'>, named: unknown, 
  * not a tool and a tool off this surface are the same refusal.
  */
 export interface Surface {
+  principalKind: ToolContext['principal']['kind'];
+  memberId: string | null;
   instructions: string;
   definitions: readonly ToolDefinition[];
   definitionOf(name: string): ToolDefinition | undefined;
@@ -183,6 +185,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
   const p = ctx.principal;
   if (p.kind === 'grant') {
     return {
+      principalKind: 'grant', memberId: null,
       instructions: GRANT_INSTRUCTIONS,
       definitions: externalDefinitions(),
       definitionOf: servedOnly,
@@ -193,6 +196,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
   }
   if (p.kind === 'run') {
     return {
+      principalKind: 'run', memberId: null,
       instructions: runInstructionsFor(acceptedActions(p.task)),
       definitions: runDefinitions(p.allow),
       definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
@@ -202,6 +206,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
     };
   }
   return {
+    principalKind: 'member', memberId: p.memberId,
     instructions: SERVER_INSTRUCTIONS,
     definitions: TOOL_DEFINITIONS,
     definitionOf: servedOnly,
@@ -230,7 +235,7 @@ export function definitionsFor(ctx: Pick<ToolContext, 'principal'>): readonly To
   const surface = surfaceFor(ctx);
   return filterDefinitions(surface, (name, op) => {
     const declaration = surface.entryFor(name, op)?.authorization;
-    return declaration !== undefined && declaration.transport === 'mcp' && declaration.subjects.includes(ctx.principal.kind)
+    return declaration !== undefined && declaration.transport === 'mcp' && declaration.subjects.includes(surface.principalKind)
       && declaration.action !== 'never' && surface.allows(name, op);
   });
 }
@@ -294,7 +299,7 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   if (isWriteOp(name as AnyTool, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   const entry = surface.entryFor(name, op);
   if (entry === undefined) throw new ToolError('invalid_input', `Unknown op '${op}' for tool ${name}`);
-  if (entry.authorization === undefined || entry.authorization.transport !== 'mcp' || !entry.authorization.subjects.includes(ctx.principal.kind)) throw unknownTool(name);
+  if (entry.authorization === undefined || entry.authorization.transport !== 'mcp' || !entry.authorization.subjects.includes(surface.principalKind)) throw unknownTool(name);
   if ('notServed' in entry) {
     throw new ToolError('not_served', entry.notServed === 'never'
       ? `${name} op '${op}' is not offered by a Deployment`
@@ -302,9 +307,10 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   }
   let scoped: ToolContext;
   const project = namedProject(input);
-  if (ctx.projectId === null || (ctx.principal.kind === 'member' && project !== undefined)) {
+  if (ctx.projectId === null || (surface.memberId !== null && project !== undefined)) {
     if (project === undefined) throw new ToolError('invalid_input', `Missing required argument '${PROJECT_PIVOT}' for tool ${name}: this connection has no default project`);
-    const scope = await resolveTenancyArgument(ctx.env.db, { id: ctx.principal.kind === 'member' ? ctx.principal.memberId : '' }, project);
+    if (surface.memberId === null) throw unknownTool(name);
+    const scope = await resolveTenancyArgument(ctx.env.db, { id: surface.memberId }, project);
     if (scope === null) {
       if (ctx.projectId === null) throw new ToolError('invalid_input', 'Project not found');
       return { tool: name as AnyTool, op, result: { ok: false, error: 'Project not found', ...(name === 'myco_agent' ? { op } : {}) } };

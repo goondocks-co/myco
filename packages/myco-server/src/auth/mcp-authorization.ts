@@ -1,9 +1,9 @@
-import { authorizeDeclaration, deploymentIdentity, memberSubject, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from '../auth/authorization.js';
+import { authorizeDeclaration, deploymentIdentity, memberSubject, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
 import { heldRunOfCredential } from '../api/run-admission.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { projectExists } from '../read/sessions.js';
-import type { ProtocolContext, ToolContext } from './context.js';
-import type { ToolInput } from './validate.js';
+import type { ProtocolContext, ToolContext } from '../mcp/context.js';
+import type { ToolInput } from '../mcp/validate.js';
 
 /** Principal identity and liveness are resolved from the serving store. */
 export async function toolSubject(ctx: ProtocolContext): Promise<AuthorizationSubject> {
