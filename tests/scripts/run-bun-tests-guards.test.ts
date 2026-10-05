@@ -102,8 +102,10 @@ if (args[0] === '--version') {
 const preloads = args.flatMap((arg, index) => arg === '--preload' ? [args[index + 1]] : []);
 console.log('FAKE_BUN_EXEC ' + process.argv[1] + ' PRELOADS ' + preloads.join(','));
 const file = args.find((arg) => arg.startsWith('--reporter-outfile='))?.slice('--reporter-outfile='.length);
+const dom = preloads.some((preload) => preload.includes('jsdom'));
 const mode = process.env.FAKE_BUN_MODE === 'fail-then-delay'
-  ? (preloads.some((preload) => preload.includes('jsdom')) ? 'delayed-pass' : 'log-error')
+  ? (dom ? 'delayed-pass' : 'log-error')
+  : process.env.FAKE_BUN_MODE === 'repair-evidence' ? (dom ? 'repair' : 'missing')
   : (process.env.FAKE_BUN_MODE ?? 'pass');
 if (mode === 'unreadable') fs.mkdirSync(file);
 else if (mode !== 'missing') {
@@ -113,6 +115,7 @@ else if (mode !== 'missing') {
     : mode === 'junit-fail' ? '<testsuites><testsuite tests="1" failures="1" errors="0"><testcase name="fixture"><failure type="AssertionError" /></testcase></testsuite></testsuites>'
     : '<testsuites><testsuite tests="1" failures="0" errors="0"><testcase name="fixture" /></testsuite></testsuites>';
   fs.writeFileSync(file, xml);
+  if (mode === 'repair') fs.writeFileSync(path.join(path.dirname(file), 'node-env.junit.xml'), xml);
 }
 if (mode === 'log-error') console.error(' 1 error');
 else if (mode === 'fail-marker') console.error('(fail) fixture assertion');
@@ -145,6 +148,21 @@ if (process.env.FAKE_BUN_DELAY_MS && (process.env.FAKE_BUN_MODE !== 'fail-then-d
 }
 
 describe('run-bun-tests guards', () => {
+  test.skipIf(process.platform === 'win32')('retains a phase failure when its missing evidence is repaired by a later phase', () => withReportDir(async (base) => {
+    const bin = fakeBun(base);
+    const reports = path.join(base, 'reports');
+    const result = await runRunner(null, {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      MYCO_RUNNER_REPORT_DIR: reports,
+      FAKE_BUN_MODE: 'repair-evidence',
+    }, [STDIN_FIXTURE, STREAM_FAULT_FIXTURE]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('completion evidence: node env JUnit');
+    const dir = fs.readdirSync(reports).find((name) => name.startsWith('run-'))!;
+    expect(fs.readFileSync(path.join(reports, dir, 'node-env.junit.xml'), 'utf8')).toContain('failures="0"');
+    expect(JSON.parse(fs.readFileSync(path.join(reports, dir, '.runner-outcome.json'), 'utf8')).status).toBe('failed');
+  }), RUN_BOUND_MS + 10_000);
+
   test.skipIf(process.platform === 'win32')('mandatory log appends and live stream failures cannot produce a pass', () => withReportDir(async (base) => {
     const bin = fakeBun(base);
     const preload = path.join(base, 'append-fault.mjs');
@@ -328,6 +346,76 @@ describe('run-bun-tests guards', () => {
       expect(JSON.parse(fs.readFileSync(path.join(reports, dir, '.runner-outcome.json'), 'utf8')).status).toBe('failed');
     } finally {
       if (runner && alive(runner.pid!)) runner.kill('SIGKILL');
+    }
+  }), RUN_BOUND_MS + 10_000);
+
+  test.skipIf(process.platform === 'win32')('a failed phase survives SIGKILL during the next phase and later interrupted-run pruning', () => withReportDir(async (base) => {
+    const bin = fakeBun(base);
+    const reports = path.join(base, 'reports');
+    const ready = path.join(base, 'dom.ready');
+    const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, MYCO_RUNNER_REPORT_DIR: reports };
+    let runner: ChildProcess | undefined;
+    const pending = runRunner(null, {
+      ...env,
+      FAKE_BUN_MODE: 'fail-then-delay',
+      FAKE_BUN_READY_FILE: ready,
+      FAKE_BUN_DELAY_MS: '10000',
+    }, [STDIN_FIXTURE, STREAM_FAULT_FIXTURE], (child) => { runner = child; });
+    let failedDir: string | undefined;
+    try {
+      await waitFor(() => fs.existsSync(ready), 30_000, 'DOM phase after failed node phase');
+      failedDir = fs.readdirSync(reports).filter((name) => name.startsWith('run-')).map((name) => path.join(reports, name))[0];
+      expect(JSON.parse(fs.readFileSync(path.join(failedDir!, '.runner-outcome.json'), 'utf8')).status).toBe('failed');
+      runner!.kill('SIGKILL');
+      expect((await pending).status).not.toBe(0);
+    } finally {
+      if (runner && alive(runner.pid!)) runner.kill('SIGKILL');
+      if (fs.existsSync(ready)) {
+        const childPid = Number(fs.readFileSync(ready, 'utf8'));
+        if (alive(childPid)) process.kill(childPid, 'SIGKILL');
+      }
+    }
+    for (let index = 0; index < 3; index += 1) {
+      const laterReady = path.join(base, `later-${index}.ready`);
+      let laterRunner: ChildProcess | undefined;
+      const later = runRunner(STDIN_FIXTURE, {
+        ...env, FAKE_BUN_READY_FILE: laterReady, FAKE_BUN_DELAY_MS: '10000',
+      }, [], (child) => { laterRunner = child; });
+      await waitFor(() => fs.existsSync(laterReady), 30_000, 'later interrupted phase');
+      laterRunner!.kill('SIGTERM');
+      expect((await later).status).toBe(143);
+    }
+    expect(fs.existsSync(failedDir!)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(failedDir!, '.runner-outcome.json'), 'utf8')).status).toBe('failed');
+  }), RUN_BOUND_MS + 10_000);
+
+  test.skipIf(process.platform === 'win32')('failed report publication faults surface and passing phases fail when terminal publication fails', () => withReportDir(async (base) => {
+    const bin = fakeBun(base);
+    const preload = path.join(base, 'outcome-fault.mjs');
+    fs.writeFileSync(preload, `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        if (String(to).endsWith('.runner-outcome.json')) {
+          const error = new Error('injected ENOSPC');
+          error.code = 'ENOSPC';
+          throw error;
+        }
+        return rename(from, to);
+      };
+      syncBuiltinESMExports();
+    `);
+    for (const [mode, diagnostic] of [['log-error', 'cannot persist failed report'], ['pass', 'cannot finalize report lifecycle']]) {
+      const result = await runRunner(STDIN_FIXTURE, {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        MYCO_RUNNER_REPORT_DIR: path.join(base, mode),
+        FAKE_BUN_MODE: mode,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${preload}`.trim(),
+      });
+      expect(result.status).toBe(1);
+      expect(result.output).toContain(diagnostic);
+      expect(result.output).toContain('ENOSPC');
     }
   }), RUN_BOUND_MS + 10_000);
 

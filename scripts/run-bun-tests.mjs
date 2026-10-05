@@ -32,6 +32,7 @@ let killActiveGroup = null;
 let runReportDir = null;
 let interrupted = false;
 let observedFailure = false;
+let reportFailurePersistenceError = null;
 let inspectActiveStreamTails = null;
 // However the runner exits (the end of the run, a signal, an uncaught error),
 // the group it was running dies with it and the root goes.
@@ -894,6 +895,18 @@ function publishReportOutcome(dir, status) {
   }
 }
 
+function recordObservedFailure() {
+  if (observedFailure) return;
+  observedFailure = true;
+  if (!runReportDir) return;
+  try { publishReportOutcome(runReportDir, 'failed'); }
+  catch (error) {
+    reportFailurePersistenceError = error;
+    process.exitCode ||= 1;
+    console.error(`[run-bun-tests] FAIL: cannot persist failed report ${runReportDir}: ${error.message}`);
+  }
+}
+
 function ownerIsGone(pid) {
   try { process.kill(pid, 0); return false; }
   catch (error) { return error.code === 'ESRCH'; }
@@ -1104,8 +1117,11 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
       writeOverBudgetJunit(reportFile, label, files);
     }
     const evidence = evaluatePhaseEvidence([{ label, file: reportFile, log: teeFile }]);
-    if (status !== 0 || evidence.failures > 0 || evidence.invalid.length > 0) observedFailure = true;
-    return status;
+    if (status !== 0 || evidence.failures > 0 || evidence.invalid.length > 0) recordObservedFailure();
+    if (evidence.failures > 0 || evidence.invalid.length > 0) {
+      console.error(`[run-bun-tests] FAIL: ${label} completion evidence: ${evidence.invalid.join('; ') || `${evidence.failures} JUnit failure(s)/error(s)`}`);
+    }
+    return status || (reportFailurePersistenceError ? 1 : 0);
 }
 
 /**
@@ -1166,7 +1182,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       try { fs.appendFileSync(teeFile, text); }
       catch (error) {
         evidenceError = error;
-        observedFailure = true;
+        recordObservedFailure();
         process.stderr.write(`[run-bun-tests] FAIL: cannot append mandatory log ${teeFile}: ${error.message}\n`);
       }
     }
@@ -1254,7 +1270,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       const lines = combined.split(/\r?\n/);
       tailRef.value = lines.pop() ?? '';
       for (const line of lines) {
-        if (outputHasFailureMarker(line)) { streamFailure = true; observedFailure = true; }
+        if (outputHasFailureMarker(line)) { streamFailure = true; recordObservedFailure(); }
         const trimmed = line.trim();
         if (trimmed) {
           lastNonEmptyLine = trimmed;
@@ -1267,7 +1283,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     function inspectStreamTails() {
       if (outputHasFailureMarker(stdoutRef.value) || outputHasFailureMarker(stderrRef.value)) {
         streamFailure = true;
-        observedFailure = true;
+        recordObservedFailure();
       }
     }
     inspectActiveStreamTails = inspectStreamTails;
@@ -1331,7 +1347,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       inspectStreamTails();
       appendEvidence(completion);
       if (streamFailure) process.stderr.write(`[run-bun-tests] FAIL: ${label} stream reported a failure or error\n`);
-      const outcome = { status: exit || evidenceError || streamFailure ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure };
+      const outcome = { status: exit || evidenceError || streamFailure || reportFailurePersistenceError ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure };
       if (escalation === null) resolve(outcome);
       else escalation.then(() => resolve(outcome));
     }
@@ -1689,7 +1705,7 @@ function evaluatePhaseEvidence(reports) {
 }
 
 const { failures: junitFailureCount, invalid: invalidEvidence } = evaluatePhaseEvidence(phaseReports);
-const exitCode = nonDomStatus || domStatus || (junitFailureCount > 0 || invalidEvidence.length > 0 ? 1 : 0);
+const exitCode = nonDomStatus || domStatus || (observedFailure || junitFailureCount > 0 || invalidEvidence.length > 0 || reportFailurePersistenceError ? 1 : 0);
 if (exitCode !== 0) {
   for (const issue of invalidEvidence) console.error(`[run-bun-tests] FAIL: ${issue}`);
   if (junitFailureCount > 0 && (nonDomStatus || domStatus) === 0) {
