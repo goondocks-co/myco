@@ -21,6 +21,8 @@
  * write.
  */
 import { HARNESS_MEMBER_ID, USER_AGENT_ID } from '../constants.js';
+import { runDeadline } from '../core/run-deadline.js';
+import { runWriteStore } from '../core/run-write-store.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
@@ -97,7 +99,7 @@ export function grantToolContext(env: ServerEnv, ctx: GrantContext): ToolContext
 export function runToolContext(env: ServerEnv, ctx: RunContext): ToolContext {
   const { run } = ctx;
   return {
-    env,
+    env: { ...env, db: runWriteStore(env.db, ctx.projectId, run.id, { tokenId: ctx.tokenId, now: ctx.now, clock: ctx.clock, deadline: runDeadline(run) }) },
     projectId: ctx.projectId,
     principal: {
       kind: 'run', runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run),

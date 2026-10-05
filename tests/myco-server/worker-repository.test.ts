@@ -81,7 +81,7 @@ describe('a worker preparing its claimed source', () => {
     const legacy = await worker.fetch(new Request('https://s/runs/repository', {
       method: 'POST', headers: memberHeaders(result.run.runToken), body: JSON.stringify({ runId: 'run_seed' }),
     }), r.e.env);
-    expect(await jsonBody(legacy)).toEqual({ persisted: false, code: 'no_run', reason: 'credential holds no live run' });
+    expect(await jsonBody(legacy)).toEqual({ persisted: false, code: 'no_run', reason: 'credential holds no live run', refusalId: expect.any(String) });
   });
 
   it('pins once, reuses the first commit, and refuses a reconnected source', async () => {

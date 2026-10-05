@@ -6,7 +6,8 @@ import { TURN_END_HEADER } from './ingest/turns.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
-import { admitRunControl, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
+import { admitRunControl, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
+import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
 import { recordRunCall, recordRunControlRefusal, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { memberRole } from './auth/members-admin.js';
@@ -636,7 +637,7 @@ export function createServer(deps: ServerDeps) {
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-      return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now });
+      return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });
     } catch (err) {
       return failed(env, auth, route, err);
     }
@@ -644,30 +645,36 @@ export function createServer(deps: ServerDeps) {
 
   /** The retained runtime channel receives only its credential-bound dispatch and Project. */
   async function asRunControl(request: Request, env: ServerEnv, auth: MemberAuth, route: Extract<MemberRoute, { bodyMode: 'json'; handler: unknown }>, now: number): Promise<Response> {
+    const receipt = async (response: Response): Promise<Response> => {
+      const result = await response.clone().json() as Record<string, unknown>;
+      const code = runControlRefusalCode(result.code);
+      if (result.persisted !== false || code === null) return response;
+      const refusalId = await recordRunControlRefusal(env.db, auth.tokenId, code);
+      return refusalId === null ? response : Response.json({ ...result, refusalId }, { status: response.status, headers: response.headers });
+    };
     const projectId = requestedProject(request);
-    if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
+    if (projectId === null) return receipt(refuse(auth, shapeOf(route), NO_PROJECT, 'no_project'));
     const body = await readBoundedBody(request, MAX_BODY_BYTES);
-    if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-    if (auth.machineId === null) return refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity');
+    if (!body.ok) return receipt(refuse(auth, shapeOf(route), body.reason, 'body_cap'));
+    if (auth.machineId === null) return receipt(refuse(auth, shapeOf(route), NO_MACHINE_IDENTITY, 'no_machine_identity'));
     const context = { projectId, memberId: auth.memberId, machineId: auth.machineId,
       tokenId: auth.tokenId, expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
       runtime: auth.runtime, body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: new URL(request.url).origin };
     if (route.retired === true) return route.handler(env, context);
     const admission = await admitRunControl(env, auth, projectId, route.path, body.text, now);
-    if (!admission.held) return refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
+    if (!admission.held) return receipt(refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run'));
     if (admission.settled !== undefined) return admission.settled;
     const principal = { ...context, runDeadline: runDeadline(admission.run) };
-    const answered = await route.handler(env, principal);
-    await recordRunRoute(env, auth, route.path, answered, admission.run, now);
-    if (answered.status === 200) {
-      const result: unknown = await answered.clone().json();
-      if (typeof result === 'object' && result !== null && 'persisted' in result && result.persisted === false) {
-        const code = runControlRefusalCode('code' in result ? result.code : null) ?? 'refused';
-        const refusalId = await recordRunControlRefusal(env.db, auth.tokenId, code, runtimeCaller(principal));
-        if (refusalId !== null) return Response.json({ ...result, refusalId }, { status: answered.status, headers: answered.headers });
-      }
+    const guarded = CONTROL_CAPABILITIES[route.path]?.writeGuard === 'batch'
+      ? { ...env, db: runWriteStore(env.db, projectId, admission.run.id, runtimeCaller(principal)) } : env;
+    let answered: Response;
+    try { answered = await route.handler(guarded, principal); }
+    catch (error) {
+      if (!(error instanceof RunWriteExpired)) throw error;
+      answered = refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
     }
-    return answered;
+    await recordRunRoute(env, auth, route.path, answered, admission.run, now);
+    return receipt(answered);
   }
 
   async function handleRequest(request: Request, env: ServerEnv): Promise<Response> {

@@ -11,13 +11,13 @@ import { strictName } from '@goondocks/myco-shared/run-text';
 import { decodeRunUpdate, endedAnswer, RUN_UPDATE_FIELDS } from './run-fields.js';
 
 /** The retained protocol's capabilities; an undeclared route admits no run. */
-export const CONTROL_CAPABILITIES: Readonly<Record<string, { tasks: readonly string[] | null; unleased: boolean }>> = {
-  '/runs/claim': { tasks: null, unleased: false },
-  '/runs/update': { tasks: null, unleased: false },
-  '/runs/report': { tasks: null, unleased: false },
-  '/runs/embedding-step': { tasks: ['embedding-reconcile'], unleased: false },
-  '/runs/repository': { tasks: REPOSITORY_TASKS, unleased: true },
-  '/runs/canopy-map': { tasks: [MAP_TASK], unleased: true },
+export const CONTROL_CAPABILITIES: Readonly<Record<string, { tasks: readonly string[] | null; unleased: boolean; writeGuard: 'row' | 'batch' }>> = {
+  '/runs/claim': { tasks: null, unleased: false, writeGuard: 'row' },
+  '/runs/update': { tasks: null, unleased: false, writeGuard: 'row' },
+  '/runs/report': { tasks: null, unleased: false, writeGuard: 'row' },
+  '/runs/embedding-step': { tasks: ['embedding-reconcile'], unleased: false, writeGuard: 'batch' },
+  '/runs/repository': { tasks: REPOSITORY_TASKS, unleased: true, writeGuard: 'batch' },
+  '/runs/canopy-map': { tasks: [MAP_TASK], unleased: true, writeGuard: 'batch' },
 };
 
 export type RunControlAdmission = { held: true; run: HeldRun; settled?: Response } | { held: false };

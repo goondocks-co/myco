@@ -13,7 +13,7 @@
  */
 import { MapArtifactError } from '@goondocks/myco-shared/canopy';
 import { mapInputUnchanged, readMapSettings, writeCanopyMap } from '../../core/canopy.js';
-import { getRun, mapSourcePinOfRun, recordRunWrite, repositoryPinOfRun } from '../../core/runs.js';
+import { getRun, mapSourcePinOfRun, repositoryPinOfRun } from '../../core/runs.js';
 import { MAP_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { readCanopyMap } from '../../read/canopy.js';
 import { failure, runOf, type ToolContext } from '../context.js';
@@ -53,7 +53,7 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
     try { artifact = JSON.parse(artifact); } catch { return failure('artifact is not valid JSON'); }
   }
   try {
-    const written = await writeCanopyMap(db, scope, run, artifact, ctx.now);
+    const written = await writeCanopyMap(db, scope, run, artifact, ctx.now, { runId: run.id, toolName: MAP_WRITE_TOOL, op: 'write', recordedAt: ctx.now });
     if (!written) {
       const current = await readCanopyMap(db, scope);
       return failure(current?.sourceRunId === run.id
@@ -64,7 +64,6 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
     if (error instanceof MapArtifactError) return failure(error.message);
     throw error;
   }
-  await recordRunWrite(db, scope, { runId: run.id, toolName: MAP_WRITE_TOOL, op: 'write', recordedAt: ctx.now });
   const stored = await readCanopyMap(db, scope);
   return { written: true, revision: stored?.revision ?? null, commit: repository.commit };
 }

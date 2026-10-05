@@ -1,5 +1,8 @@
 import type { RunRow } from './runs.js';
 
+/** Millisecond UTC time evaluated by SQLite at statement execution. */
+export const SQL_NOW_MS = "(CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))";
+
 /** The dispatch bound when its caller supplies none. */
 export const DEFAULT_DISPATCH_TIMEOUT_SECONDS = 300;
 /** The Deployment margin between a run's dispatch bound and terminal runtime expiry. */

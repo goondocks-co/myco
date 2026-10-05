@@ -1,3 +1,4 @@
+import { commitAttributedWrite, type RunWrite } from '../core/runs.js';
 import type { PreparedStatement, RelationalStore, RunResult } from '../core/adapters.js';
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
 import { containsPattern, inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
@@ -719,11 +720,11 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
 }
 
 /** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
-export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null): Promise<boolean> {
-  const result = await db
+export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null, attribution?: RunWrite): Promise<boolean> {
+  const statement = db
     .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ? AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
-    .bind(title, summary, titledBy, projectId, sessionId)
-    .run();
+    .bind(title, summary, titledBy, projectId, sessionId);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution);
   return result.meta.changes > 0;
 }
 
@@ -737,11 +738,11 @@ export async function sessionCarriesTitle(db: RelationalStore, scope: ReadScope,
 }
 
 /** Stores a session's title and summary where none exists yet; false when one already does. */
-export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string): Promise<boolean> {
-  const result = await db
+export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
+  const statement = db
     .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
-    .bind(title, summary, projectId, sessionId)
-    .run();
+    .bind(title, summary, projectId, sessionId);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution);
   return result.meta.changes > 0;
 }
 
