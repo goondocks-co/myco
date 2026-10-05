@@ -83,7 +83,10 @@ it('rejects child output leaks', () => assertTokenFree(token, [token]));
     try {
       const result = spawnSync('npm', ['test', '--', fixture], {
         cwd: resolve('.'), encoding: 'utf8', timeout: 30_000,
-        env: { ...isolatedEnv(home), MYCO_FAKE_TOKEN: FAKE_TOKEN, MYCO_RUNNER_REPORT_DIR: join(root, 'reports') },
+        env: {
+          ...isolatedEnv(home), MYCO_FAKE_TOKEN: FAKE_TOKEN, MYCO_RUNNER_REPORT_DIR: join(root, 'reports'),
+          MYCO_TEST_KIND: 'all', MYCO_TEST_SHARD: '1/1', MYCO_TEST_PROFILE: '',
+        },
       });
       expect((result.stdout + result.stderr).includes(FAKE_TOKEN), 'failing gate diagnostics must contain no credentials').toBe(false);
       expect(result.status === 1, 'all intentionally leaky gates must fail').toBe(true);
