@@ -31,24 +31,32 @@ const originalRealpath = fs.realpathSync.bind(fs);
 const originalReadlink = fs.readlinkSync.bind(fs);
 const originalExists = fs.existsSync.bind(fs);
 const originalFstat = fs.fstatSync.bind(fs);
+const METADATA_LOOKUP_ATTEMPTS = 3;
+function retryInterrupted<T>(lookup: () => T): T {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return lookup(); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EINTR' || attempt >= METADATA_LOOKUP_ATTEMPTS) throw error;
+    }
+  }
+}
 function resolvedTarget(target: string): string {
   let ancestor = target;
   const suffix: string[] = [];
   while (true) {
-    try { return path.join(originalRealpath(ancestor), ...suffix); }
+    try { return path.join(retryInterrupted(() => originalRealpath(ancestor)), ...suffix); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EACCES' || code === 'EPERM') return target;
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
       try {
-        const link = originalReadlink(ancestor);
+        const link = retryInterrupted(() => originalReadlink(ancestor));
         return resolvedTarget(path.resolve(path.dirname(ancestor), link, ...suffix));
       } catch (linkError) {
         const linkCode = (linkError as NodeJS.ErrnoException).code;
-        if (!['ENOENT', 'ENOTDIR', 'EINVAL', 'EACCES', 'EPERM'].includes(linkCode ?? '')) throw linkError;
+        if (!['ENOENT', 'ENOTDIR', 'EINVAL'].includes(linkCode ?? '')) throw linkError;
       }
       const parent = path.dirname(ancestor);
-      if (parent === ancestor) return target;
+      if (parent === ancestor) throw error;
       suffix.unshift(path.basename(ancestor));
       ancestor = parent;
     }
@@ -119,9 +127,9 @@ function deny(fnName: string, hit: FenceHit): never {
 type AnyFn = (...a: unknown[]) => unknown;
 function anonymousOutputStream(name: string, fd: unknown): boolean {
   if ((fd !== 1 && fd !== 2) || descriptorPaths.has(fd) || !/^(write|writeSync|writev|writevSync)$/.test(name)) return false;
-  const stat = originalFstat(fd);
+  const stat = retryInterrupted(() => originalFstat(fd));
   if (!stat.isFIFO() && !stat.isSocket()) return false;
-  if (process.platform === 'linux') return /^(?:pipe|socket):\[\d+\]$/.test(originalReadlink(`/proc/self/fd/${fd}`));
+  if (process.platform === 'linux') return /^(?:pipe|socket):\[\d+\]$/.test(retryInterrupted(() => originalReadlink(`/proc/self/fd/${fd}`)));
   return stat.nlink === 0 || process.platform === 'win32';
 }
 function wrap(mod: Record<string, AnyFn>, name: string, argIdxs: number[]) {

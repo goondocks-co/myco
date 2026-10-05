@@ -8,6 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import fs from 'node:fs';
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { drainBacklog } from '@myco/member/backlog.js';
 import { unboundedBudget } from '@myco/member/budget.js';
@@ -300,14 +301,14 @@ describe('an event refused for a passing reason', () => {
     try {
       for (let at = t0; at <= t0 + 2 * UNCLASSIFIED_REFUSAL_HOLD_MS; at += 6 * HOUR_MS) {
         setSystemTime(new Date(at));
-        fs.chmodSync(staged, unreadable ? 0o000 : 0o600);
+        setFixturePermissions(staged, unreadable ? 0o000 : 0o600);
         expect(await drain()).toMatchObject({ endedBy: unreadable ? 'unreadable' : 'refused', refused: 0, remaining: 1 });
         // Each refusal after an unreadable hold is the first of its run.
         expect(readSessionState(spool.dir, 'sess-alternating').eventRetry!.unclassified).toEqual(unreadable ? undefined : { since: at, backoffMs: REFUSAL_RETRY_INITIAL_MS });
         unreadable = !unreadable;
       }
     } finally {
-      fs.chmodSync(staged, 0o600);
+      setFixturePermissions(staged, 0o600);
     }
     expect(spool.depth('sess-alternating')).toBe(1);
   });
@@ -398,7 +399,7 @@ describe('an event refused for a passing reason', () => {
       expect(readSessionState(spool.dir, 'sess-locked').eventRetry?.backoffMs).toBe(REFUSAL_RETRY_INITIAL_MS);
       expect(fs.existsSync(staged)).toBe(true);
     } finally {
-      fs.chmodSync(staged, 0o600);
+      setFixturePermissions(staged, 0o600);
     }
     expect(await spool.drainSession('sess-locked', clientFor(rig, spy.fetch), unboundedBudget())).toMatchObject({ acked: 1, remaining: 0, endedBy: 'drained' });
     expect(storedIds(rig, 'sess-locked')).toEqual(idsOf([big, after]).sort());

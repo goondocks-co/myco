@@ -10,6 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultSpec, installService, renderUnit, servicePaths, statusOfService, uninstallService, type ServiceRunner } from '@myco/server/service.js';
@@ -383,7 +384,7 @@ describe('removing every worker unit a home is responsible for', () => {
         expect(listWorkerUnits(home, 'darwin')).toHaveLength(1);
         expect([...rec.loaded]).toEqual([workerServiceUnit('https://other.example', other).label]);
       } finally {
-        fs.chmodSync(path.dirname(file), 0o700);
+        setFixturePermissions(path.dirname(file), 0o700);
       }
     });
   }

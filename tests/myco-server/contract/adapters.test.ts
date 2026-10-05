@@ -14,6 +14,7 @@ import { classifyR2BlobFailure } from '@myco-server-worker/platform/cloudflare/e
 import { classifyBlobFailureOf } from '@myco-server-worker/platform/bun/env.js';
 import { classifyBlobStore } from '@myco-server-worker/telemetry.js';
 import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync } from "../../support/fenced-fs.mjs";
+import { setFixturePermissions } from '../../helpers/permission-fixture.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -183,7 +184,7 @@ describe('the disk blob store', () => {
     try {
       await expect(store.head('proj_1/abc')).rejects.toThrow();
     } finally {
-      chmodSync(join(dir, 'proj_1'), 0o700);
+      setFixturePermissions(join(dir, 'proj_1'), 0o700);
     }
   });
 

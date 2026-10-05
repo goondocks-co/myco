@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
+import { runPermissionFixture } from '../helpers/permission-fixture.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -899,27 +900,15 @@ describe('secrets', () => {
 
     it.skipIf(!POSIX)('repairs an owner-owned mode-000 secret file before decoding it', () => {
       const secretsPath = path.join(testDir, 'secrets.env');
-      fs.writeFileSync(secretsPath, 'REPAIRED=value\n', { mode: 0o600 });
-      fs.chmodSync(secretsPath, 0o000);
-
-      tightenSecretsPermissions(testDir);
-
+      runPermissionFixture('secret-file', testDir);
       expect(fs.statSync(secretsPath).mode & 0o777).toBe(0o600);
       expect(readSecrets(testDir)).toEqual({ REPAIRED: 'value' });
     });
 
     it.skipIf(!POSIX)('repairs an owner-owned mode-000 secret directory before decoding its file', () => {
-      const secretsPath = path.join(testDir, 'secrets.env');
-      fs.writeFileSync(secretsPath, 'REPAIRED=value\n', { mode: 0o600 });
-      fs.chmodSync(testDir, 0o000);
-
-      try {
-        tightenSecretsPermissions(testDir);
-        expect(fs.statSync(testDir).mode & 0o777).toBe(0o700);
-        expect(readSecrets(testDir)).toEqual({ REPAIRED: 'value' });
-      } finally {
-        fs.chmodSync(testDir, 0o700);
-      }
+      runPermissionFixture('secret-directory', testDir);
+      expect(fs.statSync(testDir).mode & 0o777).toBe(0o700);
+      expect(readSecrets(testDir)).toEqual({ REPAIRED: 'value' });
     });
 
     it.skipIf(!POSIX)('propagates a failed permission repair without changing secret bytes', () => {

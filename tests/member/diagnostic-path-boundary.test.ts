@@ -13,6 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import os from 'node:os';
 import path from 'node:path';
 import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson } from '@myco/member/store.js';
@@ -121,7 +122,7 @@ describe('a member path held inside the member root', () => {
     try {
       expect(() => assertMemberPathContained(spool('proj_1', 'blobs', 'x'), mycoHome)).toThrow(/could not be read/);
     } finally {
-      fs.chmodSync(spool('proj_1'), 0o700);
+      setFixturePermissions(spool('proj_1'), 0o700);
     }
   });
 
