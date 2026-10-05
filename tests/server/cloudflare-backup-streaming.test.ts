@@ -55,7 +55,9 @@ for (const rows of [4096, 65537]) {
       }, 250);
       try {
         const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-        console.log(`D1 streaming ${rows} rows: measured peak ${measuredKiB} KiB; ${stdout.trim()}`);
+        const progressFile = path.join(root, 'progress.json');
+        const progress = fs.existsSync(progressFile) ? fs.readFileSync(progressFile, 'utf8') : '{"phase":"download"}';
+        console.log(`D1 streaming ${rows} rows: measured peak ${measuredKiB} KiB; progress ${progress}; ${stdout.trim()}`);
         expect(monitorError).toBeNull();
         expect({ code, stderr, measuredKiB }).toMatchObject({ code: 0, stderr: '' });
         const result = JSON.parse(stdout);

@@ -46,6 +46,7 @@ await exportD1({
   },
 });
 const downloadPeakKiB = peakKiB();
+fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify({ phase: 'import', downloadPeakKiB, bytes: fs.statSync(sqlPath).size }));
 await buildSnapshotDatabase(databasePath, sqlPath, [{ type: 'table', name: 'payloads', sql: definition, storage: 'table' }]);
 const db = new Database(databasePath, { readonly: true });
 try {
