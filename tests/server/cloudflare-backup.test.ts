@@ -825,6 +825,35 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     } finally { f.cleanup(); }
   });
 
+  it('caps new whole exports at two across snapshot retries and preserves the hold for a later run', async () => {
+    const f = fixture();
+    try {
+      const fetch: CloudflareFetch = async (url, init) => {
+        const answer = await f.fetchObject(url, init);
+        if (url.startsWith('https://signed.fixture/d1/')) return new Response(null, { status: 404 });
+        const bookmark = url.endsWith('/export') ? JSON.parse(String(init.body)).current_bookmark : undefined;
+        if (bookmark && f.exports().find((job) => job.bookmark === bookmark)!.polls > 1) {
+          return Response.json({ success: true, result: { success: true, status: 'error', error: 'provider reset' } });
+        }
+        return answer;
+      };
+      await expect(f.backup({ fetch })).rejects.toThrow('new D1 export limit (2) reached');
+      expect(f.exports()).toHaveLength(2);
+      expect(f.source.sqlite.query('SELECT released_at FROM recovery_holds WHERE holder=\'operator\'').all()).toEqual([{ released_at: null }]);
+      expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
+      const admissions = () => fs.readdirSync(path.join(f.mycoHome, 'server', 'cloudflare')).filter((name) => name.startsWith('d1-admissions-'));
+      expect(admissions()).toHaveLength(1);
+      await expect(f.backup()).rejects.toThrow('new D1 export limit (2) reached');
+      expect(f.exports()).toHaveLength(2);
+      const owner = cloudflareRecoveryHoldOf({ accountId: f.record.accountId, mycoHome: f.mycoHome, runner: f.runner, fetch: f.fetchObject });
+      expect((await abandonRecoveryHold(f.destination, owner)).state).toBe('released');
+      expect(admissions()).toHaveLength(0);
+      expect((await f.backup({ destination: path.join(f.root, 'fresh-attempt') })).status).toBe('complete');
+      expect(f.exports()).toHaveLength(3);
+      expect(admissions()).toHaveLength(0);
+    } finally { f.cleanup(); }
+  });
+
   it('keeps the production snapshot bound: four captures, waiting 15 s, 60 s and 120 s between them', () => {
     expect(RECOVERY_RETRY.snapshots).toEqual({ attempts: 4, backoffMs: [15_000, 60_000, 120_000] });
   });

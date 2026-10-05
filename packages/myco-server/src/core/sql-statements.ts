@@ -128,6 +128,14 @@ export function feedStatements(
   for (; offset < text.length - 1; offset += 1) {
     const char = text[offset]!;
     const next = text[offset + 1]!;
+    if (retain === 'all' && scan.quote !== '' && char !== scan.quote && char !== '\0') {
+      const closing = text.indexOf(scan.quote, offset);
+      const nul = text.indexOf('\0', offset);
+      const end = Math.min(text.length - 1, closing < 0 ? text.length : closing, nul < 0 ? text.length : nul);
+      append(scan, text.slice(offset, end), retain);
+      offset = end - 1;
+      continue;
+    }
     append(scan, char, retain);
     if (char === '\0') {
       if (scan.quote !== "'") throw new Error('a recovery export contains a NUL outside a text literal');

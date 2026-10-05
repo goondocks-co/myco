@@ -39,6 +39,7 @@ import { z } from 'zod';
 import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
 import { ObjectReadError, transientApiCode, transientStatus } from './object-read.js';
 import type { CloudflareFetch, OperatorLogin } from './cloudflare.js';
+import { fetchD1Download, injectedD1Download, type D1Download, type D1DownloadFetch } from './d1-download.js';
 
 /**
  * How long one export may run, from its first request to its completion. A backup's export takes minutes; this is
@@ -71,6 +72,68 @@ export const D1_EXPORT_STALL_MS = 60_000;
  * the same export for its download again, and resumes the bytes already on disk where the download serves a range.
  */
 export const D1_EXPORT_DOWNLOAD_ATTEMPTS = 4;
+/** New whole exports admitted under one recovery hold, including process and snapshot retries. */
+export const D1_EXPORT_START_LIMIT = 2;
+
+type AdmissionContext = Pick<D1ExportContext, 'accountId' | 'databaseId' | 'recordDir' | 'holdToken'>;
+const admissionSchema = z.object({ accountId: z.string(), databaseId: z.string(), holdToken: z.string(),
+  started: z.number().int().min(0).max(D1_EXPORT_START_LIMIT) });
+type AdmissionRecord = z.infer<typeof admissionSchema>;
+
+const admissionPath = (recordDir: string, databaseId: string, holdToken: string) => path.join(recordDir,
+  `d1-admissions-${createHash('sha256').update(JSON.stringify([databaseId, holdToken])).digest('hex')}.json`);
+
+/** One admission writer; held captures persist every start before its request, and bookmark polls consume none. */
+export class D1ExportStartBudget {
+  private started = 0;
+
+  /** Initializes a newly acquired hold's budget; an existing budget is never reset. */
+  constructor(freshHold?: AdmissionContext) {
+    if (freshHold?.holdToken && this.read(freshHold) === null) this.write(freshHold, 0);
+  }
+
+  private read(context: AdmissionContext): number | null {
+    if (!context.holdToken) return this.started;
+    let raw: string;
+    try { raw = fs.readFileSync(admissionPath(context.recordDir, context.databaseId, context.holdToken), 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    const record = admissionSchema.parse(JSON.parse(raw));
+    if (record.accountId !== context.accountId || record.databaseId !== context.databaseId || record.holdToken !== context.holdToken) {
+      throw new Error('D1 export admission record belongs to another recovery hold or source');
+    }
+    return record.started;
+  }
+
+  private write(context: AdmissionContext, started: number): void {
+    if (!context.holdToken) { this.started = started; return; }
+    writeRecord(admissionPath(context.recordDir, context.databaseId, context.holdToken),
+      { accountId: context.accountId, databaseId: context.databaseId, holdToken: context.holdToken, started });
+  }
+
+  admit(context: AdmissionContext): () => void {
+    const started = this.read(context);
+    if (started === null) throw new Error('D1 export admission count is unavailable for this recovery hold; no new export was started. '
+      + 'Resume its recorded export, or explicitly abandon the hold before starting a new recovery attempt.');
+    if (started >= D1_EXPORT_START_LIMIT) {
+      throw new Error(`new D1 export limit (${D1_EXPORT_START_LIMIT}) reached for this recovery attempt; no further export was started. `
+        + 'Each new export pauses D1 queries. Resume its recorded export, or explicitly abandon this recovery hold before starting a new recovery attempt.');
+    }
+    this.write(context, started + 1);
+    let refused = false;
+    return () => {
+      if (refused) return;
+      const current = this.read(context);
+      if (current === null || current < 1) throw new Error('D1 export admission count is unavailable for authentication-refusal refund');
+      this.write(context, current - 1);
+      refused = true;
+    };
+  }
+
+  /** A confirmed released hold ends its admission budget, independently of any kept export record. */
+  static release(recordDir: string, databaseId: string, holdToken: string): void {
+    fs.rmSync(admissionPath(recordDir, databaseId, holdToken), { force: true });
+  }
+}
 
 /** The provider's origin, and the only one an operator credential is sent to. */
 const API_ORIGIN = 'https://api.cloudflare.com';
@@ -155,7 +218,10 @@ export interface D1ExportContext {
   /** The directory this machine records its running export in, shared by every backup of the database. */
   recordDir: string;
   login: OperatorLogin;
+  /** Shared across the snapshot retries of one backup run. */
+  startBudget?: D1ExportStartBudget;
   fetch?: CloudflareFetch;
+  download?: D1DownloadFetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** Test-only overrides of the bound, the cancel margin, the pause between polls and the download's stall. */
@@ -208,11 +274,11 @@ function readRecord(file: string, marginMs: number): ExportRecord | null {
 }
 
 /** Write `record` in place of the one before it, on disk before this returns: it is what stops a second export. */
-function writeRecord(file: string, record: ExportRecord): void {
+function writeRecord(file: string, record: ExportRecord | AdmissionRecord): void {
   const temporary = `${file}.${process.pid}.tmp`;
   const handle = fs.openSync(temporary, 'w', 0o600);
   try {
-    fs.writeSync(handle, `${JSON.stringify(record)}\n`);
+    fs.writeFileSync(handle, `${JSON.stringify(record)}\n`);
     fs.fsyncSync(handle);
   } finally {
     fs.closeSync(handle);
@@ -242,12 +308,14 @@ function syncPath(file: string): void {
 /** The steps of one export, over one context. */
 function exporter(context: D1ExportContext) {
   const fetchApi = context.fetch ?? globalThis.fetch;
+  const fetchDownload = context.download ?? (context.fetch ? injectedD1Download(context.fetch) : fetchD1Download);
   const now = context.now ?? Date.now;
   const sleep = context.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const boundMs = context.boundMs ?? D1_EXPORT_BOUND_MS;
   const marginMs = context.marginMs ?? D1_EXPORT_CANCEL_MARGIN_MS;
   const pollMs = context.pollMs ?? D1_EXPORT_POLL_MS;
   const stallMs = context.stallMs ?? D1_EXPORT_STALL_MS;
+  const startBudget = context.startBudget ?? new D1ExportStartBudget();
   const file = exportRecordPath(context.recordDir, context.databaseId);
   const endpoint = `${API_ORIGIN}/client/v4/accounts/${encodeURIComponent(context.accountId)}/d1/database/${encodeURIComponent(context.databaseId)}/export`;
 
@@ -261,6 +329,7 @@ function exporter(context: D1ExportContext) {
       const used = context.login.current();
       const headers = new Headers(await used);
       headers.set('content-type', 'application/json');
+      const refusedStart = bookmark === null ? startBudget.admit(context) : () => {};
       if (attempt > 0) beforeRetry?.();
       let response: Response;
       try {
@@ -280,6 +349,7 @@ function exporter(context: D1ExportContext) {
       let body: unknown;
       try { body = JSON.parse(text); } catch { body = undefined; }
       const read = readD1ExportAnswer(response.status, body, bookmark);
+      if (read.kind === 'refused-login') refusedStart();
       if (read.kind === 'refused-login' && attempt === 0) {
         context.login.refused(used);
         continue;
@@ -320,25 +390,29 @@ function exporter(context: D1ExportContext) {
    * rewritten from the start otherwise, never spliced. Null once the whole result is in `part`.
    */
   const downloadOnce = async (signedUrl: string, part: string, served: { etag: string | null; total: number | null }): Promise<null | { error: ObjectReadError; gone: boolean }> => {
-    const offset = fs.existsSync(part) ? fs.statSync(part).size : 0;
+    let offset = fs.existsSync(part) ? fs.statSync(part).size : 0;
+    const strong = (etag: string | null): etag is string => etag !== null && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(etag);
+    if (offset > 0 && (!strong(served.etag) || served.total === null)) {
+      fs.rmSync(part, { force: true });
+      offset = 0;
+    }
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let arm = (): void => {};
-    const stalled = new Promise<never>((_, reject) => {
-      arm = () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-          reject(new Error(`no bytes arrived for ${Math.round(stallMs / 1000)} s`));
-          controller.abort();
-        }, stallMs);
-      };
-    });
-    stalled.catch(() => {});
-    arm();
+    const waiting = async <T>(operation: () => Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await new Promise<T>((resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`no bytes arrived for ${Math.round(stallMs / 1000)} s`));
+            controller.abort();
+          }, stallMs);
+          operation().then(resolve, reject);
+        });
+      } finally { clearTimeout(timer); }
+    };
     const failed = (message: string, gone = false, transient = true) => ({ error: new ObjectReadError(message, { transient }), gone });
     try {
       // The signed URL is a capability of its own, fetched with no operator credential, and never written to a message.
-      let response: Response;
+      let response: D1Download;
       try {
         // Asked for as stored, so a length and a range count the bytes written here.
         const headers = new Headers({ 'accept-encoding': 'identity' });
@@ -346,16 +420,16 @@ function exporter(context: D1ExportContext) {
           headers.set('range', `bytes=${offset}-`);
           if (served.etag !== null) headers.set('if-range', served.etag);
         }
-        response = await Promise.race([fetchApi(signedUrl, { method: 'GET', redirect: 'follow', signal: controller.signal, headers }), stalled]);
+        response = await waiting(() => fetchDownload(signedUrl, { method: 'GET', redirect: 'follow', signal: controller.signal, headers }));
       } catch (error) {
         return failed(`the D1 export download did not reach Cloudflare (${redacted((error as Error).message)})`);
       }
       if ([401, 403, 404, 410].includes(response.status)) {
-        await response.body?.cancel().catch(() => {});
+        await response.reader?.cancel().catch(() => {});
         return failed(`the D1 export download is no longer served (HTTP ${response.status})`, true);
       }
-      if (!response.ok || response.body === null) {
-        await response.body?.cancel().catch(() => {});
+      if (!response.ok || response.reader === null) {
+        await response.reader?.cancel().catch(() => {});
         return failed(`the D1 export download failed (HTTP ${response.status})`, false, response.status === 408 || response.status === 429 || response.status >= 500);
       }
       // An answer served encoded anyway counts its length and ranges in bytes this side never sees: it is taken whole,
@@ -365,11 +439,11 @@ function exporter(context: D1ExportContext) {
       const etag = response.headers.get('etag');
       let resumed = false;
       if (response.status === 206) {
-        const same = !encoded && range !== null && Number(range[1]) === offset
-          && (served.total === null || Number(range[2]) === served.total)
-          && (served.etag === null || etag === null || etag === served.etag);
+        const same = offset > 0 && !encoded && range !== null && Number(range[1]) === offset
+          && served.total !== null && Number(range[2]) === served.total
+          && strong(served.etag) && strong(etag) && etag === served.etag;
         if (!same) {
-          await response.body.cancel().catch(() => {});
+          await response.reader.cancel().catch(() => {});
           fs.rmSync(part, { force: true });
           return failed('the D1 export download answered a range other than the one asked for, or of another object; it starts again from its first byte');
         }
@@ -378,7 +452,7 @@ function exporter(context: D1ExportContext) {
       const declared = encoded ? Number.NaN : resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
       // A whole answer is told from a cut one by the length it declares; one that declares none is never taken.
       if (!encoded && !Number.isFinite(declared)) {
-        await response.body.cancel().catch(() => {});
+        await response.reader.cancel().catch(() => {});
         fs.rmSync(part, { force: true });
         return failed('the D1 export download declared no length, so a whole answer cannot be told from a cut one');
       }
@@ -388,13 +462,17 @@ function exporter(context: D1ExportContext) {
       }
       const handle = fs.openSync(part, resumed ? 'a' : 'w', 0o600);
       let written = resumed ? offset : 0;
-      const reader = response.body.getReader();
+      const reader = response.reader;
       try {
         for (;;) {
-          const chunk = await Promise.race([reader.read(), stalled]);
+          const chunk = await waiting(() => reader.read());
           if (chunk.done) break;
-          arm();
-          fs.writeSync(handle, chunk.value);
+          let offset = 0;
+          while (offset < chunk.value.byteLength) {
+            const written = fs.writeSync(handle, chunk.value, offset, chunk.value.byteLength - offset);
+            if (written === 0) throw new Error('D1 export file write made no progress');
+            offset += written;
+          }
           written += chunk.value.byteLength;
         }
       } catch (error) {
@@ -407,7 +485,7 @@ function exporter(context: D1ExportContext) {
       if (Number.isFinite(declared) && written !== declared) return failed(`the D1 export download ended at ${written} of ${declared} bytes`);
       return null;
     } finally {
-      clearTimeout(timer);
+      controller.abort();
     }
   };
 
@@ -599,6 +677,7 @@ export function releaseD1Export(context: D1ExportContext): void {
  * under it can use the result any longer. A result kept under another hold, and an export still running, stay.
  */
 export function releaseKeptD1Export(recordDir: string, databaseId: string, holdToken: string): void {
+  D1ExportStartBudget.release(recordDir, databaseId, holdToken);
   const file = exportRecordPath(recordDir, databaseId);
   let recorded: ExportRecord | null;
   try { recorded = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS); } catch { return; }

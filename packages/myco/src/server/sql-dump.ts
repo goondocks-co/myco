@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { Database } from 'bun:sqlite';
+import { boundedMemoryChunks } from './stream-memory.js';
 import {
   endStatements, feedStatements, identifierAt, newStatementScan, significantStatement,
 } from '@myco-server-worker/core/sql-statements.js';
@@ -44,6 +45,8 @@ export async function importTableDump(db: Database, file: string): Promise<void>
   };
   const scan = newStatementScan();
   const input = fs.createReadStream(file, { encoding: 'utf8' });
-  for await (const chunk of input) feedStatements(scan, chunk as string, 'all', execute);
+  for await (const chunk of boundedMemoryChunks(input, (chunk) => typeof chunk === 'string' ? chunk.length * 2 : chunk.byteLength)) {
+    feedStatements(scan, chunk as string, 'all', execute);
+  }
   endStatements(scan, 'all', execute);
 }
