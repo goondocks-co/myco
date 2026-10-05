@@ -14,15 +14,16 @@ import { NO_OP, SERVED_TOOLS, UNSERVED_OPS, type ServedTool } from '../core/tool
 import type { ToolContext } from './context.js';
 import { handleAgent } from './tools/agent.js';
 import { handleCortexCanopyMap, handleCortexInstructions, handleCortexProjectsActivity } from './tools/cortex.js';
-import { handlePlans } from './tools/plans.js';
+import { handlePlans, isPlanStatusOnly } from './tools/plans.js';
 import { handleSessions } from './tools/sessions.js';
 import { handleSkills } from './tools/skills.js';
 import { handleSpores } from './tools/spores.js';
 import { handleSearch } from './tools/search.js';
 import type { ToolInput } from './validate.js';
+import type { AuthorizationDeclaration, Action, ResourceKind, SubjectKind } from '../auth/authorization.js';
 
 export type ToolHandler = (input: ToolInput, ctx: ToolContext) => Promise<unknown>;
-export type RegistryEntry = { handler: ToolHandler } | { notServed: string };
+export type RegistryEntry = ({ handler: ToolHandler } | { notServed: string }) & { authorization: AuthorizationDeclaration };
 
 export interface ToolEntry {
   /** The op a call without one runs; null for a tool with no op concept. */
@@ -32,36 +33,46 @@ export interface ToolEntry {
 
 export { NO_OP };
 
-const served = (handler: ToolHandler): RegistryEntry => ({ handler });
+export function toolPolicy(resource: ResourceKind, action: AuthorizationDeclaration['action'], subjects: readonly SubjectKind[] = ['member', 'grant', 'run']): AuthorizationDeclaration {
+  return { subjects, transport: 'mcp', resource, resolver: resource === 'run' ? 'run' : resource === 'protocol' ? 'protocol' : 'project', action };
+}
+
+const served = (handler: ToolHandler, resource: ResourceKind, action: AuthorizationDeclaration['action'] = 'read', subjects?: readonly SubjectKind[]): RegistryEntry =>
+  ({ handler, authorization: toolPolicy(resource, action, subjects) });
+
+const planSaveAction: AuthorizationDeclaration['action'] = {
+  actions: ['status', 'capture'],
+  resolve: (input): Action => isPlanStatusOnly(input) ? 'status' : 'capture',
+};
 /** The catalogue's unserved ops for one tool, as registry entries; the issue it names rides the answer. */
 const notServed = (tool: ServedTool): Record<string, RegistryEntry> =>
-  Object.fromEntries(Object.entries(UNSERVED_OPS[tool] ?? {}).map(([op, by]) => [op, { notServed: by }]));
+  Object.fromEntries(Object.entries(UNSERVED_OPS[tool] ?? {}).map(([op, by]) => [op, { notServed: by, authorization: toolPolicy('protocol', 'never', ['member']) }]));
 
 export const TOOL_REGISTRY: Record<ServedTool, ToolEntry> = {
-  myco_search: { defaultOp: null, ops: { [NO_OP]: served(handleSearch) } },
+  myco_search: { defaultOp: null, ops: { [NO_OP]: served(handleSearch, 'processed') } },
   myco_cortex: {
     defaultOp: 'instructions',
     ops: {
-      instructions: served(handleCortexInstructions),
-      canopy_map: served(handleCortexCanopyMap),
-      projects_activity: served(handleCortexProjectsActivity),
+      instructions: served(handleCortexInstructions, 'processed', 'read', ['member', 'grant']),
+      canopy_map: served(handleCortexCanopyMap, 'processed', 'read', ['member']),
+      projects_activity: { handler: handleCortexProjectsActivity, authorization: { ...toolPolicy('directory', 'read', ['member']), resolver: 'deployment' } },
       ...notServed('myco_cortex'),
     },
   },
   myco_plans: {
     defaultOp: 'list',
-    ops: { list: served(handlePlans), get: served(handlePlans), save: served(handlePlans), ...notServed('myco_plans') },
+    ops: { list: served(handlePlans, 'plan', 'read', ['member', 'grant']), get: served(handlePlans, 'plan', 'read', ['member', 'grant']), save: served(handlePlans, 'plan', planSaveAction, ['member']), ...notServed('myco_plans') },
   },
-  myco_sessions: { defaultOp: 'list', ops: { list: served(handleSessions), get: served(handleSessions) } },
-  myco_skills: { defaultOp: 'list', ops: { list: served(handleSkills), get: served(handleSkills) } },
+  myco_sessions: { defaultOp: 'list', ops: { list: served(handleSessions, 'processed', 'read', ['member', 'grant']), get: served(handleSessions, 'processed', 'read', ['member', 'grant']) } },
+  myco_skills: { defaultOp: 'list', ops: { list: served(handleSkills, 'processed', 'read', ['member', 'grant']), get: served(handleSkills, 'processed', 'read', ['member', 'grant']) } },
   myco_spores: {
     defaultOp: 'list',
     ops: {
-      list: served(handleSpores), get: served(handleSpores), save: served(handleSpores),
-      supersede: served(handleSpores), consolidate: served(handleSpores), obsolete: served(handleSpores),
+      list: served(handleSpores, 'spore'), get: served(handleSpores, 'spore'), save: served(handleSpores, 'spore', 'edit'),
+      supersede: served(handleSpores, 'spore', 'edit'), consolidate: served(handleSpores, 'spore', 'edit', ['member', 'run']), obsolete: served(handleSpores, 'spore', 'edit', ['member', 'run']),
     },
   },
-  myco_agent: { defaultOp: 'runs', ops: { runs: served(handleAgent), run: served(handleAgent) } },
+  myco_agent: { defaultOp: 'runs', ops: { runs: served(handleAgent, 'processed', 'read', ['member']), run: served(handleAgent, 'processed', 'read', ['member']) } },
 };
 
 /** The op a call resolves to: the argument when given, else the tool's default; `NO_OP` for a tool without one. */
