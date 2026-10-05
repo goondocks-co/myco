@@ -61,7 +61,7 @@ export async function handleRenameMachine(env: ServerEnv, ctx: OwnerContext): Pr
   const name = machineName(body.label);
   if (name === null) return badRequest(`label must be 1 to ${MACHINE_NAME_MAX} printable characters`);
   const machineId = ctx.params.machineId!;
-  if (!(await renameMachine(env.db, { memberId: ctx.member.id, admin: isAdmin(ctx.member.role) }, machineId, name))) return notFound();
+  if (!(await renameMachine(env.db, { memberId: ctx.member.id }, machineId, name))) return notFound();
   emit({ kind: 'machine_renamed', machineId, actor: ctx.member.id });
   return ok({ machineId, name });
 }

@@ -227,15 +227,17 @@ describe('the nav', () => {
     await waitFor(() => expect(document.querySelector('header[data-shell]')?.textContent).toContain('My machines'));
   });
 
-  it('hides every admin page from a member: no Project settings, People & machines, Settings or Health', async () => {
+  it('links a member to the read-only People page without admin settings or health', async () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
     expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work']);
     await findScope();
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
+    const people = await screen.findByRole('navigation', { name: 'People' });
+    expect(within(people).getByRole('link', { name: INVITE_CONTROLS.page }).getAttribute('href')).toBe('/people');
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    for (const name of ['Project settings', INVITE_CONTROLS.page, 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    for (const name of ['Project settings', 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
   });
 
   it('keeps the last project in the page links on a page that spans the server', async () => {

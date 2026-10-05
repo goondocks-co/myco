@@ -81,7 +81,7 @@ describe('the dashboard for a member who is not an admin', () => {
     });
   }
 
-  it('offers no admin page in the navigation, and says what an admin-only page is instead of showing its controls', async () => {
+  it('keeps admin pages protected and offers People read-only', async () => {
     server(ROUTES_ANSWERED);
     mount('/p/live/settings');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
@@ -89,15 +89,24 @@ describe('the dashboard for a member who is not an admin', () => {
     // The nav foot of admin pages is absent, not greyed out.
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    for (const name of [INVITE_CONTROLS.page, 'Settings', 'Health', 'Project settings']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    expect(within(nav).getByRole('link', { name: INVITE_CONTROLS.page }).getAttribute('href')).toBe('/people');
+    for (const name of ['Settings', 'Health', 'Project settings']) expect(within(nav).queryByRole('link', { name })).toBeNull();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
-    for (const path of ['/people', '/settings', '/settings/models', '/status/health']) {
+    for (const path of ['/settings', '/settings/models', '/status/health']) {
       cleanup();
       server(ROUTES_ANSWERED);
       mount(path);
       expect(await screen.findByTestId('admin-only')).toBeTruthy();
       expect(screen.queryAllByRole('switch')).toEqual([]);
     }
+    cleanup();
+    const asked = server(ROUTES_ANSWERED);
+    mount('/people');
+    expect(await screen.findByRole('heading', { level: 1, name: INVITE_CONTROLS.page })).toBeTruthy();
+    expect(screen.queryByTestId('admin-only')).toBeNull();
+    expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
+    expect(screen.queryAllByRole('switch')).toEqual([]);
+    expect(adminRequests(asked)).toEqual([]);
   });
 
   it('lists the member\'s own machines on My machines, with no invitation or removal, and the member\'s own Stop', async () => {

@@ -14,6 +14,8 @@ export interface MemberRow {
   label: string | null;
   /** What this member may do. A worker's credential must belong to an admin, which is what makes a claim from it admissible. */
   role: 'admin' | 'member';
+  /** Revision to review before changing this member's role. */
+  roleRevision: string;
   /** Whether a GitHub account is connected. */
   linked: boolean;
   createdAt: number;

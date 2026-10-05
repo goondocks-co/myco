@@ -56,7 +56,7 @@ export function helpText(legacyUsage: string, deps: MemberVerbDeps = {}): string
 /** The member verbs, as a 1.4 list shows them beside its own on a home that holds both. */
 export const MEMBER_SECTION = `2.0 member (a project joined with \`myco login\`; run \`myco --help\` from it for the full list):
   login <invite-link>      Redeem an invite link and sign this machine in
-  member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership
+  member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
   worker [options]         Run this machine's harnesses for a Deployment (install|uninstall|status)
   In a joined project, search, vectors, session, stats, doctor, logs and config answer as the member.
 `;
@@ -65,7 +65,7 @@ export const MEMBER_USAGE = `Usage: myco <command> [args]
 
 Membership:
   login <invite-link>      Redeem an invite link and sign this machine in
-  member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership
+  member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
   import                   Bring this machine's existing agent history to its Deployment
   worker [options]         Run this machine's harnesses for a Deployment (install|uninstall|status)
 

@@ -22,7 +22,7 @@ import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
 import { asMemberRole, MEMBER_ROLES_SQL, type MemberRole } from './roles.js';
-import { authorize, enrollmentAuthorityPredicate, enrollmentResource, memberSubject } from './authorization.js';
+import { authorize, enrollmentAuthorityPredicate, enrollmentResource, memberSubject, memberWritePredicate } from './authorization.js';
 
 export type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
 
@@ -404,8 +404,8 @@ export async function claimMachineIdentity(
  * statement. True when the machine took the name; false for a machine that is absent or that `actor` may not rename,
  * which the caller answers alike.
  */
-export async function renameMachine(db: RelationalStore, actor: { memberId: string; admin: boolean }, machineId: string, name: string): Promise<boolean> {
-  const result = await db.prepare(`UPDATE machine_claims SET label = ? WHERE machine_id = ? AND (? = 1 OR member_id = ?)`)
-    .bind(name, machineId, actor.admin ? 1 : 0, actor.memberId).run();
+export async function renameMachine(db: RelationalStore, actor: { memberId: string }, machineId: string, name: string): Promise<boolean> {
+  const result = await db.prepare(`UPDATE machine_claims SET label = ? WHERE machine_id = ? AND ${memberWritePredicate('?', 'machine_claims.member_id')}`)
+    .bind(name, machineId, actor.memberId).run();
   return result.meta.changes === 1;
 }

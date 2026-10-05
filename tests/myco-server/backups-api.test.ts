@@ -9,6 +9,7 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { MAX_BACKUP_BYTES } from '@myco-server-worker/core/backup.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 
 const setup = () => {
   const e = sqliteEnv();
@@ -47,7 +48,8 @@ describe('the backup routes', () => {
   });
 
   it('creates, lists verified, previews, pins, and restores through the envelopes', async () => {
-    const { env } = setup();
+    const { env, db } = setup();
+    await bootstrapOwnership(db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
     const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
     const createdBody = await created.json() as { backup: { id: string }; pruned: number };
     expect({ status: created.status, pruned: createdBody.pruned }).toEqual({ status: 200, pruned: 0 });
@@ -81,7 +83,8 @@ describe('the backup routes', () => {
   });
 
   it('serves the artifact for download, and restores an uploaded artifact through the same gates', async () => {
-    const { env } = setup();
+    const { env, db } = setup();
+    await bootstrapOwnership(db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
     const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
     const id = ((await created.json()) as { backup: { id: string } }).backup.id;
 
@@ -91,6 +94,7 @@ describe('the backup routes', () => {
     expect(text.slice(0, text.indexOf('\n'))).toContain('"format":"myco-backup/1"');
 
     const other = setup();
+    await bootstrapOwnership(other.db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
     const refused = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: text }), other.env);
     expect({ status: refused.status, error: ((await refused.json()) as { error: string }).error }).toEqual({ status: 409, error: 'foreign_lineage' });
 

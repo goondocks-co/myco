@@ -7,6 +7,7 @@ import path from 'node:path';
 import type { RawClaimPreview } from '@goondocks/myco-shared/raw-claims';
 import { runRawClaims } from '@myco/cli/member-raw-claims.js';
 import { runOwnership } from '@myco/cli/member-ownership.js';
+import { runRole } from '@myco/cli/member-role.js';
 import { MEMBER_HELP, run as runMember } from '@myco/cli/member.js';
 import type { MemberVerbDeps } from '@myco/cli/deployment-reader.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -31,7 +32,9 @@ function fixture(overrides: { preview?: RawClaimPreview; status?: number; code?:
       expect(request.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
       expect(init?.redirect).toBe('error');
       if (overrides.status !== undefined) return Response.json({ code: overrides.code, reason: 'refused' }, { status: overrides.status });
-      if (url.pathname === '/members/ownership') return Response.json({ ownerMemberId: request.method === 'POST' ? 'mem_selected' : null, revision: 'ownership-r1' });
+      if (url.pathname === '/members/ownership') return Response.json({ ownerMemberId: request.method === 'POST' ? 'mem_selected' : null, revision: 'ownership-r1', candidates: [{ memberId: 'mem_selected', label: 'Selected', role: 'admin', roleRevision: 'role-r1' }], proposalMemberId: 'mem_selected' });
+      if (url.pathname === '/members/ownership/transfer') return Response.json({ ownerMemberId: 'mem_selected', revision: 'ownership-r2', candidates: [], proposalMemberId: null });
+      if (url.pathname === '/members/roles') return Response.json(request.method === 'GET' ? { members: [{ id: 'mem_selected', label: 'Selected', role: 'member', roleRevision: 'role-r1' }] } : { memberId: 'mem_selected', role: 'admin', roleRevision: 'role-r2' });
       return Response.json(request.method === 'GET' ? overrides.preview ?? PREVIEW : { claimId: 'claim_one', preview: { ...PREVIEW, revision: 'raw-r2', projects: [] } });
     },
   };
@@ -100,7 +103,7 @@ describe('explicit ownership CLI', () => {
     const f = fixture();
     expect(await runOwnership(['--credential', 'env'], f.deps)).toBe(true);
     expect(f.requests.map((r) => r.method)).toEqual(['GET']);
-    expect(JSON.parse(f.stdout[0]!)).toEqual({ ownerMemberId: null, revision: 'ownership-r1' });
+    expect(JSON.parse(f.stdout[0]!)).toEqual({ ownerMemberId: null, revision: 'ownership-r1', candidates: [{ memberId: 'mem_selected', label: 'Selected', role: 'admin', roleRevision: 'role-r1' }], proposalMemberId: 'mem_selected' });
     await runMember(['ownership', '--credential', 'env', '--owner', 'mem_selected', '--revision', 'ownership-r1'], f.deps);
     expect(f.requests.at(-1)).toEqual({ method: 'POST', path: '/members/ownership', body: { ownerMemberId: 'mem_selected', revision: 'ownership-r1' }, project: null });
   });
@@ -116,6 +119,53 @@ describe('explicit ownership CLI', () => {
     expect(await runOwnership(['--credential', 'env', '--owner', 'mem_selected', '--revision', 'stale'], f.deps)).toBe(false);
     expect(f.requests.map((r) => r.method)).toEqual(['GET']);
     expect(f.stderr.join('\n')).toContain('ownership changed');
+  });
+
+  it('replays the recorded owner through the bootstrap operation and requires transfer for a different owner', async () => {
+    for (const selected of ['mem_selected', 'mem_other']) {
+      const f = fixture();
+      const fetch = f.deps.fetch!;
+      f.deps.fetch = async (input, init) => {
+        const response = await fetch(input, init);
+        if (new Request(input, init).method === 'POST') return response;
+        return Response.json({ ...await response.json(), ownerMemberId: 'mem_selected', proposalMemberId: null });
+      };
+      expect(await runOwnership(['--credential', 'env', '--owner', selected, '--revision', 'ownership-r1'], f.deps)).toBe(selected === 'mem_selected');
+      expect(f.requests.map((request) => request.method)).toEqual(selected === 'mem_selected' ? ['GET', 'POST'] : ['GET']);
+      if (selected === 'mem_other') expect(f.stderr.join('\n')).toContain('use --transfer');
+    }
+  });
+
+  it('transfers only to a candidate from a reviewed current owner preview', async () => {
+    const f = fixture();
+    f.deps.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      f.requests.push({ method: request.method, path, body: request.method === 'POST' ? await request.json() : null, project: request.headers.get('x-myco-project') });
+      return Response.json(request.method === 'GET'
+        ? { ownerMemberId: 'mem_old', revision: 'ownership-r1', candidates: [{ memberId: 'mem_selected', label: 'Selected', role: 'admin', roleRevision: 'role-r1' }], proposalMemberId: null }
+        : { ownerMemberId: 'mem_selected', revision: 'ownership-r2', candidates: [], proposalMemberId: null });
+    };
+    expect(await runOwnership(['--credential', 'env', '--transfer', 'mem_selected', '--revision', 'ownership-r1'], f.deps)).toBe(true);
+    expect(f.requests.at(-1)).toEqual({ method: 'POST', path: '/members/ownership/transfer', body: { member_id: 'mem_selected', expected_revision: 'ownership-r1' }, project: null });
+  });
+});
+
+describe('member role CLI', () => {
+  it('previews role revisions and applies only the reviewed member revision', async () => {
+    const f = fixture();
+    expect(await runRole(['--credential', 'env'], f.deps)).toBe(true);
+    expect(f.requests).toEqual([{ method: 'GET', path: '/members/roles', body: null, project: null }]);
+    await runMember(['role', '--credential', 'env', '--member', 'mem_selected', '--role', 'admin', '--revision', 'role-r1'], f.deps);
+    expect(f.requests.at(-1)).toEqual({ method: 'POST', path: '/members/roles', body: { member_id: 'mem_selected', role: 'admin', expected_revision: 'role-r1' }, project: null });
+  });
+
+  it('refuses a stale revision and incomplete role arguments before writing', async () => {
+    const f = fixture();
+    expect(await runRole(['--credential', 'env', '--member', 'mem_selected', '--role', 'admin', '--revision', 'stale'], f.deps)).toBe(false);
+    expect(f.requests.map((r) => r.method)).toEqual(['GET']);
+    expect(await runRole(['--credential', 'env', '--member', 'mem_selected'], f.deps)).toBe(false);
+    expect(f.requests).toHaveLength(1);
   });
 });
 
@@ -181,7 +231,7 @@ it('runs the actual CLI on loopback with a bearer held only in its isolated envi
     expect(request.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
     const pathname = new URL(request.url).pathname;
     requests.push({ method: request.method, path: pathname, body: request.method === 'POST' ? await request.json() : null, project: request.headers.get('x-myco-project') });
-    if (pathname === '/members/ownership') return Response.json({ ownerMemberId: request.method === 'POST' ? 'mem_selected' : null, revision: 'owner-r1' });
+    if (pathname === '/members/ownership') return Response.json({ ownerMemberId: request.method === 'POST' ? 'mem_selected' : null, revision: 'owner-r1', candidates: [{ memberId: 'mem_selected', label: 'Selected', role: 'admin', roleRevision: 'role-r1' }], proposalMemberId: 'mem_selected' });
     return Response.json(request.method === 'GET' ? PREVIEW : { claimId: 'claim_real_cli', preview: { ...PREVIEW, projects: [] } });
   } });
   try {
@@ -208,7 +258,7 @@ it('runs the actual CLI on loopback with a bearer held only in its isolated envi
     expect(`${preview.stdout}${preview.stderr}${applied.stdout}${applied.stderr}`).not.toContain(TOKEN);
     const ownership = await invoke('ownership', []);
     expect(ownership.status).toBe(0);
-    expect(JSON.parse(ownership.stdout)).toEqual({ ownerMemberId: null, revision: 'owner-r1' });
+    expect(JSON.parse(ownership.stdout)).toEqual({ ownerMemberId: null, revision: 'owner-r1', candidates: [{ memberId: 'mem_selected', label: 'Selected', role: 'admin', roleRevision: 'role-r1' }], proposalMemberId: 'mem_selected' });
     const recorded = await invoke('ownership', ['--owner', 'mem_selected', '--revision', 'owner-r1']);
     expect(recorded.status).toBe(0);
     expect(recorded.stdout).toContain('mem_selected');

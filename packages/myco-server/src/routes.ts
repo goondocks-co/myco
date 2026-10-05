@@ -1,5 +1,6 @@
+import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
-import { httpPolicy, invitationAction, runDispatchAction } from './auth/http-authorization.js';
+import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction } from './auth/http-authorization.js';
 import type { AuthorizationDeclaration } from './auth/authorization.js';
 import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, handleMemberRawClaim, handleOwnershipPreview, handleOwnership, handleMemberOwnershipPreview, handleMemberOwnership } from './api/raw-claims.js';
 import type { RawAction, RawResource } from './core/raw-resources.js';
@@ -199,11 +200,16 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberStatus },
   { authorization: httpPolicy('raw', 'owner', 'deployment', ['member']), method: 'GET', path: '/members/raw-claims', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberRawClaimPreview },
   { authorization: httpPolicy('raw', 'owner', 'deployment', ['member']), method: 'POST', path: '/members/raw-claims', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberRawClaim },
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/members/ownership', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberOwnershipPreview },
+  { authorization: httpPolicy('member', 'read', 'deployment', ['member']), method: 'GET', path: '/members/ownership', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberOwnershipPreview },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/members/ownership', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', mintsAuthority: true, credential: handleMemberOwnership },
+  { authorization: httpPolicy('member', 'owner', 'deployment'), method: 'POST', path: '/members/ownership/transfer', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', mintsAuthority: true, credential: handleMemberOwnershipTransfer },
+  { authorization: httpPolicy('member', 'read', 'deployment'), method: 'GET', path: '/members/roles', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleCredentialRoles },
+  { authorization: httpPolicy('member', 'owner', 'deployment'), method: 'POST', path: '/members/roles', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', mintsAuthority: true, credential: handleCredentialMemberRole },
+  { authorization: httpPolicy('member', 'owner', 'deployment'), method: 'POST', path: '/api/ownership/transfer', auth: 'session', authority: 'admin', handler: handleOwnershipTransfer },
+  { authorization: httpPolicy('member', 'owner', 'member'), method: 'POST', path: '/api/members/{memberId}/role', pattern: new RegExp(`^/api/members/(?<memberId>${MEMBER_ID_SEGMENT})/role$`), auth: 'session', authority: 'admin', handler: handleMemberRole },
   { authorization: httpPolicy('raw', 'owner', 'deployment', ['member']), method: 'GET', path: '/api/raw-claims', auth: 'session', authority: 'admin', handler: handleRawClaimPreview },
   { authorization: httpPolicy('raw', 'owner', 'deployment', ['member']), method: 'POST', path: '/api/raw-claims', auth: 'session', authority: 'admin', handler: handleRawClaim },
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/ownership', auth: 'session', authority: 'admin', handler: handleOwnershipPreview },
+  { authorization: httpPolicy('member', 'read', 'deployment', ['member']), method: 'GET', path: '/api/ownership', auth: 'session', authority: 'member', handler: handleOwnershipPreview },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/ownership', auth: 'session', authority: 'admin', handler: handleOwnership },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'GET', path: '/auth/me', auth: 'session', authority: 'account', handler: handleMe },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'POST', path: '/auth/link', auth: 'session', authority: 'account', handler: handleLink },
@@ -231,7 +237,7 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/processed/{kind}/{id}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/processed\/(?<kind>prompt|response|plan|tool-input|tool-output|attachment)\/(?<id>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleProcessedBody },
   { authorization: httpPolicy('raw', 'read', 'raw', ['member']), method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'session', authority: 'member', raw: { resource: 'blob', action: 'read' }, handler: handleBlobRead },
   { authorization: httpPolicy('directory', 'read', 'deployment', ['member']), method: 'GET', path: '/api/members', auth: 'session', authority: 'member', handler: handleMembers },
-  { authorization: httpPolicy('member', 'admin', 'member', ['member']), method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'session', authority: 'admin', handler: handleRevokeMember },
+  { authorization: httpPolicy('member', memberRevocationAction, 'member', ['member']), method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'session', authority: 'admin', handler: handleRevokeMember },
   { authorization: httpPolicy('member', 'admin', 'member', ['member']), method: 'POST', path: '/api/members/{memberId}/link-github', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/link-github$`), auth: 'session', authority: 'admin', handler: handleIssueMemberLink },
   { authorization: httpPolicy('enrollment', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/enrollment', auth: 'session', authority: 'admin', handler: handleInvitations },
   { authorization: httpPolicy('enrollment', invitationAction, 'enrollment'), method: 'POST', path: '/api/enrollment', auth: 'session', authority: 'admin', handler: handleMintInvitation },

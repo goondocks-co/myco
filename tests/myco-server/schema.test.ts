@@ -4,6 +4,7 @@ import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { DEPLOYMENT_ACCESS_PATH_INDEXES } from './helpers/access-paths.js';
+import { foreignKeyChildren, isForeignKeyChildIndex, leadsWith } from './helpers/foreign-key-indexes.js';
 
 const table = (name: string) => SCHEMA_DDL.find((s) => new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`).test(s))!;
 
@@ -21,6 +22,23 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('indexes every foreign-key child with its complete leading column sequence', () => {
+    const sqlite = applied();
+    try {
+      const tables = sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+      const uncovered = tables.flatMap(({ name }) => {
+        const quoted = (value: string) => `'${value.replaceAll("'", "''")}'`;
+        const indexes = sqlite.query(`PRAGMA index_list(${quoted(name)})`).all() as { name: string; partial: number }[];
+        const prefixes = indexes.filter(index => index.partial === 0).map(index => indexColumns(sqlite, quoted(index.name)));
+        const primary = columns(sqlite, quoted(name)).filter(column => column.pk > 0).sort((a, b) => a.pk - b.pk);
+        if (primary.length === 1 && primary[0]!.type === 'INTEGER') prefixes.push([primary[0]!.name]);
+        return foreignKeyChildren(sqlite, name).flatMap(fields =>
+          prefixes.some(prefix => leadsWith(prefix, fields)) ? [] : [`${name}(${fields.join(', ')})`]);
+      });
+      expect(uncovered).toEqual([]);
+    } finally { sqlite.close(); }
+  });
+
   it('adds the embedding switch, one at a time, without changing the settings or the vectors search holds', () => {
     const sqlite = new Database(':memory:');
     try {
@@ -113,7 +131,7 @@ describe('server schema', () => {
         if (c.name.endsWith('_at')) expect({ t, c: c.name, type: c.type }).toEqual({ t, c: c.name, type: 'INTEGER' });
       }
       for (const i of indexes(sqlite, t)) {
-        if (DEPLOYMENT_ACCESS_PATH_INDEXES.has(i.name)) continue;
+        if (DEPLOYMENT_ACCESS_PATH_INDEXES.has(i.name) || isForeignKeyChildIndex(sqlite, t, i.name)) continue;
         expect({ t, i: i.name, first: indexColumns(sqlite, i.name)[0] }).toEqual({ t, i: i.name, first: 'project_id' });
       }
     }

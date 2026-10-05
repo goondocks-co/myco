@@ -31,14 +31,14 @@ describe('insertion-ordered restore continuation', () => {
         }
         return target.db.batch(statements);
       } };
-      await expect(restoreArtifact(interrupted, { text, allowForeignLineage: true })).rejects.toThrow(BackupApplyError);
+      await expect(restoreArtifact(interrupted, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow(BackupApplyError);
       expect(reports(target)).toHaveLength(20);
       expect(target.sqlite.query(`SELECT next_row FROM backup_restore_progress WHERE table_name = 'agent_reports'`).get()).toEqual({ next_row: 20 });
 
-      const result = await restoreArtifact(target.db, { text, allowForeignLineage: true });
+      const result = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       expect(result.tables.agent_reports).toEqual({ rows: 60, inserted: 40 });
       expect(reports(target)).toEqual(Array.from({ length: 60 }, (_, i) => ({ id: i + 1, summary: `report ${i}` })));
-      const repeated = await restoreArtifact(target.db, { text, allowForeignLineage: true });
+      const repeated = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       expect(repeated.tables.agent_reports).toEqual({ rows: 60, inserted: 0 });
     } finally { target.sqlite.close(); }
   });
@@ -51,15 +51,15 @@ describe('insertion-ordered restore continuation', () => {
         if (reports(target).length === 20) throw new Error('storage unavailable');
         return target.db.batch(statements);
       } };
-      await expect(restoreArtifact(interrupted, { text, allowForeignLineage: true })).rejects.toThrow('storage unavailable');
+      await expect(restoreArtifact(interrupted, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('storage unavailable');
       const before = reports(target);
       const different = text.replace('report 21', 'another artifact');
-      const refused = await restoreArtifact(target.db, { text: different, allowForeignLineage: true });
+      const refused = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: different, allowForeignLineage: true });
       expect(refused.tables.agent_reports.skipped).toContain('insertion-ordered');
       expect(reports(target)).toEqual(before);
 
       target.sqlite.run('DELETE FROM backup_restore_progress');
-      const unowned = await restoreArtifact(target.db, { text, allowForeignLineage: true });
+      const unowned = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       expect(unowned.tables.agent_reports.skipped).toContain('insertion-ordered');
       expect(reports(target)).toEqual(before);
     } finally { target.sqlite.close(); }
@@ -78,7 +78,7 @@ describe('insertion-ordered restore continuation', () => {
         }
         return target.db.batch(statements);
       } };
-      await expect(restoreArtifact(concurrent, { text, allowForeignLineage: true })).rejects.toThrow('backup_restore_rows_match');
+      await expect(restoreArtifact(concurrent, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('backup_restore_rows_match');
       expect(reports(target)).toHaveLength(21);
       expect(reports(target).at(-1)).toEqual({ id: 25, summary: 'unrelated history' });
       expect(target.sqlite.query(`SELECT next_row FROM backup_restore_progress WHERE table_name = 'agent_reports'`).get()).toEqual({ next_row: 20 });
@@ -90,8 +90,8 @@ describe('insertion-ordered restore continuation', () => {
     const target = sqliteEnv();
     try {
       const results = await Promise.all([
-        restoreArtifact(target.db, { text, allowForeignLineage: true }),
-        restoreArtifact(target.db, { text, allowForeignLineage: true }),
+        restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true }),
+        restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true }),
       ]);
       expect(results.reduce((sum, result) => sum + result.tables.agent_reports.inserted, 0)).toBe(60);
       expect(reports(target)).toHaveLength(60);
@@ -103,12 +103,12 @@ describe('insertion-ordered restore continuation', () => {
     const text = await reportArtifact();
     const target = sqliteEnv();
     try {
-      await restoreArtifact(target.db, { text, allowForeignLineage: true });
+      await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       target.sqlite.run('DELETE FROM agent_reports WHERE id = 1');
-      await expect(restoreArtifact(target.db, { text, allowForeignLineage: true })).rejects.toThrow('previously restored rows changed');
+      await expect(restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('previously restored rows changed');
       expect(reports(target)).toHaveLength(59);
       target.sqlite.run('DELETE FROM agent_reports');
-      const recovered = await restoreArtifact(target.db, { text, allowForeignLineage: true });
+      const recovered = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       expect(recovered.tables.agent_reports).toEqual({ rows: 60, inserted: 60 });
       expect(reports(target)).toHaveLength(60);
     } finally { target.sqlite.close(); }

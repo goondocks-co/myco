@@ -58,7 +58,7 @@ describe('raw transcript ownership during additive restore', () => {
       transcript(source); transcript(destination);
       const held = destination.sqlite.query('SELECT * FROM transcripts').all();
       const heldProof = destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all();
-      const outcome = await restoreArtifact(destination.db, { text: await artifact(source), allowForeignLineage: true });
+      const outcome = await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: await artifact(source), allowForeignLineage: true });
       expect(outcome.tables.raw_resources?.inserted).toBe(0);
       expect(destination.sqlite.query('SELECT * FROM transcripts').all()).toEqual(held);
       expect(destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all()).toEqual(heldProof);
@@ -79,7 +79,7 @@ describe('raw transcript ownership during additive restore', () => {
       const heldSegments = destination.sqlite.query('SELECT * FROM transcript_segments').all();
       const heldProof = destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all();
       expect(await reader(source, 'mem_machine_2').allows({ kind: 'transcript', id: TRANSCRIPT_ID }, 'read')).toBe(true);
-      await restoreArtifact(destination.db, { text: await artifact(source), allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: await artifact(source), allowForeignLineage: true });
       expect(destination.sqlite.query('SELECT * FROM transcript_segments').all()).toEqual(heldSegments);
       expect(destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all()).toEqual(heldProof);
       expect(await reader(destination, 'mem_machine_2').transcripts(SESSION_ID)).toEqual([]);
@@ -98,7 +98,7 @@ describe('raw transcript ownership during additive restore', () => {
       transcript(source, { segments: 1 }); transcript(destination, { segments: 1 });
       const heldProof = destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all();
       expect(heldProof).toMatchObject([{ owner_member_id: null, claim_member_id: 'mem_machine_1', provenance: 'missing' }]);
-      await restoreArtifact(destination.db, { text: await artifact(source), allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: await artifact(source), allowForeignLineage: true });
       expect(destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all()).toEqual(heldProof);
       expect(await reader(destination, 'mem_machine_2').transcripts(SESSION_ID)).toEqual([]);
     } finally { source.sqlite.close(); destination.sqlite.close(); }
@@ -113,7 +113,7 @@ describe('raw transcript ownership during additive restore', () => {
       transcript(destination, { path: '/destination/private.jsonl' });
       const held = destination.sqlite.query('SELECT * FROM transcripts').all();
       const heldProof = destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all();
-      await restoreArtifact(destination.db, { text: await artifact(source), allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: await artifact(source), allowForeignLineage: true });
       expect(destination.sqlite.query('SELECT * FROM transcripts').all()).toEqual(held);
       expect(destination.sqlite.query("SELECT * FROM raw_resources WHERE kind = 'transcript'").all()).toEqual(heldProof);
       expect(await reader(destination, 'mem_machine_2').transcripts(SESSION_ID)).toEqual([]);
@@ -136,7 +136,7 @@ describe('raw transcript ownership during additive restore', () => {
       transcript(source); transcript(destination);
       const text = await artifact(source);
       armed = true;
-      await expect(restoreArtifact(destination.db, { text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
+      await expect(restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
       expect(raced).toBe(true);
       expect(await reader(destination, 'mem_machine_1').allows({ kind: 'transcript', id: TRANSCRIPT_ID }, 'read')).toBe(false);
       expect(destination.sqlite.query("SELECT owner_member_id FROM raw_resources WHERE kind = 'transcript' AND provenance = 'recorded'").all())
@@ -161,7 +161,7 @@ describe('raw transcript ownership during additive restore', () => {
       transcript(source, { segments: 1 }); transcript(destination, { segments: 1 });
       const text = await artifact(source);
       armed = true;
-      await expect(restoreArtifact(destination.db, { text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
+      await expect(restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
       expect(raced).toBe(true);
       expect(destination.sqlite.query('SELECT blob_key FROM transcript_segments').all()).toEqual([{ blob_key: HELD_BLOB }]);
       expect(await reader(destination, 'mem_machine_1').allows({ kind: 'transcript', id: TRANSCRIPT_ID }, 'read')).toBe(false);
@@ -178,7 +178,7 @@ describe('raw transcript ownership during additive restore', () => {
       await finish(source);
       await claimUnknownRaw(source.db, 'mem_machine_1', (await rawClaimPreview(source.db, 'mem_machine_1')).revision, 2);
       const text = await artifact(source);
-      await restoreArtifact(destination.db, { text, allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       const restored = await reader(destination, 'mem_machine_1').transcripts(SESSION_ID);
       expect(restored).toHaveLength(1);
       expect(restored[0]!.segments).toHaveLength(21);
@@ -186,7 +186,7 @@ describe('raw transcript ownership during additive restore', () => {
       expect(stored).not.toBeNull();
       expect(new Uint8Array(await new Response(stored!.body).arrayBuffer())).toEqual(BODY);
       expect(await reader(destination, 'mem_machine_2').transcripts(SESSION_ID)).toEqual([]);
-      const retry = await restoreArtifact(destination.db, { text, allowForeignLineage: true });
+      const retry = await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true });
       expect(retry.tables.raw_resources?.inserted).toBe(0);
       expect(await reader(destination, 'mem_machine_1').transcripts(SESSION_ID)).toEqual(restored);
     } finally { source.sqlite.close(); destination.sqlite.close(); }

@@ -13,6 +13,14 @@ export type Transport = 'http' | 'mcp';
 export const OWNER_CONTROL_CREDENTIAL_WRITE = `NOT EXISTS (SELECT 1 FROM deployment_ownership o
   WHERE o.id = 1 AND o.member_id = member_credentials.member_id AND o.member_id <> ?)`;
 
+/** A live member edits their own resources; current administrators may edit another member's resources. */
+export function memberWritePredicate(actor: string, ownedBy: string): string {
+  return `EXISTS (SELECT 1 FROM members write_actor WHERE write_actor.id = ${actor}
+    AND write_actor.revoked_at IS NULL AND write_actor.role IN ('admin', 'member')
+    AND (write_actor.role = 'admin' OR write_actor.id = ${ownedBy}
+      OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = write_actor.id)))`;
+}
+
 export interface AuthorizationSubject {
   kind: SubjectKind;
   deploymentId: string;
@@ -40,6 +48,7 @@ export interface AuthorizationResource {
   attempt?: number;
   uploader?: boolean;
   protectedOwner?: boolean;
+  ownerPending?: boolean;
   bootstrapAllowed?: boolean;
   grantedRole?: 'owner' | 'admin' | 'member';
   targetRevoked?: boolean;
