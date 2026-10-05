@@ -21,26 +21,21 @@ await exportD1({
   accountId: 'fixture', databaseId: 'fixture', tables: ['payloads'], schema: 'fixture', output: sqlPath, recordDir: root,
   login: { current: async () => new Headers(), headers: async () => new Headers(), refused: () => {} },
   sleep: async () => {},
-  fetch: async (url, init) => {
-    if (url === signedUrl) {
-      downloads++;
-      resumed ||= new Headers(init.headers).has('range');
-      const response = await fetchD1Download(url, init);
-      const reader = response.body!.getReader();
-      // A slow sink must backpressure the network rather than grow its unread body.
-      const body = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          const chunk = await reader.read();
-          if (chunk.done) controller.close();
-          else {
-            await new Promise((resolve) => setTimeout(resolve, CONSUMER_PAUSE_MS));
-            controller.enqueue(chunk.value);
-          }
-        },
-        cancel: (reason) => reader.cancel(reason),
-      }, { highWaterMark: 0 });
-      return new Response(body, { status: response.status, headers: response.headers });
-    }
+  download: async (url, init) => {
+    downloads++;
+    resumed ||= new Headers(init.headers).has('range');
+    const response = await fetchD1Download(url, init);
+    const reader = response.reader!;
+    return { ...response, reader: {
+      async read() {
+        const chunk = await reader.read();
+        if (!chunk.done) await new Promise((resolve) => setTimeout(resolve, CONSUMER_PAUSE_MS));
+        return chunk;
+      },
+      cancel: (reason) => reader.cancel(reason),
+    } };
+  },
+  fetch: async (_url, init) => {
     if (!JSON.parse(String(init.body)).current_bookmark) starts++;
     return Response.json({ success: true, result: { success: true, status: 'complete', at_bookmark: 'same-export', result: { signed_url: signedUrl } } });
   },

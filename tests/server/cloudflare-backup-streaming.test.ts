@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { fetchD1Download } from '@myco/server/d1-download.js';
 
-const MAX_RSS_MIB = 768;
+const MAX_RSS_MIB = 512;
 const MAX_RSS_KIB = MAX_RSS_MIB * 1024;
 const MAX_METADATA_CHARACTERS = 4096;
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -83,7 +83,14 @@ it('streams a redirected, encoded signed download while preserving its encoding 
     const { signedUrl } = JSON.parse(metadata);
     const response = await fetchD1Download(signedUrl, { headers: { 'accept-encoding': 'identity' } });
     expect(response.headers.get('content-encoding')).toBe('gzip');
-    const text = await response.text();
+    const decoder = new TextDecoder();
+    let text = '';
+    for (;;) {
+      const chunk = await response.reader!.read();
+      if (chunk.done) break;
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
     expect(text).toStartWith('CREATE TABLE payloads(value TEXT);');
     expect(text).toContain('INSERT INTO payloads');
     expect(text.length).toBeGreaterThan(Number(response.headers.get('content-length')));

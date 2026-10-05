@@ -39,7 +39,7 @@ import { z } from 'zod';
 import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
 import { ObjectReadError, transientApiCode, transientStatus } from './object-read.js';
 import type { CloudflareFetch, OperatorLogin } from './cloudflare.js';
-import { fetchD1Download } from './d1-download.js';
+import { fetchD1Download, injectedD1Download, type D1Download, type D1DownloadFetch } from './d1-download.js';
 
 /**
  * How long one export may run, from its first request to its completion. A backup's export takes minutes; this is
@@ -221,6 +221,7 @@ export interface D1ExportContext {
   /** Shared across the snapshot retries of one backup run. */
   startBudget?: D1ExportStartBudget;
   fetch?: CloudflareFetch;
+  download?: D1DownloadFetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** Test-only overrides of the bound, the cancel margin, the pause between polls and the download's stall. */
@@ -307,7 +308,7 @@ function syncPath(file: string): void {
 /** The steps of one export, over one context. */
 function exporter(context: D1ExportContext) {
   const fetchApi = context.fetch ?? globalThis.fetch;
-  const fetchDownload = context.fetch ?? fetchD1Download;
+  const fetchDownload = context.download ?? (context.fetch ? injectedD1Download(context.fetch) : fetchD1Download);
   const now = context.now ?? Date.now;
   const sleep = context.sleep ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const boundMs = context.boundMs ?? D1_EXPORT_BOUND_MS;
@@ -411,7 +412,7 @@ function exporter(context: D1ExportContext) {
     const failed = (message: string, gone = false, transient = true) => ({ error: new ObjectReadError(message, { transient }), gone });
     try {
       // The signed URL is a capability of its own, fetched with no operator credential, and never written to a message.
-      let response: Response;
+      let response: D1Download;
       try {
         // Asked for as stored, so a length and a range count the bytes written here.
         const headers = new Headers({ 'accept-encoding': 'identity' });
@@ -424,11 +425,11 @@ function exporter(context: D1ExportContext) {
         return failed(`the D1 export download did not reach Cloudflare (${redacted((error as Error).message)})`);
       }
       if ([401, 403, 404, 410].includes(response.status)) {
-        await response.body?.cancel().catch(() => {});
+        await response.reader?.cancel().catch(() => {});
         return failed(`the D1 export download is no longer served (HTTP ${response.status})`, true);
       }
-      if (!response.ok || response.body === null) {
-        await response.body?.cancel().catch(() => {});
+      if (!response.ok || response.reader === null) {
+        await response.reader?.cancel().catch(() => {});
         return failed(`the D1 export download failed (HTTP ${response.status})`, false, response.status === 408 || response.status === 429 || response.status >= 500);
       }
       // An answer served encoded anyway counts its length and ranges in bytes this side never sees: it is taken whole,
@@ -442,7 +443,7 @@ function exporter(context: D1ExportContext) {
           && served.total !== null && Number(range[2]) === served.total
           && strong(served.etag) && strong(etag) && etag === served.etag;
         if (!same) {
-          await response.body.cancel().catch(() => {});
+          await response.reader.cancel().catch(() => {});
           fs.rmSync(part, { force: true });
           return failed('the D1 export download answered a range other than the one asked for, or of another object; it starts again from its first byte');
         }
@@ -451,7 +452,7 @@ function exporter(context: D1ExportContext) {
       const declared = encoded ? Number.NaN : resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
       // A whole answer is told from a cut one by the length it declares; one that declares none is never taken.
       if (!encoded && !Number.isFinite(declared)) {
-        await response.body.cancel().catch(() => {});
+        await response.reader.cancel().catch(() => {});
         fs.rmSync(part, { force: true });
         return failed('the D1 export download declared no length, so a whole answer cannot be told from a cut one');
       }
@@ -461,7 +462,7 @@ function exporter(context: D1ExportContext) {
       }
       const handle = fs.openSync(part, resumed ? 'a' : 'w', 0o600);
       let written = resumed ? offset : 0;
-      const reader = response.body.getReader();
+      const reader = response.reader;
       try {
         for (;;) {
           const chunk = await waiting(() => reader.read());
