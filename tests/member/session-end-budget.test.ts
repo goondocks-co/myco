@@ -55,7 +55,7 @@ describe.skipIf(process.platform === 'win32')('SessionEnd Git enrichment budget'
     fs.writeFileSync(path.join(repo, 'tracked.txt'), 'tracked\n');
     git('add', 'tracked.txt');
     git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '-m', 'fixture');
-    const spool = new MemberSpool('proj_budget', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_budget', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     const transcript = path.join(root, 'end.jsonl');
     fs.writeFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: 'save before exit' } }) + '\n');
     const observation = path.join(root, 'git-observation.jsonl');

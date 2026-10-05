@@ -7,6 +7,7 @@
  * under macOS's per-user temp directory, the longest parent a run meets.
  */
 import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveExternalMcpSocketPath } from '@myco/daemon/external-listener.js';
@@ -15,7 +16,7 @@ import { resolveExternalMcpSocketPath } from '@myco/daemon/external-listener.js'
 const MACOS_USER_TEMP_DIR = `/var/folders/xx/${'x'.repeat(30)}/T`;
 
 /** The temp directory the run started from: the run root's parent under the runner, os.tmpdir() under a raw `bun test`. */
-const RUN_PARENT_TEMP_DIR = process.env.MYCO_TEST_RUN_PARENT_TMPDIR ?? os.tmpdir();
+const RUN_PARENT_TEMP_DIR = fs.realpathSync(process.env.MYCO_TEST_RUN_PARENT_TMPDIR ?? os.tmpdir());
 
 describe('the external-MCP socket of a test daemon', () => {
   it('resolves under the sandbox home, with the run under macOS\'s per-user temp directory', () => {

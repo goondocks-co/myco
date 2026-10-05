@@ -9,7 +9,7 @@ import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/m
 import { drainEntryBacklog } from '@myco/member/backlog.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
@@ -18,11 +18,11 @@ const LARGE = 'held prompt'.repeat(40_000);
 
 function fixture() {
   const mycoHome = tempMycoHome();
-  const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32) };
+  const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32), serverUrl: 'https://s' };
   fs.mkdirSync(repo.root);
   const opts = { mycoHome, now: Date.now() };
   const held = pendingSpool(repo, opts)!;
-  const live = new MemberSpool('proj_1', { mycoHome });
+  const live = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
   const context = (sessionId: string) => ({ agent: 'claude-code', sessionId, stage: held.stagerFor(sessionId), now: () => opts.now });
   return { mycoHome, repo, opts, held, live, context };
 }
@@ -95,7 +95,7 @@ describe('pending migration', () => {
     join(f);
     const read = fs.readFileSync.bind(fs);
     const fault = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
-      if (String(args[0]) === path.join(pendingDir(f.repo.rootKey, f.mycoHome), 'unreadable.jsonl')) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
+      if (String(args[0]) === path.join(pendingDir(f.repo.rootKey, f.mycoHome, 'https://s'), 'unreadable.jsonl')) throw Object.assign(new Error('injected read failure'), { code: 'EIO' });
       return Reflect.apply(read, fs, args);
     }) as typeof fs.readFileSync);
     try {
@@ -145,7 +145,7 @@ describe('pending migration', () => {
   it('leaves held migration for the next helper when a pending writer owns the repository lock', () => {
     const f = fixture();
     appendPending(f.repo, 'busy', [sessionStartEvent(f.context('busy'), { startedAt: f.opts.now, originPath: f.repo.root })], undefined, f.opts);
-    const taken = LifecycleLock.acquire(path.join(path.dirname(f.held.dir), `.${f.repo.rootKey}.lock`), { command: 'test pending writer' });
+    const taken = LifecycleLock.acquire(path.join(f.mycoHome, 'member', 'pending', `.${f.repo.rootKey}.lock`), { command: 'test pending writer' });
     if (!taken.acquired) throw new Error('failed to acquire pending writer fixture');
     try {
       expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(0);
@@ -157,7 +157,7 @@ describe('pending migration', () => {
   it('appends joined capture while the pending migration owns the repository lock', () => {
     const f = fixture();
     join(f);
-    const taken = LifecycleLock.acquire(path.join(path.dirname(f.held.dir), `.${f.repo.rootKey}.lock`), { command: 'test pending migration' });
+    const taken = LifecycleLock.acquire(path.join(f.mycoHome, 'member', 'pending', `.${f.repo.rootKey}.lock`), { command: 'test pending migration' });
     if (!taken.acquired) throw new Error('failed to acquire pending migration fixture');
     try {
       const source = new URL('../../packages/myco/src/member/pending.ts', import.meta.url).href;
@@ -172,12 +172,12 @@ describe('pending migration', () => {
     const before = sessionStartEvent(f.context('damaged'), { startedAt: f.opts.now, originPath: f.repo.root });
     const after = sessionStartEvent(f.context('damaged'), { startedAt: f.opts.now + 1, originPath: f.repo.root });
     appendPending(f.repo, 'damaged', [before], undefined, f.opts);
-    fs.appendFileSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome), 'damaged.jsonl'), '{broken}\n');
+    fs.appendFileSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome, 'https://s'), 'damaged.jsonl'), '{broken}\n');
     appendPending(f.repo, 'damaged', [after], undefined, f.opts);
     expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(2);
     expect(f.live.readRecords('damaged').map((line) => line?.eventId)).toEqual([before.envelope.eventId, after.envelope.eventId]);
     expect(readCaptureLoss(f.live.dir)).toMatchObject({ readable: true, records: 1 });
-    expect(fs.existsSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome), 'damaged.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(pendingDir(f.repo.rootKey, f.mycoHome, 'https://s'), 'damaged.jsonl'))).toBe(false);
     expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(0);
     expect(f.live.readRecords('damaged')).toHaveLength(2);
     expect(readCaptureLoss(f.live.dir)).toMatchObject({ readable: true, records: 1 });
@@ -188,10 +188,10 @@ describe('pending migration', () => {
     const event = promptEvent(f.context('referenced'), { promptId: mintId(), text: LARGE });
     appendPending(f.repo, 'referenced', [event], undefined, f.opts);
     expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(1);
-    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(false);
+    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, serverUrl: 'https://s', now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(false);
     expect(fs.existsSync(event.blobSource!.path)).toBe(true);
     updateSessionState(f.live.dir, 'referenced', (state) => { state.highWater = 1; }, f.opts.now);
-    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(true);
+    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, serverUrl: 'https://s', now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(true);
   });
 
   it('carries held capture-loss totals into the joined project before retiring pending metadata', () => {

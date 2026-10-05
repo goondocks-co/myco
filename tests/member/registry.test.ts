@@ -108,7 +108,7 @@ describe('member registry', () => {
   });
 
   it('the spool creates its dirs 0700 and its files 0600 before any lock or buffer touches them', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s.example' }, { mycoHome });
     expect(mode(spool.dir)).toBe(0o700);
     expect(mode(spool.blobsDir)).toBe(0o700);
     spool.append('sess-1', { envelope: { eventId: '00000000-0000-7000-8000-000000000001', sessionId: 'sess-1', kind: 'session.end', createdAt: 1, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload: {} } });

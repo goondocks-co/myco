@@ -6,7 +6,7 @@ import { REFUSAL_RETRY_INITIAL_MS } from '@myco/member/constants.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { projectDiagnostics } from '@myco/member/diagnostics.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
 import { runStatus } from '@myco/cli/member.js';
@@ -19,8 +19,8 @@ describe('payload loss disposition', () => {
   it('confirms deletion across retries, sends blob_absent, delivers the tail and reports one visible loss', async () => {
     const mycoHome = tempMycoHome();
     const rig = await memberRig();
-    const entry = registerTestMember({ root: '/repo-loss', token: rig.token, projectId: 'proj_1', mycoHome });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const entry = registerTestMember({ root: '/repo-loss', serverUrl: 'https://s', token: rig.token, projectId: 'proj_1', mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'deleted', stage: spool.stagerFor('deleted') };
     const lost = promptEvent(ctx, { promptId: mintId(), text: TEXT });
     const tail = promptEvent(ctx, { promptId: mintId(), text: 'after missing bytes' });
@@ -54,7 +54,7 @@ describe('payload loss disposition', () => {
 
   it.each(['EACCES', 'EIO'])('keeps %s bytes retryable while delivering later records', async (code) => {
     const mycoHome = tempMycoHome();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: code, stage: spool.stagerFor(code) };
     const first = promptEvent(ctx, { promptId: mintId(), text: TEXT });
     spool.appendAndRecord(code, [sessionStartEvent(ctx, {}), first, promptEvent(ctx, { promptId: mintId(), text: 'healthy tail' })]);
@@ -82,7 +82,7 @@ describe('payload loss disposition', () => {
     const mycoHome = tempMycoHome();
     const original = path.join(mycoHome, 'original.txt');
     fs.writeFileSync(original, TEXT);
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'repair', stage: spool.stagerFor('repair') };
     const event = promptEvent(ctx, { promptId: mintId(), text: TEXT });
     event.blobSource!.recovery = { path: original };
@@ -96,7 +96,7 @@ describe('payload loss disposition', () => {
   });
 
   it('bounds loss accounting and preserves its count after session state retires', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     updateSessionState(spool.dir, 'loss-count', (state) => {
       for (let i = 0; i < MAX_RECENT_CAPTURE_LOSSES + 1; i++) recordSessionLoss(state, `lost-${i}`, 'payload', Date.now());
     });
@@ -110,8 +110,8 @@ describe('payload loss disposition', () => {
   });
 
   it('bounds completed migration receipts without losing their accumulated totals', () => {
-    const source = new MemberSpool('proj_source', { mycoHome: tempMycoHome() });
-    const target = new MemberSpool('proj_target', { mycoHome: tempMycoHome() });
+    const source = new MemberSpool({ projectId: 'proj_source', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
+    const target = new MemberSpool({ projectId: 'proj_target', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     new CaptureLossLedger(source.dir).record([{ key: 'lost-plan', kind: 'plan', at: Date.now() }]);
     const ledger = new CaptureLossLedger(target.dir);
     for (let i = 0; i <= MAX_RECENT_CAPTURE_LOSSES; i++) ledger.transferFrom(source.dir, `hold-${i}`);
@@ -137,7 +137,7 @@ describe('payload loss disposition', () => {
   });
 
   it('keeps the held record after a crash immediately following journal replacement', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const ctx = { agent: 'claude-code', sessionId: 'crash', stage: spool.stagerFor('crash') };
     const rig = await memberRig();
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
@@ -164,7 +164,7 @@ describe('payload loss disposition', () => {
   });
 
   it('does not count local deletion as loss when the Deployment already has the bytes', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const ctx = { agent: 'claude-code', sessionId: 'already-uploaded', stage: spool.stagerFor('already-uploaded') };
     const event = promptEvent(ctx, { promptId: mintId(), text: TEXT });
     const rig = await memberRig();
@@ -181,7 +181,7 @@ describe('payload loss disposition', () => {
   });
 
   it('preserves a later server refusal window when local payload retries are compacted', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const ctx = { agent: 'claude-code', sessionId: 'two-waits', stage: spool.stagerFor('two-waits') };
     const missing = promptEvent(ctx, { promptId: mintId(), text: TEXT });
     const refused = promptEvent(ctx, { promptId: mintId(), text: 'future event' });

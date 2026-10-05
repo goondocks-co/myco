@@ -13,6 +13,7 @@ import { deploymentsDir, machineSettingsPath } from './registry.js';
 import { ensureMemberDir, ensurePrivateFile, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
 import { ServerClient, type FetchLike } from './transport.js';
+import { assertDeploymentTokenPair } from './token-pairing.js';
 
 /** The leaf naming the folders this machine's agents write plans to, beyond the ones each agent's manifest names. */
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
@@ -205,6 +206,11 @@ export const SETTINGS_READ_PATH = '/members/settings';
 export async function seedMachineSettings(
   record: { serverUrl: string; token: string }, opts: { mycoHome: string; fetch?: FetchLike },
 ): Promise<boolean> {
+  try { assertDeploymentTokenPair(record, opts.mycoHome); }
+  catch (error) {
+    process.stderr.write(`[myco] member: machine settings not fetched (${(error as Error).message})\n`);
+    return false;
+  }
   try {
     const client = new ServerClient({ serverUrl: record.serverUrl, token: record.token }, opts.fetch ?? globalThis.fetch);
     const requestOrder = beginMachineSettingsRequest(record.serverUrl, opts.mycoHome);

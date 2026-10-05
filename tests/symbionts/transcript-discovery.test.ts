@@ -169,7 +169,23 @@ describe('transcript discovery — lookup', () => {
         roots: [path.join(tmpDir, 'projects')],
         patterns: ['*/agent-transcripts/{sessionId}.txt', '*/agent-transcripts/{sessionId}/{sessionId}.jsonl'],
       });
-      expect(enumerateTranscripts(discovery)).toHaveLength(1);
+      expect(enumerateTranscripts(discovery)).toEqual([{ sessionId: id, filePath: path.join(dir, `${id}.txt`) }]);
+    });
+
+    it('keeps identical session ids in separate member destinations', () => {
+      const root = path.join(tmpDir, 'member', 'transcripts');
+      const id = 'shared-session';
+      const files = ['1111111111111111', '2222222222222222'].map((deployment) => {
+        const dir = path.join(root, deployment, 'proj_same', 'opencode');
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, `${id}.jsonl`);
+        fs.writeFileSync(file, '{}');
+        return file;
+      });
+      const discovery = transcriptDiscovery({
+        roots: [root], patterns: ['*/*/opencode/{sessionId}.jsonl'], retention: 'member',
+      });
+      expect(enumerateTranscripts(discovery).map((item) => item.filePath).sort()).toEqual(files.sort());
     });
   });
 });

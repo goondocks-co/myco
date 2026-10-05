@@ -18,7 +18,7 @@ function syncDirectoryIfSupported(directory: string): void {
 }
 
 /** Read and verify local payloads before either migration or delivery consumes their records. */
-export function readStagedBlob(source: BlobSource): StagedBlobRead {
+function readOne(source: BlobSource): StagedBlobRead {
   let bytes: Buffer;
   try { bytes = fs.readFileSync(source.path); }
   catch { return { status: pathIsAbsent(source.path) ? 'missing' : 'unreadable' }; }
@@ -26,9 +26,23 @@ export function readStagedBlob(source: BlobSource): StagedBlobRead {
   return { status: 'ready', bytes };
 }
 
+/** Retained migration staging carries the same missing, corrupt and transient availability contract. */
+export function readStagedBlob(source: BlobSource): StagedBlobRead {
+  const primary = readOne(source);
+  if (primary.status === 'ready' || source.migrationSource === undefined) return primary;
+  const retained = readOne({ ...source, path: source.migrationSource.path });
+  if (retained.status === 'ready') return retained;
+  const retired = readOne({ ...source, path: source.migrationSource.retiredPath });
+  if (retired.status === 'ready') return retired;
+  const outcomes = [primary, retained, retired];
+  if (outcomes.some((read) => read.status === 'unreadable')) return { status: 'unreadable' };
+  if (outcomes.some((read) => read.status === 'corrupt')) return { status: 'corrupt' };
+  return { status: 'missing' };
+}
+
 /** Publish complete verified bytes by rename; concurrent identical stagers publish interchangeable objects. */
 export function publishStagedBlob(source: BlobSource, bytes: Uint8Array): void {
-  if (readStagedBlob(source).status === 'ready') {
+  if (readOne(source).status === 'ready') {
     const now = new Date();
     try { fs.utimesSync(source.path, now, now); return; }
     catch (err) { if (!pathIsAbsent(source.path)) throw err; }
@@ -36,7 +50,7 @@ export function publishStagedBlob(source: BlobSource, bytes: Uint8Array): void {
   const temporary = `${source.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, bytes, { mode: MEMBER_FILE_MODE, flag: 'wx' });
-    const staged = readStagedBlob({ ...source, path: temporary });
+    const staged = readOne({ ...source, path: temporary });
     if (staged.status !== 'ready') throw new Error(`Staged blob publication failed verification (${staged.status})`);
     const fd = fs.openSync(temporary, 'r+');
     try { fs.fsyncSync(fd); }

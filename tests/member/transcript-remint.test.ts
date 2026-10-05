@@ -31,6 +31,7 @@ const MACHINE = 'machine_1';
 function disagreeingClient(answers: Outcome[]): { client: ServerClient; posted: MemberEnvelope[] } {
   const posted: MemberEnvelope[] = [];
   const client = {
+    serverUrl: 'https://s', projectId: 'proj_1',
     postBlob: async (): Promise<Outcome> => ({ class: 'acked', body: {} }),
     postEvent: async (envelope: MemberEnvelope): Promise<Outcome> => {
       posted.push(envelope);
@@ -42,7 +43,7 @@ function disagreeingClient(answers: Outcome[]): { client: ServerClient; posted: 
 
 describe('a transcript the Deployment reports replaced', () => {
   it('is re-minted over the file\'s current bytes and shipped again from offset zero under a new id, once', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remint-')), `${SESSION}.jsonl`);
     fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'x'.repeat(TRANSCRIPT_HEAD_HASH_BYTES) } }) + '\n');
     const fresh = transcriptPointerFor(file, MACHINE)!;
@@ -65,7 +66,7 @@ describe('a transcript the Deployment reports replaced', () => {
   });
 
   it('refuses a second disagreement under the fresh id rather than re-minting forever', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remint-')), `${SESSION}.jsonl`);
     fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'y'.repeat(TRANSCRIPT_HEAD_HASH_BYTES) } }) + '\n');
     const fresh = transcriptPointerFor(file, MACHINE)!;
@@ -83,7 +84,7 @@ describe('a transcript the Deployment reports replaced', () => {
   });
 
   it('never re-mints a pointer whose file is too short for a digest: the same bytes mint the same id', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remint-')), `${SESSION}.jsonl`);
     fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'short' } }) + '\n');
     const pointer = transcriptPointerFor(file, MACHINE)!;

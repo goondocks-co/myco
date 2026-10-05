@@ -73,7 +73,7 @@ describe('capture is never lost permanently at the commit point', () => {
       await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: root });
       fs.writeFileSync(file, '# Durable\n\n- [ ] one\n');
       const before = rig.rows('events');
-      const spool = new MemberSpool('proj_1', { mycoHome });
+      const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
 
       const crashed = await crashAtCommit(() => run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: '', cwd: root }));
 
@@ -101,7 +101,7 @@ describe('capture is never lost permanently at the commit point', () => {
   it('a pasted plan tag killed at the commit point leaves no receipt, and the rerun lands it once', async () => {
     const tx = transcript('/nowhere/plan.md');
     await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     const prompt = 'Approved:\n<ultraplan>\n# Pasted\n</ultraplan>';
     const crashed = await crashAtCommit(() => run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt }));
     // Fail open: the harness still gets its response and the hook exits 0.

@@ -41,6 +41,8 @@ export interface BlobSource {
   size: number;
   /** Original file bytes available to reconstruct a staged object after local corruption. */
   recovery?: { path: string; offset?: number };
+  /** Retained legacy staging consulted while the destination owns the primary payload path. */
+  migrationSource?: { path: string; retiredPath: string };
 }
 
 /** One event ready for the spool: the wire envelope plus its blob source, when the payload references one. */

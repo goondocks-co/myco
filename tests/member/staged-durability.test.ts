@@ -9,7 +9,7 @@ import { appendPending, appendPendingTurnEnd, expirePending, flushPending, PENDI
 import { registryEntryPath, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 
 const LARGE = 'capture'.repeat(50_000);
@@ -18,7 +18,7 @@ const context = (spool: MemberSpool, sessionId: string) => ({ agent: 'claude-cod
 describe('staged capture durability', () => {
   it('repairs a torn content-addressed object before returning its reference and accepts the capture once', async () => {
     const mycoHome = tempMycoHome();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = context(spool, 'torn');
     const first = promptEvent(ctx, { promptId: mintId(), text: LARGE });
     fs.truncateSync(first.blobSource!.path, 1);
@@ -32,7 +32,7 @@ describe('staged capture durability', () => {
   });
 
   it('a partial staging write never publishes partial final bytes and a retry repairs it', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const stage = spool.stagerFor('fault');
     const bytes = Buffer.from(LARGE);
     const digest = crypto.createHash('sha256').update(bytes).digest('hex');
@@ -55,7 +55,7 @@ describe('staged capture durability', () => {
   });
 
   it('holds corrupt local bytes before a terminal server digest refusal can consume the receipt', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const event = promptEvent(context(spool, 'corrupt'), { promptId: mintId(), text: LARGE });
     spool.append('corrupt', event);
     fs.truncateSync(event.blobSource!.path, 1);
@@ -67,7 +67,7 @@ describe('staged capture durability', () => {
   });
 
   it('publishes new complete objects through rename without writing the final name', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const bytes = Buffer.from(LARGE);
     const digest = crypto.createHash('sha256').update(bytes).digest('hex');
     const final = path.join(spool.blobsDirFor('publication'), digest);
@@ -85,7 +85,7 @@ describe('staged capture durability', () => {
   });
 
   it('syncs the staged file and its directory before publishing its final name', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const bytes = Buffer.from(LARGE);
     const dir = spool.blobsDirFor('sync-order');
     const final = path.join(dir, crypto.createHash('sha256').update(bytes).digest('hex'));
@@ -117,7 +117,7 @@ describe('staged capture durability', () => {
   });
 
   it('publishes when file flushing requires a writable handle', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const open = fs.openSync.bind(fs);
     const sync = fs.fsyncSync.bind(fs);
     const readonly = new Set<number>();
@@ -140,7 +140,7 @@ describe('staged capture durability', () => {
   });
 
   it('does not publish a staged blob when its file sync fails', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome: tempMycoHome() });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: tempMycoHome() });
     const bytes = Buffer.from(LARGE);
     const final = path.join(spool.blobsDirFor('sync-failure'), crypto.createHash('sha256').update(bytes).digest('hex'));
     const syncing = spyOn(fs, 'fsyncSync').mockImplementation(() => {
@@ -154,12 +154,12 @@ describe('staged capture durability', () => {
 
   it('concurrent identical stagers and readers observe only complete final objects', async () => {
     const mycoHome = tempMycoHome();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const bytes = Buffer.from(LARGE);
     const digest = crypto.createHash('sha256').update(bytes).digest('hex');
     const file = path.join(spool.blobsDirFor('race'), digest);
     const modulePath = path.resolve('packages/myco/src/member/spool.ts');
-    const script = `import {MemberSpool} from ${JSON.stringify(modulePath)}; const stage = new MemberSpool('proj_1',{mycoHome:process.argv[1]}).stagerFor('race'); for(let i=0;i<15;i++) stage(Buffer.from('capture'.repeat(50000)),'text/plain');`;
+    const script = `import {MemberSpool} from ${JSON.stringify(modulePath)}; const stage = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' },{mycoHome:process.argv[1]}).stagerFor('race'); for(let i=0;i<15;i++) stage(Buffer.from('capture'.repeat(50000)),'text/plain');`;
     const observed: string[] = [];
     const reader = setInterval(() => {
       try { observed.push(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')); }
@@ -181,12 +181,12 @@ describe('staged capture durability', () => {
 
   it('an interrupted pending move can replay the same envelopes without duplicating the target journal', () => {
     const mycoHome = tempMycoHome();
-    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'c'.repeat(32) };
+    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'c'.repeat(32), serverUrl: 'https://s' };
     const opts = { mycoHome, now: Date.now() };
     const source = pendingSpool(repo, opts)!;
     const event = promptEvent(context(source, 'replay'), { promptId: mintId(), text: LARGE });
     appendPending(repo, 'replay', [event], (state) => { state.prompts.receipt = 'id'; }, opts);
-    const target = new MemberSpool('proj_1', { mycoHome });
+    const target = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const interrupt = spyOn(target, 'appendMovedTurnEnds').mockImplementation(() => { throw new Error('interrupted move'); });
     try { expect(() => flushPending(repo.rootKey, target, opts)).toThrow('interrupted move'); }
     finally { interrupt.mockRestore(); }
@@ -200,12 +200,12 @@ describe('staged capture durability', () => {
   for (const code of ['EACCES', 'EIO', 'ENOENT']) {
     it(`pending migration transfers the source and receipts across ${code}, then delivers when readable`, async () => {
       const mycoHome = tempMycoHome();
-      const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'a'.repeat(32) };
+      const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'a'.repeat(32), serverUrl: 'https://s' };
       const opts = { mycoHome, now: Date.now() };
       const source = pendingSpool(repo, opts)!;
       const event = promptEvent(context(source, 'pending'), { promptId: mintId(), text: LARGE });
       appendPending(repo, 'pending', [event], (state) => { state.prompts.receipt = 'prompt-id'; }, opts);
-      const target = new MemberSpool('proj_1', { mycoHome });
+      const target = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
       const read = fs.readFileSync.bind(fs);
       const fault = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
         if (String(args[0]) === event.blobSource!.path) throw Object.assign(new Error('injected read failure'), { code });
@@ -228,13 +228,13 @@ describe('staged capture durability', () => {
 
   it('moves missing pending bytes with their journal and receipt for live disposition', () => {
     const mycoHome = tempMycoHome();
-    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'b'.repeat(32) };
+    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'b'.repeat(32), serverUrl: 'https://s' };
     const opts = { mycoHome, now: Date.now() };
     const source = pendingSpool(repo, opts)!;
     const event = promptEvent(context(source, 'missing'), { promptId: mintId(), text: LARGE });
     appendPending(repo, 'missing', [event], (state) => { state.prompts.receipt = 'id'; }, opts);
     fs.unlinkSync(event.blobSource!.path);
-    const target = new MemberSpool('proj_1', { mycoHome });
+    const target = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     expect(flushPending(repo.rootKey, target, opts)).toBe(1);
     expect(fs.existsSync(path.join(source.dir, 'missing.jsonl'))).toBe(false);
     expect(target.readRecords('missing')[0]?._blobSource?.path).toBe(event.blobSource!.path);
@@ -243,7 +243,7 @@ describe('staged capture durability', () => {
 
   it('new capture and turn marks enter the live spool while a held blob read fails', () => {
     const mycoHome = tempMycoHome();
-    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32) };
+    const repo = { root: path.join(mycoHome, 'repo'), rootKey: 'd'.repeat(32), serverUrl: 'https://s' };
     fs.mkdirSync(repo.root);
     const opts = { mycoHome, now: Date.now() };
     const source = pendingSpool(repo, opts)!;
@@ -259,7 +259,7 @@ describe('staged capture durability', () => {
       return Reflect.apply(read, fs, args);
     }) as typeof fs.readFileSync);
     const mark = { slot: 'primary' as const, transcriptId: 'tx_1234', atSize: 10 };
-    const target = new MemberSpool('proj_1', { mycoHome });
+    const target = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     try {
       expect(appendPending(repo, 'ordered', [fresh], undefined, opts)).toBe('project');
       expect(appendPendingTurnEnd(repo, 'ordered', mark, undefined, opts)).toBe('project');

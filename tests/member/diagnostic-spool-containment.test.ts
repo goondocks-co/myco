@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { deploymentKeyFor } from '@myco/member/registry.js';
 import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
 import { isProjectId } from '@myco/member/constants.js';
 import {
@@ -62,9 +63,9 @@ describe('an id that is a path, not a project', () => {
 
   it('names no directory, whether or not one would be made', () => {
     for (const id of escapes) {
-      expect(() => spoolDirFor(id, mycoHome)).toThrow();
-      expect(() => new MemberSpool(id, { mycoHome })).toThrow();
-      expect(() => new MemberSpool(id, { mycoHome, initialize: false })).toThrow();
+      expect(() => spoolDirFor({ projectId: id, serverUrl: 'https://deployment.example' }, mycoHome)).toThrow();
+      expect(() => new MemberSpool({ projectId: id, serverUrl: 'https://deployment.example' }, { mycoHome })).toThrow();
+      expect(() => new MemberSpool({ projectId: id, serverUrl: 'https://deployment.example' }, { mycoHome, initialize: false })).toThrow();
     }
   });
 
@@ -75,7 +76,7 @@ describe('an id that is a path, not a project', () => {
 
     // The id a crafted entry would carry to reach `outside`.
     const rel = path.relative(path.join(mycoHome, 'member', 'spool'), outside);
-    expect(() => new MemberSpool(rel, { mycoHome, initialize: false })).toThrow();
+    expect(() => new MemberSpool({ projectId: rel, serverUrl: 'https://deployment.example' }, { mycoHome, initialize: false })).toThrow();
 
     expect(tree(outside)).toEqual(before);
     expect(fs.readFileSync(marker, 'utf-8')).toBe('untouched');
@@ -115,8 +116,8 @@ describe('a registry entry carrying such an id', () => {
 
 describe('an id a project really carries', () => {
   it('still names its own directory under the spool root, and reads it', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
-    expect(spool.dir).toBe(path.join(mycoHome, 'member', 'spool', 'proj_1'));
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
+    expect(spool.dir).toBe(path.join(mycoHome, 'member', 'spool', `d-${deploymentKeyFor('https://deployment.example')}`, 'proj_1'));
     expect(spool.readSpool()).toEqual({ readable: true, sessions: [] });
 
     writeRegistryEntry(entry('proj_1'), { mycoHome });
@@ -127,7 +128,7 @@ describe('an id a project really carries', () => {
   it('admits the punctuation the grammar allows', () => {
     for (const id of ['proj_1', 'a.b-c_d', 'A'.repeat(64)]) {
       expect(isProjectId(id)).toBe(true);
-      expect(spoolDirFor(id, mycoHome)).toBe(path.join(mycoHome, 'member', 'spool', id));
+      expect(spoolDirFor({ projectId: id, serverUrl: 'https://deployment.example' }, mycoHome)).toBe(path.join(mycoHome, 'member', 'spool', `d-${deploymentKeyFor('https://deployment.example')}`, id));
     }
   });
 });

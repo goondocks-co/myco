@@ -21,7 +21,8 @@ import { buildIdentity, refreshDue, refreshMemberCredential, refreshMembership, 
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { deliveryNotice } from '@myco/member/delivery-notice.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 
@@ -184,7 +185,7 @@ describe('member token rotation', () => {
 
     expect(eventCalls(spy)).toBe(2);
     expect(rig.rows('prompt_batches')).toBe(1);
-    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBe(0);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBe(0);
     expect(out.stderr).not.toContain('myco login');
     expect(refreshCalls(spy)).toBe(0);
   });
@@ -363,7 +364,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal }).toEqual({ nonRotating: true, refreshTerminal: false });
     expect(first.stderr).toContain('member token refused');
     expect(rig.rows('prompt_batches')).toBe(0);
-    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBeGreaterThan(0);
 
     // The next hook says so: the refusal was learned by the helper after this hook answered.
     const again = await prompt(spy.fetch, 'again');
@@ -386,7 +387,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     const entry = readRegistryEntry(root, mycoHome)!;
     expect({ nonRotating: entry.nonRotating, refreshTerminal: entry.refreshTerminal, refused: typeof entry.refusedAt, expiresAt: entry.expiresAt }).toEqual({ nonRotating: true, refreshTerminal: false, refused: 'number', expiresAt: rig.expiresAt });
     expect(stopped.stderr).toContain('member token refused');
-    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBeGreaterThan(0);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBeGreaterThan(0);
 
     // The next hook carries the notice.
     const told = await prompt(spy.fetch, 'still stopped');
@@ -417,7 +418,7 @@ describe('a credential minted not to rotate (#1420)', () => {
     const next = await prompt(spy.fetch, 'after the proxy');
     expect(next.stderr).not.toContain('Myco capture is not being delivered');
     expect(rig.rows('prompt_batches')).toBe(3);
-    expect(new MemberSpool(PROJECT, { mycoHome }).depth(session)).toBe(0);
+    expect(new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).depth(session)).toBe(0);
   });
 
   it('in a registry, a refusal recorded against a token the Deployment still accepts is cleared by the next acknowledged send', async () => {

@@ -184,7 +184,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     expect(requests.map((r) => r.path)).toContain('/events');
     expect(rig.rows('events')).toBe(1);
     // The spool is under the pinned home, not under `~/.myco`.
-    expect(fs.existsSync(spoolDirFor('proj_1', home))).toBe(true);
+    expect(fs.existsSync(spoolDirFor({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, home))).toBe(true);
   });
 
   it('caches this machine\'s settings in the home the project pin names, and reads its plan folders back from there (#1393)', async () => {

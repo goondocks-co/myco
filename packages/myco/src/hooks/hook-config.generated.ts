@@ -434,10 +434,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     },
     "transcriptDiscovery": {
       "roots": [
-        "@memberHome/member/transcripts/cline"
+        "@memberHome/member/transcripts"
       ],
       "patterns": [
-        "{sessionId}.jsonl"
+        "*/*/cline/{sessionId}.jsonl"
       ],
       "transcriptCwdPath": "cwd",
       "retention": "member"
@@ -927,10 +927,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     },
     "transcriptDiscovery": {
       "roots": [
-        "@memberHome/member/transcripts/opencode"
+        "@memberHome/member/transcripts"
       ],
       "patterns": [
-        "{sessionId}.jsonl"
+        "*/*/opencode/{sessionId}.jsonl"
       ],
       "transcriptCwdPath": "cwd",
       "retention": "member"

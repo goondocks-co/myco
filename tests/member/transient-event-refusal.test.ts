@@ -15,7 +15,8 @@ import { REFUSAL_RETRY_INITIAL_MS, REFUSAL_RETRY_MAX_MS, UNCLASSIFIED_REFUSAL_HO
 import { mintId, promptEvent, sessionStartEvent, type EnvelopeContext, type OutboundEvent } from '@myco/member/envelope.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, runHook } from './helpers/hooks.js';
 
@@ -68,7 +69,7 @@ function answering(rig: MemberRig, refuse: (envelope: { eventId: string; session
 describe('an event refused for a passing reason', () => {
   it('resumes with clock_skew on the first drain and a working clock on the next: every event is delivered once, in order, with no duplicate row', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const t0 = Date.now();
     // The machine resumed from suspend with its clock an hour ahead of the Deployment's.
     const ahead = t0 + HOUR_MS;
@@ -104,7 +105,7 @@ describe('an event refused for a passing reason', () => {
 
   it('holds one session on its refusal and delivers every other session the walk reaches', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const held = ctxFor(spool, 'sess-a-held');
     const heldEvents = [sessionStartEvent(held, { startedAt: Date.now() }), prompt(held, 'a1'), prompt(held, 'a2')];
     // A kind this Deployment's version does not know yet: an older server.
@@ -129,7 +130,7 @@ describe('an event refused for a passing reason', () => {
   it('is passed over by a backlog walk while its wait runs, sent once it has run out, and sent at once by `myco member drain`', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-wait');
     const events = [sessionStartEvent(ctx, { startedAt: Date.now() }), prompt(ctx, 'w1')];
     for (const e of events) spool.append('sess-wait', e);
@@ -165,7 +166,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-bad');
     const events = [prompt(ctx, 'never accepted'), sessionStartEvent(ctx, { startedAt: t0 })];
     for (const e of events) spool.append('sess-bad', e);
@@ -194,7 +195,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-away');
     spool.append('sess-away', prompt(ctx, 'refused before the machine went away'));
     const spy = answering(rig, () => 'refused');
@@ -222,7 +223,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-archived-weekend');
     spool.append('sess-archived-weekend', prompt(ctx, 'captured while archived'));
     let code: MemberCode = 'project_archived';
@@ -249,7 +250,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-broken-run');
     spool.append('sess-broken-run', prompt(ctx, 'unknown, then archived, then unknown'));
     const archivedAt = t0 + 36 * HOUR_MS;
@@ -269,7 +270,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-archived-after');
     spool.append('sess-archived-after', prompt(ctx, 'unknown for three days, then archived'));
     const archivedAt = t0 + UNCLASSIFIED_REFUSAL_HOLD_MS;
@@ -287,7 +288,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-alternating');
     const big = prompt(ctx, 'a'.repeat(300_000));
     spool.append('sess-alternating', big);
@@ -315,7 +316,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-archived-then-away');
     spool.append('sess-archived-then-away', prompt(ctx, 'archived, then unknown, then the machine went away'));
     let code: MemberCode = 'project_archived';
@@ -345,7 +346,7 @@ describe('an event refused for a passing reason', () => {
     const t0 = Date.now();
     setSystemTime(new Date(t0));
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-archived');
     spool.append('sess-archived', prompt(ctx, 'archived project'));
     const spy = answering(rig, () => 'project_archived');
@@ -357,7 +358,7 @@ describe('an event refused for a passing reason', () => {
 
   it('holds missing staged bytes for recovery, then drops only a payload the Deployment refuses permanently', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-bytes');
     const gone = prompt(ctx, 'g'.repeat(300_000));
     const capped = prompt(ctx, 'c'.repeat(300_001));
@@ -383,7 +384,7 @@ describe('an event refused for a passing reason', () => {
   });
   it('holds a record whose staged bytes are there but could not be read, keeps the bytes, and delivers it once they can be', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-locked');
     const big = prompt(ctx, 'l'.repeat(300_000));
     const after = prompt(ctx, 'after');
@@ -405,7 +406,7 @@ describe('an event refused for a passing reason', () => {
 
   it('holds a record the Deployment answers blob_absent while its staged bytes are still on this machine, and uploads them again', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-blob');
     const big = prompt(ctx, 'b'.repeat(300_000));
     spool.append('sess-blob', big);
@@ -419,7 +420,7 @@ describe('an event refused for a passing reason', () => {
 
   it('drops at once a record the Deployment refuses for a field outside its bound, and delivers the records after it', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-field');
     const bad = prompt(ctx, 'bad origin');
     (bad.envelope.payload as Record<string, unknown>).origin = 'not-an-origin';
@@ -434,7 +435,7 @@ describe('an event refused for a passing reason', () => {
   it('drops the events of a session another machine owns rather than holding them: the identity is not this machine\'s to change', async () => {
     const rig = await memberRig();
     const other = await rig.otherMachine();
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     const theirs = sessionStartEvent(ctxFor(spool, 'sess-theirs'), { startedAt: Date.now() });
     const answer = await new ServerClient({ serverUrl: SERVER_URL, token: other.token, projectId: PROJECT }, rig.fetch).postEvent(theirs.envelope, unboundedBudget());
     expect(answer.class).toBe('acked');
@@ -449,7 +450,7 @@ describe('an event refused for a passing reason', () => {
   it('delivers the other sessions\' backlog from a probing hook whose own session is held on a refusal of its own records', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: SERVER_URL });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
     spool.append('sess-own', prompt(ctxFor(spool, 'sess-own'), 'held'));
     const otherEvents = [sessionStartEvent(ctxFor(spool, 'sess-other'), { startedAt: Date.now() })];
     for (const e of otherEvents) spool.append('sess-other', e);

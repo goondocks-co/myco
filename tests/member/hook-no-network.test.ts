@@ -92,7 +92,7 @@ describe('no hook waits on the network (G1)', () => {
       const requests = fs.existsSync(fetchLog) ? fs.readFileSync(fetchLog, 'utf-8').trim().split('\n') : [];
       if (source === 'registry' || !ENDS.includes(hook)) expect(requests).toEqual([]);
 
-      const spool = new MemberSpool('proj_1', { mycoHome });
+      const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
       const state = readSessionState(spool.dir, sessionId);
       const leftWork = spool.depth(sessionId) > 0 || (state.contextAsks ?? []).length > 0 || ALWAYS_KICKS.includes(hook);
       const kicks = fs.existsSync(kickLog) ? fs.readFileSync(kickLog, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as string[]) : [];
@@ -100,7 +100,7 @@ describe('no hook waits on the network (G1)', () => {
       if (source === 'env') expect(kicks).toEqual([]);
       else if (leftWork) {
         expect(kicks.length).toBeGreaterThan(0);
-        expect(kicks[0].slice(-6)).toEqual(['member', 'helper', '--project', 'proj_1', '--home', mycoHome]);
+        expect(kicks[0].slice(-8)).toEqual(['member', 'helper', '--project', 'proj_1', '--server', 'https://member-test.invalid', '--home', mycoHome]);
       }
     }, 30_000);
   }

@@ -38,7 +38,7 @@ const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ ag
 describe('myco member drain / status', () => {
   it('drain delivers every spooled event for the current project, ignoring the latch; status reports the redacted entry and an empty spool afterwards', async () => {
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     for (let i = 0; i < 4; i++) spool.append('sess-cli', promptEvent(ctxFor(spool, 'sess-cli'), { promptId: mintId(), text: `p${i}` }));
     spool.markOffline(Date.now());
     const out: string[] = [];
@@ -67,7 +67,7 @@ describe('myco member drain / status', () => {
 
   it('status reports the acknowledgement of a session whose spool file the drain has already deleted, and reports none when nothing has ever been acked', async () => {
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     const out: string[] = [];
     const err: string[] = [];
     const status = async (): Promise<string> => {
@@ -91,7 +91,7 @@ describe('myco member drain / status', () => {
 
   it('status counts a transcript segment the Deployment acknowledged as a delivery, for a session that shipped nothing else', async () => {
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     // A session whose turns arrive only in its transcript (`turnRowSource: transcript`): no event of its own is spooled.
     const dir = fs.mkdtempSync(path.join(mycoHome, 'tx-'));
     const tx = path.join(dir, 'sess-segments.jsonl');
@@ -112,7 +112,7 @@ describe('myco member drain / status', () => {
 
   it('does not count a blob the Deployment took as a delivery when the record it belongs to is refused', async () => {
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     // A record too long to travel inline, of a kind the Deployment does not take: its bytes upload, the record is refused.
     const event = promptEvent(ctxFor(spool, 'sess-blob'), { promptId: mintId(), text: 'x'.repeat(MEMBER_INLINE_TEXT_MAX_BYTES + 10) });
     (event.envelope as { kind: string }).kind = 'future.kind';
@@ -134,7 +134,7 @@ describe('myco member drain / status', () => {
     expect(out).toEqual([]);
     const other = await rig.otherMachine();
     registerTestMember({ mycoHome, token: other.token, tokenId: other.tokenId, projectId: 'proj_1', root: path.join(mycoHome, 'elsewhere') });
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     spool.append('sess-all', promptEvent(ctxFor(spool, 'sess-all'), { promptId: mintId(), text: 'x' }));
     await runMemberCli(['drain', '--all'], { mycoHome, fetch: rig.fetch, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
     expect(out.join('\n')).toContain('proj_1 sess-all: sent 1, acked 1');

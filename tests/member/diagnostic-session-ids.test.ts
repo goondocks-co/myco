@@ -13,7 +13,7 @@ afterEach(() => {
 it('retains an internal .jsonl segment in session IDs and reads its pending records', () => {
   const home = tempMycoHome();
   homes.push(home);
-  const spool = new MemberSpool('proj_1', { mycoHome: home });
+  const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: home });
   const sessionId = 'a.jsonl.b';
   const event = promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 'test' }, { promptId: 'prompt_1', text: 'example' });
   spool.append(sessionId, event);

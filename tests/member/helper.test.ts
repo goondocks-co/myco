@@ -39,20 +39,20 @@ describe('the member helper', () => {
   it('runs one pass, lingers, and exits idle when nothing new arrives', async () => {
     const clock = fakeTime();
     let passes = 0;
-    const result = await runHelper({ projectId: PROJECT, mycoHome, ...clock, pass: async () => { passes += 1; } });
+    const result = await runHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...clock, pass: async () => { passes += 1; } });
     expect(result).toEqual({ endedBy: 'idle', passes: 1 });
     // It let go of the lock: the next helper takes it.
-    const lock = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome).lock);
+    const lock = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome, 'https://s').lock);
     expect(lock.acquired).toBe(true);
     if (lock.acquired) lock.lock.release();
   });
 
   it('runs another pass for work that arrives while a pass runs, and for work that arrives while it lingers', async () => {
     const clock = fakeTime();
-    const { dirty } = helperPaths(PROJECT, mycoHome);
+    const { dirty } = helperPaths(PROJECT, mycoHome, 'https://s');
     let passes = 0;
     const result = await runHelper({
-      projectId: PROJECT, mycoHome, now: clock.now,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, now: clock.now,
       // The second sleep of the linger finds a kick's mark.
       sleep: async (ms) => { clock.advance(ms); if (passes === 2 && clock.now() % 1_000 === 400) fs.writeFileSync(dirty, ''); },
       pass: async () => { passes += 1; if (passes === 1) fs.writeFileSync(dirty, ''); },
@@ -63,11 +63,11 @@ describe('the member helper', () => {
 
   it('loses no kick that lands as it lets go of the lock', async () => {
     const clock = fakeTime();
-    const { dirty } = helperPaths(PROJECT, mycoHome);
+    const { dirty } = helperPaths(PROJECT, mycoHome, 'https://s');
     let releases = 0;
     let passes = 0;
     const result = await runHelper({
-      projectId: PROJECT, mycoHome, ...clock,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...clock,
       pass: async () => { passes += 1; },
       // A hook's kick between the helper's last look and its exit: it found the lock held, so it left only its mark.
       onReleased: () => { releases += 1; if (releases === 1) fs.writeFileSync(dirty, ''); },
@@ -77,9 +77,9 @@ describe('the member helper', () => {
 
   it('stops at its deadline however much work keeps arriving', async () => {
     const clock = fakeTime();
-    const { dirty } = helperPaths(PROJECT, mycoHome);
+    const { dirty } = helperPaths(PROJECT, mycoHome, 'https://s');
     const result = await runHelper({
-      projectId: PROJECT, mycoHome, ...clock, deadlineMs: 10_000,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...clock, deadlineMs: 10_000,
       pass: async () => { clock.advance(1_000); fs.writeFileSync(dirty, ''); },
     });
     expect(result.endedBy).toBe('deadline');
@@ -87,11 +87,11 @@ describe('the member helper', () => {
   });
 
   it('does nothing while another helper holds the lock', async () => {
-    const held = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome).lock);
+    const held = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome, 'https://s').lock);
     expect(held.acquired).toBe(true);
     try {
       let passes = 0;
-      const result = await runHelper({ projectId: PROJECT, mycoHome, ...fakeTime(), pass: async () => { passes += 1; } });
+      const result = await runHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(), pass: async () => { passes += 1; } });
       expect(result).toEqual({ endedBy: 'busy', passes: 0 });
     } finally {
       if (held.acquired) held.lock.release();
@@ -103,27 +103,27 @@ describe('a kick', () => {
   it('marks the work and starts a helper when none runs, carrying the project and the home on its command line', () => {
     const starts: Array<{ command: string; args: readonly string[]; cwd: string }> = [];
     const spawn: DetachedSpawn = (command, args, opts) => { starts.push({ command, args, cwd: opts.cwd }); return { started: true }; };
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'started', contained: false });
-    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).dirty)).toBe(true);
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn })).toEqual({ kind: 'started', contained: false });
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').dirty)).toBe(true);
     expect(starts).toHaveLength(1);
-    expect(starts[0].args.slice(-6)).toEqual(['member', 'helper', '--project', PROJECT, '--home', mycoHome]);
+    expect(starts[0].args.slice(-8)).toEqual(['member', 'helper', '--project', PROJECT, '--server', 'https://s', '--home', mycoHome]);
   });
 
   it('only marks the work when a helper already runs, which reads the mark before it exits', () => {
-    const held = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome).lock);
+    const held = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome, 'https://s').lock);
     try {
       let started = 0;
       const spawn: DetachedSpawn = () => { started += 1; return { started: true }; };
-      expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'running', contained: false });
+      expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn })).toEqual({ kind: 'running', contained: false });
       expect(started).toBe(0);
-      expect(fs.existsSync(helperPaths(PROJECT, mycoHome).dirty)).toBe(true);
+      expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').dirty)).toBe(true);
     } finally {
       if (held.acquired) held.lock.release();
     }
   });
 
   it('says so when a helper could not be started', () => {
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: false }) })).toEqual({ kind: 'failed' });
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => ({ started: false }) })).toEqual({ kind: 'failed' });
   });
 });
 
@@ -132,7 +132,7 @@ describe('myco member helper', () => {
     it(`delivers capture with ${damage} machine-settings order file`, async () => {
       const rig = await memberRig();
       registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-      const spool = new MemberSpool(PROJECT, { mycoHome });
+      const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
       const sessionId = `sess-order-${damage}`;
       const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
       spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'must arrive' }));
@@ -157,7 +157,7 @@ describe('myco member helper', () => {
         return true;
       }) as typeof process.stderr.write) : null;
       try {
-        await helperPass(PROJECT, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true });
+        await helperPass({ projectId: PROJECT, serverUrl: 'https://s' }, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true });
       } finally { ownerStat?.mockRestore(); unreadableStat?.mockRestore(); write?.mockRestore(); }
       expect(rig.rows('events')).toBe(1);
       expect(spool.depth(sessionId)).toBe(0);
@@ -173,7 +173,7 @@ describe('myco member helper', () => {
   it('drains the backlog when optional prefetch throws', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-prefetch-fails';
     const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
     spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'must arrive' }));
@@ -191,7 +191,7 @@ describe('myco member helper', () => {
       return realWrite(chunk);
     }) as typeof process.stderr.write);
     try {
-      await helperPass(PROJECT, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true });
+      await helperPass({ projectId: PROJECT, serverUrl: 'https://s' }, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true });
     } finally { rename.mockRestore(); write.mockRestore(); }
     expect(rig.rows('events')).toBe(1);
     expect(spool.depth(sessionId)).toBe(0);
@@ -201,11 +201,11 @@ describe('myco member helper', () => {
   it('ships the project\'s spool to its Deployment and logs what it did', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'sess-helper', stage: spool.stagerFor('sess-helper'), version: 't' };
     for (const text of ['one', 'two', 'three']) spool.append('sess-helper', promptEvent(ctx, { promptId: mintId(), text }));
 
-    const result = await runHelperVerb(['--project', PROJECT, '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0 });
+    const result = await runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0 });
     expect(result).toEqual({ endedBy: 'idle', passes: 1 });
     expect(rig.rows('events')).toBe(3);
     expect(fs.existsSync(path.join(spool.dir, 'sess-helper.jsonl'))).toBe(false);
@@ -252,15 +252,15 @@ describe('no kick is lost on the way out', () => {
   it('starts a successor at the deadline for a kick that landed during the last pass, which delivers it', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'sess-late', stage: spool.stagerFor('sess-late'), version: 't' };
     spool.append('sess-late', promptEvent(ctx, { promptId: mintId(), text: 'before' }));
     const clock = fakeTime(Date.now());
     const deps = { fetch: rig.fetch, keepStderr: true, lingerMs: 0, deadlineMs: 10_000, now: clock.now, sleep: clock.sleep };
     const successors = inProcessHelpers(deps);
     let passes = 0;
-    const realPass = helperPass(PROJECT, mycoHome, { fetch: rig.fetch, now: clock.now });
-    const first = await runHelperVerb(['--project', PROJECT, '--home', mycoHome], {
+    const realPass = helperPass({ projectId: PROJECT, serverUrl: 'https://s' }, mycoHome, { fetch: rig.fetch, now: clock.now });
+    const first = await runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], {
       ...deps,
       spawn: successors.spawn,
       pass: async (deadline, opts) => {
@@ -268,7 +268,7 @@ describe('no kick is lost on the way out', () => {
         passes += 1;
         // The Stop hook of a busy turn: it appends and kicks while the helper holds the lock, then the pass runs out the clock.
         spool.append('sess-late', promptEvent(ctx, { promptId: mintId(), text: 'the turn\'s last words' }));
-        expect(kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } })).toEqual({ kind: 'running', contained: false });
+        expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } })).toEqual({ kind: 'running', contained: false });
         clock.advance(20_000);
         return result;
       },
@@ -284,15 +284,15 @@ describe('no kick is lost on the way out', () => {
   it('logs a pass that fails, puts its marks back, and starts a successor that delivers the work', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'sess-fail', stage: spool.stagerFor('sess-fail'), version: 't' };
     spool.append('sess-fail', promptEvent(ctx, { promptId: mintId(), text: 'kept' }));
     // A turn's end asked for a probe past the latch: the failed pass must not spend it.
-    kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => ({ started: false }) });
+    kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'turn-end', spawn: () => ({ started: false }) });
     const forces: boolean[] = [];
-    const realPass = helperPass(PROJECT, mycoHome, { fetch: rig.fetch });
+    const realPass = helperPass({ projectId: PROJECT, serverUrl: 'https://s' }, mycoHome, { fetch: rig.fetch });
     const successors = inProcessHelpers({ fetch: rig.fetch, lingerMs: 0, keepStderr: true, pass: async (deadline, opts) => { forces.push(opts.force); return realPass(deadline, opts); } });
-    const failed = runHelperVerb(['--project', PROJECT, '--home', mycoHome], {
+    const failed = runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], {
       fetch: rig.fetch, lingerMs: 0, spawn: successors.spawn,
       pass: async () => { throw new Error('the disk went away'); },
     });
@@ -300,21 +300,21 @@ describe('no kick is lost on the way out', () => {
     const log = fs.readFileSync(helperLogPath(mycoHome), 'utf-8');
     expect(log).toContain(`${PROJECT} [myco] helper: a pass failed: the disk went away`);
     expect(log).toContain('by a failed pass; a successor takes its work');
-    expect(successors.starts).toEqual([['--project', PROJECT, '--home', mycoHome, '--after-failure']]);
+    expect(successors.starts).toEqual([['--project', PROJECT, '--server', 'https://s', '--home', mycoHome, '--after-failure']]);
     await successors.settle();
     expect(rig.rows('events')).toBe(1);
     // The probe the turn's end asked for went to the successor's pass, not to the pass that failed.
     expect(forces).toEqual([true]);
-    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).probe)).toBe(false);
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').probe)).toBe(false);
   });
 
   it('hands a forced pass\'s probe on when the pass runs out of time, so its successor is forced too', async () => {
     const clock = fakeTime();
-    const paths = helperPaths(PROJECT, mycoHome);
-    kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => ({ started: false }) });
+    const paths = helperPaths(PROJECT, mycoHome, 'https://s');
+    kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'turn-end', spawn: () => ({ started: false }) });
     const forces: boolean[] = [];
     await runHelper({
-      projectId: PROJECT, mycoHome, ...clock, deadlineMs: 10_000,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...clock, deadlineMs: 10_000,
       spawn: () => ({ started: true, pid: process.pid }),
       pass: async (_deadline, opts) => { forces.push(opts.force); clock.advance(11_000); return { more: true }; },
     });
@@ -322,7 +322,7 @@ describe('no kick is lost on the way out', () => {
     expect(fs.existsSync(paths.probe)).toBe(true);
     // The successor's pass is forced.
     try { fs.unlinkSync(paths.starting); } catch { /* none */ }
-    await runHelper({ projectId: PROJECT, mycoHome, ...fakeTime(), pass: async (_d, opts) => { forces.push(opts.force); } });
+    await runHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(), pass: async (_d, opts) => { forces.push(opts.force); } });
     expect(forces).toEqual([true, true]);
   });
 
@@ -330,19 +330,19 @@ describe('no kick is lost on the way out', () => {
     const clock = fakeTime();
     const starts: string[][] = [];
     const result = await runHelper({
-      projectId: PROJECT, mycoHome, ...clock, deadlineMs: 10_000,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...clock, deadlineMs: 10_000,
       spawn: (_command, args) => { starts.push([...args]); return { started: true, pid: process.pid }; },
       pass: async () => { clock.advance(11_000); return { more: true }; },
     });
     expect(result).toEqual({ endedBy: 'deadline', passes: 1, successor: 'started' });
     expect(starts).toHaveLength(1);
     // A pass that finished leaves no successor behind it.
-    const done = await runHelper({ projectId: PROJECT, mycoHome, ...fakeTime(), deadlineMs: 10_000, pass: async () => ({ more: false }) });
+    const done = await runHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(), deadlineMs: 10_000, pass: async () => ({ more: false }) });
     expect(done).toEqual({ endedBy: 'idle', passes: 1 });
   });
 
   it('takes the lock again for a kick that found its start claim while another held the lock', async () => {
-    const paths = helperPaths(PROJECT, mycoHome);
+    const paths = helperPaths(PROJECT, mycoHome, 'https://s');
     // A kick's probe holds the lock as this helper starts, and the helper's own start claim is still there.
     fs.mkdirSync(path.dirname(paths.lock), { recursive: true });
     fs.writeFileSync(paths.starting, JSON.stringify({ at: Date.now(), pid: process.pid }));
@@ -351,13 +351,13 @@ describe('no kick is lost on the way out', () => {
     let kicked: KickOutcome | null = null;
     let passes = 0;
     const result = await runHelper({
-      projectId: PROJECT, mycoHome, ...fakeTime(),
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(),
       pass: async () => { passes += 1; },
       // Between this helper's failed take and its claim's removal: the probe lets go, finds the claim, and the kick
       // leaves only its mark.
       onBusy: () => {
         if (probe.acquired) probe.lock.release();
-        kicked = kickHelper({ projectId: PROJECT, mycoHome, reason: 'session-end', spawn: () => { throw new Error('a start under way is not started again'); } });
+        kicked = kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'session-end', spawn: () => { throw new Error('a start under way is not started again'); } });
       },
     });
     expect(kicked as KickOutcome | null).toEqual({ kind: 'starting', contained: false });
@@ -368,7 +368,7 @@ describe('no kick is lost on the way out', () => {
 
   it('logs a successor it could not start as work left for the next kick, not as the caller shipping inline', async () => {
     await runHelper({
-      projectId: PROJECT, mycoHome, ...fakeTime(),
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(),
       spawn: () => ({ started: false }),
       pass: async () => { throw new Error('broken'); },
     }).catch(() => {});
@@ -380,15 +380,15 @@ describe('no kick is lost on the way out', () => {
   it('leaves the marks for the next kick when the successor of a failure fails too, and starts nobody', async () => {
     let started = 0;
     const err = await runHelper({
-      projectId: PROJECT, mycoHome, ...fakeTime(), afterFailure: true,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(), afterFailure: true,
       spawn: () => { started += 1; return { started: true }; },
       pass: async () => { throw new Error('still broken'); },
     }).catch((e: unknown) => e);
     expect(String(err)).toContain('still broken');
     expect(started).toBe(0);
-    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).dirty)).toBe(true);
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').dirty)).toBe(true);
     // The lock is free for the next kick's helper.
-    const lock = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome).lock);
+    const lock = LifecycleLock.acquire(helperPaths(PROJECT, mycoHome, 'https://s').lock);
     expect(lock.acquired).toBe(true);
     if (lock.acquired) lock.lock.release();
   });
@@ -398,19 +398,19 @@ describe('the offline latch', () => {
   it('holds an ordinary kick\'s pass back, and lets a turn\'s or a session\'s end dial past it', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'sess-latch', stage: spool.stagerFor('sess-latch'), version: 't' };
     spool.append('sess-latch', promptEvent(ctx, { promptId: mintId(), text: 'while offline' }));
     spool.markOffline(Date.now());
     const noSpawn: DetachedSpawn = () => ({ started: true });
-    const helper = () => runHelperVerb(['--project', PROJECT, '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
+    const helper = () => runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
 
-    kickHelper({ projectId: PROJECT, mycoHome, reason: 'capture', spawn: noSpawn });
+    kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'capture', spawn: noSpawn });
     await helper();
     expect(rig.rows('events')).toBe(0);
     for (const reason of ['turn-end', 'session-end'] as const) {
-      kickHelper({ projectId: PROJECT, mycoHome, reason, spawn: noSpawn });
-      expect(fs.existsSync(helperPaths(PROJECT, mycoHome).probe)).toBe(true);
+      kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason, spawn: noSpawn });
+      expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').probe)).toBe(true);
     }
     await helper();
     expect(rig.rows('events')).toBe(1);
@@ -422,20 +422,20 @@ describe('a forced pass', () => {
   it('dials past the latch, and still leaves a record inside its refusal wait alone', async () => {
     const rig = await memberRig();
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'sess-wait', stage: spool.stagerFor('sess-wait'), version: 't' };
     spool.append('sess-wait', promptEvent(ctx, { promptId: mintId(), text: 'held for now' }));
     // A refusal set a wait that has not run out; the spool is also latched offline.
     updateSessionState(spool.dir, 'sess-wait', (s) => { s.eventRetry = { at: Date.now() + 60_000, backoffMs: 60_000 }; });
     spool.markOffline(Date.now());
-    kickHelper({ projectId: PROJECT, mycoHome, reason: 'session-end', spawn: () => ({ started: true }) });
-    await runHelperVerb(['--project', PROJECT, '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
+    kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'session-end', spawn: () => ({ started: true }) });
+    await runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
     expect(rig.rows('events')).toBe(0);
     expect(spool.depth('sess-wait')).toBe(1);
     // Once the wait is out, the next forced pass sends it.
     updateSessionState(spool.dir, 'sess-wait', (s) => { s.eventRetry = { at: Date.now() - 1, backoffMs: 60_000 }; });
-    kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => ({ started: true }) });
-    await runHelperVerb(['--project', PROJECT, '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
+    kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'turn-end', spawn: () => ({ started: true }) });
+    await runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
     expect(rig.rows('events')).toBe(1);
   });
 });
@@ -443,8 +443,8 @@ describe('a forced pass', () => {
 describe('a kick whose helper cannot outlive it', () => {
   it('is logged and answered so the caller ships inline: a start refused, or one held in the caller\'s Job Object', () => {
     const outcomes: KickOutcome[] = [
-      kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: false }) }),
-      kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: true, pid: process.pid, contained: true }) }),
+      kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => ({ started: false }) }),
+      kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => ({ started: true, pid: process.pid, contained: true }) }),
     ];
     expect(outcomes).toEqual([{ kind: 'failed' }, { kind: 'started', contained: true }]);
     expect(outcomes.map(shipsInline)).toEqual([true, true]);
@@ -460,9 +460,9 @@ describe('a kick whose helper cannot outlive it', () => {
 describe('a helper that ends with the harness, found by a later kick', () => {
   it('is answered contained while on its way, and while it holds the lock: the later kick ships inline too', async () => {
     // A capture hook's kick started it inside the harness's Job Object.
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: true, pid: process.pid, contained: true }) }))
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => ({ started: true, pid: process.pid, contained: true }) }))
       .toEqual({ kind: 'started', contained: true });
-    const onItsWay = kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a start under way is not started again'); } });
+    const onItsWay = kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a start under way is not started again'); } });
     expect(onItsWay).toEqual({ kind: 'starting', contained: true });
     expect(shipsInline(onItsWay)).toBe(true);
 
@@ -471,11 +471,11 @@ describe('a helper that ends with the harness, found by a later kick', () => {
     const holding = new Promise<void>((resolve) => { release = resolve; });
     let found: KickOutcome | null = null;
     const run = runHelper({
-      projectId: PROJECT, mycoHome, contained: false, lingerMs: 0,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, contained: false, lingerMs: 0,
       pass: async () => {
         // The first pass only: the kick's mark asks for one more, which finds nothing to do.
         if (found !== null) return;
-        found = kickHelper({ projectId: PROJECT, mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } });
+        found = kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'turn-end', spawn: () => { throw new Error('a running helper is not started again'); } });
         await holding;
       },
     });
@@ -486,11 +486,11 @@ describe('a helper that ends with the harness, found by a later kick', () => {
     // A helper free of any job leaves a lock that says nothing of one.
     let seen = false;
     await runHelper({
-      projectId: PROJECT, mycoHome, contained: false, lingerMs: 0,
+      projectId: PROJECT, serverUrl: 'https://s', mycoHome, contained: false, lingerMs: 0,
       pass: async () => {
         if (seen) return;
         seen = true;
-        found = kickHelper({ projectId: PROJECT, mycoHome, spawn: () => ({ started: false }) });
+        found = kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => ({ started: false }) });
       },
     });
     expect(found as KickOutcome | null).toEqual({ kind: 'running', contained: false });
@@ -505,17 +505,17 @@ describe('the sweep a helper ends with', () => {
       registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId, expiresAt: rig.expiresAt, serverUrl: 'https://s', root: roots[i] });
     }
     // proj_2's last turn never reached the Deployment; proj_3 holds nothing.
-    const waiting = new MemberSpool('proj_2', { mycoHome });
+    const waiting = new MemberSpool({ projectId: 'proj_2', serverUrl: 'https://s' }, { mycoHome });
     waiting.append('sess-left', promptEvent({ agent: 'claude-code', sessionId: 'sess-left', stage: waiting.stagerFor('sess-left') }, { promptId: mintId(), text: 'the last turn' }));
-    fs.mkdirSync(new MemberSpool('proj_3', { mycoHome }).dir, { recursive: true });
+    fs.mkdirSync(new MemberSpool({ projectId: 'proj_3', serverUrl: 'https://s' }, { mycoHome }).dir, { recursive: true });
     const starts: string[][] = [];
     // proj_4 holds work too, but its Deployment is latched offline for the next hour: its own probe decides when it dials.
-    const latched = new MemberSpool('proj_4', { mycoHome });
+    const latched = new MemberSpool({ projectId: 'proj_4', serverUrl: 'https://s' }, { mycoHome });
     latched.append('sess-latched', promptEvent({ agent: 'claude-code', sessionId: 'sess-latched', stage: latched.stagerFor('sess-latched') }, { promptId: mintId(), text: 'offline' }));
     const spawn: DetachedSpawn = (_command, args) => { starts.push([...args]); return { started: false }; };
     const clock = fakeTime(Date.now());
     latched.markOffline(clock.now(), 3_600_000);
-    const helperOf = () => runHelperVerb(['--project', 'proj_1', '--home', mycoHome], { keepStderr: true, now: clock.now, sleep: clock.sleep, lingerMs: 0, spawn, pass: async () => {} });
+    const helperOf = () => runHelperVerb(['--project', 'proj_1', '--server', 'https://s', '--home', mycoHome], { keepStderr: true, now: clock.now, sleep: clock.sleep, lingerMs: 0, spawn, pass: async () => {} });
 
     await helperOf();
     expect(starts.map((args) => args[args.indexOf('--project') + 1])).toEqual(['proj_2']);
@@ -532,20 +532,20 @@ describe('a start under way', () => {
   it('spares every kick that lands before its helper takes the lock a start of its own, until its process is gone', () => {
     let started = 0;
     const spawn: DetachedSpawn = () => { started += 1; return { started: true, pid: process.pid }; };
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
-    for (let i = 0; i < 20; i++) expect(kickHelper({ projectId: PROJECT, mycoHome, spawn })).toEqual({ kind: 'starting', contained: false });
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
+    for (let i = 0; i < 20; i++) expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn })).toEqual({ kind: 'starting', contained: false });
     expect(started).toBe(1);
     // A started process that died before it took the lock: its claim is spent, and the next kick starts another.
     const dead = Bun.spawnSync([process.execPath, '-e', '0']).pid;
-    fs.writeFileSync(helperPaths(PROJECT, mycoHome).starting, JSON.stringify({ at: Date.now(), pid: dead }));
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    fs.writeFileSync(helperPaths(PROJECT, mycoHome, 'https://s').starting, JSON.stringify({ at: Date.now(), pid: dead }));
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
     expect(started).toBe(2);
   });
 
   it('is spent past its grace even with a live process, and when dated after now, so neither a hung start nor a clock set back holds kicks off', () => {
     let started = 0;
     const spawn: DetachedSpawn = () => { started += 1; return { started: true, pid: process.pid }; };
-    const { starting } = helperPaths(PROJECT, mycoHome);
+    const { starting } = helperPaths(PROJECT, mycoHome, 'https://s');
     fs.mkdirSync(path.dirname(starting), { recursive: true });
     const claims = [
       // A live process (this one: a reused pid, or a start that hung) claimed past the grace.
@@ -557,47 +557,47 @@ describe('a start under way', () => {
     ];
     for (const claim of claims) {
       fs.writeFileSync(starting, JSON.stringify(claim));
-      expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+      expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
     }
     // A claim not yet written, its file dated in the future.
     fs.writeFileSync(starting, '');
     const future = new Date(Date.now() + 3_600_000);
     fs.utimesSync(starting, future, future);
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
     expect(started).toBe(4);
   });
 
   it('answers a start that threw as one that failed, and leaves no claim to hold the next kick off', () => {
-    const outcome = kickHelper({ projectId: PROJECT, mycoHome, spawn: () => { throw new Error('spawn exploded'); } });
+    const outcome = kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => { throw new Error('spawn exploded'); } });
     expect(outcome).toEqual({ kind: 'failed' });
-    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).starting)).toBe(false);
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').starting)).toBe(false);
     let started = 0;
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn: () => { started += 1; return { started: true, pid: process.pid }; } }).kind).toBe('started');
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn: () => { started += 1; return { started: true, pid: process.pid }; } }).kind).toBe('started');
     expect(started).toBe(1);
   });
 
   it('starts a helper when a spent claim cannot be cleared, rather than wait on a start that is not coming', () => {
     let started = 0;
     const spawn: DetachedSpawn = () => { started += 1; return { started: true, pid: process.pid }; };
-    const { starting } = helperPaths(PROJECT, mycoHome);
+    const { starting } = helperPaths(PROJECT, mycoHome, 'https://s');
     // Something that is not a claim stands at its path, old, and no unlink removes it.
     fs.mkdirSync(starting, { recursive: true });
     const old = new Date(Date.now() - 3_600_000);
     fs.utimesSync(starting, old, old);
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
     expect(started).toBe(1);
   });
 
   it('is over once its helper takes the lock: a kick after that helper has gone starts the next', async () => {
     const runs: Array<Promise<unknown>> = [];
     const spawn: DetachedSpawn = () => {
-      runs.push(runHelper({ projectId: PROJECT, mycoHome, ...fakeTime(), pass: async () => {} }));
+      runs.push(runHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, ...fakeTime(), pass: async () => {} }));
       return { started: true, pid: process.pid };
     };
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
     await Promise.all(runs);
-    expect(fs.existsSync(helperPaths(PROJECT, mycoHome).starting)).toBe(false);
-    expect(kickHelper({ projectId: PROJECT, mycoHome, spawn }).kind).toBe('started');
+    expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').starting)).toBe(false);
+    expect(kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, spawn }).kind).toBe('started');
     await Promise.all(runs);
   });
 });

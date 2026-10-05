@@ -5,7 +5,8 @@
 import { describe, expect, it } from 'bun:test';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { canStartRequest, clippedRequestBudget, declaredTimeoutMs, longestDeclaredHookTimeoutMs, remainingMs, resolveHookBudget, subRequestBudget, unboundedBudget } from '@myco/member/budget.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { tempStager } from './helpers/server.js';
 import { CONNECT_TIMEOUT_CAP_MS, HOOK_BUDGET_MARGIN_MS, MEMBER_DEFAULT_HOOK_TIMEOUT_MS, NEVER_DRAINS_HOOK } from '@myco/member/constants.js';

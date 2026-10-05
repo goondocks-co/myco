@@ -1,3 +1,4 @@
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 /**
  * A member's agent setup kept current as releases change it (#1499).
  *
@@ -34,6 +35,7 @@ describe('a member\'s agent setup', () => {
     previousHome = process.env.HOME;
     process.env.HOME = agentHome;
     writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: home });
+    recordDefaultDeployment(SERVER, { mycoHome: home });
     fs.mkdirSync(path.join(agentHome, '.claude'), { recursive: true });
     fs.mkdirSync(path.join(agentHome, '.codex'), { recursive: true });
     out = [];

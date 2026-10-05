@@ -14,7 +14,7 @@ import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 describe('plan read dependencies survive transcript derivation', () => {
   it('ages out a confirmed missing plan, but resets confirmation after an unreadable interval', () => {
     const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-expiry-')));
-    const spool = new MemberSpool('proj_retry', { mycoHome: path.join(root, 'member-home') });
+    const spool = new MemberSpool({ projectId: 'proj_retry', serverUrl: 'https://example.invalid' }, { mycoHome: path.join(root, 'member-home') });
     const sessionId = 'expired-plan';
     const file = path.join(root, 'deleted.md');
     const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId) };
@@ -50,7 +50,7 @@ describe('plan read dependencies survive transcript derivation', () => {
 
   it('bounds outstanding plan reads by giving displaced paths a visible disposition', () => {
     const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-bound-')));
-    const spool = new MemberSpool('proj_retry', { mycoHome: path.join(root, 'member-home') });
+    const spool = new MemberSpool({ projectId: 'proj_retry', serverUrl: 'https://example.invalid' }, { mycoHome: path.join(root, 'member-home') });
     const sessionId = 'bounded-plans';
     spool.appendAndRecord(sessionId, [], (state) => {
       for (let i = 0; i < 1_000; i++) state.planPaths[`missing-${i}.md`] = {
@@ -75,7 +75,7 @@ describe('plan read dependencies survive transcript derivation', () => {
       if (failure !== 'ENOENT') fs.writeFileSync(file, '# Retry\n');
       const transcript = path.join(root, 'session.jsonl');
       fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: file } }] } }) + '\n');
-      const spool = new MemberSpool('proj_retry', { mycoHome: path.join(root, 'member-home') });
+      const spool = new MemberSpool({ projectId: 'proj_retry', serverUrl: 'https://example.invalid' }, { mycoHome: path.join(root, 'member-home') });
       const sessionId = 'sess-retry';
       const run: HookRun = {
         hookName: 'stop', sessionId, agent: 'claude-code', spool,
@@ -111,7 +111,7 @@ describe('plan read dependencies survive transcript derivation', () => {
   it('retains a first-read obligation while the path is deleted, then captures its replacement once', () => {
     const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-delete-')));
     const file = path.join(root, 'removed.md');
-    const spool = new MemberSpool('proj_retry', { mycoHome: path.join(root, 'member-home') });
+    const spool = new MemberSpool({ projectId: 'proj_retry', serverUrl: 'https://example.invalid' }, { mycoHome: path.join(root, 'member-home') });
     const ctx = { agent: 'claude-code', sessionId: 'deleted', stage: spool.stagerFor('deleted') };
     const capture = planFileCapture(ctx, readSessionState(spool.dir, 'deleted'), 'proj_retry', root, file, 'first-prompt');
     spool.appendAndRecord('deleted', capture.events, capture.record);
@@ -129,7 +129,7 @@ describe('plan read dependencies survive transcript derivation', () => {
 
   it('preserves every outstanding read when old completed receipts are trimmed', () => {
     const root = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plan-obligations-')));
-    const spool = new MemberSpool('proj_retry', { mycoHome: root });
+    const spool = new MemberSpool({ projectId: 'proj_retry', serverUrl: 'https://example.invalid' }, { mycoHome: root });
     spool.appendAndRecord('obligations', [], (state) => {
       for (let i = 0; i < 600; i++) {
         state.planPaths[`pending-${i}.md`] = { planKey: `pending-${i}`, hash: '', pendingRead: 'absent' };

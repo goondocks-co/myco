@@ -1032,10 +1032,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "transcriptDiscovery": {
         "roots": [
-          "@memberHome/member/transcripts/cline"
+          "@memberHome/member/transcripts"
         ],
         "patterns": [
-          "{sessionId}.jsonl"
+          "*/*/cline/{sessionId}.jsonl"
         ],
         "transcriptCwdPath": "cwd",
         "retention": "member"
@@ -2328,10 +2328,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "rules": [],
       "transcriptDiscovery": {
         "roots": [
-          "@memberHome/member/transcripts/opencode"
+          "@memberHome/member/transcripts"
         ],
         "patterns": [
-          "{sessionId}.jsonl"
+          "*/*/opencode/{sessionId}.jsonl"
         ],
         "transcriptCwdPath": "cwd",
         "retention": "member"

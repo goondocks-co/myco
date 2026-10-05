@@ -11,6 +11,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { cacheMachineSettings, machineSettingsHeaders, machinePlanDirs, machineAutoJoinLeaves, seedMachineSettings, forgetConnectRoot } from '@myco/member/machine-settings.js';
+import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { asOwner, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 
@@ -193,6 +194,7 @@ describe('machine settings effective contract', () => {
       await r.sync();
       expect((await r.rows())[0]!.application).toBe('applied');
 
+      writeDeploymentMembership({ serverUrl: 'https://s', token: r.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome: r.home });
       expect(await seedMachineSettings({ serverUrl: 'https://s', token: r.token }, {
         mycoHome: r.home, fetch: (input, init) => r.request(new Request(input, init)),
       })).toBe(true);

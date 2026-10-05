@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { machinePlanDirs, seedMachineSettings, cacheMachineSettings } from '@myco/member/machine-settings.js';
-import { machineSettingsPath } from '@myco/member/registry.js';
+import { machineSettingsPath, writeDeploymentMembership } from '@myco/member/registry.js';
 import { lit, MACHINE_ID, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const LEAF = 'capture.plan_dirs';
@@ -80,6 +80,7 @@ export const machineSettings: ParityScenario = {
       // The machine caches the answer one file per Deployment: another Deployment's cache is left as it was.
       const elsewhere = 'https://elsewhere.parity.example';
       cacheMachineSettings(elsewhere, { leaves: { [LEAF]: ['~/other-deployment'] } }, home);
+      writeDeploymentMembership({ serverUrl: target.url, token: target.memberToken, machineId: MACHINE_ID, joinedAt: now, updatedAt: now }, { mycoHome: home });
       const seeded = await seedMachineSettings({ serverUrl: target.url, token: target.memberToken }, {
         mycoHome: home,
         fetch: ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), 'cf-connecting-ip': '1.2.3.4' } })) as typeof fetch,

@@ -17,6 +17,7 @@
  * membership.
  */
 import { readCaptureLoss } from './capture-loss.js';
+import type { BufferedDestinationIssue } from './routing.js';
 import { REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getPluginVersion } from '../version.js';
 import type { MissingMembershipRecord } from './no-membership.js';
@@ -201,6 +202,7 @@ export interface MemberDiagnostics {
   /** Null when the caller gathered none; a report says it holds none rather than that none failed. */
   checks: CheckFacts[] | null;
   omissions: readonly string[];
+  heldDestinations?: BufferedDestinationIssue[];
 }
 
 /** HTTP routing URL without userinfo, query or fragment; null for an unusable URL. */
@@ -283,7 +285,7 @@ export const missedCaptureOf = (record: MissingMembershipRecord): MissedCaptureF
 /** One project's spool, latch and refusal log. */
 export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: number): ProjectDiagnostics {
   // A report reads the spool where it is; a layout it could not use is a fact to carry, not a directory to make.
-  const spool = new MemberSpool(entry.projectId, { mycoHome, initialize: false });
+  const spool = new MemberSpool(entry, { mycoHome, initialize: false });
   // Acknowledgement is held in session state, which outlives the spool file a
   // session's records were written to.
   // State is read under the records' own lock, so a layout that blocks it is
@@ -353,6 +355,7 @@ export function memberDiagnostics(opts: {
   /** What the caller's missed-capture read could answer; omitted reports a store read whole. */
   missedCaptureStore?: MissedCaptureStoreFacts;
   checks?: readonly CheckFacts[];
+  heldDestinations?: readonly BufferedDestinationIssue[];
 }): MemberDiagnostics {
   const registry: RegistryFacts = opts.registry ?? { readable: true, unavailableEntries: 0 };
   return {
@@ -371,5 +374,6 @@ export function memberDiagnostics(opts: {
     },
     checks: opts.checks === undefined ? null : [...opts.checks],
     omissions: MEMBER_OMISSIONS,
+    ...(opts.heldDestinations?.length ? { heldDestinations: opts.heldDestinations.map(({ key, reason }) => ({ key, reason })) } : {}),
   };
 }

@@ -531,7 +531,7 @@ it('worker records and model-listing database writes stay quiet through the real
     VALUES ('proj_1', 'captured', 'machine_1', 'mt_test', ?, ?, 'opencode', ?)`, [OLD, OLD, OLD]);
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: home, serverUrl: 'https://myco.example', token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome });
-  updateProjectContext(spoolDirFor(entry.projectId, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://myco.example' }, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   const manifest = loadManifests().find((m) => m.name === 'opencode')!;
   const db = sessionStore();
   session(db, WORKER, NOW);
@@ -556,7 +556,7 @@ it('unreadable OpenCode activity reaches Health as cannot tell, and recovery res
     VALUES ('proj_1', 'captured', 'machine_1', 'mt_test', ?, ?, 'opencode', ?)`, [OLD, OLD, OLD]);
   const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: home, serverUrl: 'https://myco.example', token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 };
   writeRegistryEntry(entry, { mycoHome });
-  updateProjectContext(spoolDirFor(entry.projectId, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  updateProjectContext(spoolDirFor({ projectId: entry.projectId, serverUrl: 'https://myco.example' }, mycoHome), mycoHome, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   provisionGlobally('opencode', null, mycoHome, { serverUrl: entry.serverUrl });
   const result = keepCurrent(mycoHome, { binaryFound: () => true })!;
   expect(result.harnesses).toContainEqual(expect.objectContaining({ id: 'opencode', state: 'repair_failed', action: "Can't tell whether OpenCode ran; open it and check access to its session store" }));

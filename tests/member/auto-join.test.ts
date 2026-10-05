@@ -13,18 +13,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import {
-  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, requestJoin, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
+  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { cacheMachineSettings, machineAutoJoinLeaves } from '@myco/member/machine-settings.js';
 import { readMissingMembership, recordMissingMembership } from '@myco/member/no-membership.js';
 import { appendPending, appendPendingTurnEnd, expirePending, flushPending, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS, pendingDir, pendingSpool } from '@myco/member/pending.js';
-import { readRegistryEntry, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, registryEntryPath, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readCaptureLoss } from '@myco/member/capture-loss.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { joinPass, runAutoJoin } from '@myco/cli/member-auto-join.js';
 import { helperPass } from '@myco/cli/member-helper.js';
@@ -188,7 +188,7 @@ describe('a hook in a repository with no connection', () => {
     fs.mkdirSync(path.dirname(plan), { recursive: true });
     fs.writeFileSync(plan, '# A plan\n\nstep one\n');
     await runHook('post-tool-use', { session_id: 'sess-p', hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: plan, content: '# A plan' }, cwd: root }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });
-    const pending = new MemberSpool('', { mycoHome, dir: pendingDir(rootKeyFor(root, mycoHome), mycoHome), initialize: false });
+    const pending = new MemberSpool(null, { mycoHome, dir: pendingDir(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL), initialize: false });
     expect(pending.sessionIds().flatMap((id) => pending.readRecords(id)).map((r) => (r !== null && "kind" in r ? r.kind : null))).toEqual([]);
   });
 
@@ -317,7 +317,7 @@ describe('many hooks in a repository still joining (G4d, with pending capture)',
     /** A start that runs its bucket's helper here after a detached start's delay, auditing that no pass overlaps another of its bucket. */
     const startFor = (bucket: string, pass: HelperPass): DetachedSpawn => () => {
       runs.push(sleep(100 + Math.floor(Math.random() * 275)).then(() => runHelper({
-        projectId: bucket, mycoHome, lingerMs: 40, pollMs: 5,
+        projectId: bucket, serverUrl: 'https://s', mycoHome, lingerMs: 40, pollMs: 5,
         pass: async (deadline, o) => {
           const now = (active.get(bucket) ?? 0) + 1;
           active.set(bucket, now);
@@ -337,11 +337,11 @@ describe('many hooks in a repository still joining (G4d, with pending capture)',
         // project's helper; one without holds its capture and asks the join bucket.
         const entry = readRegistryEntry(root, mycoHome);
         if (entry !== null) {
-          const spool = new MemberSpool(entry.projectId, { mycoHome });
+          const spool = new MemberSpool({ projectId: entry.projectId, serverUrl: SERVER_URL }, { mycoHome });
           const event = promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' }, { promptId: mintId(), text: `${sessionId} ${h}` });
           sent.push(event.envelope.eventId);
           spool.append(sessionId, event);
-          kickHelper({ projectId: entry.projectId, mycoHome, spawn: startFor(entry.projectId, helperPass(entry.projectId, mycoHome, { fetch: rig.fetch })) });
+          kickHelper({ projectId: entry.projectId, serverUrl: 'https://s', mycoHome, spawn: startFor(entry.projectId, helperPass({ projectId: entry.projectId, serverUrl: SERVER_URL }, mycoHome, { fetch: rig.fetch })) });
         } else {
           const steps: Array<() => void> = [];
           const hold = autoJoinHold({ root, hookName: 'user-prompt-submit', agent: 'claude-code', sessionId, mycoHome, now: Date.now(), spawn: joinStart, later: (step) => steps.push(step) });
@@ -362,7 +362,7 @@ describe('many hooks in a repository still joining (G4d, with pending capture)',
     }
     // Held capture the last moves left in the project's spool is its helper's: one more kick, as the next hook makes.
     const entry = readRegistryEntry(root, mycoHome)!;
-    kickHelper({ projectId: entry.projectId, mycoHome, spawn: startFor(entry.projectId, helperPass(entry.projectId, mycoHome, { fetch: rig.fetch })) });
+    kickHelper({ projectId: entry.projectId, serverUrl: 'https://s', mycoHome, spawn: startFor(entry.projectId, helperPass({ projectId: entry.projectId, serverUrl: SERVER_URL }, mycoHome, { fetch: rig.fetch })) });
     for (let settled = 0; settled < runs.length;) {
       const batch = runs.slice(settled);
       await Promise.all(batch);
@@ -385,8 +385,8 @@ describe('myco member auto-join', () => {
     expect(readRegistryEntry(root, mycoHome)).toMatchObject({ projectId, serverUrl: SERVER_URL, token: rig.token });
     expect(rig.env.sqlite.query(`SELECT name FROM projects WHERE project_id = ?`).get(projectId)).toEqual({ name: 'widget' });
     expect(rig.env.sqlite.query(`SELECT project_id, kind FROM events WHERE session_id = 'sess-j'`).all()).toEqual([{ project_id: projectId, kind: 'session.start' }]);
-    expect(fs.existsSync(pendingDir(rootKeyFor(root, mycoHome), mycoHome))).toBe(false);
-    expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome)).toMatchObject({ outcome: 'joined', projectId });
+    expect(fs.existsSync(pendingDir(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL))).toBe(false);
+    expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).toMatchObject({ outcome: 'joined', projectId });
 
     // A second clone of the same repository joins the same project.
     const clone = repository(path.join(base, 'Repos', 'forks'), 'widget', 'git@github.com:acme/widget.git');
@@ -467,7 +467,7 @@ describe('myco member auto-join', () => {
   it('tries a repository that did not join again only after the retry gap', async () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
     await join(['--root', root]);
-    const state = readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome)!;
+    const state = readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)!;
     const hook = (at: number) => runHook('user-prompt-submit', { session_id: `sess-${at}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn, now: () => at });
     await hook(state.attemptAt + AUTO_JOIN_RETRY_MS - 1);
     expect({ spawned, requested: requested() }).toEqual({ spawned: [], requested: [] });
@@ -633,12 +633,12 @@ describe('a repository that keeps missing', () => {
     const waits: number[] = [];
     for (let i = 0; i < 7; i += 1) {
       await join(['--root', root]);
-      const state = readAutoJoinState(key, mycoHome)!;
+      const state = readAutoJoinState(key, mycoHome, SERVER_URL)!;
       waits.push(Math.round((state.nextAttemptAt! - state.attemptAt) / 60_000));
     }
     expect(waits).toEqual([2, 4, 8, 16, 32, 60, 60]);
     // A hook starts no attempt before the backed-off one is due.
-    const last = readAutoJoinState(key, mycoHome)!;
+    const last = readAutoJoinState(key, mycoHome, SERVER_URL)!;
     const at = (t: number) => runHook('user-prompt-submit', { session_id: `sess-${t}`, hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: root, transcript_path: transcript(root, `sess-${t}`) }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn, now: () => t });
     await at(last.attemptAt + AUTO_JOIN_RETRY_MS);
     expect(spawned).toEqual([]);
@@ -648,13 +648,13 @@ describe('a repository that keeps missing', () => {
     rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.auto_join_roots', ?, 1, ?) ON CONFLICT (machine_id, leaf) DO UPDATE SET value = excluded.value`,
       [TEST_MACHINE_ID, JSON.stringify([path.join(base, 'elsewhere')]), `mem_${TEST_MACHINE_ID}`]);
     await join(['--root', root]);
-    const after = readAutoJoinState(key, mycoHome)!;
+    const after = readAutoJoinState(key, mycoHome, SERVER_URL)!;
     expect({ outcome: after.outcome, wait: Math.round((after.nextAttemptAt! - after.attemptAt) / 60_000) }).toEqual({ outcome: 'outside_folders', wait: 2 });
   });
 
   it('keeps the hold the machine reports on its row across attempts, and counts sessions, not attempts', async () => {
     const root = repository(path.join(base, 'Repos'), 'busy', null);
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     await prompt(root, 'sess-a');
     await prompt(root, 'sess-b');
@@ -725,7 +725,7 @@ describe('the machine salt', () => {
 describe('the pending spool', () => {
   it('uses a held prompt receipt for the first joined tool hook before replay', async () => {
     const root = repository(path.join(base, 'Repos'), 'joined-prompt-receipt', 'https://github.com/acme/joined-prompt-receipt.git');
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const sessionId = 'sess-receipt';
     const promptId = mintId();
@@ -737,7 +737,7 @@ describe('the pending spool', () => {
 
     await runHook('post-tool-use', { session_id: sessionId, hook_event_name: 'PostToolUse', cwd: root,
       tool_name: 'Read', tool_input: { file_path: '/x' } }, { fetch: rig.fetch, helpers: 'record', symbiont: 'copilot' });
-    const live = new MemberSpool('proj_1', { mycoHome });
+    const live = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome });
     expect(live.readRecords(sessionId).map((record) => record?.kind)).toEqual(['tool.use']);
     expect(live.readRecords(sessionId)[0]?.payload).toMatchObject({ promptId });
     expect(held.readRecords(sessionId)).toHaveLength(1);
@@ -745,7 +745,7 @@ describe('the pending spool', () => {
 
   it('captures a joined hook before held cleanup runs, and retains the old record on cleanup failure', async () => {
     const root = repository(path.join(base, 'Repos'), 'joined-cleanup-eio', 'https://github.com/acme/joined-cleanup-eio.git');
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const held = pendingSpool(repo, { mycoHome, now: at })!;
     const old = sessionStartEvent({ agent: 'claude-code', sessionId: 'sess-cleanup', stage: held.stagerFor('sess-cleanup'), now: () => at },
@@ -756,8 +756,8 @@ describe('the pending spool', () => {
     const remove = fs.rmSync.bind(fs);
     let sawLiveAtCleanup = false;
     const fault = spyOn(fs, 'rmSync').mockImplementation(((file: fs.PathLike, options?: fs.RmOptions) => {
-      if (String(file) === path.join(pendingDir(repo.rootKey, mycoHome), 'pending.json')) {
-        sawLiveAtCleanup = new MemberSpool('proj_1', { mycoHome }).readRecords('sess-cleanup').length === 2;
+      if (String(file) === path.join(pendingDir(repo.rootKey, mycoHome, SERVER_URL), 'pending.json')) {
+        sawLiveAtCleanup = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome }).readRecords('sess-cleanup').length === 2;
         throw Object.assign(new Error('injected cleanup failure'), { code: 'EIO' });
       }
       return remove(file, options);
@@ -769,13 +769,13 @@ describe('the pending spool', () => {
       expect(captured.stderr).not.toContain('session-start error');
       expect(sawLiveAtCleanup).toBe(true);
       expect(rig.env.sqlite.query(`SELECT kind FROM events WHERE session_id = 'sess-cleanup'`).all()).toEqual([{ kind: 'session.start' }, { kind: 'session.start' }]);
-      expect(fs.existsSync(path.join(pendingDir(repo.rootKey, mycoHome), 'pending.json'))).toBe(true);
+      expect(fs.existsSync(path.join(pendingDir(repo.rootKey, mycoHome, SERVER_URL), 'pending.json'))).toBe(true);
     } finally { fault.mockRestore(); }
   });
 
   it('keeps more than 2,000 joined hooks after a deleted held blob and delivers every movable record', async () => {
     const root = repository(path.join(base, 'Repos'), 'joined-many', 'https://github.com/acme/joined-many.git');
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const held = pendingSpool(repo, { mycoHome, now: at })!;
     const sessionId = 'sess-many';
@@ -792,7 +792,7 @@ describe('the pending spool', () => {
         { fetch: rig.fetch, helpers: 'record' });
       expect(run.stderr).not.toContain('not retained');
     }
-    const live = new MemberSpool('proj_1', { mycoHome });
+    const live = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome });
     expect(live.readRecords(sessionId)).toHaveLength(furtherHooks);
     expect(flushPending(repo.rootKey, live, { mycoHome, now: at })).toBe(1);
     expect(live.readRecords(sessionId)).toHaveLength(furtherHooks + 1);
@@ -809,7 +809,7 @@ describe('the pending spool', () => {
 
   it('routes a joined hook to live delivery while an older held blob is unreadable', async () => {
     const root = repository(path.join(base, 'Repos'), 'joined-held', 'https://github.com/acme/joined-held.git');
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const held = pendingSpool(repo, { mycoHome, now: at })!;
     const old = promptEvent({ agent: 'claude-code', sessionId: 'sess-order', stage: held.stagerFor('sess-order'), now: () => at },
@@ -828,26 +828,26 @@ describe('the pending spool', () => {
         { fetch: rig.fetch, helpers: 'record' });
       expect(captured.stderr).not.toContain('not retained');
       expect(held.readRecords('sess-order')).toHaveLength(1);
-      expect(new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order').map((record) => record?.kind)).toEqual(['session.start']);
+      expect(new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome }).readRecords('sess-order').map((record) => record?.kind)).toEqual(['session.start']);
     } finally { fault.mockRestore(); }
-    expect(flushPending(repo.rootKey, new MemberSpool('proj_1', { mycoHome }), { mycoHome, now: at })).toBe(1);
+    expect(flushPending(repo.rootKey, new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome }), { mycoHome, now: at })).toBe(1);
     await runHook('session-start', { session_id: 'sess-order', hook_event_name: 'SessionStart', cwd: root, transcript_path: transcriptPath },
       { fetch: rig.fetch, helpers: 'record' });
-    const records = new MemberSpool('proj_1', { mycoHome }).readRecords('sess-order');
+    const records = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome }).readRecords('sess-order');
     expect(records.map((record) => record?.kind)).toEqual(['prompt', 'session.start', 'session.start']);
     expect(records[0]?.eventId).toBe(old.envelope.eventId);
   });
 
   it('discards held capture once it is older than the TTL, and refuses more past the record cap', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const ctx = { agent: 'claude-code', sessionId: 'sess-p', stage: pendingSpool(repo, { mycoHome, now: at })!.stagerFor('sess-p'), now: () => at };
     expect(appendPending(repo, 'sess-p', [sessionStartEvent(ctx, { startedAt: at, originPath: root })], undefined, { mycoHome, now: at })).toBe('pending');
-    expect(expirePending(repo.rootKey, { mycoHome, now: at + PENDING_TTL_MS - 1 })).toBe(false);
+    expect(expirePending(repo.rootKey, { serverUrl: SERVER_URL, mycoHome, now: at + PENDING_TTL_MS - 1 })).toBe(false);
     expect(listPending({ mycoHome, now: at + PENDING_TTL_MS - 1 })).toHaveLength(1);
     expect(listPending({ mycoHome, now: at + PENDING_TTL_MS })).toEqual([]);
-    expect(fs.existsSync(pendingDir(repo.rootKey, mycoHome))).toBe(false);
+    expect(fs.existsSync(pendingDir(repo.rootKey, mycoHome, SERVER_URL))).toBe(false);
 
     const many = Array.from({ length: PENDING_MAX_RECORDS }, () => sessionStartEvent(ctx, { startedAt: at, originPath: root }));
     expect(appendPending(repo, 'sess-p', many, undefined, { mycoHome, now: at })).toBe('pending');
@@ -857,7 +857,7 @@ describe('the pending spool', () => {
 
   it('moves a held session\'s unconsumed turn-end marks into the project\'s marks file, each with the time its turn ended', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const held = pendingSpool(repo, { mycoHome, now: at })!;
     const ctx = { agent: 'claude-code', sessionId: 'sess-j', stage: held.stagerFor('sess-j'), now: () => at };
@@ -867,13 +867,13 @@ describe('the pending spool', () => {
     // A pass already consumed the first held mark.
     const [first] = held.pendingTurnEnds('sess-j');
     held.consumeTurnEnds('sess-j', { generation: first!.generation, line: first!.line });
-    const into = new MemberSpool('proj_1', { mycoHome });
+    const into = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome });
     into.appendTurnEnd('sess-j', mark(5), undefined, at + 5);
     expect(flushPending(repo.rootKey, into, { mycoHome, now: at + 10 })).toBe(1);
     const landed = into.pendingTurnEnds('sess-j');
     expect(landed.map((p) => ({ atSize: p.mark.atSize, at: p.mark.at }))).toEqual([{ atSize: 5, at: at + 5 }, { atSize: 20, at: at + 2 }]);
     expect(into.readRecords('sess-j').map((r) => (r === null ? null : r.kind))).toEqual(['session.start']);
-    expect(fs.existsSync(pendingDir(repo.rootKey, mycoHome))).toBe(false);
+    expect(fs.existsSync(pendingDir(repo.rootKey, mycoHome, SERVER_URL))).toBe(false);
     // A pass holding the held file's place consumes nothing in the project's file.
     into.consumeTurnEnds('sess-j', { generation: first!.generation, line: 9 });
     expect(into.pendingTurnEnds('sess-j')).toHaveLength(2);
@@ -881,7 +881,7 @@ describe('the pending spool', () => {
 
   it('lands a hook\'s capture after what was held, when the connection is written but not yet settled', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     const ctx = (sessionId: string) => ({ agent: 'claude-code', sessionId, stage: pendingSpool(repo, { mycoHome, now: at })!.stagerFor(sessionId), now: () => at });
     appendPending(repo, 'sess-o', [sessionStartEvent(ctx('sess-o'), { startedAt: at, originPath: root })], undefined, { mycoHome, now: at });
@@ -889,7 +889,7 @@ describe('the pending spool', () => {
     writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token, root, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
     const late = promptEvent({ ...ctx('sess-o'), now: () => at + 1 }, { promptId: mintId(), text: 'after' });
     expect(appendPending(repo, 'sess-o', [late], undefined, { mycoHome, now: at + 1 })).toBe('project');
-    const into = new MemberSpool('proj_1', { mycoHome });
+    const into = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome });
     expect(into.readRecords('sess-o').map((r) => r?.kind)).toEqual(['prompt']);
     expect(flushPending(repo.rootKey, into, { mycoHome, now: at + 2 })).toBe(1);
     expect(into.readRecords('sess-o').map((r) => r?.kind)).toEqual(['session.start', 'prompt']);
@@ -897,14 +897,14 @@ describe('the pending spool', () => {
 
   it('moves each held turn-end mark once when a move stopped part-way runs again, and leaves a hook\'s own marks as they come', () => {
     const root = repository(path.join(base, 'Repos'), 'widget', null);
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const mark = { slot: 'primary' as const, transcriptId: `tx_${'b'.repeat(32)}`, atSize: 42 };
     expect(appendPendingTurnEnd(repo, 'sess-k', mark, undefined, { mycoHome, now: 1 })).toBe('pending');
     // A move that stopped after appending, before it removed what it moved: the held files are there again.
-    const dir = pendingDir(repo.rootKey, mycoHome);
+    const dir = pendingDir(repo.rootKey, mycoHome, SERVER_URL);
     const kept = fs.mkdtempSync(path.join(base, 'kept-'));
     fs.cpSync(dir, kept, { recursive: true });
-    const into = new MemberSpool('proj_1', { mycoHome });
+    const into = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome });
     flushPending(repo.rootKey, into, { mycoHome, now: 2 });
     fs.cpSync(kept, dir, { recursive: true });
     flushPending(repo.rootKey, into, { mycoHome, now: 3 });
@@ -916,14 +916,14 @@ describe('the pending spool', () => {
 
   it('lands a hook\'s capture in the project\'s spool when the join connects the repository while the hook runs', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
-    const repo = { root, rootKey: rootKeyFor(root, mycoHome) };
+    const repo = { root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL };
     const at = Date.now();
     // The hook began before the join: it reads the pending spool and stages through it.
     const stage = pendingSpool(repo, { mycoHome, now: at })!.stagerFor('sess-r');
     const [joined] = await join(['--root', root]);
     const projectId = (joined as { projectId: string }).projectId;
     expect(appendPending(repo, 'sess-r', [sessionStartEvent({ agent: 'claude-code', sessionId: 'sess-r', stage, now: () => at }, { startedAt: at, originPath: root })], undefined, { mycoHome, now: at })).toBe('project');
-    expect(new MemberSpool(projectId, { mycoHome }).readRecords('sess-r').map((r) => (r !== null && "kind" in r ? r.kind : null))).toEqual(['session.start']);
+    expect(new MemberSpool({ projectId: projectId, serverUrl: SERVER_URL }, { mycoHome }).readRecords('sess-r').map((r) => (r !== null && "kind" in r ? r.kind : null))).toEqual(['session.start']);
     expect(listPending({ mycoHome, now: at })).toEqual([]);
   });
 
@@ -931,10 +931,10 @@ describe('the pending spool', () => {
     const full = repository(path.join(base, 'Repos'), 'busy', null);
     const old = repository(path.join(base, 'Repos'), 'stale', null);
     const at = Date.now();
-    const ctx = (root: string) => ({ agent: 'claude-code', sessionId: 'sess-f', stage: pendingSpool({ root, rootKey: rootKeyFor(root, mycoHome) }, { mycoHome, now: at })!.stagerFor('sess-f'), now: () => at });
+    const ctx = (root: string, createdAt: number = at) => ({ agent: 'claude-code', sessionId: 'sess-f', stage: pendingSpool({ root, rootKey: rootKeyFor(root, mycoHome), serverUrl: SERVER_URL }, { mycoHome, now: createdAt })!.stagerFor('sess-f'), now: () => createdAt });
     const many = Array.from({ length: PENDING_MAX_RECORDS }, () => sessionStartEvent(ctx(full), { startedAt: at, originPath: full }));
-    appendPending({ root: full, rootKey: rootKeyFor(full, mycoHome) }, 'sess-f', many, undefined, { mycoHome, now: at });
-    appendPending({ root: old, rootKey: rootKeyFor(old, mycoHome) }, 'sess-f', [sessionStartEvent(ctx(old), { startedAt: at, originPath: old })], undefined, { mycoHome, now: at - PENDING_TTL_MS - 1 });
+    appendPending({ root: full, rootKey: rootKeyFor(full, mycoHome), serverUrl: SERVER_URL }, 'sess-f', many, undefined, { mycoHome, now: at });
+    appendPending({ root: old, rootKey: rootKeyFor(old, mycoHome), serverUrl: SERVER_URL }, 'sess-f', [sessionStartEvent(ctx(old, at - PENDING_TTL_MS - 1), { startedAt: at, originPath: old })], undefined, { mycoHome, now: at - PENDING_TTL_MS - 1 });
     for (const root of [full, old]) await join(['--root', root]);
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-n1', hook_event_name: 'UserPromptSubmit', prompt: 'hi', cwd: full, transcript_path: transcript(full, 'sess-n1') }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });
     expect(prompt.stdout).toContain('is no longer held');
@@ -950,7 +950,7 @@ describe('the pending spool', () => {
     expect(spy.requests.filter((r) => r.path === '/members/uncaptured/state')).toEqual([]);
     const lines: string[] = [];
     await runMemberCli(['status', '--all'], { mycoHome, stdout: (l) => lines.push(l), stderr: () => {} });
-    expect(lines.filter((l) => l.startsWith('held no more:')).map((l) => l.split(' — ')[0])).toEqual(expect.arrayContaining([`held no more: ${full}`, `held no more: ${old}`]));
+    expect(lines.filter((l) => l.startsWith('held no more:')).map((l) => l.split(' — ')[0])).toEqual(expect.arrayContaining([`held no more: ${full} (${SERVER_URL})`, `held no more: ${old} (${SERVER_URL})`]));
   });
 
   it('is shown by `myco member status`, with when it is discarded', async () => {
@@ -961,7 +961,7 @@ describe('the pending spool', () => {
     await runMemberCli(['status', '--all'], { mycoHome, stdout: (l) => lines.push(l), stderr: () => {} });
     expect(lines).toContain(`default:    ${SERVER_URL} (new repositories join it)`);
     expect(lines.some((l) => l.startsWith(`not joined: ${root} — no_remote`))).toBe(true);
-    expect(lines.some((l) => l.startsWith(`pending:    ${root} — 1 event(s) in 1 session(s) waiting to join since`) && l.includes('discarded after'))).toBe(true);
+    expect(lines.some((l) => l.startsWith(`pending:    ${root} (${SERVER_URL}) — 1 event(s) in 1 session(s) waiting to join since`) && l.includes('discarded after'))).toBe(true);
   });
 });
 
@@ -1065,7 +1065,7 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
     };
     await pass(Date.now() + 60_000, fetch);
     await pass(Date.now() + 60_000, fetch);
-    expect({ resolves, repeats: readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome)?.repeats, requested: requested() }).toEqual({ resolves: 1, repeats: 1, requested: [] });
+    expect({ resolves, repeats: readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)?.repeats, requested: requested() }).toEqual({ resolves: 1, repeats: 1, requested: [] });
   });
 
   it('joins a repository a hook asked about before a slow sweep, and leaves the sweep to the next pass at its deadline', async () => {
@@ -1117,7 +1117,7 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
     }
   });
 
-  it('drops a request asked for under another Deployment than the default, or under none', async () => {
+  it('delivers a pinned join request to its original membership after the default changes', async () => {
     const root = repository(path.join(base, 'Repos'), 'moved', 'https://github.com/acme/moved.git');
     await ask(root, 'sess-moved');
     const other = 'https://other-deployment.invalid';
@@ -1129,16 +1129,54 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
       return rig.fetch(input, init);
     };
     await pass(Date.now() + 60_000, fetch);
-    // Nothing is asked of either Deployment for it, and no attempt is recorded.
-    expect({ requested: requested(), dialled, connected: connected(root), tried: readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome) })
-      .toEqual({ requested: [], dialled: [], connected: false, tried: null });
+    expect(dialled.length).toBeGreaterThan(0);
+    expect(dialled.every((url) => url.startsWith(SERVER_URL))).toBe(true);
+    expect(connected(root)).toBe(true);
+    expect(requested()).toEqual([]);
 
     recordDefaultDeployment(SERVER_URL, { mycoHome, replace: true });
     await ask(root, 'sess-moved-2');
-    expect(requested()).toEqual([root]);
+    expect(requested()).toEqual([]);
     fs.rmSync(defaultDeploymentPath(mycoHome));
     await pass(Date.now() + 60_000, fetch);
     expect(requested()).toEqual([]);
+  });
+
+  it('holds queued joins and imports when an existing binding is unavailable', async () => {
+    const root = repository(path.join(base, 'Repos'), 'unreadable-binding', 'https://github.com/acme/widget.git');
+    await ask(root, 'sess-unreadable');
+    const other = 'https://other-deployment.invalid';
+    writeRegistryEntry({ version: REGISTRY_VERSION, root, serverUrl: other, projectId: 'proj_1', token: 'B'.repeat(43), machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    const file = registryEntryPath(root, mycoHome);
+    const original = fs.readFileSync(file);
+    fs.writeFileSync(file, '{unavailable');
+    queueImport({ root, rootKey: rootKeyFor(root, mycoHome), serverUrl: other, projectId: 'proj_1', at: Date.now() }, mycoHome);
+    recordDefaultDeployment(other, { mycoHome, replace: true });
+    let calls = 0;
+    await pass(Date.now() + 60_000, async (input, init) => { calls++; return rig.fetch(input, init); });
+    expect(calls).toBe(0);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{unavailable');
+    expect(requested()).toEqual([root]);
+    expect(listPendingImports(mycoHome)).toHaveLength(1);
+    fs.writeFileSync(file, original);
+    await pass(Date.now() + 60_000, async () => { throw new Error('offline'); });
+    expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(other);
+    expect(listPending({ mycoHome, now: Date.now() }).some((pending) => pending.root === root)).toBe(true);
+  });
+
+  it('rechecks unavailable bindings before committing a remote join answer', async () => {
+    const root = repository(path.join(base, 'Repos'), 'raced-binding', 'https://github.com/acme/widget.git');
+    await ask(root, 'sess-race');
+    const file = registryEntryPath(root, mycoHome);
+    await pass(Date.now() + 60_000, async (input, init) => {
+      const response = await rig.fetch(input, init);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url).pathname === RESOLVE_PROJECT_PATH) fs.writeFileSync(file, '{unavailable');
+      return response;
+    });
+    expect(fs.readFileSync(file, 'utf8')).toBe('{unavailable');
+    expect(requested()).toEqual([root]);
+    expect(listPending({ mycoHome, now: Date.now() }).some((pending) => pending.root === root)).toBe(true);
   });
 
   it('runs with the home its command line names as MYCO_HOME, whatever the environment it was started with', async () => {
@@ -1157,7 +1195,7 @@ describe('a join kick that cannot leave the hook\'s job (#1595 review)', () => {
     const log = fs.readFileSync(helperLogPath(mycoHome), 'utf-8');
     expect({ waits: log.includes('the join waits for the next hook'), inline: log.includes('the caller ships inline'), requested: requested() })
       .toEqual({ waits: true, inline: false, requested: [root] });
-    expect(kickHelper({ projectId: JOIN_BUCKET, mycoHome, spawn: contained })).toMatchObject({ contained: true });
+    expect(kickHelper({ projectId: JOIN_BUCKET, serverUrl: 'https://s', mycoHome, spawn: contained })).toMatchObject({ contained: true });
   });
 });
 
@@ -1169,7 +1207,8 @@ describe('a hook whose join cannot be asked for (#1595 review)', () => {
     fs.writeFileSync(path.join(autoJoinDir(mycoHome), 'requests'), '');
     const hook = await runHook('session-start', { session_id: 'sess-unwritable', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-unwritable'), cwd: root }, { fetch: rig.fetch, helperSpawn: spawn });
     // The capture is held, the helper still kicked, and the hook ends as any other.
-    expect({ records: listPending({ mycoHome, now: Date.now() }).map((p) => p.records), requested: requested(), kicked: spawned.map((k) => k.args.slice(-5)), stderr: hook.stderr })
-      .toEqual({ records: [1], requested: [], kicked: [joinKick()], stderr: '' });
+    expect(() => requested()).toThrow('ENOTDIR');
+    expect({ records: listPending({ mycoHome, now: Date.now() }).map((p) => p.records), kicked: spawned.map((k) => k.args.slice(-5)), stderr: hook.stderr })
+      .toEqual({ records: [1], kicked: [joinKick()], stderr: '' });
   });
 });
