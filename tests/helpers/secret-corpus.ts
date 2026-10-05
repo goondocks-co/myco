@@ -19,6 +19,9 @@ export interface Leak { name: string; command: string; secrets: readonly string[
 
 /** Each input, and the values of it no path may ever store. */
 export const CORPUS: readonly Leak[] = [
+  { name: 'an explicit slash-bearing search pattern', command: 'rg -e private/customer-note src/', secrets: ['private/customer-note'] },
+  { name: 'an unknown value shaped like a search mode', command: 'rg --message --files private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'an unknown short-cluster value', command: 'ls -lhZ private/customer-note src/', secrets: ['private/customer-note'] },
   { name: 'a slash-bearing printf payload', command: 'printf %s private/customer-note', secrets: ['private/customer-note'] },
   { name: 'a slash-bearing data flag value', command: 'curl --data private/customer-note https://fixture.invalid', secrets: ['private/customer-note'] },
   { name: 'a file-shaped data flag value', command: 'curl --data customer-note.json https://fixture.invalid', secrets: ['customer-note.json'] },
@@ -156,6 +159,13 @@ export const OPENAI_LETTERS = ['sk', 'abcdefghijklmnop'].join('-');
  * a password-file record; and a key or a label broken by zero-width characters. Agent prose keeps none of them.
  */
 export const PROSE: readonly Leak[] = [
+  ...['DBPASSWORD', 'ACCESSTOKEN', 'CLIENTAPIKEY'].map((label) => ({ name: `uppercase ${label}`, command: `Read the policy.\n${label}: "hunter22" Updated the policy.`, secrets: ['hunter22'] })),
+  ...['\n', '\r\n'].map((newline) => ({ name: `a quoted secret across ${newline === '\n' ? 'LF' : 'CRLF'}`, command: `Read the policy.\nclientPassword: "customer-fragment${newline}piano-harbor"\nUpdated the policy.`, secrets: ['customer-fragment', 'piano-harbor'] })),
+  { name: 'a compatibility Unicode secret label', command: 'Read the policy.\nclientＰassword: piano-harbor\nUpdated the policy.', secrets: ['piano-harbor'] },
+  { name: 'a compatibility Unicode label delimiter', command: 'Read the policy.\nclientPassword： piano-harbor\nUpdated the policy.', secrets: ['piano-harbor'] },
+  { name: 'a fullwidth secret label', command: 'Read the policy.\nｃｌｉｅｎｔＰａｓｓｗｏｒｄ： piano-harbor\nUpdated the policy.', secrets: ['piano-harbor'] },
+  ...['accessKey', 'access_key', 'access-key'].map((label) => ({ name: `an ${label} label`, command: `Read the policy.\n${label}: piano-harbor\nUpdated the policy.`, secrets: ['piano-harbor'] })),
+  { name: 'an escaped quote inside a multiline secret', command: 'Read the policy.\nclientPassword: "customer-fragment\\"\npiano-harbor"\nUpdated the policy.', secrets: ['customer-fragment', 'piano-harbor'] },
   { name: 'indented JSON output', command: 'Read the configuration:\n\n    {"clientPassword":"piano-harbor","note":"customer-content"}\n\nUpdated the policy.', secrets: ['piano-harbor', 'customer-content'] },
   { name: 'tab-indented YAML output', command: 'Read the configuration:\n\tclientPassword: piano-harbor\n\tnote: customer-content\nUpdated the policy.', secrets: ['piano-harbor', 'customer-content'] },
   { name: 'blockquote output', command: 'Read the response:\n> customer-content\n> another copied line\nUpdated the policy.', secrets: ['customer-content', 'another copied line'] },

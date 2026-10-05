@@ -280,6 +280,20 @@ describe('agent prose, bounded and masked', () => {
     expect(agentProse('Steps:\n1. Read the material.\r\n2. Wrote the title.', 1_000, { singleLine: true })).toBe('Steps: 1. Read the material. 2. Wrote the title.');
   });
 
+  it('keeps complete ordinary label components and the prose beside quoted secrets', () => {
+    for (const account of ['bypass: disabled. Fixed src/auth.ts.', 'compass: east. Updated src/auth.ts.', 'surpass: done. Updated the policy.', 'Reviewed ﬁle ①. Compass: east.']) {
+      expect(agentProse(account, 1000)).toBe(account);
+      expect(redactSecrets(account)).toBe(account);
+    }
+    for (const leak of PROSE.filter((case_) => case_.command.startsWith('Read the policy.\n'))) {
+      const stored = agentProse(leak.command, 1000)!;
+      expect(leaksIn(leak, stored)).toEqual([]);
+      expect(stored).toContain('Read the policy.');
+      expect(stored).toContain('Updated the policy.');
+      expect(leaksIn(leak, redactSecrets(leak.command))).toEqual([]);
+    }
+  });
+
   it('is cut to its bound and is null where nothing is left', () => {
     expect(agentProse('word '.repeat(100), 20)).toHaveLength(20);
     expect(agentProse('word '.repeat(100), 20)!.endsWith('…')).toBe(true);

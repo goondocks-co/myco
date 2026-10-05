@@ -22,6 +22,7 @@
 
 import { commandShape, identifierShape, keyLike, urlShape, ZERO_WIDTH } from './command-shape.js';
 import { redactSecrets } from './redact-secrets.js';
+import { isSecretFlag, isSecretLabel, maskSecretLabels } from './secret-labels.js';
 import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 
 const ELIDED = '…';
@@ -368,22 +369,20 @@ const STRUCTURED_START = /\{\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*:|\[\s*
 const URL_START = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const FLAG_ASSIGNMENT = /^(--?[A-Za-z][A-Za-z0-9-]{0,40})=/;
-/** A flag whose name says the word after it carries a secret. */
-const SECRET_FLAG = /^--?[A-Za-z0-9-]*(?:token|secret|pass|key|auth|credential)[A-Za-z0-9-]*$/i;
-/** A label whose name says the word after it, past `is`, `was`, `=` or `:`, carries a secret. */
-const SECRET_LABEL = /^[A-Za-z0-9_-]*(?:password|passwd|passphrase|passcode|secret|token|api[_-]?key|credentials?|creds)$/i;
-/**
- * A label naming a secret, with what joins it to its value (`is`, `was`, `are`, `=`, `:` or a table's `|`), and the
- * value: a quoted span to its closing quote, or everything to the next table cell or the end of the line.
- */
-const LABELED_VALUE = /(\b[A-Za-z0-9_-]*(?:password|passwd|passphrase|passcode|pass|pwd|pw|pin|secret|token|api[_-]?key|credentials?|creds)\b["']?)([ \t]*(?:\b(?:is|was|are)\b|=|:|\|)[ \t]*)("[^"\n]*"?|'[^'\n]*'?|[^|\n]*)/gi;
 /** A line shaped like a record of `/etc/passwd` or `/etc/shadow`: a user name and six or more `:`-separated fields. */
 const ACCOUNT_LINE = /^[ \t]*[A-Za-z_][A-Za-z0-9._-]*(?::[^:\n]*){6,}[ \t]*$/gm;
 /** Three or more `*` in a row: a key echoed with its middle masked. */
 const MASKED_ECHO = /\*{3,}/;
 const CONNECTORS: ReadonlySet<string> = new Set(['is', 'was', 'were', 'are', '=', ':', '|', 'of', 'as', 'to']);
 const LEADING = /^[("'`<[{*_]+/;
-const TRAILING = /[)"'`>\]}.,;:!?*_]+$/;
+const TRAILING_CHAR = /^[)"'`>\]}.,;:!?*_]$/;
+
+/** A word's trailing punctuation, scanned from its end. */
+function trailing(word: string, colon = true): string {
+  let at = word.length;
+  while (at > 0 && TRAILING_CHAR.test(word[at - 1]!) && (colon || word[at - 1] !== ':')) at -= 1;
+  return word.slice(at);
+}
 
 /** Every here-document's body read as `…`, its opener and delimiter kept; a body that never closes runs to the end. */
 function collapseHeredocs(text: string): string {
@@ -439,7 +438,7 @@ function collapseStructuredOutput(text: string): string {
 function elided(word: string): string {
   const lead = LEADING.exec(word)?.[0] ?? '';
   const rest = word.slice(lead.length);
-  const trail = TRAILING.exec(rest)?.[0] ?? '';
+  const trail = trailing(rest);
   return rest.length === trail.length ? word : `${lead}${ELIDED}${trail}`;
 }
 
@@ -448,7 +447,7 @@ function maskWord(word: string): string {
   if (MASKED_ECHO.test(word) && /[A-Za-z0-9]/.test(word)) return elided(word.replace(/\*/g, 'x'));
   const lead = LEADING.exec(word)?.[0] ?? '';
   const rest = word.slice(lead.length);
-  const trail = TRAILING.exec(rest)?.[0] ?? '';
+  const trail = trailing(rest);
   const core = rest.slice(0, rest.length - trail.length);
   if (core === '' || core === ELIDED || core === '[REDACTED]') return word;
   // A word of six or more `:`-separated fields is a password-file record, wherever it stands.
@@ -460,16 +459,17 @@ function maskWord(word: string): string {
   // Credentials before an @, and the local part of an address, are never kept; a scope such as `@org/pkg` is.
   if (/^[^@]+@/.test(core)) return `${lead}${ELIDED}${trail}`;
   const colon = core.indexOf(':');
-  if (colon > 0 && SECRET_LABEL.test(core.slice(0, colon).replace(/^-+/, '')) && colon < core.length - 1) return `${lead}${ELIDED}${trail}`;
+  if (colon > 0 && isSecretLabel(core.slice(0, colon).replace(/^-+/, '')) && colon < core.length - 1) return `${lead}${ELIDED}${trail}`;
   if (colon > 0 && /^(?:pass|key|auth|bearer)$/i.test(core.slice(0, colon)) && colon < core.length - 1) return `${lead}${ELIDED}${trail}`;
   return keyLike(core) ? `${lead}${ELIDED}${trail}` : word;
 }
 
 /** Whether the word after this one carries a secret by what this one says, and how many connecting words may come between. */
 function secretNext(word: string): boolean {
-  const core = word.replace(LEADING, '').replace(/[)"'`>\]}.,;!?*_]+$/, '');
-  if (SECRET_FLAG.test(core) && !core.includes('=')) return true;
-  return SECRET_LABEL.test(core.replace(/:$/, ''));
+  const bare = word.replace(LEADING, '');
+  const core = bare.slice(0, bare.length - trailing(bare, false).length);
+  if (core.startsWith('-') && !core.includes('=')) return isSecretFlag(core);
+  return !core.includes('=') && isSecretLabel(core.replace(/:$/, ''));
 }
 
 /** Every word in its stored shape, the word after a secret-named flag or label read `…`. */
@@ -496,12 +496,7 @@ function maskWords(text: string): string {
 
 /** A labeled secret's whole value read as `…`: a quoted value keeps its quotes, a table cell its closing space. */
 function maskLabeledValues(text: string): string {
-  return text.replace(LABELED_VALUE, (_match, label: string, joint: string, value: string) => {
-    if (value.trim() === '' || value.trim() === ELIDED) return `${label}${joint}${value}`;
-    const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
-    if (quote !== '') return `${label}${joint}${quote}${ELIDED}${value.length > 1 && value.endsWith(quote) ? quote : ''}`;
-    return `${label}${joint}${ELIDED}${/\s$/.test(value) ? ' ' : ''}`;
-  });
+  return maskSecretLabels(text, ELIDED, { unquoted: 'line', keepQuotes: true });
 }
 
 /** An inline code span: a command shaped as one (`commandShape`), a single word masked as a word is. */
@@ -526,14 +521,14 @@ export function agentProse(value: string, max: number, options: { singleLine?: b
   // Inline code is shaped before here-documents are read, so a here-document quoted inline never runs past its span.
   text = text.replace(INLINE_CODE, inlineCode);
   text = collapseHeredocs(text);
+  text = maskLabeledValues(text);
   text = text.replace(HERESTRING, `<<< ${ELIDED}`);
   text = text.replace(OUTPUT_LINE, (line) => line.trim() === '' ? line : `${ELIDED}\n`);
   text = collapseStructuredOutput(text);
   text = text.replace(/\t+/g, ' ');
   text = maskWords(text);
-  text = maskLabeledValues(text);
   text = redactSecrets(text);
-  if (options.singleLine === true) text = text.replace(/ *\n[\n ]*/g, ' ');
+  if (options.singleLine === true) text = text.split('\n').map((line) => line.trim()).filter((line) => line !== '').join(' ');
   text = text.trim();
   if (text === '') return null;
   return text.length > max ? `${text.slice(0, max - 1)}${ELIDED}` : text;

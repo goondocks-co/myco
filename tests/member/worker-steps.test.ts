@@ -158,7 +158,7 @@ describe('a step log from a harness\'s stream', () => {
     expect(steps.map(({ callId, kind, tool, target, outcome }) => ({ callId, kind, tool, target, outcome }))).toEqual([
       { callId: 'c1', kind: 'read', tool: 'read', target: '/repo/src/runner/loop.ts', outcome: 'ok' },
       { callId: 'c2', kind: 'command', tool: 'execute', target: 'npm test', outcome: 'error' },
-      { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -r… …', outcome: 'refused' },
+      { callId: 'c3', kind: 'command', tool: 'execute', target: 'rm -rf …', outcome: 'refused' },
     ]);
     expect(unrecognized).toEqual({ total: 1, shapes: { 'session/update:mystery_update': 1 } });
     expect(JSON.stringify(steps)).not.toContain(FILE_BODY);
@@ -532,7 +532,9 @@ describe('a step log on its way to the Deployment', () => {
 describe('command payloads through the worker and Deployment', () => {
   it('keeps slash-bearing payloads out of the durable outbox and server rows while retaining a declared file path', async () => {
     const cases = CORPUS.filter((leak) => leak.secrets.some((secret) => secret === 'private/customer-note' || secret === 'customer-note.json'));
-    const commands = [...cases.map((leak) => leak.command), 'ls -l /etc'];
+    const kept = ['ls -l /etc', 'rg --files src/', 'ls -lh src/', 'rg -e public src/'];
+    const shapes = ['ls -l /etc', 'rg --files src/', 'ls -lh src/', 'rg -e … src/'];
+    const commands = [...cases.map((leak) => leak.command), ...kept];
     const lines = commands.flatMap((command, i) => [
       JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `payload_${i}`, name: 'Bash', input: { command } }] } }),
       JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `payload_${i}`, content: 'fixture output' }] } }),
@@ -545,12 +547,12 @@ describe('command payloads through the worker and Deployment', () => {
       expect(file).toBeDefined();
       const artifact = readFileSync(file!, 'utf8');
       for (const leak of cases) for (const secret of leak.secrets) expect(artifact).not.toContain(secret);
-      expect(artifact).toContain('ls -l /etc');
+      for (const shape of shapes) expect(artifact).toContain(shape);
       w.refuse(false);
       await w.attach(false);
       const rows = JSON.stringify(w.stored());
       for (const leak of cases) for (const secret of leak.secrets) expect(rows).not.toContain(secret);
-      expect(rows).toContain('ls -l /etc');
+      for (const shape of shapes) expect(rows).toContain(shape);
       expect(w.outbox()).toEqual([]);
     } finally { w.e.sqlite.close(); }
   }, 20_000);

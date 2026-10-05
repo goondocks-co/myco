@@ -65,14 +65,22 @@ export const PATH_SUBCOMMAND_TABLE: Readonly<Record<string, readonly string[]>> 
 
 /** Flags with no separate value, scoped to the command that declares them. */
 export const BOOLEAN_FLAG_TABLE: Readonly<Record<string, readonly string[]>> = {
-  ls: ['-l', '-a', '-h', '-la', '-al', '--all', '--long'],
+  ls: ['-l', '-a', '-h', '--all', '--long'],
   cat: ['-n', '-b', '-s'],
-  cp: ['-r', '-R', '-f', '-i', '-a'], mv: ['-f', '-i'], rm: ['-r', '-R', '-f', '-rf'],
+  cp: ['-r', '-R', '-f', '-i', '-a'], mv: ['-f', '-i'], rm: ['-r', '-R', '-f'],
   rg: ['-n', '-i', '-l', '-q', '-c', '--line-number', '--ignore-case', '--files', '--hidden'],
   grep: ['-n', '-i', '-l', '-q', '-c', '-r', '-R', '-v'],
   egrep: ['-n', '-i', '-l', '-q', '-c'], ag: ['-n', '-i', '-l'],
   git: ['--oneline', '--cached', '--stat', '--name-only', '--staged'],
 };
+
+/** Search flags whose separate or attached value supplies the pattern. */
+export const SEARCH_PATTERN_FLAG_TABLE: Readonly<Record<string, readonly string[]>> = {
+  rg: ['-e', '--regexp'], grep: ['-e', '--regexp'], egrep: ['-e', '--regexp'],
+};
+
+/** Search modes whose positional arguments all name paths. */
+export const SEARCH_PATH_MODE_TABLE: Readonly<Record<string, readonly string[]>> = { rg: ['--files'] };
 
 /** Flags whose one separate value names a filesystem path. */
 export const PATH_FLAG_TABLE: Readonly<Record<string, readonly string[]>> = {
