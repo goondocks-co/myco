@@ -258,7 +258,11 @@ CREATE TRIGGER IF NOT EXISTS prompt_processed_reference_insert
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -286,7 +290,11 @@ CREATE TRIGGER IF NOT EXISTS prompt_processed_reference_update
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -317,7 +325,11 @@ CREATE TRIGGER IF NOT EXISTS response_processed_reference_insert
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -345,7 +357,11 @@ CREATE TRIGGER IF NOT EXISTS response_processed_reference_update
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -376,7 +392,11 @@ CREATE TRIGGER IF NOT EXISTS plan_processed_reference_insert
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -404,7 +424,11 @@ CREATE TRIGGER IF NOT EXISTS plan_processed_reference_update
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -435,7 +459,11 @@ CREATE TRIGGER IF NOT EXISTS tool_input_processed_reference_insert
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -463,7 +491,11 @@ CREATE TRIGGER IF NOT EXISTS tool_input_processed_reference_update
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -494,7 +526,11 @@ CREATE TRIGGER IF NOT EXISTS tool_output_processed_reference_insert
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -522,7 +558,11 @@ CREATE TRIGGER IF NOT EXISTS tool_output_processed_reference_update
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -553,7 +593,11 @@ CREATE TRIGGER IF NOT EXISTS attachment_processed_reference_insert
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
@@ -581,7 +625,11 @@ CREATE TRIGGER IF NOT EXISTS attachment_processed_reference_update
     ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
           AND (r.provenance <> 'missing' OR NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
-    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+    AND other.resource_id = r.resource_id AND ((SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1) IS NULL OR other.revision <= (SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = c.member_id AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+  ORDER BY rc.cutoff_revision LIMIT 1)) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
       OR (COALESCE(other.owner_member_id,
   (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
