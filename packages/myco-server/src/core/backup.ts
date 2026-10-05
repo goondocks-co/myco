@@ -1,3 +1,5 @@
+import { HARNESS_MEMBER_ID } from '../constants.js';
+import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
 import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
 /**
  * Deployment backup and restore.
@@ -38,7 +40,7 @@ const RESTORE_CHUNK_ROWS = 20;
  */
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
-  'member_credentials', 'deployment_ownership', 'deployment_ownership_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'processed_resources', 'agents',
+  'member_credentials', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'processed_resources', 'agents',
   'sessions', 'session_tombstones', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
@@ -485,7 +487,8 @@ export async function restoreArtifact(
     if (table === 'deployment_ownership') {
       const row = rows[0]!;
       if (typeof row.member_id === 'string') await restoreOwnership(db, { member_id: row.member_id, revision: Number(row.revision) },
-        { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number });
+        { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number,
+          previous_member_id: ownerAudit!.previous_member_id as string | null | undefined, operation: ownerAudit!.operation as string | undefined });
       outcome.tables[table] = { rows: rows.length, inserted: 0 };
       continue;
     }
@@ -542,6 +545,9 @@ export async function restoreArtifact(
       const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
       const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
       statements.push(...chunk.map((row) => {
+        if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, ownership);
+        if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
+          byTable.get('members')?.find(member => member.id === row.member_id));
         const restoreOwned = OWNED_ROW_RESTORERS[table];
         if (restoreOwned !== undefined) return restoreOwned(db, row, transcriptParents);
         const columns = Object.keys(row);
@@ -556,7 +562,9 @@ export async function restoreArtifact(
       }
       let applied;
       try {
-        applied = await db.batch(statements);
+        applied = table === 'members'
+          ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
+          : await db.batch(statements);
       } catch (err) {
         const missing = await unregisteredAmong(db, references);
         if (missing.length > 0) throw new BackupObjectsMissingError(missing.length);

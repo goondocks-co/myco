@@ -198,15 +198,13 @@ describe('bootstrap, then admin (#1448)', () => {
     const atBind = new Promise<void>((resolve) => { reachBind = resolve; });
     let release!: () => void;
     const released = new Promise<void>((resolve) => { release = resolve; });
-    const holdRun = (statement: PreparedStatement): PreparedStatement => ({
-      bind: (...values: unknown[]) => holdRun(statement.bind(...values)),
-      first: <T,>() => statement.first<T>(),
-      all: <T,>() => statement.all<T>(),
-      run: async () => { reachBind(); await released; return statement.run(); },
-    });
     const held: RelationalStore = {
-      prepare: (sql) => (/^\s*UPDATE members SET github_id/.test(sql) ? holdRun(r.db.prepare(sql)) : r.db.prepare(sql)),
-      batch: (statements) => r.db.batch(statements),
+      prepare: (sql) => r.db.prepare(sql),
+      batch: async (statements) => {
+        reachBind();
+        await released;
+        return r.db.batch(statements);
+      },
     };
     const second = spendIdentityLinkAuthority(held, b.key, '9002', NOW);
     await atBind;

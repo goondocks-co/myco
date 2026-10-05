@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES } from '@goondocks/myco-shared/member-protocol';
 import {
-  Avatar, Button, Card, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, EmptyState, ErrorState, LoadingState, MoreMenu,
+  Avatar, Button, Card, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, EmptyState, ErrorState, Input, LoadingState, MoreMenu,
   ShowMore, StatusChip, type MoreMenuItem,
 } from '../../../design';
 import { refusalText, useAccessActions, useInvitations, useMembers } from '../../../hooks/use-access';
 import { useMe } from '../../../hooks/use-me';
 import { usePaged } from '../../../hooks/use-paged';
+import { ApiError } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
 import { ago } from '../../today/words';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
@@ -89,6 +90,8 @@ export function PeoplePage() {
               live={live}
               removed={removed}
               viewerId={viewerId}
+              isOwner={me.data?.owner === true}
+              ownerMemberId={me.data?.owner === true ? viewerId : null}
               nameOf={nameOf}
               machineCount={machineCount}
               machinesComplete={!machines.hasMore}
@@ -118,7 +121,7 @@ export function PeoplePage() {
 
       <InviteDialog target={invite} onClose={() => setInvite(null)} people={choices} />
       {me.data?.owner === true && <RawClaims />}
-      {me.data?.owner === false && <Ownership candidates={live.filter((person) => person.role === 'admin' && person.linked).map((person) => ({ id: person.id, name: nameOfPerson(person) }))} />}
+      {me.data?.member?.role === 'admin' && me.data.owner !== undefined && <Ownership isOwner={me.data.owner} nameOfCandidate={(candidate) => nameOfPerson({ id: candidate.memberId, label: candidate.label })} />}
     </AdminPage>
   );
 }
@@ -127,18 +130,23 @@ interface PeopleListProps {
   live: MemberRow[];
   removed: MemberRow[];
   viewerId: string | null;
+  isOwner: boolean;
+  ownerMemberId: string | null;
   nameOf: (id: string | null | undefined) => string | null;
   machineCount: (memberId: string) => number | null;
   machinesComplete: boolean;
   onAddMachine: (memberId: string) => void;
 }
 
-function PeopleList({ live, removed, viewerId, nameOf, machineCount, machinesComplete, onAddMachine }: PeopleListProps) {
+function PeopleList({ live, removed, viewerId, isOwner, ownerMemberId, nameOf, machineCount, machinesComplete, onAddMachine }: PeopleListProps) {
   const nameOfPerson = usePersonName();
   const actions = useAccessActions();
   const [removing, setRemoving] = useState<MemberRow | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [linking, setLinking] = useState<MemberRow | null>(null);
+  const [roleReview, setRoleReview] = useState<MemberRow | null>(null);
+  const [roleError, setRoleError] = useState<string | null>(null);
+  const [roleConfirmed, setRoleConfirmed] = useState(false);
   const self = removing !== null && removing.id === viewerId;
   const removingName = removing === null ? '' : nameOfPerson(removing);
 
@@ -157,7 +165,8 @@ function PeopleList({ live, removed, viewerId, nameOf, machineCount, machinesCom
                 actions={[
                   ...(!member.linked ? [{ label: 'Connect GitHub', onSelect: () => setLinking(member) }] : []),
                   { label: `${INVITE_CONTROLS.button} for them`, onSelect: () => onAddMachine(member.id) },
-                  { label: 'Remove', tone: 'danger' as const, onSelect: () => { setRemoveError(null); actions.revokeMember.reset(); setRemoving(member); } },
+                  ...(isOwner && member.id !== viewerId ? [{ label: member.role === 'admin' ? 'Make member' : 'Make admin', onSelect: () => { setRoleError(null); setRoleConfirmed(false); actions.changeRole.reset(); setRoleReview(member); } }] : []),
+                  ...(member.id !== ownerMemberId && !(isOwner && member.id === viewerId) && (member.role === 'member' || isOwner) ? [{ label: 'Remove', tone: 'danger' as const, onSelect: () => { setRemoveError(null); actions.revokeMember.reset(); setRemoving(member); } }] : []),
                 ]}
               />
             ))}
@@ -205,6 +214,29 @@ function PeopleList({ live, removed, viewerId, nameOf, machineCount, machinesCom
         }}
       />
       <ConnectGithubDialog member={linking} name={linking === null ? '' : nameOfPerson(linking)} onClose={() => setLinking(null)} />
+      <ConfirmDialog
+        open={roleReview !== null}
+        onOpenChange={(open) => { if (!open) { setRoleReview(null); setRoleConfirmed(false); } }}
+        title={roleReview?.role === 'admin' ? `Make ${roleReview === null ? '' : nameOfPerson(roleReview)} a member?` : `Make ${roleReview === null ? '' : nameOfPerson(roleReview)} an admin?`}
+        description={roleReview?.role === 'admin'
+          ? 'They will lose server administration powers. Their membership and data stay.'
+          : 'They will gain server administration powers. Only the owner can change roles or transfer ownership.'}
+        confirmLabel={roleReview?.role === 'admin' ? 'Make member' : 'Make admin'}
+        confirmDisabled={!roleConfirmed}
+        pending={actions.changeRole.isPending}
+        error={roleError}
+        onConfirm={() => {
+          if (roleReview === null || !roleConfirmed) return;
+          actions.changeRole.mutate({ memberId: roleReview.id, role: roleReview.role === 'admin' ? 'member' : 'admin', expectedRevision: roleReview.roleRevision }, {
+            onSuccess: () => { setRoleReview(null); setRoleConfirmed(false); },
+            onError: (failure) => { setRoleReview(null); setRoleConfirmed(false); setRoleError(failure instanceof ApiError && failure.code === 'revision_conflict'
+              ? 'That role changed. Review the refreshed person before trying again.' : refusalText(failure)); },
+          });
+        }}
+      >
+        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={roleConfirmed} onChange={(event) => setRoleConfirmed(event.target.checked)} />I reviewed this role change.</label>
+      </ConfirmDialog>
+      {roleReview === null && roleError !== null && <p role="alert" className="t-small text-bad">{roleError}</p>}
     </div>
   );
 }
@@ -219,6 +251,7 @@ function PersonItem({ member, viewerId, machines, machinesComplete, actions }: {
         <span className="flex flex-wrap items-center gap-s2">
           <span className="t-body font-medium text-ink">{name}</span>
           {member.role === 'admin' && <StatusChip>Admin</StatusChip>}
+          {member.role === 'member' && <StatusChip>Member</StatusChip>}
           {member.id === viewerId && name !== 'You' && <StatusChip>You</StatusChip>}
         </span>
         <span className="t-small text-muted">

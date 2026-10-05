@@ -313,6 +313,7 @@ describe('one server product, two deployment targets', () => {
 
 import { authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { authenticateGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 
@@ -323,6 +324,7 @@ describe('access administration agrees on both stores', () => {
       const now = Date.now();
       const token = await t.token();
       const credential = (await issueMemberToken(t.env.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now)).token;
+      await bootstrapOwnership(t.env.db, 'mem_machine_1', 'mem_machine_1', '0', now);
       const revoked = await revokeMember(t.env.db, 'mem_machine_2', 'mem_machine_1', now);
       const afterRevoke = await authenticateServerMemberToken(t.env.db, await sha256Hex(credential), now + 1);
       const grant = await issueExternalGrant(t.env.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', now);

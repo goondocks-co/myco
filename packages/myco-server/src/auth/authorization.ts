@@ -40,6 +40,7 @@ export interface AuthorizationResource {
   attempt?: number;
   uploader?: boolean;
   protectedOwner?: boolean;
+  ownerPending?: boolean;
   bootstrapAllowed?: boolean;
   grantedRole?: 'owner' | 'admin' | 'member';
   targetRevoked?: boolean;

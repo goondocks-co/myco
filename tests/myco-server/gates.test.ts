@@ -766,6 +766,21 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ ownerMemberId: 'mem_machine_1', revision: '0' }) }),
       },
+      'GET /members/roles': {
+        shape: 'persisted',
+        malformed: (_token) => new Request('https://s/members/roles', { headers: memberHeaders(anonymous.token) }),
+        wellFormed: (token) => new Request('https://s/members/roles', { headers: memberHeaders(token) }),
+      },
+      'POST /members/roles': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/roles', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/members/roles', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ member_id: 'mem_machine_3', role: 'member', expected_revision: '0' }) }),
+      },
+      'POST /members/ownership/transfer': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/ownership/transfer', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/members/ownership/transfer', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ member_id: 'mem_machine_2', expected_revision: '1' }) }),
+      },
       'GET /members/raw-claims': {
         shape: 'persisted',
         malformed: (_token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(anonymous.token) }),
@@ -829,6 +844,8 @@ describe('gates', () => {
     const retired = new Set(ROUTES.filter((r) => 'retired' in r && r.retired === true).map((r) => `${r.method} ${r.path}`));
     sqlite.run('UPDATE raw_provenance_backfill SET complete = 1 WHERE id = 1');
     for (const [route, fixture] of Object.entries(FIXTURES)) {
+      if (route === 'POST /members/roles' || route === 'GET /members/raw-claims') sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1' WHERE id=1");
+      if (route === 'POST /members/ownership/transfer') sqlite.run("UPDATE members SET role='admin',github_id='gate-transfer' WHERE id='mem_machine_2'");
       if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
       if (route.startsWith('POST /runs/') && !retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
@@ -1315,7 +1332,10 @@ describe('gates', () => {
       'member GET /members/raw-claims',
       'member POST /members/raw-claims',
       'member GET /members/ownership',
+      'member GET /members/roles',
       'member POST /members/ownership',
+      'member POST /members/ownership/transfer',
+      'member POST /members/roles',
       'member POST /members/status',
       'member POST /members/uncaptured',
       'member POST /members/uncaptured/state',
@@ -1352,8 +1372,10 @@ describe('gates', () => {
       'session:admin DELETE /api/settings/{leaf}',
       'session:admin GET /api/raw-claims',
       'session:admin POST /api/raw-claims',
-      'session:admin GET /api/ownership',
+      'session:member GET /api/ownership',
       'session:admin POST /api/ownership',
+      'session:admin POST /api/ownership/transfer',
+      'session:admin POST /api/members/{memberId}/role',
       'session:admin GET /api/attention',
       'session:admin GET /api/backups',
       'session:admin GET /api/backups/{backupId}/artifact',

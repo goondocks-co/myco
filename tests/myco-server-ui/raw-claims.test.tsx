@@ -19,7 +19,7 @@ const PREVIEW: RawClaimPreview = { revision: 'reviewed-r1', complete: true, proj
   { kind: 'transcript', count: 1, oldestAt: DATE, newestAt: DATE },
 ] }] };
 
-function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; preview?: () => RawClaimPreview; claim?: (body: unknown) => Response; ownership?: (init?: RequestInit) => Response } = {}) {
+function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewerLabel?: string | null; login?: string; preview?: () => RawClaimPreview; claim?: (body: unknown) => Response; ownership?: (init?: RequestInit) => Response; roleChange?: (body: unknown) => Response } = {}) {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
@@ -27,18 +27,21 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; previ
     const body = init?.body === undefined ? null : JSON.parse(String(init.body));
     requests.push({ method, path: url.pathname, body });
     switch (url.pathname) {
-      case '/auth/me': return Response.json({ sub: '1', login: 'Ada', owner: options.owner ?? true, member: { id: OWNER, label: 'Ada', role: options.role ?? 'admin' } });
+      case '/auth/me': return Response.json({ sub: '1', login: options.login ?? 'Ada', owner: options.owner ?? true, member: { id: OWNER, label: options.viewerLabel === undefined ? 'Ada' : options.viewerLabel, role: options.role ?? 'admin' } });
       case '/api/projects': return Response.json({ projects: [] });
       case '/api/members': return Response.json({ members: [
-        { id: OWNER, label: 'Ada', role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
-        { id: 'mem_member', label: 'Lin', role: 'member', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
-        { id: 'mem_not_linked', label: 'Unlinked', role: 'admin', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
-        { id: 'mem_system', label: 'Myco', system: true, role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
+        { id: OWNER, label: options.viewerLabel === undefined ? 'Ada' : options.viewerLabel, role: 'admin', roleRevision: 'ada-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
+        { id: 'mem_member', label: 'Lin', role: 'member', roleRevision: 'lin-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
+        { id: 'mem_not_linked', label: 'Unlinked', role: 'admin', roleRevision: 'unlinked-r1', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
+        { id: 'mem_system', label: 'Myco', system: true, role: 'admin', roleRevision: 'system-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
       ] });
       case '/api/enrollment': return Response.json({ invitations: [] });
       case '/api/credentials': return Response.json({ rows: [], cursor: null });
       case '/api/machines': return Response.json({ machines: [], cursor: null });
-      case '/api/ownership': return options.ownership?.(init) ?? Response.json({ ownerMemberId: OWNER, revision: 'owner-r1' });
+      case '/api/ownership': return options.ownership?.(init) ?? Response.json({ ownerMemberId: OWNER, revision: 'owner-r1', candidates: [{ memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' }], proposalMemberId: null });
+      case '/api/ownership/transfer': return options.ownership?.(init) ?? Response.json({ ownerMemberId: 'mem_next', revision: 'owner-r2', candidates: [], proposalMemberId: null });
+      case '/api/members/mem_member/role': return options.roleChange?.(body) ?? Response.json({ memberId: 'mem_member', role: 'admin', roleRevision: 'lin-r2' });
+      case '/api/members/mem_not_linked/role': return options.roleChange?.(body) ?? Response.json({ memberId: 'mem_not_linked', role: 'member', roleRevision: 'unlinked-r2' });
       case '/api/raw-claims': return method === 'POST' ? options.claim?.(body) ?? Response.json({ claimId: 'claim_one', preview: { revision: 'claimed-r2', complete: true, projects: [] } }) : Response.json(options.preview?.() ?? PREVIEW);
       default: return new Response(null, { status: 404 });
     }
@@ -138,11 +141,37 @@ describe('owner raw claims', () => {
 });
 
 describe('explicit initial ownership', () => {
+  it.each([
+    { label: null, login: 'Ada', name: 'Ada' },
+    { label: OWNER, login: '', name: 'You' },
+  ])('uses the signed-in person name for a sole-admin proposal with label $label', async ({ label, login, name }) => {
+    const { requests } = deployment({ owner: false, viewerLabel: label, login, ownership: () => Response.json({ ownerMemberId: null, revision: 'owner-r1', candidates: [
+      { memberId: OWNER, label, role: 'admin', roleRevision: 'ada-r1' },
+    ], proposalMemberId: OWNER }) });
+    expect(await screen.findByText(`Proposed server owner: ${name}. Review and confirm this choice; ownership has not changed.`)).toBeTruthy();
+    fireEvent.click(screen.getByRole('combobox', { name: 'Server owner' }));
+    fireEvent.click(await screen.findByRole('option', { name }));
+    fireEvent.click(screen.getByRole('button', { name: 'Record server owner' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(`Record ${name} as this server’s owner.`)).toBeTruthy();
+    expect(document.body.textContent).not.toContain(OWNER);
+    expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
+  });
+
+  it('shows a sole eligible admin as a proposal that still needs review and confirmation', async () => {
+    const { requests } = deployment({ owner: false, ownership: () => Response.json({ ownerMemberId: null, revision: 'owner-r1', candidates: [
+      { memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' },
+    ], proposalMemberId: OWNER }) });
+    expect(await screen.findByText('Proposed server owner: Ada. Review and confirm this choice; ownership has not changed.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Record server owner' }).hasAttribute('disabled')).toBe(true);
+    expect(requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+  });
+
   it('surfaces a refused bootstrap when another admin recorded an owner during review', async () => {
     let ownerMemberId: string | null = null;
     const { requests } = deployment({ owner: false, ownership: (init) => {
       if (init?.method === 'POST') { ownerMemberId = 'mem_other'; return Response.json({ error: 'revision_conflict' }, { status: 409 }); }
-      return Response.json({ ownerMemberId, revision: ownerMemberId === null ? 'owner-r1' : 'owner-r2' });
+      return Response.json({ ownerMemberId, revision: ownerMemberId === null ? 'owner-r1' : 'owner-r2', candidates: [{ memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' }], proposalMemberId: ownerMemberId === null ? OWNER : null });
     } });
     await screen.findByRole('button', { name: 'Record server owner' });
     fireEvent.click(screen.getByRole('combobox', { name: 'Server owner' }));
@@ -151,14 +180,14 @@ describe('explicit initial ownership', () => {
     const dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('checkbox'));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record server owner' }));
-    await screen.findByText('An owner is already recorded. This choice cannot replace them.');
-    expect(screen.getByText('Ownership changed. Review it again before recording an owner.').closest('[role="alert"]')).toBeTruthy();
+    await screen.findByText(/A server owner is recorded/);
+    expect(screen.getByText('Ownership changed. Review the refreshed owner and choose again.').closest('[role="alert"]')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Record server owner' })).toBeNull();
     expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
   });
 
   it('offers only live linked human admins and requires confirmation before recording the selected person', async () => {
-    const { requests } = deployment({ owner: false, ownership: (init) => Response.json({ ownerMemberId: init?.method === 'POST' ? OWNER : null, revision: 'owner-r1' }) });
+    const { requests } = deployment({ owner: false, ownership: (init) => Response.json({ ownerMemberId: init?.method === 'POST' ? OWNER : null, revision: 'owner-r1', candidates: [{ memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' }], proposalMemberId: OWNER }) });
     const button = await screen.findByRole('button', { name: 'Record server owner' });
     expect(button.hasAttribute('disabled')).toBe(true);
     fireEvent.click(screen.getByRole('combobox', { name: 'Server owner' }));
@@ -174,5 +203,63 @@ describe('explicit initial ownership', () => {
     fireEvent.click(within(dialog).getByRole('checkbox'));
     fireEvent.click(confirm);
     await waitFor(() => expect(requests.filter((r) => r.method === 'POST')).toEqual([{ method: 'POST', path: '/api/ownership', body: { ownerMemberId: OWNER, revision: 'owner-r1' } }]));
+  });
+
+  it('lets only the owner transfer to a connected admin after explicit confirmation', async () => {
+    const { requests } = deployment({ ownership: (init) => Response.json({ ownerMemberId: init?.method === 'POST' ? 'mem_next' : OWNER, revision: 'owner-r1', candidates: [
+      { memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' },
+      { memberId: 'mem_next', label: 'Next', role: 'admin', roleRevision: 'next-r1' },
+    ], proposalMemberId: null }) });
+    const button = await screen.findByRole('button', { name: 'Transfer server ownership' });
+    expect(button.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(screen.getByRole('combobox', { name: 'New server owner' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Next' }));
+    fireEvent.click(button);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/You will remain an admin and lose owner powers/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Transfer ownership' }));
+    await waitFor(() => expect(requests.filter((r) => r.path === '/api/ownership/transfer' && r.method === 'POST')).toEqual([
+      { method: 'POST', path: '/api/ownership/transfer', body: { member_id: 'mem_next', expected_revision: 'owner-r1' } },
+    ]));
+  });
+
+  it('owner confirms role promotion using the reviewed member revision', async () => {
+    const { requests } = deployment();
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Make admin' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Make admin' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make admin' }));
+    await waitFor(() => expect(requests.filter((r) => r.path === '/api/members/mem_member/role' && r.method === 'POST')).toEqual([
+      { method: 'POST', path: '/api/members/mem_member/role', body: { member_id: 'mem_member', role: 'admin', expected_revision: 'lin-r1' } },
+    ]));
+  });
+
+  it('shows roles read-only to a nonowner admin', async () => {
+    deployment({ owner: false });
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: 'Make admin' })).toBeNull();
+    expect(screen.getByText('Member')).toBeTruthy();
+  });
+
+  it('owner can review an admin demotion but cannot demote or remove themselves', async () => {
+    const { requests } = deployment();
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada' }), { key: 'Enter' });
+    let menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: 'Make member' })).toBeNull();
+    expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More for Unlinked' }), { key: 'Enter' });
+    menu = await screen.findByRole('menu');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Make member' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('They will lose server administration powers. Their membership and data stay.')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make member' }));
+    await waitFor(() => expect(requests.filter((r) => r.path === '/api/members/mem_not_linked/role' && r.method === 'POST')).toEqual([
+      { method: 'POST', path: '/api/members/mem_not_linked/role', body: { member_id: 'mem_not_linked', role: 'member', expected_revision: 'unlinked-r1' } },
+    ]));
   });
 });

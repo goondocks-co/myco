@@ -19,6 +19,10 @@ export const invitationAction: AuthorizationDeclaration['action'] = {
   },
 };
 
+export const memberRevocationAction: AuthorizationDeclaration['action'] = {
+  actions: ['admin', 'owner'], resolve: (_input, resource) => resource === undefined ? null : resource.grantedRole === 'admin' || resource.grantedRole === 'owner' ? 'owner' : 'admin',
+};
+
 export const runDispatchAction: AuthorizationDeclaration['action'] = {
   actions: ['dispatch', 'admin'], resolve: input => input.fresh === true ? 'admin' : 'dispatch',
 };
@@ -74,15 +78,22 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
   }
   if (declaration.resolver === 'member') {
     const id = params.memberId ?? subject.memberId;
-    const row = await env.db.prepare('SELECT m.id, o.member_id AS owner FROM members m LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?').bind(id ?? '').first<{ id: string; owner: string | null }>();
+    const row = await env.db.prepare('SELECT m.id, m.role, o.member_id AS owner FROM members m LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?').bind(id ?? '').first<{ id: string; role: string; owner: string | null }>();
     resource.exists = row !== null;
     resource.id = row?.id;
     resource.protectedOwner = row !== null && row.id === row.owner;
+    resource.ownerPending = row !== null && row.owner === null;
     resource.ownerMemberId = row?.id;
+    resource.grantedRole = row?.id === row?.owner ? 'owner' : row?.role === 'admin' ? 'admin' : 'member';
     if (action === 'bootstrap') {
       const linked = await env.db.prepare(`SELECT 1 FROM members la WHERE ${linkedAdmin('la')} LIMIT 1`).first();
       resource.bootstrapAllowed = linked === null;
     }
+  }
+  if (declaration.resolver === 'deployment' && resource.kind === 'member') {
+    const owner = await env.db.prepare('SELECT member_id FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null }>();
+    if (owner === null) throw new Error('Deployment ownership record is missing');
+    resource.ownerPending = owner.member_id === null;
   }
   if (declaration.resolver === 'deployment' && (resource.kind === 'machine' || resource.kind === 'credential')) resource.ownerMemberId = subject.memberId;
   if (declaration.resolver === 'run') {

@@ -18,7 +18,8 @@ import { emit } from '../telemetry.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
-import { linkedAdmin, revokeLinkKeysOfMember } from './identity-link.js';
+import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
+import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
 import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
 import { asMemberRole, isAdmin, type MemberRole } from './roles.js';
@@ -28,6 +29,7 @@ export interface MemberRow {
   label: string | null;
   /** What this member may administer. Every member reads this list; only an admin acts on it. */
   role: MemberRole;
+  roleRevision: string;
   /** Whether a GitHub account is connected. The account itself is never listed. */
   linked: boolean;
   createdAt: number;
@@ -41,7 +43,7 @@ export interface MemberRow {
 
 export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
   const { results } = await db
-    .prepare(`SELECT m.id, m.label, m.role, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
+    .prepare(`SELECT m.id, m.label, m.role, m.role_revision, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
                      (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')} AND NOT (${runCredential('c')})) AS live_credentials
                 FROM members m ORDER BY m.created_at ASC, m.id ASC`)
     .bind(nowMs, HARNESS_MEMBER_ID)
@@ -50,6 +52,7 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
     id: r.id as string,
     label: (r.label as string | null) ?? null,
     role: asMemberRole(r.role) ?? 'member',
+    roleRevision: String(r.role_revision),
     linked: Number(r.linked) === 1,
     createdAt: r.created_at as number,
     revokedAt: (r.revoked_at as number | null) ?? null,
@@ -99,7 +102,7 @@ export async function memberState(db: RelationalStore, memberId: string): Promis
   return row.revoked_at === null ? 'live' : 'revoked';
 }
 
-export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin';
+export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin' | 'active_owner' | 'not_owner';
 export type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMemberRefusal };
 
 /**
@@ -118,9 +121,10 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
     db.prepare(`UPDATE members SET revoked_at = ?, revoked_by = ?
                  WHERE id = ? AND revoked_at IS NULL
                    AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1
-                   AND (NOT (${linkedAdmin('members')})
-                        OR EXISTS (SELECT 1 FROM members other WHERE other.id <> ? AND ${linkedAdmin('other')}))`)
-      .bind(nowMs, actor, memberId, memberId, memberId),
+                   AND ${removableAdministratorSql('members')}
+                   AND (role <> 'admin' OR ${deploymentOwnerSql('?')})
+                   AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.role = 'admin' AND actor.revoked_at IS NULL)`)
+      .bind(nowMs, actor, memberId, memberId, actor, actor),
     revokeCredentialsOfMember(db, memberId, actor, nowMs),
     revokeInvitationsOfMember(db, memberId, actor, nowMs),
     revokeLinkKeysOfMember(db, memberId, actor, nowMs),
@@ -132,6 +136,11 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
   }
   const state = await memberState(db, memberId);
   if (state !== 'live') return { ok: false, reason: state === 'absent' ? 'absent' : 'already_revoked' };
+  const protectedOwner = await db.prepare('SELECT 1 FROM deployment_ownership WHERE id = 1 AND member_id = ?').bind(memberId).first();
+  if (protectedOwner !== null) return { ok: false, reason: 'active_owner' };
+  const targetRole = await memberRole(db, memberId);
+  const actorOwner = await db.prepare(`SELECT ${deploymentOwnerSql('?')} AS admitted`).bind(actor).first<{ admitted: number }>();
+  if (targetRole === 'admin' && actorOwner?.admitted !== 1) return { ok: false, reason: 'not_owner' };
   const others = await db
     .prepare(`SELECT COUNT(*) AS linked FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?`)
     .bind(memberId)

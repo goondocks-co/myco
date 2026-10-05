@@ -32,6 +32,7 @@ describe('raw ownership schema step 71', () => {
     const sqlite = historical();
     try {
       for (const sql of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(sql);
+      for (const step of SCHEMA_STEPS.filter((step) => step.version > 71)) for (const sql of step.statements) sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
       sqlite.run("INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation) VALUES ('p','restored-blob',12,'text/plain','ca',0,'00000000-0000-4000-8000-000000000001')");
       const transcript = { project_id: 'p', transcript_id: 'restored', session_id: 'session', machine_id: 'ma', size: 24, segment_count: 2,
