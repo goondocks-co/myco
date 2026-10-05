@@ -157,15 +157,15 @@ jobs:
           if-no-files-found: error
 
   parity:
-    name: parity (${{ matrix.shard }}/4)
+    name: parity (${{ matrix.shard }}/5)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     env:
-      MYCO_PARITY_SHARD: ${{ matrix.shard }}/4
+      MYCO_PARITY_SHARD: ${{ matrix.shard }}/5
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup

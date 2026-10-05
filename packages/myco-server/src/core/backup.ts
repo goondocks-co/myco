@@ -1,3 +1,5 @@
+import { HARNESS_MEMBER_ID } from '../constants.js';
+import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
 import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
 /**
  * Deployment backup and restore.
@@ -20,6 +22,7 @@ import type { BlobRef } from './blob-references.js';
 import { assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
+import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -38,7 +41,7 @@ const RESTORE_CHUNK_ROWS = 20;
  */
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
-  'member_credentials', 'deployment_ownership', 'deployment_ownership_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'processed_resources', 'agents',
+  'member_credentials', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'processed_resources', 'agents',
   'sessions', 'session_tombstones', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
@@ -402,11 +405,11 @@ async function restoreTranscriptReference(
  */
 export async function restoreBackup(
   db: RelationalStore, blobs: BlobStore,
-  opts: { id: string; allowForeignLineage?: boolean },
+  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization },
 ): Promise<RestoreOutcome | null> {
   const artifact = await readArtifact(db, blobs, opts.id);
   if (artifact === null) return null;
-  return restoreArtifact(db, { text: artifact.text, allowForeignLineage: opts.allowForeignLineage });
+  return restoreArtifact(db, { text: artifact.text, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization });
 }
 
 /**
@@ -415,7 +418,7 @@ export async function restoreBackup(
  */
 export async function restoreArtifact(
   db: RelationalStore,
-  opts: { text: string; allowForeignLineage?: boolean },
+  opts: { text: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization },
 ): Promise<RestoreOutcome> {
   const lines = opts.text.split('\n').filter((l) => l.length > 0);
   const header = JSON.parse(lines[0]!) as BackupHeader;
@@ -433,6 +436,8 @@ export async function restoreArtifact(
     rows.push(portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
   }
+
+  db = await authorizeRestore(db, opts.authorization, byTable.keys());
 
   // Blob rows are never inserted: each must already be registered here, with the bytes its own row names. Checked
   // before any table is written, so a refused artifact changes nothing.
@@ -485,7 +490,8 @@ export async function restoreArtifact(
     if (table === 'deployment_ownership') {
       const row = rows[0]!;
       if (typeof row.member_id === 'string') await restoreOwnership(db, { member_id: row.member_id, revision: Number(row.revision) },
-        { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number });
+        { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number,
+          previous_member_id: ownerAudit!.previous_member_id as string | null | undefined, operation: ownerAudit!.operation as string | undefined });
       outcome.tables[table] = { rows: rows.length, inserted: 0 };
       continue;
     }
@@ -508,6 +514,7 @@ export async function restoreArtifact(
             ? await restoreTranscriptReference(db, row, transcriptRows.get(identity), transcriptSegments.get(identity) ?? [], insert)
             : (await insert.all()).results.length;
         } catch (error) {
+          if (error instanceof RestoreAuthorizationError) throw error;
           throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
         }
       }
@@ -542,6 +549,9 @@ export async function restoreArtifact(
       const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
       const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
       statements.push(...chunk.map((row) => {
+        if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, ownership);
+        if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
+          byTable.get('members')?.find(member => member.id === row.member_id));
         const restoreOwned = OWNED_ROW_RESTORERS[table];
         if (restoreOwned !== undefined) return restoreOwned(db, row, transcriptParents);
         const columns = Object.keys(row);
@@ -556,8 +566,11 @@ export async function restoreArtifact(
       }
       let applied;
       try {
-        applied = await db.batch(statements);
+        applied = table === 'members'
+          ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
+          : await db.batch(statements);
       } catch (err) {
+        if (err instanceof RestoreAuthorizationError) throw err;
         const missing = await unregisteredAmong(db, references);
         if (missing.length > 0) throw new BackupObjectsMissingError(missing.length);
         throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));

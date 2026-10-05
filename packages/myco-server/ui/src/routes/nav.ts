@@ -125,11 +125,12 @@ export const SETTINGS_SECTIONS = [
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
 /**
- * The nav foot: the server's admin pages. A member who is not an admin sees
- * none of them. Health carries the count of what needs an admin.
+ * The nav foot: People is readable by every member; other pages require an
+ * admin. Health carries the count of what needs an admin.
  */
+export const PEOPLE_PAGE: ServerPage = { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH };
 export const ADMIN_PAGES: readonly ServerPage[] = [
-  { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH },
+  PEOPLE_PAGE,
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },
 ];

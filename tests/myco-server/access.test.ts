@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueIdentityLinkAuthority, linkStatement } from '@myco-server-worker/auth/identity-link.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { authenticateServerMemberToken, issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -46,6 +47,7 @@ describe('membership is a boundary at authentication', () => {
 describe('revoking a member', () => {
   it('ends everything live that is theirs in one attributed transaction, and leaves machine claims alone', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
     e.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'");
     const env = { ...e.env, ...OWNER_ENV };
@@ -70,16 +72,18 @@ describe('revoking a member', () => {
 
   it('refuses to leave the Deployment with no live linked member, changing nothing', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     const env = { ...e.env, ...OWNER_ENV };
     const cred = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW);
     const res = await worker.fetch(await asOwnerPost('/api/members/mem_machine_1/revoke'), env);
-    expect({ status: res.status, body: await res.json() }).toEqual({ status: 409, body: { error: 'last_member' } });
+    expect({ status: res.status, body: await res.json() }).toEqual({ status: 409, body: { error: 'active_owner' } });
     expect(e.sqlite.query(`SELECT revoked_at FROM members WHERE id = 'mem_machine_1'`).get()).toEqual({ revoked_at: null });
     expect(e.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(cred.tokenId)).toEqual({ revoked_at: null });
   });
 
-  it('is flat and serialised: with two linked members, the first revocation wins and the second is refused as the last member', async () => {
+  it('preserves the owner when two linked administrators revoke concurrently', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
     e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
     const [a, b] = await Promise.all([revokeMember(e.db, 'mem_machine_2', 'mem_machine_1', NOW), revokeMember(e.db, 'mem_machine_1', 'mem_machine_2', NOW)]);
@@ -89,20 +93,22 @@ describe('revoking a member', () => {
 
   it('rolls the whole transaction back when a later statement fails', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
     e.sqlite.run(`DROP TABLE identity_link_authorities`);
     await expect(revokeMember(e.db, 'mem_machine_2', 'mem_machine_1', NOW)).rejects.toThrow();
     expect(e.sqlite.query(`SELECT revoked_at FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ revoked_at: null });
   });
 
-  it('refuses to remove the only admin who can sign in while a linked plain member remains, so a member credential can never link itself after (#1448)', async () => {
+  it('refuses to remove the owner while a linked plain member remains and keeps link bootstrap closed', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     const env = { ...e.env, ...OWNER_ENV };
     e.sqlite.query(`UPDATE members SET github_id = '9002', role = 'member' WHERE id = 'mem_machine_2'`).run();
     const res = await worker.fetch(await asOwnerPost('/api/members/mem_machine_1/revoke'), env);
-    expect({ status: res.status, body: await res.json() }).toEqual({ status: 409, body: { error: 'last_admin' } });
+    expect({ status: res.status, body: await res.json() }).toEqual({ status: 409, body: { error: 'active_owner' } });
     expect(e.sqlite.query(`SELECT revoked_at FROM members WHERE id = 'mem_machine_1'`).get()).toEqual({ revoked_at: null });
-    expect(await revokeMember(e.db, 'mem_machine_1', 'mem_machine_2', NOW)).toEqual({ ok: false, reason: 'last_admin' });
+    expect(await revokeMember(e.db, 'mem_machine_1', 'mem_machine_2', NOW)).toEqual({ ok: false, reason: 'active_owner' });
 
     const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_3', machineId: 'machine_3' }, Date.now())).token;
     const link = await worker.fetch(new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }), env);
@@ -110,17 +116,19 @@ describe('revoking a member', () => {
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM identity_link_authorities`).get()).toEqual({ c: 0 });
   });
 
-  it('removes one of two linked admins, and then refuses the other as the only admin who can sign in', async () => {
+  it('lets the owner remove another linked admin and retains the owner', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
     e.sqlite.query(`UPDATE members SET github_id = '9003', role = 'member' WHERE id = 'mem_machine_3'`).run();
     expect(await revokeMember(e.db, 'mem_machine_2', 'mem_machine_1', NOW)).toEqual({ ok: true });
-    expect(await revokeMember(e.db, 'mem_machine_1', 'mem_machine_1', NOW)).toEqual({ ok: false, reason: 'last_admin' });
+    expect(await revokeMember(e.db, 'mem_machine_1', 'mem_machine_1', NOW)).toEqual({ ok: false, reason: 'active_owner' });
     expect(await revokeMember(e.db, 'mem_machine_3', 'mem_machine_1', NOW)).toEqual({ ok: true });
   });
 
   it('answers 404 for an absent member and 409 for one already revoked', async () => {
     const e = sqliteEnv();
+    await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', NOW);
     const env = { ...e.env, ...OWNER_ENV };
     expect((await worker.fetch(await asOwnerPost('/api/members/mem_nobody/revoke'), env)).status).toBe(404);
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
@@ -226,7 +234,8 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
       'src/auth/identity-link.ts: github_id = ?', // the bind: only a NULL account, or the same one, and never to NULL
       'src/auth/identity-link.ts: github_id = ?', // break-glass linkStatement: a validated account id, never NULL
       'src/auth/members-admin.ts: label = ?', // nameMemberFromLogin: a name, only where none is held
-      'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?', // revokeMember: guarded below
+      'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?',
+      'src/core/ownership.ts: role = ?, role_revision = role_revision + 1', // revokeMember: guarded below
     ]);
     const source = readFileSync(join(ROOT, 'src', 'auth', 'identity-link.ts'), 'utf8');
     expect(source).toMatch(/UPDATE members SET github_id = \?\s+WHERE id = \? AND revoked_at IS NULL AND \(github_id IS NULL OR github_id = \?\)/);

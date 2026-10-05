@@ -111,22 +111,21 @@ describe('members', () => {
     expect(within(list).getByText('Admin')).toBeTruthy();
     expect(list.textContent).toContain('GitHub connected');
     expect(list.textContent).toContain('No GitHub account yet');
-    fireEvent.click(within(await openMenu('More for Ada')).getByRole('menuitem', { name: 'Remove' }));
-    let dialog = await screen.findByRole('dialog', { name: 'Remove yourself?' });
-    expect(dialog.textContent).toContain('can no longer sign in');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const menu = await openMenu('More for Ada');
+    expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     // Removing another member says their machines stay theirs (#1209).
     fireEvent.click(within(await openMenu('More for Lin')).getByRole('menuitem', { name: 'Remove' }));
-    dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
+    const dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
     expect(dialog.textContent).toContain(MEMBER_KEEPS_MACHINES);
   });
 
   it('says the server\'s refusal in the person\'s words, and keeps the confirm open', async () => {
-    accessServer({}, { [`/api/members/${ADA}/revoke`]: () => Response.json({ error: 'last_member' }, { status: 409 }) });
+    accessServer({}, { [`/api/members/${LIN}/revoke`]: () => Response.json({ error: 'last_member' }, { status: 409 }) });
     mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada')).getByRole('menuitem', { name: 'Remove' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Remove yourself?' });
+    fireEvent.click(within(await openMenu('More for Lin')).getByRole('menuitem', { name: 'Remove' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     expect((await within(dialog).findByRole('alert')).textContent).toMatch(/nobody who can sign in/);
   });

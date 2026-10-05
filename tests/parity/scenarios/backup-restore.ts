@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { MEMBER_ID, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { bootSelfhosted } from '../targets/selfhosted.ts';
 
 // State-changing owner routes hold a same-origin line; a scenario names its own origin the way a browser would.
@@ -10,9 +10,20 @@ async function ownerPost<T>(target: ParityTarget, path: string, body: unknown): 
   return { status: res.status, body: (await res.json()) as T };
 }
 
+async function selectOwner(target: ParityTarget): Promise<void> {
+  await target.sql("UPDATE deployment_ownership SET bootstrap_mode = 'selection' WHERE id = 1");
+  const preview = await fetch(`${target.url}/api/ownership`, { headers: ownerJson(target) });
+  expect(preview.status).toBe(200);
+  const revision = (await preview.json() as { revision: string }).revision;
+  const selected = await ownerPost<{ ownerMemberId: string }>(target, '/api/ownership', { ownerMemberId: MEMBER_ID, revision });
+  expect({ status: selected.status, owner: selected.body.ownerMemberId }).toEqual({ status: 200, owner: MEMBER_ID });
+}
+
 export const restoreContinuation: ParityScenario = {
   name: 'backup: interrupted report restore resumes through the owner HTTP route',
+  dedicated: { timeoutMs: 240_000 },
   async run(target) {
+    await selectOwner(target);
     await target.sql(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (${lit(target.projectId)}, 'parity', 1)`);
     await target.sql(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_restore', 'restore', 'built-in', 1, 1)`);
     await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at)
@@ -59,7 +70,9 @@ export const restoreContinuation: ParityScenario = {
  */
 export const backupRestore: ParityScenario = {
   name: 'backup: create, verified list, preview, converging restore, and cross-deployment adoption',
+  dedicated: { timeoutMs: 300_000 },
   async run(target) {
+    await selectOwner(target);
     await target.sql(`INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (${lit(target.projectId)}, 'sess_backup', 'm_parity', 'mt_parity', 1, 1)`);
 
     const created = await ownerPost<{ backup: { id: string } }>(target, '/api/backups', {});
@@ -86,6 +99,7 @@ export const backupRestore: ParityScenario = {
 
     const sibling = await bootSelfhosted();
     try {
+      await selectOwner(sibling);
       const refused = await ownerPost<{ error: string }>(sibling, '/api/backups/restore-upload', { artifact: text });
       expect({ status: refused.status, error: refused.body.error }).toEqual({ status: 409, error: 'foreign_lineage' });
 

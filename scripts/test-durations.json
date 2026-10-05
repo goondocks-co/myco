@@ -802,6 +802,12 @@
     "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 60000,
     "raw backfill: bounded historical provenance, retained transcript ownership and completion on native and D1": 250000,
     "raw claims: explicit owner bootstrap, reviewed unknown-only claims and projectless CLI on native and D1": 60000,
-    "raw privacy: uploader provenance, filtered transcripts, verified dedup, shared processed bodies and browser revocation": 100000
+    "raw privacy: uploader provenance, filtered transcripts, verified dedup, shared processed bodies and browser revocation": 100000,
+    "owner lifecycle: explicit legacy selection, atomic transfer, role CAS, protected owner and credential Stop": 154000,
+    "owner lifecycle: first authenticated GitHub link atomically selects the fresh Deployment owner": 29000,
+    "owner lifecycle: interrupted restore preserves selected owner and imported administrator": 51000,
+    "owner lifecycle: restored future audit rows cannot misattribute the next owner or role change": 67000,
+    "owner review: stored and uploaded authority restore admit the live owner before any write": 80000,
+    "owner review: live actor scope gates credential and machine Stop after demotion": 67000
   }
 }

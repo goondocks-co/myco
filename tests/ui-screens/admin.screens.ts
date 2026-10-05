@@ -3,9 +3,8 @@
  *
  * Signed in as the owner: People & machines, Settings (its first section and
  * Models and keys), a project's settings and Health. Signed in as a member who
- * is not an admin: My machines and its Rename dialog, and each admin page,
- * which says it is for an admin and asks the server nothing an admin route
- * answers.
+ * is not an admin: the read-only People directory, My machines and its Rename
+ * dialog. Other admin pages say they are for an admin.
  *
  * On the fixture the owner has two machines (one named, one whose runtime gave
  * no name), the member one; two invitations are open; the owner's machine has
@@ -51,6 +50,29 @@ async function expectPeople(page: Page): Promise<void> {
   await expect(page.locator('body')).not.toContainText('ada_7c1e9f02');
   await expect(page.locator('section#people').getByText('Ada', { exact: true })).toBeVisible();
   await expect(page.locator('section#invitations').locator('li')).toHaveCount(2);
+  await page.getByRole('button', { name: 'More for Lin', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Make admin' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Remove' })).toBeVisible();
+  await page.keyboard.press('Escape');
+}
+
+async function expectMemberPeople(page: Page): Promise<void> {
+  await expect(page.getByRole('heading', { level: 1, name: INVITE_CONTROLS.page })).toBeInViewport();
+  const directory = page.locator('section#people');
+  await expect(directory.getByRole('heading', { level: 2, name: 'People' })).toBeVisible();
+  await expect(directory.getByRole('list', { name: 'Members' })).toBeVisible();
+  await expect(directory.getByText('Admin', { exact: true })).toBeVisible();
+  await expect(directory.getByText('Member', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('admin-only')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: INVITE_CONTROLS.invite })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: INVITE_CONTROLS.button })).toHaveCount(0);
+  await expect(directory.getByRole('button', { name: /^More for / })).toHaveCount(0);
+  for (const section of ['invitations', 'machines', 'runs', 'ownership']) await expect(page.locator(`section#${section}`)).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
+  if (onFixture()) {
+    await expect(directory.getByText('Ada', { exact: true })).toBeVisible();
+    await expect(directory.getByText('Lin', { exact: true })).toBeVisible();
+  }
 }
 
 async function expectSettings(page: Page, viewport: ViewportName): Promise<void> {
@@ -158,7 +180,6 @@ async function expectMyMachines(page: Page): Promise<void> {
 }
 
 const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (page: Page, viewport: ViewportName) => Promise<void> }> = [
-  { name: 'people', path: () => '/people', rendered: (page) => expectPeople(page) },
   { name: 'settings', path: () => '/settings', rendered: (page, viewport) => expectSettings(page, viewport) },
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
   { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectCaptureSettings(page) },
@@ -167,9 +188,10 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
   { name: 'health', path: () => '/status/health', rendered: (page) => expectHealth(page) },
 ];
+const OWNER_PAGES = [{ name: 'people', path: () => '/people', rendered: (page: Page) => expectPeople(page) }, ...ADMIN_PAGES] as const;
 
 test.describe('admin pages, as the owner', () => {
-  for (const { name, path, rendered } of ADMIN_PAGES) for (const { viewport, mode } of SHOT_MATRIX) {
+  for (const { name, path, rendered } of OWNER_PAGES) for (const { viewport, mode } of SHOT_MATRIX) {
     test(`${name} admin ${viewport} ${mode}`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: path(), viewport, mode, cookie: screensEnv('ownerCookie') });
       try {
@@ -194,6 +216,23 @@ test.describe('admin pages, as the owner', () => {
 });
 
 test.describe('My machines and the admin pages, as a member', () => {
+  for (const { viewport, mode } of SHOT_MATRIX) {
+    test(`people directory member ${viewport} ${mode}`, async ({ browser }) => {
+      const { context, page, watch } = await openPage(browser, { path: '/people', viewport, mode, cookie: screensEnv('memberCookie') });
+      try {
+        await expectMemberPeople(page);
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        expectQuiet(watch);
+        await shoot(page, 'member-people', viewport, mode);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
   for (const { viewport, mode } of SHOT_MATRIX) {
     test(`my machines member ${viewport} ${mode}`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: '/me/machines', viewport, mode, cookie: screensEnv('memberCookie') });

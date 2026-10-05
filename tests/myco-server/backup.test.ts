@@ -62,7 +62,7 @@ describe('portable machine identities', () => {
       expect(identity.r).not.toHaveProperty('settings_contract_supported');
       expect(lines.some((line) => line.t === 'machine_settings_snapshots')).toBe(false);
       identity.r = { ...identity.r, settings_cached_revision: 'm1', settings_cached_values: '{"capture.plan_dirs":["notes"]}', settings_report_order: 5, settings_contract_supported: 1 };
-      await restoreArtifact(target.db, { text: lines.map((line) => JSON.stringify(line)).join('\n'), allowForeignLineage: true });
+      await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: lines.map((line) => JSON.stringify(line)).join('\n'), allowForeignLineage: true });
       expect(target.sqlite.query(`SELECT settings_cached_revision, settings_cached_values, settings_report_order, settings_contract_supported FROM machine_claims WHERE machine_id = 'machine_backup_cache'`).get())
         .toEqual({ settings_cached_revision: null, settings_cached_values: null, settings_report_order: -1, settings_contract_supported: 0 });
       expect(target.sqlite.query(`SELECT * FROM machine_settings_snapshots WHERE machine_id = 'machine_backup_cache'`).all()).toEqual([]);
@@ -171,7 +171,7 @@ describe('stored artifact integrity', () => {
 
     const mark = executed.length;
     await expect(previewRestore(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
-    await expect(restoreBackup(db, bucket, { id: backup.id })).rejects.toThrow(`the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created`);
+    await expect(restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(`the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created`);
     await expect(backupArtifact(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
     expect(executed.slice(mark).filter(isWrite)).toEqual([]);
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM sessions`).get()).toEqual({ n: 0 });
@@ -184,7 +184,7 @@ describe('stored artifact integrity', () => {
     const read = await backupArtifact(db, bucket, backup.id);
     expect(createHash('sha256').update(read!.text).digest('hex')).toBe(backup.sha256!);
     expect((await previewRestore(db, bucket, backup.id))!.foreignLineage).toBe(false);
-    expect((await restoreBackup(db, bucket, { id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
+    expect((await restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
   });
 
   it('holds every read to the recorded size, counting delivered bytes rather than the declared size, whether or not the row recorded a digest', async () => {
@@ -200,7 +200,7 @@ describe('stored artifact integrity', () => {
     longer.set(original.bytes);
     for (const declared of [original.size, original.bytes.byteLength - 1]) {
       bucket.objects.set(backup.key, { ...original, bytes: longer.subarray(0, declared === original.size ? longer.byteLength : declared), size: declared });
-      await expect(restoreBackup(db, bucket, { id: backup.id })).rejects.toThrow(sizeRefusal);
+      await expect(restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(sizeRefusal);
     }
 
     sqlite.query(`UPDATE backups SET sha256 = NULL WHERE id = ?`).run(backup.id);
@@ -220,7 +220,7 @@ describe('stored artifact integrity', () => {
     const original = bucket.objects.get(backup.key)!;
     expect((await backupArtifact(db, bucket, backup.id))!.text).toBe(new TextDecoder().decode(original.bytes));
     expect((await previewRestore(db, bucket, backup.id))!.foreignLineage).toBe(false);
-    expect((await restoreBackup(db, bucket, { id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
+    expect((await restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
     // No digest exists to hold a same-length change to; the size is the only evidence such a row carries.
     bucket.objects.set(backup.key, { ...original, bytes: sameLengthChange(original.bytes) });
     expect((await previewRestore(db, bucket, backup.id))!.header.producer).toBe('TEST');
@@ -239,18 +239,18 @@ describe('restore', () => {
         VALUES (?, ?, ?, ?, ?, ?, 'copied', 0)`)
       .run(backup.id, backup.key, backup.created_at, backup.size_bytes, backup.counts_json, backup.schema_version);
 
-    await expect(restoreBackup(target.db, target.bucket, { id: backup.id })).rejects.toThrow(BackupLineageError);
+    await expect(restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(BackupLineageError);
 
     // The target's own row under the same key stays as it is: additive, target wins.
     target.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_bk', 'THEIRS', 1)`).run();
-    const outcome = await restoreBackup(target.db, target.bucket, { id: backup.id, allowForeignLineage: true });
+    const outcome = await restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
     expect(outcome!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
     expect(outcome!.tables.projects!.inserted).toBeLessThan(outcome!.tables.projects!.rows);
     const kept = target.sqlite.query(`SELECT name FROM projects WHERE project_id = 'proj_bk'`).get() as { name: string };
     expect(kept.name).toBe('THEIRS');
     expect((await deploymentId(target.db)) === (await deploymentId(source.db))).toBe(false);
 
-    const again = await restoreBackup(target.db, target.bucket, { id: backup.id, allowForeignLineage: true });
+    const again = await restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
     expect(Object.values(again!.tables).every((t) => t.inserted === 0)).toBe(true);
   });
 
@@ -270,10 +270,10 @@ describe('restore', () => {
     source.bucket.objects.set(doctoredKey, { ...source.bucket.objects.get(backup.key)!, bytes: doctoredBytes, size: doctoredBytes.byteLength });
     source.sqlite.query(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned)
         VALUES ('bk_doctored', ?, 1, ?, '{}', 999, 'test', 0)`).run(doctoredKey, doctoredBytes.byteLength);
-    await expect(restoreBackup(source.db, source.bucket, { id: 'bk_doctored' })).rejects.toThrow(BackupSchemaError);
+    await expect(restoreBackup(source.db, source.bucket, { authorization: { kind: 'recovery' }, id: 'bk_doctored' })).rejects.toThrow(BackupSchemaError);
 
     // agent_reports already holds a row, so its restore is a named skip, never a silent drop.
-    const outcome = await restoreBackup(source.db, source.bucket, { id: backup.id });
+    const outcome = await restoreBackup(source.db, source.bucket, { authorization: { kind: 'recovery' }, id: backup.id });
     expect(outcome!.tables.agent_reports!.skipped).toContain('insertion-ordered');
     expect(outcome!.tables.agent_reports!.inserted).toBe(0);
   });
@@ -331,10 +331,10 @@ describe('apply refusals', () => {
     const header = JSON.stringify({ format: 'myco-backup/1', deploymentId: await deploymentId(db), schemaVersion: 13, createdAt: now, producer: 'test', counts: {} });
     const orphanReport = JSON.stringify({ t: 'agent_reports', r: { project_id: 'proj_bk', run_id: 'run_ghost', agent_id: 'agent_bk', action: 'a', summary: 's', created_at: now } });
     const { restoreArtifact, BackupApplyError } = await import('@myco-server-worker/core/backup.js');
-    await expect(restoreArtifact(db, { text: `${header}\n${orphanReport}\n` })).rejects.toThrow(BackupApplyError);
-    await expect(restoreArtifact(db, { text: `${header}\n${orphanReport}\n` })).rejects.toThrow(/agent_reports/);
+    await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: `${header}\n${orphanReport}\n` })).rejects.toThrow(BackupApplyError);
+    await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: `${header}\n${orphanReport}\n` })).rejects.toThrow(/agent_reports/);
 
     const crafted = JSON.stringify({ t: 'projects', r: { 'project_id, name) VALUES (1,2); --': 'x' } });
-    await expect(restoreArtifact(db, { text: `${header}\n${crafted}\n` })).rejects.toThrow(/column name outside the store grammar/);
+    await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: `${header}\n${crafted}\n` })).rejects.toThrow(/column name outside the store grammar/);
   });
 });

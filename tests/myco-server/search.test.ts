@@ -61,11 +61,11 @@ describe('full-text search', () => {
     expect(artifact).not.toContain('"t":"search_blob');
     // A backup carries no blob bytes: a target without the body registered refuses the whole artifact before writing.
     const bare = fixture();
-    await expect(restoreArtifact(bare.db, { text: artifact, allowForeignLineage: true })).rejects.toBeInstanceOf(BackupObjectsMissingError);
+    await expect(restoreArtifact(bare.db, { authorization: { kind: 'recovery' }, text: artifact, allowForeignLineage: true })).rejects.toBeInstanceOf(BackupObjectsMissingError);
     expect(bare.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches').get()).toEqual({ n: 0 });
     const target = fixture();
     await target.blob('restore-body', 'restoredneedle deepbody');
-    const result = await restoreArtifact(target.db, { text: artifact, allowForeignLineage: true });
+    const result = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact, allowForeignLineage: true });
     expect(result.tables.blobs).toEqual({ rows: 1, inserted: 0, reused: 1 });
     expect(result.tables.prompt_batches.inserted).toBe(1);
     expect((await target.search('restoredneedle')).results.map((r) => r.id)).toEqual(['restored-plan']);
@@ -73,7 +73,7 @@ describe('full-text search', () => {
     const tick = await runTick(target.serverEnv, POWER_THRESHOLDS.deepSleepMs + 100_000);
     expect(tick.state).toBe('active');
     expect((await target.search('deepbody')).results.map((r) => r.id)).toEqual(['restored']);
-    const repeated = await restoreArtifact(target.db, { text: artifact, allowForeignLineage: true });
+    const repeated = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact, allowForeignLineage: true });
     expect(Object.values(repeated.tables).every((table) => table.inserted === 0)).toBe(true);
     expect(await pendingSearchBlobs(target.db)).toBe(0);
   });

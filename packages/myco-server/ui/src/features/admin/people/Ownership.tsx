@@ -7,40 +7,75 @@ import { ME_KEY } from '../../../lib/query-client';
 import { AdminSection } from '../AdminFrame';
 
 const OWNERSHIP_KEY = ['ownership'] as const;
+type Review = { kind: 'record' | 'transfer'; revision: string; memberId: string; name: string };
+type Candidate = DeploymentOwnershipPreview['candidates'][number];
 
-/** An admin explicitly chooses the initial owner from the live, linked human admins. */
-export function Ownership({ candidates }: { candidates: Array<{ id: string; name: string }> }) {
+/** The server's preview supplies eligible admins and the revision for an explicit owner change. */
+export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; nameOfCandidate: (candidate: Candidate) => string }) {
   const client = useQueryClient();
   const ownership = useQuery({ queryKey: OWNERSHIP_KEY, queryFn: ({ signal }) => fetchJson<DeploymentOwnershipPreview>('/api/ownership', signal) });
   const [selected, setSelected] = useState('');
-  const [review, setReview] = useState<{ revision: string; ownerMemberId: string; name: string } | null>(null);
+  const [review, setReview] = useState<Review | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const record = useMutation({
-    mutationFn: (body: { revision: string; ownerMemberId: string }) => postJson<DeploymentOwnershipPreview>('/api/ownership', body),
+  const [error, setError] = useState<string | null>(null);
+  const change = useMutation({
+    mutationFn: (choice: Review) => choice.kind === 'record'
+      ? postJson<DeploymentOwnershipPreview>('/api/ownership', { ownerMemberId: choice.memberId, revision: choice.revision })
+      : postJson<DeploymentOwnershipPreview>('/api/ownership/transfer', { member_id: choice.memberId, expected_revision: choice.revision }),
     onSuccess: async (outcome) => {
       setReview(null);
+      setConfirmed(false);
+      setSelected('');
+      setError(null);
       client.setQueryData(OWNERSHIP_KEY, outcome);
       await Promise.all([client.invalidateQueries({ queryKey: OWNERSHIP_KEY }), client.invalidateQueries({ queryKey: ME_KEY })]);
     },
-    onError: async () => { setReview(null); setConfirmed(false); await client.invalidateQueries({ queryKey: OWNERSHIP_KEY }); },
+    onError: async (failure) => {
+      setReview(null);
+      setConfirmed(false);
+      setError(failure instanceof ApiError && failure.code === 'revision_conflict'
+        ? 'Ownership changed. Review the refreshed owner and choose again.'
+        : 'The server could not change the owner. Review the refreshed ownership before trying again.');
+      await client.invalidateQueries({ queryKey: OWNERSHIP_KEY });
+    },
   });
-  if (ownership.data?.ownerMemberId != null && !record.isError) return null;
-  const candidate = candidates.find((person) => person.id === selected);
+  const preview = ownership.data;
+  const canChange = preview?.ownerMemberId === null || isOwner;
+  const candidates = preview?.candidates.filter((person) => person.memberId !== preview.ownerMemberId) ?? [];
+  const proposal = candidates.find((person) => person.memberId === preview?.proposalMemberId);
+  const candidate = candidates.find((person) => person.memberId === selected);
+  const label = preview?.ownerMemberId === null ? 'Record server owner' : 'Transfer server ownership';
+  const choose = () => {
+    if (preview === undefined || candidate === undefined) return;
+    setError(null);
+    change.reset();
+    setConfirmed(false);
+    setReview({ kind: preview.ownerMemberId === null ? 'record' : 'transfer', revision: preview.revision, memberId: candidate.memberId, name: nameOfCandidate(candidate) });
+  };
   return (
-    <AdminSection id="ownership" title="Server owner" description="Choose who owns this server. Only its recorded owner can claim raw data with no recorded uploader.">
+    <AdminSection id="ownership" title="Server owner" description="The owner controls roles and ownership of this server, and may claim raw data with no recorded uploader.">
       {ownership.isPending ? <LoadingState label="Reading server ownership" />
         : ownership.isError ? <ErrorState error={ownership.error} onRetry={() => void ownership.refetch()} />
-        : ownership.data.ownerMemberId !== null ? <Card><p className="t-small text-muted">An owner is already recorded. This choice cannot replace them.</p></Card>
+        : preview === undefined ? null
         : <Card className="flex flex-col gap-s4">
-          <p className="t-small text-muted">No owner is recorded. Choose an admin with a connected GitHub account. This choice can be made once.</p>
-          <Select label="Server owner" value={selected} onValueChange={setSelected} placeholder="Choose an owner" options={candidates.map((person) => ({ value: person.id, label: person.name }))} />
-          <Button disabled={candidate === undefined || record.isPending} onClick={() => { if (candidate !== undefined) { record.reset(); setConfirmed(false); setReview({ revision: ownership.data.revision, ownerMemberId: candidate.id, name: candidate.name }); } }}>Record server owner</Button>
+          {preview.ownerMemberId === null
+            ? <p className="t-small text-muted">No owner is recorded. Choose an admin with a connected GitHub account.</p>
+            : <p className="t-small text-muted">A server owner is recorded. {isOwner ? 'You can transfer ownership to another connected admin. You remain an admin after transfer.' : 'Only the recorded owner can transfer ownership.'}</p>}
+          {proposal !== undefined && <p className="t-small text-muted">Proposed server owner: {nameOfCandidate(proposal)}. Review and confirm this choice; ownership has not changed.</p>}
+          {canChange && <>
+            {candidates.length === 0 && <p className="t-small text-muted">There is no eligible admin to choose. Promote or connect another person first.</p>}
+            <Select label={preview.ownerMemberId === null ? 'Server owner' : 'New server owner'} value={selected} onValueChange={setSelected} placeholder="Choose an admin" options={candidates.map((person) => ({ value: person.memberId, label: nameOfCandidate(person) }))} />
+            <Button disabled={candidate === undefined || change.isPending} onClick={choose}>{label}</Button>
+          </>}
         </Card>}
-      {record.isError && <p role="alert" className="t-small text-bad">{record.error instanceof ApiError && record.error.code === 'revision_conflict' ? 'Ownership changed. Review it again before recording an owner.' : 'The server could not record this owner. Refresh ownership before trying again.'}</p>}
-      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); } }} title="Record server owner"
-        description={`Record ${review?.name ?? ''} as this server’s owner. This choice can be made once.`} confirmLabel="Record server owner" tone="primary" pending={record.isPending} confirmDisabled={!confirmed}
-        onConfirm={() => { if (review !== null && confirmed && !record.isPending) record.mutate({ revision: review.revision, ownerMemberId: review.ownerMemberId }); }}>
-        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected person and want to record them as the server owner.</label>
+      {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
+      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); } }} title={review?.kind === 'transfer' ? 'Transfer server ownership' : 'Record server owner'}
+        description={review?.kind === 'transfer'
+          ? `Transfer server ownership to ${review.name}. They will gain owner powers. You will remain an admin and lose owner powers.`
+          : `Record ${review?.name ?? ''} as this server’s owner.`}
+        confirmLabel={review?.kind === 'transfer' ? 'Transfer ownership' : 'Record server owner'} tone="primary" pending={change.isPending} confirmDisabled={!confirmed}
+        onConfirm={() => { if (review !== null && confirmed && !change.isPending) change.mutate(review); }}>
+        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected person and want to {review?.kind === 'transfer' ? 'transfer ownership to them' : 'record them as the server owner'}.</label>
       </ConfirmDialog>
     </AdminSection>
   );

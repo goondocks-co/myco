@@ -5,9 +5,8 @@ import { sha256Hex } from '../hash.js';
 import { carriedBytes, TOKEN_LIVE } from '../ingest/live-credential.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
-import { isAdmin } from './roles.js';
 import type { DashboardMember } from './identity-link.js';
-import { authorize, credentialResource, machineResource, memberSubject, OWNER_CONTROL_CREDENTIAL_WRITE } from './authorization.js';
+import { authorize, credentialResource, machineResource, memberSubject, memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from './authorization.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -155,16 +154,6 @@ export async function issueMemberToken(
   return issued;
 }
 
-/**
- * Revoke a credential on behalf of a member. Membership is flat: any member may
- * revoke any credential, so the write carries no ownership predicate.
- *
- * `revokedBy` is recorded rather than checked, in the same statement that revokes
- * — a revocation and the record of who made it cannot come apart. Restricting who
- * may revoke is then a policy change on top of this record rather than a
- * re-derivation of who owns what, and until there is one, an operator can always
- * answer who ended a credential.
- */
 /** The attributed revocation of one token row, as a statement: the break-glass script renders it for a token whose successors are known to be its owner's. */
 export function revokeCredentialStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number): PreparedStatement {
   return db
@@ -179,8 +168,8 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
  */
 export function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null, controlActor?: string): PreparedStatement {
   return db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${OWNER_CONTROL_CREDENTIAL_WRITE}`}`)
-    .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]), ...(controlActor === undefined ? [] : [controlActor]));
+    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`}`)
+    .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]), ...(controlActor === undefined ? [] : [controlActor, controlActor]));
 }
 
 /** Revoke an admitted credential's lineage with attribution and the caller's member scope. */
@@ -189,7 +178,7 @@ export async function revokeCredentialAsMember(
 ): Promise<{ revoked: boolean; revokedBy: string }> {
   const revokedBy = actor.id;
   if (!authorize(await memberSubject(db, actor.id, 'http'), 'edit', await credentialResource(db, tokenId))) return { revoked: false, revokedBy };
-  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, isAdmin(actor.role) ? null : revokedBy, actor.id).run();
+  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, null, actor.id).run();
   const revoked = result.meta.changes > 0;
   emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.meta.changes });
   return { revoked, revokedBy };
@@ -203,9 +192,10 @@ export async function revokeMachineCredentialsAsMember(
   const result = await db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
       WHERE machine_id = ? AND revoked_at IS NULL
         AND ${OWNER_CONTROL_CREDENTIAL_WRITE}
+        AND ${memberWritePredicate('?', 'member_credentials.member_id')}
         AND EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id
-          ${isAdmin(actor.role) ? '' : 'AND mc.member_id = ?'})`)
-    .bind(nowMs, actor.id, machineId, actor.id, ...(isAdmin(actor.role) ? [] : [actor.id])).run();
+          AND mc.member_id = member_credentials.member_id)`)
+    .bind(nowMs, actor.id, machineId, actor.id, actor.id).run();
   emit({ kind: 'credential_revoked', machineId, revokedBy: actor.id, revoked: result.meta.changes > 0, rows: result.meta.changes });
   return { revoked: result.meta.changes, revokedBy: actor.id };
 }

@@ -32,6 +32,7 @@ describe('raw ownership schema step 71', () => {
     const sqlite = historical();
     try {
       for (const sql of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(sql);
+      for (const step of SCHEMA_STEPS.filter((step) => step.version > 71)) for (const sql of step.statements) sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
       sqlite.run("INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation) VALUES ('p','restored-blob',12,'text/plain','ca',0,'00000000-0000-4000-8000-000000000001')");
       const transcript = { project_id: 'p', transcript_id: 'restored', session_id: 'session', machine_id: 'ma', size: 24, segment_count: 2,
@@ -42,7 +43,7 @@ describe('raw ownership schema step 71', () => {
         counts: { transcripts: 1, transcript_segments: 2 } };
       // Artifact row order is independent of the restore capability's table order.
       const text = [header, { t: 'transcripts', r: transcript }, ...segments.map((r) => ({ t: 'transcript_segments', r }))].map((row) => JSON.stringify(row)).join('\n');
-      await restoreArtifact(db, { text });
+      await restoreArtifact(db, { authorization: { kind: 'recovery' }, text });
       expect(sqlite.query("SELECT owner_member_id FROM raw_resources WHERE kind = 'transcript' AND resource_id = 'restored'").get())
         .toEqual({ owner_member_id: null });
       expect(sqlite.query('SELECT COUNT(*) AS n FROM transcript_segments').get()).toEqual({ n: 2 });

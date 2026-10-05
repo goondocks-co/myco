@@ -1,45 +1,8 @@
 import type { RawClaimPreview, RawClaimOutcome, DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-claims';
 import type { RelationalStore } from './adapters.js';
 
-export class RawClaimRefusal extends Error {
-  constructor(readonly code: 'not_owner' | 'not_admin' | 'owner_already_recorded' | 'invalid_owner' | 'revision_conflict' | 'backfill_pending') { super(code); }
-}
-
-export const deploymentOwnerSql = (member: string): string => `EXISTS (SELECT 1 FROM deployment_ownership o JOIN members m ON m.id = o.member_id
-  WHERE o.id = 1 AND o.member_id = ${member} AND m.revoked_at IS NULL AND m.role = 'admin')`;
-export async function isDeploymentOwner(db: RelationalStore, memberId: string): Promise<boolean> {
-  return (await db.prepare(`SELECT ${deploymentOwnerSql('?')} AS admitted`).bind(memberId).first<{ admitted: number }>())?.admitted === 1;
-}
-
-export async function ownershipPreview(db: RelationalStore): Promise<DeploymentOwnershipPreview> {
-  const row = await db.prepare('SELECT member_id, revision FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null; revision: number }>();
-  if (row === null) throw new Error('Deployment ownership record is missing');
-  return { ownerMemberId: row.member_id, revision: String(row.revision) };
-}
-
-/** Initial owner selection is explicit; the guarded write cannot replace an established owner. */
-export async function bootstrapOwnership(db: RelationalStore, actor: string, candidate: string, revision: string, now: number): Promise<DeploymentOwnershipPreview> {
-  const admin = await db.prepare("SELECT 1 AS admitted FROM members WHERE id = ? AND role = 'admin' AND revoked_at IS NULL").bind(actor).first();
-  if (admin === null) throw new RawClaimRefusal('not_admin');
-  const current = await ownershipPreview(db);
-  if (current.ownerMemberId === candidate) return current;
-  if (current.ownerMemberId !== null) throw new RawClaimRefusal('owner_already_recorded');
-  if (current.revision !== revision) throw new RawClaimRefusal('revision_conflict');
-  const live = await db.prepare("SELECT 1 AS admitted FROM members WHERE id = ? AND role = 'admin' AND github_id IS NOT NULL AND revoked_at IS NULL")
-    .bind(candidate).first();
-  if (live === null) throw new RawClaimRefusal('invalid_owner');
-  const results = await db.batch([
-    db.prepare(`UPDATE deployment_ownership SET member_id = ?, revision = revision + 1 WHERE id = 1 AND member_id IS NULL AND revision = ?
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND role = 'admin' AND revoked_at IS NULL)
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND role = 'admin' AND github_id IS NOT NULL AND revoked_at IS NULL)`)
-      .bind(candidate, revision, actor, candidate),
-    db.prepare(`INSERT INTO deployment_ownership_audit (revision,member_id,actor_id,created_at)
-      SELECT revision, member_id, ?, ? FROM deployment_ownership WHERE id = 1 AND member_id = ? AND revision = ?
-      ON CONFLICT DO NOTHING`).bind(actor, now, candidate, Number(revision) + 1),
-  ]);
-  if (results[0]!.meta.changes === 0) throw new RawClaimRefusal('revision_conflict');
-  return ownershipPreview(db);
-}
+import { deploymentOwnerSql, isDeploymentOwner, ownershipPreview, OwnershipRefusal as RawClaimRefusal } from './ownership.js';
+export { deploymentOwnerSql, isDeploymentOwner, ownershipPreview, bootstrapOwnership, restoreOwnership, OwnershipRefusal as RawClaimRefusal } from './ownership.js';
 
 /** A claim covers only missing provenance at its reviewed revision; recorded and contradictory identities are excluded. */
 export const effectiveRawOwnerSql = (owner: string, provenance: string, revision: string, candidate = 'NULL'): string => `COALESCE(${owner},
@@ -114,15 +77,4 @@ export async function reserveRawRestore(db: RelationalStore, artifactHash: strin
   const held = await db.prepare('SELECT revision_offset FROM raw_restore_revisions WHERE artifact_hash = ?').bind(artifactHash).first<{ revision_offset: number }>();
   if (held === null) throw new Error('Raw restore revision reservation is missing');
   return held.revision_offset;
-}
-
-/** Recovery can fill an unselected owner; additive restore preserves an established destination owner. */
-export async function restoreOwnership(db: RelationalStore, row: { member_id: string; revision: number }, audit: { actor_id: string; created_at: number }): Promise<void> {
-  await db.batch([
-    db.prepare(`UPDATE deployment_ownership SET member_id = ?, revision = ? WHERE id = 1 AND member_id IS NULL`)
-      .bind(row.member_id, row.revision),
-    db.prepare(`INSERT INTO deployment_ownership_audit (revision,member_id,actor_id,created_at)
-      SELECT revision,member_id,?,? FROM deployment_ownership WHERE id = 1 AND member_id = ? AND revision = ? ON CONFLICT DO NOTHING`)
-      .bind(audit.actor_id, audit.created_at, row.member_id, row.revision),
-  ]);
 }

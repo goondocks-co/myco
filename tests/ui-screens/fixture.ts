@@ -28,6 +28,7 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
 import { REPORT_UNCAPTURED_PATH, RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
 import { MACHINE_IDS } from './machine-ids.ts';
@@ -223,6 +224,7 @@ export async function seedIdentities(databasePath: string, now: number): Promise
       sqlite.query('INSERT INTO members (id, label, created_at, revoked_at, role) VALUES (?, ?, ?, NULL, ?)').run(member.id, member.label, now - 60 * DAY, member.role);
       await linkStatement(db, member.id, member.githubSub).run();
     }
+    await bootstrapOwnership(db, OWNER.id, OWNER.id, '0', now);
     const tokens: Record<string, string> = {};
     for (const machine of MACHINES) {
       sqlite.query('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)').run(machine.id, machine.member.id, now - 50 * DAY);

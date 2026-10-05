@@ -280,7 +280,7 @@ describe('machine settings effective contract', () => {
       const artifact = (await backupArtifact(source.env.db, source.bucket, saved.id))!;
       const restored = await rig(target);
       restored.sqlite.run(`DELETE FROM machine_claims WHERE machine_id = 'machine_1'`);
-      await restoreArtifact(restored.env.db, { text: artifact.text, allowForeignLineage: true });
+      await restoreArtifact(restored.env.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
       const ask = (headers: Record<string, string>) => restored.request(memberPost(source.token, {}, '/members/settings', headers));
       const lostResponse = await ask(oldHeaders);
       expect(lostResponse.status).toBe(200);

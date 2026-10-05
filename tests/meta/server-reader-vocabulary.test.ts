@@ -19,6 +19,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'core/runtime-probe.ts:The runtime probe model is only for the retained container probe': 'Programmer guard for a task-local resolver; the dashboard never renders it.',
   'core/worker-selection.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
   'core/worker-selection.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
+  'core/worker-selection.ts:deployment': 'LoginPlan discriminator for credential source selection; never dashboard prose.',
   'core/settings-policies.ts:agent.harnesses. … .credential': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
   'core/settings-policies.ts:worker.harness': 'Settings leaf address a policy owns; the editor supplies a user-facing label.',
   'core/execution-profile.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the execution profile.',

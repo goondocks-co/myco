@@ -375,7 +375,7 @@ export function createServer(deps: ServerDeps) {
           if (matched.route.authorization?.resource === 'machine-settings') return Response.json({ applied: false, reason: 'forbidden', detail: 'only the member this machine belongs to reaches its settings' }, { status: 403 });
           if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.resolver === 'machine') return Response.json({ error: 'not_found' }, { status: 404 });
           if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.action === 'edit') return Response.json({ revoked: matched.route.authorization.resolver === 'machine' ? 0 : false, revokedBy: member?.id });
-          if (authorization.action === 'owner') return Response.json({ error: 'not_owner' }, { status: 403 });
+          if (authorization.action === 'owner') return Response.json({ error: authorization.resource?.ownerPending ? 'owner_pending' : 'not_owner' }, { status: authorization.resource?.ownerPending ? 409 : 403 });
           if (matched.route.authority === 'admin') return forbiddenToMember();
           return Response.json({ error: 'not_found' }, { status: 404 });
         }
@@ -635,9 +635,13 @@ export function createServer(deps: ServerDeps) {
         const malformed = emptyBodyRefusal(body.text);
         if (malformed !== null) return refuse(auth, shapeOf(route), malformed.reason, malformed.classifier);
       }
-      if (!await authorizeHttp(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { machineId, tokenId: auth.tokenId, body: body.text })) {
+      const authorization = await httpAuthorizationDecision(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { machineId, tokenId: auth.tokenId, body: body.text });
+      if (!authorization.allowed) {
         if (route.authorization.action === 'bootstrap') return refuse(auth, shapeOf(route), LINK_REQUIRES_ADMIN, 'link_requires_admin');
-        if (route.authorization.action === 'owner') return Response.json({ persisted: false, code: 'not_owner', reason: 'not_owner' });
+        if (route.authorization.action === 'owner') {
+          const code = authorization.resource?.ownerPending ? 'owner_pending' : 'not_owner';
+          return Response.json({ persisted: false, code, reason: code });
+        }
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
       return await route.credential(env, {

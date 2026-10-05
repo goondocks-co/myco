@@ -98,7 +98,7 @@ describe('explicit owner claim of missing raw uploader', () => {
     const e = sqliteEnv();
     try {
       e.sqlite.run("UPDATE members SET github_id = 'owner-account' WHERE id = 'mem_machine_1'");
-      expect(await ownershipPreview(e.db)).toEqual({ ownerMemberId: null, revision: '0' });
+      expect(await ownershipPreview(e.db)).toMatchObject({ ownerMemberId: null, revision: '0' });
       await bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', 100);
       expect(e.sqlite.query('SELECT COUNT(*) AS n FROM deployment_ownership_audit').get()).toEqual({ n: 1 });
       missing(e, 'missing-old', 10); missing(e, 'missing-new', 20);
@@ -181,7 +181,7 @@ describe('explicit owner claim of missing raw uploader', () => {
     try {
       e.sqlite.run(`CREATE TRIGGER audit_gate BEFORE INSERT ON deployment_ownership_audit BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END`);
       await expect(bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', 1)).rejects.toThrow('audit unavailable');
-      expect(await ownershipPreview(e.db)).toEqual({ ownerMemberId: null, revision: '0' });
+      expect(await ownershipPreview(e.db)).toMatchObject({ ownerMemberId: null, revision: '0' });
       e.sqlite.run('DROP TRIGGER audit_gate');
       await bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', 2);
       expect(e.sqlite.query('SELECT member_id,actor_id,created_at FROM deployment_ownership_audit').all())
@@ -235,8 +235,8 @@ describe('explicit owner claim of missing raw uploader', () => {
       const backup = await createBackup(source.db, source.bucket, { producer: 'restore claim gate', now: 3 });
       const artifact = (await backupArtifact(source.db, source.bucket, backup.id))!;
       event(destination, 'destination-unreviewed', 'destination-missing');
-      await restoreArtifact(destination.db, { text: artifact.text, allowForeignLineage: true });
-      expect(await ownershipPreview(destination.db)).toEqual({ ownerMemberId: 'mem_machine_1', revision: '1' });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      expect(await ownershipPreview(destination.db)).toMatchObject({ ownerMemberId: 'mem_machine_1', revision: '1' });
       expect(destination.sqlite.query('SELECT member_id,actor_id FROM deployment_ownership_audit').all())
         .toEqual([{ member_id: 'mem_machine_1', actor_id: 'mem_machine_1' }]);
       expect(await reader(destination, 'mem_machine_1').event('source-claimed')).toBe('full raw bytes');
@@ -245,7 +245,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       expect(await reader(destination, 'mem_machine_1').event('new-after-recovery')).toBeNull();
       await complete(destination);
       expect(await reader(destination, 'mem_machine_1').event('destination-unreviewed')).toBeNull();
-      await restoreArtifact(destination.db, { text: artifact.text, allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
       expect(await reader(destination, 'mem_machine_1').event('new-after-recovery')).toBeNull();
       expect(destination.sqlite.query('SELECT COUNT(*) AS n FROM raw_restore_revisions').get()).toEqual({ n: 1 });
     } finally { source.sqlite.close(); destination.sqlite.close(); }
@@ -261,7 +261,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       const transcript = { project_id: 'proj_1', transcript_id: 'legacy-retained', session_id: 'history', machine_id: 'missing-old-machine',
         size: 10, segment_count: 2, first_received_at: 3, last_received_at: 3, token_id: 'missing-old-token' };
       const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(e.db), schemaVersion: 70, createdAt: 3, producer: 'legacy', counts: { transcripts: 1 } };
-      await restoreArtifact(e.db, { text: [header, { t: 'transcripts', r: transcript }].map((r) => JSON.stringify(r)).join('\n') });
+      await restoreArtifact(e.db, { authorization: { kind: 'recovery' }, text: [header, { t: 'transcripts', r: transcript }].map((r) => JSON.stringify(r)).join('\n') });
       expect(e.sqlite.query('SELECT complete FROM raw_provenance_backfill').get()).toEqual({ complete: 0 });
       await complete(e);
       expect(await reader(e, 'mem_machine_1').allows({ kind: 'transcript', id: 'legacy-retained' }, 'read')).toBe(false);
@@ -287,7 +287,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       await complete(source);
       await claimUnknownRaw(source.db, 'mem_machine_2', (await rawClaimPreview(source.db, 'mem_machine_2')).revision, 2);
       const backup = await createBackup(source.db, source.bucket, { producer: 'foreign claim', now: 3 });
-      await restoreArtifact(destination.db, { text: (await backupArtifact(source.db, source.bucket, backup.id))!.text, allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: (await backupArtifact(source.db, source.bucket, backup.id))!.text, allowForeignLineage: true });
       await complete(destination);
       expect(await reader(destination, 'mem_machine_2').allows({ kind: 'transcript', id: 'foreign-claimed' }, 'read')).toBe(true);
       expect((await rawClaimPreview(destination.db, 'mem_machine_1')).projects).toEqual([]);
@@ -301,8 +301,8 @@ describe('explicit owner claim of missing raw uploader', () => {
     try {
       const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(e.db), schemaVersion: 71, createdAt: 1, producer: 'test', counts: { deployment_ownership: 1 } };
       const text = [header, { t: 'deployment_ownership', r: { id: 1, member_id: 'mem_machine_1', revision: 1 } }].map((r) => JSON.stringify(r)).join('\n');
-      await expect(restoreArtifact(e.db, { text })).rejects.toThrow('matching audit receipt');
-      expect(await ownershipPreview(e.db)).toEqual({ ownerMemberId: null, revision: '0' });
+      await expect(restoreArtifact(e.db, { authorization: { kind: 'recovery' }, text })).rejects.toThrow('matching audit receipt');
+      expect(await ownershipPreview(e.db)).toMatchObject({ ownerMemberId: null, revision: '0' });
       expect(e.sqlite.query('SELECT COUNT(*) AS n FROM deployment_ownership_audit').get()).toEqual({ n: 0 });
     } finally { e.sqlite.close(); }
   });

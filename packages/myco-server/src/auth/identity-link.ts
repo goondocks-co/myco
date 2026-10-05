@@ -20,6 +20,7 @@
  * A member's account is fixed once linked. Changing it is break-glass: direct
  * store access, the same authority #907 settled as the recovery path.
  */
+import { completeIdentityLink } from '../core/ownership.js';
 import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
@@ -189,13 +190,12 @@ export async function spendIdentityLinkAuthority(
 
   let changes: number;
   try {
-    const bind = await db
+    const bind = db
       .prepare(`UPDATE members SET github_id = ?
                  WHERE id = ? AND revoked_at IS NULL AND (github_id IS NULL OR github_id = ?)
                    AND EXISTS (SELECT 1 FROM identity_link_authorities a WHERE a.key_hash = ? AND ${linkAdmitted('a.issued_by', 'a.member_id')})`)
-      .bind(githubId, memberId, githubId, keyHash)
-      .run();
-    changes = bind.meta.changes;
+      .bind(githubId, memberId, githubId, keyHash);
+    changes = await completeIdentityLink(db, bind, memberId, githubId, nowMs);
   } catch (err) {
     // A bind racing another for the same account meets the unique index; the account is then another member's.
     if (/UNIQUE constraint failed: members\.github_id/.test(err instanceof Error ? err.message : String(err))) return { ok: false, reason: 'identity_taken' };

@@ -21,4 +21,6 @@ export interface RawClaimOutcome {
 export interface DeploymentOwnershipPreview {
   ownerMemberId: string | null;
   revision: string;
+  candidates: Array<{ memberId: string; label: string | null; role: 'admin'; roleRevision: string }>;
+  proposalMemberId: string | null;
 }

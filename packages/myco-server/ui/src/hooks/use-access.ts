@@ -53,6 +53,11 @@ export function useAccessActions() {
   const refresh = (...keys: string[]) => Promise.all(keys.map((k) => client.invalidateQueries({ queryKey: [k] })));
   return {
     revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials', 'machines') }),
+    changeRole: useMutation({
+      mutationFn: ({ memberId, role, expectedRevision }: { memberId: string; role: 'admin' | 'member'; expectedRevision: string }) =>
+        postJson<{ memberId: string; role: 'admin' | 'member'; roleRevision: string }>(`/api/members/${encodeURIComponent(memberId)}/role`, { member_id: memberId, role, expected_revision: expectedRevision }),
+      onSettled: () => refresh('members', 'ownership'),
+    }),
     // A minted key lives only in the page's own state: the mutation keeps no copy once it has answered.
     mintInvitation: useMutation({ gcTime: 0, mutationFn: (body: { memberId?: string; ttlMinutes: number }) => postJson<MintedInvitation>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
     // The link's key lives only in the page's own state, as an invitation's does.
