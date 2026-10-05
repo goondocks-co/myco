@@ -636,7 +636,7 @@ export function createServer(deps: ServerDeps) {
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-      return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now });
+      return await route.run(env, { projectId: held.projectId, run: held, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });
     } catch (err) {
       return failed(env, auth, route, err);
     }
@@ -654,7 +654,11 @@ export function createServer(deps: ServerDeps) {
       runtime: auth.runtime, body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: new URL(request.url).origin };
     if (route.retired === true) return route.handler(env, context);
     const admission = await admitRunControl(env, auth, projectId, route.path, body.text, now);
-    if (!admission.held) return refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
+    if (!admission.held) {
+      const refused = refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
+      const refusalId = await recordRunControlRefusal(env.db, auth.tokenId, 'no_run');
+      return refusalId === null ? refused : Response.json({ ...await refused.json() as Record<string, unknown>, refusalId }, { status: refused.status, headers: refused.headers });
+    }
     if (admission.settled !== undefined) return admission.settled;
     const principal = { ...context, runDeadline: runDeadline(admission.run) };
     const answered = await route.handler(env, principal);

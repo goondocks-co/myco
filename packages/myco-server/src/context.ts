@@ -92,6 +92,7 @@ export interface RunContext {
   tokenId: string;
   body: string;
   now: number;
+  clock?: () => number;
 }
 
 /** Context for a route reached over an External Agent grant: the grant's Project, the grant, and the body the pipeline read. Nothing of a member travels here; the grant records what it found under its own name, and its volume is held by the limiter keyed on the grant and by the grant's expiry. */

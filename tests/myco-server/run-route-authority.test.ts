@@ -6,6 +6,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { runControlResult, RunControlError } from '@goondocks/myco-shared/run-control';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
@@ -48,7 +49,7 @@ async function fixture(target: 'cloudflare' | 'native', path: string, onSql?: Pa
       : await pipeline.handleRequest(request, target === 'native' ? native : f.serverEnv);
     return { status: response.status, body: await response.json() as Record<string, unknown> };
   };
-  const snapshot = () => ({ runs: f.sqlite.query('SELECT * FROM agent_runs ORDER BY project_id,id').all(),
+  const snapshot = () => ({ runs: f.sqlite.query("SELECT *, json_remove(run_context, '$.runControlRefusals') AS run_context FROM agent_runs ORDER BY project_id,id").all(),
     reports: f.sqlite.query('SELECT * FROM agent_reports ORDER BY id').all(),
     calls: f.sqlite.query('SELECT * FROM agent_run_events ORDER BY project_id,run_id,id').all(), projects: f.sqlite.query('SELECT * FROM projects ORDER BY project_id').all() });
   return { ...f, holder, sibling, foreign, unheld, member, admin, post, snapshot, now, advanceClock: (at: number) => { now = at; } };
@@ -103,6 +104,24 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
       const before = f.snapshot();
       expect((await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS])).body.persisted).toBe(false);
       expect(f.snapshot()).toEqual(before);
+    } finally { f.sqlite.close(); }
+  });
+  it('returns a stable credential-bound receipt for an admission refusal', async () => {
+    const f = await fixture(target, '/runs/update');
+    try {
+      f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now - 1]);
+      const offer = { runId: 'target', update: { status: 'failed', error: 'runtime overrun' } };
+      const first = await f.post(f.holder.token, offer);
+      const second = await f.post(f.holder.token, offer);
+      const receiptId = first.body.refusalId as string;
+      expect({ ...first.body }).toMatchObject({ persisted: false, code: 'no_run', refusalId: expect.any(String) });
+      expect(second.body.refusalId).toBe(receiptId);
+      const context = f.sqlite.query("SELECT run_context AS context FROM agent_runs WHERE id = 'target'").get() as { context: string };
+      expect(JSON.parse(context.context).runControlRefusals.no_run).toEqual({ id: receiptId, tokenId: f.holder.tokenId, code: 'no_run' });
+      try { runControlResult(first.status, first.body, '/runs/update'); throw new Error('expected refusal'); }
+      catch (error) { expect(error).toBeInstanceOf(RunControlError); expect((error as RunControlError).refusalId).toBe(receiptId); }
+      f.sqlite.run("UPDATE agent_runs SET dispatched_by = ? WHERE id = 'sibling'", [f.holder.tokenId]);
+      expect((await f.post(f.holder.token, offer)).body.refusalId).toBeUndefined();
     } finally { f.sqlite.close(); }
   });
   it('admits an embedding step while its rightful dispatch lease is live', async () => {

@@ -8,7 +8,8 @@ import worker from '@myco-server-worker/index.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
-import { taskEntriesSince } from '@myco-server-worker/core/runs.js';
+import { runDeadline } from '@myco-server-worker/core/run-deadline.js';
+import { getRun, taskEntriesSince } from '@myco-server-worker/core/runs.js';
 import { dispatchTask } from '@myco-server-worker/core/harness.js';
 import { memberHeaders, sqliteEnv, withHarness } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -77,6 +78,7 @@ describe('POST /api/harness/dispatch', () => {
     const spec = launches[0]!;
     expect(spec.timeoutSeconds).toBe(240);
     const vars = spec.envVars;
+    expect(Number(vars.MYCO_RUN_DEADLINE)).toBe(runDeadline((await getRun(db, { projectId: 'proj_1' }, spec.runId))!));
     expect({ url: vars.MYCO_SERVER_URL, project: vars.MYCO_PROJECT, task: vars.MYCO_TASK, run: vars.MYCO_RUN_ID, oat: vars.CLAUDE_CODE_OAUTH_TOKEN, model: vars.MYCO_MODEL, admission: vars.MYCO_TASK_ADMISSION, params: vars.MYCO_TASK_PARAMS })
       .toEqual({ url: 'https://s', project: 'proj_1', task: 'container-smoke', run: spec.runId, oat: 'sk-ant-oat-test-token', model: 'claude-opus-5', admission: 'cortex', params: JSON.stringify({ timeoutSeconds: 240 }) });
     expect(vars.ANTHROPIC_API_KEY).toBeUndefined();

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  bearerMatches, childDeadline, CHILD_OVERRUN_MARGIN_MS, childLaunchPlan, decideChildExit, decideLaunch, decideSignal,
+  bearerMatches, childDeadline, CHILD_CLOSE_RESERVE_MS, CHILD_OVERRUN_MARGIN_MS, childLaunchPlan, decideChildExit, decideLaunch, decideSignal,
   LAUNCH_REFUSAL_STATUS, readableBy, RUN_ID_PATTERN, type RuntimeUser, type SupervisorState,
 } from '@myco/agent/runtime/supervisor-policy.js';
 import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
@@ -15,6 +15,13 @@ import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
 const idle: SupervisorState = { draining: false, running: [] };
 const holding = (...running: string[]): SupervisorState => ({ draining: false, running });
 const draining = (...running: string[]): SupervisorState => ({ draining: true, running });
+
+it('kills against the server deadline with time left for the close', () => {
+  const serverDeadline = 100_000;
+  expect(childDeadline(50_000, 300, undefined, serverDeadline)).toBe(serverDeadline - CHILD_CLOSE_RESERVE_MS);
+  expect(childDeadline(50_000, 0, 10, serverDeadline)).toBe(50_010);
+  expect(childDeadline(50_000, 300, undefined, NaN)).toBe(childDeadline(50_000, 300));
+});
 
 describe('what a launch is answered with', () => {
   it('admits a run this supervisor is not already running', () => {

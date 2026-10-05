@@ -26,6 +26,7 @@
  */
 import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@modelcontextprotocol/server';
 import { acceptedActions } from '../core/run-postconditions.js';
+import { RunWriteExpired } from '../core/run-write-store.js';
 import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
 import { normalizeRemote, projectForRemote } from '../core/remotes.js';
@@ -264,6 +265,7 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   } else scoped = ctx;
   try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }
   catch (error) {
+    if (error instanceof RunWriteExpired) throw new ToolError('tool_call_failed', error.message);
     if (error instanceof SessionMaterialPendingError) throw new ToolError('tool_call_failed', error.message);
     throw error;
   }

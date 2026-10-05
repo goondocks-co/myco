@@ -656,7 +656,7 @@ export async function runInstruction(db: RelationalStore, scope: ReadScope, runI
 export interface RunCaller { tokenId: string; now: number; deadline: number; clock?: () => number; refusalId?: string }
 
 /** Runtime writes require the same dispatch and an unexpired open attempt. */
-function runCallerGuard(caller: RunCaller | undefined, statuses = LIVE_RUN_STATUSES): { sql: string; params: (string | number)[] } {
+export function runCallerGuard(caller: RunCaller | undefined, statuses = LIVE_RUN_STATUSES): { sql: string; params: (string | number)[] } {
   if (caller === undefined) return { sql: '', params: [] };
   const now = caller.clock?.() ?? caller.now;
   return {

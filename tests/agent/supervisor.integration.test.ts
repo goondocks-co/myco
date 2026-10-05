@@ -23,6 +23,7 @@ import {
   startSupervisor, supervisorOptionsFromEnv, SUPERVISOR_ONLY_ENV,
   type RunningSupervisor, type SpawnedChild, type SpawnPlan,
 } from '@myco/agent/runtime/supervisor.js';
+import { CHILD_CLOSE_RESERVE_MS } from '@myco/agent/runtime/supervisor-policy.js';
 import { RUNTIME_EXIT, RUNTIME_OWN_ENDINGS } from '@myco/agent/runtime/process-signals.js';
 
 const TOKEN = 'supervisor-token';
@@ -531,6 +532,20 @@ describe('a run whose runtime died before it ended', () => {
     });
     return { url: `http://127.0.0.1:${server.port}`, posts, stop: () => { server.stop(true); } };
   }
+
+  it('kills a real overrunning child before the absolute server deadline and posts its ending', async () => {
+    const s = boot();
+    const deploy = deployment();
+    const deadline = Date.now() + CHILD_CLOSE_RESERVE_MS + 400;
+    try {
+      expect((await s.launch({ runId: 'absolute_overrun', timeoutSeconds: 300,
+        envVars: { MYCO_SERVER_URL: deploy.url, MYCO_MEMBER_TOKEN: 'mt_absolute', MYCO_PROJECT: 'proj_1', MYCO_RUN_DEADLINE: String(deadline) },
+      })).status).toBe(202);
+      await until(() => deploy.posts.length > 0, 'the overrunning child ending', 5_000);
+      expect(Date.now()).toBeLessThan(deadline);
+      expect(deploy.posts[0]!.body).toMatchObject({ runId: 'absolute_overrun', update: { status: 'failed', error: expect.stringContaining(RUNTIME_DIED_ERROR) } });
+    } finally { deploy.stop(); }
+  });
 
   it('is closed by the supervisor, with that run\'s own credential', async () => {
     const s = boot();

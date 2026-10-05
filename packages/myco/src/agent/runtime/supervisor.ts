@@ -474,7 +474,7 @@ export function startSupervisor(options: SupervisorOptions): RunningSupervisor {
       }, Math.max(0, delay));
       (backstop as { unref?: () => void }).unref?.();
     };
-    arm(childDeadline(startedAt, timeoutSeconds, options.overrunMarginMs) - startedAt);
+    arm(childDeadline(startedAt, timeoutSeconds, options.overrunMarginMs, Number(envVars.MYCO_RUN_DEADLINE)) - startedAt);
 
     children.set(runId, {
       pid: child.pid,
