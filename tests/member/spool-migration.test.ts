@@ -321,6 +321,35 @@ describe('legacy member spool migration', () => {
     expect(fs.existsSync(cache)).toBe(true);
   });
 
+  it.each(['null', 'missing-destination', 'copy-failure'])('keeps fresh destination delivery progressing through %s legacy migration metadata', async (fault) => {
+    const rig = await memberRig({ projectId });
+    const entry = { ...binding(routeA.serverUrl), token: rig.token, expiresAt: rig.expiresAt };
+    writeRegistryEntry(entry, { mycoHome });
+    const source = legacy();
+    appendPrompt(source, 'legacy-metadata', fault === 'copy-failure' ? 'retained legacy capture '.repeat(10_000) : 'retained legacy capture');
+    if (fault === 'copy-failure') expect(source.readRecords('legacy-metadata')[0]?._blobSource).toBeDefined();
+    const sourceBytes = fs.readFileSync(path.join(source.dir, 'legacy-metadata.jsonl'));
+    const target = new MemberSpool(routeA, { mycoHome });
+    appendPrompt(target, 'fresh-metadata', 'fresh destination capture');
+    if (fault !== 'copy-failure') {
+      fs.writeFileSync(path.join(source.dir, LEGACY_MIGRATION_FILE), fault === 'null' ? 'null' : JSON.stringify({ version: 1, state: 'validated', status: 'migrated' }), { mode: 0o600 });
+      expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'held', reason: 'Source migration marker is malformed' });
+    }
+    const write = fs.writeFileSync.bind(fs);
+    const guard = spyOn(fs, 'writeFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: unknown) => {
+      if (fault === 'copy-failure' && String(file).startsWith(path.join(target.dir, 'blobs', 'legacy-metadata'))) throw Object.assign(new Error('legacy payload staging temporarily unavailable'), { code: 'EIO' });
+      return write(file, data, options as never);
+    }) as typeof fs.writeFileSync);
+    const notices: string[] = [];
+    const stderr = spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => { notices.push(String(chunk)); return true; });
+    try {
+      const report = await drainEntryBacklog(entry, { mycoHome, fetch: rig.fetch });
+      expect(report.sessions.some((session) => session.sessionId === 'fresh-metadata' && session.events?.acked === 1)).toBe(true);
+      expect(notices.join('')).toMatch(/legacy.*held|held migration failed/i);
+    } finally { stderr.mockRestore(); guard.mockRestore(); }
+    expect(fs.readFileSync(path.join(source.dir, 'legacy-metadata.jsonl'))).toEqual(sourceBytes);
+  });
+
   it('reports an active legacy helper while fresh destination capture delivers', async () => {
     const rig = await memberRig({ projectId });
     const entry = { ...binding(routeA.serverUrl), token: rig.token, expiresAt: rig.expiresAt };

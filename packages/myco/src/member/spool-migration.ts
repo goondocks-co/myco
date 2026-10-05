@@ -632,6 +632,10 @@ function migrateSource(route: MemberRoutingIdentity, mycoHome: string, dir: stri
       if (fs.realpathSync(dir) === fs.realpathSync(target.dir)) throw new MigrationHold('Legacy spool aliases its destination');
       const previous = readPrivateJson<Marker>(markerPath(dir));
       if (!previous.ok && previous.reason !== 'missing') throw new MigrationHold('Source migration marker is unreadable');
+      if (previous.ok && (previous.value === null || typeof previous.value !== 'object' || Array.isArray(previous.value) ||
+          (previous.value.state === 'validated' && (typeof previous.value.destination?.serverUrl !== 'string' || typeof previous.value.destination?.projectId !== 'string')))) {
+        throw new MigrationHold('Source migration marker is malformed');
+      }
       const destinationMarker = readPrivateJson<Marker>(markerPath(target.dir));
       if (!destinationMarker.ok && destinationMarker.reason !== 'missing') throw new MigrationHold('Destination migration marker is unreadable');
       const validated = validatedMarker(previous, route);

@@ -373,9 +373,9 @@ export function withPendingLock<T>(rootKey: string, mycoHome: string, fn: () => 
   return withFileLockSync(path.join(pendingRoot(mycoHome), `.${rootKey}.lock`), fn);
 }
 
-/** A failed held move remains retryable while the current hook continues into the live spool. */
-export function attemptHeldMigrationForCapture(move: () => number): void {
-  try { move(); }
+/** A failed held move stays retryable while live capture continues. */
+export function attemptHeldMigrationForCapture<T>(move: () => T): T | undefined {
+  try { return move(); }
   catch (err) { process.stderr.write(`[myco] member: held migration failed (${(err as Error).message}) — held capture retained for retry\n`); }
 }
 

@@ -330,7 +330,7 @@ export async function drainEntryBacklog(
   if (current.root !== '') {
     attemptHeldMigrationForCapture(() => flushHeldCapture(current.root, current, { mycoHome: opts.mycoHome, now: now(), deadline: budget.deadline }));
   }
-  const migration = opts.migrateLegacy === false ? null : migrateLegacySpool(current, opts.mycoHome, now());
+  const migration = opts.migrateLegacy === false ? null : attemptHeldMigrationForCapture(() => migrateLegacySpool(current, opts.mycoHome, now()));
   if (migration?.status === 'held') process.stderr.write(`[myco] member: legacy capture for ${current.projectId} held locally: ${migration.reason}\n`);
   for (const reason of migration?.sidecarHolds ?? []) process.stderr.write(`[myco] member: legacy optional state for ${current.projectId} held locally: ${reason}\n`);
   for (const file of migration?.ignoredSidecars ?? []) process.stderr.write(`[myco] member: legacy temporary artifact for ${current.projectId} ignored: ${file}\n`);
