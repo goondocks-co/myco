@@ -5,9 +5,13 @@ import { execFileSync } from 'node:child_process';
 import { describeWindowsFileLock } from './windows-file-lock.mjs';
 
 const ROOT_NAME = /^mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
+const RETIRED_NAME = /^\.mt-cleanup-([1-9]\d*)-mt-(?:[A-Za-z0-9]{6}|sweep-\d+-\d+)$/;
 const TEST_NAME = /^(?:myco-|mt-)/;
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
-const CLEANUP_RETRIES = 30;
+const CLEANUP_RETRIES = Number(process.env.MYCO_TEST_CLEANUP_RETRIES ?? 30);
+if (!Number.isSafeInteger(CLEANUP_RETRIES) || CLEANUP_RETRIES < 0) throw new Error('Invalid MYCO_TEST_CLEANUP_RETRIES');
+const CLEANUP_RETRY_DELAY_MS = 100;
+const cleanupWait = new Int32Array(new SharedArrayBuffer(4));
 
 function ownerPid(root) {
   try {
@@ -33,18 +37,34 @@ function alive(pid) {
   }
 }
 
+// Retired roots leave the leak-scan namespace before their owner marker is removed.
+function removeRunRoot(root) {
+  const retired = path.join(path.dirname(root), `.mt-cleanup-${process.pid}-${path.basename(root)}`);
+  const target = RETIRED_NAME.test(path.basename(root)) ? root : retired;
+  if (target !== root) {
+    for (let attempt = 0; ; attempt += 1) {
+      try { fs.renameSync(root, target); break; }
+      catch (error) {
+        if (process.platform !== 'win32' || !['EBUSY', 'EPERM', 'EACCES'].includes(error.code) || attempt >= CLEANUP_RETRIES) throw error;
+        Atomics.wait(cleanupWait, 0, 0, (attempt + 1) * CLEANUP_RETRY_DELAY_MS);
+      }
+    }
+  }
+  fs.rmSync(target, { recursive: true, force: true, maxRetries: CLEANUP_RETRIES });
+}
+
 export function sweepStaleRunRoots(parent) {
   let swept = 0;
   for (const name of fs.readdirSync(parent)) {
-    if (!ROOT_NAME.test(name)) continue;
+    const retired = RETIRED_NAME.exec(name);
+    if (!ROOT_NAME.test(name) && !retired) continue;
     const root = path.join(parent, name);
     try {
       if (!fs.lstatSync(root).isDirectory()) continue;
-      const pid = ownerPid(root);
+      const pid = retired ? Number(retired[1]) : ownerPid(root);
+      if (pid !== null && !Number.isSafeInteger(pid)) continue;
       if (pid === null || alive(pid) !== false) continue;
-      const claimed = path.join(parent, `mt-sweep-${process.pid}-${swept}`);
-      fs.renameSync(root, claimed);
-      fs.rmSync(claimed, { recursive: true, force: true, maxRetries: 3 });
+      removeRunRoot(root);
       swept += 1;
     } catch (error) {
       if (error.code === 'ENOENT') continue;
@@ -83,6 +103,9 @@ export function newTestTemps(before, startedAt, root) {
       // A live sibling runner's root belongs to that runner's process tree.
       const pid = ROOT_NAME.test(name) ? ownerPid(entry) : null;
       if (pid !== null && pid !== process.pid && alive(pid)) continue;
+      // A sibling may retire between the directory listing and the owner read.
+      try { fs.lstatSync(entry); }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
       leaks.push(entry);
     }
   }
@@ -117,7 +140,7 @@ export function createTestTempRun({ parent = os.tmpdir(), directories = systemTe
         return leaks;
       } finally {
         try {
-          fs.rmSync(root, { recursive: true, force: true, maxRetries: CLEANUP_RETRIES });
+          removeRunRoot(root);
         } catch (error) {
           if (process.platform === 'win32' && error.code === 'EBUSY') {
             try { console.error(`[run-bun-tests] locked file ${error.path}: ${describeWindowsFileLock(error.path)}`); }

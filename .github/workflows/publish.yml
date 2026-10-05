@@ -10,10 +10,22 @@ on:
       - 'myco-shared/v*.*.*-*'
 
 permissions:
+  actions: read
   contents: write
   id-token: write
 
 jobs:
+  require-ci:
+    name: Require CI for tagged commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require the canonical CI aggregate on main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/require-release-ci.mjs
+
   validate-tag:
     name: Validate Release Tag
     runs-on: ubuntu-latest
@@ -451,7 +463,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [validate-tag, build]
+    needs: [validate-tag, build, require-ci]
     # build runs for all tag prefixes via its always() gate; this gate
     # carries that override forward. myco-shared is internal — we skip
     # the GitHub Release UI for it but still let publish run.
@@ -459,6 +471,7 @@ jobs:
       always() &&
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
+      needs.require-ci.result == 'success' &&
       needs.validate-tag.outputs.tag_prefix != 'myco-shared'
     steps:
       - uses: actions/checkout@v7
@@ -682,15 +695,14 @@ jobs:
   publish:
     name: Publish to npmjs.org
     runs-on: ubuntu-latest
-    needs: [validate-tag, build, create-release]
+    needs: [validate-tag, build, create-release, require-ci]
     environment: npm-publish
-    # publish only depends on the npm-package artifact from build.
-    # create-release is decorative (GitHub Release UI) and may be
-    # intentionally skipped (e.g. internal packages). Tolerate that.
+    # Build supplies the npm tarballs. Internal packages skip the GitHub Release.
     if: |
       always() &&
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
+      needs.require-ci.result == 'success' &&
       (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     steps:
       - uses: actions/setup-node@v7
