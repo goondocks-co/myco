@@ -7,6 +7,7 @@ import { TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
 import { SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { authRow, noMemberRow } from './helpers/rows.js';
+import { sqliteEnv } from './helpers/fixtures.js';
 
 /** The two principals the revoke path dispatches on. */
 const ADMIN = { id: 'mem_machine_1', label: 'machine_1', role: 'admin' as const };
@@ -71,19 +72,20 @@ describe('member tokens', () => {
     expect(await revokeMemberLineage(recordingDb(0).db, 'mt_missing', 9_000, 'mem_machine_1')).toEqual({ revoked: 0 });
   });
 
-  it('revokes the whole lineage of the named credential in one statement, reporting whether any live row matched', async () => {
-    const { db, calls } = recordingDb(2);
-    expect(await revokeCredentialAsMember(db, ADMIN, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_1' });
-    expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toMatch(/UPDATE member_credentials SET revoked_at = \?, revoked_by = \?\s+WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL$/);
-    expect(calls[0].params).toEqual([9_000, 'mem_machine_1', 'mt_1']);
-    expect(await revokeCredentialAsMember(recordingDb(0).db, ADMIN, 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: 'mem_machine_1' });
-
-    // A member reaches only its own: the statement carries the member id as a predicate, not just as attribution.
-    const asMember = recordingDb();
-    expect(await revokeCredentialAsMember(asMember.db, MEMBER, 'mt_1', 9_000)).toEqual({ revoked: true, revokedBy: 'mem_machine_2' });
-    expect(asMember.calls[0].sql).toMatch(/WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = \?\) AND revoked_at IS NULL AND member_id = \?$/);
-    expect(asMember.calls[0].params).toEqual([9_000, 'mem_machine_2', 'mt_1', 'mem_machine_2']);
+  it('revokes an admitted lineage, preserves other members for ordinary callers, and refuses unknown credentials', async () => {
+    const e = sqliteEnv();
+    try {
+      e.sqlite.run("UPDATE members SET role='member' WHERE id='mem_machine_2'");
+      const own = await issueMemberToken(e.db, { memberId: MEMBER.id, machineId: 'machine_2' }, 1_000);
+      const successor = await issueMemberToken(e.db, { memberId: MEMBER.id, machineId: 'machine_2' }, 2_000,
+        { predecessorId: own.tokenId, lineageRoot: own.tokenId, lineageStartedAt: 1_000 });
+      const other = await issueMemberToken(e.db, { memberId: ADMIN.id, machineId: 'machine_1' }, 1_000);
+      expect(await revokeCredentialAsMember(e.db, MEMBER, other.tokenId, 9_000)).toEqual({ revoked: false, revokedBy: MEMBER.id });
+      expect(await revokeCredentialAsMember(e.db, MEMBER, successor.tokenId, 9_000)).toEqual({ revoked: true, revokedBy: MEMBER.id });
+      expect(e.sqlite.query('SELECT id FROM member_credentials WHERE revoked_by = ? ORDER BY id').all(MEMBER.id)).toEqual([own.tokenId, successor.tokenId].sort().map(id => ({ id })));
+      expect(await revokeCredentialAsMember(e.db, ADMIN, other.tokenId, 9_000)).toEqual({ revoked: true, revokedBy: ADMIN.id });
+      expect(await revokeCredentialAsMember(e.db, ADMIN, 'mt_missing', 9_000)).toEqual({ revoked: false, revokedBy: ADMIN.id });
+    } finally { e.sqlite.close(); }
   });
 
   it('authenticates a live token digest and returns its bound machine, lifetime, lineage, predecessor and first use', async () => {

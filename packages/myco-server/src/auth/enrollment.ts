@@ -22,6 +22,19 @@ import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
 import { asMemberRole, MEMBER_ROLES_SQL, type MemberRole } from './roles.js';
+import { authorize, enrollmentAuthorityPredicate, enrollmentResource, memberSubject } from './authorization.js';
+
+export type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
+
+export class EnrollmentAuthorizationError extends Error {
+  constructor() { super('enrollment authority refused'); }
+}
+
+function enrollmentIssuerMember(issuer: EnrollmentIssuer): string | null {
+  if (issuer?.kind === 'operator') return null;
+  if (issuer?.kind === 'member' && typeof issuer.memberId === 'string' && issuer.memberId) return issuer.memberId;
+  throw new EnrollmentAuthorizationError();
+}
 
 /** Bytes of entropy in an enrollment key. 32 = 256 bits. */
 export const ENROLLMENT_KEY_BYTES = 32;
@@ -63,35 +76,45 @@ export interface IssuedEnrollmentAuthority {
  * own member, so a stolen key cannot be redirected at somebody else's identity.
  *
  * `role` and `projectId` are fixed at the same moment and for the same reason.
- * `role` is what the join grants and has no default anywhere: every caller
- * states it. `projectId` binds the key to one Project — a sandbox needs one to
+ * `role` is required and grants a new member that role. An existing member keeps
+ * their current role and ownership authority. `projectId` binds the key to one Project — a sandbox needs one to
  * write its registry entry, a person joining the Deployment needs none — and a
  * key that carries none is refused the binding rather than given a guess.
  */
 export function enrollmentInsert(
-  db: RelationalStore, nowMs: number, ttlMs: number, createdByMember: string | null, keyHash: string, id: string,
+  db: RelationalStore, nowMs: number, ttlMs: number, issuer: EnrollmentIssuer, keyHash: string, id: string,
   role: MemberRole, memberId: string | null = null, projectId: string | null = null,
 ): { statement: PreparedStatement; expiresAt: number } {
+  const createdByMember = enrollmentIssuerMember(issuer);
   const expiresAt = nowMs + ttlMs;
   const statement = db
-    .prepare(`INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member, member_id, role, project_id)
-              VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`)
-    .bind(id, keyHash, nowMs, expiresAt, createdByMember, memberId, role, projectId);
+    .prepare(`WITH candidate AS (SELECT ? AS created_by_member, ? AS member_id, ? AS role)
+              INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member, member_id, role, project_id)
+              SELECT ?, ?, ?, ?, NULL, NULL, NULL, candidate.created_by_member, candidate.member_id, candidate.role, ?
+                FROM candidate WHERE ${enrollmentAuthorityPredicate('candidate')}`)
+    .bind(createdByMember, memberId, role, id, keyHash, nowMs, expiresAt, projectId);
   return { statement, expiresAt };
 }
 
-/** Sole minter of enrollment authorities. Stores the digest; returns the raw key once. `role` is required: an invitation always states what it grants. */
+/** Sole enrollment minter. Stores the digest and returns the raw key once. `role` grants a new member's authority; existing members keep their authority. */
 export async function issueEnrollmentAuthority(
   db: RelationalStore, nowMs: number,
-  options: { role: MemberRole; ttlMs?: number; createdByMember?: string | null; memberId?: string | null; projectId?: string | null },
+  options: { role: MemberRole; issuer: EnrollmentIssuer; ttlMs?: number; memberId?: string | null; projectId?: string | null },
 ): Promise<IssuedEnrollmentAuthority> {
+  const createdByMember = enrollmentIssuerMember(options.issuer);
+  const issuer: EnrollmentIssuer = createdByMember === null ? { kind: 'operator' } : { kind: 'member', memberId: createdByMember };
+  if (createdByMember !== null) {
+    const subject = await memberSubject(db, createdByMember, 'http');
+    const resource = await enrollmentResource(db, options.memberId ?? null, options.role);
+    if (!authorize(subject, options.role === 'admin' ? 'owner' : 'admin', resource)) throw new EnrollmentAuthorizationError();
+  }
   const key = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const id = `${ENROLLMENT_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_ID_BYTES)))}`;
   const { statement, expiresAt } = enrollmentInsert(
-    db, nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, options.createdByMember ?? null, await sha256Hex(key), id,
+    db, nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, issuer, await sha256Hex(key), id,
     options.role, options.memberId ?? null, options.projectId ?? null,
   );
-  await statement.run();
+  if ((await statement.run()).meta.changes !== 1) throw new EnrollmentAuthorizationError();
   return { key, id, expiresAt };
 }
 
@@ -115,7 +138,8 @@ export function enrollmentAdmission(
             ${opts.forProject === true ? 'AND project_id IS NOT NULL' : ''}
             ${target === null ? '' : 'AND COALESCE(member_id, ?) = ?'}
             AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
-            AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})`,
+            AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})
+            AND ${enrollmentAuthorityPredicate('enrollment_authorities')}`,
     params: target === null ? [keyHash, nowMs] : [keyHash, nowMs, target, target],
   };
 }
@@ -192,7 +216,7 @@ export async function explainEnrollment(
   if (!ENROLLMENT_KEY_PATTERN.test(presentedKey)) return { admissible: false, reason: 'unknown' };
   const row = await db
     .prepare(`SELECT a.used_at, a.revoked_at, a.expires_at, a.member_id, a.role, a.project_id,
-                     ((a.member_id IS NOT NULL AND NOT ${memberLive('a.member_id')}) OR (a.created_by_member IS NOT NULL AND NOT ${memberLive('a.created_by_member')})) AS voided
+                     NOT (${enrollmentAuthorityPredicate('a')}) AS voided
                 FROM enrollment_authorities a WHERE a.key_hash = ?`)
     .bind(await sha256Hex(presentedKey))
     .first<{ used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; role: string; project_id: string | null; voided: number }>();
@@ -239,7 +263,7 @@ export async function spendEnrollmentAuthority(
   // The read only explains a refusal. An invitation whose member, or whose minter, is revoked is void: it answers as revoked.
   const row = await db
     .prepare(`SELECT a.id, a.used_at, a.revoked_at, a.expires_at, a.member_id, a.role, a.project_id,
-                     ((a.member_id IS NOT NULL AND NOT ${memberLive('a.member_id')}) OR (a.created_by_member IS NOT NULL AND NOT ${memberLive('a.created_by_member')})) AS voided
+                     NOT (${enrollmentAuthorityPredicate('a')}) AS voided
                 FROM enrollment_authorities a WHERE a.key_hash = ?`)
     .bind(keyHash)
     .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; role: string; project_id: string | null; voided: number }>();
@@ -295,6 +319,7 @@ export async function listInvitations(db: RelationalStore, nowMs: number): Promi
                WHERE used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
                  AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
                  AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})
+                 AND ${enrollmentAuthorityPredicate('enrollment_authorities')}
                ORDER BY created_at DESC, id DESC`)
     .bind(nowMs)
     .all<Record<string, unknown>>();

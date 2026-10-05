@@ -53,7 +53,7 @@ describe('myco login sets up the agents on this machine', () => {
     ...extra,
   });
   const invite = async (rig: ReturnType<typeof unjoinedRig>, projectId?: string) =>
-    `https://s/join#${(await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', ...(projectId === undefined ? {} : { projectId }) })).key}`;
+    `https://s/join#${(await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', ...(projectId === undefined ? {} : { projectId }) })).key}`;
   const read = (file: string) => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
 
   it('provisions every agent it detects for the Deployment, with no project connected yet, and says so', async () => {

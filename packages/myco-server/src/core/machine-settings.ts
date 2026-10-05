@@ -219,7 +219,7 @@ export async function machineBlockFor(
 
 /**
  * Connect one repository of a machine: `project` is the project it joins, or `''` for the one it resolves by its remote
- * or creates. Written on the Deployment's authority, which the caller has checked; the machine's other entries stand.
+ * or creates. The claimant must still hold the machine when the write lands; the machine's other entries stand.
  */
 export async function connectMachineRoot(db: RelationalStore, machineId: string, rootKey: string, project: string, actor: string, now: number): Promise<MachineWrite> {
   const current = (await readMachineSettings(db, machineId)).find((l) => l.leaf === CONNECT_ROOTS_LEAF)?.value;
@@ -228,9 +228,9 @@ export async function connectMachineRoot(db: RelationalStore, machineId: string,
   if (violation !== null) return { applied: false, reason: 'invalid_value', detail: violation };
   const written = await db.prepare(
     `INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
-       SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ?)
+       SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)
        ON CONFLICT (machine_id, leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-  ).bind(machineId, CONNECT_ROOTS_LEAF, JSON.stringify(next), now, actor, machineId).run();
+  ).bind(machineId, CONNECT_ROOTS_LEAF, JSON.stringify(next), now, actor, machineId, actor).run();
   return written.meta.changes > 0 ? { applied: true } : { applied: false, reason: 'absent' };
 }
 
@@ -239,9 +239,11 @@ export async function disconnectMachineRoot(db: RelationalStore, machineId: stri
   const current = (await readMachineSettings(db, machineId)).find((l) => l.leaf === CONNECT_ROOTS_LEAF)?.value as Record<string, string> | undefined;
   if (current === undefined || !Object.prototype.hasOwnProperty.call(current, rootKey)) return false;
   const next = Object.fromEntries(Object.entries(current).filter(([key]) => key !== rootKey));
-  await db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ? WHERE machine_id = ? AND leaf = ?`)
-    .bind(JSON.stringify(next), now, actor, machineId, CONNECT_ROOTS_LEAF).run();
-  return true;
+  const written = await db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ?
+    WHERE machine_id = ? AND leaf = ?
+      AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)`)
+    .bind(JSON.stringify(next), now, actor, machineId, CONNECT_ROOTS_LEAF, machineId, actor).run();
+  return written.meta.changes === 1;
 }
 
 /** What a machine is told to connect a repository to: a project, `''` for any, or null where it is told nothing. */

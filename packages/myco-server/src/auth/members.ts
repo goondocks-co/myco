@@ -6,7 +6,7 @@ import { refusal, type Refusal } from '../telemetry.js';
 import { issueIdentityLinkAuthority } from './identity-link.js';
 
 /** A body that is not JSON, not an object, or carries a field: refused by name, in the `persisted` shape. */
-function emptyBodyRefusal(body: string): Refusal | null {
+export function emptyBodyRefusal(body: string): Refusal | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);

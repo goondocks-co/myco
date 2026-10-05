@@ -60,6 +60,8 @@ export interface RunPrincipal {
   runContext: string | null;
   tokenId: string;
   allow: RunAllowlist;
+  /** The current attempt's start, resolved when the credential is admitted. */
+  attempt?: number;
   /** How much of the Project one pass of this run may read. */
   window: ReadWindow;
 }
@@ -104,6 +106,7 @@ export function runToolContext(env: ServerEnv, ctx: RunContext): ToolContext {
     principal: {
       kind: 'run', runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run),
       runContext: run.runContext, tokenId: ctx.tokenId,
+      attempt: run.resumedAt ?? run.startedAt ?? 0,
       allow: runAllowlist(taskTools(run.task), { dryRun: run.dryRun === 1 }),
       window: readWindowFor(run.task),
     },

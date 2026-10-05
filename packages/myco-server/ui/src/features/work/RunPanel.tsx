@@ -171,6 +171,7 @@ function WhatItRead({ answer, projectId, now, latest }: { answer: RunDetailAnswe
 
 /** The run's headline: what came of it, or where it stands while it has not finished. */
 function headlineOf({ run, read, produced }: RunDetailAnswer): string {
+  if (run.errorCode === 'run_cancelled') return 'Cancelled';
   if (run.status === 'skipped') return 'Held off';
   if (run.status === 'queued') return 'Waiting to start';
   if (run.status === 'running' || run.status === 'claimed') return 'Running now';

@@ -4,7 +4,7 @@
  * the one its hooks capture on this machine — never the row's: a session
  * belongs to the machine that captured it, and an event naming another
  * machine's session is refused as capture into it would be. A status-only
- * save is an administrative edit by the caller's member, the same write the
+ * save is a shared editorial edit by the caller's member, the same write the
  * dashboard makes; it names the session for the record and writes the row.
  */
 import { changePlanStatus, savePlan } from '../../core/plans.js';
@@ -27,6 +27,9 @@ export interface PlanSummary {
 }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
+
+export const isPlanStatusOnly = (input: ToolInput): input is ToolInput & { id: string; status: string } => str(input.id) !== undefined && str(input.status) !== undefined
+  && str(input.content) === undefined && str(input.title) === undefined && !Array.isArray(input.tags);
 
 function summary(row: ProjectPlanRow): PlanSummary {
   return { id: row.planKey, title: row.title, status: row.status, progress: row.progress, prompt_id: row.promptId, tags: row.tags, created_at: row.createdAt };
@@ -85,13 +88,12 @@ async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promi
   const title = str(input.title);
   const tags = Array.isArray(input.tags) ? input.tags.map(String) : undefined;
 
-  // A save that names a plan and changes nothing but its status is the administrative edit, not a capture event.
-  if (id !== undefined && status !== undefined && content === undefined && title === undefined && tags === undefined) {
-    const existing = await getPlan(ctx.env.db, scope, id);
+  if (isPlanStatusOnly(input)) {
+    const existing = await getPlan(ctx.env.db, scope, input.id);
     if (existing === null) return failure('Plan not found');
-    const row = await changePlanStatus(ctx.env.db, scope, id, status, member.memberId, ctx.now);
+    const row = await changePlanStatus(ctx.env.db, scope, input.id, input.status, member.memberId, ctx.now);
     if (row === null) return failure('Plan not found');
-    return saved(row, id);
+    return saved(row, input.id);
   }
 
   const outcome = await savePlan(ctx.env, member, scope, {

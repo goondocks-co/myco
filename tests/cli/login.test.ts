@@ -61,7 +61,7 @@ describe('myco login', () => {
 
   it('redeems a Project-bound link, binding that Project to the named root', async () => {
     const rig = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'admin', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'admin', projectId: 'proj_1' });
 
     expect(await run([`https://s/join#${issued.key}`, '--root', root], deps(rig))).toBe(true);
 
@@ -73,12 +73,12 @@ describe('myco login', () => {
 
   it('caches the settings the Deployment holds for this machine as it signs in (#1393)', async () => {
     const rig = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     expect(await run([`https://s/join#${issued.key}`, '--root', root], deps(rig))).toBe(true);
     // An admin sets this machine's plan folders; the next sign-in on it caches them before any session asks.
     rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES ('machine_person', 'capture.plan_dirs', '["docs/plans"]', 1, 'mem_admin')`);
     fs.rmSync(machineSettingsPath('https://s', home), { force: true });
-    const again = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1', memberId: readDeploymentMembership('https://s', home)!.memberId! });
+    const again = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1', memberId: readDeploymentMembership('https://s', home)!.memberId! });
     expect(await run([`https://s/join#${again.key}`, '--root', root], deps(rig))).toBe(true);
     expect(machinePlanDirs('https://s', home)).toEqual(['docs/plans']);
   });
@@ -88,7 +88,7 @@ describe('myco login', () => {
     const at = { s: unjoinedRig(), t: unjoinedRig(), u: unjoinedRig() };
     const fetchAll = ((input: RequestInfo | URL, init?: RequestInit) => at[new URL(new Request(input, init).url).host as 's' | 't' | 'u'].fetch(input as never, init)) as typeof fetch;
     const rig = { ...at.s, fetch: fetchAll } as ReturnType<typeof unjoinedRig>;
-    const link = async (host: 's' | 't' | 'u') => `https://${host}/join#${(await issueEnrollmentAuthority(at[host].env.db, Date.now(), { role: 'member', projectId: null })).key}`;
+    const link = async (host: 's' | 't' | 'u') => `https://${host}/join#${(await issueEnrollmentAuthority(at[host].env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: null })).key}`;
     expect(await run([await link('s')], deps(rig))).toBe(true);
     expect(readDefaultDeployment(home)?.serverUrl).toBe('https://s');
     expect(await run([await link('t')], deps(rig))).toBe(true);
@@ -100,7 +100,7 @@ describe('myco login', () => {
 
   it('signs in on a link that names no Project, writing the membership and NO binding', async () => {
     const rig = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
 
     expect(await run([`https://s/join#${issued.key}`, '--root', root], deps(rig))).toBe(true);
 
@@ -126,12 +126,12 @@ describe('myco login', () => {
     const labelOf = (rig: ReturnType<typeof unjoinedRig>): unknown =>
       (rig.env.sqlite.query(`SELECT runtime_label FROM member_credentials WHERE machine_id = 'machine_person' ORDER BY issued_at DESC, id DESC`).get() as { runtime_label: unknown }).runtime_label;
     const named = unjoinedRig();
-    const first = await issueEnrollmentAuthority(named.env.db, Date.now(), { role: 'member' });
+    const first = await issueEnrollmentAuthority(named.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     expect(await run([`https://s/join#${first.key}`, '--root', root], { ...deps(named), hostname: () => 'Chris’s MacBook Pro.local' })).toBe(true);
     expect(labelOf(named)).toBe('Chriss-MacBook-Pro');
 
     const unnamed = unjoinedRig();
-    const second = await issueEnrollmentAuthority(unnamed.env.db, Date.now(), { role: 'member' });
+    const second = await issueEnrollmentAuthority(unnamed.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     expect(await run([`https://s/join#${second.key}`, '--root', root], { ...deps(unnamed), hostname: () => '…' })).toBe(true);
     expect(labelOf(unnamed)).toBe(null);
   });
@@ -139,7 +139,7 @@ describe('myco login', () => {
   it('keeps a worker running at login for an administrator who signs in, and installs none for a member', async () => {
     const admin = unjoinedRig();
     const platform = recordingPlatform();
-    const adminKey = (await issueEnrollmentAuthority(admin.env.db, Date.now(), { role: 'admin' })).key;
+    const adminKey = (await issueEnrollmentAuthority(admin.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'admin' })).key;
     expect(await run([`https://s/join#${adminKey}`, '--root', root], deps(admin, workerDeps(platform)))).toBe(true);
     expect(workerUnits()).toHaveLength(1);
     expect(platform.running.size).toBe(1);
@@ -148,7 +148,7 @@ describe('myco login', () => {
     fs.rmSync(path.join(home, 'Library'), { recursive: true, force: true });
     out.length = 0;
     const member = unjoinedRig();
-    const memberKey = (await issueEnrollmentAuthority(member.env.db, Date.now(), { role: 'member' })).key;
+    const memberKey = (await issueEnrollmentAuthority(member.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' })).key;
     const untouched = { ...workerDeps(), runner: () => { throw new Error('no platform command runs for a member'); } };
     expect(await run([`https://t/join#${memberKey}`, '--root', root], deps(member, untouched))).toBe(true);
     expect(workerUnits()).toEqual([]);
@@ -157,7 +157,7 @@ describe('myco login', () => {
 
   it('reports a spent link as spent, and writes nothing', async () => {
     const rig = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     expect(await run([`https://s/join#${issued.key}`], deps(rig))).toBe(true);
 
     out.length = 0;
@@ -167,18 +167,18 @@ describe('myco login', () => {
 
   it('tells a machine its member already holds to ask for an invitation for that member, never a new one (#1382)', async () => {
     const rig = unjoinedRig();
-    const first = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    const first = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     expect(await run([`https://s/join#${first.key}`], deps(rig))).toBe(true);
 
     // A second invitation for a new member: this machine's identity is the first member's.
-    const fresh = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    const fresh = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     err.length = 0;
     expect(await run([`https://s/join#${fresh.key}`], deps(rig))).toBe(false);
     expect(err.join('\n')).toContain(`this machine already belongs to a member of https://s (identity_claimed) — ${REJOIN_HINT}. ${MACHINE_IDENTITY_NOTE}.`);
 
     // The invitation the remedy names, for the member already here, signs it in.
     const memberId = (rig.env.sqlite.query('SELECT member_id FROM member_credentials').get() as { member_id: string }).member_id;
-    const forMember = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', memberId });
+    const forMember = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', memberId });
     expect(await run([`https://s/join#${forMember.key}`], deps(rig))).toBe(true);
   });
 

@@ -7,7 +7,7 @@ export const LAUNCH_REFUSED_ERROR = 'the machine could not start the task';
 /** How a run whose closing reports carry no audit is recorded (`core/run-postconditions.ts`). */
 export const RUN_CLOSE_AUDIT_ERROR = 'the run ended without its audit';
 
-export type RunErrorCode = RunControlRefusalCode | 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit'
+export type RunErrorCode = RunControlRefusalCode | 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit' | 'run_cancelled'
   | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed'
   | 'agent_failed' | 'agent_launch_failed' | 'agent_protocol_error' | 'agent_permission_refused' | 'agent_tools_unlisted' | 'agent_tools_unused' | 'run_failed';
 

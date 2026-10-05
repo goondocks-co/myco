@@ -164,7 +164,7 @@ describe('a session start', () => {
     scratch.push(fresh);
     process.env.MYCO_HOME = fresh;
     resetMachineIdCache();
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     try {
       const start = await runHook('session-start', { session_id: 'sess-joined', transcript_path: transcript('sess-joined'), cwd: process.cwd() }, { fetch: rig.fetch, credential: 'env' });

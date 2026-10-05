@@ -28,29 +28,32 @@ async function envFor(token: string, opts: EnvOpts = {}) {
   const member = authRow({
     expires_at: opts.expiresAt ?? Date.now() + 1_000_000,
     revoked_at: opts.revokedAt ?? null,
+    member_live: 'mem_1',
     ...version,
   });
-  const nobody = noMemberRow({ ...version });
-  const statement = () => ({
-    first: async () => { if (opts.authThrows) throw new Error('D1_ERROR: boom'); return null; },
+  const nobody = noMemberRow({ member_live: null, ...version });
+  const statement = (sql: string, values: unknown[] = []) => ({
+    sql,
+    bind: (...bound: unknown[]) => statement(sql, bound),
+    first: async () => {
+      if (opts.authThrows) throw new Error('D1_ERROR: boom');
+      if (sql.includes("s.key = 'version'")) {
+        if (opts.schemaVersion === null) return null;
+        return values[0] === tokenHash ? member : nobody;
+      }
+      if (sql.includes("key = 'deployment_id'")) return { value: 'dep_pipeline_fixture' };
+      if (sql === 'SELECT member_id FROM member_credentials WHERE id = ?') return values[0] === member.id ? { member_id: 'mem_1' } : null;
+      if (sql.includes('FROM members m') && sql.includes('deployment_ownership')) {
+        return values[0] === 'mem_1' ? { role: 'member', revoked_at: null, owner: null } : null;
+      }
+      if (sql.includes('SELECT 1 AS present FROM projects')) return values[0] === 'proj_1' ? { present: 1 } : null;
+      return null;
+    },
     run: async () => { if (opts.writeThrows) throw new Error('D1_ERROR: boom'); return { results: [], meta: { changes: 1 } }; },
   });
   return {
     MYCO_DB: {
-      prepare: (sql: string) => ({
-        ...statement(),
-        sql,
-        bind: (h: string) => ({
-          ...statement(),
-          sql,
-          first: async () => {
-            if (opts.authThrows) throw new Error('D1_ERROR: boom');
-            if (!sql.includes('schema_meta')) return null;
-            if (opts.schemaVersion === null) return null;
-            return h === tokenHash ? member : nobody;
-          },
-        }),
-      }),
+      prepare: (sql: string) => statement(sql),
       // The credential is live: the one row a capture's admission reads back answers so.
       batch: async (stmts: { sql?: string }[]) => { if (opts.writeThrows) throw new Error('D1_ERROR: boom'); return stmts.map((st) => ({ results: st.sql?.includes(' AS live') ? [{ live: 1 }] : [], meta: { changes: 1 } })); },
     },

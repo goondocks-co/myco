@@ -49,7 +49,7 @@ describe('what an invitation grants', () => {
   it('admits the joiner at the role the invitation names, and records it on the member', async () => {
     const r = rig();
     for (const [role, machineId] of [['admin', 'machine_admin'], ['member', 'machine_member']] as const) {
-      const key = await issueEnrollmentAuthority(r.e.db, NOW, { role });
+      const key = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role });
       const body = await json(await r.join({ key: key.key, machineId }));
       expect({ role, joined: body.joined, answered: body.role }).toEqual({ role, joined: true, answered: role });
       expect(r.e.sqlite.query(`SELECT role FROM members WHERE id = ?`).get(body.memberId as string)).toEqual({ role });
@@ -58,7 +58,7 @@ describe('what an invitation grants', () => {
 
   it('refuses a role named at join time: the invitation decides, never the joiner', async () => {
     const r = rig();
-    const key = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const key = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     const refused = await json(await r.join({ key: key.key, machineId: 'machine_x', role: 'admin' }));
     expect({ joined: refused.joined, code: refused.code }).toEqual({ joined: false, code: 'unknown_field' });
     // The refusal left the invitation unspent: it still works.
@@ -67,8 +67,8 @@ describe('what an invitation grants', () => {
 
   it('adds a runtime at the role its member already holds, and ANSWERS that role rather than the invitation\'s', async () => {
     const r = rig();
-    const first = await json(await r.join({ key: (await issueEnrollmentAuthority(r.e.db, NOW, { role: 'admin' })).key, machineId: 'machine_1a' }));
-    const second = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member', memberId: first.memberId as string });
+    const first = await json(await r.join({ key: (await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'admin' })).key, machineId: 'machine_1a' }));
+    const second = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member', memberId: first.memberId as string });
     const again = await json(await r.join({ key: second.key, machineId: 'machine_1b' }));
 
     expect(again.memberId).toBe(first.memberId);
@@ -80,7 +80,7 @@ describe('what an invitation grants', () => {
 
   it('refuses an invitation whose stored role is outside the grammar, and leaves it UNSPENT', async () => {
     const r = rig();
-    const bent = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const bent = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     r.e.sqlite.query(`UPDATE enrollment_authorities SET role = 'owner' WHERE id = ?`).run(bent.id);
 
     const refused = await json(await r.join({ key: bent.key, machineId: 'machine_bent' }));
@@ -97,16 +97,16 @@ describe('what an invitation grants', () => {
 describe('what an invitation binds', () => {
   it('answers the Project the invitation names, and none when it names none', async () => {
     const r = rig();
-    const bound = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member', projectId: 'proj_1' });
+    const bound = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     expect((await json(await r.join({ key: bound.key, machineId: 'machine_b1', forProject: true }))).projectId).toBe('proj_1');
 
-    const free = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const free = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     expect((await json(await r.join({ key: free.key, machineId: 'machine_b2' }))).projectId).toBe(null);
   });
 
   it('refuses a joiner that needs a Project when the invitation carries none, WITHOUT spending it', async () => {
     const r = rig();
-    const free = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const free = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
 
     const refused = await json(await r.join({ key: free.key, machineId: 'machine_np', forProject: true }));
     expect({ joined: refused.joined, code: refused.code }).toEqual({ joined: false, code: 'enrollment_no_project' });
@@ -120,7 +120,7 @@ describe('what an invitation binds', () => {
 
   it('names an expired invitation expired even when the joiner needs a Project it also lacks', async () => {
     const r = rig();
-    const stale = await issueEnrollmentAuthority(r.e.db, NOW - ENROLLMENT_TTL_MS * 2, { role: 'member' });
+    const stale = await issueEnrollmentAuthority(r.e.db, NOW - ENROLLMENT_TTL_MS * 2, { issuer: { kind: 'operator' }, role: 'member' });
     const refused = await json(await r.join({ key: stale.key, machineId: 'machine_stale', forProject: true }));
     expect(refused.code).toBe('enrollment_expired');
   });
@@ -186,15 +186,19 @@ describe('who administers membership', () => {
     expect(live(theirs.tokenId).revoked_at).not.toBe(null);
   });
 
-  it('mints at member unless an admin asks for an admin, and refuses any other role', async () => {
+  it('mints at member, reserves admin grants to the owner, and refuses any other role', async () => {
     const r = rig();
     expect(await json(await r.call(await asOwnerPost('/api/enrollment', {})))).toMatchObject({ role: 'member', projectId: null });
+    expect((await r.call(await asOwnerPost('/api/enrollment', { role: 'admin' }))).status).toBe(403);
+    expect(r.authorities()).toHaveLength(1);
+    r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
     expect(await json(await r.call(await asOwnerPost('/api/enrollment', { role: 'admin' })))).toMatchObject({ role: 'admin' });
     expect((await r.call(await asOwnerPost('/api/enrollment', { role: 'owner' }))).status).toBe(400);
   });
 
   it('mints against a known Project only, and lists what each live invitation grants and binds', async () => {
     const r = rig();
+    r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
     expect((await r.call(await asOwnerPost('/api/enrollment', { projectId: 'no_such_project' }))).status).toBe(404);
     expect(await json(await r.call(await asOwnerPost('/api/enrollment', { projectId: 'proj_1', role: 'admin' })))).toMatchObject({ role: 'admin', projectId: 'proj_1' });
 
@@ -214,19 +218,19 @@ describe('invite-expiry', () => {
     const r = rig();
     const old = NOW - ENROLLMENT_RETENTION_MS - 1;
 
-    const spentLongAgo = await issueEnrollmentAuthority(r.e.db, old, { role: 'member' });
+    const spentLongAgo = await issueEnrollmentAuthority(r.e.db, old, { issuer: { kind: 'operator' }, role: 'member' });
     r.e.sqlite.query(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = 'm' WHERE id = ?`).run(old, spentLongAgo.id);
-    const revokedLongAgo = await issueEnrollmentAuthority(r.e.db, old, { role: 'member' });
+    const revokedLongAgo = await issueEnrollmentAuthority(r.e.db, old, { issuer: { kind: 'operator' }, role: 'member' });
     r.e.sqlite.query(`UPDATE enrollment_authorities SET revoked_at = ? WHERE id = ?`).run(old, revokedLongAgo.id);
     // Expired long ago, never spent: still finished, still reclaimable. The window is
     // measured from the moment it EXPIRED, not the moment of minting.
-    const expiredLongAgo = await issueEnrollmentAuthority(r.e.db, old - ENROLLMENT_TTL_MS, { role: 'member' });
+    const expiredLongAgo = await issueEnrollmentAuthority(r.e.db, old - ENROLLMENT_TTL_MS, { issuer: { kind: 'operator' }, role: 'member' });
     // Spent recently: audit material an operator may still be asking about.
-    const spentRecently = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const spentRecently = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     r.e.sqlite.query(`UPDATE enrollment_authorities SET used_at = ? WHERE id = ?`).run(NOW, spentRecently.id);
-    const live = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const live = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     // Unspent, minted long ago, with a TTL long enough that it has not expired.
-    const longLived = await issueEnrollmentAuthority(r.e.db, old, { role: 'member', ttlMs: ENROLLMENT_RETENTION_MS * 10 });
+    const longLived = await issueEnrollmentAuthority(r.e.db, old, { issuer: { kind: 'operator' }, role: 'member', ttlMs: ENROLLMENT_RETENTION_MS * 10 });
 
     expect(await inviteExpiry(r.e.serverEnv, NOW)).toBe(3);
     expect(r.authorities().sort()).toEqual([spentRecently.id, live.id, longLived.id].sort());
@@ -235,7 +239,7 @@ describe('invite-expiry', () => {
 
   it('reclaims nothing when nothing is finished, and a second pass over the same state removes nothing more', async () => {
     const r = rig();
-    const live = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const live = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     expect(await inviteExpiry(r.e.serverEnv, NOW)).toBe(0);
     expect(await inviteExpiry(r.e.serverEnv, NOW)).toBe(0);
     expect(r.authorities()).toEqual([live.id]);
@@ -243,7 +247,8 @@ describe('invite-expiry', () => {
 
   it('reclaims an authority revoked with its member, once that revocation is old enough', async () => {
     const r = rig();
-    const doomed = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2' });
+    r.e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
+    const doomed = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member', issuer: { kind: 'member', memberId: 'mem_machine_2' } });
     expect(await revokeEnrollmentAuthority(r.e.db, doomed.id, NOW - ENROLLMENT_RETENTION_MS - 1, 'mem_machine_1')).toEqual({ revoked: true });
     expect(await inviteExpiry(r.e.serverEnv, NOW)).toBe(1);
     expect(r.authorities()).toEqual([]);
@@ -255,7 +260,7 @@ describe('a join reaches the clock the tick reads', () => {
     const r = rig();
     expect(await lastActivityAt(r.e.db)).toBe(null);
 
-    const key = await issueEnrollmentAuthority(r.e.db, NOW, { role: 'member' });
+    const key = await issueEnrollmentAuthority(r.e.db, NOW, { issuer: { kind: 'operator' }, role: 'member' });
     expect((await json(await r.join({ key: key.key, machineId: 'machine_clock' }))).joined).toBe(true);
 
     const seen = await lastActivityAt(r.e.db);

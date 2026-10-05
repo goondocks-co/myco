@@ -11,6 +11,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { pruneUncaptured, UNCAPTURED_RETENTION_MS } from '@myco-server-worker/ingest/uncaptured.js';
+import { connectMachineRoot, disconnectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, PRINCIPAL, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 
@@ -133,10 +134,23 @@ describe('the dashboard', () => {
   it('lets a member connect their own machine\'s repository and no other member\'s, and forgets it once connected', async () => {
     const r = await seeded();
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, MEMBER_SUB)).status).toBe(404);
+    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, undefined, { projectId: 'proj_1' })).status).toBe(404);
+    expect(r.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get()).toEqual({ n: 0 });
+    expect(r.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM project_remotes WHERE remote = 'github.com/acme/members-repo'`).get()).toEqual({ n: 0 });
     expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB)).status).toBe(200);
     expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
     expect(r.fixture.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get()).toEqual({ value: JSON.stringify({ [KEY_B]: '' }) });
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, undefined)).status).toBe(200);
+  });
+
+  it('keeps the claimant check at the machine settings writer', async () => {
+    const r = await seeded();
+    expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', PRINCIPAL.id, Date.now())).toEqual({ applied: false, reason: 'absent' });
+    expect(r.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get()).toEqual({ n: 0 });
+    expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', MEMBER_PRINCIPAL.id, Date.now())).toEqual({ applied: true });
+    expect(await disconnectMachineRoot(r.fixture.db, 'machine_2', KEY_B, PRINCIPAL.id, Date.now())).toBe(false);
+    expect(r.fixture.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get())
+      .toEqual({ value: JSON.stringify({ [KEY_B]: 'proj_1' }) });
   });
 
   it('connects a repository to a named project and binds its remote there, and refuses a remote another project holds', async () => {
@@ -156,7 +170,7 @@ describe('the dashboard', () => {
     r.fixture.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('capture.auto_create_projects', 'false', 1, 'mem_machine_1')`);
     const asked = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB);
     expect({ status: asked.status, error: asked.body.error }).toEqual({ status: 400, error: 'auto_create_off' });
-    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, undefined)).status).toBe(400);
+    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, undefined)).status).toBe(404);
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, undefined)).status).toBe(200);
     // A remote a live project holds joins it, which starts no project: leaving the choice to Myco connects it.
     await r.machine(r.admin, '/members/projects/resolve', { rootKey: 'c'.repeat(16), label: 'holder', remote: 'https://github.com/acme/holder' });

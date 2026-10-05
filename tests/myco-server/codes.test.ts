@@ -94,26 +94,26 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   no_project: (r) => r.fetch(memberPost(r.t1.token, envelope({}), '/events', { [PROJECT_HEADER]: '' })),
   enrollment_unknown: (r) => r.join('u'.repeat(43)),
   identity_claimed: async (r) => {
-    const held = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
+    const held = await issueEnrollmentAuthority(r.e.db, r.now, { issuer: { kind: 'operator' }, role: 'member' });
     expect((await json(await r.join(held.key, 'machine_held'))).joined).toBe(true);
-    const other = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
+    const other = await issueEnrollmentAuthority(r.e.db, r.now, { issuer: { kind: 'operator' }, role: 'member' });
     return r.join(other.key, 'machine_held');
   },
   enrollment_used: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
+    const key = await issueEnrollmentAuthority(r.e.db, r.now, { issuer: { kind: 'operator' }, role: 'member' });
     expect((await json(await r.join(key.key, 'machine_used'))).joined).toBe(true);
     return r.join(key.key, 'machine_used2');
   },
   enrollment_expired: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2, { role: 'member' });
+    const key = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2, { issuer: { kind: 'operator' }, role: 'member' });
     return r.join(key.key, 'machine_expired');
   },
   enrollment_no_project: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
+    const key = await issueEnrollmentAuthority(r.e.db, r.now, { issuer: { kind: 'operator' }, role: 'member' });
     return r.join(key.key, 'machine_no_project', { forProject: true });
   },
   enrollment_revoked: async (r) => {
-    const key = await issueEnrollmentAuthority(r.e.db, r.now, { role: 'member' });
+    const key = await issueEnrollmentAuthority(r.e.db, r.now, { issuer: { kind: 'operator' }, role: 'member' });
     expect(await revokeEnrollmentAuthority(r.e.db, key.id, r.now, 'mem_machine_1')).toEqual({ revoked: true });
     return r.join(key.key, 'machine_revoked');
   },

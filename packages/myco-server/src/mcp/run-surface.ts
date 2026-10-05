@@ -25,7 +25,8 @@ import { ALWAYS_ALLOWED, isRunCall, RUN_TOOL_MAP, runAllowlist, type RunAllowlis
 import { narrowDefinitions } from './external.js';
 import { TOOL_DEFINITIONS, type ToolDefinition } from './definitions.js';
 import { RUN_DEFINITIONS, RUN_PROJECT_DESCRIPTION } from './run-definitions.js';
-import type { RegistryEntry } from './registry.js';
+import { toolPolicy, type RegistryEntry, type ToolHandler } from './registry.js';
+import type { Action } from '../auth/authorization.js';
 import { handleRun } from './tools/run.js';
 import { handleRunMap } from './tools/run-map.js';
 import { handleRunPrompts } from './tools/run-prompts.js';
@@ -33,12 +34,14 @@ import { handleRunSessions } from './tools/run-sessions.js';
 import { handleRunSpores } from './tools/run-spores.js';
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
+const runOperation = (handler: ToolHandler, action: Action): RegistryEntry => ({ handler, authorization: toolPolicy('run', action, ['run']) });
+
 export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<string, RegistryEntry> }> = {
-  myco_run: { defaultOp: 'report', ops: { report: { handler: handleRun }, state_get: { handler: handleRun }, state_set: { handler: handleRun } } },
-  myco_run_spores: { defaultOp: 'list', ops: { list: { handler: handleRunSpores }, get: { handler: handleRunSpores } } },
-  myco_run_sessions: { defaultOp: 'list', ops: { list: { handler: handleRunSessions }, material: { handler: handleRunSessions }, title: { handler: handleRunSessions } } },
-  myco_run_prompts: { defaultOp: 'unprocessed', ops: { unprocessed: { handler: handleRunPrompts }, mark_processed: { handler: handleRunPrompts } } },
-  myco_run_map: { defaultOp: 'get', ops: { get: { handler: handleRunMap }, write: { handler: handleRunMap } } },
+  myco_run: { defaultOp: 'report', ops: { report: runOperation(handleRun, 'execute'), state_get: runOperation(handleRun, 'read'), state_set: runOperation(handleRun, 'execute') } },
+  myco_run_spores: { defaultOp: 'list', ops: { list: runOperation(handleRunSpores, 'read'), get: runOperation(handleRunSpores, 'read') } },
+  myco_run_sessions: { defaultOp: 'list', ops: { list: runOperation(handleRunSessions, 'read'), material: runOperation(handleRunSessions, 'read'), title: runOperation(handleRunSessions, 'execute') } },
+  myco_run_prompts: { defaultOp: 'unprocessed', ops: { unprocessed: runOperation(handleRunPrompts, 'read'), mark_processed: runOperation(handleRunPrompts, 'execute') } },
+  myco_run_map: { defaultOp: 'get', ops: { get: runOperation(handleRunMap, 'read'), write: runOperation(handleRunMap, 'execute') } },
 };
 
 export { ALWAYS_ALLOWED, isRunCall, RUN_PROJECT_DESCRIPTION, RUN_TOOL_MAP, runAllowlist, type RunAllowlist, type RunSurfaceTarget };

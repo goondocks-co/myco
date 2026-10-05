@@ -108,7 +108,7 @@ describe('the Deployment leaves a member is answered', () => {
   it('are never applied by a sign-in that caches the machine\'s settings and provisions its agents', async () => {
     const rig = unjoinedRig();
     sentinelLeaves(rig.env.sqlite);
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: PROJECT });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: PROJECT });
     const platform = recordingPlatform();
     const globalsBefore = new Set(Object.getOwnPropertyNames(globalThis));
     const ok = await login([`https://s/join#${issued.key}`, '--root', checkout], {

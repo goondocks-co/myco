@@ -1,9 +1,8 @@
 /**
  * The MCP protocol server for one request.
  *
- * `tools/list` answers the definitions as written — every served tool to a
- * member, the allowlisted ones to a grant, a run's task-declared ones to a
- * run. `tools/call` validates the
+ * `tools/list` filters the registered operations through their authorization
+ * declarations and the caller's grant or task allowlist. `tools/call` validates the
  * arguments against the definition, resolves the op through the registry, and
  * runs the handler with the caller's context. A failure the caller can act on
  * — bad arguments, an unknown tool, an op not yet served, a storage fault — is
@@ -39,6 +38,8 @@ import { isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
 import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
+import { authorizeDeclaration, type AuthorizationResource } from '../auth/authorization.js';
+import { authorizeTool, toolResource, toolSubject } from '../auth/mcp-authorization.js';
 
 export const SERVER_NAME = 'myco';
 
@@ -167,6 +168,8 @@ async function namesBoundProject(ctx: Pick<ToolContext, 'env'>, named: unknown, 
  * not a tool and a tool off this surface are the same refusal.
  */
 export interface Surface {
+  principalKind: ToolContext['principal']['kind'];
+  memberId: string | null;
   instructions: string;
   definitions: readonly ToolDefinition[];
   definitionOf(name: string): ToolDefinition | undefined;
@@ -182,6 +185,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
   const p = ctx.principal;
   if (p.kind === 'grant') {
     return {
+      principalKind: 'grant', memberId: null,
       instructions: GRANT_INSTRUCTIONS,
       definitions: externalDefinitions(),
       definitionOf: servedOnly,
@@ -192,6 +196,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
   }
   if (p.kind === 'run') {
     return {
+      principalKind: 'run', memberId: null,
       instructions: runInstructionsFor(acceptedActions(p.task)),
       definitions: runDefinitions(p.allow),
       definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
@@ -201,6 +206,7 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
     };
   }
   return {
+    principalKind: 'member', memberId: p.memberId,
     instructions: SERVER_INSTRUCTIONS,
     definitions: TOOL_DEFINITIONS,
     definitionOf: servedOnly,
@@ -226,14 +232,58 @@ function runEntryFor(name: string, op: string): RegistryEntry | undefined {
 
 /** The definitions this principal is served. */
 export function definitionsFor(ctx: Pick<ToolContext, 'principal'>): readonly ToolDefinition[] {
-  return surfaceFor(ctx).definitions;
+  const surface = surfaceFor(ctx);
+  return filterDefinitions(surface, (name, op) => {
+    const declaration = surface.entryFor(name, op)?.authorization;
+    return declaration !== undefined && declaration.transport === 'mcp' && declaration.subjects.includes(surface.principalKind)
+      && declaration.action !== 'never' && surface.allows(name, op);
+  });
+}
+
+function filterDefinitions(surface: Surface, allowed: (name: string, op: string) => boolean): ToolDefinition[] {
+  return surface.definitions.flatMap((definition) => {
+    const property = definition.inputSchema.properties.op;
+    const ops = property?.enum?.filter((value): value is string => typeof value === 'string');
+    if (ops === undefined) return allowed(definition.name, NO_OP) ? [definition] : [];
+    const permitted = ops.filter((op) => allowed(definition.name, op));
+    if (permitted.length === 0) return [];
+    if (permitted.length === ops.length) return [definition];
+    return [{ ...definition, inputSchema: { ...definition.inputSchema, properties: { ...definition.inputSchema.properties, op: { ...property, enum: permitted } } } }];
+  });
+}
+
+/** Tool discovery applies the dispatch declarations to the current stored identity. */
+export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<readonly ToolDefinition[]> {
+  const surface = surfaceFor(ctx);
+  const subject = await toolSubject(ctx);
+  if (!subject.live) throw unknownTool('tools/list');
+  const decisions = new Map<string, boolean>();
+  const resources = new Map<string, AuthorizationResource>();
+  for (const definition of surface.definitions) {
+    const ops = definition.inputSchema.properties.op?.enum?.filter((value): value is string => typeof value === 'string') ?? [NO_OP];
+    for (const op of ops) {
+      const declaration = surface.entryFor(definition.name, op)?.authorization;
+      if (declaration === undefined || !surface.allows(definition.name, op)) continue;
+      const key = `${declaration.resolver}:${declaration.resource}`;
+      let resource = resources.get(key);
+      if (resource === undefined) {
+        resource = ctx.projectId === null
+          ? { kind: declaration.resource, deploymentId: subject.deploymentId, exists: true }
+          : await toolResource(ctx, declaration, subject);
+        resources.set(key, resource);
+      }
+      const actions = typeof declaration.action === 'string' ? [declaration.action] : declaration.action.actions;
+      const permitted = actions.some((action) => authorizeDeclaration(subject, { ...declaration, action }, {}, resource));
+      decisions.set(`${definition.name}:${op}`, permitted);
+    }
+  }
+  return filterDefinitions(surface, (name, op) => decisions.get(`${name}:${op}`) === true);
 }
 
 /**
  * Run one tool call for this context: the principal's surface, validation, op
- * resolution, the handler. Every failure leaves as a `ToolError`. `admitted`
- * hears the `(tool, op)` once the principal's surface has admitted the call,
- * before anything else can fail it.
+ * resolution, authorization, the handler. Every failure leaves as a `ToolError`.
+ * `admitted` hears the `(tool, op)` after the operation is authorized.
  */
 export async function callTool(ctx: ProtocolContext, name: string, args: unknown, admitted?: (call: { tool: AnyTool; op: string }) => void): Promise<{ tool: AnyTool; op: string; result: unknown }> {
   const surface = surfaceFor(ctx);
@@ -245,24 +295,30 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   if (bound !== null && named !== undefined && named !== bound && !(await namesBoundProject(ctx, named, bound))) throw unknownTool(name);
   const op = surface.opOf(name, input);
   if (!surface.allows(name, op)) throw unknownTool(name);
-  admitted?.({ tool: name as AnyTool, op });
   validateInput(definition, input);
   if (isWriteOp(name as AnyTool, op) && bound === null && namedProject(input) === undefined) throw missingProject(name);
   const entry = surface.entryFor(name, op);
   if (entry === undefined) throw new ToolError('invalid_input', `Unknown op '${op}' for tool ${name}`);
+  if (entry.authorization === undefined || entry.authorization.transport !== 'mcp' || !entry.authorization.subjects.includes(surface.principalKind)) throw unknownTool(name);
   if ('notServed' in entry) {
     throw new ToolError('not_served', entry.notServed === 'never'
       ? `${name} op '${op}' is not offered by a Deployment`
       : `${name} op '${op}' is not yet served by this Deployment (${entry.notServed})`);
   }
   let scoped: ToolContext;
-  if (ctx.projectId === null) {
-    const project = namedProject(input);
+  const project = namedProject(input);
+  if (ctx.projectId === null || (surface.memberId !== null && project !== undefined)) {
     if (project === undefined) throw new ToolError('invalid_input', `Missing required argument '${PROJECT_PIVOT}' for tool ${name}: this connection has no default project`);
-    const scope = await resolveTenancyArgument(ctx.env.db, { id: ctx.principal.memberId }, project);
-    if (scope === null) throw new ToolError('invalid_input', 'Project not found');
+    if (surface.memberId === null) throw unknownTool(name);
+    const scope = await resolveTenancyArgument(ctx.env.db, { id: surface.memberId }, project);
+    if (scope === null) {
+      if (ctx.projectId === null) throw new ToolError('invalid_input', 'Project not found');
+      return { tool: name as AnyTool, op, result: { ok: false, error: 'Project not found', ...(name === 'myco_agent' ? { op } : {}) } };
+    }
     scoped = { ...ctx, projectId: scope.projectId };
   } else scoped = ctx;
+  if (!(await authorizeTool(scoped, entry.authorization, input))) throw unknownTool(name);
+  admitted?.({ tool: name as AnyTool, op });
   try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }
   catch (error) {
     if (error instanceof RunWriteExpired) throw new ToolError('tool_call_failed', error.message);
@@ -282,7 +338,14 @@ export function createProtocolServer(ctx: ProtocolContext, version: string, onFa
     { capabilities: { tools: {} }, instructions: surfaceFor(ctx).instructions, supportedProtocolVersions: [...SERVED_PROTOCOL_VERSIONS] },
   );
 
-  server.setRequestHandler('tools/list', () => ({ tools: definitionsFor(ctx).map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema as unknown as Tool['inputSchema'], annotations: d.annotations })) }));
+  server.setRequestHandler('tools/list', async () => {
+    try {
+      return { tools: (await authorizedDefinitionsFor(ctx)).map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema as unknown as Tool['inputSchema'], annotations: d.annotations })) };
+    } catch (error) {
+      if (!(error instanceof ToolError)) onFailure(error);
+      throw toolError(error instanceof ToolError ? error : new ToolError('tool_call_failed', 'the Deployment could not list tools'));
+    }
+  });
 
   server.setRequestHandler('tools/call', async (request) => {
     const { name, arguments: args } = request.params;

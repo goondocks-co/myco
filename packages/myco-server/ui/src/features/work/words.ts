@@ -369,6 +369,7 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
     agent_permission_refused: 'The agent was refused a tool the task needs.',
     agent_tools_unlisted: 'The machine couldn’t list the task’s tools for the agent.',
     agent_tools_unused: 'The agent didn’t use Myco’s tools.',
+    run_cancelled: 'A member cancelled this run.',
     run_failed: 'The task stopped before it could finish.',
   };
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;

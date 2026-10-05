@@ -62,7 +62,7 @@ describe('the home a pinned repository uses', () => {
     return (rig.fetch as typeof fetch)(input, init);
   }) as typeof fetch;
   const invite = async (rig: ReturnType<typeof unjoinedRig>, projectId?: string) =>
-    `https://s/join#${(await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', ...(projectId === undefined ? {} : { projectId }) })).key}`;
+    `https://s/join#${(await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', ...(projectId === undefined ? {} : { projectId }) })).key}`;
   const gitRepo = (dir: string) => { fs.mkdirSync(dir, { recursive: true }); execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' }); return dir; };
   const io = { stdout: (l: string) => out.push(l), stderr: (l: string) => err.push(l) };
 

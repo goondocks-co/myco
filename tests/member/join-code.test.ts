@@ -52,7 +52,7 @@ describe('reading a join code', () => {
 describe('spending a join code', () => {
   it('exchanges a Project-bound code for a credential, and answers what it granted and bound', async () => {
     const r = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
 
     const result = await exchangeJoinCode({ serverUrl: 'https://s', key: issued.key }, { fetch: r.fetch as typeof fetch, machineId: 'machine_sandbox', forProject: true });
     expect(result.ok).toBe(true);
@@ -63,7 +63,7 @@ describe('spending a join code', () => {
 
   it('reports the Deployment\'s own refusal rather than a failure to reach it', async () => {
     const r = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { role: 'member' });
+    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     const code = { serverUrl: 'https://s', key: issued.key };
 
     const refused = await exchangeJoinCode(code, { fetch: r.fetch as typeof fetch, machineId: 'machine_np', forProject: true });
@@ -98,7 +98,7 @@ describe('a sandbox holding only a join code', () => {
 
   it('joins on its first hook and records a credential the next hook reads, with no configuration of any kind', async () => {
     const r = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-root-'));
 
@@ -119,7 +119,7 @@ describe('a sandbox holding only a join code', () => {
 
   it('lets BOTH of two hooks starting together capture, on the one credential the single-use code yields', async () => {
     const r = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-root-'));
 
@@ -135,7 +135,7 @@ describe('a sandbox holding only a join code', () => {
 
   it('writes the binding under the root a hook resolves, so the very next resolve finds a credential', async () => {
     const r = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-root-'));
 
@@ -156,7 +156,7 @@ describe('a sandbox holding only a join code', () => {
 
   it('writes nothing when the Deployment refuses the code, leaving the machine as it found it', async () => {
     const r = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { role: 'member' });
+    const issued = await issueEnrollmentAuthority(r.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
 
     await ensureJoinedFromCode({ env, mycoHome: home, fetch: r.fetch as typeof fetch, machineId: 'machine_np' });
@@ -203,7 +203,7 @@ describe('a hook on a machine holding only a join code', () => {
     process.env.MYCO_HOME = mycoHome;
     resetMachineIdCache();
     rig = unjoinedRig();
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
   });
   afterEach(() => {
@@ -265,7 +265,7 @@ describe('a hook on a machine holding only a join code', () => {
     const session = 'sess-join-code-refused';
     const tx = transcriptWithPlan(session);
     // An invitation naming no Project: a sandbox cannot bind one, and the server refuses it.
-    const free = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' });
+    const free = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${free.key}`;
 
     const { stdout } = await runHook('session-start', { session_id: session, transcript_path: tx, cwd: '/work/repo' }, { fetch: rig.fetch });
@@ -328,7 +328,7 @@ describe('the emitted sandbox settings with a join code', () => {
   it('delivers each session at its turn\'s end, in the hook, and never starts a helper that ends with the sandbox; a second session uses the same credential', async () => {
     const source = emittedSource();
     expect(source).toBe('env');
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     const noStart = () => { throw new Error('a sandbox\'s hook started a helper'); };
     const turn = async (session: string) => {
@@ -353,7 +353,7 @@ describe('the emitted sandbox settings with a join code', () => {
   });
 
   it('resolves the redeemed membership as a registry credential, which rotates, and never as the orchestrator\'s non-rotating token', async () => {
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     await runHook('session-start', sessionInput('sess-env-code-rot'), { fetch: rig.fetch, credential: 'env' });
     const record = resolveCredential('env', { mycoHome });
@@ -377,7 +377,7 @@ describe('the emitted sandbox settings with a join code', () => {
       resetMachineIdCache();
       for (const k of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete process.env[k];
       Object.assign(process.env, c.env);
-      const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+      const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
       process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
       const session = `sess-spend-${i}`;
       // A hook declared to read the registry leaves its delivery to a helper; one declared `env` delivers at the turn's end.
@@ -401,7 +401,7 @@ describe('the emitted sandbox settings with a join code', () => {
     // The home already binds this root to Deployment A — a laptop's, or one a devcontainer mounts.
     const laptopToken = await memberRigToken(rig);
     const bound = registerTestMember({ mycoHome, token: laptopToken, projectId: 'proj_1', serverUrl: 'https://a.example' });
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     const dialled: string[] = [];
     const watching = ((input: string | URL | Request, init?: RequestInit) => {
@@ -427,12 +427,12 @@ describe('the emitted sandbox settings with a join code', () => {
   });
 
   it('names the remedy for a machine identity another member holds, and does not dial again with it', async () => {
-    const first = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const first = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     const firstHome = tempMycoHome();
     await ensureJoinedFromCode({ env: { [ENV_JOIN_CODE]: `https://s/join#${first.key}` }, mycoHome: firstHome, root: '/work/a', fetch: rig.fetch as typeof fetch, machineId: 'machine_shared' });
     expect(spent(first.id)).toBe(true);
 
-    const second = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const second = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     let joins = 0;
     // The exchanges only: a join that lands also previews the Project's blocks for the cache.
     const counting = ((input: string | URL | Request, init?: RequestInit) => {

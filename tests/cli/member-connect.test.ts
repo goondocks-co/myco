@@ -43,7 +43,7 @@ describe('myco member join inside a repository', () => {
   /** A machine signed in with an invite that names no project, and no agent to set up. */
   const signedIn = async () => {
     const rig = unjoinedRig();
-    const key = (await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member' })).key;
+    const key = (await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' })).key;
     expect(await login([`https://s/join#${key}`, '--no-agents'], { fetch: rig.fetch as typeof fetch, mycoHome: home, machineId: 'machine_person', cwd: repos, stdout: () => {}, stderr: () => {} })).toBe(true);
     return rig;
   };

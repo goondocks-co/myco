@@ -1570,6 +1570,32 @@ export async function getDispatchActor(db: RelationalStore, scope: ReadScope, ru
   return row?.actor ?? null;
 }
 
+/** The code and message on a run stopped by a signed-in member. */
+export const RUN_CANCELLED = 'run_cancelled';
+
+/**
+ * End one in-flight run at the writer. A member may end only a request whose
+ * persisted dispatch names them; an administrator may end any request. The
+ * actor, live membership, Project and live status are checked by the update.
+ */
+export async function cancelRun(
+  db: RelationalStore, scope: ReadScope, runId: string,
+  actor: { memberId: string; admin: boolean }, now: number,
+): Promise<{ displaced: string | null } | null> {
+  const row = await db.prepare(`UPDATE agent_runs
+    SET status = 'failed', completed_at = ?, error = ?, error_code = ?,
+        lease_expires_at = NULL, held_by = NULL
+    WHERE project_id = ? AND id = ? AND ${IN_FLIGHT_RUN_STATUSES}
+      AND EXISTS (SELECT 1 FROM members m WHERE m.id = ? AND m.revoked_at IS NULL)
+      AND (${DISPATCH_ACTOR_SQL} = ? OR (? = 1 AND EXISTS (
+        SELECT 1 FROM members m WHERE m.id = ? AND m.role = 'admin' AND m.revoked_at IS NULL)))
+    RETURNING dispatched_by AS displaced`)
+    .bind(now, 'Cancelled by a member', RUN_CANCELLED, scope.projectId, runId,
+      actor.memberId, actor.memberId, actor.admin ? 1 : 0, actor.memberId)
+    .first<{ displaced: string | null }>();
+  return row;
+}
+
 /**
  * When this task last entered the Project's run list — launched, queued, or
  * left alone over material that had not moved — or null when it never has.
