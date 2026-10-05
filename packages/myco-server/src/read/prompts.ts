@@ -1,3 +1,4 @@
+import { commitAttributedWrite, type RunWrite } from '../core/runs.js';
 /**
  * The extraction cursor: which prompts a run has not read yet, and marking one read.
  *
@@ -178,10 +179,10 @@ export async function listUnprocessedPrompts(
 }
 
 /** Mark one prompt read. False when this Project holds no such prompt, so a caller never reads a miss as a move. */
-export async function markPromptProcessed(db: RelationalStore, scope: ReadScope, promptId: string): Promise<boolean> {
-  const result = await db
+export async function markPromptProcessed(db: RelationalStore, scope: ReadScope, promptId: string, attribution?: RunWrite): Promise<boolean> {
+  const statement = db
     .prepare('UPDATE prompt_batches SET processed = 1 WHERE project_id = ? AND prompt_id = ?')
-    .bind(scope.projectId, promptId)
-    .run();
+    .bind(scope.projectId, promptId);
+  const result = await commitAttributedWrite(db, scope, statement, attribution);
   return result.meta.changes === 1;
 }

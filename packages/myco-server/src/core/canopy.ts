@@ -1,3 +1,4 @@
+import { commitAttributedWrite, type RunWrite } from './runs.js';
 import { CANOPY_DEFAULT_EXCLUDE_PATTERNS, MAP_TASK, parseMapArtifact, type MapSettings, type MapSourcePin, type StoredMap } from '@goondocks/myco-shared/canopy';
 import type { RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { RelationalStore } from './adapters.js';
@@ -57,14 +58,14 @@ export function mapInputUnchanged(current: StoredMap | null, source: MapSourcePi
 }
 
 /** Publish one map against the revision and committed source the held run prepared. */
-export async function writeCanopyMap(db: RelationalStore, scope: ReadScope, run: RunRow, value: unknown, now: number): Promise<boolean> {
+export async function writeCanopyMap(db: RelationalStore, scope: ReadScope, run: RunRow, value: unknown, now: number, attribution?: RunWrite): Promise<boolean> {
   const source = mapSourcePinOfRun(run);
   const repository = repositoryPinOfRun(run);
   if (run.task !== MAP_TASK || run.status !== 'running' || run.dryRun === 1 || source === null || repository === null) return false;
   const artifact = parseMapArtifact(value);
   const prior = await readCanopyMap(db, scope);
   if (prior?.sourceRunId === run.id) return prior.inputHash === source.inputHash && JSON.stringify(prior.artifact) === JSON.stringify(artifact);
-  const result = await db.prepare(`INSERT INTO canopy_maps
+  const statement = db.prepare(`INSERT INTO canopy_maps
     (project_id, revision, artifact, input_hash, repository_url, repository_branch, repository_commit, source_run_id, generated_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?)
@@ -76,7 +77,8 @@ export async function writeCanopyMap(db: RelationalStore, scope: ReadScope, run:
     WHERE canopy_maps.revision = ?`)
     .bind(scope.projectId, crypto.randomUUID(), JSON.stringify(artifact), source.inputHash, repository.url, repository.branch, repository.commit, run.id, now,
       scope.projectId, run.id, run.dispatchedBy, scope.projectId, repository.url, repository.branch,
-      source.priorRevision, scope.projectId, source.priorRevision, source.priorRevision).run();
+      source.priorRevision, scope.projectId, source.priorRevision, source.priorRevision);
+  const result = await commitAttributedWrite(db, scope, statement, attribution);
   return result.meta.changes === 1;
 }
 
