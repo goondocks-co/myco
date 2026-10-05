@@ -6,6 +6,7 @@ import { deploymentKeyFor } from '@myco/member/registry.js';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BUFFER_QUARANTINE_DIRNAME } from '@myco/capture/buffer.js';
@@ -568,7 +569,7 @@ describe('spool retention', () => {
       expect(applySpoolRetention(spool).releasedBlobs).toBe(0);
       expect(fs.existsSync(source.path)).toBe(true);
     } finally {
-      fs.chmodSync(journal, 0o600);
+      setFixturePermissions(journal, 0o600);
     }
   });
 

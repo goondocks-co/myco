@@ -5,6 +5,7 @@
  * credential is checked. Both are asserted here against the adapter itself rather
  * than through a stubbed `sourceOf`, so a change that weakens either fails by name.
  */
+import { allocateOwnedFixture } from '../../support/owned-fixtures.js';
 import { describe, it, expect } from 'bun:test';
 import { trustedProxySourceOf } from '@myco-server-worker/platform/bun/source.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
@@ -13,8 +14,8 @@ import { diskBlobStore, sweepPartialObjects, DIGEST_MISMATCH_MESSAGE } from '@my
 import { classifyR2BlobFailure } from '@myco-server-worker/platform/cloudflare/env.js';
 import { classifyBlobFailureOf } from '@myco-server-worker/platform/bun/env.js';
 import { classifyBlobStore } from '@myco-server-worker/telemetry.js';
-import { chmodSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync } from "../../support/fenced-fs.mjs";
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, readdirSync, writeFileSync } from "../../support/fenced-fs.mjs";
+import { setFixturePermissions } from '../../helpers/permission-fixture.js';
 import { join } from 'node:path';
 
 const withHeader = (name: string, value: string) => new Request('https://s/events', { headers: { [name]: value } });
@@ -154,7 +155,7 @@ function withCountedMaps<T>(probe: { ops: number }, build: () => T): T {
 }
 
 describe('the disk blob store', () => {
-  const root = () => mkdtempSync(join(tmpdir(), 'myco-blobstore-'));
+  const root = () => allocateOwnedFixture('myco-blobstore-');
   const openDescriptors = () => readdirSync('/dev/fd').length;
 
   it('refuses a key that escapes the store root instead of reporting it absent', async () => {
@@ -183,7 +184,7 @@ describe('the disk blob store', () => {
     try {
       await expect(store.head('proj_1/abc')).rejects.toThrow();
     } finally {
-      chmodSync(join(dir, 'proj_1'), 0o700);
+      setFixturePermissions(join(dir, 'proj_1'), 0o700);
     }
   });
 
