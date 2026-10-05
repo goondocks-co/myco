@@ -5,6 +5,14 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { restoreArtifact, deploymentId, BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
+import { rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
+
+async function finishBackfill(sqlite: Database): Promise<void> {
+  for (let pass = 0; pass < 20; pass += 1) {
+    if (!(await rawBackfill(sqliteRelationalStore(sqlite), pass)).more) return;
+  }
+  throw new Error('Historical provenance did not complete');
+}
 
 function historical() {
   const sqlite = new Database(':memory:');
@@ -56,6 +64,7 @@ describe('raw ownership schema step 70', () => {
       const bytes = sqlite.query('SELECT * FROM blobs').all();
       const transcripts = sqlite.query('SELECT * FROM transcripts').all();
       for (const sql of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(sql);
+      await finishBackfill(sqlite);
       expect(sqlite.query('SELECT * FROM blobs').all()).toEqual(bytes);
       expect(sqlite.query('SELECT * FROM transcripts').all()).toEqual(transcripts);
       expect(sqlite.query('SELECT kind,resource_id,owner_member_id FROM raw_resources ORDER BY kind,resource_id').all()).toEqual([
@@ -72,7 +81,7 @@ describe('raw ownership schema step 70', () => {
       sqlite.run("INSERT INTO processed_resources (project_id,kind,resource_id,blob_key,source_token_id,event_id) VALUES ('p','plan','shared','known','ca','event')");
       expect(() => sqlite.run("UPDATE processed_resources SET source_token_id = 'cb'")).toThrow('immutable');
       sqlite.run("UPDATE machine_claims SET member_id = 'b' WHERE machine_id = 'ma'");
-      for (const sql of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(sql);
+      expect(await rawBackfill(sqliteRelationalStore(sqlite), 20)).toEqual({ changed: 0, more: false });
       const db = sqliteRelationalStore(sqlite);
       const blobs = memoryBlobStore();
       blobs.get = async () => { throw new Error('policy check must not read bytes'); };

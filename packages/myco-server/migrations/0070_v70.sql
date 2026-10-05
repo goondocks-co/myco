@@ -42,92 +42,200 @@ CREATE TRIGGER IF NOT EXISTS plans_search_blob_au AFTER UPDATE OF project_id, bl
        INSERT INTO search_blob_queue(project_id, blob_key) VALUES(new.project_id, new.blob_key)
        ON CONFLICT(project_id, blob_key) DO NOTHING; END;
 
+CREATE TABLE IF NOT EXISTS deployment_ownership (
+     id INTEGER PRIMARY KEY CHECK (id = 1), member_id TEXT REFERENCES members(id), revision INTEGER NOT NULL DEFAULT 0);
+
+INSERT INTO deployment_ownership (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS deployment_ownership_audit (
+     revision INTEGER PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), actor_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS raw_provenance_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL DEFAULT 0);
+
+INSERT INTO raw_provenance_state (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS raw_provenance_backfill (
+     id INTEGER PRIMARY KEY CHECK (id = 1), source INTEGER NOT NULL DEFAULT 0, cursor_project TEXT NOT NULL DEFAULT '',
+     cursor_id TEXT NOT NULL DEFAULT '', complete INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+
+INSERT INTO raw_provenance_backfill (id, complete) SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM blobs) OR EXISTS (SELECT 1 FROM transcripts) OR EXISTS (SELECT 1 FROM events) THEN 0 ELSE 1 END ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS raw_claims (
+     id TEXT PRIMARY KEY, owner_member_id TEXT NOT NULL REFERENCES members(id), cutoff_revision INTEGER NOT NULL UNIQUE,
+     created_at INTEGER NOT NULL, preview TEXT NOT NULL, min_revision INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE IF NOT EXISTS raw_restore_revisions (
+     artifact_hash TEXT PRIMARY KEY, revision_offset INTEGER NOT NULL, source_revision INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS raw_credentials (
+     token_id TEXT PRIMARY KEY, owner_member_id TEXT REFERENCES members(id),
+     provenance TEXT NOT NULL CHECK (provenance IN ('recorded','missing','ambiguous')));
+
+ALTER TABLE events ADD COLUMN raw_revision INTEGER;
+
+CREATE TRIGGER IF NOT EXISTS events_raw_credential AFTER INSERT ON events WHEN NEW.raw_revision IS NULL BEGIN
+     INSERT INTO raw_credentials (token_id, owner_member_id, provenance)
+       VALUES (NEW.token_id, (SELECT credential.member_id FROM member_credentials credential
+  WHERE credential.id = NEW.token_id AND credential.machine_id IS NOT NULL
+
+    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)), CASE
+  WHEN (SELECT credential.member_id FROM member_credentials credential
+  WHERE credential.id = NEW.token_id AND credential.machine_id IS NOT NULL
+
+    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)) IS NOT NULL THEN 'recorded'
+  WHEN NOT EXISTS (SELECT 1 FROM member_credentials WHERE id = NEW.token_id) THEN 'missing'
+  ELSE 'ambiguous' END) ON CONFLICT DO NOTHING;
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1;
+     UPDATE events SET raw_revision = (SELECT revision FROM raw_provenance_state WHERE id = 1)
+       WHERE project_id = NEW.project_id AND event_id = NEW.event_id; END;
+
+CREATE TRIGGER IF NOT EXISTS events_raw_revision_delete AFTER DELETE ON events BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS events_raw_identity_immutable BEFORE UPDATE OF project_id,event_id,token_id,raw_revision ON events
+     WHEN OLD.raw_revision IS NOT NULL BEGIN SELECT RAISE(ABORT, 'raw event reference is immutable'); END;
+
 CREATE TABLE IF NOT EXISTS raw_resources (
      project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),
      kind TEXT NOT NULL CHECK (kind IN ('blob', 'event', 'transcript')),
      resource_id TEXT NOT NULL,
      reference_id TEXT NOT NULL,
      owner_member_id TEXT REFERENCES members(id),
+     claim_member_id TEXT REFERENCES members(id),
      machine_id TEXT,
      token_id TEXT,
      classification TEXT NOT NULL DEFAULT 'raw' CHECK (classification = 'raw'),
+     provenance TEXT NOT NULL DEFAULT 'recorded' CHECK (provenance IN ('recorded','missing','ambiguous')),
+     revision INTEGER NOT NULL DEFAULT 0,
      PRIMARY KEY (project_id, kind, resource_id, reference_id));
+
+CREATE INDEX IF NOT EXISTS idx_raw_resources_identity ON raw_resources (project_id, kind, resource_id, owner_member_id, provenance, revision);
 
 CREATE INDEX IF NOT EXISTS idx_raw_resources_owner ON raw_resources (project_id, owner_member_id, kind, resource_id);
 
-INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
-         SELECT s.project_id, 'blob', s.key, s.token_id, (SELECT credential.member_id FROM member_credentials credential
-  WHERE credential.id = s.token_id AND credential.machine_id IS NOT NULL
-    
-    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)), (SELECT machine_id FROM member_credentials WHERE id = s.token_id), s.token_id FROM blobs s WHERE 1 ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS blobs_raw_reference AFTER INSERT ON blobs BEGIN
-         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
+         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id, provenance, revision, claim_member_id)
            SELECT NEW.project_id, 'blob', NEW.key, NEW.token_id, (SELECT credential.member_id FROM member_credentials credential
   WHERE credential.id = NEW.token_id AND credential.machine_id IS NOT NULL
-    
-    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)), (SELECT machine_id FROM member_credentials WHERE id = NEW.token_id), NEW.token_id  ON CONFLICT DO NOTHING; END;
+
+    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)), (SELECT machine_id FROM member_credentials WHERE id = NEW.token_id), NEW.token_id, CASE
+  WHEN (SELECT credential.member_id FROM member_credentials credential
+  WHERE credential.id = NEW.token_id AND credential.machine_id IS NOT NULL
+
+    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)) IS NOT NULL THEN 'recorded'
+  WHEN NOT EXISTS (SELECT 1 FROM member_credentials WHERE id = NEW.token_id) THEN 'missing'
+  ELSE 'ambiguous' END, (SELECT revision + 1 FROM raw_provenance_state WHERE id = 1), NULL  ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS blobs_raw_reference_delete AFTER DELETE ON blobs BEGIN
          DELETE FROM raw_resources WHERE project_id = OLD.project_id AND kind = 'blob' AND resource_id = OLD.key; END;
 
-INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
-         SELECT s.project_id, 'event', s.event_id, '', (SELECT credential.member_id FROM member_credentials credential
-  WHERE credential.id = s.token_id AND credential.machine_id IS NOT NULL
-    
-    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)), (SELECT machine_id FROM member_credentials WHERE id = s.token_id), s.token_id FROM events s WHERE 1 ON CONFLICT DO NOTHING;
-
-CREATE TRIGGER IF NOT EXISTS events_raw_reference AFTER INSERT ON events BEGIN
-         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
-           SELECT NEW.project_id, 'event', NEW.event_id, '', (SELECT credential.member_id FROM member_credentials credential
-  WHERE credential.id = NEW.token_id AND credential.machine_id IS NOT NULL
-    
-    AND NOT EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = credential.machine_id AND mc.member_id <> credential.member_id)), (SELECT machine_id FROM member_credentials WHERE id = NEW.token_id), NEW.token_id  ON CONFLICT DO NOTHING; END;
-
-CREATE TRIGGER IF NOT EXISTS events_raw_reference_delete AFTER DELETE ON events BEGIN
-         DELETE FROM raw_resources WHERE project_id = OLD.project_id AND kind = 'event' AND resource_id = OLD.event_id; END;
-
-INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
-         SELECT s.project_id, 'transcript', s.transcript_id, '', (SELECT mc.member_id FROM machine_claims mc
-  WHERE mc.machine_id = s.machine_id
-    AND s.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = s.project_id AND ts.transcript_id = s.transcript_id)
-    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = s.token_id
-      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> s.machine_id))
-    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts LEFT JOIN member_credentials c ON c.id = ts.token_id
-      WHERE ts.project_id = s.project_id AND ts.transcript_id = s.transcript_id
-        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> s.machine_id))), s.machine_id, s.token_id FROM transcripts s WHERE 1 ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS transcripts_raw_reference AFTER INSERT ON transcripts BEGIN
-         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
+         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id, provenance, revision, claim_member_id)
            SELECT NEW.project_id, 'transcript', NEW.transcript_id, '', (SELECT mc.member_id FROM machine_claims mc
   WHERE mc.machine_id = NEW.machine_id
-    AND NEW.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id)
     AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = NEW.token_id
       AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))
     AND NOT EXISTS (SELECT 1 FROM transcript_segments ts LEFT JOIN member_credentials c ON c.id = ts.token_id
       WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id
-        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))), NEW.machine_id, NEW.token_id WHERE NEW.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id) ON CONFLICT DO NOTHING; END;
+        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))), NEW.machine_id, NEW.token_id, CASE
+  WHEN (SELECT mc.member_id FROM machine_claims mc
+  WHERE mc.machine_id = NEW.machine_id
+    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = NEW.token_id
+      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts LEFT JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id
+        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))) IS NOT NULL THEN 'recorded'
+  WHEN (SELECT mc.member_id FROM machine_claims mc
+  WHERE mc.machine_id = NEW.machine_id
+    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = NEW.token_id
+      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id
+        AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))) IS NOT NULL THEN 'missing'
+  WHEN NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = NEW.machine_id)
+    AND NOT EXISTS (SELECT 1 FROM member_credentials WHERE id = NEW.token_id)
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id) THEN 'missing'
+  ELSE 'ambiguous' END, (SELECT revision + 1 FROM raw_provenance_state WHERE id = 1), (SELECT mc.member_id FROM machine_claims mc
+  WHERE mc.machine_id = NEW.machine_id
+    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = NEW.token_id
+      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id
+        AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> NEW.machine_id))) WHERE NEW.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS transcripts_raw_reference_delete AFTER DELETE ON transcripts BEGIN
          DELETE FROM raw_resources WHERE project_id = OLD.project_id AND kind = 'transcript' AND resource_id = OLD.transcript_id; END;
 
 CREATE TRIGGER IF NOT EXISTS transcript_segments_raw_reference AFTER INSERT ON transcript_segments BEGIN
-     INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id)
+     INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id, provenance, revision, claim_member_id)
        SELECT t.project_id, 'transcript', t.transcript_id, '', (SELECT mc.member_id FROM machine_claims mc
   WHERE mc.machine_id = t.machine_id
-    AND t.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id)
     AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = t.token_id
       AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))
     AND NOT EXISTS (SELECT 1 FROM transcript_segments ts LEFT JOIN member_credentials c ON c.id = ts.token_id
       WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id
-        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))), t.machine_id, t.token_id
+        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))), t.machine_id, t.token_id, CASE
+  WHEN (SELECT mc.member_id FROM machine_claims mc
+  WHERE mc.machine_id = t.machine_id
+    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = t.token_id
+      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts LEFT JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id
+        AND (c.id IS NULL OR c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))) IS NOT NULL THEN 'recorded'
+  WHEN (SELECT mc.member_id FROM machine_claims mc
+  WHERE mc.machine_id = t.machine_id
+    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = t.token_id
+      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id
+        AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))) IS NOT NULL THEN 'missing'
+  WHEN NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = t.machine_id)
+    AND NOT EXISTS (SELECT 1 FROM member_credentials WHERE id = t.token_id)
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id) THEN 'missing'
+  ELSE 'ambiguous' END,
+         (SELECT revision + 1 FROM raw_provenance_state WHERE id = 1), (SELECT mc.member_id FROM machine_claims mc
+  WHERE mc.machine_id = t.machine_id
+    AND NOT EXISTS (SELECT 1 FROM member_credentials c WHERE c.id = t.token_id
+      AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id))
+    AND NOT EXISTS (SELECT 1 FROM transcript_segments ts JOIN member_credentials c ON c.id = ts.token_id
+      WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id
+        AND (c.member_id <> mc.member_id OR c.machine_id IS NULL OR c.machine_id <> t.machine_id)))
          FROM transcripts t WHERE t.project_id = NEW.project_id AND t.transcript_id = NEW.transcript_id
            AND t.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id)
        ON CONFLICT DO NOTHING; END;
 
+CREATE TRIGGER IF NOT EXISTS raw_resources_revision_insert AFTER INSERT ON raw_resources BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS raw_resources_revision_delete AFTER DELETE ON raw_resources BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_segments_revision_insert AFTER INSERT ON transcript_segments BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_segments_revision_update AFTER UPDATE ON transcript_segments BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_segments_revision_delete AFTER DELETE ON transcript_segments BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS raw_claim_revision AFTER INSERT ON raw_claims BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END;
+
+CREATE TRIGGER IF NOT EXISTS raw_credentials_immutable BEFORE UPDATE ON raw_credentials BEGIN
+     SELECT RAISE(ABORT, 'raw provenance audit is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS raw_claims_immutable BEFORE UPDATE ON raw_claims BEGIN
+     SELECT RAISE(ABORT, 'raw provenance audit is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS deployment_ownership_audit_immutable BEFORE UPDATE ON deployment_ownership_audit BEGIN
+     SELECT RAISE(ABORT, 'raw provenance audit is immutable'); END;
+
 CREATE TABLE IF NOT EXISTS processed_resources (
      project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),
-     kind TEXT NOT NULL CHECK (kind IN ('prompt', 'response', 'plan', 'tool-input', 'tool-output')),
+     kind TEXT NOT NULL CHECK (kind IN ('prompt', 'response', 'plan', 'tool-input', 'tool-output', 'attachment')),
      resource_id TEXT NOT NULL,
      blob_key TEXT NOT NULL,
      source_token_id TEXT NOT NULL,
@@ -135,210 +243,359 @@ CREATE TABLE IF NOT EXISTS processed_resources (
      classification TEXT NOT NULL DEFAULT 'processed' CHECK (classification = 'processed'),
      PRIMARY KEY (project_id, kind, resource_id, blob_key));
 
-INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
-      SELECT s.project_id, 'prompt', s.prompt_id, s.blob_key, s.token_id, s.event_id
-        FROM prompt_batches s
-        WHERE s.blob_key IS NOT NULL AND EXISTS (
-  SELECT 1 FROM blobs b WHERE b.project_id = s.project_id AND b.key = s.blob_key
-    AND (b.token_id = s.token_id
-      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = s.token_id
-        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
-      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = s.project_id AND e.event_id = s.event_id
-        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS prompt_processed_reference_insert
         AFTER INSERT ON prompt_batches BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'prompt', NEW.prompt_id, NEW.blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS prompt_processed_reference_update
         AFTER UPDATE ON prompt_batches BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'prompt', NEW.prompt_id, NEW.blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS prompt_processed_reference_delete AFTER DELETE ON prompt_batches BEGIN
         DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = 'prompt' AND resource_id = OLD.prompt_id; END;
 
-INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
-      SELECT s.project_id, 'response', s.response_id, s.blob_key, s.token_id, s.event_id
-        FROM responses s
-        WHERE s.blob_key IS NOT NULL AND EXISTS (
-  SELECT 1 FROM blobs b WHERE b.project_id = s.project_id AND b.key = s.blob_key
-    AND (b.token_id = s.token_id
-      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = s.token_id
-        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
-      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = s.project_id AND e.event_id = s.event_id
-        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS response_processed_reference_insert
         AFTER INSERT ON responses BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'response', NEW.response_id, NEW.blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS response_processed_reference_update
         AFTER UPDATE ON responses BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'response', NEW.response_id, NEW.blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS response_processed_reference_delete AFTER DELETE ON responses BEGIN
         DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = 'response' AND resource_id = OLD.response_id; END;
 
-INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
-      SELECT s.project_id, 'plan', s.plan_key, s.blob_key, s.token_id, s.event_id
-        FROM plans s
-        WHERE s.blob_key IS NOT NULL AND EXISTS (
-  SELECT 1 FROM blobs b WHERE b.project_id = s.project_id AND b.key = s.blob_key
-    AND (b.token_id = s.token_id
-      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = s.token_id
-        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
-      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = s.project_id AND e.event_id = s.event_id
-        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS plan_processed_reference_insert
         AFTER INSERT ON plans BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'plan', NEW.plan_key, NEW.blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS plan_processed_reference_update
         AFTER UPDATE ON plans BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'plan', NEW.plan_key, NEW.blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS plan_processed_reference_delete AFTER DELETE ON plans BEGIN
         DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = 'plan' AND resource_id = OLD.plan_key; END;
 
-INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
-      SELECT s.project_id, 'tool-input', s.tool_call_id, s.input_blob_key, s.token_id, s.event_id
-        FROM tool_calls s
-        WHERE s.input_blob_key IS NOT NULL AND EXISTS (
-  SELECT 1 FROM blobs b WHERE b.project_id = s.project_id AND b.key = s.input_blob_key
-    AND (b.token_id = s.token_id
-      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = s.token_id
-        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
-      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = s.project_id AND e.event_id = s.event_id
-        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS tool_input_processed_reference_insert
         AFTER INSERT ON tool_calls BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'tool-input', NEW.tool_call_id, NEW.input_blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.input_blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.input_blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS tool_input_processed_reference_update
         AFTER UPDATE ON tool_calls BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'tool-input', NEW.tool_call_id, NEW.input_blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.input_blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.input_blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS tool_input_processed_reference_delete AFTER DELETE ON tool_calls BEGIN
         DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = 'tool-input' AND resource_id = OLD.tool_call_id; END;
 
-INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
-      SELECT s.project_id, 'tool-output', s.tool_call_id, s.output_blob_key, s.token_id, s.event_id
-        FROM tool_calls s
-        WHERE s.output_blob_key IS NOT NULL AND EXISTS (
-  SELECT 1 FROM blobs b WHERE b.project_id = s.project_id AND b.key = s.output_blob_key
-    AND (b.token_id = s.token_id
-      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = s.token_id
-        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
-      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = s.project_id AND e.event_id = s.event_id
-        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING;
-
 CREATE TRIGGER IF NOT EXISTS tool_output_processed_reference_insert
         AFTER INSERT ON tool_calls BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'tool-output', NEW.tool_call_id, NEW.output_blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.output_blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.output_blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS tool_output_processed_reference_update
         AFTER UPDATE ON tool_calls BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT NEW.project_id, 'tool-output', NEW.tool_call_id, NEW.output_blob_key, NEW.token_id, NEW.event_id
-        
+
         WHERE NEW.output_blob_key IS NOT NULL AND EXISTS (
   SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.output_blob_key
     AND (b.token_id = NEW.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
         AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
 
 CREATE TRIGGER IF NOT EXISTS tool_output_processed_reference_delete AFTER DELETE ON tool_calls BEGIN
         DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = 'tool-output' AND resource_id = OLD.tool_call_id; END;
+
+CREATE TRIGGER IF NOT EXISTS attachment_processed_reference_insert
+        AFTER INSERT ON attachments BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
+      SELECT NEW.project_id, 'attachment', NEW.attachment_id, NEW.blob_key, NEW.token_id, NEW.event_id
+
+        WHERE NEW.blob_key IS NOT NULL AND EXISTS (
+  SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
+    AND (b.token_id = NEW.token_id
+      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
+        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
+      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
+        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
+
+CREATE TRIGGER IF NOT EXISTS attachment_processed_reference_update
+        AFTER UPDATE ON attachments BEGIN INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
+      SELECT NEW.project_id, 'attachment', NEW.attachment_id, NEW.blob_key, NEW.token_id, NEW.event_id
+
+        WHERE NEW.blob_key IS NOT NULL AND EXISTS (
+  SELECT 1 FROM blobs b WHERE b.project_id = NEW.project_id AND b.key = NEW.blob_key
+    AND (b.token_id = NEW.token_id
+      OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = NEW.token_id
+        WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
+          AND r.classification = 'raw' AND COALESCE(r.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE r.provenance = 'missing' AND rc.min_revision <= r.revision AND rc.cutoff_revision >= r.revision
+    AND (r.claim_member_id IS NULL OR rc.owner_member_id = r.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) = c.member_id
+          AND (r.provenance <> 'missing' OR NOT EXISTS (
+  SELECT 1 FROM raw_resources other WHERE other.project_id = r.project_id AND other.kind = r.kind
+    AND other.resource_id = r.resource_id AND (other.provenance <> 'missing'
+      OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT c.member_id)
+      OR (COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT NULL
+        AND COALESCE(other.owner_member_id,
+  (SELECT rc.owner_member_id FROM raw_claims rc WHERE other.provenance = 'missing' AND rc.min_revision <= other.revision AND rc.cutoff_revision >= other.revision
+    AND (other.claim_member_id IS NULL OR rc.owner_member_id = other.claim_member_id)
+    ORDER BY rc.cutoff_revision LIMIT 1)) IS NOT c.member_id)))))
+      OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = NEW.project_id AND e.event_id = NEW.event_id
+        AND e.producer_adapter = 'transcript-parse'))) ON CONFLICT DO NOTHING; END;
+
+CREATE TRIGGER IF NOT EXISTS attachment_processed_reference_delete AFTER DELETE ON attachments BEGIN
+        DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = 'attachment' AND resource_id = OLD.attachment_id; END;
 
 DROP VIEW IF EXISTS embedding_sources;
 

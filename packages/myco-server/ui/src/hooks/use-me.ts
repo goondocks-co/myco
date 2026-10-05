@@ -6,6 +6,7 @@ import { ME_KEY } from '../lib/query-client';
 export interface Me {
   sub: string;
   login: string;
+  owner: boolean;
   member: { id: string; label: string | null; role: 'admin' | 'member' } | null;
 }
 

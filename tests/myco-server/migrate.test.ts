@@ -77,7 +77,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0067_v67.sql': 'fd1348570100dce0ccb4d580b8880764c1b5118868ad23b1fdfe0ab88b2284f4',
   '0068_v68.sql': '0140d5ef41ef8f07301a3e1fdf0c34414b3070b5c264c01c97a9da18ec85e178',
   '0069_v69.sql': '37ad86138c143f8b83e4420127ecfcc90207234e1812551cd867bb50c06d526c',
-  '0070_v70.sql': '3f3462cf13ed003ffc89f72dd4dd1de1777f555102ad012d8fb167d4e0c1367e',
+  '0070_v70.sql': '29fdbd7e9226dc87cfb183fc5f25a95fa31fc3daed0ce7e3f6451b49d856ff34',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -608,6 +608,7 @@ describe('versioned schema steps', () => {
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
           : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
           : t === 'transcript_parser_state_chunks' && c.name === 'chunk_count' ? '1'
+          : t === 'raw_resources' && c.name === 'provenance' ? `'missing'`
           : t === 'raw_resources' && c.name === 'kind' ? `'blob'` : t === 'raw_resources' && c.name === 'classification' ? `'raw'`
           : t === 'processed_resources' && c.name === 'kind' ? `'plan'` : t === 'processed_resources' && c.name === 'classification' ? `'processed'`
           : t === 'agent_run_steps' && c.name === 'kind' ? `'read'` : t === 'agent_run_steps' && c.name === 'outcome' ? `'ok'` : c.type === 'INTEGER' ? '0' : `'x'`));

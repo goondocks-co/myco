@@ -1,3 +1,4 @@
+import { claimableRawIdentitySql, effectiveRawOwnerSql } from './raw-claims.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 /** The projected fields whose complete bodies are Deployment-shared. */
@@ -7,6 +8,7 @@ export const PROCESSED_FIELDS = {
   plan: { table: 'plans', id: 'plan_key', text: 'content', blob: 'blob_key' },
   'tool-input': { table: 'tool_calls', id: 'tool_call_id', text: 'input', blob: 'input_blob_key' },
   'tool-output': { table: 'tool_calls', id: 'tool_call_id', text: 'output_preview', blob: 'output_blob_key' },
+  attachment: { table: 'attachments', id: 'attachment_id', text: null, blob: 'blob_key' },
 } as const;
 
 /** A projected field carries a verified upload or a server-parser reference. */
@@ -15,7 +17,8 @@ export const processedReferenceSql = (alias: string, field: { blob: string }): s
     AND (b.token_id = ${alias}.token_id
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = ${alias}.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
-          AND r.classification = 'raw' AND r.owner_member_id = c.member_id)
+          AND r.classification = 'raw' AND ${effectiveRawOwnerSql('r.owner_member_id', 'r.provenance', 'r.revision', 'r.claim_member_id')} = c.member_id
+          AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'c.member_id')}))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = ${alias}.project_id AND e.event_id = ${alias}.event_id
         AND e.producer_adapter = '${TRANSCRIPT_PARSE_ADAPTER}')))`;
 

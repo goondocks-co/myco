@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button, Disclosure, ExternalLink, ItemLink, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
-import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
+import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
 import { PlanLine } from '../knowledge/PlanLine';
 import { TextOrBlob } from './StoredText';
@@ -56,14 +56,14 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
     <div className="flex flex-wrap items-start gap-s3" data-testid="turn-attachments">
       {images.map((a, i) => (
         <Button key={a.attachmentId} variant="ghost" onClick={() => setLightbox(i)} className="h-auto overflow-hidden rounded-control border-line p-0" aria-label={`Open ${a.description ?? 'image'}`}>
-          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-thumb-h max-w-thumb object-cover" />
+          <img src={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-thumb-h max-w-thumb object-cover" />
         </Button>
       ))}
       {files.map((a) => (
-        <ExternalLink key={a.attachmentId} href={blobUrl(projectId, a.blobKey)} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
+        <ExternalLink key={a.attachmentId} href={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
       ))}
       {lightbox !== null && (
-        <Lightbox images={images.map((a) => ({ src: blobUrl(projectId, a.blobKey), alt: a.description ?? 'An attached image' }))} index={lightbox} onNavigate={setLightbox} onClose={() => setLightbox(null)} />
+        <Lightbox images={images.map((a) => ({ src: processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId }), alt: a.description ?? 'An attached image' }))} index={lightbox} onNavigate={setLightbox} onClose={() => setLightbox(null)} />
       )}
     </div>
   );

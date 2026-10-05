@@ -346,7 +346,10 @@ describe('the session reading page', () => {
     [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
       prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: `Please rename the project card ${'x'.repeat(130)}\n\nAnd the rest of a long prompt.`, blobKey: null, createdAt: NOW - 3000 },
       responses: [{ responseId: 'r1', promptId: P1, text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }],
-      attachments: [{ attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW }],
+      attachments: [
+        { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
+        { attachmentId: 'turn-file', promptId: P1, blobKey: KEY_SVG, mediaType: 'image/svg+xml', byteSize: 99, description: 'a turn diagram', createdAt: NOW, orderedAt: NOW },
+      ],
       plans: [], injection: null, children: [],
     }),
     [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({
@@ -599,7 +602,12 @@ describe('the session reading page', () => {
       // The whole prompt, its image and its reply sit inline.
       await within(first).findByTestId('turn-response');
       expect(within(first).getByTestId('turn-response').textContent).toContain('done');
-      expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe(BLOB(KEY_IMG));
+      expect(within(first).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
+      expect(within(first).getByRole('link', { name: 'Download a turn diagram' }).getAttribute('href')).toBe('/api/projects/x/processed/attachment/turn-file');
+      fireEvent.click(within(first).getByRole('button', { name: 'Open a screenshot' }));
+      const lightbox = await screen.findByRole('dialog', { name: 'Image' });
+      expect(within(lightbox).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
+      fireEvent.click(within(lightbox).getByRole('button', { name: 'Close' }));
       expect(first.textContent).toContain('And the rest of a long prompt.');
     } finally {
       (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = original;
@@ -773,7 +781,8 @@ describe('the session reading page', () => {
     const groups = within(attachments).getAllByRole('region');
     expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Please rename the project card', 'Other prompts in this session', 'Not tied to a prompt']);
     expect(within(groups[0]!).getByRole('link', { name: 'Open the prompt' }).getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
-    expect(within(groups[2]!).getByText('Download a diagram').getAttribute('href')).toBe(BLOB(KEY_SVG));
+    expect(within(groups[0]!).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
+    expect(within(groups[2]!).getByText('Download a diagram').getAttribute('href')).toBe('/api/projects/x/processed/attachment/a2');
   });
 
   it('sends a link to an old tab to the raw data, open at that part', async () => {

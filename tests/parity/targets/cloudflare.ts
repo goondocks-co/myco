@@ -28,7 +28,7 @@ async function wrangler(args: string[], env: Record<string, string | undefined> 
   const timeout = Bun.sleep(120_000).then(() => { proc.kill(); return -1; });
   const [code, out, err] = await Promise.all([Promise.race([proc.exited, timeout]), new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   SPAWNED.delete(proc);
-  if (code !== 0) throw new Error(`wrangler ${args.slice(0, 3).join(' ')} exited ${code}: ${(err || out).slice(-2000)}`);
+  if (code !== 0) throw new Error(`wrangler ${args.slice(0, 3).join(' ')} exited ${code}: ${[err, out].filter(Boolean).join('\n').slice(-4000)}`);
   return out;
 }
 

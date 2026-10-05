@@ -7,6 +7,7 @@ import { expectPersisted, lit, memberHeadersFor, SESSION_SECRET, type ParityScen
 type RequestFetch = (request: Request) => Promise<Response>;
 const TOKEN_TTL_MS = 3_600_000;
 const PROJECT = 'proj_raw_privacy';
+const ATTACHMENT_PNG = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 96, 96, 96, 96, 0, 0, 0, 5, 0, 1, 165, 246, 69, 64, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
 
 interface Viewer { id: string; sub: string; machine: string; token: string; tokenId: string; headers: Record<string, string> }
 
@@ -36,10 +37,10 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   ];
   const get = (path: string, headers: Record<string, string>) => requestFetch(new Request(`${target.url}${path}`, { headers }));
   const post = (path: string, headers: Record<string, string>, body: BodyInit) => requestFetch(new Request(`${target.url}${path}`, { method: 'POST', headers, body }));
-  const upload = async (viewer: Viewer, text: string, namedKey?: string) => {
-    const bytes = utf8(text);
+  const upload = async (viewer: Viewer, body: string | Uint8Array<ArrayBuffer>, namedKey?: string, mediaType = 'text/plain') => {
+    const bytes = typeof body === 'string' ? utf8(body) : body;
     const key = namedKey ?? await sha256HexOf(bytes);
-    const response = await post(`/blobs/${key}`, memberHeadersFor(viewer.token, PROJECT, { 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), bytes);
+    const response = await post(`/blobs/${key}`, memberHeadersFor(viewer.token, PROJECT, { 'content-type': mediaType, 'content-length': String(bytes.byteLength) }), bytes);
     return { response, key };
   };
   const session = 'raw_privacy_session';
@@ -91,6 +92,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   const typedKinds: Record<string, { kind: string; idField: string }> = {
     prompt: { kind: 'prompt', idField: 'promptId' }, response: { kind: 'response', idField: 'responseId' }, plan: { kind: 'plan', idField: 'planKey' },
     'tool.use': { kind: 'tool-input', idField: 'toolCallId' }, 'tool.failure': { kind: 'tool-input', idField: 'toolCallId' },
+    attachment: { kind: 'attachment', idField: 'attachmentId' },
   };
   for (const spec of KINDS) {
     for (const field of blobFields(spec)) {
@@ -158,6 +160,23 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   await event('plan', { planKey, promptId, title: 'shared spilled plan', blob: spilled.key });
   await event('plan', { planKey: inlinePlanKey, promptId, content: 'shared inline plan' });
   await event('tool.use', { toolCallId, promptId, toolName: 'Read', blob: spilled.key, outputBlob: spilled.key, success: true });
+  const attachments: Array<{ attachmentId: string; key: string; mediaType: string; bytes: Uint8Array<ArrayBuffer> }> = [];
+  for (const [mediaType, bytes] of [
+    ['image/png', ATTACHMENT_PNG],
+    ['application/octet-stream', Uint8Array.from([0, 255, 128, 10, 13, 0, 42])],
+  ] as const) {
+    const attachmentId = crypto.randomUUID();
+    const attachment = await upload(uploader, bytes, undefined, mediaType);
+    await expectPersisted(attachment.response, 'attachment blob');
+    await event('attachment', { attachmentId, promptId, blob: attachment.key, description: 'shared captured file' });
+    attachments.push({ attachmentId, key: attachment.key, mediaType, bytes });
+  }
+  const turnResponse = await get(`/api/projects/${PROJECT}/sessions/${session}/turns/${promptId}`, other.headers);
+  expect(turnResponse.status).toBe(200);
+  const turn = await turnResponse.json() as { attachments: Array<{ attachmentId: string; blobKey: string; mediaType: string; byteSize: number }> };
+  expect(turn.attachments).toHaveLength(attachments.length);
+  expect(turn.attachments.map(({ attachmentId, blobKey, mediaType, byteSize }) => ({ attachmentId, blobKey, mediaType, byteSize })))
+    .toEqual(expect.arrayContaining(attachments.map(({ attachmentId, key, mediaType, bytes }) => ({ attachmentId, blobKey: key, mediaType, byteSize: bytes.byteLength }))));
   for (const metadata of [{ title: 'member title edit', tags: ['shared'] }, { title: 'member status and title edit', status: 'completed' }]) {
     const saved = await post('/mcp', memberHeadersFor(other.token, PROJECT, { 'content-type': 'application/json' }), JSON.stringify({
       jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
@@ -184,6 +203,19 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
       expect({ viewer: reader.name, kind, status: response.status }).toEqual({ viewer: reader.name, kind, status: 200 });
       expect(await response.text()).toBe(expected);
     }
+    for (const attachment of attachments) {
+      const response = await get(`/api/projects/${PROJECT}/processed/attachment/${attachment.attachmentId}`, reader.headers);
+      expect({ viewer: reader.name, mediaType: attachment.mediaType, status: response.status })
+        .toEqual({ viewer: reader.name, mediaType: attachment.mediaType, status: 200 });
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(attachment.bytes);
+      expect(response.headers.get('content-type')).toBe(attachment.mediaType);
+      expect(response.headers.get('content-length')).toBe(String(attachment.bytes.byteLength));
+      expect(response.headers.get('content-disposition')).toBe(attachment.mediaType === 'image/png' ? null : `attachment; filename="${attachment.attachmentId}"`);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      const generic = await get(blobPath(attachment.key), reader.headers);
+      expect(generic.status).toBe(reader.admitted ? 200 : 404);
+      assertPrivateCache(generic);
+    }
     const generic = await get(blobPath(spilled.key), reader.headers);
     expect(generic.status).toBe(reader.admitted ? 200 : 404);
     assertPrivateCache(generic);
@@ -200,6 +232,11 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
     const revoked = await get(path, uploader.headers);
     expect(revoked.status).toBe(401);
     assertPrivateCache(revoked);
+  }
+  for (const attachment of attachments) {
+    const response = await get(`/api/projects/${PROJECT}/processed/attachment/${attachment.attachmentId}`, other.headers);
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(attachment.bytes);
   }
   const changedBrowser = await get(blobPath(spilled.key), admin.headers);
   expect(changedBrowser.status).toBe(404);

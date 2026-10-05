@@ -76,6 +76,7 @@ export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
 
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
+  { name: 'raw-provenance-backfill', runsThrough: 'sleep', converges: 'every historical raw reference and processed field has immutable provenance, through bounded checkpointed pages' },
   {
     name: 'agent-run-retention',
     runsThrough: 'sleep',

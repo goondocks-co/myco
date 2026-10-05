@@ -1,3 +1,4 @@
+import { isDeploymentOwner } from '../core/raw-claims.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { SessionContext } from '../context.js';
 import { IDENTITY_LINK_KEY_PATTERN, previewIdentityLinkAuthority, spendIdentityLinkAuthority, type IdentityLinkRefusal } from '../auth/identity-link.js';
@@ -20,7 +21,7 @@ export async function handleMe(env: ServerEnv, ctx: SessionContext): Promise<Res
       member = ctx.member;
     }
   }
-  return ok({ sub: ctx.session.sub, login: ctx.session.login, member });
+  return ok({ sub: ctx.session.sub, login: ctx.session.login, member, owner: member !== null && await isDeploymentOwner(env.db, member.id) });
 }
 
 const STATUS: Record<IdentityLinkRefusal, number> = { denied: 400, identity_taken: 409, member_linked: 409, member_revoked: 403, link_requires_admin: 403 };

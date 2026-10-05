@@ -1,3 +1,4 @@
+import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
 /**
  * Deployment backup and restore.
  *
@@ -37,9 +38,9 @@ const RESTORE_CHUNK_ROWS = 20;
  */
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
-  'member_credentials', 'raw_resources', 'processed_resources', 'agents',
+  'member_credentials', 'deployment_ownership', 'deployment_ownership_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'processed_resources', 'agents',
   'sessions', 'session_tombstones', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
-  'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'tags',
+  'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
   'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
   'digest_extracts', 'cortex_instructions', 'canopy_maps', 'knowledge_release_state', 'external_grants',
@@ -73,7 +74,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
-  'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
+  'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
@@ -339,6 +340,61 @@ function restoredRowsMatch(table: string, rows: readonly Record<string, unknown>
     WHERE held.id IS NULL OR ${mismatch.join(' OR ')})`;
 }
 
+const TRANSCRIPT_RAW_COLUMNS = ['project_id', 'transcript_id', 'session_id', 'machine_id', 'token_id', 'agent', 'origin_path', 'role', 'head_hash', 'size', 'segment_count', 'first_received_at', 'last_received_at', 'imported_at'] as const;
+const TRANSCRIPT_SEGMENT_COLUMNS = ['project_id', 'transcript_id', 'base_offset', 'length', 'blob_key', 'event_id', 'created_at', 'received_at', 'token_id'] as const;
+const transcriptIdentity = (project: unknown, id: unknown): string => JSON.stringify([project, id]);
+
+/** Imported transcript attribution requires the held raw identity, bytes and existing owners to agree. */
+async function restoreTranscriptReference(
+  db: RelationalStore, row: Record<string, unknown>, transcript: Record<string, unknown> | undefined,
+  segments: readonly Record<string, unknown>[], insert: PreparedStatement,
+): Promise<number> {
+  if (transcript === undefined) return 0;
+  const expected = Object.fromEntries(TRANSCRIPT_RAW_COLUMNS.map((column) => [column,
+    transcript[column] ?? (column === 'role' ? 'primary' : column === 'size' || column === 'segment_count' ? 0 : null)]));
+  const heldOwner = effectiveRawOwnerSql('r.owner_member_id', 'r.provenance', 'r.revision', 'r.claim_member_id');
+  const importedOwner = effectiveRawOwnerSql("json_extract(candidate.value, '$.owner_member_id')", "json_extract(candidate.value, '$.provenance')", "json_extract(candidate.value, '$.revision')", "json_extract(candidate.value, '$.claim_member_id')");
+  const compatibility = {
+    sql: `EXISTS (SELECT 1 FROM transcripts held, json_each(?) expected WHERE ${TRANSCRIPT_RAW_COLUMNS
+      .map((column) => `held.${column} IS json_extract(expected.value, '$.${column}')`).join(' AND ')})
+      AND (SELECT COUNT(*) FROM transcript_segments WHERE project_id = ? AND transcript_id = ?) = ?
+      AND NOT EXISTS (SELECT 1 FROM raw_resources r, json_each(?) candidate
+        WHERE r.project_id = ? AND r.kind = 'transcript' AND r.resource_id = ?
+          AND (r.provenance = 'ambiguous'
+            OR (r.claim_member_id IS NOT NULL AND r.claim_member_id IS NOT COALESCE(${importedOwner}, json_extract(candidate.value, '$.claim_member_id')))
+            OR (${heldOwner} IS NOT NULL AND ${heldOwner} IS NOT ${importedOwner})))`,
+    params: [JSON.stringify([expected]), row.project_id, row.resource_id, segments.length, JSON.stringify([row]), row.project_id, row.resource_id],
+  };
+  const revision = await db.prepare('SELECT revision FROM raw_provenance_state WHERE id = 1').first<{ revision: number }>();
+  if (revision === null) throw new Error('Raw provenance revision is missing');
+  const agrees = async (check: { sql: string; params: unknown[] }): Promise<boolean> => {
+    const result = await db.prepare(`SELECT (${check.sql}) AS matches`).bind(...check.params).first<{ matches: number }>();
+    if (result === null) throw new Error('Transcript restore comparison returned no result');
+    return result.matches === 1;
+  };
+  if (!await agrees(compatibility)) return 0;
+  for (let start = 0; start < segments.length; start += RESTORE_CHUNK_ROWS) {
+    const page = segments.slice(start, start + RESTORE_CHUNK_ROWS);
+    if (!await agrees({
+      sql: `NOT EXISTS (SELECT 1 FROM json_each(?) expected LEFT JOIN transcript_segments held
+        ON held.project_id = json_extract(expected.value, '$.project_id')
+          AND held.transcript_id = json_extract(expected.value, '$.transcript_id')
+          AND held.base_offset = json_extract(expected.value, '$.base_offset')
+        WHERE held.base_offset IS NULL OR ${TRANSCRIPT_SEGMENT_COLUMNS
+          .map((column) => `held.${column} IS NOT json_extract(expected.value, '$.${column}')`).join(' OR ')})`,
+      params: [JSON.stringify(page)],
+    })) return 0;
+  }
+  const applied = await db.batch([
+    db.prepare(`INSERT INTO restore_reference_guard (missing)
+      SELECT 'transcript ownership conflicts with held raw data'
+        WHERE NOT ((SELECT revision FROM raw_provenance_state WHERE id = 1) = ? AND (${compatibility.sql}))`)
+      .bind(revision.revision, ...compatibility.params),
+    insert,
+  ]);
+  return applied.at(-1)!.results.length;
+}
+
 /**
  * Apply one artifact: refusal gates first, then additive `INSERT OR IGNORE`
  * per row in bounded batches. Rows the target already holds stay exactly as
@@ -388,18 +444,76 @@ export async function restoreArtifact(
   const absent = await unregisteredAmong(db, named);
   if (absent.length > 0) throw new BackupObjectsMissingError(absent.length);
 
+  const ownership = byTable.get('deployment_ownership')?.[0];
+  const ownerAudit = ownership?.member_id == null ? undefined : (byTable.get('deployment_ownership_audit') ?? [])
+    .find((row) => row.member_id === ownership.member_id && row.revision === ownership.revision);
+  if (ownership?.member_id != null && (ownerAudit === undefined || typeof ownerAudit.actor_id !== 'string' || !Number.isSafeInteger(ownerAudit.created_at))) {
+    throw new BackupApplyError('deployment_ownership', 'ownership requires its matching audit receipt');
+  }
+
   const outcome: RestoreOutcome = { tables: {} };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row), row]));
   const hash = await sha256Hex(opts.text);
+  const provenance = ['raw_provenance_state', 'raw_resources', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);
+  const sourceRevision = provenance.reduce((max, row) => Math.max(max,
+    ...['revision','raw_revision','cutoff_revision'].map((key) => typeof row[key] === 'number' ? row[key] as number : 0)), 0);
+  if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) throw new BackupApplyError('raw_claims', 'invalid raw provenance revision');
+  const offset = provenance.length === 0 ? 0 : await reserveRawRestore(db, hash, sourceRevision);
+  for (const table of ['raw_resources', 'raw_claims', 'events']) {
+    for (const row of byTable.get(table) ?? []) {
+      if (table === 'raw_resources') row.reference_id = `restore:${hash}:${String(row.reference_id)}`;
+      for (const key of table === 'raw_claims' ? ['min_revision', 'cutoff_revision'] : table === 'events' ? ['raw_revision'] : ['revision']) {
+        if (table === 'raw_claims' && key === 'min_revision' && row[key] === undefined) row[key] = 0;
+        if (typeof row[key] === 'number') row[key] = (row[key] as number) + offset;
+      }
+    }
+  }
+  const transcriptRows = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
+  const transcriptSegments = new Map<string, Record<string, unknown>[]>();
+  for (const row of byTable.get('transcript_segments') ?? []) {
+    const identity = transcriptIdentity(row.project_id, row.transcript_id);
+    const segments = transcriptSegments.get(identity) ?? [];
+    segments.push(row);
+    transcriptSegments.set(identity, segments);
+  }
   for (const table of BACKUP_TABLES) {
     const rows = byTable.get(table) ?? [];
     if (rows.length === 0) continue;
+    if (table === 'raw_provenance_state' || table === 'raw_provenance_backfill') {
+      outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'destination provenance checkpoint owns the restored revision reservation' };
+      continue;
+    }
+    if (table === 'deployment_ownership') {
+      const row = rows[0]!;
+      if (typeof row.member_id === 'string') await restoreOwnership(db, { member_id: row.member_id, revision: Number(row.revision) },
+        { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number });
+      outcome.tables[table] = { rows: rows.length, inserted: 0 };
+      continue;
+    }
     if (table === 'blobs') {
       outcome.tables[table] = { rows: rows.length, inserted: 0, reused: rows.length };
       continue;
     }
     for (const row of rows) {
       if (!Object.keys(row).every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
+    }
+    if (table === 'raw_resources') {
+      let inserted = 0;
+      for (const row of rows) {
+        const columns = Object.keys(row);
+        const insert = db.prepare(`INSERT OR IGNORE INTO raw_resources (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
+          .bind(...columns.map((column) => row[column] ?? null));
+        try {
+          const identity = transcriptIdentity(row.project_id, row.resource_id);
+          inserted += row.kind === 'transcript'
+            ? await restoreTranscriptReference(db, row, transcriptRows.get(identity), transcriptSegments.get(identity) ?? [], insert)
+            : (await insert.all()).results.length;
+        } catch (error) {
+          throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
+        }
+      }
+      outcome.tables[table] = { rows: rows.length, inserted };
+      continue;
     }
     const ordered = EMPTY_ONLY_TABLES.has(table);
     if (ordered && (rows.some((row) => !Number.isSafeInteger(row.id)) || new Set(rows.map((row) => row.id)).size !== rows.length)) {
