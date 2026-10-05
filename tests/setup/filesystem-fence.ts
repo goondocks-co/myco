@@ -23,7 +23,10 @@ export function installFilesystemFence(home: string, additionalRoots: string[] =
     ...['.myco', '.myco-team', '.myco-dev', '.myco-collective', 'myco_backups'].map((name) => path.join(home, name)),
     ...additionalRoots,
   ];
-  const targets = [...new Set(protectedRoots.flatMap((root) => [root, resolvedTarget(root)]))];
+  const targets = [...new Set(protectedRoots.flatMap((root) => {
+    const literal = path.resolve(root);
+    return [literal, resolvedTarget(literal, true)];
+  }))];
   scopes.add(targets);
   return { protectedRoots, dispose: () => { scopes.delete(targets); } };
 }
@@ -41,24 +44,30 @@ function retryInterrupted<T>(lookup: () => T): T {
     }
   }
 }
-function resolvedTarget(target: string): string {
+function resolvedTarget(target: string, protectUnreadableRoot = false): string {
   let ancestor = target;
   const suffix: string[] = [];
   while (true) {
     try { return path.join(retryInterrupted(() => originalRealpath(ancestor)), ...suffix); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      const unreadable = protectUnreadableRoot && (code === 'EPERM' || code === 'EACCES');
+      if (!unreadable && code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
       let link: string | undefined;
-      try {
-        link = retryInterrupted(() => originalReadlink(ancestor));
-      } catch (linkError) {
-        const linkCode = (linkError as NodeJS.ErrnoException).code;
-        if (!['ENOENT', 'ENOTDIR', 'EINVAL'].includes(linkCode ?? '')) throw linkError;
+      if (!unreadable) {
+        try {
+          link = retryInterrupted(() => originalReadlink(ancestor));
+        } catch (linkError) {
+          const linkCode = (linkError as NodeJS.ErrnoException).code;
+          if (!['ENOENT', 'ENOTDIR', 'EINVAL'].includes(linkCode ?? '')) throw linkError;
+        }
       }
-      if (link !== undefined) return resolvedTarget(path.resolve(path.dirname(ancestor), link, ...suffix));
+      if (link !== undefined) return resolvedTarget(path.resolve(path.dirname(ancestor), link, ...suffix), protectUnreadableRoot);
       const parent = path.dirname(ancestor);
-      if (parent === ancestor) throw error;
+      if (parent === ancestor) {
+        if (unreadable) return target;
+        throw error;
+      }
       suffix.unshift(path.basename(ancestor));
       ancestor = parent;
     }
@@ -97,7 +106,7 @@ function offending(p: unknown, includesParents = false): FenceHit | null {
   else return null;
   let s: string;
   try { s = path.resolve(raw); } catch { return null; }
-  return offendingPaths([s, resolvedTarget(s)], includesParents);
+  return offendingPaths([s], includesParents) ?? offendingPaths([s, resolvedTarget(s)], includesParents);
 }
 function offendingPaths(targets: string[], includesParents: boolean): FenceHit | null {
   for (const target of targets) {

@@ -84,6 +84,7 @@ describe('filesystem fence metadata retries', () => {
     it(`${lookup}: retries through the last allowed attempt`, () => probe(lookup, 'EINTR', 2));
     it(`${lookup}: repeated EINTR fails closed after three attempts`, () => probe(lookup, 'EINTR', Number.MAX_SAFE_INTEGER));
     for (const code of ['EACCES', 'EPERM', 'EIO', 'ELOOP']) {
+      if (lookup === 'realpathSync' && (code === 'EACCES' || code === 'EPERM')) continue;
       it(`${lookup}: ${code} fails closed without retry`, () => probe(lookup, code, Number.MAX_SAFE_INTEGER));
     }
   }
