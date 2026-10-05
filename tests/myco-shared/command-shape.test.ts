@@ -104,6 +104,21 @@ describe('the allowed shape of a command', () => {
     });
   }
 
+  it('keeps paths in declared search modes and boolean clusters through worker, server and audit projection', () => {
+    for (const [command, shaped] of [
+      ['rg --files src/', 'rg --files src/'],
+      ['ls -lh src/', 'ls -lh src/'],
+      ['rg -e public src/', 'rg -e … src/'],
+      ['rg -e --files src/', 'rg -e … src/'],
+      ['rg --regexp=public src/', 'rg --regexp=… src/'],
+      ['rg -epublic src/', 'rg -e… src/'],
+    ]) {
+      const paths = stored(command!);
+      expect(paths.commandShape).toBe(shaped!);
+      for (const path of ['workerTarget', 'serverTarget', 'audit']) expect(paths[path]).toContain(shaped!);
+    }
+  });
+
   it('keeps what a reader needs: the program, a listed subcommand, flag names, paths, operators, and a URL as its scheme and host', () => {
     const shapes: Array<[string, string]> = [
       ['git status', 'git status'],
@@ -112,8 +127,8 @@ describe('the allowed shape of a command', () => {
       ['ls -l /etc', 'ls -l /etc'],
       ['cat packages/x/y.ts', 'cat packages/x/y.ts'],
       ['rg -n leaseDeadline src/', 'rg -n … src/'],
-      ['bun test tests/a.test.ts', 'bun test tests/a.test.ts'],
-      ['npm test -- tests/member/worker-steps.test.ts', 'npm test -- tests/member/worker-steps.test.ts'],
+      ['bun test tests/a.test.ts', 'bun test …'],
+      ['npm test -- tests/member/worker-steps.test.ts', 'npm test -- …'],
       ['git log -1 --oneline', 'git log -1 --oneline'],
       ['git -C /repo status', 'git -C /repo status'],
       ['cd repo && npm run build | tail -5', 'cd … && npm run … | tail -5'],
@@ -153,7 +168,7 @@ describe('the allowed shape of a command', () => {
   it('never keeps the word after a flag whose name says it carries a secret, and reads a bare dotted word as a file only by a listed extension', () => {
     expect(commandShape('login --password Winter.Is.Coming')).toBe('login --password …');
     expect(commandShape('deploy --token ./tok3n-file')).toBe('deploy --token …');
-    expect(commandShape('cp --backup ./a.txt b.txt')).toBe('cp --backup ./a.txt b.txt');
+    expect(commandShape('cp --backup ./a.txt b.txt')).toBe('cp --backup … b.txt');
     expect(commandShape('cat notes.md config.yaml Winter.Is.Coming registry.example.test')).toBe('cat notes.md config.yaml …');
   });
 

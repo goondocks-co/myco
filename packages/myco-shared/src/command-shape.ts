@@ -12,10 +12,10 @@
  *   `-c` script only where it is one `KNOWN_PROGRAMS` lists, or a path;
  * - a subcommand is kept only where it is the program's first positional word, before any `--`, and one the program's
  *   entry in `SUBCOMMANDS` lists;
- * - a flag keeps its name and never its value: `-x` reads `-x`, `-xVALUE` reads `-x…`, `--name=VALUE` reads
- *   `--name=…`; a word is never read as a flag's value or not, so the word after a flag is kept only where it is a path,
- *   and never after a flag whose name says it carries a secret (token, secret, pass, key, auth, credential);
- * - any other argument is kept only where it is a path: `.` or `..`, or a word that holds a `/` or ends in an extension
+ * - a flag keeps its name: `-x` reads `-x`, `-xVALUE` reads `-x…`, `--name=VALUE` reads
+ *   `--name=…`; a separate value is omitted unless the command declares a path-taking flag; declared boolean flags
+ *   take no value; secret-named flags never keep a value;
+ * - a positional argument is kept only in a declared path-taking role and where it is a path: `.` or `..`, or a word that holds a `/` or ends in an extension
  *   `FILE_EXTENSIONS` lists; it holds no `@ : = ? &`, and is not key-like taken whole;
  * - a URL reads as its scheme and host alone, and as its scheme alone where the host is key-like;
  * - after a redirection (`<`, `<<`, `<<<`, `>`, `>>`) every word reads `…` up to the next command, and each command of
@@ -26,8 +26,9 @@
  * Masking known access-key shapes (`redactSecrets`) is a second layer a caller applies after this one.
  */
 
-import { EXTENSION_TABLE, PROGRAM_TABLE, SUBCOMMAND_TABLE } from './command-tables.js';
+import { BOOLEAN_FLAG_TABLE, EXTENSION_TABLE, PATH_FLAG_TABLE, PATH_PROGRAM_TABLE, PATH_SUBCOMMAND_TABLE, PROGRAM_TABLE, FIRST_PATH_PROGRAM_TABLE, SEARCH_PROGRAM_TABLE, SEARCH_PATTERN_FLAG_TABLE, SEARCH_PATH_MODE_TABLE, SUBCOMMAND_TABLE } from './command-tables.js';
 import { PROVIDER_KEY_PREFIXES } from './redact-secrets.js';
+import { isSecretFlag } from './secret-labels.js';
 
 /** The programs whose first positional word is a subcommand a reader needs, each with the subcommands it is read as. */
 export const SUBCOMMANDS: Readonly<Record<string, ReadonlySet<string>>> = Object.fromEntries(
@@ -56,8 +57,6 @@ const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 const PATH_CHARS = /^[A-Za-z0-9._/~+,*{}[\]-]{1,160}$/;
 const EXTENSION = /\.([A-Za-z][A-Za-z0-9]{0,9})$/;
-/** A flag whose name says the word after it carries a secret, so that word is never kept. */
-const SECRET_FLAG = /token|secret|pass|key|auth|credential/i;
 const FLAG_NAME = /^--[A-Za-z0-9][A-Za-z0-9-]{0,40}$/;
 const SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
 const SHELL_SCRIPT_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
@@ -167,11 +166,11 @@ function unquoted(token: string, spaces = false): string | null {
   return (!spaces && /\s/.test(inner)) || inner.includes(first) ? null : inner;
 }
 
-/** An argument in its allowed shape: a URL as its scheme and host, a path as it stands, anything else `…`. */
-function argument(token: string): string {
+/** An argument: a URL as its scheme and host, a path only in a declared path role, anything else `…`. */
+function argument(token: string, path: boolean): string {
   const bare = unquoted(token);
   if (bare === null || bare === '') return ELIDED;
-  return urlShape(bare) ?? (pathLike(bare) ? bare : ELIDED);
+  return urlShape(bare) ?? (path && pathLike(bare) ? bare : ELIDED);
 }
 
 /**
@@ -188,10 +187,11 @@ function program(token: string, first: boolean): string {
 }
 
 /** Whether a flag's name says the word after it carries a secret. */
-const secretFlag = (token: string): boolean => SECRET_FLAG.test(token.replace(/^-+/, '').split('=')[0]!);
+const secretFlag = (token: string): boolean => isSecretFlag(token.replace(/^-+/, '').split('=')[0]!);
 
 /** A flag's name without its value. */
-function flag(token: string): string {
+function flag(token: string, boolean = false): string {
+  if (boolean) return token;
   if (token.startsWith('--')) {
     const equals = token.indexOf('=');
     const name = equals < 0 ? token : token.slice(0, equals);
@@ -203,6 +203,19 @@ function flag(token: string): string {
   return token.length === 2 ? token : `-${letter}${ELIDED}`;
 }
 
+/** A declared argument role; a short cluster takes no value only when every member is declared boolean. */
+function flagGrammar(name: string, token: string): { role: 'boolean' | 'path' | 'pattern' | 'unknown'; attached: boolean } {
+  const booleans = BOOLEAN_FLAG_TABLE[name] ?? [];
+  if (booleans.includes(token) || (!token.startsWith('--') && [...token.slice(1)].every((letter) => booleans.includes(`-${letter}`)))) {
+    return { role: 'boolean', attached: false };
+  }
+  const flagName = token.startsWith('--') ? token.split('=', 1)[0]! : token.slice(0, 2);
+  const attached = token.startsWith('--') ? token.includes('=') : token.length > 2;
+  if (!secretFlag(flagName) && PATH_FLAG_TABLE[name]?.includes(flagName)) return { role: 'path', attached };
+  if (SEARCH_PATTERN_FLAG_TABLE[name]?.includes(flagName)) return { role: 'pattern', attached };
+  return { role: 'unknown', attached: token.includes('=') };
+}
+
 /** The words of one command line in their allowed shapes. */
 function shapeWords(tokens: readonly string[], depth: number): string[] {
   const out: string[] = [];
@@ -211,7 +224,12 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
   let name = '';
   let positionals = 0;
   let afterFlag = false;
-  let secretNext = false;
+  let pathNext = false;
+  let patternNext = false;
+  let patternProvided = false;
+  let pathsOnly = false;
+  let subcommandName = '';
+  let firstPathAllowed = true;
   let redirected = false;
   let endOfFlags = false;
   let scriptNext = false;
@@ -219,7 +237,7 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
   for (const token of tokens) {
     if (COMMAND_BREAKS.has(token)) {
       out.push(token);
-      atProgram = true; first = false; name = ''; positionals = 0; afterFlag = false; secretNext = false; redirected = false; endOfFlags = false; scriptNext = false;
+      atProgram = true; first = false; name = ''; positionals = 0; afterFlag = false; pathNext = false; patternNext = false; patternProvided = false; pathsOnly = false; subcommandName = ''; firstPathAllowed = true; redirected = false; endOfFlags = false; scriptNext = false;
       continue;
     }
     if (GROUPS.has(token)) {
@@ -253,19 +271,42 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
       out.push(script === null ? ELIDED : shapeLine(script, depth + 1) ?? ELIDED);
       continue;
     }
-    if (!endOfFlags && token === '--') { out.push(token); endOfFlags = true; afterFlag = false; secretNext = false; continue; }
+    if (afterFlag && (pathNext || patternNext || !token.startsWith('-'))) {
+      out.push(pathNext ? argument(token, true) : ELIDED);
+      if (patternNext) patternProvided = true;
+      pathNext = false; patternNext = false; afterFlag = false;
+      continue;
+    }
+    if (!endOfFlags && token === '--') { out.push(token); endOfFlags = true; afterFlag = false; pathNext = false; patternNext = false; continue; }
     if (!endOfFlags && token.startsWith('-') && token.length > 1) {
-      out.push(flag(token));
-      afterFlag = true;
-      secretNext = secretFlag(token) && !token.includes('=');
+      const grammar = flagGrammar(name, token);
+      out.push(flag(token, grammar.role === 'boolean'));
+      if (afterFlag) continue;
+      if (FIRST_PATH_PROGRAM_TABLE.includes(name)) firstPathAllowed = false;
+      afterFlag = grammar.role !== 'boolean' && !grammar.attached;
+      pathNext = afterFlag && grammar.role === 'path';
+      patternNext = afterFlag && grammar.role === 'pattern';
+      if (grammar.role === 'pattern' && grammar.attached) patternProvided = true;
+      if (SEARCH_PATH_MODE_TABLE[name]?.includes(token)) pathsOnly = true;
       scriptNext = SHELLS.has(name) && SHELL_SCRIPT_FLAG.test(token);
       continue;
     }
-    if (secretNext) { out.push(ELIDED); secretNext = false; afterFlag = false; continue; }
-    if (!afterFlag) positionals += 1;
+    if (afterFlag) {
+      out.push(pathNext ? argument(token, true) : ELIDED);
+      if (patternNext) patternProvided = true;
+      pathNext = false; patternNext = false; afterFlag = false;
+      continue;
+    }
+    positionals += 1;
     const bare = unquoted(token);
-    const subcommand = !afterFlag && !endOfFlags && positionals === 1 && bare !== null && SUBCOMMANDS[name]?.has(bare) === true;
-    out.push(subcommand ? bare! : argument(token));
+    const subcommand = !endOfFlags && positionals === 1 && bare !== null && SUBCOMMANDS[name]?.has(bare) === true;
+    if (subcommand) subcommandName = bare!;
+    const path = PATH_PROGRAM_TABLE.includes(name)
+      || (FIRST_PATH_PROGRAM_TABLE.includes(name) && firstPathAllowed && positionals === 1)
+      || (SEARCH_PROGRAM_TABLE.includes(name) && (pathsOnly || patternProvided))
+      || PATH_SUBCOMMAND_TABLE[name]?.includes(subcommandName) === true;
+    out.push(subcommand ? bare! : argument(token, path));
+    if (SEARCH_PROGRAM_TABLE.includes(name)) patternProvided = true;
     afterFlag = false;
   }
   return out;

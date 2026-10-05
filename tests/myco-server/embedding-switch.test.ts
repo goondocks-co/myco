@@ -1,3 +1,4 @@
+import { DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 /**
  * Switch embedding model, on both targets through their shipped env and request handler: search keeps answering by
  * meaning at every step while the new model's vectors are built, reconcile retires neither model's vectors meanwhile,
@@ -281,7 +282,7 @@ for (const make of [hosted, selfHosted]) {
       await t.step(2_000);
       const waiting = (await status(t))!;
       expect({ state: waiting.state, retryAt: waiting.retryAt }).toEqual({ state: 'building', retryAt: 2_000 + 60_000 });
-      expect(waiting.reason).toMatch(t.name === 'hosted' ? /could not answer \(“AiError: 3001: Internal server error”\)/ : /had a problem \(HTTP 503\)/);
+      expect(waiting.reason).toMatch(t.name === 'hosted' ? /could not reach.*harness_error/ : /had a problem \(HTTP 503\)/);
       expect(receipts(t, t.currentKey)).toEqual([{ ready: 1, n: 3 }]);
       expect(await meaning(t.env())).toEqual({ unavailable: false, ids: ['one', 'two'] });
       // Until the wait is over the new model is not asked; then it is, and a second failure waits twice as long.
@@ -323,7 +324,7 @@ describe('what a failure of the new model does', () => {
     const actions = Object.fromEntries([400, 401, 403, 404, 408, 413, 422, 429, 503].map((status) => [status, switchFailureAction(http(status), 0, 0).action]));
     expect(actions).toEqual({ 400: 'skip', 401: 'pause', 403: 'pause', 404: 'pause', 408: 'wait', 413: 'skip', 422: 'skip', 429: 'wait', 503: 'wait' });
     expect(switchFailureAction(new EmbeddingUnavailable('x', workersAiFailure(new Error('AiError: 3010: Invalid or incomplete input for the model'), false, 0)), 0, 0).action).toBe('skip');
-    expect(switchFailureAction(new EmbeddingUnavailable('x', workersAiFailure(new Error('AiError: 3001: Internal server error'), false, 0)), 0, 0)).toMatchObject({ action: 'wait', reason: expect.stringContaining('AiError: 3001: Internal server error') });
+    expect(switchFailureAction(new EmbeddingUnavailable('x', workersAiFailure(new Error('AiError: 3001: Internal server error'), false, 0)), 0, 0)).toMatchObject({ action: 'wait', reason: expect.stringContaining('harness_error') });
   });
 });
 
@@ -405,7 +406,7 @@ describe('what never holds a switch back', () => {
       for (let i = 0; i < 30 && (await status(t)) !== null; i++) await t.step(2_000 + i);
       expect({ target: t.name, moved: await status(t) === null }).toEqual({ target: t.name, moved: true });
       const listed = await passedOverForHealth(t.env(), 2_100);
-      expect(listed).toMatchObject({ count: 1, sources: [{ title: 'decision', anyModel: false, reason: expect.stringMatching(make === hosted ? /the model refused its text \(“AiError: 3010/ : /the model refused its text with HTTP 400 \(“input is too long for this model”\)/) }] });
+      expect(listed).toMatchObject({ count: 1, sources: [{ title: 'decision', anyModel: false, reason: expect.stringMatching(make === hosted ? /the model refused its text \(model_refused/ : /the model refused its text with HTTP 400 \(model_refused/) }] });
       // Once the replaced model's vectors are retired, nothing is left: the refused source is not asked again within a day.
       for (let i = 0; i < 12; i++) await t.step(2_200 + i);
       for (let i = 0; i < 12; i++) await t.step(2_200 + VECTOR_DELETE_CONFIRM_MS + i);
@@ -603,3 +604,24 @@ describe('reconcile while a switch stands', () => {
     expect(receipts(t, 'other-model')).toEqual([{ ready: 1, n: 3 }]);
   });
 });
+
+for (const make of [hosted, selfHosted]) {
+  describe(`embedding diagnostic privacy on ${make.name}`, () => {
+    for (const leak of DIAGNOSTIC_PAYLOADS) {
+      it(`stores no ${leak.name} in switch reasons or returned diagnostics`, async () => {
+        const t = await built(make);
+        await t.fetch(await asOwnerPost('/api/embedding/switch', { ...t.otherSize, confirm: true }));
+        t.models.failing.set(t.otherSize.model, { status: 503, words: leak.command });
+        await t.step(2_000);
+        const stored = JSON.stringify([t.sqlite.query('SELECT reason FROM embedding_switches').all(), t.sqlite.query('SELECT reason FROM embedding_source_failures').all(), await status(t)]);
+        for (const secret of leak.secrets) expect(stored).not.toContain(secret);
+        const waiting = (await status(t))!;
+        expect(waiting.state).toBe('building');
+        if (t.name === 'hosted' && leak.command.includes('3010')) {
+          expect(waiting.retryAt).toBeNull();
+          expect(stored).toContain('model_refused');
+        } else if (!leak.command.includes('4006')) expect(waiting.retryAt).toBe(62_000);
+      });
+    }
+  });
+}

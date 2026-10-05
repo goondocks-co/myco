@@ -1,18 +1,11 @@
 /**
- * The worker's local diagnostics log: what a harness or the worker itself said about a run that failed.
- *
- * A run's record on the Deployment carries a coded reason alone (`run-text.ts` in myco-shared). The words behind it —
- * a harness's stderr, its in-band error, an exception the worker caught — are kept here, on the machine that ran the
- * run and nowhere else, for whoever operates that machine. Before an entry is written, every value of the run's
- * credential environment is masked where it appears verbatim, and known access-key shapes are masked
- * (`redactSecrets`). Each entry holds at most `MAX_ENTRY_CHARS` of words; the file is rotated into `.1` …
- * `.<MAX_BACKUPS>` before a write would take it past `MAX_LOG_BYTES`, the oldest dropped; a file whose newest entry is
- * older than `MAX_LOG_AGE_MS` is removed; and the file is written owner-only.
+ * The worker's owner-only local diagnostic log: coded errors and bounded content-free detail.
+ * Files rotate at the size bound and expire at the age bound.
  */
 import nodeFs from 'node:fs';
 const { appendFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync } = nodeFs;
 import { join } from 'node:path';
-import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
+import { diagnosticDetail } from '@goondocks/myco-shared/run-text';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 
 export const DIAGNOSTIC_LOG_FILENAME = WORKER_DIAGNOSTIC_LOG.split('/').at(-1)!;
@@ -24,8 +17,6 @@ export const MAX_LOG_BYTES = 1024 * 1024;
 export const MAX_BACKUPS = 2;
 /** How long an entry is kept: a file whose newest entry is older than this is removed. */
 export const MAX_LOG_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-/** The shortest credential value masked verbatim; a shorter one is no credential and masking it would mangle the words. */
-const MIN_MASKED_CHARS = 4;
 
 export interface DiagnosticEntry {
   runId: string;
@@ -69,14 +60,9 @@ function rotate(dir: string, bytes: number, maxBytes: number): void {
   renameSync(live, `${live}.1`);
 }
 
-/** The words with every credential value masked where it appears verbatim, then known access-key shapes. */
-export function maskedDetail(detail: string, secrets: readonly string[] = []): string {
-  let masked = detail;
-  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
-    if (secret.length >= MIN_MASKED_CHARS) masked = masked.replaceAll(secret, '[REDACTED]');
-  }
-  masked = redactSecrets(masked);
-  return masked.length > MAX_ENTRY_CHARS ? `${masked.slice(0, MAX_ENTRY_CHARS)}…` : masked;
+/** A bounded diagnostic detail projected by the shared diagnostic boundary. */
+export function maskedDetail(detail: string, _secrets: readonly string[] = []): string {
+  return diagnosticDetail(detail, MAX_ENTRY_CHARS);
 }
 
 /** Append one entry as a line of JSON, stamped with its instant: pruned by age, rotated before it would cross the size bound. */

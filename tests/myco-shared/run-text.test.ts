@@ -144,6 +144,7 @@ describe('a harness diagnostic, stored as a coded reason', () => {
  * it stored, as its own words, with the run. Inline code, a code fence and a here-document never keep one.
  */
 const PLAIN_WORDS: ReadonlySet<string> = new Set([
+  'private/customer-note', 'customer-note.json',
   'letmein77', 'literal-secret-value', '123456', 'AUTH', 'qwerty', 'lowercasesecret', 'hunter22', 'hunter2', 'assword', 'oken',
   'secrets/prod.env', 'prod-signing', 'Bearer', 'X-Api-Key', 'root', 'deployer', 'openai', 'Winter', 'Coming', 'vllkbsi5',
   'Summer2024', 'hunterpass', 'rotation',
@@ -277,6 +278,28 @@ describe('agent prose, bounded and masked', () => {
     expect(agentProse(account, 1_000)).toBe(account);
     expect(agentProse('Steps:\n1. Read the material.\n2. Wrote the title.', 1_000)).toBe('Steps:\n1. Read the material.\n2. Wrote the title.');
     expect(agentProse('Steps:\n1. Read the material.\r\n2. Wrote the title.', 1_000, { singleLine: true })).toBe('Steps: 1. Read the material. 2. Wrote the title.');
+  });
+
+  it('keeps complete ordinary label components and the prose beside quoted secrets', () => {
+    for (const account of ['bypass: disabled. Fixed src/auth.ts.', 'compass: east. Updated src/auth.ts.', 'surpass: done. Updated the policy.', 'Reviewed ﬁle ①. Compass: east.']) {
+      expect(agentProse(account, 1000)).toBe(account);
+      expect(redactSecrets(account)).toBe(account);
+    }
+    for (const leak of PROSE.filter((case_) => case_.command.startsWith('Read the policy.\n'))) {
+      const stored = agentProse(leak.command, 1000)!;
+      expect(leaksIn(leak, stored)).toEqual([]);
+      expect(stored).toContain('Read the policy.');
+      expect(stored).toContain('Updated the policy.');
+      expect(leaksIn(leak, redactSecrets(leak.command))).toEqual([]);
+    }
+  });
+
+  it('keeps declared decimal token quantities in displayed instructions', () => {
+    const quantities = 'Keep max_tokens=4096 and token_budget: 12000; token_limit=8000.';
+    expect(redactSecrets(quantities)).toBe(quantities);
+    for (const leak of PROSE.filter((case_) => case_.name.startsWith('token quantity payload'))) {
+      expect(leaksIn(leak, redactSecrets(leak.command))).toEqual([]);
+    }
   });
 
   it('is cut to its bound and is null where nothing is left', () => {

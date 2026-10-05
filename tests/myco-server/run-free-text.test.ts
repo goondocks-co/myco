@@ -160,6 +160,17 @@ describe('every text field the run routes still take', () => {
       const rows = r.e.sqlite.query('SELECT summary, details, audit FROM agent_reports WHERE run_id = ? ORDER BY id').all(r.run.id) as Array<Record<string, unknown>>;
       expect(rows).toHaveLength(PROSE.length);
       expect(rows.flatMap((row, i) => leaked([PROSE[i]!], JSON.stringify(row)))).toEqual([]);
+      rows.forEach((row, i) => {
+        if (!PROSE[i]!.command.startsWith('Read the policy.\n')) return;
+        const stored = JSON.stringify(row);
+        expect(stored.match(/Read the policy\./g)).toHaveLength(6);
+        expect(stored.match(/Updated the policy\./g)).toHaveLength(6);
+      });
+      for (const ordinary of ['bypass: disabled. Fixed src/auth.ts.', 'compass: east. Updated src/auth.ts.', 'Reviewed ﬁle ①. Compass: east.']) {
+        await r.report({ action: TITLING_REPORT_ACTION, summary: ordinary, details: ordinary, audit: { ...RUN_AUDIT, steps: [ordinary], reasoning: ordinary, failures: [{ what: ordinary, recovery: ordinary }] } });
+        const row = r.e.sqlite.query('SELECT summary, details, audit FROM agent_reports WHERE run_id = ? ORDER BY id DESC LIMIT 1').get(r.run.id);
+        expect(JSON.stringify(row).split(ordinary)).toHaveLength(7);
+      }
     } finally { r.e.sqlite.close(); }
   });
 });

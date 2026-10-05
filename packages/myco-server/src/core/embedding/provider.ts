@@ -1,3 +1,4 @@
+import { diagnosticDetail, type RunDiagnosticCode } from '@goondocks/myco-shared/run-text';
 import { normalizedVector } from './vectors.js';
 
 export const EMBEDDING_TEXT_CHARS = 8000;
@@ -23,7 +24,7 @@ export interface EmbeddingProvider {
 /**
  * Why a provider could not compute a vector: it could not be reached, it did not answer in time, it answered an HTTP
  * error (with how long it asked callers to wait, where it said), its daily quota is spent until `resetsAt`, or it
- * refused this text as input. `detail` carries the provider's own words, bounded.
+ * refused this text as input. `detail` carries bounded masked diagnostic detail.
  */
 export type EmbeddingFailure =
   | { kind: 'unreachable'; detail: string | null }
@@ -36,13 +37,13 @@ export class EmbeddingUnavailable extends Error {
   constructor(message: string, readonly failure: EmbeddingFailure = { kind: 'unreachable', detail: null }) { super(message); }
 }
 
-/** The most of a provider's own error words a failure carries. */
+/** The bound on reading provider error words and keeping projected detail. */
 export const FAILURE_DETAIL_CHARS = 200;
 
-/** An error's own words, bounded, or null where it has none. */
+/** An error's bounded masked detail, or null where it has none. */
 export const failureDetail = (error: unknown): string | null => {
   const words = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  return words.trim() === '' ? null : words.trim().slice(0, FAILURE_DETAIL_CHARS);
+  return words.trim() === '' ? null : diagnosticDetail(words, FAILURE_DETAIL_CHARS);
 };
 
 /** Workers AI's answer when an account's daily free allocation is spent: error 4006, naming the daily allocation of neurons. */
@@ -63,9 +64,10 @@ const WORKERS_AI_INPUT = /\b(3010|5006)\b|invalid or incomplete input|input (is 
  */
 export function workersAiFailure(error: unknown, timedOut: boolean, now: number): EmbeddingFailure {
   if (timedOut) return { kind: 'timeout' };
+  const words = (error instanceof Error ? error.message : typeof error === 'string' ? error : '').trim().slice(0, FAILURE_DETAIL_CHARS);
   const detail = failureDetail(error);
-  if (detail !== null && WORKERS_AI_DAILY_QUOTA.test(detail)) return { kind: 'quota', resetsAt: nextUtcMidnight(now), detail };
-  if (detail !== null && WORKERS_AI_INPUT.test(detail)) return { kind: 'input', detail };
+  if (detail !== null && WORKERS_AI_DAILY_QUOTA.test(words)) return { kind: 'quota', resetsAt: nextUtcMidnight(now), detail };
+  if (detail !== null && WORKERS_AI_INPUT.test(words)) return { kind: 'input', detail };
   return { kind: 'unreachable', detail };
 }
 
@@ -79,10 +81,24 @@ const INPUT_STATUSES: ReadonlySet<number> = new Set([400, 413, 422]);
 export function inputRefusal(error: unknown): string | null {
   if (!(error instanceof EmbeddingUnavailable)) return null;
   const failure = error.failure;
-  const said = (detail: string | null) => detail === null ? '' : ` (“${detail}”)`;
-  if (failure.kind === 'input') return `the model refused its text${said(failure.detail)}`;
-  if (failure.kind === 'http' && INPUT_STATUSES.has(failure.status)) return `the model refused its text with HTTP ${failure.status}${said(failure.detail)}`;
+  const said = ` (${embeddingDiagnostic(failure)})`;
+  if (failure.kind === 'input') return `the model refused its text${said}`;
+  if (failure.kind === 'http' && INPUT_STATUSES.has(failure.status)) return `the model refused its text with HTTP ${failure.status}${said}`;
   return null;
+}
+
+/** A provider failure as a run diagnostic code, HTTP status where supplied, and bounded masked detail. */
+export function embeddingDiagnostic(failure: EmbeddingFailure): string {
+  const code: RunDiagnosticCode = failure.kind === 'timeout' ? 'timed_out'
+    : failure.kind === 'quota' ? 'rate_limited'
+    : failure.kind === 'input' ? 'model_refused'
+    : failure.kind === 'http' ? INPUT_STATUSES.has(failure.status) ? 'model_refused'
+      : failure.status === 401 || failure.status === 403 ? 'login_missing'
+      : failure.status === 429 ? 'rate_limited' : 'harness_error'
+    : 'harness_error';
+  const status = failure.kind === 'http' ? `; HTTP ${failure.status}` : '';
+  const detail = 'detail' in failure && failure.detail !== null ? `; detail ${diagnosticDetail(failure.detail, FAILURE_DETAIL_CHARS)}` : '';
+  return `${code}${status}${detail}`;
 }
 
 /** The longest wait a provider's `Retry-After` is honoured for. */

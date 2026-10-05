@@ -27,7 +27,7 @@ const UNRECOGNIZED = { total: 3, shapes: { 'system/hook_started': 2, rate_limit_
 
 const steps = (count: number, at = NOW): WorkerStep[] => Array.from({ length: count }, (_, seq) => ({
   seq, callId: `toolu_${seq}`, kind: seq % 2 === 0 ? 'read' : 'command', tool: seq % 2 === 0 ? 'Read' : 'Bash',
-  target: seq % 2 === 0 ? `src/file-${seq}.ts` : `npm test -- tests/t-${seq}.test.ts`, outcome: 'ok', exitCode: seq % 2 === 0 ? null : 0, startedAt: at + seq, endedAt: at + seq + 1,
+  target: seq % 2 === 0 ? `src/file-${seq}.ts` : 'npm test -- …', outcome: 'ok', exitCode: seq % 2 === 0 ? null : 0, startedAt: at + seq, endedAt: at + seq + 1,
 }));
 
 async function rig() {

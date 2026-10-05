@@ -1,3 +1,4 @@
+import { DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 import type { OutboundFetch } from '@myco-server-worker/core/adapters.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { afterEach, expect, test } from 'bun:test';
@@ -5,7 +6,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { settingsWriter } from '../../packages/myco-server/src/core/settings.js';
 import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
 import { configuredEmbeddingProvider } from '../../packages/myco-server/src/core/embedding/configured-provider.js';
-import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable } from '../../packages/myco-server/src/core/embedding/provider.js';
+import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable, embeddingDiagnostic } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '../../packages/myco-server/src/platform/cloudflare/embedding.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 import { BUN_EMBEDDING_PLATFORM } from '../../packages/myco-server/src/platform/bun/env.js';
@@ -91,3 +92,24 @@ test('OpenRouter preserves its existing default model and opens only its own cre
   expect(request!.headers.get('authorization')).toBe('Bearer router-credential');
   expect((await jsonBody<{ model: string }>(request!)).model).toBe('openai/text-embedding-3-small');
 });
+
+for (const leak of DIAGNOSTIC_PAYLOADS) {
+  test(`HTTP and binding failures project ${leak.name} before returning diagnostic detail`, async () => {
+    const f = fixture();
+    await f.configure('ollama');
+    const http = (await configuredEmbeddingProvider(f.db, f.key, (async () => new Response(leak.command, { status: 400 })) as OutboundFetch, BUN_EMBEDDING_PLATFORM))!;
+    const binding = cloudflareEmbeddingProvider({ run: async () => { throw new Error(leak.command); } }, BGE_M3);
+    for (const provider of [http, binding]) {
+      let caught: unknown;
+      try { await provider.embed('source knowledge'); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(EmbeddingUnavailable);
+      if (!(caught instanceof EmbeddingUnavailable)) throw new Error('provider failure missing');
+      const diagnostic = JSON.stringify([caught.failure, embeddingDiagnostic(caught.failure)]);
+      for (const secret of leak.secrets) expect(diagnostic).not.toContain(secret);
+      if (provider === http) expect(caught.failure).toMatchObject({ kind: 'http', status: 400 });
+      else if (leak.command.includes('4006')) expect(caught.failure.kind).toBe('quota');
+      else if (leak.command.includes('3010')) expect(caught.failure.kind).toBe('input');
+      else expect(caught.failure.kind).toBe('unreachable');
+    }
+  });
+}
