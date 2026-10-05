@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import { seededSqlite, sqliteD1 } from '../tests/myco-server/helpers/d1.js';
+import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '../packages/myco-server/src/constants.js';
+import { wrappingKeyFromText } from '../packages/myco-server/src/platform/wrapping-key.js';
+import type { ServerEnv } from '../packages/myco-server/src/core/adapters.js';
+import { ownerCookie, OWNER_ENV, MEMBER_SUB, seedMemberRoleAccount } from '../tests/myco-server/helpers/owner.js';
+import { createServer } from '../packages/myco-server/src/pipeline.js';
+import { issueMemberToken } from '../packages/myco-server/src/auth/tokens.js';
+import { callTool, authorizedDefinitionsFor } from '../packages/myco-server/src/mcp/server.js';
+import { authorize, authorizeDeclaration } from '../packages/myco-server/src/auth/authorization.js';
+import { ROUTES, RETIRED_ROUTES } from '../packages/myco-server/src/routes.js';
+import { TOOL_REGISTRY } from '../packages/myco-server/src/mcp/registry.js';
+import { RUN_TOOL_REGISTRY } from '../packages/myco-server/src/mcp/run-surface.js';
+
+const sqlite = seededSqlite();
+const fixture = { sqlite, db: sqliteD1(sqlite) };
+seedMemberRoleAccount(fixture.sqlite);
+const now = Date.now();
+const env: ServerEnv = { db: fixture.db, blobs: { get: async () => null, head: async () => null, put: async () => ({ size: 0 }), delete: async () => {} }, sourceLimit: { limit: async () => ({ success: true }) }, tokenLimit: { limit: async () => ({ success: true }) }, secrets: OWNER_ENV, wrappingKey: wrappingKeyFromText(async () => undefined, 'smoke'), platform: { name: 'self-hosted', capabilities: () => [], classifyError: () => null, classifyBlobFailure: () => 'transient', jobBudget: { calls: 100, wallMs: 1000 } }, harnessCredentialSource: 'worker-login', afterResponse: () => {}, outbound: () => { throw new Error('Unexpected outbound'); } };
+const server = createServer({ now: () => now, sourceOf: () => 'smoke', fetchImpl: () => { throw new Error('Unexpected outbound call'); } });
+const credential = await issueMemberToken(fixture.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
+const ctx = { env, projectId: 'proj_1', principal: { kind: 'member' as const, memberId: 'mem_machine_2', machineId: 'machine_2', tokenId: credential.tokenId }, now };
+const member = { kind: 'member' as const, memberId: 'member', role: 'member' as const, deploymentId: 'a', live: true, transport: 'http' as const };
+const processed = { kind: 'processed' as const, deploymentId: 'a', exists: true };
+assert.equal(authorize(member, 'read', processed), true);
+assert.equal(authorize(member, 'read', { ...processed, deploymentId: 'b' }), false);
+assert.equal(authorizeDeclaration(member, undefined, {}, processed), false);
+for (const role of ['owner', 'admin', 'member'] as const) {
+  assert.equal(authorize({ ...member, role }, 'read', { ...processed, kind: 'raw', uploader: false }), false);
+  assert.equal(authorize({ ...member, role }, 'read', { ...processed, kind: 'raw', uploader: true }), true);
+  assert.equal(authorize({ ...member, role }, 'claimant.edit', { ...processed, kind: 'machine-settings', claimantMemberId: 'other' }), false);
+}
+const run = { ...member, kind: 'run' as const, projectId: 'proj_1', runId: 'run', tokenId: 'token', attempt: 1 };
+const runResource = { ...processed, kind: 'run' as const, projectId: 'proj_1', runId: 'run', tokenId: 'token', attempt: 1 };
+assert.equal(authorize(run, 'execute', runResource), true);
+for (const mismatch of [{ projectId: 'proj_2' }, { runId: 'other' }, { tokenId: 'other' }, { attempt: 2 }]) assert.equal(authorize(run, 'execute', { ...runResource, ...mismatch }), false);
+assert.equal(authorize(member, 'execute', runResource), false);
+assert.equal((await server.handleRequest(new Request('https://smoke/health'), env)).status, 200);
+assert.equal((await server.handleRequest(new Request('https://smoke/spores/list', { method: 'POST', headers: { authorization: `Bearer ${credential.token}`, [PROJECT_HEADER]: 'proj_1', [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) }, body: '{}' }), env)).status, 200);
+const listed = await authorizedDefinitionsFor(ctx);
+assert.ok(listed.some((tool) => tool.name === 'myco_plans'));
+assert.ok(!listed.some((tool) => tool.name === 'myco_run'));
+await callTool(ctx, 'myco_plans', { op: 'list', project: 'proj_1' });
+fixture.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('smoke-agent','Smoke','built-in',1,?)`, [now]);
+for (const [id, actor] of [['own', 'mem_machine_2'], ['other', 'mem_machine_3']]) fixture.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,dispatch_spec,started_at) VALUES ('proj_1',?,'smoke-agent','title-summary','queued',?,?)`, [id, JSON.stringify({ actor }), now]);
+const post = async (id: string) => server.handleRequest(new Request(`https://smoke/api/projects/proj_1/runs/${id}/cancel`, { method: 'POST', headers: { cookie: await ownerCookie(now, MEMBER_SUB), origin: 'https://smoke' } }), env);
+assert.equal((await post('other')).status, 404);
+assert.equal((await post('own')).status, 200);
+assert.equal((fixture.sqlite.query("SELECT status FROM agent_runs WHERE id='other'").get() as { status: string }).status, 'queued');
+const statusRoute = ROUTES.find((route) => route.path.endsWith('/plans/{planKey}/status'))!;
+const statusTool = TOOL_REGISTRY.myco_plans.ops.save.authorization;
+for (const role of ['owner', 'admin', 'member'] as const) {
+  const plan = { ...processed, kind: 'plan' as const };
+  assert.equal(authorizeDeclaration({ ...member, role }, statusRoute.authorization, { status: 'completed' }, plan), true);
+  assert.equal(authorizeDeclaration({ ...member, role, transport: 'mcp' }, statusTool, { id: 'plan', status: 'completed' }, plan), true);
+}
+const coverage = { routes: ROUTES.length, retired: RETIRED_ROUTES.length, memberOps: Object.values(TOOL_REGISTRY).reduce((n, t) => n + Object.keys(t.ops).length, 0), runOps: Object.values(RUN_TOOL_REGISTRY).reduce((n, t) => n + Object.keys(t.ops).length, 0) };
+assert.ok(ROUTES.every((r) => r.authorization !== undefined));
+assert.ok(RETIRED_ROUTES.every((r) => r.authorization.action === 'never'));
+console.log(JSON.stringify({ smoke: 'passed', coverage }));
+fixture.sqlite.close();
