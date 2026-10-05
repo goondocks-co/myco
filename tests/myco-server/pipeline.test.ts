@@ -42,6 +42,7 @@ async function envFor(token: string, opts: EnvOpts = {}) {
         return values[0] === tokenHash ? member : nobody;
       }
       if (sql.includes("key = 'deployment_id'")) return { value: 'dep_pipeline_fixture' };
+      if (sql === 'SELECT member_id FROM member_credentials WHERE id = ?') return values[0] === member.id ? { member_id: 'mem_1' } : null;
       if (sql.includes('FROM members m') && sql.includes('deployment_ownership')) {
         return values[0] === 'mem_1' ? { role: 'member', revoked_at: null, owner: null } : null;
       }
