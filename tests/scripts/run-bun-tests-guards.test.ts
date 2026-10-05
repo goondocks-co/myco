@@ -125,6 +125,7 @@ else if (mode === 'stream-only') {
   await new Promise((resolve) => setTimeout(resolve, 100));
   fs.writeFileSync(file.replace(/\\.junit\\.xml$/, '.log'), '');
 }
+else if (mode === 'held-tail-error') process.stderr.write(' 1 error');
 else if (mode === 'skip-only') console.error(' 0 pass\\n 1 skip\\n 0 fail');
 else console.error(' 1 pass\\n 0 fail');
 if (mode === 'unreadable-log') {
@@ -328,6 +329,58 @@ describe('run-bun-tests guards', () => {
     } finally {
       if (runner && alive(runner.pid!)) runner.kill('SIGKILL');
     }
+  }), RUN_BOUND_MS + 10_000);
+
+  test.skipIf(process.platform === 'win32')('an unterminated failure line remains failed when its active phase is interrupted', () => withReportDir(async (base) => {
+    const bin = fakeBun(base);
+    const reports = path.join(base, 'reports');
+    const ready = path.join(base, 'child.ready');
+    let runner: ChildProcess | undefined;
+    const pending = runRunner(STDIN_FIXTURE, {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      MYCO_RUNNER_REPORT_DIR: reports,
+      FAKE_BUN_MODE: 'held-tail-error',
+      FAKE_BUN_READY_FILE: ready,
+      FAKE_BUN_DELAY_MS: '10000',
+    }, [], (child) => { runner = child; });
+    try {
+      await waitFor(() => fs.existsSync(ready), 30_000, 'unterminated error before interrupt');
+      await waitFor(() => fs.readdirSync(reports).some((name) => {
+        if (!name.startsWith('run-')) return false;
+        const log = path.join(reports, name, 'node-env.log');
+        return fs.existsSync(log) && fs.readFileSync(log, 'utf8').includes(' 1 error');
+      }), 30_000, 'runner to ingest the unterminated error');
+      runner!.kill('SIGTERM');
+      const result = await pending;
+      expect(result.status).toBe(143);
+      const dir = fs.readdirSync(reports).find((name) => name.startsWith('run-'))!;
+      expect(JSON.parse(fs.readFileSync(path.join(reports, dir, '.runner-outcome.json'), 'utf8')).status).toBe('failed');
+    } finally {
+      if (runner && alive(runner.pid!)) runner.kill('SIGKILL');
+    }
+  }), RUN_BOUND_MS + 10_000);
+
+  test.skipIf(process.platform === 'win32')('malformed and unreadable report metadata is preserved with safe diagnostics', () => withReportDir(async (base) => {
+    const bin = fakeBun(base);
+    const reports = path.join(base, 'reports');
+    fs.mkdirSync(reports);
+    const deadPid = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf8' }).pid!;
+    expect(alive(deadPid)).toBe(false);
+    const malformedOwner = path.join(reports, 'run-aaaaaa');
+    const unreadableOwner = path.join(reports, 'run-bbbbbb');
+    const malformedOutcome = path.join(reports, 'run-cccccc');
+    for (const dir of [malformedOwner, unreadableOwner, malformedOutcome]) fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(malformedOwner, '.runner-owner.json'), '{secret: credential-value');
+    fs.mkdirSync(path.join(unreadableOwner, '.runner-owner.json'));
+    fs.writeFileSync(path.join(malformedOutcome, '.runner-owner.json'), JSON.stringify({ pid: deadPid, createdAt: Date.now() - 1000 }));
+    fs.writeFileSync(path.join(malformedOutcome, '.runner-outcome.json'), '{secret: credential-value');
+    const result = await runRunner(STDIN_FIXTURE, { PATH: `${bin}${path.delimiter}${process.env.PATH}`, MYCO_RUNNER_REPORT_DIR: reports });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('owner invalid JSON');
+    expect(result.output).toContain('owner EISDIR');
+    expect(result.output).toContain('outcome invalid JSON');
+    expect(result.output).not.toContain('credential-value');
+    for (const dir of [malformedOwner, unreadableOwner, malformedOutcome]) expect(fs.existsSync(dir)).toBe(true);
   }), RUN_BOUND_MS + 10_000);
 
   test('real overlapping node and DOM phases each load their own preloads', () => withReportDir(async (base) => {

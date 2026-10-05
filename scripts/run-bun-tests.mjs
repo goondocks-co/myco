@@ -32,9 +32,11 @@ let killActiveGroup = null;
 let runReportDir = null;
 let interrupted = false;
 let observedFailure = false;
+let inspectActiveStreamTails = null;
 // However the runner exits (the end of the run, a signal, an uncaught error),
 // the group it was running dies with it and the root goes.
 process.on('exit', () => {
+  inspectActiveStreamTails?.();
   try {
     finishTestTempRun(tempRun, () => {
       try { killActiveGroup?.('SIGKILL'); }
@@ -897,6 +899,11 @@ function ownerIsGone(pid) {
   catch (error) { return error.code === 'ESRCH'; }
 }
 
+function warnReportMetadata(dir, field, error) {
+  const reason = error instanceof SyntaxError ? 'invalid JSON' : (typeof error?.code === 'string' ? error.code : 'invalid shape');
+  console.warn(`[run-bun-tests] WARN: preserving report ${dir}: ${field} ${reason}`);
+}
+
 function pruneRunReports(parent, current, currentOutcome = null) {
   const candidates = { success: [], interrupted: [] };
   for (const name of fs.readdirSync(parent)) {
@@ -907,13 +914,26 @@ function pruneRunReports(parent, current, currentOutcome = null) {
     catch (error) { if (error.code === 'ENOENT') continue; throw error; }
     let owner;
     try { owner = JSON.parse(fs.readFileSync(path.join(dir, REPORT_OWNER_FILE), 'utf8')); }
-    catch { continue; } // Unknown ownership is never inferred from directory age.
-    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(owner.createdAt) || !ownerIsGone(owner.pid)) continue;
+    catch (error) {
+      if (error.code !== 'ENOENT') warnReportMetadata(dir, 'owner', error);
+      continue;
+    }
+    if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(owner.createdAt)) {
+      warnReportMetadata(dir, 'owner', null);
+      continue;
+    }
+    if (!ownerIsGone(owner.pid)) continue;
     let outcome;
     try { outcome = JSON.parse(fs.readFileSync(path.join(dir, REPORT_OUTCOME_FILE), 'utf8')); }
-    catch (error) { if (error.code !== 'ENOENT') continue; }
+    catch (error) {
+      if (error.code !== 'ENOENT') { warnReportMetadata(dir, 'outcome', error); continue; }
+    }
+    if (outcome !== undefined && (!outcome || !['success', 'failed', 'interrupted'].includes(outcome.status) || !Number.isFinite(outcome.finishedAt))) {
+      warnReportMetadata(dir, 'outcome', null);
+      continue;
+    }
     const status = outcome?.status ?? 'interrupted';
-    if (!(status in candidates) || (outcome && !Number.isFinite(outcome.finishedAt))) continue;
+    if (!(status in candidates)) continue;
     candidates[status].push({ dir, time: outcome?.finishedAt ?? owner.createdAt });
   }
   for (const [status, keep] of [['success', SUCCESS_REPORT_RETAIN], ['interrupted', INTERRUPTED_REPORT_RETAIN]]) {
@@ -1244,6 +1264,13 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     }
     const stdoutRef = { value: stdoutTail };
     const stderrRef = { value: stderrTail };
+    function inspectStreamTails() {
+      if (outputHasFailureMarker(stdoutRef.value) || outputHasFailureMarker(stderrRef.value)) {
+        streamFailure = true;
+        observedFailure = true;
+      }
+    }
+    inspectActiveStreamTails = inspectStreamTails;
     child.stdout.on('data', (c) => ingest(c, process.stdout, stdoutRef));
     child.stderr.on('data', (c) => ingest(c, process.stderr, stderrRef));
 
@@ -1290,6 +1317,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       if (settled) return;
       if (process.platform !== 'win32' && child.pid) stopTestProcessGroup(child.pid, 'SIGKILL');
       settled = true;
+      inspectActiveStreamTails = null;
       killActiveGroup = null;
       clearInterval(watchdog);
       clearTimeout(budgetTimer);
@@ -1300,10 +1328,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       const verb = killedForBudget ? 'KILLED (over budget)' : killedForHang ? 'KILLED (wedged)' : 'FINISHED';
       const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
-      if (outputHasFailureMarker(stdoutRef.value) || outputHasFailureMarker(stderrRef.value)) {
-        streamFailure = true;
-        observedFailure = true;
-      }
+      inspectStreamTails();
       appendEvidence(completion);
       if (streamFailure) process.stderr.write(`[run-bun-tests] FAIL: ${label} stream reported a failure or error\n`);
       const outcome = { status: exit || evidenceError || streamFailure ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure };
