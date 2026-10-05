@@ -307,7 +307,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
           openTo={runPath}
         />
       ))}
-      <KeptNote summary={summary} cause={summary.kept[0] === undefined ? null : failureWords(summary.kept[0].failure)} />
+      <KeptNote summary={summary} />
       {searching && !whole && lines.length === 0 && groups.length === 0 && <p className="t-small text-muted">Nothing here matches your search.</p>}
     </OutcomeCard>
   );

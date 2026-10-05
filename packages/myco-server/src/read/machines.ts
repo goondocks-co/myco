@@ -56,13 +56,15 @@ export async function listMachines(
   const [credentials, recent, contacts] = await db.batch([
     db.prepare(`SELECT c.machine_id, COUNT(*) AS credential_count,
           SUM(CASE WHEN ${credentialLive('c')} THEN 1 ELSE 0 END) AS live_count,
-          SUM(CASE WHEN c.id = (SELECT n.id FROM member_credentials n INDEXED BY idx_member_credentials_lineage
-            WHERE n.lineage_root = c.lineage_root AND n.machine_id = c.machine_id ORDER BY n.issued_at DESC, n.id DESC LIMIT 1)
-            THEN c.bytes_written ELSE 0 END) AS bytes_written, MIN(c.lineage_started_at) AS first_seen_at,
+          SUM(CASE WHEN c.lineage_rank = 1 THEN c.bytes_written ELSE 0 END) AS bytes_written,
+          MIN(c.lineage_started_at) AS first_seen_at,
           (SELECT n.revoked_at FROM member_credentials n WHERE n.machine_id = c.machine_id ORDER BY n.issued_at DESC, n.id DESC LIMIT 1) AS newest_revoked_at,
           (SELECT n.revoked_by FROM member_credentials n WHERE n.machine_id = c.machine_id ORDER BY n.issued_at DESC, n.id DESC LIMIT 1) AS newest_revoked_by,
           (SELECT n.runtime_label FROM member_credentials n WHERE n.machine_id = c.machine_id AND ${credentialLive('n')} AND n.runtime_label IS NOT NULL ORDER BY n.issued_at DESC, n.id DESC LIMIT 1) AS live_label
-       FROM member_credentials c WHERE c.machine_id IN (SELECT value FROM json_each(?)) GROUP BY c.machine_id`).bind(nowMs, nowMs, ids),
+       FROM (SELECT c.machine_id, c.member_id, c.revoked_at, c.expires_at, c.bytes_written, c.lineage_started_at,
+          ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root ORDER BY c.issued_at DESC, c.id DESC) AS lineage_rank
+         FROM member_credentials c INDEXED BY idx_member_credentials_machine
+         WHERE c.machine_id IN (SELECT value FROM json_each(?))) c GROUP BY c.machine_id`).bind(nowMs, nowMs, ids),
     db.prepare(`SELECT machine_id, agent, MAX(last_received_at) AS last_event_at, project_id FROM sessions
        WHERE last_received_at >= ? AND machine_id IN (SELECT value FROM json_each(?))
        GROUP BY machine_id, agent ORDER BY last_event_at DESC, machine_id, agent`).bind(nowMs - CAPTURE_WINDOW_MS, ids),

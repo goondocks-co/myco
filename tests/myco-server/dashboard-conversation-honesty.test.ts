@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { turnDetail, type TurnDetail } from '@myco-server-worker/read/turns.js';
+import { setPlanStatus } from '@myco-server-worker/read/plans.js';
 import type { Page } from '@myco-server-worker/read/scope.js';
 import { sqliteEnv, uuid } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
@@ -65,6 +66,26 @@ describe('dashboard conversation honesty', () => {
       expect((await worker.fetch(await asOwner(`${e.base}/${uuid(1)}${suffix}`), { ...e.env, ...OWNER_ENV })).status).toBe(400);
     }
     expect((await worker.fetch(await asOwner(`${e.base}/${uuid(99)}?collection=responses`), { ...e.env, ...OWNER_ENV })).status).toBe(404);
+  });
+
+  it('gate 1643.1: plan edits and equal-time inserts cannot move displayed identities into a continuation', async () => {
+    const e = fixture();
+    e.prompt(1);
+    const addPlan = (id: number) => e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, prompt_id, title, content, created_at, updated_at, token_id, received_at)
+      VALUES ('proj_1',?,'conversation',?,'m1','hash','draft',?,'Plan','Initial content',1,1,'tok_1',1)`, [uuid(id), `plan-${id}`, uuid(1)]);
+    for (let i = 1; i <= 51; i++) addPlan(3000 + i);
+    const first = await e.read<TurnDetail>(`${e.base}/${uuid(1)}`);
+    expect(first.plans).toHaveLength(50);
+    expect(await setPlanStatus(e.db, { projectId: 'proj_1' }, uuid(3001), 'completed', 'member', 100)).toBe(true);
+    e.sqlite.run('UPDATE plans SET content = ?, created_at = 0 WHERE plan_key = ?', ['Edited content', uuid(3001)]);
+    e.sqlite.run('UPDATE plans SET created_at = 0 WHERE plan_key = ?', [uuid(3051)]);
+    addPlan(3052);
+    const next = await e.read<Page<{ planKey: string }>>(`${e.base}/${uuid(1)}?collection=plans&cursor=${encodeURIComponent(first.cursors.plans!)}`);
+    expect(next.rows.map((plan) => plan.planKey)).toEqual([uuid(3051), uuid(3052)]);
+    expect(next.cursor).toBeNull();
+    expect(new Set([...first.plans, ...next.rows].map((plan) => plan.planKey)).size).toBe(52);
+    const refreshed = await e.read<TurnDetail>(`${e.base}/${uuid(1)}`);
+    expect(refreshed.plans[0]).toMatchObject({ planKey: uuid(3001), status: 'completed', content: 'Edited content' });
   });
 
   it('gate 1643.2: reads newest turns directly and resolves named turns across a 5,001-turn session', async () => {

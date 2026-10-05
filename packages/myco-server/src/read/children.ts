@@ -6,12 +6,12 @@ import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 import { progressOf } from './plans.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
-/** A child projection read: its table, the columns to select, and the id column that breaks a tie on `created_at`. Ordered oldest-first — a session reads forward in time. */
+/** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
 export interface ChildQuery<T> {
   table: string;
   columns: string;
   idColumn: string;
-  /** The column the table's session index orders by. `plans` carries BOTH `created_at` and `updated_at` and is indexed on the latter, so each table names its own. */
+  /** The numeric ordering expression paired with the identity in a page cursor. */
   orderColumn: string;
   map: (row: Record<string, unknown>) => T;
 }
@@ -139,6 +139,9 @@ export const PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = {
     updatedBy: (r.updated_by as string | null) ?? null,
   }),
 };
+
+/** A fixed numeric cursor prefix leaves turn plans ordered solely by their immutable plan key. */
+export const TURN_PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = { ...PLAN_QUERY, orderColumn: 'CAST(0 AS INTEGER)' };
 
 export const ATTACHMENT_QUERY: ChildQuery<Omit<AttachmentRow, 'orderedAt'>> = {
   table: 'attachments', columns: 'attachment_id, prompt_id, blob_key, media_type, byte_size, description, created_at', idColumn: 'attachment_id', orderColumn: 'created_at',

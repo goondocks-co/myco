@@ -8,7 +8,7 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { injectionForPrompt, type PromptInjection } from '../core/injection.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
-import { ATTACHMENT_QUERY, PLAN_QUERY, RESPONSE_QUERY, listChildren, listChildrenByPrompt, type AttachmentRow, type PlanRow, type ResponseRow } from './children.js';
+import { ATTACHMENT_QUERY, TURN_PLAN_QUERY, RESPONSE_QUERY, listChildren, listChildrenByPrompt, type AttachmentRow, type PlanRow, type ResponseRow } from './children.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** How much of a prompt's inline text the list row carries. */
@@ -59,7 +59,7 @@ export interface TurnDetail {
   prompt: TurnPrompt;
   responses: ResponseRow[];
   attachments: AttachmentRow[];
-  /** The plans this prompt produced, oldest update first. */
+  /** The plans this prompt produced, in immutable key order. */
   plans: PlanRow[];
   /** The observations Myco served with this prompt, with their spores hydrated; null when it served none. */
   injection: PromptInjection | null;
@@ -161,7 +161,7 @@ export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionI
   const [responses, attachments, plans, injection, children] = await Promise.all([
     listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId }),
     listChildren(db, ATTACHMENT_QUERY, scope, sessionId, { ...body, promptId }),
-    listChildren(db, PLAN_QUERY, scope, sessionId, { ...body, promptId }),
+    listChildren(db, TURN_PLAN_QUERY, scope, sessionId, { ...body, promptId }),
     injectionForPrompt(db, scope, sessionId, promptId),
     listSteeringChildren(db, scope, sessionId, promptId, body),
   ]);
@@ -194,7 +194,7 @@ export function turnCollection(db: RelationalStore, scope: ReadScope, sessionId:
   switch (collection) {
     case 'responses': return listChildren(db, RESPONSE_QUERY, scope, sessionId, bounded);
     case 'attachments': return listChildren(db, ATTACHMENT_QUERY, scope, sessionId, bounded);
-    case 'plans': return listChildren(db, PLAN_QUERY, scope, sessionId, bounded);
+    case 'plans': return listChildren(db, TURN_PLAN_QUERY, scope, sessionId, bounded);
     case 'children': return listSteeringChildren(db, scope, sessionId, promptId, bounded);
   }
 }

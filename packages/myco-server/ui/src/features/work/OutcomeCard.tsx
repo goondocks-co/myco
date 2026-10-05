@@ -211,17 +211,23 @@ function listTimes(times: readonly string[]): string {
   return `${times.slice(0, 2).join(', ')} and ${times.length - 2} more`;
 }
 
-/** Runs that stopped early but kept what they saved: one quiet line, since there is nothing to do. */
-export function KeptNote({ summary, cause }: { summary: Pick<KindSummary, 'kept'>; cause: string | null }) {
-  const { kept } = summary;
-  if (kept.length === 0) return null;
-  const spores = kept.reduce((total, run) => total + run.outcome.spores, 0);
-  const one = kept.length === 1;
+/** Full-window count of runs that stopped after saving output, with a cause only when its run is listed. */
+export function KeptNote({ summary }: { summary: Pick<KindSummary, 'kind' | 'failedWithOutput' | 'kept'> }) {
+  const { kind, kept, failedWithOutput } = summary;
+  if (failedWithOutput === 0) return null;
+  const one = failedWithOutput === 1;
+  const cause = one && kept.length === 1 ? failureWords(kept[0]!.failure) : null;
   const why = cause === null ? null : cause.trim().replace(/\.$/, '');
+  const saved = {
+    learn: 'spores saved from recent sessions',
+    title: 'session titles and summaries written',
+    map: 'code map updates written',
+    seed: 'spores saved from the project’s code',
+  }[kind];
   return (
     <p className="rounded-control border border-line bg-surface-2 px-s3 py-s2 t-small text-ink-2" data-kept="">
-      {one ? 'One run' : `${kept.length} runs`} stopped early{why === null || why === '' ? '.' : <>: {why.charAt(0).toLowerCase()}{why.slice(1)}.</>}{' '}
-      {one ? 'It' : 'They'} kept the {count(spores, 'spore')} {one ? 'it' : 'they'} had saved, so there’s nothing to do.
+      {one ? 'One' : failedWithOutput.toLocaleString()} {runNoun(kind, failedWithOutput)} stopped early{why === null || why === '' ? '.' : <>: {why.charAt(0).toLowerCase()}{why.slice(1)}.</>}{' '}
+      The {saved} are kept.
     </p>
   );
 }

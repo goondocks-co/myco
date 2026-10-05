@@ -728,6 +728,83 @@ describe('the session reading page', () => {
     expect(screen.getByText('Retained reply 101')).toBeTruthy();
   });
 
+  for (const refresh of ['cached', 'failed', 'fresh'] as const) {
+    it(`gate 1643.1: inserted first-page replies appear once with ${refresh} parent detail and retained continuations`, async () => {
+      let changed = false;
+      const reply = (id: number) => ({ responseId: `insert-reply-${id}`, promptId: P1, text: `Inserted-page reply ${id}`, blobKey: null, createdAt: NOW, orderedAt: NOW });
+      const original = Array.from({ length: 61 }, (_, i) => reply(i + 1));
+      const inserted = reply(25.5);
+      const current = () => changed ? [...original.slice(0, 25), inserted, ...original.slice(25)] : original;
+      const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+      const body = () => Response.json({
+        prompt: { promptId: P1, origin: 'user', text: 'A turn with shifting pages', blobKey: null, createdAt: NOW },
+        responses: current().slice(0, 50), attachments: [], plans: [], children: [], injection: null,
+        cursors: { responses: changed ? 'new' : 'old', attachments: null, plans: null, children: null },
+      });
+      const { requested } = server(routes({
+        '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ responseCount: 62, toolCallCount: 0 })]),
+        [turnPath]: () => changed && refresh === 'failed' ? new Response(null, { status: 503 }) : body(),
+        [`${turnPath}?collection=responses`]: () => page(current().slice(0, 50), changed ? 'new' : 'old'),
+        [`${turnPath}?collection=responses&cursor=old`]: () => page(original.slice(50)),
+        [`${turnPath}?collection=responses&cursor=new`]: () => page([current()[49]!, ...current().slice(50)]),
+      }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+      mount('/p/x/sessions/s1', client);
+      await screen.findByText('A turn with shifting pages');
+      expect(requested.some((path) => path.includes('collection='))).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Show more replies' }));
+      expect(await screen.findByText('Inserted-page reply 61')).toBeTruthy();
+      changed = true;
+      if (refresh === 'fresh') {
+        await act(async () => { await client.invalidateQueries({ queryKey: ['turn', 'x', 's1', P1], exact: true }); });
+      } else {
+        cleanup();
+        if (refresh === 'failed') client.setQueryDefaults(['turn', 'x', 's1', P1], { staleTime: 0 });
+        mount('/p/x/sessions/s1', client);
+      }
+      expect(await screen.findByText('Inserted-page reply 25.5')).toBeTruthy();
+      await waitFor(() => expect(screen.getAllByTestId('turn-response')).toHaveLength(62));
+      for (const row of [...original, inserted]) expect(screen.getAllByText(row.text)).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: 'Show more replies' })).toBeNull();
+      if (refresh === 'failed') expect(await screen.findByText(/Showing the last successful this turn read/)).toBeTruthy();
+      if (refresh === 'cached') expect(requested.filter((path) => path === turnPath)).toHaveLength(1);
+    });
+  }
+
+  it('gate 1643.1: overlapping plan identities retain the latest status and every final plan', async () => {
+    const plan = (id: number, status = 'draft') => ({ planKey: `merge-plan-${id}`, promptId: P1, title: `Merge plan ${id}`, status, content: null, blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW });
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ planCount: 51, toolCallCount: 0 })]),
+      [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'Plans sharing page boundaries', blobKey: null, origin: 'user', createdAt: NOW }, responses: [], attachments: [], children: [], injection: null, plans: Array.from({ length: 50 }, (_, i) => plan(i + 1)), cursors: { plans: 'next' } }),
+      [`${turnPath}?collection=plans&cursor=next`]: () => page([plan(1, 'completed'), plan(51)]),
+    }));
+    mount('/p/x/sessions/s1');
+    await screen.findByText('Plans sharing page boundaries');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Merge plan 51')).toBeTruthy();
+    expect(screen.getAllByText('Merge plan 1')).toHaveLength(1);
+    expect(screen.getByText('Merge plan 1').closest('[data-plan-line]')?.getAttribute('data-plan-line')).toBe('completed');
+    expect(screen.getByTestId('turn-plans').children).toHaveLength(51);
+  });
+
+  it('gate 1643.3: an initial turn-body failure offers a manual retry that reads the body', async () => {
+    let failed = true;
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ toolCallCount: 0 })]),
+      [turnPath]: () => failed ? new Response(null, { status: 503 }) : Response.json({ prompt: { promptId: P1, text: 'Recovered turn', blobKey: null, origin: 'user', createdAt: NOW }, responses: [{ responseId: 'recovered', text: 'Recovered reply', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null }),
+    }));
+    mount('/p/x/sessions/s1');
+    const card = await screen.findByTestId(`turn-${P1}`);
+    expect(await within(card).findByText(/Couldn’t read this turn/)).toBeTruthy();
+    failed = false;
+    fireEvent.click(within(card).getByRole('button', { name: 'Retry' }));
+    expect(await within(card).findByText('Recovered reply')).toBeTruthy();
+    expect(within(card).queryByRole('alert')).toBeNull();
+    expect(requested.filter((path) => path === turnPath)).toHaveLength(2);
+  });
+
   it('gate 1643.2: opens 5,001 turns at the newest page, then reads earlier pages only on request', async () => {
     const many = Array.from({ length: 5001 }, (_, i) => turn({ promptId: `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`, preview: `prompt ${i}`, createdAt: NOW - (5001 - i) * MINUTE, toolCallCount: 0, responseCount: 0 }));
     const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc';

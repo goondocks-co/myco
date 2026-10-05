@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { Button, Disclosure, ExternalLink, ItemLink, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
+import { Button, Disclosure, ExternalLink, ItemLink, Lightbox, ReadState, StatusChip, TypeChip } from '../../design';
 import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow, type TurnCollection } from '../../hooks/use-sessions';
 import { useTurnCollection } from '../../hooks/use-turn-collection';
 import { cn } from '../../lib/cn';
@@ -48,11 +48,11 @@ function useSeen<T extends Element>(): [RefObject<T | null>, boolean] {
   return [ref, seen];
 }
 
-function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cursor, label, children }: {
+function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cursor, rowKey, label, children }: {
   projectId: string; sessionId: string; promptId: string; collection: TurnCollection; initial: T[]; cursor?: string | null;
-  label: string; children: (rows: T[]) => ReactNode;
+  rowKey: (row: T) => string; label: string; children: (rows: T[]) => ReactNode;
 }) {
-  const pages = useTurnCollection(projectId, sessionId, promptId, collection, initial, cursor);
+  const pages = useTurnCollection(projectId, sessionId, promptId, collection, initial, cursor, rowKey);
   return <>
     {children(pages.rows)}
     {pages.error && <p role="alert" className="t-small text-bad">More {label} could not be read. The items above are still available.</p>}
@@ -108,7 +108,7 @@ function SteeringChild({ projectId, sessionId, child }: { projectId: string; ses
       </div>
       <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} body={{ kind: 'prompt', id: child.prompt.promptId }} />
       <ToolCalls projectId={projectId} sessionId={sessionId} promptId={child.prompt.promptId} total={child.toolCallCount} />
-      <TurnPages projectId={projectId} sessionId={sessionId} promptId={child.prompt.promptId} collection="responses" initial={child.responses} cursor={child.responsesCursor} label="replies">
+      <TurnPages projectId={projectId} sessionId={sessionId} promptId={child.prompt.promptId} collection="responses" initial={child.responses} cursor={child.responsesCursor} rowKey={(row) => row.responseId} label="replies">
         {(rows) => <Replies projectId={projectId} responses={rows} />}
       </TurnPages>
     </div>
@@ -188,34 +188,26 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
         <PromptText projectId={projectId} turn={turn} text={body === undefined ? undefined : body.prompt.text} blobKey={body?.prompt.blobKey} />
       </div>
       <div data-testid="turn-body" className="flex flex-col gap-s4 pl-s6">
-        {body === undefined ? (
-          detail.error
-            ? <p className="t-small text-bad">This turn could not be read.</p>
-            : (turn.responseCount > 0 || turn.toolCallCount > 0) && <div role="status" aria-label="Loading the turn" className="flex flex-col gap-s2"><Skeleton className="h-s4 w-3/4" /><Skeleton className="h-s4 w-1/2" /></div>
-        ) : (
-          <>
-            {detail.error && <div role="alert" className="t-small text-bad">
-              This turn could not be refreshed. The content below is from the last successful read.
-              <Button variant="ghost" size="sm" onClick={() => { void detail.refetch(); }}>Retry reading this turn</Button>
-            </div>}
-            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="attachments" initial={body.attachments} cursor={body.cursors?.attachments} label="attachments">
+        <ReadState data={body} pending={detail.isPending} error={detail.error} onRetry={() => { void detail.refetch(); }} label="this turn">
+          {(body) => <>
+            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="attachments" initial={body.attachments} cursor={body.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">
               {(rows) => <Attachments projectId={projectId} attachments={rows} />}
             </TurnPages>
             {body.injection !== null && <Injection projectId={projectId} injection={body.injection} />}
-            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="plans" initial={body.plans} cursor={body.cursors?.plans} label="plans">
+            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="plans" initial={body.plans} cursor={body.cursors?.plans} rowKey={(row) => row.planKey} label="plans">
               {(rows) => rows.length > 0 && <div className="flex flex-col gap-s2" data-testid="turn-plans">
                 {rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={Date.now()} />)}
               </div>}
             </TurnPages>
             <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />
-            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" initial={body.children} cursor={body.cursors?.children} label="steering prompts">
+            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
               {(rows) => rows.map((child) => <SteeringChild key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} child={child} />)}
             </TurnPages>
-            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} label="replies">
+            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} rowKey={(row) => row.responseId} label="replies">
               {(rows) => <Replies projectId={projectId} responses={rows} />}
             </TurnPages>
-          </>
-        )}
+          </>}
+        </ReadState>
       </div>
     </li>
   );

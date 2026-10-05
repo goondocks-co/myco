@@ -95,13 +95,30 @@ async function machineHistory(target: ParityTarget, machineId: string, memberId:
     expect(response.status).toBe(200);
     return await response.json() as T;
   };
-  try {
-    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<5000)
+  const addHistory = (from: number, to: number) => target.sql(`WITH RECURSIVE n(i) AS (SELECT ${from} UNION ALL SELECT i+1 FROM n WHERE i<${to})
       INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, revoked_by, bytes_written, lineage_root, lineage_started_at)
       SELECT ${lit(credentialPrefix)} || printf('%04d',i), ${lit(memberId)}, ${lit(machineId)},
-        ${lit(`hash_${credentialPrefix}`)} || printf('%04d',i), ${now - 1_000_000} + i, ${now - 1}, ${now - 1}, ${lit(memberId)}, 1,
-        ${lit(credentialPrefix)} || printf('%04d',i), ${now - 1_000_000} + i FROM n`);
-    const summary = await read<{ machines: Machine[]; cursor: string | null }>('/api/machines?limit=50');
+        ${lit(`hash_${credentialPrefix}`)} || printf('%04d',i), ${now - 1_000_000} + i, ${now - 1}, ${now - 1}, ${lit(memberId)}, i,
+        ${lit(`${credentialPrefix}lineage`)}, ${now - 1_000_000} FROM n`);
+  const summaryPath = '/api/machines?limit=50';
+  const measuredSummary = async () => {
+    await read<{ machines: Machine[] }>(summaryPath);
+    const samples: number[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const began = performance.now();
+      await read<{ machines: Machine[] }>(summaryPath);
+      samples.push(performance.now() - began);
+    }
+    return Math.min(...samples);
+  };
+  try {
+    await addHistory(1, 500);
+    const smallMs = await measuredSummary();
+    await addHistory(501, 5_000);
+    const largeMs = await measuredSummary();
+    console.info(`[machines parity ${target.name}] one lineage: 500 credentials ${smallMs.toFixed(1)} ms; 5,000 credentials ${largeMs.toFixed(1)} ms`);
+    expect(largeMs).toBeLessThan(smallMs * 15 + 1_000);
+    const summary = await read<{ machines: Machine[]; cursor: string | null }>(summaryPath);
     expect(summary.machines).toHaveLength(1);
     expect(summary.cursor).toBeNull();
     expect(summary.machines[0]).toMatchObject({

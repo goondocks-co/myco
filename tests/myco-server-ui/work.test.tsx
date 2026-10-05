@@ -175,6 +175,47 @@ describe('Myco’s work', () => {
     expect(seed.textContent).not.toContain('Read the project’s code');
   });
 
+  for (const { kind, task, output, noun, saved } of [
+    { kind: 'learn', task: 'extract-curate', output: { spores: 1, sessions: 1, maps: 0 }, noun: 'learning run', saved: 'spores saved from recent sessions' },
+    { kind: 'seed', task: 'vault-seed', output: { spores: 1, sessions: 0, maps: 0 }, noun: 'run over the code', saved: 'spores saved from the project’s code' },
+    { kind: 'title', task: 'title-summary', output: { spores: 0, sessions: 1, maps: 0 }, noun: 'titling run', saved: 'session titles and summaries written' },
+    { kind: 'map', task: 'canopy-map', output: { spores: 0, sessions: 0, maps: 1 }, noun: 'code map update', saved: 'code map updates written' },
+  ] as const) {
+    it(`keeps the full-window saved-output failure visible for ${kind} beyond the 200-run page`, async () => {
+      const runs = Array.from({ length: 200 }, (_, i) => workRun({
+        id: `run_${kind}_${i}`, kind, task, at: NOW - i * MINUTE, outcome: output,
+      }));
+      const cursor = JSON.stringify([runs[199]!.at, P, runs[199]!.id]);
+      const older = workRun({
+        id: `run_${kind}_older`, kind, task, status: 'failed', result: 'failed_with_output',
+        at: NOW - 201 * MINUTE, outcome: output,
+        failure: { cause: 'Stopped after saving output', source: 'error' },
+      });
+      const first: WorkAnswer = {
+        ...WEEK_WORK,
+        outcomes: [outcome({
+          kind, task, runs: { completed: 200, failed: 1 }, failedWithOutput: 1,
+          outcome: { spores: 201 * output.spores, sessions: 201 * output.sessions, maps: 201 * output.maps },
+        })],
+        runs, truncated: true, cursor,
+      };
+      server({
+        ...week({ work: first }),
+        '/api/work': (url) => Response.json(url.searchParams.get('cursor') === cursor
+          ? { ...first, runs: [older], truncated: false, cursor: null }
+          : first),
+      });
+      mount('/work');
+      const panel = await findCard(kind);
+      await waitFor(() => expect(panel.querySelector('[data-kept]')).not.toBeNull());
+      expect(panel.querySelector('[data-kept]')!.textContent).toBe(`One ${noun} stopped early. The ${saved} are kept.`);
+      fireEvent.click(within(document.querySelector('[data-work-evidence]') as HTMLElement).getByRole('button', { name: 'Show more' }));
+      await waitFor(() => expect(panel.querySelectorAll('[data-run-line]')).toHaveLength(201));
+      expect(panel.querySelector('[data-kept]')!.textContent).toContain(`One ${noun} stopped early`);
+      expect(panel.querySelector('[data-kept]')!.textContent).toContain(`The ${saved} are kept.`);
+    });
+  }
+
   it('surfaces a failed per-task run read with a retry', async () => {
     server({
       ...week(),
@@ -216,7 +257,7 @@ describe('Myco’s work', () => {
     expect(lines[2]!.textContent).toContain('Ada’s studio Mac · by Lin');
     expect(within(lines[2]!).getByRole('link').getAttribute('href')).toBe(`/p/${P}/work/runs/run_a2c4e6f801`);
     // The run that stopped early but kept its spores is a quiet note: nothing to do.
-    expect(learn.querySelector('[data-kept]')!.textContent).toBe('One run stopped early: saved 2 spores from 3 sessions before the turn budget ran out. It kept the 2 spores it had saved, so there’s nothing to do.');
+    expect(learn.querySelector('[data-kept]')!.textContent).toBe('One learning run stopped early: saved 2 spores from 3 sessions before the turn budget ran out. The spores saved from recent sessions are kept.');
     expect(learn.querySelector('[data-failure]')).toBeNull();
 
     // Titles: the sessions by their titles.

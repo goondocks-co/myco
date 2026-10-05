@@ -261,7 +261,9 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       const read = await plans((db) => listMachines(db, 1_790_000_000_000, scope), true);
       for (const { store, sql, plan } of read) {
         const walks = /^SCAN (?:mc(?: USING INDEX idx_machine_claims_claimed)?|machine_claims|w USING INDEX idx_worker_contacts_seen|json_each VIRTUAL TABLE INDEX 1:)$/;
-        expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter((step) => walks.test(step)) });
+        const boundedWindow = sql.includes('ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root');
+        const allowed = (step: string) => walks.test(step) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
+        expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter(allowed) });
       }
       for (const { store, plan } of reading(read, 'sessions')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH sessions USING COVERING INDEX idx_sessions_capture \(last_received_at>\?\)/) });
@@ -269,6 +271,10 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
       for (const { store, plan } of reading(read, 'member_credentials')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });
       }
+      const summary = read.find(({ sql }) => sql.includes('AS credential_count'));
+      expect(summary?.sql).toMatch(/ROW_NUMBER\(\) OVER \(PARTITION BY c\.machine_id, c\.lineage_root ORDER BY c\.issued_at DESC, c\.id DESC\)/);
+      expect(summary?.sql).not.toContain('INDEXED BY idx_member_credentials_lineage');
+      expect(summary?.plan).not.toContain('idx_member_credentials_lineage');
       for (const { store, plan } of reading(read, 'worker_contacts')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX sqlite_autoindex_member_credentials_1 \(id=\?\)[\s\S]*SEARCH r USING (?:COVERING )?INDEX idx_agent_runs_lease \(leased_by=\?\)/) });
       }
