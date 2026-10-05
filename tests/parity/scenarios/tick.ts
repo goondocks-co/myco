@@ -1,3 +1,4 @@
+import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET } from '@myco-server-worker/core/raw-backfill.js';
 import { expect } from 'bun:test';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { CHAINED_WAKE_MS } from '@myco-server-worker/core/tick.js';
@@ -62,6 +63,11 @@ export const tick: ParityScenario = {
     };
     const rows = () => target.sql(`SELECT id, status, error FROM agent_runs WHERE id LIKE 'tick-%' ORDER BY id`);
 
+    const backfillRows = RAW_BACKFILL_BATCH * Math.floor(RAW_BACKFILL_BUDGET.calls / 6) + 1;
+    await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_tick_backfill', 'tick backfill', ${now})`);
+    await target.sql(`WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ${backfillRows})
+      INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation)
+      SELECT 'proj_tick_backfill', printf('%064x', i), 1, 'text/plain', ${lit(credential!.id)}, ${now}, '00000000-0000-4000-8000-000000000001' FROM seq`);
     await target.sql(`UPDATE raw_provenance_backfill SET source = 0, cursor_project = '', cursor_id = '', complete = 0 WHERE id = 1`);
     const first = await wake();
     // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.

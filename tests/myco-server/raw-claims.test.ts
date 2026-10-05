@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { CHAINED_WAKE_MS, engineAssertions, runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
-import { rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
+import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { bootstrapOwnership, claimUnknownRaw, rawClaimPreview, ownershipPreview } from '@myco-server-worker/core/raw-claims.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -78,6 +78,10 @@ describe('explicit owner claim of missing raw uploader', () => {
   it('continues pending provenance work on a quiet Deployment without a dashboard activity stamp', async () => {
     const e = sqliteEnv();
     try {
+      const rows = RAW_BACKFILL_BATCH * Math.floor(RAW_BACKFILL_BUDGET.calls / 6) + 1;
+      e.sqlite.exec(`WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ${rows})
+        INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation)
+        SELECT 'proj_1', printf('%064x', i), 1, 'text/plain', 'lost-token', 0, '00000000-0000-4000-8000-000000000001' FROM seq`);
       e.sqlite.run('UPDATE raw_provenance_backfill SET complete = 0 WHERE id = 1');
       const now = Date.now();
       expect(await engineAssertions(e.serverEnv, now)).toContainEqual({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
