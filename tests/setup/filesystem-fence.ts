@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { protectedAgentPaths } from './protected-agent-paths.js';
@@ -52,11 +53,30 @@ function resolvedTarget(target: string): string {
 }
 
 type FenceHit = { path: string; boundary: 'home' | 'temp' };
+const descriptorPaths = new Map<number, string[]>();
+function descriptorTargets(target: unknown): string[] {
+  if (typeof target === 'string' || target instanceof URL || Buffer.isBuffer(target)) {
+    const absolute = path.resolve(target instanceof URL ? fileURLToPath(target) : target.toString());
+    return [absolute, resolvedTarget(absolute)];
+  }
+  return [];
+}
 function within(target: string, root: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 function offending(p: unknown, includesParents = false): FenceHit | null {
+  const fd = typeof p === 'number' ? p
+    : p !== null && typeof p === 'object' && 'fd' in p && typeof p.fd === 'number' ? p.fd : undefined;
+  if (fd !== undefined) {
+    const targets = descriptorPaths.get(fd);
+    if (!targets) throw new Error(`TEST SAFETY: mutation through untracked file descriptor ${fd} was blocked. Open files through fenced fs.`);
+    for (const target of targets) {
+      const hit = offending(target, includesParents);
+      if (hit) return hit;
+    }
+    return null;
+  }
   let raw: string;
   if (typeof p === 'string') raw = p;
   else if (p instanceof URL) raw = fileURLToPath(p);
@@ -94,17 +114,34 @@ function deny(fnName: string, hit: FenceHit): never {
   );
 }
 type AnyFn = (...a: unknown[]) => unknown;
+function anonymousOutputStream(name: string, fd: unknown): boolean {
+  if ((fd !== 1 && fd !== 2) || descriptorPaths.has(fd) || !/^(write|writeSync|writev|writevSync)$/.test(name)) return false;
+  const stat = fs.fstatSync(fd);
+  if (!stat.isFIFO() && !stat.isSocket()) return false;
+  if (process.platform === 'linux') return /^(?:pipe|socket):\[\d+\]$/.test(originalReadlink(`/proc/self/fd/${fd}`));
+  return stat.nlink === 0 || process.platform === 'win32';
+}
 function wrap(mod: Record<string, AnyFn>, name: string, argIdxs: number[]) {
   const orig = mod[name];
   if (typeof orig !== 'function') return;
   mod[name] = function (this: unknown, ...args: unknown[]) {
-    for (const i of argIdxs) { const hit = offending(args[i], /^(rename|rm|rmdir)/.test(name)); if (hit) deny(name, hit); }
+    for (const i of argIdxs) {
+      if (anonymousOutputStream(name, args[i])) continue;
+      const hit = offending(args[i], /^(rename|rm|rmdir|cp$|cpSync$)/.test(name));
+      if (hit) deny(name, hit);
+    }
     return orig.apply(this, args);
   } as AnyFn;
 }
 const FS = fs as unknown as Record<string, AnyFn>;
+function writableFlags(flags: unknown): boolean {
+  return typeof flags === 'number'
+    ? (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND)) !== 0
+    : typeof flags === 'string' && /[wa+]/.test(flags);
+}
 // single-path mutators → guard arg0
 for (const n of ['writeFileSync','appendFileSync','mkdirSync','rmSync','rmdirSync','unlinkSync','chmodSync','chownSync','truncateSync','lchmodSync','lchownSync','mkdtempSync','utimesSync','lutimesSync']) wrap(FS, n, [0]);
+for (const n of ['writeSync', 'writevSync', 'fchmodSync', 'fchownSync', 'ftruncateSync', 'futimesSync']) wrap(FS, n, [0]);
 // two-path → guard the destination (and both for rename)
 wrap(FS, 'copyFileSync', [1]);
 wrap(FS, 'cpSync', [1]);
@@ -116,17 +153,39 @@ wrap(FS, 'renameSync', [0, 1]); // moving a protected path away is also a mutati
   const origOpen = FS.openSync;
   if (typeof origOpen === 'function') {
     FS.openSync = function (this: unknown, ...args: unknown[]) {
-      const f = typeof args[1] === 'string' ? args[1] : '';
-      const isWrite = typeof args[1] === 'number' ? true : /[wa+]/.test(f);
-      if (isWrite) { const hit = offending(args[0]); if (hit) deny('openSync', hit); }
-      return origOpen.apply(this, args);
+      if (writableFlags(args[1])) { const hit = offending(args[0]); if (hit) deny('openSync', hit); }
+      const targets = descriptorTargets(args[0]);
+      const fd = origOpen.apply(this, args) as number;
+      descriptorPaths.set(fd, targets);
+      return fd;
     } as AnyFn;
   }
 }
-// createWriteStream opens for writing on call — guard arg0
-wrap(FS, 'createWriteStream', [0]);
+// Stream descriptors retain their opening targets.
+{
+  const original = fs.createReadStream;
+  fs.createReadStream = ((target, options) => {
+    const targets = descriptorTargets(target);
+    const stream = original(target, options);
+    stream.on('open', (fd: number) => descriptorPaths.set(fd, targets));
+    return stream;
+  }) as typeof fs.createReadStream;
+}
+{
+  const original = fs.createWriteStream;
+  fs.createWriteStream = ((target, options) => {
+    const fd = typeof options === 'object' ? options?.fd : undefined;
+    const hit = offending(target) ?? (anonymousOutputStream('write', fd) ? null : offending(fd));
+    if (hit) deny('createWriteStream', hit);
+    const targets = descriptorTargets(target);
+    const stream = original(target, options);
+    stream.on('open', (fd: number) => descriptorPaths.set(fd, targets));
+    return stream;
+  }) as typeof fs.createWriteStream;
+}
 // callback-form fs writers — same path-arg indices as their sync counterparts
 for (const n of ['writeFile','appendFile','mkdir','rm','rmdir','unlink','chmod','chown','truncate','mkdtemp','utimes','lutimes','lchmod','lchown']) wrap(FS, n, [0]);
+for (const n of ['write', 'writev', 'fchmod', 'fchown', 'ftruncate', 'futimes']) wrap(FS, n, [0]);
 wrap(FS, 'copyFile', [1]);
 wrap(FS, 'cp', [1]);
 wrap(FS, 'symlink', [1]);
@@ -137,12 +196,32 @@ wrap(FS, 'rename', [0, 1]);
   const origOpenCb = FS.open;
   if (typeof origOpenCb === 'function') {
     FS.open = function (this: unknown, ...args: unknown[]) {
-      const f = typeof args[1] === 'string' ? args[1] : '';
-      const isWrite = typeof args[1] === 'number' ? true : /[wa+]/.test(f);
-      if (isWrite) { const hit = offending(args[0]); if (hit) deny('open', hit); }
+      if (writableFlags(args[1])) { const hit = offending(args[0]); if (hit) deny('open', hit); }
+      const targets = descriptorTargets(args[0]);
+      const callback = args[args.length - 1] as (error: NodeJS.ErrnoException | null, fd: number) => void;
+      if (typeof callback !== 'function') return origOpenCb.apply(this, args);
+      args[args.length - 1] = (error: NodeJS.ErrnoException | null, fd: number) => {
+        if (!error) descriptorPaths.set(fd, targets);
+        callback(error, fd);
+      };
       return origOpenCb.apply(this, args);
     } as AnyFn;
   }
+}
+{
+  const original = fs.closeSync;
+  fs.closeSync = (fd) => { original(fd); descriptorPaths.delete(fd); };
+  const originalCallback = FS.close!;
+  FS.close = function (this: unknown, ...args: unknown[]) {
+    const fd = args[0] as number;
+    const callback = args[1] as ((error: NodeJS.ErrnoException | null) => void) | undefined;
+    if (typeof callback !== 'function') return originalCallback.apply(this, args);
+    args[1] = (error: NodeJS.ErrnoException | null) => {
+      if (!error) descriptorPaths.delete(fd);
+      callback(error);
+    };
+    return originalCallback.apply(this, args);
+  };
 }
 // fs.promises mirror
 const FSP = fs.promises as unknown as Record<string, AnyFn>;
@@ -158,38 +237,60 @@ wrap(FSP, 'rename', [0, 1]);
   const original = FSP.open!;
   FSP.open = function (this: unknown, ...args: unknown[]) {
     const flags = args[1];
-    if (typeof flags === 'number' || (typeof flags === 'string' && /[wa+]/.test(flags))) {
+    if (writableFlags(flags)) {
       const hit = offending(args[0]);
       if (hit) deny('open', hit);
     }
-    return original.apply(this, args);
+    const targets = descriptorTargets(args[0]);
+    return (original.apply(this, args) as Promise<FileHandle>).then((handle) => {
+      descriptorPaths.set(handle.fd, targets);
+      const methods = handle as unknown as Record<string, AnyFn>;
+      for (const name of ['write', 'writev', 'writeFile', 'appendFile', 'truncate', 'chmod', 'chown', 'utimes', 'createWriteStream']) {
+        const mutate = methods[name];
+        if (typeof mutate !== 'function') continue;
+        methods[name] = (...options) => {
+          const hit = offending(handle.fd);
+          if (hit) deny(`FileHandle.${name}`, hit);
+          return mutate.apply(handle, options);
+        };
+      }
+      const close = handle.close.bind(handle);
+      handle.close = async () => {
+        const fd = handle.fd;
+        await close();
+        descriptorPaths.delete(fd);
+      };
+      return handle;
+    });
   };
 }
 
 // Bun's native writer does not delegate to node:fs.
+const bunFileTargets = new WeakMap<Bun.BunFile, unknown>();
 const originalBunWrite = Bun.write;
 Bun.write = ((destination: Parameters<typeof Bun.write>[0], ...args: unknown[]) => {
   const target = typeof destination === 'object' && !(destination instanceof URL)
-    && 'name' in destination ? destination.name : destination;
-  const hit = offending(target);
+    && 'name' in destination ? bunFileTargets.get(destination as unknown as Bun.BunFile) ?? destination.name : destination;
+  const hit = anonymousOutputStream('write', target) ? null : offending(target);
   if (hit) deny('Bun.write', hit);
   return (originalBunWrite as unknown as AnyFn)(destination, ...args);
 }) as typeof Bun.write;
 
-function fenceBunFile(file: Bun.BunFile): Bun.BunFile {
+function fenceBunFile(file: Bun.BunFile, destination: unknown = file.name): Bun.BunFile {
+  bunFileTargets.set(file, destination);
   const methods = file as unknown as Record<string, AnyFn>;
   for (const name of ['writer', 'write', 'delete', 'unlink']) {
     const original = methods[name];
     if (typeof original !== 'function') continue;
     methods[name] = (...options: unknown[]) => {
-      const hit = offending(file.name);
+      const hit = (name === 'writer' || name === 'write') && anonymousOutputStream('write', destination) ? null : offending(destination);
       if (hit) deny(`Bun.file.${name}`, hit);
       return original.apply(file, options);
     };
   }
   const slice = methods.slice!;
-  methods.slice = (...options: unknown[]) => fenceBunFile(slice.apply(file, options) as Bun.BunFile);
+  methods.slice = (...options: unknown[]) => fenceBunFile(slice.apply(file, options) as Bun.BunFile, destination);
   return file;
 }
 const originalBunFile = Bun.file;
-Bun.file = ((...args: Parameters<typeof Bun.file>) => fenceBunFile(originalBunFile(...args))) as typeof Bun.file;
+Bun.file = ((...args: Parameters<typeof Bun.file>) => fenceBunFile(originalBunFile(...args), args[0])) as typeof Bun.file;

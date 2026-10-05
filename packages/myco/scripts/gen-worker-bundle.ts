@@ -12,8 +12,9 @@
  * makes those hooks free on an unchanged tree.
  */
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import nodeFs from 'node:fs';
-const { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync } = nodeFs;
+const { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync, renameSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,9 +83,6 @@ function installedWranglerVersion(): string {
   return version;
 }
 
-/** The config wrangler bundles against, in the Worker package so `main` resolves. */
-const BUNDLE_CONFIG_NAME = 'wrangler.bundle.toml';
-
 /**
  * The committed configuration without its `[assets]` table.
  *
@@ -118,10 +116,10 @@ export function assertWranglerPinned(): string {
 
 export function buildWorkerBundle(): string {
   const out = mkdtempSync(path.join(tmpdir(), 'myco-worker-bundle-'));
-  const config = path.join(WORKER_DIR, BUNDLE_CONFIG_NAME);
+  const config = path.join(WORKER_DIR, `wrangler.bundle-${path.basename(out)}.toml`);
   try {
     writeFileSync(config, bundleConfig(readFileSync(path.join(WORKER_DIR, 'wrangler.toml'), 'utf-8')), 'utf-8');
-    execFileSync('npx', ['--no-install', 'wrangler', 'deploy', '--dry-run', '--minify', '--outdir', out, '-c', BUNDLE_CONFIG_NAME], {
+    execFileSync('npx', ['--no-install', 'wrangler', 'deploy', '--dry-run', '--minify', '--outdir', out, '-c', config], {
       cwd: WORKER_DIR,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -140,16 +138,20 @@ export function emitWorkerBundle(outputPath: string = OUTPUT_PATH, wranglerVersi
   const version = wranglerVersion ?? assertWranglerPinned();
   const bundle = buildWorkerBundle();
   if (bundle.trim() === '') throw new Error('the Worker bundle is empty; a deploy from it would serve nothing');
-  writeFileSync(outputPath, [
-    '// GENERATED FILE — do not edit.',
-    '// Written by packages/myco/scripts/gen-worker-bundle.ts from the Cloudflare Worker',
-    '// source, so provisioning can deploy without a repository checkout.',
-    '',
-    `export const ${VERSION_EXPORT_NAME}: string = ${JSON.stringify(version)};`,
-    '',
-    `export const ${EXPORT_NAME}: string = ${JSON.stringify(Buffer.from(bundle, 'utf-8').toString('base64'))};`,
-    '',
-  ].join('\n'), 'utf-8');
+  const stagingPath = `${outputPath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(stagingPath, [
+      '// GENERATED FILE — do not edit.',
+      '// Written by packages/myco/scripts/gen-worker-bundle.ts from the Cloudflare Worker',
+      '// source, so provisioning can deploy without a repository checkout.',
+      '',
+      `export const ${VERSION_EXPORT_NAME}: string = ${JSON.stringify(version)};`,
+      '',
+      `export const ${EXPORT_NAME}: string = ${JSON.stringify(Buffer.from(bundle, 'utf-8').toString('base64'))};`,
+      '',
+    ].join('\n'), 'utf-8');
+    renameSync(stagingPath, outputPath);
+  } finally { rmSync(stagingPath, { force: true }); }
   return Buffer.byteLength(bundle, 'utf-8');
 }
 

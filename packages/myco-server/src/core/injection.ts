@@ -3,11 +3,9 @@
  * record of having served them.
  *
  * This module OWNS `spore_injections`. Its consumer is the member route
- * `POST /context/prompt` (#1026): the route calls the selector and hands the
- * rendered context to the hook. The `INSERT OR IGNORE` and the `meta.changes`
- * it answers from are the pattern `core/resume.ts` and `core/runs.ts` already
- * prove on both targets — the store decides, and the caller reads the decision
- * off the write.
+ * `POST /context/prompt`: the route calls the selector and hands the
+ * rendered context to the hook. The store's `INSERT OR IGNORE` decides whether
+ * the record was written, and `meta.changes` answers that decision.
  *
  * The record carries what 1.4 spreads across a status allowlist, a session-wide
  * exclusion set and a UNIQUE content hash, and the two rules hold to different

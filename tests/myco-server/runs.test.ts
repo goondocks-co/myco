@@ -18,7 +18,7 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch,
-  RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS, supersedeEquivalentResumableRuns,
+  RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS,
   upsertCortexInstructions, type RunInsert,
 } from '@myco-server-worker/core/runs.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -387,38 +387,6 @@ describe('run lifecycle', () => {
       expect({ column, settable: (RUN_UPDATE_COLUMNS as readonly string[]).includes(column) })
         .toEqual({ column, settable: false });
     }
-  });
-
-  it('supersedes an equivalent failed resumable run and leaves the excluded one alone', async () => {
-    const { db, sqlite } = store();
-    seedFailedResumable(sqlite, 'old');
-    seedFailedResumable(sqlite, 'keep');
-    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'keep', { agentId: AGENT, taskName: 'digest', dryRun: false })).toBe(1);
-    const rows = sqlite.query(`SELECT id, resumable, resume_status AS s FROM agent_runs ORDER BY id`).all() as { id: string; resumable: number; s: string | null }[];
-    expect(rows).toEqual([{ id: 'keep', resumable: 1, s: null }, { id: 'old', resumable: 0, s: 'superseded' }]);
-  });
-
-  it('does not let a dry run supersede a real one, or the reverse', async () => {
-    const { db, sqlite } = store();
-    seedFailedResumable(sqlite, 'real', { dryRun: 0 });
-    seedFailedResumable(sqlite, 'dry', { dryRun: 1 });
-    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'x', { agentId: AGENT, taskName: 'digest', dryRun: true })).toBe(1);
-    const rows = sqlite.query(`SELECT id, resumable FROM agent_runs ORDER BY id`).all() as { id: string; resumable: number }[];
-    expect(rows).toEqual([{ id: 'dry', resumable: 0 }, { id: 'real', resumable: 1 }]);
-  });
-
-  it('supersedes neither another task, another agent, nor another Project', async () => {
-    const { db, sqlite } = store();
-    seedFailedResumable(sqlite, 'other_task', { task: 'extract' });
-    seedFailedResumable(sqlite, 'other_project', { projectId: OTHER.projectId });
-    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'x', { agentId: AGENT, taskName: 'digest', dryRun: false })).toBe(0);
-  });
-
-  it('touches only failed resumable runs', async () => {
-    const { db, sqlite } = store();
-    await claimRun(db, SCOPE, run('running', 'digest'), guardFor('digest'), NOW);
-    sqlite.query(`UPDATE agent_runs SET resumable = 1 WHERE id = 'running'`).run();
-    expect(await supersedeEquivalentResumableRuns(db, SCOPE, 'x', { agentId: AGENT, taskName: 'digest', dryRun: false })).toBe(0);
   });
 
   it('reads a run back within its scope and not outside it', async () => {

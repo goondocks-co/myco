@@ -14,6 +14,7 @@ import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
+import { RETIRED_RUN_ROUTES } from '@myco-server-worker/api/runs.js';
 import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
@@ -247,7 +248,11 @@ describe('the run routes no 2.0 path sends', () => {
   it('refuses each with route_retired and what replaced it, and stores nothing', async () => {
     const { post, sqlite } = await harness();
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
-    const callsBefore = sqlite.query('SELECT COUNT(*) AS c FROM agent_run_events').get();
+    sqlite.run(`UPDATE agent_runs SET status = 'failed', resumable = 1, resume_status = 'ready', resume_attempts = 2, checkpoints = '{"cursor":7}' WHERE id = 'r1'`);
+    sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES ('proj_1', 'r1', ?, 'container-smoke', 'retained history', ?)`, [AGENT, Date.now()]);
+    const snapshot = () => Object.fromEntries(['agent_runs', 'agent_reports', 'agent_run_events'].map((table) => [table, sqlite.query(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    const before = snapshot();
+    const routes = new Set<string>();
     for (const [path, body] of [
       ['/runs/get', { runId: 'r1' }],
       ['/runs/failed', { runId: 'r1', errorClass: 'other', error: 'boom' }],
@@ -256,12 +261,13 @@ describe('the run routes no 2.0 path sends', () => {
       ['/runs/reports', { runId: 'r1' }],
       ['/runs/events', { events: [{ runId: 'r1', eventType: 'post_tool_use', toolName: 'Bash', payload: '{"toolInput":{"command":"cat .env"}}' }] }],
     ] as const) {
+      routes.add(path);
       const answered = await post(path, body);
       expect({ path, persisted: answered.persisted, code: answered.code, retired: String(answered.reason).startsWith(`${path} is retired: `) })
         .toEqual({ path, persisted: false, code: 'route_retired', retired: true });
     }
-    expect(sqlite.query('SELECT COUNT(*) AS c FROM agent_run_events').get()).toEqual(callsBefore);
-    expect(sqlite.query(`SELECT status, error FROM agent_runs WHERE id = 'r1'`).get()).toEqual({ status: 'running', error: null });
+    expect([...routes].sort()).toEqual(Object.keys(RETIRED_RUN_ROUTES).sort());
+    expect(snapshot()).toEqual(before);
   });
 
   it('refuses every update column no runtime sets, and a claim that carries an instruction, with field_retired', async () => {

@@ -1,10 +1,6 @@
-// TEST-ONLY safety net. Loaded via bunfig [test] preload for EVERY bun test run
-// (root bunfig.toml: node phases + raw `bun test`/`--watch`; bunfig.dom.toml:
-// jsdom phase). Two chokepoints make a test touching live config improbable and,
-// if something slips, loud:
-//   1. Redirect os.homedir()/userInfo()/HOME to a throwaway per-process sandbox,
-//      so home-derived paths resolve INSIDE the sandbox (current + future subsystems).
-//   2. Fence fs mutations under real Myco and manifest-declared agent homes.
+// Test-only preload: runner CLI --preload, root/DOM bunfig defaults, and Vitest setup.
+// Home lookups resolve to a throwaway per-process sandbox.
+// Filesystem mutation fences protect real Myco and manifest-declared agent homes.
 import './sandbox-environment.js';
 import { afterAll } from 'bun:test';
 import os from 'node:os';
