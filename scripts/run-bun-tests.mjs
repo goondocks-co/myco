@@ -29,17 +29,37 @@ process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;
 
 /** Kills the running group's process tree; null between groups. */
 let killActiveGroup = null;
+let runReportDir = null;
+let interrupted = false;
+let observedFailure = false;
 // However the runner exits (the end of the run, a signal, an uncaught error),
 // the group it was running dies with it and the root goes.
-process.on('exit', () => finishTestTempRun(tempRun, () => {
-  try { killActiveGroup?.('SIGKILL'); }
-  finally {
-    try { stopRegisteredTestProcesses(RUN_ROOT); }
-    finally { fs.rmSync(BUNDLE_DIR, { recursive: true, force: true }); }
+process.on('exit', () => {
+  try {
+    finishTestTempRun(tempRun, () => {
+      try { killActiveGroup?.('SIGKILL'); }
+      finally {
+        try { stopRegisteredTestProcesses(RUN_ROOT); }
+        finally { fs.rmSync(BUNDLE_DIR, { recursive: true, force: true }); }
+      }
+    });
+  } finally {
+    if (runReportDir) {
+      try {
+        const outcome = process.exitCode ? (interrupted && !observedFailure ? 'interrupted' : 'failed') : 'success';
+        pruneRunReports(path.dirname(runReportDir), runReportDir, outcome);
+        publishReportOutcome(runReportDir, outcome);
+      } catch (error) {
+        process.exitCode ||= 1;
+        console.error(`[run-bun-tests] FAIL: cannot finalize report lifecycle: ${error.message}`);
+        try { publishReportOutcome(runReportDir, 'failed'); }
+        catch (statusError) { console.error(`[run-bun-tests] FAIL: cannot record failed report: ${statusError.message}`); }
+      }
+    }
   }
-}));
+});
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
-  process.on(signal, () => process.exit(128 + number));
+  process.on(signal, () => { interrupted = true; process.exit(128 + number); });
 }
 
 // Node reads the account home independently of HOME; Bun's userInfo follows HOME.
@@ -857,8 +877,60 @@ function buildArgs() {
 const REPORT_DIR = process.env.MYCO_RUNNER_REPORT_DIR
   ? path.resolve(process.env.MYCO_RUNNER_REPORT_DIR)
   : path.join(REPO, 'target', 'test-reports');
+const REPORT_OWNER_FILE = '.runner-owner.json';
+const REPORT_OUTCOME_FILE = '.runner-outcome.json';
+const SUCCESS_REPORT_RETAIN = 3;
+const INTERRUPTED_REPORT_RETAIN = 2;
+
+function publishReportOutcome(dir, status) {
+  const temporary = path.join(dir, `${REPORT_OUTCOME_FILE}.${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ status, finishedAt: Date.now() }));
+    fs.renameSync(temporary, path.join(dir, REPORT_OUTCOME_FILE));
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function ownerIsGone(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return error.code === 'ESRCH'; }
+}
+
+function pruneRunReports(parent, current, currentOutcome = null) {
+  const candidates = { success: [], interrupted: [] };
+  for (const name of fs.readdirSync(parent)) {
+    if (!/^run-[A-Za-z0-9]{6}$/.test(name)) continue;
+    const dir = path.join(parent, name);
+    if (dir === current) continue;
+    try { if (!fs.lstatSync(dir).isDirectory()) continue; }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    let owner;
+    try { owner = JSON.parse(fs.readFileSync(path.join(dir, REPORT_OWNER_FILE), 'utf8')); }
+    catch { continue; } // Unknown ownership is never inferred from directory age.
+    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(owner.createdAt) || !ownerIsGone(owner.pid)) continue;
+    let outcome;
+    try { outcome = JSON.parse(fs.readFileSync(path.join(dir, REPORT_OUTCOME_FILE), 'utf8')); }
+    catch (error) { if (error.code !== 'ENOENT') continue; }
+    const status = outcome?.status ?? 'interrupted';
+    if (!(status in candidates) || (outcome && !Number.isFinite(outcome.finishedAt))) continue;
+    candidates[status].push({ dir, time: outcome?.finishedAt ?? owner.createdAt });
+  }
+  for (const [status, keep] of [['success', SUCCESS_REPORT_RETAIN], ['interrupted', INTERRUPTED_REPORT_RETAIN]]) {
+    const ordered = candidates[status].sort((a, b) => b.time - a.time || b.dir.localeCompare(a.dir));
+    // The current terminal run consumes one slot of its retention class.
+    for (const { dir } of ordered.slice(keep - Number(currentOutcome === status))) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+}
+
 fs.mkdirSync(REPORT_DIR, { recursive: true });
 const RUN_REPORT_DIR = fs.mkdtempSync(path.join(REPORT_DIR, 'run-'));
+fs.writeFileSync(path.join(RUN_REPORT_DIR, REPORT_OWNER_FILE), JSON.stringify({ pid: process.pid, createdAt: Date.now() }), { flag: 'wx' });
+runReportDir = RUN_REPORT_DIR;
+pruneRunReports(REPORT_DIR, RUN_REPORT_DIR);
 function reportPath(label) {
   return path.join(RUN_REPORT_DIR, `${label.replace(/\s+/g, '-')}.junit.xml`);
 }
@@ -1000,17 +1072,19 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
     const deadlineMs = Date.now() + GROUP_BUDGET_MS;
     const hangFile = hangPath(label);
     fs.rmSync(hangFile, { force: true });
-    let { status, wedged, overBudget } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile });
-    for (let attempt = 1; wedged && !overBudget && attempt <= WEDGE_RETRIES && Date.now() < deadlineMs; attempt += 1) {
+    let { status, wedged, overBudget, evidenceError, streamFailure } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile });
+    for (let attempt = 1; wedged && !overBudget && !evidenceError && !streamFailure && attempt <= WEDGE_RETRIES && Date.now() < deadlineMs; attempt += 1) {
       const note = `[run-bun-tests] RETRYING ${label} after wedge-kill (attempt ${attempt}/${WEDGE_RETRIES})\n`;
       process.stderr.write(note);
       fs.writeFileSync(teeFile, ''); // fresh log for the retry
-      ({ status, wedged, overBudget } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile }));
+      ({ status, wedged, overBudget, evidenceError, streamFailure } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile }));
     }
     if (overBudget) {
       overBudgetGroups.push({ label, files, hangFile });
       writeOverBudgetJunit(reportFile, label, files);
     }
+    const evidence = evaluatePhaseEvidence([{ label, file: reportFile, log: teeFile }]);
+    if (status !== 0 || evidence.failures > 0 || evidence.invalid.length > 0) observedFailure = true;
     return status;
 }
 
@@ -1065,6 +1139,17 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
   return new Promise((resolve) => {
+    let evidenceError = null;
+    let streamFailure = false;
+    function appendEvidence(text) {
+      if (evidenceError) return;
+      try { fs.appendFileSync(teeFile, text); }
+      catch (error) {
+        evidenceError = error;
+        observedFailure = true;
+        process.stderr.write(`[run-bun-tests] FAIL: cannot append mandatory log ${teeFile}: ${error.message}\n`);
+      }
+    }
     // POSIX phase termination signals the detached process group and its workers.
     // Tests reading stdin receive EOF.
     const child = spawn(command, args, {
@@ -1120,7 +1205,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       captured = table === null ? null : new Map(pids.map((pid) => [pid, table.get(pid).started]));
       process.stderr.write(`${heading}\n[run-bun-tests] sampling ${pids.length} process(es) of ${label} into ${hangFile}\n`);
       const diagnostics = captureHangDiagnostics(pids, hangFile, heading);
-      try { fs.appendFileSync(teeFile, `${heading}\n${diagnostics}`); } catch { /* best-effort */ }
+      appendEvidence(`${heading}\n${diagnostics}`);
       killPhaseTree('SIGTERM');
       // Escalate shortly after, in case anything ignored SIGTERM. The timer is
       // held, and the group waits for it, so the runner never moves on or exits
@@ -1143,12 +1228,13 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       // Mirror to the log file. Sync append: chunks are small, sync
       // I/O here matches the prior runWithTee behavior (shell tee was
       // also sync per write).
-      try { fs.appendFileSync(teeFile, text); } catch { /* best-effort */ }
+      appendEvidence(text);
       // Track the last non-empty line for the watchdog heartbeat.
       const combined = tailRef.value + text;
       const lines = combined.split(/\r?\n/);
       tailRef.value = lines.pop() ?? '';
       for (const line of lines) {
+        if (outputHasFailureMarker(line)) { streamFailure = true; observedFailure = true; }
         const trimmed = line.trim();
         if (trimmed) {
           lastNonEmptyLine = trimmed;
@@ -1179,7 +1265,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       if (sinceLastOutput >= WATCHDOG_QUIET_MS) {
         const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output; last line: ${lastNonEmptyLine || '(none)'}\n`;
         process.stderr.write(msg);
-        try { fs.appendFileSync(teeFile, msg); } catch { /* best-effort */ }
+        appendEvidence(msg);
       }
     }
     // The budget fires on time even when it falls between heartbeat ticks.
@@ -1214,8 +1300,13 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       const verb = killedForBudget ? 'KILLED (over budget)' : killedForHang ? 'KILLED (wedged)' : 'FINISHED';
       const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
-      try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
-      const outcome = { status: exit, wedged: killedForHang, overBudget: killedForBudget };
+      if (outputHasFailureMarker(stdoutRef.value) || outputHasFailureMarker(stderrRef.value)) {
+        streamFailure = true;
+        observedFailure = true;
+      }
+      appendEvidence(completion);
+      if (streamFailure) process.stderr.write(`[run-bun-tests] FAIL: ${label} stream reported a failure or error\n`);
+      const outcome = { status: exit || evidenceError || streamFailure ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure };
       if (escalation === null) resolve(outcome);
       else escalation.then(() => resolve(outcome));
     }
@@ -1548,11 +1639,15 @@ function readJunitEvidence(file) {
   return Math.max(declaredFailures, failureNodes);
 }
 
-function readLogEvidence(file) {
-  const log = stripVTControlCharacters(fs.readFileSync(file, 'utf8'));
+function outputHasFailureMarker(text) {
+  const log = stripVTControlCharacters(text);
   return /^\s*[1-9]\d*\s+(?:fail|error)\b/m.test(log)
     || /^\(fail\)\s+/m.test(log)
     || /^error:\s+\S/m.test(log);
+}
+
+function readLogEvidence(file) {
+  return outputHasFailureMarker(fs.readFileSync(file, 'utf8'));
 }
 
 function evaluatePhaseEvidence(reports) {
@@ -1581,4 +1676,4 @@ if (exitCode !== 0) {
   printFailureSummary(phaseReports);
   printOverBudgetSummary();
 }
-process.exit(exitCode);
+process.exitCode = exitCode;

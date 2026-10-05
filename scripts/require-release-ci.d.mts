@@ -15,3 +15,4 @@ export interface CiJob {
 
 export function latestExactCiRun(runs: CiRun[], sha: string): CiRun | null;
 export function releaseCiDecision(run: CiRun | null, jobs: CiJob[], sha: string): { state: 'waiting' | 'refused' | 'passed'; reason: string };
+export function readGithubJobs(base: string, runId: number, token: string, request?: typeof fetch): Promise<CiJob[]>;

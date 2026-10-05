@@ -6,6 +6,8 @@ import { protectedAgentPaths } from './protected-agent-paths.js';
 import { systemTempDirectories } from '../../scripts/test-temp-root.mjs';
 
 // Fence mutations to the operating-system account home.
+// The in-process fence does not cover already-existing hard-link aliases
+// outside protected roots or filesystem mutations by child processes.
 const scopes = new Set<string[]>();
 const tempScopes = new Set<{ root: string; directories: string[] }>();
 const TEST_TEMP_NAME = /^(?:myco-|mt-)/;

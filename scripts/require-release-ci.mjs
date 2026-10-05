@@ -27,8 +27,8 @@ export function releaseCiDecision(run, jobs, sha) {
   return { state: 'passed', reason: `CI run ${run.id} and its ${AGGREGATE_JOB} aggregate succeeded for ${sha}` };
 }
 
-async function githubJson(path, token) {
-  const response = await fetch(`https://api.github.com${path}`, {
+async function githubJson(path, token, request = fetch) {
+  const response = await request(`https://api.github.com${path}`, {
     headers: {
       accept: 'application/vnd.github+json',
       authorization: `Bearer ${token}`,
@@ -36,7 +36,45 @@ async function githubJson(path, token) {
     },
   });
   if (!response.ok) throw new Error(`GitHub Actions API ${path} returned HTTP ${response.status}`);
-  return response.json();
+  return { body: await response.json(), link: response.headers.get('link') };
+}
+
+function nextJobsPage(link, path, currentPage) {
+  const next = link?.split(',').filter((part) => /;\s*rel="next"(?:\s*;|\s*$)/.test(part)) ?? [];
+  if (next.length === 0) return null;
+  if (next.length !== 1) throw new Error('GitHub Actions jobs response has multiple next pages');
+  const match = /^\s*<([^>]+)>/.exec(next[0]);
+  if (match === null) throw new Error('GitHub Actions jobs response has a malformed next page');
+  const url = new URL(match[1]);
+  const page = Number(url.searchParams.get('page'));
+  if (url.origin !== 'https://api.github.com' || url.pathname !== path
+      || url.searchParams.get('filter') !== 'latest' || url.searchParams.get('per_page') !== '100'
+      || [...url.searchParams.keys()].sort().join(',') !== 'filter,page,per_page'
+      || !Number.isSafeInteger(page) || page !== currentPage + 1) {
+    throw new Error('GitHub Actions jobs next page is outside the required latest-job listing');
+  }
+  return page;
+}
+
+export async function readGithubJobs(base, runId, token, request = fetch) {
+  const path = `${base}/runs/${runId}/jobs`;
+  const jobs = [];
+  let page = 1;
+  for (;;) {
+    const { body, link } = await githubJson(`${path}?filter=latest&per_page=100&page=${page}`, token, request);
+    if (!Array.isArray(body.jobs) || !Number.isSafeInteger(body.total_count) || body.total_count < 0) {
+      throw new Error('GitHub Actions jobs response has no valid jobs or total_count');
+    }
+    jobs.push(...body.jobs);
+    if (jobs.length > body.total_count) throw new Error('GitHub Actions jobs response exceeds total_count');
+    const next = nextJobsPage(link, path, page);
+    if (next === null) {
+      if (jobs.length !== body.total_count) throw new Error('GitHub Actions jobs response omitted a page');
+      return jobs;
+    }
+    if (jobs.length === body.total_count) throw new Error('GitHub Actions jobs response links beyond total_count');
+    page = next;
+  }
 }
 
 async function main() {
@@ -51,10 +89,10 @@ async function main() {
   const deadline = Date.now() + MAX_WAIT_MS;
   for (;;) {
     const query = new URLSearchParams({ branch: 'main', event: 'push', head_sha: sha, per_page: '100' });
-    const runs = await githubJson(`${base}/workflows/${WORKFLOW}/runs?${query}`, token);
+    const { body: runs } = await githubJson(`${base}/workflows/${WORKFLOW}/runs?${query}`, token);
     const run = latestExactCiRun(runs.workflow_runs ?? [], sha);
     const jobs = run?.status === 'completed' && run.conclusion === 'success'
-      ? (await githubJson(`${base}/runs/${run.id}/jobs?filter=latest&per_page=100`, token)).jobs ?? []
+      ? await readGithubJobs(base, run.id, token)
       : [];
     const decision = releaseCiDecision(run, jobs, sha);
     process.stdout.write(`${decision.reason}\n`);

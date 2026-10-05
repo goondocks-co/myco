@@ -87,6 +87,78 @@ test('ordinary tests passing cannot publish when parity or runtime makes the agg
     { ...run, id: 3, head_sha: 'b'.repeat(40) }], sha)?.id).toBe(2);
 });
 
+const releaseCliPreload = String.raw`
+const fixture = JSON.parse(process.env.MYCO_RELEASE_CI_FIXTURE);
+const jobsPath = '/repos/goondocks/myco/actions/runs/42/jobs';
+const pageTwo = 'https://api.github.com' + jobsPath + '?filter=latest&per_page=100&page=2';
+const check = { name: 'check', head_sha: fixture.sha, conclusion: 'success' };
+globalThis.fetch = async (input, options) => {
+  const url = new URL(input);
+  if (url.origin !== 'https://api.github.com' || options.headers.authorization !== 'Bearer fixture-token') {
+    throw new Error('release gate requested an unexpected API origin or credential');
+  }
+  if (url.pathname.endsWith('/workflows/ci.yml/runs')) {
+    if (url.searchParams.get('head_sha') !== fixture.sha) throw new Error('release gate queried another commit');
+    return Response.json({ workflow_runs: [{
+      id: 42, head_sha: fixture.sha, head_branch: 'main', event: 'push', status: 'completed', conclusion: 'success',
+    }] });
+  }
+  if (url.pathname !== jobsPath || url.searchParams.get('filter') !== 'latest' || url.searchParams.get('per_page') !== '100') {
+    throw new Error('release gate requested an unexpected jobs listing');
+  }
+  if (url.searchParams.get('page') === '1') {
+    const jobs = Array.from({ length: 100 }, (_, index) => ({ name: 'job-' + index, head_sha: fixture.sha, conclusion: 'success' }));
+    if (fixture.scenario === 'extra-link') jobs[0] = check;
+    const link = '<' + (fixture.scenario === 'hostile-link' ? pageTwo.replace('api.github.com', 'evil.example.com') : pageTwo) + '>; rel="next"';
+    return Response.json({ total_count: fixture.scenario === 'extra-link' ? 100 : 101, jobs }, { headers: { link } });
+  }
+  if (url.searchParams.get('page') === '2') {
+    if (fixture.scenario === 'extra-link') return Response.json({ total_count: 100, jobs: [] });
+    return Response.json({ total_count: 101, jobs: [check] }, { status: fixture.scenario === 'api-error' ? 503 : 200 });
+  }
+  throw new Error('release gate requested an unexpected page');
+};
+`;
+
+function releaseCli(scenario: 'page-two' | 'api-error' | 'hostile-link' | 'extra-link') {
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (head.status !== 0) throw new Error(`cannot resolve test commit: ${head.stderr}`);
+  const child = spawnSync('node', ['--import', `data:text/javascript,${encodeURIComponent(releaseCliPreload)}`, 'scripts/require-release-ci.mjs'], {
+    env: {
+      ...process.env,
+      GITHUB_REPOSITORY: 'goondocks/myco', GITHUB_TOKEN: 'fixture-token',
+      MYCO_RELEASE_CI_FIXTURE: JSON.stringify({ scenario, sha: head.stdout.trim() }),
+    },
+    encoding: 'utf8', timeout: 10_000,
+  });
+  if (child.error) throw child.error;
+  return child;
+}
+
+test('release CLI admits the aggregate on the second latest-jobs page', () => {
+  const child = releaseCli('page-two');
+  expect(child.status).toBe(0);
+  expect(child.stdout).toContain('and its check aggregate succeeded');
+});
+
+test('release CLI refuses an API error on the second jobs page', () => {
+  const child = releaseCli('api-error');
+  expect(child.status).toBe(1);
+  expect(child.stderr).toContain('returned HTTP 503');
+});
+
+test('release CLI refuses an untrusted next-page URL', () => {
+  const child = releaseCli('hostile-link');
+  expect(child.status).toBe(1);
+  expect(child.stderr).toContain('outside the required latest-job listing');
+});
+
+test('release CLI refuses a next page beyond the reported job count', () => {
+  const child = releaseCli('extra-link');
+  expect(child.status).toBe(1);
+  expect(child.stderr).toContain('links beyond total_count');
+});
+
 test('CI runs the real container preservation and destructive-image gates', () => {
   const workflow = ci.jobs['self-hosted-container'];
   expect(workflow.steps.some((step: { run?: string }) => step.run?.includes('scripts/smoke-container-persistence.mjs'))).toBe(true);
