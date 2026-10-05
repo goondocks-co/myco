@@ -187,7 +187,7 @@ export async function handleEndSession(env: ServerEnv, ctx: OwnerContext): Promi
   return outcome === null ? notFound() : ok(outcome);
 }
 
-/** Sets a plan's status as an administrative edit by the signed-in member; 404 unless the plan sits in the session, 400 for a status outside the writable set. Answers the row as it stands afterwards. */
+/** Sets a plan's status as a shared editorial edit; 404 unless the plan sits in the session, 400 for a status outside the writable set. Answers the row as it stands afterwards. */
 export async function handleSetPlanStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();

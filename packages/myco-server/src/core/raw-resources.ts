@@ -3,6 +3,7 @@ import type { ServerEnv } from './adapters.js';
 import { getBlob, type BlobRow } from '../read/blobs.js';
 import type { ReadScope } from '../read/scope.js';
 import { listTranscripts, listSegments, type TranscriptRow, type SegmentRow } from '../read/transcript.js';
+import { authorize, deploymentIdentity, memberSubject } from '../auth/authorization.js';
 
 export type RawResource = { kind: 'blob' | 'event' | 'transcript'; id: string };
 export type RawAction = 'enumerate' | 'read';
@@ -30,7 +31,8 @@ export class RawResourceReader {
     if (this.subject.kind !== 'member' || (action !== 'read' && action !== 'enumerate')) return false;
     const row = await this.env.db.prepare(`SELECT ${rawMemberResourceSql('?', resource.kind, '?', '?')} AS admitted`)
       .bind(this.scope.projectId, resource.id, this.subject.memberId).first<{ admitted: number }>();
-    return row?.admitted === 1;
+    const subject = await memberSubject(this.env.db, this.subject.memberId, 'http');
+    return authorize(subject, 'read', { kind: 'raw', exists: true, deploymentId: await deploymentIdentity(this.env.db), projectId: this.scope.projectId, id: resource.id, uploader: row?.admitted === 1 });
   }
 
   async blob(key: string): Promise<{ row: BlobRow; body: ReadableStream<Uint8Array> } | null> {

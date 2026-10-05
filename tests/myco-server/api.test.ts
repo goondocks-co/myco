@@ -4,7 +4,7 @@ import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
-import { OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost } from './helpers/owner.js';
+import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost, seedMemberRoleAccount } from './helpers/owner.js';
 import { issueMemberToken, MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
 
 /** The principal the chokepoint takes. Unread today; present so a grant check is one edit. */
@@ -179,6 +179,7 @@ describe('session turns', () => {
   it('sets a plan\'s status as the signed-in member, refuses a status outside the writable set, and finds nothing outside the session', async () => {
     const e = sqliteEnv();
     seed(e);
+    seedMemberRoleAccount(e.sqlite);
     const key = '00000000-0000-5000-8000-000000000002';
     e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content, content_hash, status, created_at, updated_at, token_id, received_at)
                   VALUES ('proj_1',?,'s1','ep1','machine_1','- [ ] a','h','active',10,10,'tok_1',10)`, [key]);
@@ -187,6 +188,14 @@ describe('session turns', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { plan: { status: string; updatedBy: string | null; progress: string; updatedAt: number } };
     expect([body.plan.status, body.plan.updatedBy, body.plan.progress, body.plan.updatedAt > 10]).toEqual(['completed', PRINCIPAL.id, '0/1', true]);
+    const memberRes = await worker.fetch(new Request(`https://s/api/projects/proj_1/sessions/s1/plans/${key}/status`, {
+      method: 'POST',
+      headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'in_progress' }),
+    }), { ...e.env, ...OWNER_ENV });
+    expect(memberRes.status).toBe(200);
+    expect((await memberRes.json() as { plan: { status: string; updatedBy: string } }).plan)
+      .toMatchObject({ status: 'in_progress', updatedBy: MEMBER_PRINCIPAL.id });
     expect((await post(`/api/projects/proj_1/sessions/s1/plans/${key}/status`, { status: 'all' })).status).toBe(400);
     expect((await post(`/api/projects/proj_1/sessions/s1/plans/${key}/status`, 'nope')).status).toBe(400);
     expect((await post(`/api/projects/proj_1/sessions/s2/plans/${key}/status`, { status: 'active' })).status).toBe(404);
