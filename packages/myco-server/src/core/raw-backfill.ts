@@ -20,8 +20,8 @@ async function rawBackfillPage(db: RelationalStore, now: number): Promise<{ chan
   if (state === null || state.complete === 1) return { changed: 0, more: false };
   const source = SOURCES[state.source];
   if (source === undefined) throw new Error('Unknown raw provenance backfill source');
-  const predicate = `(s.project_id > ? OR (s.project_id = ? AND s.${source.id} > ?))`;
-  const args = [state.cursor_project, state.cursor_project, state.cursor_id, RAW_BACKFILL_BATCH];
+  const predicate = `(s.project_id, s.${source.id}) > (?, ?)`;
+  const args = [state.cursor_project, state.cursor_id, RAW_BACKFILL_BATCH];
   const rows = (await db.prepare(`SELECT s.project_id, s.${source.id} AS resource_id FROM ${source.table} s
     WHERE ${predicate} ORDER BY s.project_id, s.${source.id} LIMIT ?`).bind(...args).all<{ project_id: string; resource_id: string }>()).results;
   const held = `EXISTS (SELECT 1 FROM raw_provenance_backfill WHERE id = 1 AND source = ? AND cursor_project = ? AND cursor_id = ? AND complete = 0)`;
@@ -65,7 +65,7 @@ async function rawBackfillPage(db: RelationalStore, now: number): Promise<{ chan
   return { changed: results[0]!.results.length, more: nextSource < SOURCES.length };
 }
 
-/** Drains independently committed pages within a store-call and elapsed-time allowance. */
+/** Drains independently committed pages within a statement and elapsed-time allowance. */
 export async function rawBackfill(
   db: RelationalStore,
   now: number,

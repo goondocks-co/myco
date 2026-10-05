@@ -3,9 +3,54 @@ import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
+import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
+import { PROCESSED_FIELDS } from '@myco-server-worker/core/processed-resources.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { historicalBackfillSql } from './helpers/raw-backfill-fixture.js';
+
+async function assertPageSeeks(db: RelationalStore): Promise<void> {
+  const sources = [
+    { table: 'blobs', id: 'key' }, { table: 'transcripts', id: 'transcript_id' }, { table: 'events', id: 'event_id' },
+    ...Object.values(PROCESSED_FIELDS),
+  ];
+  const stopped = new Error('stop before the page commit');
+  for (const [source, { table, id }] of sources.entries()) {
+    const rows = (await db.prepare(`SELECT project_id, ${id} AS resource_id FROM ${table} ORDER BY project_id, ${id}`)
+      .all<{ project_id: string; resource_id: string }>()).results;
+    expect(rows.length).toBeGreaterThan(0);
+    const cursors = [{ project_id: '', resource_id: '' }, rows[Math.floor(rows.length / 2)]!, rows[Math.floor(rows.length * .9)]!];
+    for (const cursor of cursors) {
+      await db.prepare('UPDATE raw_provenance_backfill SET source = ?, cursor_project = ?, cursor_id = ?, complete = 0 WHERE id = 1')
+        .bind(source, cursor.project_id, cursor.resource_id).run();
+      let selected = false;
+      const observe = (sql: string, statement: PreparedStatement, values: unknown[] = []): PreparedStatement => ({
+        ...statement,
+        bind: (...bound) => observe(sql, statement.bind(...bound), bound),
+        first: <T,>() => statement.first<T>(),
+        run: () => statement.run(),
+        all: async <T = Record<string, unknown>>() => {
+          const result = await statement.all<T>();
+          if (sql.startsWith('SELECT s.project_id,')) {
+            selected = true;
+            const plan = (await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...values).all<{ detail: string }>()).results;
+            expect(plan.some(row => row.detail.startsWith('SEARCH s USING')), `${table}: ${JSON.stringify(plan)}`).toBe(true);
+            expect(plan.some(row => row.detail.startsWith('SCAN s')), `${table}: ${JSON.stringify(plan)}`).toBe(false);
+            const previous = await db.prepare(`SELECT s.project_id, s.${id} AS resource_id FROM ${table} s
+              WHERE (s.project_id > ? OR (s.project_id = ? AND s.${id} > ?)) ORDER BY s.project_id, s.${id} LIMIT ?`)
+              .bind(cursor.project_id, cursor.project_id, cursor.resource_id, RAW_BACKFILL_BATCH).all<T>();
+            expect(result.results).toEqual(previous.results);
+          }
+          return result;
+        },
+      });
+      await expect(rawBackfill({ prepare: sql => observe(sql, db.prepare(sql)), batch: async () => { throw stopped; } }, 42,
+        { budget: { calls: 6, wallMs: 2_000 } })).rejects.toBe(stopped);
+      expect(selected).toBe(true);
+    }
+  }
+  await db.prepare("UPDATE raw_provenance_backfill SET source = 0, cursor_project = '', cursor_id = '', complete = 0 WHERE id = 1").run();
+}
 
 it('workerd D1 and native SQLite produce identical bounded backfill runs', async () => {
   const bundle = await Bun.build({ entrypoints: [`${import.meta.dir}/../../packages/myco-server/src/core/raw-backfill.ts`], format: 'esm', target: 'browser' });
@@ -44,6 +89,8 @@ it('workerd D1 and native SQLite produce identical bounded backfill runs', async
     const migration = SCHEMA_STEPS.find(s => s.version === 71)!;
     await d1.batch(migration.statements.map(sql => d1.prepare(sql)));
     for (const sql of migration.statements) native.exec(sql);
+    await assertPageSeeks(sqliteD1(native));
+    await assertPageSeeks(d1);
     let done = false;
     let nativeDone = false;
     let nativeChanged = 0;
