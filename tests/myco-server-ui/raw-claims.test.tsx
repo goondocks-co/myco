@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { RawClaimPreview } from '@goondocks/myco-shared/raw-claims';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
+import { formatDateTime } from '../../packages/myco-server/ui/src/lib/format';
 
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
 const originalFetch = globalThis.fetch;
@@ -47,6 +48,25 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; previ
 }
 
 describe('owner raw claims', () => {
+  it('shows every reviewed project, kind, count and full date in a compact confirmation list', async () => {
+    const preview: RawClaimPreview = { ...PREVIEW, projects: [...PREVIEW.projects, { projectId: 'proj_second', name: 'Second archive', kinds: [
+      { kind: 'blob', count: 7, oldestAt: DATE, newestAt: DATE + 86_400_000 },
+    ] }] };
+    deployment({ preview: () => preview });
+    fireEvent.click(await screen.findByRole('button', { name: LABEL }));
+    const dialog = screen.getByRole('dialog');
+    const list = within(dialog).getByRole('list', { name: 'Raw data claim preview' });
+    expect(within(dialog).queryByRole('table')).toBeNull();
+    expect(within(list).getAllByText('Archive')).toHaveLength(3);
+    expect(within(list).getByText('Second archive')).toBeTruthy();
+    for (const project of preview.projects) for (const kind of project.kinds) {
+      const names = { blob: 'Raw blobs', event: 'Capture events', transcript: 'Transcripts' };
+      const at = (value: number | null) => value === null ? 'Unknown' : formatDateTime(value);
+      expect(within(list).getByText(`${names[kind.kind]} · Count: ${kind.count} · Oldest: ${at(kind.oldestAt)} · Newest: ${at(kind.newestAt)}`)).toBeTruthy();
+    }
+    expect(within(dialog).getByRole('button', { name: LABEL }).hasAttribute('disabled')).toBe(true);
+  });
+
   it('previews project, all kinds, counts and dates and requires an explicitly reviewed revision', async () => {
     const { requests, client } = deployment();
     client.setQueryData(['transcript', 'proj_old', 'session_one'], { transcript: [] });

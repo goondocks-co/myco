@@ -20,6 +20,8 @@ const PREVIEW_COLUMNS: readonly DataTableColumn<PreviewRow>[] = [
   { key: 'oldest', header: 'Oldest', cell: (row) => previewDate(row.oldestAt), width: 'md' },
   { key: 'newest', header: 'Newest', cell: (row) => previewDate(row.newestAt), width: 'md' },
 ];
+const previewRows = (preview: RawClaimPreview): PreviewRow[] => preview.projects.flatMap((project) => project.kinds.map((kind) => ({ ...kind, projectId: project.projectId, projectName: project.name })));
+const previewMetadata = (row: PreviewRow) => `${KIND_NAMES[row.kind]} · Count: ${row.count.toLocaleString()} · Oldest: ${previewDate(row.oldestAt)} · Newest: ${previewDate(row.newestAt)}`;
 
 function claimError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -31,12 +33,23 @@ function claimError(error: unknown): string {
   return 'Could not reach the server. Refresh the preview before trying again.';
 }
 
-function Preview({ preview }: { preview: RawClaimPreview }) {
+function Preview({ preview, compact = false }: { preview: RawClaimPreview; compact?: boolean }) {
+  const rows = previewRows(preview);
+  if (compact) return (
+    <ul aria-label="Raw data claim preview" className="flex flex-col gap-s2">
+      {rows.map((row) => <li key={`${row.projectId}:${row.kind}`}>
+        <Card className="flex flex-col gap-s1">
+          <p className="t-body font-medium text-ink">{row.projectName}</p>
+          <p className="t-small text-muted">{previewMetadata(row)}</p>
+        </Card>
+      </li>)}
+    </ul>
+  );
   return (
     <DataTable label="Raw data with no recorded uploader" columns={PREVIEW_COLUMNS}
-      groups={[{ key: 'preview', label: 'Raw data to claim', rows: preview.projects.flatMap((project) => project.kinds.map((kind) => ({ ...kind, projectId: project.projectId, projectName: project.name }))) }]}
+      groups={[{ key: 'preview', label: 'Raw data to claim', rows }]}
       rowKey={(row) => `${row.projectId}:${row.kind}`} rowHref={(row) => projectPath(row.projectId, '/sessions')}
-      phoneMeta={(row) => `${KIND_NAMES[row.kind]} · Count: ${row.count.toLocaleString()} · Oldest: ${previewDate(row.oldestAt)} · Newest: ${previewDate(row.newestAt)}`} />
+      phoneMeta={previewMetadata} />
   );
 }
 
@@ -78,7 +91,7 @@ export function RawClaims() {
         description="The raw data in this preview will become private to you. This records you as its owner."
         confirmLabel={CLAIM_LABEL} tone="primary" pending={claim.isPending} confirmDisabled={!confirmed || review?.complete !== true}
         onConfirm={() => { if (confirmed && review?.complete === true && !claim.isPending) claim.mutate(review.revision); }}>
-        {review !== null && <Preview preview={review} />}
+        {review !== null && <Preview preview={review} compact />}
         <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed these projects, kinds, counts and dates and want to claim this raw data.</label>
       </ConfirmDialog>
     </AdminSection>
