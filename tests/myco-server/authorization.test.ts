@@ -227,6 +227,7 @@ describe('Deployment authorization policy', () => {
       expect({ path: item.path, registered: route !== undefined }).toEqual({ path: item.path, registered: true });
       const httpDeclaration = (route as typeof route & { authorization: AuthorizationDeclaration }).authorization;
       const mcpDeclaration = TOOL_REGISTRY[item.tool].ops[item.op].authorization;
+      expect(declaredAction(httpDeclaration, item.input)).toBe(declaredAction(mcpDeclaration, item.input));
       for (const actor of ['owner', 'admin', 'member']) {
         const viaHttp = authorizeDeclaration({ ...SUBJECTS[actor], transport: 'http' }, httpDeclaration, item.input, resource(item.kind));
         const viaMcp = authorizeDeclaration({ ...SUBJECTS[actor], transport: 'mcp' }, mcpDeclaration, item.input, resource(item.kind));

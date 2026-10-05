@@ -7,7 +7,7 @@ import { ownerCookie, OWNER_ENV, MEMBER_SUB, seedMemberRoleAccount } from '../te
 import { createServer } from '../packages/myco-server/src/pipeline.js';
 import { issueMemberToken } from '../packages/myco-server/src/auth/tokens.js';
 import { callTool, authorizedDefinitionsFor } from '../packages/myco-server/src/mcp/server.js';
-import { authorize, authorizeDeclaration } from '../packages/myco-server/src/auth/authorization.js';
+import { authorize, authorizeDeclaration, declaredAction } from '../packages/myco-server/src/auth/authorization.js';
 import { ROUTES, RETIRED_ROUTES } from '../packages/myco-server/src/routes.js';
 import { TOOL_REGISTRY } from '../packages/myco-server/src/mcp/registry.js';
 import { RUN_TOOL_REGISTRY } from '../packages/myco-server/src/mcp/run-surface.js';
@@ -16,7 +16,7 @@ const sqlite = seededSqlite();
 const fixture = { sqlite, db: sqliteD1(sqlite) };
 seedMemberRoleAccount(fixture.sqlite);
 const now = Date.now();
-const env: ServerEnv = { db: fixture.db, blobs: { get: async () => null, head: async () => null, put: async () => ({ size: 0 }), delete: async () => {} }, sourceLimit: { limit: async () => ({ success: true }) }, tokenLimit: { limit: async () => ({ success: true }) }, secrets: OWNER_ENV, wrappingKey: wrappingKeyFromText(async () => undefined, 'smoke'), platform: { name: 'self-hosted', capabilities: () => [], classifyError: () => null, classifyBlobFailure: () => 'transient', jobBudget: { calls: 100, wallMs: 1000 } }, harnessCredentialSource: 'worker-login', afterResponse: () => {}, outbound: () => { throw new Error('Unexpected outbound'); } };
+const env: ServerEnv = { db: fixture.db, blobs: { get: async () => null, head: async () => null, put: async () => ({ size: 0 }), delete: async () => {} }, sourceLimit: { limit: async () => ({ success: true }) }, tokenLimit: { limit: async () => ({ success: true }) }, secrets: OWNER_ENV, wrappingKey: wrappingKeyFromText(async () => undefined, 'smoke'), platform: { name: 'bun', capabilities: () => [], classifyError: () => null, classifyBlobFailure: () => 'transient', jobBudget: { calls: 100, wallMs: 1000 } }, harnessCredentialSource: 'worker-login', afterResponse: () => {}, outbound: () => { throw new Error('Unexpected outbound'); } };
 const server = createServer({ now: () => now, sourceOf: () => 'smoke', fetchImpl: () => { throw new Error('Unexpected outbound call'); } });
 const credential = await issueMemberToken(fixture.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
 const ctx = { env, projectId: 'proj_1', principal: { kind: 'member' as const, memberId: 'mem_machine_2', machineId: 'machine_2', tokenId: credential.tokenId }, now };
@@ -49,6 +49,7 @@ assert.equal((await post('own')).status, 200);
 assert.equal((fixture.sqlite.query("SELECT status FROM agent_runs WHERE id='other'").get() as { status: string }).status, 'queued');
 const statusRoute = ROUTES.find((route) => route.path.endsWith('/plans/{planKey}/status'))!;
 const statusTool = TOOL_REGISTRY.myco_plans.ops.save.authorization;
+assert.equal(declaredAction(statusRoute.authorization, { status: 'completed' }), declaredAction(statusTool, { id: 'plan', status: 'completed' }));
 for (const role of ['owner', 'admin', 'member'] as const) {
   const plan = { ...processed, kind: 'plan' as const };
   assert.equal(authorizeDeclaration({ ...member, role }, statusRoute.authorization, { status: 'completed' }, plan), true);
