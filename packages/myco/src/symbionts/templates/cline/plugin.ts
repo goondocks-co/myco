@@ -18,7 +18,7 @@
 // myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
 import { spawnSync } from "node:child_process";
 import nodeFs from 'node:fs';
-const { accessSync, appendFileSync, closeSync, constants: fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } = nodeFs;
+const { accessSync, appendFileSync, closeSync, fstatSync, readSync, renameSync, rmdirSync, readdirSync, constants: fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } = nodeFs;
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -42,7 +42,8 @@ import { dirname, join, resolve } from "node:path";
 // Contract: the containing file has already defined imports for
 //   `readFileSync`, `appendFileSync`, `mkdirSync`, `statSync`, `lstatSync`,
 //   `accessSync`,
-//   `openSync`, `closeSync`, `writeSync`, `unlinkSync`,
+//   `openSync`, `closeSync`, `writeSync`, `unlinkSync`, `fstatSync`, `readSync`,
+//   `renameSync`, `rmdirSync`, `readdirSync`,
 //   `constants as fsConstants`, `join`, `dirname`, `resolve`, `homedir`,
 //   `spawnSync`
 // and nothing else from the outer file.
@@ -52,8 +53,8 @@ import { dirname, join, resolve } from "node:path";
 // FUNCTION exports may be added to this snippet (or to the plugin files).
 //
 // DO NOT edit this block inside a plugin file directly — edit the snippet
-// and run the installer (or rerun the template-sync test to update the
-// inlined copy). Changes here apply to every plugin the next time it
+// and run `node packages/myco/scripts/gen-templates.mjs` to update every
+// inlined copy and the bundled templates. Changes here apply to every plugin the next time it
 // installs/updates.
 // ---------------------------------------------------------------------------
 
@@ -257,6 +258,14 @@ const CLAIM_STALE_MS = 15 * 60 * 1000;
 /** How often a holder rewrites its claim while it is writing. */
 const CLAIM_TOUCH_MS = 30 * 1000;
 
+/** Minimum interval between denied acquisition checks; no timer runs in the host. */
+const CLAIM_RECHECK_MS = 1000;
+
+/** A current writer waits briefly for a concurrent claim operation. */
+const CLAIM_GATE_WAIT_MS = 25;
+const CLAIM_GATE_RETRY_MS = 1;
+const claimGateWaiter = new Int32Array(new SharedArrayBuffer(4));
+
 /**
  * Where a session's writer records that it holds the session.
  *
@@ -294,6 +303,7 @@ function claimPathFor(directory: string, agent: string, sessionId: string, routi
  * costs one writer rather than producing two.
  */
 const claimedSessions = new Map<string, boolean>();
+const claimRecheckAt = new Map<string, number>();
 const claimTouchedAt = new Map<string, number>();
 /** Claim files this instance holds, by session key, for the exit hook to give up. */
 const heldClaimPaths = new Map<string, string>();
@@ -308,65 +318,146 @@ const heldClaimPaths = new Map<string, string>();
  */
 const MYCO_INSTANCE_ID = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
+/** A nonempty directory fences each claim mutation and transcript append. */
+const activeClaimGates = new Set<string>();
+const pendingClaimGateCleanup = new Map<string, string>();
+let claimGateOrdinal = 0;
+
+function removeClaimGate(gate: string, token: string): void {
+  try { unlinkSync(join(gate, token)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  try { rmdirSync(gate); }
+  catch (error) {
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+  }
+}
+
+/** Only a dead process permits removal of its immutable operation token. */
+function recoverClaimGate(gate: string): void {
+  let tokens: string[];
+  try { tokens = readdirSync(gate); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  if (tokens.length === 0) {
+    try { rmdirSync(gate); }
+    catch (error) {
+      if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    }
+    return;
+  }
+  if (tokens.length !== 1) return;
+  const token = tokens[0];
+  const match = /^owner-(\d+)-/.exec(token);
+  if (!match || Number(match[1]) <= 0) return;
+  try { process.kill(Number(match[1]), 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") removeClaimGate(gate, token);
+  }
+}
+
+function withClaimGate<T>(claimPath: string, denied: T, operation: () => T): T {
+  if (activeClaimGates.has(claimPath)) return operation();
+  const gate = `${claimPath}.operation`;
+  const cleanupToken = pendingClaimGateCleanup.get(claimPath);
+  if (cleanupToken !== undefined) {
+    removeClaimGate(gate, cleanupToken);
+    pendingClaimGateCleanup.delete(claimPath);
+  }
+  const token = `owner-${MYCO_INSTANCE_ID}-${++claimGateOrdinal}`;
+  const prepared = `${gate}.${token}`;
+  mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
+  mkdirSync(prepared, { mode: 0o700 });
+  try {
+    const handle = openSync(join(prepared, token), "wx", 0o600);
+    closeSync(handle);
+    const deadline = performance.now() + (claimedSessions.get(claimPath) === true ? CLAIM_GATE_WAIT_MS : 0);
+    for (let attempt = 0; attempt < 2 || performance.now() < deadline; attempt += 1) {
+      try { renameSync(prepared, gate); }
+      catch (error) {
+        if (!["ENOTEMPTY", "EEXIST", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        recoverClaimGate(gate);
+        if (attempt > 0 && performance.now() < deadline) Atomics.wait(claimGateWaiter, 0, 0, CLAIM_GATE_RETRY_MS);
+        continue;
+      }
+      activeClaimGates.add(claimPath);
+      try { return operation(); }
+      finally {
+        activeClaimGates.delete(claimPath);
+        pendingClaimGateCleanup.set(claimPath, token);
+        removeClaimGate(gate, token);
+        pendingClaimGateCleanup.delete(claimPath);
+      }
+    }
+    noteOnce(`gate-wait-${claimPath}`, `writer operation for ${claimPath} is busy; this action could not acquire it`);
+    return denied;
+  } finally {
+    removeClaimGate(prepared, token);
+  }
+}
+
 /** The instance a claim names and when it last said so, or null when the claim is absent or unreadable. */
 function claimHolder(claimPath: string): { instance: string; at: number } | null {
   try {
     const [instance, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
     if (!instance) return null;
     return { instance, at: Number.parseInt(at ?? "0", 10) || 0 };
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 
 function writeClaim(claimPath: string): void {
-  try {
-    const handle = openSync(claimPath, "w");
-    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
-    closeSync(handle);
-  } catch {
-    // A claim that cannot be rewritten ages out and the session is taken over.
-  }
+  const handle = openSync(claimPath, "w", 0o600);
+  try { writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`); }
+  finally { closeSync(handle); }
 }
 
 function takeClaim(claimPath: string): boolean {
-  try {
-    const handle = openSync(claimPath, "wx");
-    writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`);
-    closeSync(handle);
-    return true;
-  } catch {
-    return false;
+  let handle: number;
+  try { handle = openSync(claimPath, "wx", 0o600); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
   }
+  try { writeSync(handle, `${MYCO_INSTANCE_ID} ${Date.now()}`); }
+  finally { closeSync(handle); }
+  return true;
 }
 
 function holdsSessionClaim(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory)): boolean {
   const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
   if (claimPath === null) return false;
-  const key = claimPath;
-  const held = claimedSessions.get(key);
-  if (held !== undefined) return held;
+  if (claimedSessions.get(claimPath) === true) return true;
+  if (Date.now() < (claimRecheckAt.get(claimPath) ?? 0)) return false;
   let claimed = false;
   try {
-    mkdirSync(dirname(claimPath), { recursive: true, mode: 0o700 });
-    claimed = takeClaim(claimPath);
-    if (!claimed) {
-      const holder = claimHolder(claimPath);
-      // Stale beyond any gap a writing instance leaves, or naming nothing
-      // readable: the session is free whatever pid is recorded.
-      if (holder === null || Date.now() - holder.at > CLAIM_STALE_MS) {
-        try { unlinkSync(claimPath); } catch { /* another instance took it first */ }
-        claimed = takeClaim(claimPath);
-      }
+    const existing = claimHolder(claimPath);
+    if (existing !== null && existing.instance !== MYCO_INSTANCE_ID && Date.now() - existing.at <= CLAIM_STALE_MS) {
+      claimRecheckAt.set(claimPath, Date.now() + CLAIM_RECHECK_MS);
+      noteOnce(`claim-wait-${claimPath}`, `${agent} session ${sessionId}: waiting for its writer claim; acquisition retries on later actions`);
+      return false;
     }
-  } catch {
-    claimed = false;
+    claimed = withClaimGate(claimPath, false, () => {
+      if (takeClaim(claimPath)) return true;
+      const holder = claimHolder(claimPath);
+      if (holder?.instance === MYCO_INSTANCE_ID) return true;
+      if (holder !== null && Date.now() - holder.at <= CLAIM_STALE_MS) return false;
+      try { unlinkSync(claimPath); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      return takeClaim(claimPath);
+    });
+  } catch (error) {
+    noteOnce(`claim-error-${claimPath}`, `${agent} session ${sessionId}: cannot acquire its claim (${(error as Error)?.message ?? "unknown"})`);
   }
-  claimedSessions.set(key, claimed);
+  claimedSessions.set(claimPath, claimed);
   if (claimed) {
-    claimTouchedAt.set(key, Date.now());
-    heldClaimPaths.set(key, claimPath);
+    claimRecheckAt.delete(claimPath);
+    claimTouchedAt.set(claimPath, Date.now());
+    heldClaimPaths.set(claimPath, claimPath);
     releaseClaimsWhenProcessEnds();
+  } else {
+    claimRecheckAt.set(claimPath, Date.now() + CLAIM_RECHECK_MS);
+    noteOnce(`claim-wait-${claimPath}`, `${agent} session ${sessionId}: waiting for its writer claim; acquisition retries on later actions`);
   }
   return claimed;
 }
@@ -385,9 +476,10 @@ function releaseClaimsWhenProcessEnds(): void {
   try {
     process.once("exit", () => {
       for (const [key, claimPath] of heldClaimPaths) {
-        if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) continue;
         try {
-          unlinkSync(claimPath);
+          withClaimGate(claimPath, undefined, () => {
+            if (claimHolder(claimPath)?.instance === MYCO_INSTANCE_ID) unlinkSync(claimPath);
+          });
         } catch (error) {
           if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
           noteOnce(`exit-${key}`, `could not give up the claim on ${key} at exit (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
@@ -415,8 +507,11 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string, 
   if (claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return false;
   const key = claimPath;
   const holder = claimHolder(claimPath);
-  if (holder !== null && holder.instance !== MYCO_INSTANCE_ID) {
+  if (holder?.instance !== MYCO_INSTANCE_ID) {
     claimedSessions.set(key, false);
+    claimRecheckAt.set(key, Date.now() + CLAIM_RECHECK_MS);
+    claimTouchedAt.delete(key);
+    heldClaimPaths.delete(key);
     noteOnce(key, `another instance took session ${sessionId}; this one stops writing`);
     return false;
   }
@@ -433,18 +528,22 @@ function keepsSessionClaim(directory: string, agent: string, sessionId: string, 
  * (a resumed session in a new process) takes it at once rather than finding a
  * fresh claim that names a writer that has gone. The claim is removed only
  * while it still names this instance; one that names another is theirs and is
- * left as it is. This instance forgets the session either way, so opening it
- * again later decides afresh.
+ * left as it is. Cleanup ownership is retained until the release succeeds;
+ * opening a released session decides ownership afresh.
  */
 function releaseSessionClaim(directory: string, agent: string, sessionId: string): void {
   for (const [key, claimPath] of heldClaimPaths) {
     if (!claimPath.endsWith(`/${agent}-${sessionId}.lock`) && !claimPath.endsWith(`\\${agent}-${sessionId}.lock`)) continue;
-    claimedSessions.delete(key);
-    claimTouchedAt.delete(key);
-    heldClaimPaths.delete(key);
-    if (claimHolder(claimPath)?.instance !== MYCO_INSTANCE_ID) continue;
     try {
-      unlinkSync(claimPath);
+      const released = withClaimGate(claimPath, false, () => {
+        if (claimHolder(claimPath)?.instance === MYCO_INSTANCE_ID) unlinkSync(claimPath);
+        return true;
+      });
+      if (!released) continue;
+      claimedSessions.delete(key);
+      claimRecheckAt.delete(key);
+      claimTouchedAt.delete(key);
+      heldClaimPaths.delete(key);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
       noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
@@ -487,15 +586,24 @@ function appendTranscriptLine(
   record: Record<string, unknown>,
 ): void {
   const routingKey = routingKeyFor(directory, false);
-  if (routingKey === null || !keepsSessionClaim(directory, agent, sessionId, routingKey)) return;
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
   const filePath = transcriptPathFor(directory, agent, sessionId, routingKey);
-  if (filePath === null) return;
+  if (routingKey === null || claimPath === null || filePath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return;
   try {
-    mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
-    appendFileSync(filePath, `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`, "utf-8");
+    withClaimGate(claimPath, undefined, () => {
+      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return;
+      mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
+      const handle = openSync(filePath, "a+", 0o600);
+      try {
+        const size = fstatSync(handle).size;
+        const tail = Buffer.alloc(1);
+        const unfinished = size > 0 && readSync(handle, tail, 0, 1, size - 1) === 1 && tail[0] !== 0x0a;
+        const line = `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`;
+        appendFileSync(handle, `${unfinished ? "\n" : ""}${line}`, "utf-8");
+        if (unfinished) noteOnce(`tail-${filePath}-${size}`, `${agent} session ${sessionId}: isolated an unfinished transcript tail at byte ${size}`);
+      } finally { closeSync(handle); }
+    });
   } catch (error) {
-    // Capture for this session is lost. It must never take the harness down
-    // with it, and it must not be lost quietly.
     noteOnce(`write-${agent}-${sessionId}`, `cannot write ${filePath}: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
   }
 }
@@ -538,42 +646,51 @@ function runMycoHook(
   // writes, like Pi, would reach that state on every session, since a claim
   // taken once and never touched goes stale on its own.
   const routingKey = routingKeyFor(directory);
-  if (routingKey === null || !keepsSessionClaim(directory, agent, sessionId, routingKey)) return null;
-  const pluginRoot = join(resolveMycoHome(directory), "member", "transcripts");
-  const transcriptPath = payload.transcript_path;
-  const withinPluginRoot = typeof transcriptPath === "string"
-    && (transcriptPath.startsWith(`${pluginRoot}/`) || transcriptPath.startsWith(`${pluginRoot}\\`));
-  if (withinPluginRoot && transcriptPath !== transcriptPathFor(directory, agent, sessionId, routingKey)) {
-    noteOnce(`route-changed-${agent}-${sessionId}`, `${agent} session ${sessionId}: routing changed during capture — this hook waits for the next action`);
-    return null;
-  }
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
+  if (routingKey === null || claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return null;
   try {
-    const run = spawnSync(
-      resolveMycoBinary(directory),
-      ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
-      {
-        cwd: directory,
-        env: { ...process.env, MYCO_HOME: resolveMycoHome(directory) },
-        input: JSON.stringify(payload),
-        timeout: MYCO_HOOK_TIMEOUT_MS,
-        maxBuffer: 4 * 1024 * 1024,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
-    const said = typeof run.stderr === "string" ? run.stderr : "";
-    for (const line of said.split("\n").map((l) => l.trim().replace(/^\[myco\]\s*/, "")).filter(Boolean)) {
-      noteOnce(`hook-said-${agent}-${sessionId}-${line}`, `${agent} session ${sessionId}: ${line}`);
-    }
-    if (run.error) throw run.error;
-    if (run.status !== 0) throw new Error(`exited ${run.status ?? run.signal}`);
-    const stdout = run.stdout;
-    const trimmed = typeof stdout === "string" ? stdout.trim() : "";
-    if (!trimmed) return {};
-    if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
-    return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
+    return withClaimGate(claimPath, null, () => {
+      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return null;
+      const pluginRoot = join(resolveMycoHome(directory), "member", "transcripts");
+      const transcriptPath = payload.transcript_path;
+      const withinPluginRoot = typeof transcriptPath === "string"
+        && (transcriptPath.startsWith(`${pluginRoot}/`) || transcriptPath.startsWith(`${pluginRoot}\\`));
+      if (withinPluginRoot && transcriptPath !== transcriptPathFor(directory, agent, sessionId, routingKey)) {
+        noteOnce(`route-changed-${agent}-${sessionId}`, `${agent} session ${sessionId}: routing changed during capture — this hook waits for the next action`);
+        return null;
+      }
+      try {
+        const run = spawnSync(
+          resolveMycoBinary(directory),
+          ["hook", verb, "--symbiont", agent, "--credential", MYCO_CREDENTIAL_SOURCE],
+          {
+            cwd: directory,
+            env: { ...process.env, MYCO_HOME: resolveMycoHome(directory) },
+            input: JSON.stringify(payload),
+            timeout: MYCO_HOOK_TIMEOUT_MS,
+            maxBuffer: 4 * 1024 * 1024,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          },
+        );
+        const said = typeof run.stderr === "string" ? run.stderr : "";
+        for (const line of said.split("\n").map((l) => l.trim().replace(/^\[myco\]\s*/, "")).filter(Boolean)) {
+          noteOnce(`hook-said-${agent}-${sessionId}-${line}`, `${agent} session ${sessionId}: ${line}`);
+        }
+        if (run.error) throw run.error;
+        if (run.status !== 0) throw new Error(`exited ${run.status ?? run.signal}`);
+        const stdout = run.stdout;
+        const trimmed = typeof stdout === "string" ? stdout.trim() : "";
+        if (!trimmed) return {};
+        if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
+        return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
+      } catch (error) {
+        noteOnce(`hook-${agent}-${sessionId}`, `${agent} session ${sessionId}: could not run \`myco hook ${verb}\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+        return null;
+      }
+    });
   } catch (error) {
-    noteOnce(`hook-${agent}-${sessionId}`, `${agent} session ${sessionId}: could not run \`myco hook ${verb}\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+    noteOnce(`claim-error-${claimPath}`, `${agent} session ${sessionId}: cannot verify its claim (${(error as Error)?.message ?? "unknown"})`);
     return null;
   }
 }
