@@ -69,7 +69,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
             )}
           </header>
           <section aria-label="The plan" data-plan-body="">
-            <TextOrBlob projectId={projectId} text={plan.content === null ? null : withoutTitle(plan.content, plan.title)} blobKey={plan.blobKey} markdown />
+            <TextOrBlob projectId={projectId} text={plan.content === null ? null : withoutTitle(plan.content, plan.title)} blobKey={plan.blobKey} body={{ kind: 'plan', id: plan.planKey }} markdown />
           </section>
         </div>
 

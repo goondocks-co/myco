@@ -1,4 +1,6 @@
 import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
+import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from '../core/raw-provenance.js';
+import { PROCESSED_FIELDS, processedReferenceSql, processedResourceProofSql } from '../core/processed-resources.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../auth/tokens.js';
@@ -1719,9 +1721,127 @@ const V69_STATEMENTS: readonly string[] = [
      UPDATE machine_claims SET settings_revision = settings_revision + 1 WHERE machine_id = OLD.machine_id; END`,
 ];
 
+/** Historical raw ownership is fixed at the logical reference, independently of physical deduplication. */
+const RAW_SOURCES = [
+  { table: 'blobs', kind: 'blob', id: 'key', ref: 'token_id', owner: (a: string) => rawCredentialOwner(`${a}.token_id`), machine: (a: string) => `(SELECT machine_id FROM member_credentials WHERE id = ${a}.token_id)` },
+  { table: 'transcripts', kind: 'transcript', id: 'transcript_id', ref: null, owner: rawTranscriptOwner, machine: (a: string) => `${a}.machine_id` },
+] as const;
+
+/** Raw reference snapshots retain unknown provenance and cannot be reassigned or reclassified. */
+const V71_STATEMENTS: readonly string[] = [
+  ...['prompt_batches', 'responses', 'plans'].flatMap((table) => ['ai', 'au'].flatMap((operation) => [
+    `DROP TRIGGER IF EXISTS ${table}_search_blob_${operation}`,
+    `CREATE TRIGGER IF NOT EXISTS ${table}_search_blob_${operation} AFTER ${operation === 'ai' ? 'INSERT' : 'UPDATE OF project_id, blob_key'} ON ${table}
+       WHEN new.blob_key IS NOT NULL BEGIN
+       INSERT INTO search_blob_queue(project_id, blob_key) VALUES(new.project_id, new.blob_key)
+       ON CONFLICT(project_id, blob_key) DO NOTHING; END`,
+  ])),
+  `CREATE TABLE IF NOT EXISTS deployment_ownership (
+     id INTEGER PRIMARY KEY CHECK (id = 1), member_id TEXT REFERENCES members(id), revision INTEGER NOT NULL DEFAULT 0)`,
+  `INSERT INTO deployment_ownership (id) VALUES (1) ON CONFLICT DO NOTHING`,
+  `CREATE TABLE IF NOT EXISTS deployment_ownership_audit (
+     revision INTEGER PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), actor_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS raw_provenance_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL DEFAULT 0)`,
+  `INSERT INTO raw_provenance_state (id) VALUES (1) ON CONFLICT DO NOTHING`,
+  `CREATE TABLE IF NOT EXISTS raw_provenance_backfill (
+     id INTEGER PRIMARY KEY CHECK (id = 1), source INTEGER NOT NULL DEFAULT 0, cursor_project TEXT NOT NULL DEFAULT '',
+     cursor_id TEXT NOT NULL DEFAULT '', complete INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)`,
+  `INSERT INTO raw_provenance_backfill (id, complete) SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM blobs) OR EXISTS (SELECT 1 FROM transcripts) OR EXISTS (SELECT 1 FROM events) THEN 0 ELSE 1 END ON CONFLICT DO NOTHING`,
+  `CREATE TABLE IF NOT EXISTS raw_claims (
+     id TEXT PRIMARY KEY, owner_member_id TEXT NOT NULL REFERENCES members(id), cutoff_revision INTEGER NOT NULL UNIQUE,
+     created_at INTEGER NOT NULL, preview TEXT NOT NULL, min_revision INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE TABLE IF NOT EXISTS raw_restore_revisions (
+     artifact_hash TEXT PRIMARY KEY, revision_offset INTEGER NOT NULL, source_revision INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS raw_credentials (
+     token_id TEXT PRIMARY KEY, owner_member_id TEXT REFERENCES members(id),
+     provenance TEXT NOT NULL CHECK (provenance IN ('recorded','missing','ambiguous')))`,
+  `ALTER TABLE events ADD COLUMN raw_revision INTEGER`,
+  `CREATE TRIGGER IF NOT EXISTS events_raw_credential AFTER INSERT ON events WHEN NEW.raw_revision IS NULL BEGIN
+     INSERT INTO raw_credentials (token_id, owner_member_id, provenance)
+       VALUES (NEW.token_id, ${rawCredentialOwner('NEW.token_id')}, ${rawCredentialProvenance('NEW.token_id')}) ON CONFLICT DO NOTHING;
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1;
+     UPDATE events SET raw_revision = (SELECT revision FROM raw_provenance_state WHERE id = 1)
+       WHERE project_id = NEW.project_id AND event_id = NEW.event_id; END`,
+  `CREATE TRIGGER IF NOT EXISTS events_raw_revision_delete AFTER DELETE ON events BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END`,
+  `CREATE TRIGGER IF NOT EXISTS events_raw_identity_immutable BEFORE UPDATE OF project_id,event_id,token_id,raw_revision ON events
+     WHEN OLD.raw_revision IS NOT NULL BEGIN SELECT RAISE(ABORT, 'raw event reference is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS raw_resources (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     kind TEXT NOT NULL CHECK (kind IN ('blob', 'event', 'transcript')),
+     resource_id TEXT NOT NULL,
+     reference_id TEXT NOT NULL,
+     owner_member_id TEXT REFERENCES members(id),
+     claim_member_id TEXT REFERENCES members(id),
+     machine_id TEXT,
+     token_id TEXT,
+     classification TEXT NOT NULL DEFAULT 'raw' CHECK (classification = 'raw'),
+     provenance TEXT NOT NULL DEFAULT 'recorded' CHECK (provenance IN ('recorded','missing','ambiguous')),
+     revision INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (project_id, kind, resource_id, reference_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_resources_identity ON raw_resources (project_id, kind, resource_id, owner_member_id, provenance, revision)`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_resources_owner ON raw_resources (project_id, owner_member_id, kind, resource_id)`,
+  ...RAW_SOURCES.flatMap((source) => {
+    const reference = (a: string): string => source.ref === null ? "''" : `${a}.${source.ref}`;
+    const provenance = (a: string): string => source.kind === 'blob' ? rawCredentialProvenance(`${a}.token_id`) : rawTranscriptProvenance(a);
+    const values = (a: string): string => `${a}.project_id, '${source.kind}', ${a}.${source.id}, ${reference(a)}, ${source.owner(a)}, ${source.machine(a)}, ${a}.token_id, ${provenance(a)}, (SELECT revision + 1 FROM raw_provenance_state WHERE id = 1), ${source.kind === 'transcript' ? rawTranscriptClaimMember(a) : 'NULL'}`;
+    return [
+      `CREATE TRIGGER IF NOT EXISTS ${source.table}_raw_reference AFTER INSERT ON ${source.table} BEGIN
+         INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id, provenance, revision, claim_member_id)
+           SELECT ${values('NEW')} ${source.kind === 'transcript' ? 'WHERE NEW.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = NEW.project_id AND ts.transcript_id = NEW.transcript_id)' : ''} ON CONFLICT DO NOTHING; END`,
+      `CREATE TRIGGER IF NOT EXISTS ${source.table}_raw_reference_delete AFTER DELETE ON ${source.table} BEGIN
+         DELETE FROM raw_resources WHERE project_id = OLD.project_id AND kind = '${source.kind}' AND resource_id = OLD.${source.id}; END`,
+    ];
+  }),
+  `CREATE TRIGGER IF NOT EXISTS transcript_segments_raw_reference AFTER INSERT ON transcript_segments BEGIN
+     INSERT INTO raw_resources (project_id, kind, resource_id, reference_id, owner_member_id, machine_id, token_id, provenance, revision, claim_member_id)
+       SELECT t.project_id, 'transcript', t.transcript_id, '', ${rawTranscriptOwner('t')}, t.machine_id, t.token_id, ${rawTranscriptProvenance('t')},
+         (SELECT revision + 1 FROM raw_provenance_state WHERE id = 1), ${rawTranscriptClaimMember('t')}
+         FROM transcripts t WHERE t.project_id = NEW.project_id AND t.transcript_id = NEW.transcript_id
+           AND t.segment_count = (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.project_id = t.project_id AND ts.transcript_id = t.transcript_id)
+       ON CONFLICT DO NOTHING; END`,
+  ...['INSERT','DELETE'].map((operation) => `CREATE TRIGGER IF NOT EXISTS raw_resources_revision_${operation.toLowerCase()} AFTER ${operation} ON raw_resources BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END`),
+  ...['INSERT','UPDATE','DELETE'].map((operation) => `CREATE TRIGGER IF NOT EXISTS transcript_segments_revision_${operation.toLowerCase()} AFTER ${operation} ON transcript_segments BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END`),
+  `CREATE TRIGGER IF NOT EXISTS raw_claim_revision AFTER INSERT ON raw_claims BEGIN
+     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1; END`,
+  ...['raw_credentials','raw_claims','deployment_ownership_audit'].map((table) => `CREATE TRIGGER IF NOT EXISTS ${table}_immutable BEFORE UPDATE ON ${table} BEGIN
+     SELECT RAISE(ABORT, 'raw provenance audit is immutable'); END`),
+  `CREATE TABLE IF NOT EXISTS processed_resources (
+     project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     kind TEXT NOT NULL CHECK (kind IN ('prompt', 'response', 'plan', 'tool-input', 'tool-output', 'attachment')),
+     resource_id TEXT NOT NULL,
+     blob_key TEXT NOT NULL,
+     source_token_id TEXT NOT NULL,
+     event_id TEXT NOT NULL,
+     classification TEXT NOT NULL DEFAULT 'processed' CHECK (classification = 'processed'),
+     PRIMARY KEY (project_id, kind, resource_id, blob_key))`,
+  ...Object.entries(PROCESSED_FIELDS).flatMap(([kind, field]) => {
+    const insert = (alias: string): string => `INSERT INTO processed_resources (project_id, kind, resource_id, blob_key, source_token_id, event_id)
+      SELECT ${alias}.project_id, '${kind}', ${alias}.${field.id}, ${alias}.${field.blob}, ${alias}.token_id, ${alias}.event_id
+        ${alias === 's' ? `FROM ${field.table} s` : ''}
+        WHERE ${alias}.${field.blob} IS NOT NULL AND ${processedReferenceSql(alias, field)} ON CONFLICT DO NOTHING`;
+    return [
+      ...['INSERT', 'UPDATE'].map((operation) => `CREATE TRIGGER IF NOT EXISTS ${kind.replace('-', '_')}_processed_reference_${operation.toLowerCase()}
+        AFTER ${operation} ON ${field.table} BEGIN ${insert('NEW')}; END`),
+      `CREATE TRIGGER IF NOT EXISTS ${kind.replace('-', '_')}_processed_reference_delete AFTER DELETE ON ${field.table} BEGIN
+        DELETE FROM processed_resources WHERE project_id = OLD.project_id AND kind = '${kind}' AND resource_id = OLD.${field.id}; END`,
+    ];
+  }),
+  `DROP VIEW IF EXISTS embedding_sources`,
+  embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
+    ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')})` }
+    : source)),
+  `CREATE TRIGGER IF NOT EXISTS processed_resources_immutable BEFORE UPDATE ON processed_resources BEGIN
+     SELECT RAISE(ABORT, 'processed reference classification is immutable'); END`,
+  `CREATE TRIGGER IF NOT EXISTS raw_resources_immutable BEFORE UPDATE ON raw_resources BEGIN
+     SELECT RAISE(ABORT, 'raw reference ownership and classification are immutable'); END`,
+];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS), withStamp(49, V49_STATEMENTS), withStamp(50, V50_STATEMENTS), withStamp(51, V51_STATEMENTS), withStamp(52, V52_STATEMENTS), withStamp(53, V53_STATEMENTS), withStamp(54, V54_STATEMENTS), withStamp(55, V55_STATEMENTS), withStamp(56, V56_STATEMENTS), withStamp(57, V57_STATEMENTS), withStamp(58, V58_STATEMENTS), withStamp(59, V59_STATEMENTS), withStamp(60, V60_STATEMENTS), withStamp(61, V61_STATEMENTS), withStamp(62, V62_STATEMENTS), withStamp(63, V63_STATEMENTS), withStamp(64, V64_STATEMENTS), withStamp(65, V65_STATEMENTS), withStamp(66, V66_STATEMENTS), withStamp(67, V67_STATEMENTS), withStamp(68, V68_STATEMENTS), withStamp(69, V69_STATEMENTS), withStamp(70, V70_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS), withStamp(49, V49_STATEMENTS), withStamp(50, V50_STATEMENTS), withStamp(51, V51_STATEMENTS), withStamp(52, V52_STATEMENTS), withStamp(53, V53_STATEMENTS), withStamp(54, V54_STATEMENTS), withStamp(55, V55_STATEMENTS), withStamp(56, V56_STATEMENTS), withStamp(57, V57_STATEMENTS), withStamp(58, V58_STATEMENTS), withStamp(59, V59_STATEMENTS), withStamp(60, V60_STATEMENTS), withStamp(61, V61_STATEMENTS), withStamp(62, V62_STATEMENTS), withStamp(63, V63_STATEMENTS), withStamp(64, V64_STATEMENTS), withStamp(65, V65_STATEMENTS), withStamp(66, V66_STATEMENTS), withStamp(67, V67_STATEMENTS), withStamp(68, V68_STATEMENTS), withStamp(69, V69_STATEMENTS), withStamp(70, V70_STATEMENTS), withStamp(71, V71_STATEMENTS.map((statement) => statement.replace(/[ \t]+$/gm, '')))];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

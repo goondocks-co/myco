@@ -98,7 +98,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   if (!payload.ok) return payload;
   const p = payload.value;
 
-  const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID(), actor: ctx.actor ?? null };
+  const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID(), actor: ctx.actor ?? null, processing: ctx.writeOrigin === 'server' && e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER };
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
   const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash });

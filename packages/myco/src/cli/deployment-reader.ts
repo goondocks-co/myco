@@ -16,10 +16,12 @@ import { callTool, withMcpClient, type ToolCallOutcome } from '../mcp/client-cal
 import { declaredCredentialSource, deploymentTransport, upstreamOf } from '../mcp/deployment-upstream.js';
 import { unboundedBudget, type RequestBudget } from '../member/budget.js';
 import { CONNECT_TIMEOUT_CAP_MS, UNBOUNDED_REQUEST_TIMEOUT_MS, type CredentialSource } from '../member/constants.js';
-import { resolveCredential, resolveMemberProjectRoot, type CredentialRecord } from '../member/credential.js';
+import { ENV_MEMBER_TOKEN, ENV_SERVER_URL, isMemberTokenShape, resolveCredential, resolveMemberProjectRoot, type CredentialRecord } from '../member/credential.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
-import { refreshMemberCredential, type RefreshStatus } from '../member/refresh.js';
-import { readRegistryEntryResult, registryEntryPath } from '../member/registry.js';
+import { refreshMemberCredential, refreshMembership, type RefreshStatus } from '../member/refresh.js';
+import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult, registryEntryPath } from '../member/registry.js';
+import { readDefaultDeployment } from '../member/default-deployment.js';
+import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
 import { routeMissing, ServerClient, type FetchLike } from '../member/transport.js';
 import { resolveMycoHome } from '../paths/home.js';
 
@@ -75,6 +77,7 @@ export interface DeploymentHandle {
   listTools: () => Promise<DeploymentOutcome<string[]>>;
   /** One member json route's answer body. */
   post: (path: string, body: Record<string, unknown>) => Promise<DeploymentOutcome<Record<string, unknown>>>;
+  get: (path: string) => Promise<DeploymentOutcome<Record<string, unknown>>>;
 }
 
 /** The registry credential renewed through the membership's own rotation; `force` asks even outside the window. */
@@ -102,17 +105,81 @@ const budgetOf = (deps: MemberVerbDeps): RequestBudget => ({
   requestTimeoutMs: deps.requestTimeoutMs ?? UNBOUNDED_REQUEST_TIMEOUT_MS,
 });
 
+/** One renewal policy for project and Deployment requests, with the credential's own single writer. */
+function renewedCredential<T extends { token: string }>(initial: T, source: CredentialSource, load: () => T | null, rotate: () => Promise<RefreshStatus>, ended: () => boolean) {
+  let record = initial;
+  let renewedAfterRefusal = false;
+  return {
+    current: () => record,
+    run: async <R>(attempt: (at: T) => Promise<DeploymentOutcome<R>>): Promise<DeploymentOutcome<R>> => {
+      const first = await attempt(record);
+      if (first.ok || first.error.code !== 'unauthorized' || source !== 'registry' || renewedAfterRefusal) return first;
+      renewedAfterRefusal = true;
+      const presented = record.token;
+      const status = await rotate();
+      const next = load();
+      if (next === null || next.token === presented) {
+        return { ok: false, error: { code: 'unauthorized', message: RENEWAL_TERMINAL.includes(status) || ended()
+          ? `the Deployment refused this machine's credential and it cannot be renewed — ${REJOIN_HINT}`
+          : `the Deployment refused this machine's credential and it could not be renewed yet (${status}); try again shortly` } };
+      }
+      record = next;
+      return attempt(record);
+    },
+  };
+}
+
+/** Deployment requests select an explicit server or the recorded default, never a Project inferred from cwd. */
+export async function openDeploymentRequests(source: CredentialSource, deps: MemberVerbDeps = {}, server?: string): Promise<DeploymentOutcome<Pick<DeploymentHandle, 'serverUrl' | 'get' | 'post'>>> {
+  const home = source === 'registry' ? homeOf(deps) : undefined;
+  const budget = budgetOf(deps);
+  const env = envOf(deps);
+  const serverUrl = source === 'env' ? env[ENV_SERVER_URL]?.trim() : server ?? readDefaultDeployment(home)?.serverUrl;
+  const failure = (message: string): DeploymentOutcome<never> => ({ ok: false, error: { code: 'credential_unavailable', message } });
+  if (!serverUrl) return failure(source === 'env' ? `set ${ENV_SERVER_URL} and ${ENV_MEMBER_TOKEN}` : 'no default Deployment is recorded; pass --server <url> or sign in with myco login');
+  if (!admitMemberServerUrl(serverUrl)) return failure(`the Deployment URL must be ${MEMBER_SERVER_URL_RULE}`);
+  if (server !== undefined && deploymentUrl(server) !== deploymentUrl(serverUrl)) return failure('--server must name the Deployment whose credential is supplied');
+  const load = (): { serverUrl: string; token: string } | null => {
+    if (source === 'env') {
+      const token = env[ENV_MEMBER_TOKEN]?.trim();
+      return token !== undefined && isMemberTokenShape(token) ? { serverUrl, token } : null;
+    }
+    const read = readDeploymentMembershipResult(serverUrl, home);
+    return read.status === 'present' ? read.membership : null;
+  };
+  let record = load();
+  if (record === null) return failure(source === 'env' ? `set a valid ${ENV_MEMBER_TOKEN}` : 'the selected Deployment membership is missing or unreadable; sign in with myco login');
+  const rotate = async (force: boolean) => (await refreshMembership(serverUrl, { mycoHome: home, budget, force, fetch: deps.fetch, now: deps.now })).status;
+  if (source === 'registry') { await rotate(false); record = load(); }
+  if (record === null) return failure('the selected Deployment membership could not be read after renewal');
+  const credential = renewedCredential(record, source, load, () => rotate(true), () => {
+    const read = readDeploymentMembershipResult(serverUrl, home);
+    return read.status === 'present' && read.membership.refreshTerminal === true;
+  });
+  const client = (at: { serverUrl: string; token: string }) => new ServerClient(at, deps.fetch ?? globalThis.fetch);
+  return { ok: true, value: {
+    serverUrl: serverUrl.replace(/\/+$/, ''),
+    get: (path) => credential.run((at) => requestRoute(client(at), budget, 'GET', path)),
+    post: (path, body) => credential.run((at) => postRoute(client(at), budget, path, body)),
+  } };
+}
+
 /** A member json route's answer body, or the refusal it carries in the route's shape, under the member request deadline. */
 export async function postRoute(client: ServerClient, budget: RequestBudget, path: string, body: Record<string, unknown>): Promise<DeploymentOutcome<Record<string, unknown>>> {
-  const raw = await client.request('POST', path, { body: JSON.stringify(body), headers: { 'content-type': 'application/json' }, budget, scope: 'deployment' });
+  return requestRoute(client, budget, 'POST', path, body);
+}
+
+/** A Deployment-scoped JSON route, under the shared transport and refusal contract. */
+async function requestRoute(client: ServerClient, budget: RequestBudget, method: 'GET' | 'POST', path: string, body?: Record<string, unknown>): Promise<DeploymentOutcome<Record<string, unknown>>> {
+  const raw = await client.request(method, path, { ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }), budget, scope: 'deployment' });
   if (raw.kind === 'timeout') return { ok: false, error: { code: 'timeout', message: `no answer within ${budget.requestTimeoutMs} ms` } };
   if (raw.kind === 'transport') return { ok: false, error: { code: 'unreachable', message: raw.detail } };
   if (routeMissing(raw)) return { ok: false, error: { code: ROUTE_MISSING, message: `the Deployment does not serve ${path}; update it` } };
   if (raw.status === 401) return { ok: false, error: { code: 'unauthorized', message: 'The Deployment refused the credential (HTTP 401).' } };
   const answer = raw.json;
   if (answer === null) return { ok: false, error: { code: 'unavailable', message: `The Deployment answered HTTP ${raw.status} with no JSON body.` } };
-  if (raw.status < 200 || raw.status >= 300 || typeof answer.code === 'string') {
-    return { ok: false, error: { code: typeof answer.code === 'string' ? answer.code : 'unavailable', message: typeof answer.reason === 'string' ? answer.reason : `HTTP ${raw.status}` } };
+  if (raw.status < 200 || raw.status >= 300 || typeof answer.code === 'string' || answer.persisted === false) {
+    return { ok: false, error: { code: typeof answer.code === 'string' ? answer.code : typeof answer.error === 'string' ? answer.error : 'unavailable', message: typeof answer.reason === 'string' ? answer.reason : `HTTP ${raw.status}` } };
   }
   return { ok: true, value: answer };
 }
@@ -138,37 +205,21 @@ export function membershipProblem(deps: MemberVerbDeps = {}): string | null {
 export async function openDeployment(source: CredentialSource, deps: MemberVerbDeps = {}): Promise<DeploymentHandle | null> {
   if (source === 'registry' && membershipProblem(deps) !== null) return null;
   if (source === 'registry') await renew(deps, false);
-  let record = credentialFor(source, deps);
+  const record = credentialFor(source, deps);
   if (record === null) return null;
   const fetchImpl: FetchLike = deps.fetch ?? globalThis.fetch;
   const budget = budgetOf(deps);
-  let renewedAfterRefusal = false;
-
-  /** Run one request, and once after a 401 on an unchanged registry credential renew it and run it again. */
-  const withRenewal = async <T>(attempt: (at: CredentialRecord) => Promise<DeploymentOutcome<T>>): Promise<DeploymentOutcome<T>> => {
-    const first = await attempt(record!);
-    if (first.ok || first.error.code !== 'unauthorized' || source !== 'registry' || renewedAfterRefusal) return first;
-    renewedAfterRefusal = true;
-    const presented = record!.token;
-    const status = await renew(deps, true);
-    const next = credentialFor(source, deps);
-    if (next === null || next.token === presented) {
-      return { ok: false, error: { code: 'unauthorized', message: RENEWAL_TERMINAL.includes(status) || renewalEnded(deps)
-        ? `the Deployment refused this machine's credential and it cannot be renewed — ${REJOIN_HINT}`
-        : `the Deployment refused this machine's credential and it could not be renewed yet (${status}); try again shortly` } };
-    }
-    record = next;
-    return attempt(record);
-  };
+  const credential = renewedCredential(record, source, () => credentialFor(source, deps), () => renew(deps, true), () => renewalEnded(deps));
 
   const transport = (at: CredentialRecord) => deploymentTransport(upstreamOf(at, source), {}, deps.fetch);
   const client = (at: CredentialRecord) => new ServerClient({ serverUrl: at.serverUrl, token: at.token, projectId: at.projectId }, fetchImpl);
   return {
     serverUrl: record.serverUrl.replace(/\/+$/, ''),
     projectId: record.projectId,
-    healthy: () => client(record!).health(budget),
-    call: (tool, args) => withRenewal((at) => callTool(transport(at), tool, args)),
-    listTools: () => withRenewal((at) => withMcpClient(transport(at), async (client) => (await client.listTools()).tools.map((t) => t.name))),
-    post: (path, body) => withRenewal((at) => postRoute(client(at), budget, path, body)),
+    healthy: () => client(credential.current()).health(budget),
+    call: (tool, args) => credential.run((at) => callTool(transport(at), tool, args)),
+    listTools: () => credential.run((at) => withMcpClient(transport(at), async (client) => (await client.listTools()).tools.map((t) => t.name))),
+    post: (path, body) => credential.run((at) => postRoute(client(at), budget, path, body)),
+    get: (path) => credential.run((at) => requestRoute(client(at), budget, 'GET', path)),
   };
 }

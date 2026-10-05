@@ -197,7 +197,7 @@ describe('sign-in', () => {
     const projects = await worker.fetch(new Request('https://s/api/projects', { headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } }), env);
     expect(projects.status).toBe(401);
     const me = await worker.fetch(new Request('https://s/auth/me', { headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } }), env);
-    expect({ status: me.status, body: await me.json() }).toEqual({ status: 200, body: { sub: '999999', login: 'octocat', member: null } });
+    expect({ status: me.status, body: await me.json() }).toEqual({ status: 200, body: { sub: '999999', login: 'octocat', owner: false, member: null } });
   });
 
   it('refuses a callback whose state does not match the planted cookie', async () => {

@@ -229,6 +229,18 @@ describe('a plan’s page', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('reads a spilled plan through its typed identity while generic storage downloads are unavailable', async () => {
+    const { requested } = server(base({
+      [PLAN]: () => onePlan({ content: null, blobKey: 'a'.repeat(64) }),
+      [`/api/projects/${MYCO}/processed/plan/${KEY}`]: () => new Response('- [ ] Preserve every processed word'),
+      [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer,
+    }, MEMBER));
+    mount(planPagePath(MYCO, { planKey: KEY }));
+    await waitFor(() => expect(document.querySelector('[data-plan-body]')?.textContent).toContain('Preserve every processed word'));
+    expect(requested).toContain(`/api/projects/${MYCO}/processed/plan/${KEY}`);
+    expect(requested.some((path) => path.includes('/blobs/'))).toBe(false);
+  });
+
   it('lets an admin pick a status and save it through the session’s route, then shows the saved status', async () => {
     let status = 'in_progress';
     const { sent } = server(base({

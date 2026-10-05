@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState, type RefObject } from 'react';
 import { Button, Disclosure, ExternalLink, ItemLink, Lightbox, Skeleton, StatusChip, TypeChip } from '../../design';
-import { blobUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
+import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnInjection, type TurnRow } from '../../hooks/use-sessions';
 import { cn } from '../../lib/cn';
 import { PlanLine } from '../knowledge/PlanLine';
 import { TextOrBlob } from './StoredText';
@@ -56,14 +56,14 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
     <div className="flex flex-wrap items-start gap-s3" data-testid="turn-attachments">
       {images.map((a, i) => (
         <Button key={a.attachmentId} variant="ghost" onClick={() => setLightbox(i)} className="h-auto overflow-hidden rounded-control border-line p-0" aria-label={`Open ${a.description ?? 'image'}`}>
-          <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-thumb-h max-w-thumb object-cover" />
+          <img src={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} alt={a.description ?? 'An attached image'} loading="lazy" className="max-h-thumb-h max-w-thumb object-cover" />
         </Button>
       ))}
       {files.map((a) => (
-        <ExternalLink key={a.attachmentId} href={blobUrl(projectId, a.blobKey)} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
+        <ExternalLink key={a.attachmentId} href={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
       ))}
       {lightbox !== null && (
-        <Lightbox images={images.map((a) => ({ src: blobUrl(projectId, a.blobKey), alt: a.description ?? 'An attached image' }))} index={lightbox} onNavigate={setLightbox} onClose={() => setLightbox(null)} />
+        <Lightbox images={images.map((a) => ({ src: processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId }), alt: a.description ?? 'An attached image' }))} index={lightbox} onNavigate={setLightbox} onClose={() => setLightbox(null)} />
       )}
     </div>
   );
@@ -76,7 +76,7 @@ function Replies({ projectId, responses }: { projectId: string; responses: Respo
       {responses.map((r) => (
         <div key={r.responseId} className="flex flex-col gap-s1" data-testid="turn-response">
           <time dateTime={new Date(r.createdAt).toISOString()} className="t-meta text-faint">Reply · {clockTime(r.createdAt)}</time>
-          <TextOrBlob projectId={projectId} text={r.text} blobKey={r.blobKey} markdown />
+          <TextOrBlob projectId={projectId} text={r.text} blobKey={r.blobKey} body={{ kind: 'response', id: r.responseId }} markdown />
         </div>
       ))}
     </div>
@@ -91,7 +91,7 @@ function SteeringChild({ projectId, sessionId, child }: { projectId: string; ses
         <span className="font-medium text-ink-2">Steered while it ran{child.prompt.threadLabel !== null ? ` · ${child.prompt.threadLabel}` : ''}</span>
         <time dateTime={new Date(child.prompt.createdAt).toISOString()}>{clockTime(child.prompt.createdAt)}</time>
       </div>
-      <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} />
+      <TextOrBlob projectId={projectId} text={child.prompt.text} blobKey={child.prompt.blobKey} body={{ kind: 'prompt', id: child.prompt.promptId }} />
       <ToolCalls projectId={projectId} sessionId={sessionId} promptId={child.prompt.promptId} total={child.toolCallCount} />
       <Replies projectId={projectId} responses={child.responses} />
     </div>
@@ -135,7 +135,7 @@ function PromptText({ projectId, turn, text, blobKey }: { projectId: string; tur
       </div>
     );
   }
-  return <div className="font-medium text-ink"><TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} /></div>;
+  return <div className="font-medium text-ink"><TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId }} /></div>;
 }
 
 export interface TurnProps {

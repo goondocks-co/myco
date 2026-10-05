@@ -1,7 +1,9 @@
+import { verifiedBlobReference } from '../core/raw-provenance.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { StreamContext } from '../context.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, RETRY_AFTER_SECONDS } from '../constants.js';
 import { blobObjectKey } from '../core/blob-objects.js';
+import { RawResourceReader } from '../core/raw-resources.js';
 import { consumeExpiredAuthorities, consumeUploadAuthority } from '../core/object-release.js';
 import { classifyBlobStore, emit, TokenRevokedError, UNAVAILABLE, type Classifier } from '../telemetry.js';
 import { credentialLive } from './live-credential.js';
@@ -107,7 +109,11 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
   let putIssued = false;
   try {
     const existing = await db.prepare(`SELECT size, media_type FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first<{ size: number; media_type: string }>();
-    if (existing) return duplicate(existing);
+    if (existing) {
+      const credential = await db.prepare('SELECT member_id FROM member_credentials WHERE id = ?').bind(ctx.tokenId).first<{ member_id: string }>();
+      if (credential !== null && await new RawResourceReader(env, { projectId: ctx.projectId }, { kind: 'member', memberId: credential.member_id })
+        .allows({ kind: 'blob', id: key }, 'read')) return duplicate(existing);
+    }
 
     let storedSize: number;
     try {
@@ -129,7 +135,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
 
     const at = ctx.clock();
     const live = `EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ? AND expires_at > ?)`;
-    const batch = await db.batch([
+    await db.batch([
       db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
                     SELECT ?, 'upload', ? WHERE EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ?)
                       AND (NOT ${live} OR EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ?))
@@ -140,14 +146,16 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
                     ON CONFLICT (project_id, key) DO NOTHING`)
         .bind(ctx.projectId, key, storedSize, mediaType, ctx.tokenId, ctx.now, reservationId, reservationId, at),
       db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
+      verifiedBlobReference(db, { projectId: ctx.projectId, key, tokenId: ctx.tokenId, reservationId, at }),
       db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),
     ]);
     consumed = true;
-    if (batch[1]!.meta.changes === 1) {
+    const row = await db.prepare(`SELECT size, media_type, generation FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key)
+      .first<{ size: number; media_type: string; generation: string | null }>();
+    if (row?.generation === reservationId) {
       emit({ kind: 'blob_stored', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return Response.json({ stored: true, duplicate: false, key, size: storedSize, mediaType } satisfies BlobResult);
     }
-    const row = await db.prepare(`SELECT size, media_type FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first<{ size: number; media_type: string }>();
     if (row !== null) return duplicate(row);
     return expired();
   } finally {

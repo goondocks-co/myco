@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
+import { CHAINED_WAKE_MS } from '@myco-server-worker/core/tick.js';
 import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
@@ -57,16 +58,18 @@ export const tick: ParityScenario = {
       // Each wake follows an owner request, so the second finds the Deployment awake unless a run holds it; the assertions below say which.
       const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
       expect(res.status).toBe(200);
-      return (await res.json()) as { state: string; jobs: Array<{ name: string; changed: number; failed: string | null }>; nextWakeMs: number | null };
+      return (await res.json()) as { state: string; jobs: Array<{ name: string; changed: number; failed: string | null; more: boolean }>; nextWakeMs: number | null };
     };
     const rows = () => target.sql(`SELECT id, status, error FROM agent_runs WHERE id LIKE 'tick-%' ORDER BY id`);
 
+    await target.sql(`UPDATE raw_provenance_backfill SET source = 0, cursor_project = '', cursor_id = '', complete = 0 WHERE id = 1`);
     const first = await wake();
     // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.
     expect(['active', 'idle']).toContain(first.state);
     // Retention removes the three runs past the window; the sweep fails the stale one.
     expect(seededView(first.jobs)).toEqual(jobReport({ 'agent-run-retention': 3, 'run-stale-sweep': 1 }));
-    expect(first.nextWakeMs).toBe(60_000);
+    expect(first.jobs.find((job) => job.name === 'raw-provenance-backfill')?.more).toBe(true);
+    expect(first.nextWakeMs).toBe(CHAINED_WAKE_MS);
     expect(await rows()).toEqual([
       { id: 'tick-live', status: 'running', error: null },
       { id: 'tick-stale', status: 'failed', error: 'the machine running it stopped responding' },

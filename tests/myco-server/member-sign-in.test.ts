@@ -58,7 +58,7 @@ describe('member sign-in', () => {
 
     expect((await worker.fetch(await get('/api/projects', '9001'), env)).status).toBe(200);
     const me = await worker.fetch(await get('/auth/me', '9001'), env);
-    expect(await jsonBody(me)).toEqual({ sub: '9001', login: 'octocat', member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
+    expect(await jsonBody(me)).toEqual({ sub: '9001', login: 'octocat', owner: false, member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
   });
 
   it('is flat: two linked members see the same projects', async () => {
@@ -167,7 +167,7 @@ describe('bootstrap, then admin (#1448)', () => {
     expect(keyRows(e)).toBe(0);
     expect(linked(e)).toEqual([{ id: PRINCIPAL.id, github_id: LINKED_SUB }]);
     expect((await worker.fetch(await get('/api/projects', LINKED_SUB), env)).status).toBe(200);
-    expect(await jsonBody(await worker.fetch(await get('/auth/me', LINKED_SUB), env))).toEqual({ sub: LINKED_SUB, login: 'octocat', member: PRINCIPAL });
+    expect(await jsonBody(await worker.fetch(await get('/auth/me', LINKED_SUB), env))).toEqual({ sub: LINKED_SUB, login: 'octocat', owner: false, member: PRINCIPAL });
   });
 
   it('refuses a key minted during bootstrap once bootstrap is over, in the preview and at confirmation, binding nothing', async () => {

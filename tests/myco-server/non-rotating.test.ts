@@ -172,7 +172,7 @@ describe('every route that mints an authority able to outlive the credential (#1
 
   it('is declared in the route table: the refresh, the worker\'s claim and repository, and the GitHub link, and no other member route', () => {
     const declared = ROUTES.filter((r) => r.auth === 'member' && 'mintsAuthority' in r && r.mintsAuthority === true).map((r) => `${r.method} ${r.path}`);
-    expect(declared).toEqual(['POST /tokens/refresh', 'POST /worker/claim', 'POST /worker/repository', 'POST /members/link-github']);
+    expect(declared).toEqual(['POST /tokens/refresh', 'POST /worker/claim', 'POST /worker/repository', 'POST /members/link-github', 'POST /members/ownership']);
   });
 
   it('is the only member route that reaches a minter or a secret opener: every call site is pinned by the function that makes it, and the door that reaches it', () => {

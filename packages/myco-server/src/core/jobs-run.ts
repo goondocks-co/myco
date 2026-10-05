@@ -1,3 +1,4 @@
+import { rawBackfill } from './raw-backfill.js';
 /**
  * What each scheduled job does when the tick runs it.
  *
@@ -217,6 +218,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   // #1158 join UX
   'invite-expiry': inviteExpiry,
   'grant-expiry': grantExpiry,
+  'raw-provenance-backfill': (env, now) => rawBackfill(env.db, now),
   // #1147 — transcript-first ingest
   'transcript-parse': (env, now) => parseTranscripts(env, now),
   'session-titling': titleReadySessions,

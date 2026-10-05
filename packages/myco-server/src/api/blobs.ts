@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { getBlob } from '../read/blobs.js';
+import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { notFound, resolveProjectScope } from './scope.js';
 
 /**
@@ -36,19 +36,19 @@ const BLOB_SECURITY: Record<string, string> = {
  */
 export async function handleBlobRead(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
-  if (scope === null) return notFound();
-  const row = await getBlob(env.db, scope, ctx.params.key);
-  if (row === null) return notFound();
-  const object = await env.blobs.get(row.objectKey);
-  if (object === null) return notFound();
+  const absent = (): Response => { const response = notFound(); for (const [name, value] of Object.entries(RAW_CACHE_HEADERS)) response.headers.set(name, value); return response; };
+  if (scope === null) return absent();
+  const blob = await new RawResourceReader(env, scope, { kind: 'member', memberId: ctx.member.id }).blob(ctx.params.key);
+  if (blob === null) return absent();
+  const { row, body } = blob;
   const renderable = RENDERABLE.has(row.mediaType);
-  return new Response(object.body, {
+  return new Response(body, {
     headers: {
       ...BLOB_SECURITY,
       'content-type': renderable ? row.mediaType : 'application/octet-stream',
       'content-length': String(row.size),
       ...(renderable ? {} : { 'content-disposition': `attachment; filename="${ctx.params.key}"` }),
-      'cache-control': 'private, max-age=31536000, immutable',
+      ...RAW_CACHE_HEADERS,
     },
   });
 }

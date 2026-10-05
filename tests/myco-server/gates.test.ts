@@ -754,6 +754,26 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'binary_missing' }] }) }),
         wellFormed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'ready' }] }) }),
       },
+      'GET /members/ownership': {
+        shape: 'persisted',
+        malformed: (_token) => new Request('https://s/members/ownership', { headers: memberHeaders(anonymous.token) }),
+        wellFormed: (token) => new Request('https://s/members/ownership', { headers: memberHeaders(token) }),
+      },
+      'POST /members/ownership': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ ownerMemberId: 'mem_machine_1', revision: '0' }) }),
+      },
+      'GET /members/raw-claims': {
+        shape: 'persisted',
+        malformed: (_token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(anonymous.token) }),
+        wellFormed: (token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(token) }),
+      },
+      'POST /members/raw-claims': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+        wellFormed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ revision: String((sqlite.query('SELECT revision FROM raw_provenance_state').get() as { revision: number }).revision) }) }),
+      },
       'POST /members/projects/list': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
@@ -794,16 +814,20 @@ describe('gates', () => {
       const refused = await worker.fetch(fixture.wellFormed(anonymous.token), e);
       machineless.push({ route: r.path, status: refused.status, ...answers.refusal(await refused.json()) });
     }
-    expect(machineless).toEqual(Object.entries(FIXTURES).map(([route, f]) => {
+    expect(machineless).toEqual(ROUTES.filter((r) => r.auth === 'member').map((r) => {
+      const route = `${r.method} ${r.path}`;
+      const f = FIXTURES[route];
       const run = route.startsWith('POST /runs/') && !ROUTES.some(r => `${r.method} ${r.path}` === route && 'retired' in r && r.retired === true);
-      return { route: route.slice('POST '.length), status: SHAPES[f.shape].refusedStatus, refused: true,
+      return { route: route.slice(route.indexOf(' ') + 1), status: SHAPES[f.shape].refusedStatus, refused: true,
         code: run ? 'run_scope' : 'no_machine_identity', reason: run ? "a run credential reaches only its run's surface" : 'token has no machine identity' };
     }));
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
     // A retired route refuses even a well-formed request, naming that it is retired (`RETIRED_RUN_ROUTES`).
     const retired = new Set(ROUTES.filter((r) => 'retired' in r && r.retired === true).map((r) => `${r.method} ${r.path}`));
+    sqlite.run('UPDATE raw_provenance_backfill SET complete = 1 WHERE id = 1');
     for (const [route, fixture] of Object.entries(FIXTURES)) {
+      if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
       const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
       if (route.startsWith('POST /runs/') && !retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
       else if (retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'route_retired', persisted: false });
@@ -1266,6 +1290,10 @@ describe('gates', () => {
       'member POST /members/projects/list',
       'member POST /members/projects/resolve',
       'member POST /members/settings',
+      'member GET /members/raw-claims',
+      'member POST /members/raw-claims',
+      'member GET /members/ownership',
+      'member POST /members/ownership',
       'member POST /members/status',
       'member POST /members/uncaptured',
       'member POST /members/uncaptured/state',
@@ -1300,6 +1328,10 @@ describe('gates', () => {
       'session:admin DELETE /api/projects/{projectId}/repository',
       'session:admin DELETE /api/secrets/{name}',
       'session:admin DELETE /api/settings/{leaf}',
+      'session:admin GET /api/raw-claims',
+      'session:admin POST /api/raw-claims',
+      'session:admin GET /api/ownership',
+      'session:admin POST /api/ownership',
       'session:admin GET /api/attention',
       'session:admin GET /api/backups',
       'session:admin GET /api/backups/{backupId}/artifact',
@@ -1372,6 +1404,7 @@ describe('gates', () => {
       'session:member GET /api/projects/{projectId}/digests/{tier}/revisions',
       'session:member GET /api/projects/{projectId}/plans',
       'session:member GET /api/projects/{projectId}/plans/{planKey}',
+      'session:member GET /api/projects/{projectId}/processed/{kind}/{id}',
       'session:member GET /api/projects/{projectId}/release-states',
       'session:member GET /api/projects/{projectId}/runs',
       'session:member GET /api/projects/{projectId}/runs/{runId}',
@@ -1405,7 +1438,7 @@ describe('gates', () => {
       'session:member POST /api/harness/dispatch',
       'session:member POST /api/uncaptured/{machineId}/{rootKey}/connect',
       'session:member PUT /api/machines/{machineId}/settings/{leaf}',
-    ]);
+    ].sort());
   });
 
   it('declares every required binding that the adapter requires, and no more', () => {

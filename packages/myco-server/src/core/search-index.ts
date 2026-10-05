@@ -1,3 +1,4 @@
+import { processedResourceProofSql } from './processed-resources.js';
 import { registeredObjectKeySql } from './blob-objects.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';
@@ -8,9 +9,9 @@ export const SEARCH_QUERY_MAX_CHARS = 512;
 export const SEARCH_CHUNKS_PER_PASS = 16;
 
 /** Only currently referenced text blobs contribute to the search backlog. */
-const REFERENCED = `EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key)
-  OR EXISTS (SELECT 1 FROM responses r WHERE r.project_id = q.project_id AND r.blob_key = q.blob_key)
-  OR EXISTS (SELECT 1 FROM plans p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key)`;
+const REFERENCED = `EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key AND ${processedResourceProofSql('p.project_id', 'prompt', 'p.prompt_id', 'p.blob_key')})
+  OR EXISTS (SELECT 1 FROM responses r WHERE r.project_id = q.project_id AND r.blob_key = q.blob_key AND ${processedResourceProofSql('r.project_id', 'response', 'r.response_id', 'r.blob_key')})
+  OR EXISTS (SELECT 1 FROM plans p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key AND ${processedResourceProofSql('p.project_id', 'plan', 'p.plan_key', 'p.blob_key')})`;
 
 /** The referenced text blobs the full-text index has not finished: every Project's, one Project's, or a set's. */
 export async function pendingSearchBlobs(db: RelationalStore, projects?: string | ProjectSet): Promise<number> {
