@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { setFixturePermissions } from '../helpers/permission-fixture.js';
 
-function probe(lookup: 'realpathSync' | 'readlinkSync', code: string, interruptions: number) {
+function probe(lookup: 'realpathSync' | 'readlinkSync', code: string, interruptions: number, faultInLinkTarget = false) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-fence-eintr-'));
   const source = path.resolve('tests/setup/filesystem-fence.ts');
   const script = `
@@ -20,7 +20,8 @@ function probe(lookup: 'realpathSync' | 'readlinkSync', code: string, interrupti
     fs.mkdirSync(home);
     fs.mkdirSync(storage);
     fs.writeFileSync(path.join(storage, 'keep'), 'private');
-    const destination = ${JSON.stringify(lookup)} === 'readlinkSync' ? path.join(storage, 'pending') : storage;
+    const destination = ${faultInLinkTarget} || ${JSON.stringify(lookup)} === 'readlinkSync' ? path.join(storage, 'pending') : storage;
+    const faultTarget = ${faultInLinkTarget} ? destination : protectedRoot;
     fs.symlinkSync(destination, protectedRoot, 'dir');
     fs.symlinkSync(storage, alias, 'dir');
     const original = fs[${JSON.stringify(lookup)}];
@@ -28,7 +29,7 @@ function probe(lookup: 'realpathSync' | 'readlinkSync', code: string, interrupti
     const paths = [];
     let enabled = true;
     fs[${JSON.stringify(lookup)}] = function (...args) {
-      if (enabled && args[0] === protectedRoot) {
+      if (enabled && args[0] === faultTarget) {
         paths.push(args[0]);
         if (paths.length <= ${interruptions}) throw failure;
       }
@@ -55,7 +56,7 @@ function probe(lookup: 'realpathSync' | 'readlinkSync', code: string, interrupti
       assert.equal(caught, failure);
       assert.equal(paths.length, ${JSON.stringify(code)} === 'EINTR' ? 3 : 1);
     }
-    assert.ok(paths.every(target => target === protectedRoot));
+    assert.ok(paths.every(target => target === faultTarget));
     enabled = false;
     console.log('metadata gate passed');
   `;
@@ -75,6 +76,9 @@ function probe(lookup: 'realpathSync' | 'readlinkSync', code: string, interrupti
 }
 
 describe('filesystem fence metadata retries', () => {
+  it('propagates a permanent realpath EINVAL from a dangling symlink destination', () => {
+    probe('realpathSync', 'EINVAL', Number.MAX_SAFE_INTEGER, true);
+  });
   for (const lookup of ['realpathSync', 'readlinkSync'] as const) {
     it(`${lookup}: one EINTR preserves symlink and parent protection`, () => probe(lookup, 'EINTR', 1));
     it(`${lookup}: retries through the last allowed attempt`, () => probe(lookup, 'EINTR', 2));

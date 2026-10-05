@@ -48,13 +48,14 @@ function resolvedTarget(target: string): string {
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      let link: string | undefined;
       try {
-        const link = retryInterrupted(() => originalReadlink(ancestor));
-        return resolvedTarget(path.resolve(path.dirname(ancestor), link, ...suffix));
+        link = retryInterrupted(() => originalReadlink(ancestor));
       } catch (linkError) {
         const linkCode = (linkError as NodeJS.ErrnoException).code;
         if (!['ENOENT', 'ENOTDIR', 'EINVAL'].includes(linkCode ?? '')) throw linkError;
       }
+      if (link !== undefined) return resolvedTarget(path.resolve(path.dirname(ancestor), link, ...suffix));
       const parent = path.dirname(ancestor);
       if (parent === ancestor) throw error;
       suffix.unshift(path.basename(ancestor));
