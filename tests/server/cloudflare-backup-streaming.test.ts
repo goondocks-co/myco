@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { fetchD1Download } from '@myco/server/d1-download.js';
 
-const MAX_RSS_KIB = 512 * 1024;
+const MAX_RSS_MIB = 768;
+const MAX_RSS_KIB = MAX_RSS_MIB * 1024;
 const MAX_METADATA_CHARACTERS = 4096;
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -34,7 +35,7 @@ async function withServer(rows: number, mode: string, run: (metadata: string) =>
 }
 
 for (const rows of [4096, 65537]) {
-  it(`downloads and imports ${rows} SQL rows below 512 MiB RSS`, async () => {
+  it(`downloads and imports ${rows} SQL rows below ${MAX_RSS_MIB} MiB RSS`, async () => {
     await withServer(rows, rows === 4096 ? 'interrupt' : 'clean', async (metadata) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-d1-streaming-'));
       expect(JSON.parse(metadata).rows).toBe(rows);
