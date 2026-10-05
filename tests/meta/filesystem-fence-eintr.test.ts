@@ -98,9 +98,10 @@ describe('permission fixture boundary', () => {
     const directory = fs.mkdtempSync(path.resolve('target/permission-fixture-'));
     const file = path.join(directory, 'fixture');
     fs.writeFileSync(file, 'private fixture', { mode: 0o644 });
+    const mode = fs.statSync(file).mode;
     try {
       expect(() => setFixturePermissions(file, 0o600)).toThrow(/private directory under the test temp root/);
-      expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+      expect(fs.statSync(file).mode).toBe(mode);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
