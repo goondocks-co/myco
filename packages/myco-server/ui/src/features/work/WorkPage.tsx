@@ -1,11 +1,11 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Button, Card, Disclosure, EmptyState, ErrorState, FilterBar, LoadingState, ShowMore, Skeleton, useFilterParams, useQueryDraft, type FilterDefinition,
+  Button, Card, Disclosure, EmptyState, ErrorState, FilterBar, ReadState, ShowMore, Skeleton, useFilterParams, useQueryDraft, type FilterDefinition,
 } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useNow } from '../../hooks/use-today';
-import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkWhileRunning, workHasLiveRun } from '../../hooks/use-work';
+import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkEvidence, useWorkWhileRunning, workHasLiveRun } from '../../hooks/use-work';
 import { sessionHeadingText } from '../../lib/session-text';
 import {
   CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX,
@@ -76,6 +76,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const picked = KIND_ORDER.find((kind) => kind === filters.values.outcome) ?? null;
   const bounds = workBounds(window, now);
   const work = useWorkWhileRunning({ projectId, ...bounds });
+  const evidence = useWorkEvidence({ projectId, ...bounds }, work.data);
   const week = useWorkWhileRunning({ projectId, ...workBounds('week', now) }, { enabled: projectId !== null });
   const live = workHasLiveRun(work.data);
   const [asking, setAsking] = useState<string | null>(null);
@@ -83,7 +84,8 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
   const name = projectId === null ? null : projectName(projectId) ?? 'this project';
   const q = filters.query.trim().toLowerCase();
   const matches = (text: string) => q === '' || text.toLowerCase().includes(q);
-  const kinds = work.data === undefined ? [] : summarize(work.data);
+  const answer = work.data === undefined ? undefined : { ...work.data, runs: evidence.rows };
+  const kinds = answer === undefined ? [] : summarize(answer);
   const shown = picked === null ? kinds : kinds.filter((kind) => kind.kind === picked);
   const closeRun = () => {
     const from = (location.state as { from?: unknown } | null)?.from;
@@ -116,18 +118,16 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
         onFilterChange={filters.setFilter}
         onClear={() => { draft.reset(); filters.clear(); }}
       />
+      <ReadState data={work.data} pending={work.isPending} error={work.error} onRetry={() => { void work.refetch(); }} label="Myco’s work">{() => null}</ReadState>
       {projectId !== null && <Disclosure key={historyParams.get('runs') === 'all' ? 'all' : 'window'} summary="All-time run history" defaultOpen={historyParams.get('runs') === 'all'}>
         <div className="flex flex-col gap-s3">
           {KIND_ORDER.map((kind) => <TaskHistory key={kind} kind={kind} projectId={projectId} now={now} defaultOpen={historyParams.get('runs') === 'all' && picked === kind} />)}
         </div>
       </Disclosure>}
       {work.data !== undefined && kinds.length > 0 && <WorkLede kinds={kinds} window={window} name={name} projectCount={new Set(kinds.flatMap((kind) => kind.projects)).size} />}
-      {work.data === undefined && work.isPending && <Skeleton className="h-s5 w-3/5" />}
       <div className="grid items-start gap-s6 lg:grid-rail">
         <section aria-label="What Myco did" className="flex min-w-0 flex-col gap-s4">
-          {work.data === undefined ? (
-            work.isPending ? <LoadingState label="Loading Myco’s work" count={4} /> : <ErrorState error={work.error} onRetry={() => void work.refetch()} />
-          ) : shown.length === 0 ? (
+          {work.data === undefined ? null : shown.length === 0 ? (
             <EmptyState
               title={picked === null ? `Nothing ran ${WINDOW_WORDS[window].noun}` : `No ${KIND_WORDS[picked].toLowerCase()} ${WINDOW_WORDS[window].noun}`}
               action={<>
@@ -140,7 +140,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
               <KindCard
                 key={kind.kind}
                 summary={kind}
-                answer={work.data!}
+                answer={answer!}
                 projectId={projectId}
                 projectName={projectName}
                 window={window}
@@ -149,8 +149,16 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
                 now={now}
                 matches={matches}
                 searching={q !== ''}
+                expanded={evidence.expanded}
               />
             ))
+          )}
+          {work.data !== undefined && (evidence.hasMore || evidence.error !== null) && (
+            <div data-work-evidence="" className="flex flex-col gap-s2">
+              <p className="t-small text-muted">Showing {evidence.rows.length.toLocaleString()} run records. Outcome counts and failure status cover the whole window.</p>
+              {evidence.error !== null && <ErrorState error={evidence.error} onRetry={evidence.more} />}
+              {evidence.hasMore && <ShowMore shown={evidence.rows.length} noun="run records" hasMore onMore={evidence.more} pending={evidence.isFetchingMore} />}
+            </div>
           )}
         </section>
         <aside aria-label="Upkeep and cost" className="flex min-w-0 flex-col gap-s4">
@@ -181,9 +189,11 @@ function WorkLede({ kinds, window, name, projectCount }: { kinds: readonly KindS
   const lead = name === null ? WINDOW_WORDS[window].lead : `${WINDOW_WORDS[window].lead} in ${name}`;
   // Under one project the project is named in the lead, so Myco is "it".
   const subject = name === null ? 'Myco' : 'it';
-  const failures = kinds.filter((kind) => kind.failures.length > 0).map((kind) => {
-    const n = count(kind.failures.length, runNoun(kind.kind), runNoun(kind.kind, 2));
-    return recovered(kind.failureGroups) ? `${capitalize(n)} failed; the ones since have worked.` : `${capitalize(n)} failed, and none has worked since.`;
+  const failures = kinds.filter((kind) => kind.failed > 0).map((kind) => {
+    const n = count(kind.failed, runNoun(kind.kind), runNoun(kind.kind, 2));
+    if (recovered(kind.failureGroups)) return `${capitalize(n)} failed; the ones since have worked.`;
+    if (kind.failureGroups.some((group) => group.producedSince > 0)) return `${capitalize(n)} failed; some projects have worked since, while others are still waiting for a successful run.`;
+    return `${capitalize(n)} failed, and none has worked since.`;
   });
   return (
     <p className="max-w-measure t-body text-ink-2" data-lede="">
@@ -219,10 +229,11 @@ interface KindCardProps {
   now: number;
   matches: (text: string) => boolean;
   searching: boolean;
+  expanded: boolean;
 }
 
 /** One kind of work: its outcome, its evidence, its latest runs, and any failure. */
-function KindCard({ summary, answer, projectId, projectName, window, bounds, live, now, matches, searching }: KindCardProps) {
+function KindCard({ summary, answer, projectId, projectName, window, bounds, live, now, matches, searching, expanded }: KindCardProps) {
   const location = useLocation();
   const [params] = useSearchParams();
   const name = useStarterNames();
@@ -238,16 +249,17 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
     const row = [...every.rows, ...(runs.data?.rows ?? [])].find((candidate) => candidate.id === id);
     return row === undefined ? null : ranOn(row.worker, name)?.machine ?? null;
   };
-  const lineItems: RunLineItem[] = projectId === null
-    ? summary.listed.slice(0, RUNS_SHOWN).map((run) => workRunLine(run, now, projectName))
-    : (all ? scopedRows : scopedRows.slice(0, RUNS_SHOWN)).map((row) => pageRowLine(row, kind, projectId, now, name));
+  const lineItems: RunLineItem[] = expanded && !all
+    ? summary.listed.map((run) => workRunLine(run, now, projectName))
+    : projectId === null
+      ? summary.listed.slice(0, RUNS_SHOWN).map((run) => workRunLine(run, now, projectName))
+      : (all ? scopedRows : scopedRows.slice(0, RUNS_SHOWN)).map((row) => pageRowLine(row, kind, projectId, now, name));
   const lines = lineItems.filter((item) => matches(item.words) || matches(item.where ?? ''));
   const groups = summary.failureGroups
     .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(failureWords(run.failure)) || matches(failureDetail(run.failure) ?? '')) }))
-    .filter((group) => group.failures.length > 0);
+    .filter((group) => !searching || group.failures.length > 0 || matches(projectName(group.projectId) ?? '') || matches('failed'));
   const whole = matches(headline);
   const failed = summary.produced === 0 && summary.failed > 0 && summary.spores === 0;
-  const loading = projectId !== null && (all ? every.isPending : runs.isPending);
   const more = projectId !== null && !all;
   return (
     <OutcomeCard
@@ -257,12 +269,20 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
       meta={metaOf(summary, projectId === null, now)}
     >
       <Evidence summary={summary} answer={answer} projectId={projectId} bounds={bounds} window={window} now={now} matches={whole ? () => true : matches} />
-      {(lines.length > 0 || loading || projectId !== null) && (
+      {(lines.length > 0 || projectId !== null) && (
         <div className="flex flex-col gap-s2">
           <PartLabel end={more ? <Button variant="ghost" size="sm" onClick={() => setAll(true)}>Show all · all time</Button> : undefined}>
             {all ? `Every ${runNoun(kind)} · all time` : window === 'today' ? 'Today’s runs' : 'This week’s runs'}
           </PartLabel>
-          {loading ? <Skeleton className="h-s12 w-full rounded-control" /> : <RunLines items={lines} label={`Latest ${runNoun(kind, 2)}`} state={from} />}
+          {projectId === null
+            ? <RunLines items={lines} label={`Latest ${runNoun(kind, 2)}`} state={from} />
+            : <ReadState
+                data={all ? (every.error !== null && every.rows.length === 0 ? undefined : every.rows) : runs.data?.rows}
+                pending={all ? every.isPending : runs.isPending}
+                error={all ? every.error : runs.error}
+                onRetry={all ? every.retry : () => { void runs.refetch(); }}
+                label={`${runNoun(kind, 2)}`}
+              >{() => <RunLines items={lines} label={`Latest ${runNoun(kind, 2)}`} state={from} />}</ReadState>}
           {all && every.hasMore && <ShowMore shown={every.rows.length} noun={runNoun(kind, 2)} onMore={every.more} pending={every.isFetchingMore} hasMore />}
           {projectId === null && (
             <p className="flex flex-wrap gap-x-s4 gap-y-s1" data-all-runs="">
@@ -303,7 +323,14 @@ function metaOf(summary: KindSummary, across: boolean, now: number): string {
     const map = summary.currentMaps[0]!;
     return `Now at ${map.branch} @ ${map.commit.slice(0, 7)}, ${atWords(map.generatedAt, now)}${held}`;
   }
-  if (summary.kind === 'title' && summary.finished > 0) return `Each session as it ended${where}${latest}${held}`;
+  if (summary.kind === 'title' && summary.sessions > 0) return `Each session as it ended${where}${latest}${held}`;
+  if (summary.finished === 0) {
+    const running = (summary.runs.running ?? 0) + (summary.runs.claimed ?? 0);
+    if (running > 0) return `${count(running, 'run')} in progress${where}${latest}${held}`;
+    const queued = summary.runs.queued ?? 0;
+    if (queued > 0) return `${count(queued, 'run')} waiting${where}${latest}${held}`;
+    if (skipped > 0) return `Held off ${times(skipped)}${where}${latest}`;
+  }
   return `${count(summary.finished, runNoun(summary.kind), runNoun(summary.kind, 2))}${where}${latest}${held}`;
 }
 
@@ -493,12 +520,12 @@ function TaskHistory({ kind, projectId, now, defaultOpen }: { kind: OutcomeKind;
   const name = useStarterNames();
   return (
     <Disclosure summary={`${capitalize(runNoun(kind, 2))} · all time`} defaultOpen={defaultOpen} onOpenChange={setOpen}>
-      {every.isPending ? <LoadingState label="Loading runs" count={3} /> : every.error !== null ? <ErrorState error={every.error} onRetry={every.retry} /> : every.rows.length === 0 ? <p className="t-small text-muted">No runs recorded.</p> : (
-        <>
+      <ReadState data={every.error !== null && every.rows.length === 0 ? undefined : every.rows} pending={every.isPending} error={every.error} onRetry={every.retry} label="all-time runs">
+        {(rows) => rows.length === 0 ? <p className="t-small text-muted">No runs recorded.</p> : <>
           <RunLines label={`All-time ${runNoun(kind, 2)}`} items={every.rows.map((row) => pageRowLine(row, kind, projectId, now, name))} />
           {every.hasMore && <ShowMore shown={every.rows.length} noun="runs" hasMore onMore={every.more} pending={every.isFetchingMore} />}
-        </>
-      )}
+        </>}
+      </ReadState>
     </Disclosure>
   );
 }

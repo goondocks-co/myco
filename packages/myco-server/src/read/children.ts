@@ -43,6 +43,30 @@ export async function listChildren<T>(
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };
 }
 
+/** First pages for several prompts, each bounded independently, in one scoped query. */
+export async function listChildrenByPrompt<T>(db: RelationalStore, query: ChildQuery<T>, scope: ReadScope, sessionId: string, promptIds: readonly string[], limit: number): Promise<Map<string, Page<T & { orderedAt: number }>>> {
+  const pages = new Map<string, Page<T & { orderedAt: number }>>();
+  if (promptIds.length === 0) return pages;
+  const { results } = await db.prepare(`SELECT * FROM (
+    SELECT ${query.columns}, ${query.orderColumn} AS order_at, ${query.idColumn},
+      ROW_NUMBER() OVER (PARTITION BY prompt_id ORDER BY ${query.orderColumn} ASC, ${query.idColumn} ASC) AS page_row
+    FROM ${query.table} WHERE project_id = ? AND session_id = ? AND prompt_id IN (SELECT value FROM json_each(?))
+  ) WHERE page_row <= ? ORDER BY prompt_id, order_at ASC, ${query.idColumn} ASC`)
+    .bind(scope.projectId, sessionId, JSON.stringify(promptIds), limit + 1).all<Record<string, unknown>>();
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const r of results) {
+    const id = r.prompt_id as string;
+    const rows = grouped.get(id) ?? [];
+    rows.push(r);
+    grouped.set(id, rows);
+  }
+  for (const id of promptIds) {
+    const result = page(grouped.get(id) ?? [], limit, (r) => ({ createdAt: r.order_at as number, id: r[query.idColumn] as string }));
+    pages.set(id, { cursor: result.cursor, rows: result.rows.map((r) => ({ ...query.map(r), orderedAt: r.order_at as number })) });
+  }
+  return pages;
+}
+
 export interface PromptRow { promptId: string; text: string | null; blobKey: string | null; origin: string; promptKind: string | null; parentPromptId: string | null; threadLabel: string | null; createdAt: number; orderedAt: number }
 /** A tool call and how it went. `inputPreview` is the first `INPUT_PREVIEW_CHARS` of the input and `inputBytes` its full length: an input can be a whole file, and a page of them is not. */
 export interface ToolCallRow {

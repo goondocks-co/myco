@@ -116,13 +116,13 @@ describe('task description registry gates', () => {
     expect(descriptionProfile('extract-curate', new Map([['agent.tasks', 'broken']]))).toMatchObject({ tier: null, profiles: [] });
   });
 
-  it('read authority: members name a visible project and inaccessible projects reveal no descriptions', async () => {
+  it('read authority: members read every visible project or a named project and inaccessible projects reveal no descriptions', async () => {
     const f = sqliteEnv();
     try {
       seedMemberRoleAccount(f.sqlite);
       const env = { ...f.env, ...OWNER_ENV };
       const headers = { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' };
-      for (const [path, status] of [['/api/tasks', 400], ['/api/tasks?project=missing', 404], ['/api/tasks?project=proj_1', 200], ['/api/tasks/names', 400], ['/api/tasks/names?project=missing', 404], ['/api/tasks/names?project=proj_1', 200]] as const) {
+      for (const [path, status] of [['/api/tasks', 200], ['/api/tasks?project=missing', 404], ['/api/tasks?project=proj_1', 200], ['/api/tasks/names', 200], ['/api/tasks/names?project=missing', 404], ['/api/tasks/names?project=proj_1', 200]] as const) {
         const response = await worker.fetch(new Request(`https://s${path}`, { headers }), env);
         expect(response.status).toBe(status);
         if (status === 200) expect((await response.json() as { tasks: unknown[] }).tasks).toHaveLength(RETAINED_TASKS.length);

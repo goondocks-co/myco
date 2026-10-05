@@ -169,7 +169,7 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
   openTo: (projectId: string, runId: string) => string;
 }) {
   const { failures, producedSince } = group;
-  if (failures.length === 0) return null;
+  if (group.count === 0) return null;
   // Failures with the same headline, reason and machine share a line with every time they happened.
   const groups = new Map<string, { cause: string; detail: string | null; times: string[] }>();
   for (const run of failures) {
@@ -185,9 +185,10 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
   return (
     <div className={cn('flex flex-col gap-s2 rounded-control border px-s3 py-s3 t-small text-ink-2', answered ? 'border-line bg-surface-2' : 'border-line bg-bad-bg')} data-failure={answered ? 'recovered' : 'open'}>
       <p className={cn('font-medium', answered ? 'text-ink' : 'text-bad')}>
-        {count(failures.length, runNoun(kind), runNoun(kind, 2))} failed {window}{where === null ? '' : ` in ${where}`}
+        {count(group.count, runNoun(kind), runNoun(kind, 2))} failed {window}{where === null ? '' : ` in ${where}`}
       </p>
-      <ul className="flex flex-col gap-s1">
+      {failures.length < group.count && <p>Showing {failures.length.toLocaleString()} of {group.count.toLocaleString()} failed runs here. Open the latest attempt or load more run evidence below.</p>}
+      {groups.size > 0 && <ul className="flex flex-col gap-s1">
         {[...groups.values()].map((line) => (
           <li key={`${line.cause}${line.detail ?? ''}${line.times.join()}`} className="flex flex-col gap-s1 sm:flex-row sm:gap-s3">
             <span className="shrink-0 tabular-nums text-muted">{listTimes(line.times)}</span>
@@ -197,9 +198,9 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
             </div>
           </li>
         ))}
-      </ul>
+      </ul>}
       <p>{answered ? `The ${count(producedSince, runNoun(kind), runNoun(kind, 2))} since then worked, so there’s nothing to do.` : failureNextStep(kind, false)}</p>
-      {!answered && <OnwardLink to={openTo(group.projectId, failures[0]!.id)}>Open the latest attempt</OnwardLink>}
+      <OnwardLink to={openTo(group.projectId, group.latestRunId)}>Open the latest attempt</OnwardLink>
     </div>
   );
 }

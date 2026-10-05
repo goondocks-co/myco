@@ -1,4 +1,4 @@
-import { Button, Card, errorWords, HealthDot, Skeleton, type HealthTone } from '../../design';
+import { Button, Card, HealthDot, ReadState, type HealthTone } from '../../design';
 import { LIVE_WITHIN_MS } from './timeline';
 import type { CaptureRow } from './wire';
 import { useMe } from '../../hooks/use-me';
@@ -9,8 +9,8 @@ const DAY = 24 * 60 * 60_000;
 /** How recently an agent sent anything, as a dot and the words it stands for. */
 export function recency(lastEventAt: number, now: number): { tone: HealthTone; live: boolean; label: string } {
   const age = now - lastEventAt;
-  if (age <= LIVE_WITHIN_MS) return { tone: 'ok', live: true, label: 'Sending now' };
-  if (age <= DAY) return { tone: 'ok', live: false, label: 'Sent today' };
+  if (age <= LIVE_WITHIN_MS) return { tone: 'ok', live: false, label: 'Received recently' };
+  if (age <= DAY) return { tone: 'ok', live: false, label: 'Received today' };
   if (age <= 7 * DAY) return { tone: 'faint', live: false, label: 'Quiet this week' };
   return { tone: 'warn', live: false, label: 'Quiet for over a week' };
 }
@@ -58,18 +58,9 @@ export function CapturePanel({ rows, unavailable, pending, error, onRetry, now }
         <h2 className="t-h2 text-ink">Capture</h2>
         {first !== undefined && <span className="min-w-0 truncate t-small text-muted">{first.name}</span>}
       </div>
-      {pending ? (
-        <div role="status" aria-label="Loading capture" className="flex flex-col gap-s2">
-          <Skeleton className="h-s4 w-3/5" />
-          <Skeleton className="h-s4 w-2/5" />
-        </div>
-      ) : rows === undefined ? (
-        <div role="alert" className="flex flex-wrap items-center gap-s2 t-small text-muted">
-          <span>Couldn’t read capture: {errorWords(error).title.replace(/\.$/, '').toLowerCase()}.</span>
-          {errorWords(error).retry && <Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button>}
-        </div>
-      ) : unavailable ? (
-        <p className="t-small text-muted">Couldn’t read capture just now.</p>
+      <ReadState data={rows} pending={pending} error={error} onRetry={onRetry} label="capture">
+      {() => unavailable ? (
+        <div role="alert" className="flex items-center gap-s2 t-small text-muted"><span>Couldn’t read capture just now.</span><Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button></div>
       ) : first === undefined ? (
         <p className="t-small text-muted">No machine has sent anything in the last 30 days.</p>
       ) : (
@@ -81,7 +72,7 @@ export function CapturePanel({ rows, unavailable, pending, error, onRetry, now }
                 <li key={`${row.machineId}:${row.agent ?? ''}`} className="flex items-center gap-s2 t-small text-ink-2" data-capture-row="">
                   <HealthDot tone={state.tone} live={state.live} label={state.label} />
                   <span className="min-w-0 flex-1 truncate">{agentName(row.agent)}</span>
-                  <span className="shrink-0 text-muted">{ago(row.lastEventAt, now)}</span>
+                  <span className="shrink-0 text-muted">Received {ago(row.lastEventAt, now)}</span>
                 </li>
               );
             })}
@@ -100,6 +91,7 @@ export function CapturePanel({ rows, unavailable, pending, error, onRetry, now }
           )}
         </>
       )}
+      </ReadState>
     </Card>
   );
 }

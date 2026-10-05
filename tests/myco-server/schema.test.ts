@@ -155,8 +155,9 @@ describe('server schema', () => {
     const cols = columns(sqlite, 'member_credentials').map((c) => c.name);
     expect(cols).toEqual(expect.arrayContaining(['predecessor_id', 'lineage_root', 'lineage_started_at', 'first_used_at']));
     expect(indexes(sqlite, 'member_credentials').map((i) => i.name).sort())
-      .toEqual(['idx_member_credentials_hash', 'idx_member_credentials_lineage', 'idx_member_credentials_live_successor', 'idx_member_credentials_member', 'idx_member_credentials_started']);
+      .toEqual(['idx_member_credentials_hash', 'idx_member_credentials_lineage', 'idx_member_credentials_live_successor', 'idx_member_credentials_machine', 'idx_member_credentials_member', 'idx_member_credentials_started']);
     expect(indexColumns(sqlite, 'idx_member_credentials_lineage')).toEqual(['lineage_root']);
+    expect(indexColumns(sqlite, 'idx_member_credentials_machine')).toEqual(['machine_id', 'issued_at', 'id']);
     expect(indexColumns(sqlite, 'idx_member_credentials_live_successor')).toEqual(['predecessor_id']);
     expect(SCHEMA_DDL.find((s) => s.includes('idx_member_credentials_live_successor')))
       .toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS idx_member_credentials_live_successor\s+ON member_credentials \(predecessor_id\) WHERE revoked_at IS NULL/);

@@ -65,7 +65,8 @@ export function PeoplePage() {
   const choices = live.map((m) => ({ id: m.id, name: nameOfPerson(m) }));
   // The viewer first, so adding a machine starts on their own.
   choices.sort((a, b) => Number(b.id === viewerId) - Number(a.id === viewerId));
-  const machineCount = (memberId: string) => machines.machines.filter((m) => m.memberId === memberId && m.standing === 'allowed').length;
+  const machineCount = (memberId: string) => machines.isPending || machines.error !== null ? null
+    : machines.machines.filter((m) => m.memberId === memberId && m.standing === 'allowed').length;
 
   return (
     <AdminPage
@@ -90,6 +91,7 @@ export function PeoplePage() {
               viewerId={viewerId}
               nameOf={nameOf}
               machineCount={machineCount}
+              machinesComplete={!machines.hasMore}
               onAddMachine={(memberId) => setInvite({ kind: 'machine', memberId })}
             />
           )}
@@ -126,11 +128,12 @@ interface PeopleListProps {
   removed: MemberRow[];
   viewerId: string | null;
   nameOf: (id: string | null | undefined) => string | null;
-  machineCount: (memberId: string) => number;
+  machineCount: (memberId: string) => number | null;
+  machinesComplete: boolean;
   onAddMachine: (memberId: string) => void;
 }
 
-function PeopleList({ live, removed, viewerId, nameOf, machineCount, onAddMachine }: PeopleListProps) {
+function PeopleList({ live, removed, viewerId, nameOf, machineCount, machinesComplete, onAddMachine }: PeopleListProps) {
   const nameOfPerson = usePersonName();
   const actions = useAccessActions();
   const [removing, setRemoving] = useState<MemberRow | null>(null);
@@ -150,6 +153,7 @@ function PeopleList({ live, removed, viewerId, nameOf, machineCount, onAddMachin
                 member={member}
                 viewerId={viewerId}
                 machines={machineCount(member.id)}
+                machinesComplete={machinesComplete}
                 actions={[
                   ...(!member.linked ? [{ label: 'Connect GitHub', onSelect: () => setLinking(member) }] : []),
                   { label: `${INVITE_CONTROLS.button} for them`, onSelect: () => onAddMachine(member.id) },
@@ -205,7 +209,7 @@ function PeopleList({ live, removed, viewerId, nameOf, machineCount, onAddMachin
   );
 }
 
-function PersonItem({ member, viewerId, machines, actions }: { member: MemberRow; viewerId: string | null; machines: number; actions: MoreMenuItem[] }) {
+function PersonItem({ member, viewerId, machines, machinesComplete, actions }: { member: MemberRow; viewerId: string | null; machines: number | null; machinesComplete: boolean; actions: MoreMenuItem[] }) {
   const nameOfPerson = usePersonName();
   const name = nameOfPerson(member);
   return (
@@ -218,7 +222,7 @@ function PersonItem({ member, viewerId, machines, actions }: { member: MemberRow
           {member.id === viewerId && name !== 'You' && <StatusChip>You</StatusChip>}
         </span>
         <span className="t-small text-muted">
-          {member.linked ? 'GitHub connected' : 'No GitHub account yet'} · {machinesCount(machines)} · joined {shortDate(member.createdAt)}
+          {member.linked ? 'GitHub connected' : 'No GitHub account yet'} · {machines === null ? 'machine count unavailable' : machinesComplete ? machinesCount(machines) : `${machinesCount(machines)} shown`} · joined {shortDate(member.createdAt)}
         </span>
       </div>
       <MoreMenu label={`More for ${name}`} items={actions} />

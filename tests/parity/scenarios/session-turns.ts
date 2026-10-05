@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 
@@ -88,5 +88,62 @@ export const sessionTurns: ParityScenario = {
     await post(session, 'session.end', { endedAt: Date.now() });
     expect((await list('?state=open&branch=turns')).some((r) => r.sessionId === session)).toBe(false);
     expect((await list('?state=ended&branch=turns')).some((r) => r.sessionId === session)).toBe(true);
+    await conversationHonesty(target);
   },
 };
+
+/** The bounded conversation contract on each server's own persisted store. */
+async function conversationHonesty(target: ParityTarget) {
+  const session = `honest-conversation-${Date.now()}`;
+  const project = lit(target.projectId);
+  const namedSession = lit(session);
+  const id = (n: number) => UUID(1643000 + n);
+  await target.sql(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+    VALUES (${project},${namedSession},'parity-machine','parity-token',1,5001)`);
+  await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<5001)
+    INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+    SELECT ${project},${namedSession},'00000000-0000-7000-8000-' || printf('%012d',1643000+i),'honest-p-' || i,'Prompt ' || i,'user','hash',i,i,'parity-token',i FROM n`);
+  const base = `/api/projects/${target.projectId}/sessions/${session}/turns`;
+  const read = async <T,>(path: string): Promise<T> => {
+    const response = await fetch(`${target.url}${path}`, { headers: target.ownerHeaders() });
+    expect(response.status).toBe(200);
+    return await response.json() as T;
+  };
+  interface Rows { rows: { promptId: string }[]; cursor: string | null }
+  const newest = await read<Rows>(`${base}?order=desc&limit=200`);
+  expect(newest.rows.map((row) => row.promptId).slice(0, 1)).toEqual([id(5001)]);
+  expect(newest.rows).toHaveLength(200);
+  const older = await read<Rows>(`${base}?order=desc&limit=200&cursor=${encodeURIComponent(newest.cursor!)}`);
+  expect(older.rows[0].promptId).toBe(id(4801));
+  for (const position of [1, 4801, 4802, 5001]) {
+    expect((await read<Rows>(`${base}?turn=${id(position)}`)).rows.map((row) => row.promptId)).toEqual([id(position)]);
+  }
+  await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<51)
+    INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, parent_prompt_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+    SELECT ${project},${namedSession},'00000000-0000-7000-8000-' || printf('%012d',1653000+i),'honest-child-' || i,${lit(id(1))},'Steering ' || i,'user','hash',i,i,'parity-token',i FROM n`);
+  const childId = (n: number) => UUID(1653000 + n);
+  for (const parent of [id(1), childId(1)]) {
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<51)
+      INSERT INTO responses (project_id, session_id, response_id, event_id, prompt_id, text, content_hash, created_at, token_id, received_at)
+      SELECT ${project},${namedSession},${lit(parent)} || '-reply-' || i,${lit(parent)} || '-er-' || i,${lit(parent)},'Reply ' || i,'hash',i,'parity-token',i FROM n`);
+  }
+  await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<51)
+    INSERT INTO attachments (project_id, session_id, attachment_id, event_id, prompt_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
+    SELECT ${project},${namedSession},'honest-a-' || i,'honest-ea-' || i,${lit(id(1))},'blob','image/png',1,i,'parity-token',i FROM n`);
+  await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<51)
+    INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, prompt_id, created_at, updated_at, token_id, received_at)
+    SELECT ${project},'honest-plan-' || i,${namedSession},'honest-epl-' || i,'parity-machine','hash','draft',${lit(id(1))},i,i,'parity-token',i FROM n`);
+  type Collection = 'responses' | 'attachments' | 'plans' | 'children';
+  interface Detail { responses: unknown[]; attachments: unknown[]; plans: unknown[]; children: { prompt: { promptId: string }; responses: unknown[]; responsesCursor: string | null }[]; cursors: Record<Collection, string | null> }
+  const detail = await read<Detail>(`${base}/${id(1)}`);
+  for (const collection of ['responses', 'attachments', 'plans', 'children'] as const) {
+    expect(detail[collection]).toHaveLength(50);
+    expect(detail.cursors[collection]).not.toBeNull();
+    const next = await read<{ rows: unknown[]; cursor: string | null }>(`${base}/${id(1)}?collection=${collection}&cursor=${encodeURIComponent(detail.cursors[collection]!)}`);
+    expect(next.rows).toHaveLength(1);
+    expect(next.cursor).toBeNull();
+  }
+  const child = detail.children[0];
+  expect(child.responses).toHaveLength(50);
+  expect((await read<{ rows: unknown[] }>(`${base}/${child.prompt.promptId}?collection=responses&cursor=${encodeURIComponent(child.responsesCursor!)}`)).rows).toHaveLength(1);
+}

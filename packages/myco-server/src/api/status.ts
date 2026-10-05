@@ -1,5 +1,5 @@
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
-import { pendingTranscripts, type TranscriptBacklog } from '../ingest/parse.js';
+import { pendingTranscripts } from '../ingest/parse.js';
 import type { CredentialContext, OwnerContext } from '../context.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { emptyBodyRoute } from '../auth/members.js';
@@ -9,9 +9,9 @@ import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
 import { workerLiveness } from '../core/runs.js';
-import { CONTACT_RECENT_MS, readWorkerFleet, type WorkerFleetRow } from '../core/worker-contacts.js';
+import { CONTACT_RECENT_MS, readWorkerFleet } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
-import { captureRecency, type CaptureRow } from '../read/capture.js';
+import { captureRecency } from '../read/capture.js';
 import { machinesOf } from '../read/machines.js';
 import { isAdmin } from '../auth/roles.js';
 
@@ -48,66 +48,34 @@ export function absentCapabilities(env: ServerEnv): CapabilityStatus[] {
  * divergence is visible, which is why the parent spec assigns it to this plan.
  */
 export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  // Infrastructure presence is answered before anything is trusted. A deployment whose
-  // relational store is absent or unusable makes a query here throw, and the owner branch
-  // answers a bare 503 naming nothing — on the one surface whose job is to name it. The
-  // query is attempted and its failure absorbed, which reports the same way on every
-  // target: a store that is missing, misconfigured, or unreachable all read as unusable
-  // here rather than only the one shape a single platform happens to produce.
   const capabilities = deploymentCapabilities(env);
-  // A surface whose advice differs by target reads the target here.
   const target = deploymentTarget(env);
-  // `available: false` is the one field a surface reads before the numbers. A
-  // store this handler could not question answers zero busy and zero queued,
-  // and zero here means "not known", never "none attached".
-  let workers: {
-    available: boolean; workersBusy: number; runsQueued: number; recentWithinMs: number; fleet: WorkerFleetRow[];
-  } = { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: CONTACT_RECENT_MS, fleet: [] };
-  let found: number | null = null;
-  let projects: Awaited<ReturnType<typeof listVisibleProjects>> = [];
-  let transcriptBacklog: TranscriptBacklog | null = null;
-  let own: Set<string> | null = null;
-  try {
-    found = await schemaVersion(env.db);
-    // The same count the tick reads to decide how awake the Deployment stays.
-    transcriptBacklog = await pendingTranscripts(env.db);
-    // A member reads their own machines alone; `own` is null for an admin, who reads every one.
-    own = isAdmin(ctx.member.role) ? null : await machinesOf(env.db, ctx.member.id);
-    const counts = await workerLiveness(env.db, ctx.now);
-    const fleet = await readWorkerFleet(env.db, ctx.now);
-    workers = { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: own === null ? fleet : fleet.filter((row) => row.machineId !== null && own!.has(row.machineId)) };
-    projects = await listVisibleProjects(env.db, ctx.member, { includeArchived: true });
-  } catch {
-    return ok({ schema: schemaCheck(null), target, capabilities, workers, projects: [], capture: [], unavailable: ['capture'] });
-  }
-  // Read on its own, so a capture read that fails names itself in `unavailable` and leaves every other fact standing.
-  let capture: CaptureRow[] = [];
   const unavailable: string[] = [];
-  try {
-    const recent = await captureRecency(env.db, ctx.now, ctx.member.id);
-    capture = own === null ? recent : recent.filter((row) => own!.has(row.machineId));
-  } catch {
-    unavailable.push('capture');
-  }
+  const readFact = async <T>(name: string, read: () => Promise<T>): Promise<T | undefined> => {
+    try { return await read(); }
+    catch { unavailable.push(name); return undefined; }
+  };
+  const own = isAdmin(ctx.member.role) ? null : await readFact('machines', () => machinesOf(env.db, ctx.member.id));
+  const visibleMachines = <T extends { machineId: string | null }>(rows: T[]): T[] => {
+    if (own === undefined) throw new Error('Machine ownership is unavailable');
+    return own === null ? rows : rows.filter((row) => row.machineId !== null && own.has(row.machineId));
+  };
+  const [found, transcriptBacklog, projects, workerFacts, capture] = await Promise.all([
+    readFact('schema', () => schemaVersion(env.db)),
+    readFact('transcriptBacklog', () => pendingTranscripts(env.db)),
+    readFact('projects', () => listVisibleProjects(env.db, ctx.member, { includeArchived: true })),
+    readFact('workers', async () => {
+      const [counts, fleet] = await Promise.all([workerLiveness(env.db, ctx.now), readWorkerFleet(env.db, ctx.now)]);
+      return { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: visibleMachines(fleet) };
+    }),
+    readFact('capture', async () => visibleMachines(await captureRecency(env.db, ctx.now, ctx.member.id))),
+  ]);
   return ok({
-    schema: schemaCheck(found),
-    target,
-    capabilities,
-    // What a capability list cannot answer: whether the queue is moving, and
-    // which workers are attached. A capability is this server's own runtime
-    // configuration; a worker attaches from elsewhere, and the two are reported
-    // apart. `fleet` carries what each worker last reported about itself: every
-    // worker to an admin, and those on a member's own machines to a member.
-    workers,
-    // Transcripts stored and not yet read into sessions: how many, and the bytes they have left.
-    transcriptBacklog,
-    projects: projects.map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
-    // When each machine's agents last sent anything, over the last `CAPTURE_WINDOW_MS`, most recent first: every
-    // machine to an admin, and a member's own to a member. A machine is named to the member it belongs to alone, and
-    // shown to anyone else as that member.
-    capture,
-    // The facts above that could not be read, so their absence says nothing.
-    unavailable,
+    schema: schemaCheck(found ?? null), target, capabilities,
+    workers: workerFacts ?? { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: CONTACT_RECENT_MS, fleet: [] },
+    transcriptBacklog: transcriptBacklog ?? null,
+    projects: (projects ?? []).map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
+    capture: capture ?? [], unavailable,
   });
 }
 

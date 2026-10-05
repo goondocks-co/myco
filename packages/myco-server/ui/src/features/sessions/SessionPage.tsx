@@ -8,7 +8,7 @@ import { PlanLine } from '../knowledge/PlanLine';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSpores } from '../../hooks/use-intelligence';
 import { useIsAdmin, useMe } from '../../hooks/use-me';
-import { UNTITLED_REASON_TEXT, useAllTurns, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
+import { UNTITLED_REASON_TEXT, useTurns, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
 import { memberLabel } from '../../lib/member-name';
@@ -94,7 +94,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const started = session.startedAt ?? session.firstReceivedAt;
   const name = projectName ?? 'A project';
   const sporesHref = `?${new URLSearchParams({ tab: 'spores' })}`;
-  const typed = useAllTurns(projectId, session.sessionId, PERSON_ONLY);
+  const typed = useTurns(projectId, session.sessionId, PERSON_ONLY);
   useFollowLive(projectId, session);
 
   return (
@@ -136,7 +136,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
         <div className="flex min-w-0 max-w-measure flex-col gap-s8 lg:col-start-1 lg:row-start-2">
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList aria-label="What the session holds">
-              <TabsTrigger value="conversation" count={typed.walking || typed.isPending ? undefined : typed.rows.length}>Conversation</TabsTrigger>
+              <TabsTrigger value="conversation" count={typed.hasMore || typed.isPending ? undefined : typed.rows.length}>Conversation</TabsTrigger>
               <TabsTrigger value="spores" count={outcome.spores.total}>Spores</TabsTrigger>
               <TabsTrigger value="plans" count={counts.plans}>Plans</TabsTrigger>
             </TabsList>

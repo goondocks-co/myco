@@ -35,7 +35,7 @@ export function machineClaimsStatement(db: RelationalStore): PreparedStatement {
 /** The label each machine's live credentials carry, newest first: the name of a machine whose claim holds none. */
 export function machineNamesStatement(db: RelationalStore, nowMs: number): PreparedStatement {
   return db.prepare(
-    `SELECT machine_id, runtime_label FROM member_credentials
+    `SELECT machine_id, runtime_label FROM member_credentials INDEXED BY idx_member_credentials_live_successor
       WHERE revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
       ORDER BY issued_at DESC, id DESC`,
   ).bind(nowMs);

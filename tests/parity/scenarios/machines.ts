@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { lit, MACHINE_ID, MEMBER_ID, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 
-type Machine = { machineId: string; name: string | null; live: boolean; member: { id: string } };
+type Machine = { machineId: string; name: string | null; live: boolean; member: { id: string }; credentialCount: number; liveCredentialCount: number; bytesWritten: number };
 
 /**
  * The machines on the People & machines page, on both targets: named by the host a join sends, read whole by an admin
@@ -59,6 +59,8 @@ export const machines: ParityScenario = {
       const status = await (await fetch(`${target.url}/api/status`, { headers: asOther })).json() as { capture: Array<{ machineId: string }> };
       expect(status.capture.filter((row) => row.machineId !== otherMachine)).toEqual([]);
 
+      await machineHistory(target, otherMachine, joined.memberId, asOther);
+
       // A machine with no live credential still takes a name.
       await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE machine_id = ${lit(otherMachine)} AND revoked_at IS NULL`);
       expect((await rename(owner, otherMachine, 'late')).status).toBe(200);
@@ -72,3 +74,67 @@ export const machines: ParityScenario = {
     }
   },
 };
+
+/** A large credential history still has one summary and one merged event page on each target's own store. */
+async function machineHistory(target: ParityTarget, machineId: string, memberId: string, asMember: Record<string, string>) {
+  const now = Date.now();
+  const credentialPrefix = `mt_parity_machine_${now}_`;
+  const eventPrefix = `ev_parity_machine_${now}_`;
+  const session = `session_parity_machine_${now}`;
+  const secondProject = `proj_${now.toString(16).padStart(32, '0')}`;
+  const token = (i: number) => `${credentialPrefix}${String(i).padStart(4, '0')}`;
+  const event = (i: number) => `${eventPrefix}${String(i).padStart(4, '0')}`;
+  const primary = target.projectId;
+  const expected = Array.from({ length: 500 }, (_, index) => {
+    const i = index + 1;
+    return { eventId: event(i), projectId: i % 2 === 0 ? secondProject : primary, createdAt: now - Math.floor((i - 1) / 3) };
+  }).sort((a, b) => b.createdAt - a.createdAt || b.projectId.localeCompare(a.projectId) || b.eventId.localeCompare(a.eventId));
+  const activityPath = `/api/machines/${machineId}/activity`;
+  const read = async <T,>(path: string, headers = asMember): Promise<T> => {
+    const response = await fetch(`${target.url}${path}`, { headers });
+    expect(response.status).toBe(200);
+    return await response.json() as T;
+  };
+  try {
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<5000)
+      INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, revoked_by, bytes_written, lineage_root, lineage_started_at)
+      SELECT ${lit(credentialPrefix)} || printf('%04d',i), ${lit(memberId)}, ${lit(machineId)},
+        ${lit(`hash_${credentialPrefix}`)} || printf('%04d',i), ${now - 1_000_000} + i, ${now - 1}, ${now - 1}, ${lit(memberId)}, 1,
+        ${lit(credentialPrefix)} || printf('%04d',i), ${now - 1_000_000} + i FROM n`);
+    const summary = await read<{ machines: Machine[]; cursor: string | null }>('/api/machines?limit=50');
+    expect(summary.machines).toHaveLength(1);
+    expect(summary.cursor).toBeNull();
+    expect(summary.machines[0]).toMatchObject({
+      machineId, name: 'Renamed by admin', live: true, member: { id: memberId },
+      credentialCount: 5_001, liveCredentialCount: 1, bytesWritten: 5_000,
+    });
+
+    await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES (${lit(secondProject)}, 'Machine activity parity', ${now})`);
+    await target.sql(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES (${lit(primary)}, ${lit(session)}, ${lit(machineId)}, ${lit(token(1))}, ${now - 500}, ${now}),
+             (${lit(secondProject)}, ${lit(session)}, ${lit(machineId)}, ${lit(token(2))}, ${now - 500}, ${now})`);
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<500)
+      INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
+      SELECT CASE WHEN i % 2 = 0 THEN ${lit(secondProject)} ELSE ${lit(primary)} END,
+        ${lit(eventPrefix)} || printf('%04d',i), ${lit(session)}, ${lit(credentialPrefix)} || printf('%04d',i),
+        'prompt', 'capture', '{}', ${lit(`hash_${eventPrefix}`)} || printf('%04d',i),
+        ${now} - CAST((i - 1) / 3 AS INTEGER), ${now} - CAST((i - 1) / 3 AS INTEGER) FROM n`);
+
+    const first = await read<{ rows: typeof expected; cursor: string | null }>(`${activityPath}?limit=50`);
+    expect(first.rows).toHaveLength(50);
+    expect(first.rows.map(({ eventId, projectId, createdAt }) => ({ eventId, projectId, createdAt }))).toEqual(expected.slice(0, 50));
+    expect(first.cursor).not.toBeNull();
+    const second = await read<{ rows: typeof expected; cursor: string | null }>(`${activityPath}?limit=50&cursor=${encodeURIComponent(first.cursor!)}`);
+    expect(second.rows.map(({ eventId, projectId, createdAt }) => ({ eventId, projectId, createdAt }))).toEqual(expected.slice(50, 100));
+
+    const hidden = await fetch(`${target.url}/api/machines/${MACHINE_ID}/activity?limit=50`, { headers: asMember });
+    const absent = await fetch(`${target.url}/api/machines/machine_that_does_not_exist/activity?limit=50`, { headers: asMember });
+    expect({ status: hidden.status, body: await hidden.json() }).toEqual({ status: absent.status, body: await absent.json() });
+    expect(hidden.status).toBe(404);
+  } finally {
+    await target.sql(`DELETE FROM events WHERE event_id LIKE ${lit(`${eventPrefix}%`)}`);
+    await target.sql(`DELETE FROM sessions WHERE session_id = ${lit(session)} AND project_id IN (${lit(primary)}, ${lit(secondProject)})`);
+    await target.sql(`DELETE FROM member_credentials WHERE id LIKE ${lit(`${credentialPrefix}%`)}`);
+    await target.sql(`DELETE FROM projects WHERE project_id = ${lit(secondProject)}`);
+  }
+}

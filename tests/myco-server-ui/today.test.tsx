@@ -97,6 +97,7 @@ const WORK: WorkAnswer = {
   outcomes: [],
   runs: RUNS,
   truncated: false,
+  cursor: null,
   upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 80 * MINUTE, failedInWindow: 1, unrecovered: null },
 };
 
@@ -340,7 +341,7 @@ describe('Today', () => {
     expect(within(capture as HTMLElement).getByRole('list', { name: 'Agents on Ada’s studio Mac' })).toBeTruthy();
     expect(within(capture as HTMLElement).getByRole('list', { name: 'Other machines' }).textContent).toBe('Lin · Cursor, 17 h ago');
     expect(capture.textContent).not.toMatch(/\b[Aa] machine\b|Machine \d/);
-    expect(within(capture as HTMLElement).getByRole('img', { name: 'Sending now' })).toBeTruthy();
+    expect(within(capture as HTMLElement).getByRole('img', { name: 'Received recently' })).toBeTruthy();
   });
 
   it('folds a project\'s title runs within an hour into one item, across a session between them, and keeps other projects\' apart', () => {
@@ -472,10 +473,11 @@ describe('Today', () => {
     screenWidth(1280);
     server(day({ attention: { items: [], unavailable: ['backup_overdue'] } }));
     mount('/');
-    const heading = await screen.findByRole('heading', { name: 'Nothing needs you' });
+    const heading = await screen.findByRole('heading', { name: 'Some checks could not be read' });
     const panel = heading.closest('[data-needs-you]')!;
     expect(panel.querySelectorAll('[data-needs-you-item]')).toHaveLength(0);
-    expect(panel.textContent).toBe('Nothing needs youCouldn’t check backups just now.');
+    expect(panel.textContent).toContain('Couldn’t check backups just now.');
+    expect(panel.textContent).not.toContain('Nothing needs you');
   });
 
   it('never asks a member\'s browser about the server\'s health, and shows them no "Needs you" while their machines capture everything', async () => {
@@ -783,7 +785,7 @@ describe('Today', () => {
       screenWidth(width);
       server({ ...day({}, MEMBER), '/api/uncaptured': () => Response.json({ error: 'internal' }, { status: 500 }) });
       mount('/');
-      const panel = (await screen.findByText('Nothing needs you')).closest('[data-needs-you]') as HTMLElement;
+      const panel = (await screen.findByText('Some checks could not be read')).closest('[data-needs-you]') as HTMLElement;
       await waitFor(() => expect(panel.textContent).toContain('Couldn’t check repositories just now.'));
       expect(within(panel).queryByRole('img', { name: 'All clear' })).toBeNull();
       cleanup();
@@ -891,4 +893,65 @@ it('describes a coded stored failure on Today without quoting its error', async 
   mount(`/p/${P_MYCO}`);
   await waitFor(() => expect(document.body.textContent).toContain('The machine running it stopped responding.'));
   expect(document.body.textContent).not.toContain(prose);
+});
+
+
+describe('dashboard honesty gates', () => {
+  it('finding 3: Today names a failed supporting spore read rather than a quiet timeline', async () => {
+    server({ ...day({ sessions: { rows: [], cursor: null }, work: { ...WORK, runs: [] } }), '/api/spores': () => Response.json({ error: 'unavailable' }, { status: 503 }) });
+    mount('/');
+    await screen.findAllByRole('alert');
+    expect(document.querySelector('[data-timeline]')?.textContent ?? document.body.textContent).not.toContain('Nothing happened');
+    expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
+  });
+
+  it('finding 3: a failed refresh labels retained capture and attention on desktop and phone', async () => {
+    for (const width of [1280, 390]) {
+    screenWidth(width);
+    let failed = false;
+    server({ ...day({ attention: { items: [], unavailable: [] } }),
+      '/api/status': () => failed ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ capture: CAPTURE, unavailable: [] }),
+      '/api/attention': () => failed ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ items: [], unavailable: [] }),
+    });
+    mount('/');
+    await screen.findAllByRole('heading', { name: 'Nothing needs you' });
+    await screen.findByRole('img', { name: 'Received recently' });
+    failed = true;
+    await client.refetchQueries({ type: 'active' });
+    await screen.findByText('Showing the last successful capture read. Couldn’t refresh it.');
+    expect(screen.queryByRole('heading', { name: 'Nothing needs you' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'All clear' })).toBeNull();
+    expect(screen.getAllByText('Showing the last successful what needs you read. Couldn’t refresh it.')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
+    cleanup(); client.clear();
+    }
+  });
+
+  it('finding 3: a phone labels failed attention refreshes before its retained items are expanded', async () => {
+    screenWidth(390);
+    let failed = false;
+    server({ ...day(), '/api/attention': () => failed
+      ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(ATTENTION) });
+    mount('/');
+    await screen.findByText('3 things need you');
+    failed = true;
+    await client.refetchQueries({ type: 'active' });
+    const alert = await screen.findByText('Showing the last successful what needs you read. Couldn’t refresh it.');
+    expect(alert.closest('[hidden]')).toBeNull();
+    expect(alert.closest('[data-state=closed]')).toBeNull();
+    expect(screen.queryByText('Last backup was 28 days ago')).toBeNull();
+  });
+
+  it('finding 9: a final receipt fourteen minutes old says received, at either side of the boundary', async () => {
+    const { recency } = await import('../../packages/myco-server/ui/src/features/today/CapturePanel');
+    for (const age of [14 * MINUTE, 15 * MINUTE, 15 * MINUTE + 1]) {
+      expect(recency(NOW - age, NOW).live).toBe(false);
+      expect(recency(NOW - age, NOW).label).not.toMatch(/sending/i);
+    }
+    server(day({ sessions: { rows: [session({ sessionId: 'ended', projectId: P_MYCO, endedAt: NOW - 14 * MINUTE, lastReceivedAt: NOW - 14 * MINUTE })], cursor: null }, status: { capture: [{ ...CAPTURE[0]!, lastEventAt: NOW - 14 * MINUTE }], unavailable: [] } }));
+    mount('/');
+    await screen.findByRole('img', { name: 'Received recently' });
+    expect(screen.queryByRole('img', { name: 'Sending now' })).toBeNull();
+    expect(document.querySelector('[data-capture]')?.textContent).toContain('14 min ago');
+  });
 });

@@ -28,6 +28,7 @@ export interface WorkOutcome {
   outcome: { spores: number; sessions: number; maps: number };
   failedWithOutput: number;
   failed: number;
+  failure: { runs: number; since: number; latestAt: number; latestRunId: string; producedSince: number } | null;
   latestAt: number | null;
   tokens: number;
   costUsd: number;
@@ -80,6 +81,7 @@ export interface WorkAnswer {
   outcomes: WorkOutcome[];
   runs: WorkRun[];
   truncated: boolean;
+  cursor: string | null;
   upkeep: Upkeep;
 }
 

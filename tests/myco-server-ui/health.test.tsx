@@ -58,6 +58,10 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/status': () => Response.json(STATUS),
   '/api/attention': () => Response.json({ items: [{ kind: 'backup_overdue', tone: 'warn', lastBackupAt: BACKUP.created_at, intervalHours: 24 }], unavailable: [] }),
   '/api/credentials': () => Response.json({ rows: [credential(STUDIO_CREDENTIAL, 'ada_5a2d54af', 'Ada’s studio Mac'), credential(BUSY_CREDENTIAL, 'lin_9e8f7a6b', 'Lin’s build box', 'mem_Hn5-pC0dJfA9sE_u')], cursor: null }),
+  '/api/machines': () => Response.json({ machines: [
+    { machineId: 'ada_5a2d54af', name: 'Ada’s studio Mac', live: true, member: { id: ADMIN.member.id, label: 'Ada', revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
+    { machineId: 'lin_9e8f7a6b', name: 'Lin’s build box', live: true, member: { id: MEMBER.member.id, label: null, revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
+  ], cursor: null }),
   '/api/backups': () => Response.json({ backups: [BACKUP] }),
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
   '/api/work': () => Response.json({ window: { since: 0, until: 0 }, outcomes: [], runs: [], truncated: false, upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 3_600_000, failedInWindow: 2, unrecovered: null } }),
@@ -347,3 +351,30 @@ for (const [code, configured, ready, expected] of [
     expect(document.body.textContent).not.toContain(prose);
   });
 }
+
+
+describe('dashboard status honesty gates', () => {
+  it('finding 3: independently failed search support reads remain visible with retries', async () => {
+    for (const endpoint of ['/api/embedding/switch', '/api/embedding/passed-over']) {
+      const table = routes({
+        '/api/embedding/switch': () => endpoint.endsWith('/switch') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ switch: null }),
+        '/api/embedding/passed-over': () => endpoint.endsWith('passed-over') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ count: 0, sources: [] }),
+      });
+      server(table); mount();
+      await screen.findByRole('heading', { name: 'Search by meaning' });
+      await screen.findAllByRole('alert');
+      expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
+      cleanup();
+    }
+  });
+  it('finding 6: healthy schema survives unavailable project and backlog facts without an empty claim', async () => {
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, projects: [], transcriptBacklog: null, unavailable: ['projects', 'transcriptBacklog'] }) }));
+    mount();
+    await screen.findByText('The database is at the version this server expects (57).');
+    await screen.findByText('Couldn’t read what projects last sent.');
+    await screen.findByText('Couldn’t read transcripts waiting to be processed.');
+    expect(screen.queryByText('Nothing has been received yet.')).toBeNull();
+    expect(screen.queryByText('The database could not be reached.')).toBeNull();
+    expect(screen.queryByText('Could not reach the server')).toBeNull();
+  });
+});

@@ -28,7 +28,7 @@ export interface KindSummary extends OutcomeCounts {
   listed: WorkRun[];
   /** Listed runs that failed and kept nothing, newest first. */
   failures: WorkRun[];
-  /** The same failures by project, each with whether that project's work has recovered since. */
+  /** Full-window failure state by Project with the listed runs available for detail. */
   failureGroups: FailureGroup[];
   /** Listed runs that failed but kept what they produced, newest first. */
   kept: WorkRun[];
@@ -41,26 +41,19 @@ export interface KindSummary extends OutcomeCounts {
  */
 export interface FailureGroup {
   projectId: string;
+  /** Full-window failed runs, including those beyond the evidence page. */
+  count: number;
+  latestRunId: string;
+  latestAt: number;
   /** Newest first. */
   failures: WorkRun[];
   /** Runs in this project that produced something after its latest failure. */
   producedSince: number;
 }
 
-/** Whether every project's failures of a kind have been answered by a later run there. */
+/** Whether every project's failures of a kind have been answered by later output there. */
 export function recovered(groups: readonly FailureGroup[]): boolean {
   return groups.length > 0 && groups.every((group) => group.producedSince > 0);
-}
-
-/** A kind's failures grouped by project, newest group first. */
-export function failureGroups(listed: readonly WorkRun[]): FailureGroup[] {
-  const byProject = new Map<string, WorkRun[]>();
-  for (const run of listed) if (run.result === 'failed') byProject.set(run.projectId, [...(byProject.get(run.projectId) ?? []), run]);
-  return [...byProject.entries()].map(([projectId, failures]) => {
-    const last = failures[0]?.at ?? null;
-    const producedSince = last === null ? 0 : listed.filter((run) => run.projectId === projectId && run.result === 'produced' && run.at !== null && run.at > last).length;
-    return { projectId, failures, producedSince };
-  });
 }
 
 const merge = (a: Range, b: Range): Range => (a === null ? b : b === null ? a : [Math.min(a[0], b[0]), Math.max(a[1], b[1])]);
@@ -70,6 +63,7 @@ const sum = (record: Record<string, number>, keys: readonly string[]) => keys.re
 /** Every kind of work the window holds, in the page's order: learning, titles, the code map, then learning from the code. */
 export function summarize(answer: WorkAnswer): KindSummary[] {
   const byKind = new Map<OutcomeKind, KindSummary>();
+  const failureFacts = new Map<OutcomeKind, FailureGroup[]>();
   for (const outcome of answer.outcomes) {
     let entry = byKind.get(outcome.kind);
     if (entry === undefined) {
@@ -87,6 +81,18 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     entry.maps += outcome.outcome.maps;
     entry.failed += outcome.failed;
     entry.failedWithOutput += outcome.failedWithOutput;
+    if (outcome.failure != null) {
+      const groups = failureFacts.get(outcome.kind) ?? [];
+      groups.push({
+        projectId: outcome.projectId,
+        count: outcome.failure.runs,
+        latestRunId: outcome.failure.latestRunId,
+        latestAt: outcome.failure.latestAt,
+        producedSince: outcome.failure.producedSince,
+        failures: [],
+      });
+      failureFacts.set(outcome.kind, groups);
+    }
     if (outcome.latestAt !== null && (entry.latestAt === null || outcome.latestAt > entry.latestAt)) entry.latestAt = outcome.latestAt;
     entry.tokens += outcome.tokens;
     entry.costUsd += outcome.costUsd;
@@ -105,7 +111,10 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     entry.listed = answer.runs.filter((run) => run.kind === entry.kind);
     entry.failures = entry.listed.filter((run) => run.result === 'failed');
     entry.kept = entry.listed.filter((run) => run.result === 'failed_with_output');
-    entry.failureGroups = failureGroups(entry.listed);
+    entry.failureGroups = (failureFacts.get(entry.kind) ?? []).map((group) => ({
+      ...group,
+      failures: entry.failures.filter((run) => run.projectId === group.projectId),
+    })).sort((a, b) => b.latestAt - a.latestAt);
   }
   return KIND_ORDER.flatMap((kind) => byKind.get(kind) ?? []);
 }

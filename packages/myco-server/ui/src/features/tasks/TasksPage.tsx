@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Play } from 'lucide-react';
-import { Button, Disclosure, EmptyState, ErrorState, LoadingState } from '../../design';
+import { Button, Disclosure, ReadState } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useTaskDescriptions } from '../../hooks/use-tasks';
 import { useTaskRuns } from '../../hooks/use-work';
@@ -45,13 +45,11 @@ export function TasksPage({ projectId }: { projectId: string | null }) {
         </div>
         <OnwardLink to={projectId === null ? WORK_SUFFIX : projectPath(projectId, WORK_SUFFIX)}>Myco’s work</OnwardLink>
       </header>
-      {tasks.scopeError !== null ? <ErrorState error={tasks.scopeError} onRetry={() => void tasks.retryScope()} />
-        : tasks.scopeEmpty ? <EmptyState title="Pick a project to see its tasks" />
-        : tasks.data === undefined
-        ? tasks.isPending ? <LoadingState label="Loading tasks" count={4} /> : <ErrorState error={tasks.error} onRetry={() => void tasks.refetch()} />
-        : <section aria-label="Myco’s tasks" className="grid min-w-0 items-start gap-s4 xl:grid-cols-2">
-          {tasks.data.tasks.map((task) => <TaskCard key={task.task} task={task} projectId={projectId} started={started?.task === task.task ? started : null} onRun={() => { setStarted(null); setAsking(task.task); }} />)}
+      <ReadState data={tasks.data} pending={tasks.isPending} error={tasks.error} onRetry={() => void tasks.refetch()} label="tasks">
+        {(data) => <section aria-label="Myco’s tasks" className="grid min-w-0 items-start gap-s4 xl:grid-cols-2">
+          {data.tasks.map((task) => <TaskCard key={task.task} task={task} projectId={projectId} started={started?.task === task.task ? started : null} onRun={() => { setStarted(null); setAsking(task.task); }} />)}
         </section>}
+      </ReadState>
       <RunTaskConfirm
         projectId={projectId}
         task={asking}
@@ -145,12 +143,13 @@ function RecentRuns({ task, projectId }: { task: TaskDescription; projectId: str
   const now = useNow();
   return <section aria-label={`Recent runs of ${task.name}`} className="flex flex-col gap-s2">
     <h3 className="t-label text-muted">Recent runs</h3>
-    {runs.data === undefined ? runs.isPending ? <LoadingState label="Loading recent runs" count={2} /> : <ErrorState error={runs.error} onRetry={() => void runs.refetch()} />
-      : runs.data.rows.length === 0 ? <p className="t-small text-muted">This task has no recorded runs in this project.</p>
-        : <ul className="flex flex-col gap-s2">{runs.data.rows.map((run) => <li key={run.id} className="flex flex-col gap-s1">
+    <ReadState data={runs.data} pending={runs.isPending} error={runs.error} onRetry={() => void runs.refetch()} label="recent runs">
+      {(data) => data.rows.length === 0 ? <p className="t-small text-muted">This task has no recorded runs in this project.</p>
+        : <ul className="flex flex-col gap-s2">{data.rows.map((run) => <li key={run.id} className="flex flex-col gap-s1">
           <OnwardLink to={runPath(projectId, run.id)}>{runLineWords(kindOf(run.task), run, run.outcome)}</OnwardLink>
           <span className="t-meta text-muted">{shortTime(run.completedAt ?? run.startedAt ?? run.queuedAt ?? now, now)}</span>
           <ModelSummary run={run} variant="list" />
         </li>)}</ul>}
+    </ReadState>
   </section>;
 }

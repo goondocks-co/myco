@@ -110,8 +110,8 @@ export function useToday({ projectId, day, now }: TodayQuery) {
   const work = useWork({ projectId, since: window.start, until: window.end, live: window.isToday });
 
   const entries = useMemo<TimelineEntry[] | undefined>(() => {
-    if (sessions.data === undefined || work.data === undefined) return undefined;
-    return buildTimeline({ sessions: sessions.data.rows, runs: work.data.runs, spores: spores.data?.spores ?? [], window, now });
+    if (sessions.data === undefined || work.data === undefined || spores.data === undefined) return undefined;
+    return buildTimeline({ sessions: sessions.data.rows, runs: work.data.runs, spores: spores.data.spores, window, now });
   }, [sessions.data, work.data, spores.data, window.start, window.end, now]);
   const counts = useMemo<LedeCounts | undefined>(() => (entries === undefined ? undefined : ledeCounts(entries)), [entries]);
 
@@ -122,8 +122,8 @@ export function useToday({ projectId, day, now }: TodayQuery) {
     work: work.data,
     /** Whether the day held more sessions or runs than were read. */
     truncated: (sessions.data?.truncated ?? false) || (work.data?.truncated ?? false),
-    isPending: sessions.isPending || work.isPending,
-    error: sessions.error ?? work.error,
+    isPending: sessions.isPending || work.isPending || spores.isPending,
+    error: sessions.error ?? work.error ?? spores.error,
     retry: () => { void sessions.refetch(); void work.refetch(); void spores.refetch(); },
   };
 }
