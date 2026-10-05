@@ -108,7 +108,7 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
       openPromptId: (t.open_prompt_id as string | null) ?? null,
       parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
       imported: t.imported_at !== null && t.imported_at !== undefined,
-    }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0 });
+    }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
     passes += 1;
     if ((sqlite.query(`SELECT parsed_offset FROM transcripts`).get() as { parsed_offset: number }).parsed_offset === before) return passes;
   }

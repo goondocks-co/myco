@@ -14,15 +14,22 @@ import { cursorParser } from './cursor.js';
 import { opencodeParser } from './opencode.js';
 import { piParser } from './pi.js';
 import type { TranscriptParser } from './index.js';
+import { boundDerivedEvents, boundPendingInputs } from './bounds.js';
+import { withParserContinuation } from './incremental.js';
 
-export const PARSERS: Readonly<Record<string, TranscriptParser>> = {
-  [claudeCodeParser.agent]: claudeCodeParser,
-  [clineParser.agent]: clineParser,
-  [codexParser.agent]: codexParser,
-  [cursorParser.agent]: cursorParser,
-  [opencodeParser.agent]: opencodeParser,
-  [piParser.agent]: piParser,
-};
+const bounded = (parser: TranscriptParser): TranscriptParser => ({
+  ...parser,
+  async parse(input) {
+    const events = await parser.parse(input);
+    boundPendingInputs(input.state);
+    return boundDerivedEvents(events);
+  },
+});
+
+export const PARSERS: Readonly<Record<string, TranscriptParser>> = Object.fromEntries(
+  [claudeCodeParser, clineParser, codexParser, cursorParser, opencodeParser, piParser]
+    .map((parser) => [parser.agent, bounded(withParserContinuation(parser))]),
+);
 
 /** The parser for an agent, or null when the server reads none for it. */
 export function parserFor(agent: string | null): TranscriptParser | null {

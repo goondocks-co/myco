@@ -16,6 +16,18 @@ const setup = () => {
 };
 
 describe('the backup routes', () => {
+  it('refuses oversized in-app exports with the operator backup command', async () => {
+    const { env, sqlite, bucket } = setup();
+    sqlite.query('UPDATE projects SET name = ?').run('x'.repeat(2 * 1024 * 1024));
+    const response = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const answer = await response.json() as { reason: string };
+    expect(response.status).toBe(400);
+    expect(answer.reason).toContain('myco server backup --to <directory> --target <deployment-target>');
+    expect(bucket.objects.size).toBe(0);
+    expect(sqlite.query('SELECT id FROM backups').all()).toEqual([]);
+    sqlite.close();
+  });
+
   it('refuses an uploaded multibyte artifact past the byte limit before restore', async () => {
     const { env, sqlite } = setup();
     const artifact = '界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3));

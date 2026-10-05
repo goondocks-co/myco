@@ -75,7 +75,7 @@ async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: 
   await parseOnce(env as never, {
     projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
     tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
-  }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0 });
+  }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
 }
 
 const count = (sqlite: Database, table: string): number =>
@@ -115,7 +115,7 @@ describe('native plugin transcripts land one row per fact', () => {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId, agent: 'opencode', size: utf8(TRANSCRIPT_TEXT).length,
       parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
-    }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0 });
+    }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
     expect(count(sqlite, 'events')).toBe(before);
     expect(count(sqlite, 'prompt_batches')).toBe(1);
   });

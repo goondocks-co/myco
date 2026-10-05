@@ -9,13 +9,16 @@
  * the whole artifact; object-store bytes (attachments, transcript segments)
  * live in the bucket already and are not duplicated into it.
  */
-import type { BlobStore, RelationalStore } from './adapters.js';
+import type { BlobStore, PreparedStatement, RelationalStore } from './adapters.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { readStoredObject } from './stored-object.js';
 import { referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong } from './object-release.js';
 import { currentRetentionVictims, type BackupRetentionPolicy } from './backup-retention.js';
 export { retentionVictims } from './backup-retention.js';
 import type { BlobRef } from './blob-references.js';
+import { assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
+export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
+import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -36,7 +39,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
   'member_credentials', 'agents',
   'sessions', 'session_tombstones', 'events', 'blobs', 'prompt_batches', 'tool_calls', 'responses', 'plans',
-  'attachments', 'transcripts', 'transcript_segments', 'tags',
+  'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
   'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
   'digest_extracts', 'cortex_instructions', 'canopy_maps', 'knowledge_release_state', 'external_grants',
@@ -184,28 +187,25 @@ function portableRow(table: string, row: Record<string, unknown>): Record<string
 export async function createBackup(
   db: RelationalStore, blobs: BlobStore, opts: { producer: string; now: number },
 ): Promise<BackupIndexRow> {
-  const lineage = await deploymentId(db);
-  const stamped = Number(await metaValue(db, 'version'));
+  const snapshot = await relationalSnapshot(db, ['schema_meta', ...BACKUP_TABLES], MAX_BACKUP_BYTES).catch((error: unknown) => {
+    if (error instanceof RelationalSnapshotTooLargeError) throw new BackupTooLargeError(error.bytes);
+    throw error;
+  });
+  assertCaptureClosure(snapshot);
+  const meta = new Map(snapshot.get('schema_meta')!.map((row) => [row.key, row.value]));
+  const lineage = meta.get('deployment_id');
+  if (typeof lineage !== 'string') throw new Error('this store carries no deployment_id; its migrations have not run');
+  const stamped = Number(meta.get('version'));
   const counts: Record<string, number> = {};
   const lines: string[] = [];
   let bytes = 0;
   for (const table of BACKUP_TABLES) {
     counts[table] = 0;
-    let cursor = 0;
-    for (;;) {
-      const { results } = await db
-        .prepare(`SELECT rowid AS __rid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT 200`)
-        .bind(cursor).all<Record<string, unknown>>();
-      if (results.length === 0) break;
-      for (const row of results) {
-        cursor = row.__rid as number;
-        const { __rid, ...columns } = row;
-        const line = JSON.stringify({ t: table, r: portableRow(table, columns) });
-        bytes = assertBackupSize(`${line}\n`, bytes);
-        lines.push(line);
-        counts[table] = counts[table]! + 1;
-      }
-      if (results.length < 200) break;
+    for (const columns of snapshot.get(table)!) {
+      const line = JSON.stringify({ t: table, r: portableRow(table, columns) });
+      bytes = assertBackupSize(`${line}\n`, bytes);
+      lines.push(line);
+      counts[table] = counts[table]! + 1;
     }
   }
 
@@ -301,6 +301,19 @@ interface RestoreProgress {
 
 const RESTORE_OWNER = 'table_name = ? AND artifact_hash = ? AND next_row = ?';
 
+type ArtifactRow = Record<string, unknown>;
+const transcriptIdentity = (row: ArtifactRow) => JSON.stringify([row.project_id, row.transcript_id]);
+type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, parents: ReadonlyMap<string, ArtifactRow>) => PreparedStatement;
+
+/** Owned state restores through the capability that admits its writes. */
+const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
+  transcript_parser_state_chunks(db, row, parents) {
+    const parent = parents.get(transcriptIdentity(row));
+    if (parent === undefined) throw new BackupApplyError('transcript_parser_state_chunks', 'a checkpoint row names no transcript in the artifact');
+    return restoreParserCheckpointStatement(db, row, parent);
+  },
+};
+
 function readRestoreProgress(db: RelationalStore, table: string): Promise<RestoreProgress | null> {
   return db.prepare(`SELECT artifact_hash, next_row FROM backup_restore_progress WHERE table_name = ?`)
     .bind(table).first<RestoreProgress>();
@@ -376,6 +389,7 @@ export async function restoreArtifact(
   if (absent.length > 0) throw new BackupObjectsMissingError(absent.length);
 
   const outcome: RestoreOutcome = { tables: {} };
+  const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row), row]));
   const hash = await sha256Hex(opts.text);
   for (const table of BACKUP_TABLES) {
     const rows = byTable.get(table) ?? [];
@@ -415,6 +429,8 @@ export async function restoreArtifact(
       const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
       const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
       statements.push(...chunk.map((row) => {
+        const restoreOwned = OWNED_ROW_RESTORERS[table];
+        if (restoreOwned !== undefined) return restoreOwned(db, row, transcriptParents);
         const columns = Object.keys(row);
         return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
           .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));

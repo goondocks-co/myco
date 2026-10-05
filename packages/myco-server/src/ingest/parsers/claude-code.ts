@@ -11,20 +11,14 @@
  *   assistant  `message.content` blocks: `text` is the reply, `tool_use` is a
  *              call awaiting its result, `image` is an attachment.
  *
- * A turn is a prompt and everything until the next prompt. The reply is the
- * turn's assistant text joined and emitted once. The member also emits one
- * response per Stop rather than one per assistant record, so one row per turn
- * holds on both paths and the two remain comparable.
- *
- * A `tool_use` is held until the `tool_result` naming it arrives, so success
- * and output land on the same row as the call. A call the transcript never
- * answers is still a call the transcript records, and it is emitted at the end
- * as an unfinished one rather than dropped.
+ * A turn is a prompt and everything until the next prompt. The registry emits
+ * joined replies at turn boundaries and retains unresolved tool calls until
+ * a result or a declared terminal outcome.
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
-  type DerivedEvent, type ParserInput, type TranscriptParser,
+  callForResult, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  type ReplyPart, type DerivedEvent, type ParserInput, type TranscriptParser,
 } from './index.js';
 
 /** The longest tool name the catalogue admits. */
@@ -32,17 +26,10 @@ const TOOL_NAME_CHARS = 64;
 
 /** A tool call's row id. The member mints a random one per hook (`envelope.ts:229`), so this derivation is the parse's own; the parity gate compares the two by content and excludes the id by name. */
 const toolCallIdFor = (sessionId: string, toolUseId: string): Promise<string> => uuidv5('tool-call', sessionId, toolUseId);
-/** A response's row id, keyed by the turn's first assistant byte; the member mints a random one at Stop. */
+/** A response's row id, keyed by an assistant record's byte offset; the member mints a random one at Stop. */
 const responseIdFor = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
 
-interface PendingCall {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-  promptId?: string;
-  createdAt: number;
-  offset: number;
-}
+
 
 /** A user record that names a prompt, rather than one carrying a tool result. */
 const namesPrompt = (v: Record<string, unknown>): boolean =>
@@ -56,26 +43,28 @@ export const claudeCodeParser: TranscriptParser = {
   planTags: ['ultraplan'],
   continuation: { parentSessionIdPath: 'session_id', markerPaths: ['isCompactSummary'] },
 
-  async parse({ lines: all, sessionId, now, openPromptId }: ParserInput): Promise<DerivedEvent[]> {
+  async parse(input: ParserInput): Promise<DerivedEvent[]> {
+    const { lines: all, sessionId, now, openPromptId } = input;
     const lines = ownedLines(all, sessionId, claudeCodeParser.continuation);
     const events: DerivedEvent[] = [];
-    const pending = new Map<string, PendingCall>();
+    const continuation = parserContinuation(input);
+    const pending = continuation.pending;
     let promptId: string | undefined = openPromptId;
-    let reply: { text: string[]; offset: number; createdAt: number; promptId?: string } | null = null;
-    let planPosition = 0;
+    let reply: { parts: ReplyPart[]; promptId?: string } | null = null;
+    let planPosition = continuation.position;
 
     const flushReply = async (): Promise<void> => {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      const text = held.text.join('\n\n').trim();
-      if (text === '') return;
-      events.push({
-        kind: 'response',
-        payload: { responseId: await responseIdFor(sessionId, held.offset), promptId: held.promptId, text },
-        createdAt: held.createdAt,
-        offset: held.offset,
-      });
+      for (const chunk of held.parts) {
+        events.push({
+          kind: 'response',
+          payload: { responseId: await responseIdFor(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
+          createdAt: chunk.createdAt,
+          offset: chunk.offset,
+        });
+      }
     };
 
     for (const { value, offset, undatedAt } of lines) {
@@ -109,9 +98,8 @@ export const claudeCodeParser: TranscriptParser = {
         for (const block of blocksOf(message?.content)) {
           if (block.type !== 'tool_result') continue;
           const id = str(block.tool_use_id);
-          const call = id === undefined ? undefined : pending.get(id);
-          if (call === undefined || id === undefined) continue;
-          pending.delete(id);
+          if (id === undefined) continue;
+          const call = await callForResult(sessionId, id, pending, { promptId, createdAt, offset });
           const failed = block.is_error === true;
           const output = textOf(block.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
           events.push({
@@ -126,7 +114,7 @@ export const claudeCodeParser: TranscriptParser = {
               ...(failed ? { errorMessage: output === '' ? 'tool failed' : output } : {}),
             },
             createdAt: call.createdAt,
-            offset: call.offset,
+            offset: input.state === undefined ? call.offset : offset,
           });
         }
         continue;
@@ -136,8 +124,8 @@ export const claudeCodeParser: TranscriptParser = {
 
       for (const block of blocksOf(message?.content)) {
         if (block.type === 'text' && typeof block.text === 'string') {
-          if (reply === null) reply = { text: [], offset, createdAt, promptId };
-          reply.text.push(block.text);
+          if (reply === null) reply = { parts: [], promptId };
+          reply.parts.push({ text: block.text, offset, createdAt });
           const plans = await plansInText(block.text, claudeCodeParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
           events.push(...plans.events);
           planPosition = plans.next;
@@ -161,24 +149,8 @@ export const claudeCodeParser: TranscriptParser = {
 
     await flushReply();
 
-    // A call the transcript never answered still happened; the row records it
-    // as unfinished rather than losing it.
-    for (const call of pending.values()) {
-      events.push({
-        kind: 'tool.failure',
-        payload: {
-          toolCallId: call.toolCallId,
-          promptId: call.promptId,
-          toolName: call.toolName,
-          input: call.input,
-          success: false,
-          errorMessage: 'tool call has no result in the transcript',
-        },
-        createdAt: call.createdAt,
-        offset: call.offset,
-      });
-    }
 
+    continuation.save(planPosition);
     return events.sort((a, b) => a.offset - b.offset);
   },
 };
