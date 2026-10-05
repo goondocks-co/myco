@@ -13,7 +13,7 @@ import { uuidv5 } from '../../hash.js';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import {
-  unfinishedCalls, parserContinuation, blocksOf, isBlock, lineTime, plansInText, replyChunks, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -71,7 +71,7 @@ export const codexParser: TranscriptParser = {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      for (const chunk of replyChunks(held.parts)) {
+      for (const chunk of held.parts) {
         events.push({
           kind: 'response',
           payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
@@ -128,9 +128,8 @@ export const codexParser: TranscriptParser = {
 
       if (kind === 'function_call_output' || kind === 'custom_tool_call_output') {
         const callId = str(payload.call_id);
-        const call = callId === undefined ? undefined : pending.get(callId);
-        if (call === undefined || callId === undefined) continue;
-        pending.delete(callId);
+        if (callId === undefined) continue;
+        const call = await callForResult(sessionId, callId, pending, { promptId, createdAt, offset });
         const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
         const failed = payload.success === false;
         events.push({
@@ -152,7 +151,6 @@ export const codexParser: TranscriptParser = {
 
     await flushReply();
 
-    if (input.state === undefined) events.push(...unfinishedCalls(pending.values()));
 
     continuation.save(planPosition);
     return events.sort((a, b) => a.offset - b.offset);

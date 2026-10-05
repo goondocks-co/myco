@@ -103,7 +103,7 @@ export async function snapshotRefusals(db: RelationalStore, blobs: BlobStore) {
   };
   const truncated = await refusal(shortRead);
   let bounded = false;
-  let transferred = -1;
+  let transferred = 0;
   const measured: RelationalStore = {
     prepare: (sql) => db.prepare(sql),
     async batch(statements) {
@@ -238,4 +238,59 @@ export async function backupCheckpointRestoreScenario(db: RelationalStore, fresh
     freshMatches: JSON.stringify(restored) === JSON.stringify(older),
     freshStateMatches: JSON.stringify(await read(fresh)) === JSON.stringify(oldState),
   };
+}
+
+/** Admission refuses stores before preparing any row-serialization statement. */
+export async function snapshotAdmission(db: RelationalStore) {
+  await db.prepare('CREATE TABLE snapshot_admission_gate (payload TEXT)').run();
+  await db.prepare(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 10001)
+    INSERT INTO snapshot_admission_gate SELECT 'small' FROM n`).run();
+  const probe = async () => {
+    const queries: string[] = [];
+    const observed: RelationalStore = { prepare(sql) { queries.push(sql); return db.prepare(sql); }, batch: (statements) => db.batch(statements) };
+    let error = '';
+    try { await relationalSnapshot(observed, ['snapshot_admission_gate'], 64 * 1024 * 1024); }
+    catch (failure) { error = String(failure); }
+    return { error, serialization: queries.filter((sql) => /json_(?:object|set)/i.test(sql)).length,
+      payloadScans: queries.filter((sql) => /length\(CAST\("payload"/i.test(sql)).length,
+      metadataSizes: queries.filter((sql) => /octet_length\("payload"\)/i.test(sql)).length };
+  };
+  const rows = await probe();
+  await db.prepare('DELETE FROM snapshot_admission_gate').run();
+  await db.prepare(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 8)
+    INSERT INTO snapshot_admission_gate SELECT replace(hex(zeroblob(100000)), '0', 'x') FROM n`).run();
+  const bytes = await probe();
+  const racingProbe = async (populate: string) => {
+    await db.prepare('DELETE FROM snapshot_admission_gate').run();
+    let interleaved = false;
+    let transferred = 0;
+    const racing: RelationalStore = {
+      prepare: (sql) => db.prepare(sql),
+      async batch(statements) {
+        const results = await db.batch(statements);
+        if (results.some((result) => result.results.some((row) => 'snapshot_count' in (row as Record<string, unknown>)))) {
+          transferred = results.reduce((n, result) => n + result.results.filter((row) => (row as { line?: unknown }).line != null).length, 0);
+        }
+        else if (!interleaved && results.some((result) => result.results.some((row) => 'admission_bytes' in (row as Record<string, unknown>)))) {
+          interleaved = true;
+          await db.prepare(populate).run();
+        }
+        return results;
+      },
+    };
+    let error = '';
+    try { await relationalSnapshot(racing, ['snapshot_admission_gate'], 64 * 1024 * 1024); }
+    catch (failure) { error = String(failure); }
+    return { interleaved, transferred, error };
+  };
+  const race = await racingProbe(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 10001)
+    INSERT INTO snapshot_admission_gate SELECT 'racing' FROM n`);
+  const byteRace = await racingProbe(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 8)
+    INSERT INTO snapshot_admission_gate SELECT replace(hex(zeroblob(100000)), '0', 'x') FROM n`);
+  await db.prepare('DELETE FROM snapshot_admission_gate').run();
+  await db.prepare(`WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 8)
+    INSERT INTO snapshot_admission_gate SELECT replace(hex(zeroblob(85000)), '0', char(1)) FROM n`).run();
+  const accepted = (await relationalSnapshot(db, ['snapshot_admission_gate'], 64 * 1024 * 1024)).get('snapshot_admission_gate')!;
+  await db.prepare('DROP TABLE snapshot_admission_gate').run();
+  return { rows, bytes, race, byteRace, accepted: { rows: accepted.length, exact: accepted.every((row) => row.payload === String.fromCharCode(1).repeat(170000)) } };
 }

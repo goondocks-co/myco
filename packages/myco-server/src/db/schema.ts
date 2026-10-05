@@ -1680,6 +1680,9 @@ const V48_STATEMENTS: readonly string[] = [
 
 /** Bounded continuation chunks share the transcript cursor's atomic commit. */
 const V70_STATEMENTS: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_transcripts_parser_version ON transcripts (parser_version, project_id, transcript_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_transcripts_terminal ON transcripts (imported_at, last_received_at, project_id, transcript_id)
+     WHERE parsed_offset = size AND json_extract(parser_context, '$.mycoParserUnfinished') = 1`,
   `CREATE TABLE IF NOT EXISTS transcript_parser_state_chunks (
      project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
      transcript_id TEXT NOT NULL,

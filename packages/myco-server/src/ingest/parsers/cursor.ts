@@ -20,7 +20,7 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  isBlock, lineTime, replyChunks, str, textOf,
+  isBlock, lineTime, str, textOf,
   type DerivedEvent, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -70,6 +70,7 @@ export const cursorParser: TranscriptParser = {
   agent: 'cursor',
   fidelity: 'no_tool_results',
   planTags: [],
+  endsTurn: (value) => value.type === TURN_ENDED,
 
   async parse(input: ParserInput): Promise<DerivedEvent[]> {
     const { lines, sessionId, now, openPromptId } = input;
@@ -81,7 +82,7 @@ export const cursorParser: TranscriptParser = {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      for (const chunk of replyChunks(held.parts)) {
+      for (const chunk of held.parts) {
         events.push({
           kind: 'response',
           payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },

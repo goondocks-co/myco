@@ -33,13 +33,13 @@ import { MAX_PAYLOAD_BYTES } from './envelope.js';
 import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
-import { isBlock, type DerivedEvent, type ParsedLine, type ParserState } from './parsers/index.js';
+import { isBlock, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
-import { parserCheckpointStatements, readParserCheckpoint } from './parser-checkpoint.js';
+import { parserCheckpointStatements, readParserCheckpoint, terminalCheckpointBatch } from './parser-checkpoint.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
-import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER, SESSION_END_SETTLE_MS } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
 export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
@@ -99,7 +99,10 @@ export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
  * be answered by a deploy — and a failure nothing can clear would mean one bad
  * line silences a transcript permanently, which no later fix could undo.
  */
-export const PARSER_VERSION = 4;
+export const PARSER_VERSION = 5;
+
+/** An unanswered live turn closes after ten minutes without new transcript bytes. */
+export const TRANSCRIPT_IDLE_MS = 600_000;
 
 /**
  * Unreadable lines ONE WINDOW tolerates before the transcript is stopped.
@@ -141,6 +144,27 @@ export const AWAITING_BYTES = 'awaiting_bytes';
  */
 export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
 
+/** A member's turn end covers the retained reply's source instants. */
+const TURN_ENDED = `EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = transcripts.project_id
+  AND s.session_id = transcripts.session_id AND s.working_since IS NULL AND s.last_turn_end_at IS NOT NULL
+  AND s.last_turn_end_at >= json_extract(parser_context, '$.mycoParserReplyLatestAt'))`;
+
+/** A completed cursor can still owe its bounded terminal outcome. */
+function terminalWorkSql(now: number): string {
+  if (!Number.isSafeInteger(now)) throw new Error('The transcript clock must be an integer instant');
+  return `(parsed_offset = size AND parse_error IS NULL
+    AND json_extract(parser_context, '$.mycoParserUnfinished') = 1
+    AND (imported_at IS NOT NULL OR last_received_at <= ${now - TRANSCRIPT_IDLE_MS}
+      OR (last_received_at <= ${now - SESSION_END_SETTLE_MS} AND EXISTS (SELECT 1 FROM sessions s
+        WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id AND s.ended_at IS NOT NULL
+          AND s.ended_at <= ${now - SESSION_END_SETTLE_MS}))
+      OR (json_extract(parser_context, '$.mycoParserReplyUnfinished') = 1 AND ${TURN_ENDED})))`;
+}
+
+function pendingWorkSql(now: number): string {
+  return `(${PENDING_TRANSCRIPTS}) OR (${terminalWorkSql(now)})`;
+}
+
 /** The transcript a pass works on. */
 interface ParseTarget {
   projectId: string;
@@ -155,6 +179,9 @@ interface ParseTarget {
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
   parserContext?: Record<string, unknown> | null;
+  lastReceivedAt?: number;
+  sessionEndedAt?: number | null;
+  turnEnded?: boolean;
   /** Whether the latest segment arrived by import; lifecycle ownership is resolved from durable events. */
   imported: boolean;
   /** The line breaks between the first byte of the segment holding the cursor and the cursor, or null where not known. */
@@ -211,24 +238,26 @@ const TOMBSTONED = `EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_i
  * The selection of the next `limit` transcripts in `lane`, bound to the parser version, each with the segments a pass
  * reads past its cursor: one statement and one round trip, which a gate reads the plan of.
  */
-export function laneSelectionSql(lane: Lane, limit = 1): string {
+export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): string {
   const segments = `SELECT json_group_array(json_object('base_offset', base_offset, 'length', length, 'blob_key', blob_key, 'created_at', created_at, 'object_key', object_key))
       FROM (SELECT ${SEGMENT_COLUMNS}
               FROM transcript_segments s
               LEFT JOIN events e ON e.project_id = s.project_id AND e.event_id = s.event_id
              WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id AND s.base_offset + s.length > transcripts.parsed_offset
              ORDER BY s.base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
-  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_segment_lines,
+  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
+                 (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
+                 ${TURN_ENDED} AS turn_ended,
                  (${segments}) AS segments
-            FROM transcripts
-           WHERE ${PENDING_TRANSCRIPTS} AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}
+            FROM (SELECT * FROM transcripts WHERE (${PENDING_TRANSCRIPTS}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}
+              UNION ALL SELECT * FROM transcripts WHERE (${terminalWorkSql(now)}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}) AS transcripts
            ORDER BY ${LANE_ORDER[lane].order} LIMIT ${limit}`;
 }
 
 /** The next `limit` transcripts in `lane` with unread bytes and no failure holding them, in the lane's order. */
-async function nextTargets(db: RelationalStore, lane: Lane, limit: number): Promise<ParseTarget[]> {
+async function nextTargets(db: RelationalStore, lane: Lane, limit: number, now: number): Promise<ParseTarget[]> {
   const { results } = await db
-    .prepare(laneSelectionSql(lane, limit))
+    .prepare(laneSelectionSql(lane, limit, now))
     .bind(PARSER_VERSION)
     .all<Record<string, unknown>>();
   return results.map(targetOf);
@@ -249,6 +278,9 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     fidelity: (row.fidelity as string | null) ?? null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     parserContext: contextFromStored(row.parser_context),
+    lastReceivedAt: row.last_received_at as number | undefined,
+    sessionEndedAt: (row.session_ended_at as number | null) ?? null,
+    turnEnded: row.turn_ended === 1,
     imported: row.imported_at !== null && row.imported_at !== undefined,
     segmentLines: (row.parse_segment_lines as number | null | undefined) ?? null,
     ...(segments === undefined ? {} : { segments }),
@@ -358,7 +390,8 @@ async function skipUnheld(
   // Where the cursor now stands is a segment's first byte or the end: no line of its segment is behind it.
   const statement = db
     .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN 0 ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?,
-                 open_prompt_id = NULL, parser_context = NULL, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+                 open_prompt_id = NULL, parser_context = CASE WHEN json_type(parser_context, '$.mycoParserRepair') IS NOT NULL
+                   THEN json_set(parser_context, '$.mycoParserState', json('{}'), '$.mycoParserUnfinished', 0, '$.mycoParserReplyUnfinished', 0) ELSE NULL END, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                WHERE project_id = ? AND transcript_id = ?`)
     .bind(to, to, now, target.projectId, target.transcriptId);
   await finalizePass(db, target, statement);
@@ -464,6 +497,15 @@ export interface PassLimits {
   calls: number;
   deadline: number;
   clock: () => number;
+  completeFile?: boolean;
+}
+
+function terminalRule(target: ParseTarget, now: number, limits: PassLimits): ParserInput['terminal'] {
+  if (limits.completeFile || target.imported) return 'complete_file';
+  if (target.sessionEndedAt != null && target.sessionEndedAt <= now - SESSION_END_SETTLE_MS
+    && (target.lastReceivedAt ?? now) <= now - SESSION_END_SETTLE_MS) return 'session_end';
+  if ((target.lastReceivedAt ?? now) <= now - TRANSCRIPT_IDLE_MS) return 'idle';
+  return target.turnEnded ? 'turn_end' : undefined;
 }
 
 /** Whether a pass has spent what it may. */
@@ -500,6 +542,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
   // `calls` counts what THIS pass spends; the caller adds its own selection.
   let calls = 0;
+  const terminalOnly = target.parsedOffset === target.size && terminalRule(target, now, limits) !== undefined;
   const needsHeader = parser.headerContext !== undefined && target.parserContext == null;
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
@@ -522,7 +565,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key, objectKey: s.object_key, createdAt: s.created_at })),
     readOffset, Number.POSITIVE_INFINITY, TRANSCRIPT_PARSE_SEGMENTS_PER_READ,
   );
-  if (taken.length === 0) return skipUnheld(env.db, target, parser, segments[0]?.base_offset ?? null, recoveringHeader, now, calls);
+  if (taken.length === 0 && !terminalOnly) return skipUnheld(env.db, target, parser, segments[0]?.base_offset ?? null, recoveringHeader, now, calls);
 
   let chunks: Uint8Array[] = [];
   let unreadBytes = 0;
@@ -580,7 +623,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   joined = new Uint8Array(0);
   split = null;
 
-  if (windowEnd === readOffset) {
+  if (windowEnd === readOffset && !terminalOnly) {
     if (readChunks === TRANSCRIPT_PARSE_SEGMENTS_PER_READ && heldEnd < target.size) {
       await stop(env.db, target, 'record_too_large', now);
       return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'record_too_large' };
@@ -609,6 +652,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   windowLines = null;
   const chunkedState = continued?.chunked === true;
   const initialState: ParserState = chunkedState ? await readParserCheckpoint(env.db, target, continued?.digest) : structuredClone(continued ?? {});
+  if (isBlock(stored?.mycoParserRepair)) initialState.repair = stored.mycoParserRepair as ParserState['repair'];
   if (chunkedState) calls += 1;
   if (typeof stored?.mycoLegacyResponseUntil === 'number') initialState.legacyReplies = { until: stored.mycoLegacyResponseUntil };
   if (initialState.legacyReplies !== undefined && lines.length > LEGACY_REPLY_LINES_PER_READ) {
@@ -616,14 +660,15 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     lines = lines.slice(0, LEGACY_REPLY_LINES_PER_READ);
   }
   const state: ParserState = structuredClone(initialState);
-  const input = { lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state };
+  const input = { lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state,
+    terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
   const parsedEvents = await parser.parse(input);
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
   const events = preserveLegacyReplies(parsedEvents, state, heldReplies);
   const stateAt = async (to: number): Promise<ParserState> => {
     const checkpoint = to === windowEnd ? state : structuredClone(initialState);
     if (to !== windowEnd) {
-      const prefix = await parser.parse({ ...input, lines: input.lines.filter((line) => line.offset < to), state: checkpoint });
+      const prefix = await parser.parse({ ...input, terminal: undefined, lines: input.lines.filter((line) => line.offset < to), state: checkpoint });
       preserveLegacyReplies(prefix, checkpoint, heldReplies);
     }
     return checkpoint;
@@ -658,12 +703,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   };
   // Whether the cursor's advance rode the last group's batch and applied there.
   let advanced = false;
-  const groups = eventGroups(events);
+  const groups = terminalOnly ? (events.length === 0 ? [] : [events]) : eventGroups(events);
   // The line counts every cursor this pass can end at needs, read before the writes so the segment bytes they are
   // counted in are let go first. Parsed records remain available for a cursor's continuation checkpoint.
   const linesAt = new Map<number, number>([windowEnd, ...groups.map((group) => group[0].offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
   held = [];
   const linesBehind = (offset: number): number => {
+    if (terminalOnly && offset === target.parsedOffset) return target.segmentLines ?? 0;
     const counted = linesAt.get(offset);
     if (counted === undefined) throw new Error(`no line count read for cursor ${offset}`);
     return counted;
@@ -692,12 +738,14 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       writes.push(planned.write);
     }
     // The last group carries the cursor's advance past the window, guarded on every event of the group being stored.
-    const last = g === groups.length - 1 && cursor > target.parsedOffset;
+    const last = g === groups.length - 1 && (cursor > target.parsedOffset || terminalOnly);
     const envelopes = last ? [...eventIds] : [];
     const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
     const advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : [];
     const tail = last ? [...advancement, ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
-    const results = await env.db.batch([...writes.flatMap((w) => w.statements), ...tail]);
+    const statements = [...writes.flatMap((w) => w.statements), ...tail];
+    const results = terminalOnly ? await terminalCheckpointBatch(env.db, target, statements) : await env.db.batch(statements);
+    if (results === null) return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
     calls += 1;
     if (last) advanced = (results[writes.reduce((n, w) => n + w.statements.length, 0) ] as { meta: { changes: number } }).meta.changes > 0;
 
@@ -719,7 +767,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // Every path above either advances the cursor or returns. A cursor that did
   // not move would leave the transcript pending and every wake re-deriving the
   // same events, so it stops the transcript rather than spinning on it.
-  if (cursor <= target.parsedOffset) {
+  if (cursor <= target.parsedOffset && !terminalOnly) {
     await stop(env.db, target, 'parse', now);
     return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
   }
@@ -729,7 +777,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // moved further keeps its own turn and no count: the pass after reads that segment from its first byte. An advance
   // the last batch carried is already in place; one it could not prove (a row held elsewhere as a duplicate) is made here.
   if (!advanced) {
-    await finalizePass(env.db, target, await advanceTo(cursor, lastTurn));
+    const statements = await advanceTo(cursor, lastTurn);
+    if (terminalOnly) {
+      if (await terminalCheckpointBatch(env.db, target, statements) === null)
+        return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
+    } else await finalizePass(env.db, target, statements);
     calls += 1;
   }
 
@@ -739,6 +791,44 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
 /** The first byte of a transcript still held in a segment, for a statement over `transcripts`. */
 const FIRST_HELD_BYTE = `SELECT MIN(s.base_offset) FROM transcript_segments s WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id`;
+
+/** Only this many older cursors enter repair on one wake. */
+export const TRANSCRIPT_REPAIRS_PER_WAKE = 4;
+const repairCandidateSql = (version: number | '?' = '?'): string => `parser_version > 0 AND parser_version < ${version} AND parsed_offset > 0
+  AND json_type(parser_context, '$.mycoLegacyResponseUntil') IS NULL`;
+const REREAD_CONTEXT = `json_set(COALESCE(parser_context, '{}'), '$.mycoLegacyResponseUntil', parsed_offset,
+  '$.mycoParserMeta', CASE WHEN json_type(parser_context, '$.mycoParserMeta') IS NOT NULL
+    THEN json_extract(parser_context, '$.mycoParserMeta') ELSE json(parser_context) END,
+  '$.mycoParserState', json('{}'), '$.mycoParserUnfinished', 0, '$.mycoParserReplyUnfinished', 0)`;
+
+/** Rewind intact older recordings once; absent source bytes become named repair omissions. */
+async function prepareParserRepairs(db: RelationalStore): Promise<number> {
+  const { results } = await db.prepare(`SELECT project_id, transcript_id, parser_version, parsed_offset, parser_context,
+    (${FIRST_HELD_BYTE}) AS first_held,
+    (SELECT COALESCE(SUM(MIN(s.length, transcripts.parsed_offset - s.base_offset)), 0) FROM transcript_segments s
+      WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id AND s.base_offset < transcripts.parsed_offset) AS held_prefix_bytes FROM transcripts WHERE ${repairCandidateSql()} AND NOT ${TOMBSTONED}
+    ORDER BY parser_version, project_id, transcript_id LIMIT ${TRANSCRIPT_REPAIRS_PER_WAKE}`)
+    .bind(PARSER_VERSION).all<{ project_id: string; transcript_id: string; parser_version: number; parsed_offset: number; parser_context: string | null; first_held: number | null; held_prefix_bytes: number }>();
+  if (results.length === 0) return 1;
+  const repairs = results.map((row) => ({ row, status: row.first_held === null ? 'raw_absent'
+    : row.first_held > 0 ? 'raw_prefix_pruned' : row.held_prefix_bytes !== row.parsed_offset ? 'raw_gap' : 'replaying' }));
+  const statements = repairs.map(({ row, status }) => {
+    const repair = JSON.stringify({ version: PARSER_VERSION, fromVersion: row.parser_version, status });
+    const mutations = status === 'replaying'
+      ? `parsed_offset = 0, parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL,
+          parse_awaited_size = NULL, parser_context = json_set(${REREAD_CONTEXT}, '$.mycoParserRepair', json(?))`
+      : `parser_version = ${PARSER_VERSION}, parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?))`;
+    return db.prepare(`UPDATE transcripts SET ${mutations} WHERE project_id = ? AND transcript_id = ?
+      AND parser_version = ? AND parsed_offset = ? AND parser_context IS ?`)
+      .bind(repair, row.project_id, row.transcript_id, row.parser_version, row.parsed_offset, row.parser_context);
+  });
+  const changed = await db.batch(statements);
+  for (const [index, { row, status }] of repairs.entries()) {
+    if (changed[index].meta.changes > 0 && status !== 'replaying') emit({ kind: 'transcript_repair_omitted', projectId: row.project_id,
+      transcriptId: row.transcript_id, failure: status, fromVersion: row.parser_version });
+  }
+  return 2;
+}
 
 /** Which stored transcripts to read again: every one an agent's parser reads, or one session's. */
 export type RereadSelector = { agent: string } | { projectId: string; sessionId: string };
@@ -768,11 +858,11 @@ export async function rereadTranscripts(db: RelationalStore, selector: RereadSel
     ? { sql: 'agent = ?', params: [selector.agent] }
     : { sql: 'project_id = ? AND session_id = ?', params: [selector.projectId, selector.sessionId] };
   const result = await db
-    .prepare(`UPDATE transcripts SET parsed_offset = (${FIRST_HELD_BYTE}), parse_segment_lines = 0, open_prompt_id = NULL, parser_context = json_object('mycoLegacyResponseUntil', parsed_offset, 'mycoParserMeta', CASE WHEN json_type(parser_context, '$.mycoParserMeta') IS NOT NULL THEN json_extract(parser_context, '$.mycoParserMeta') ELSE json(parser_context) END), parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
-               WHERE ${where.sql} AND (${FIRST_HELD_BYTE}) IS NOT NULL`)
+    .prepare(`UPDATE transcripts SET parsed_offset = (${FIRST_HELD_BYTE}), parse_segment_lines = 0, open_prompt_id = NULL, parser_context = ${REREAD_CONTEXT}, parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+               WHERE ${where.sql} AND (${FIRST_HELD_BYTE}) IS NOT NULL RETURNING transcript_id`)
     .bind(...where.params)
-    .run();
-  const reread = result.meta.changes;
+    .all();
+  const reread = result.results.length;
   emit({ kind: 'transcripts_reread', ...('agent' in selector ? { agent: selector.agent } : { projectId: selector.projectId }), transcripts: reread });
   return reread;
 }
@@ -789,13 +879,14 @@ export interface TranscriptBacklog {
  * Deployment awake while a backlog stands, what the tick reports, and what the dashboard shows. The live half holds
  * the Deployment at `active`; an import backlog holds it only at `idle`, finishing as the Deployment is used.
  */
-export async function pendingTranscripts(db: RelationalStore): Promise<TranscriptBacklog> {
+export async function pendingTranscripts(db: RelationalStore, now = Date.now()): Promise<TranscriptBacklog> {
+  const queuedBytes = `CASE WHEN (${repairCandidateSql(PARSER_VERSION)}) THEN size ELSE size - parsed_offset END`;
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(size - parsed_offset), 0) AS bytes,
+    .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(${queuedBytes}), 0) AS bytes,
                      COALESCE(SUM(CASE WHEN imported_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS imported_n,
-                     COALESCE(SUM(CASE WHEN imported_at IS NOT NULL THEN size - parsed_offset ELSE 0 END), 0) AS imported_bytes
-                FROM transcripts WHERE ${PENDING_TRANSCRIPTS} AND NOT ${TOMBSTONED}`)
-    .bind(PARSER_VERSION)
+                     COALESCE(SUM(CASE WHEN imported_at IS NOT NULL THEN ${queuedBytes} ELSE 0 END), 0) AS imported_bytes
+                FROM transcripts WHERE ((${pendingWorkSql(now)}) OR (${repairCandidateSql()})) AND NOT ${TOMBSTONED}`)
+    .bind(PARSER_VERSION, PARSER_VERSION)
     .first<{ n: number; bytes: number; imported_n: number; imported_bytes: number }>();
   return {
     transcripts: Number(row?.n ?? 0),
@@ -823,7 +914,7 @@ export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTr
   // Counted here rather than grouped in SQL: a GROUP BY leads the planner to walk every transcript in Project order,
   // where the rows wanted all sit in the backlog index.
   const { results } = await db
-    .prepare(`SELECT project_id, parse_error, parse_failed_at FROM transcripts
+    .prepare(`SELECT project_id, parse_error, parse_failed_at FROM transcripts INDEXED BY idx_transcripts_backlog
                 WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND parser_version >= ? AND NOT ${TOMBSTONED}
                   AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = transcripts.project_id AND p.archived_at IS NULL)`)
     .bind(PARSER_VERSION)
@@ -895,14 +986,14 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
   const deadline = clock() + budget.wallMs;
   const liveShare = Math.max(1, Math.floor(budget.calls / 2));
   const done: Record<Lane, boolean> = { live: false, imported: false };
-  let spent = 0;
+  let spent = budget.calls >= 2 && clock() < deadline ? await prepareParserRepairs(env.db) : 0;
   let liveSpent = 0;
   let derived = 0;
   while (spent < budget.calls && clock() < deadline) {
     const lane: Lane | null = !done.live && (done.imported || liveSpent < liveShare) ? 'live' : !done.imported ? 'imported' : null;
     if (lane === null) break;
     // Imported transcripts are read several at a time: each call waits on a round trip, not on the store.
-    const targets = await nextTargets(env.db, lane, lane === 'imported' ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1);
+    const targets = await nextTargets(env.db, lane, lane === 'imported' ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1, now);
     spent += 1;
     if (lane === 'live') liveSpent += 1;
     if (targets.length === 0) {
@@ -927,6 +1018,6 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
     // rather than read again.
     if (reports.every((report) => report.nextOffset === null && report.failure === null)) done[lane] = true;
   }
-  const more = !(done.live && done.imported) && (await pendingTranscripts(env.db)).transcripts > 0;
+  const more = (await pendingTranscripts(env.db, now)).transcripts > 0;
   return { changed: derived, more };
 }

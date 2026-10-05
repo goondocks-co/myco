@@ -438,7 +438,11 @@ const toolCall = ({ db, ctx, e, p }: Inputs): KindPlan => {
           (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, myco_tool, myco_op, input, input_blob_key, output_preview, output_blob_key, success, error_message, duration_ms, files_affected, canopy_injection_tokens, created_at, token_id, received_at)
         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE ${RAW_ROW_GATE}
-        ON CONFLICT (project_id, tool_call_id) DO NOTHING`)
+        ON CONFLICT (project_id, tool_call_id) DO UPDATE SET
+          event_id = excluded.event_id, output_preview = excluded.output_preview, output_blob_key = excluded.output_blob_key,
+          success = excluded.success, error_message = excluded.error_message, duration_ms = excluded.duration_ms,
+          received_at = MAX(tool_calls.received_at, excluded.received_at)
+        WHERE tool_calls.session_id = excluded.session_id AND tool_calls.success = 0 AND excluded.success = 1`)
         .bind(ctx.projectId, p.toolCallId, e.sessionId, opt(p.promptId), e.eventId, p.toolName, opt(p.mycoTool), opt(p.mycoOp),
               json(p.input), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage),
               opt(p.durationMs), json(p.filesAffected ?? filesNamedByToolInput(p.input)), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),

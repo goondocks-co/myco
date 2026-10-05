@@ -134,7 +134,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
-  const backlog = await pendingTranscripts(env.db);
+  const backlog = await pendingTranscripts(env.db, now);
   if (backlog.transcripts - backlog.imported.transcripts > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
   if (backlog.imported.transcripts > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
@@ -173,7 +173,7 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
     pacer.draining = jobs.filter((j) => j.more).map((j) => j.name);
     const untilFull = Math.max(0, pacer.fullAt + nextWakeDelayMs(pacer.state, WAKE_INTERVALS)! - now);
     const nextWakeMs = pacer.draining.length > 0 ? Math.min(untilFull, CHAINED_WAKE_MS) : untilFull;
-    const backlog = await pendingTranscripts(env.db);
+    const backlog = await pendingTranscripts(env.db, now);
     return { state: pacer.state, heldBy: pacer.heldBy, drained, scheduled: { dispatched: 0, skipped: 0 }, idleMs: pacer.idleMs, jobs, nextWakeMs, backlog, drainOnly: true };
   }
   const last = await lastActivityAt(env.db);
@@ -204,7 +204,7 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
   // Work a job left is taken by a wake soon after this one; the cadence is the longest the next wake waits.
   const cadence = nextWakeDelayMs(resolved.state, WAKE_INTERVALS);
   const nextWakeMs = cadence !== null && jobs.some((j) => j.more) ? Math.min(cadence, CHAINED_WAKE_MS) : cadence;
-  const backlog = await pendingTranscripts(env.db);
+  const backlog = await pendingTranscripts(env.db, now);
   if (pacer !== undefined) Object.assign(pacer, { fullAt: now, state: resolved.state, heldBy: resolved.heldBy, idleMs, draining: jobs.filter((j) => j.more).map((j) => j.name) });
   return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs, backlog, drainOnly: false };
 }

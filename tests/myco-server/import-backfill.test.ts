@@ -371,8 +371,8 @@ describe('imports read side by side', () => {
     });
     const db: RelationalStore = { prepare: (sql: string) => spy(r.serverEnv.db.prepare(sql), sql), batch: (statements) => r.serverEnv.db.batch(statements) };
     await parseTranscripts({ ...r.serverEnv, db }, NOW, { budget: { calls: 200, wallMs: 60_000 } });
-    // One selection named every import, and one more found none left.
-    expect(selected.filter((n) => n > 0)).toEqual([TRANSCRIPT_PARSE_IMPORTED_AT_ONCE]);
+    // Each selection names every import: first its bytes, then its terminal continuation.
+    expect(selected.filter((n) => n > 0)).toEqual([TRANSCRIPT_PARSE_IMPORTED_AT_ONCE, TRANSCRIPT_PARSE_IMPORTED_AT_ONCE]);
     expect(state(r)).toEqual(Array.from({ length: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE }, (_, t) => ({ transcript_id: tx(`side${t}`), done: 1, parse_error: null }))
       .sort((a, b) => a.transcript_id.localeCompare(b.transcript_id)));
     expect(counts(r)).toMatchObject({ prompt_batches: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE * 5, responses: TRANSCRIPT_PARSE_IMPORTED_AT_ONCE * 5 });
@@ -417,7 +417,7 @@ describe('imports read side by side within a byte budget', () => {
       seen,
       passes: {
         started: (id: string, bytes: number) => {
-          held.set(id, bytes);
+          if (bytes > 0) held.set(id, bytes);
           seen.bytes.push(bytes);
           seen.most = Math.max(seen.most, [...held.values()].reduce((n, b) => n + b, 0));
           seen.together = Math.max(seen.together, held.size);

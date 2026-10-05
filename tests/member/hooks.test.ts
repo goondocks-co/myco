@@ -587,7 +587,7 @@ describe('member hooks through the worker: cursor', () => {
     expect(rig.rows('responses')).toBe(0);
     await parseAll();
     expect(texts('prompt_batches')).toEqual(['List the files in this directory and say how many there are. Do not modify anything.']);
-    expect(texts('responses')).toHaveLength(4);
+    expect(texts('responses')).toHaveLength(1);
     expect(texts('responses').some((text) => text.endsWith('Nothing was modified.'))).toBe(true);
     await cursor('session-end', { hook_event_name: 'sessionEnd' });
     expect(memberKinds()).toEqual(['session.start', 'tool.use', 'tool.failure', 'transcript.segment', 'session.end', 'session.end']);

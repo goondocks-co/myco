@@ -12,13 +12,13 @@
  *              call awaiting its result, `image` is an attachment.
  *
  * A turn is a prompt and everything until the next prompt. The registry emits
- * replies by immutable assistant record and carries tool calls until a result
- * names them. Only an explicitly complete-file read emits unanswered calls.
+ * joined replies at turn boundaries and retains unresolved tool calls until
+ * a result or a declared terminal outcome.
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  unfinishedCalls, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
-  replyChunks, type ReplyPart, type DerivedEvent, type ParserInput, type TranscriptParser,
+  callForResult, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  type ReplyPart, type DerivedEvent, type ParserInput, type TranscriptParser,
 } from './index.js';
 
 /** The longest tool name the catalogue admits. */
@@ -57,7 +57,7 @@ export const claudeCodeParser: TranscriptParser = {
       if (reply === null) return;
       const held = reply;
       reply = null;
-      for (const chunk of replyChunks(held.parts)) {
+      for (const chunk of held.parts) {
         events.push({
           kind: 'response',
           payload: { responseId: await responseIdFor(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
@@ -98,9 +98,8 @@ export const claudeCodeParser: TranscriptParser = {
         for (const block of blocksOf(message?.content)) {
           if (block.type !== 'tool_result') continue;
           const id = str(block.tool_use_id);
-          const call = id === undefined ? undefined : pending.get(id);
-          if (call === undefined || id === undefined) continue;
-          pending.delete(id);
+          if (id === undefined) continue;
+          const call = await callForResult(sessionId, id, pending, { promptId, createdAt, offset });
           const failed = block.is_error === true;
           const output = textOf(block.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
           events.push({
@@ -150,9 +149,6 @@ export const claudeCodeParser: TranscriptParser = {
 
     await flushReply();
 
-    // A call the transcript never answered still happened; the row records it
-    // as unfinished rather than losing it.
-    if (input.state === undefined) events.push(...unfinishedCalls(pending.values()));
 
     continuation.save(planPosition);
     return events.sort((a, b) => a.offset - b.offset);

@@ -17,6 +17,7 @@ import { currentRetentionVictims, type BackupRetentionPolicy } from './backup-re
 export { retentionVictims } from './backup-retention.js';
 import type { BlobRef } from './blob-references.js';
 import { assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
+export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';

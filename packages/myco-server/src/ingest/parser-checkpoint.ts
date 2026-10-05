@@ -26,7 +26,12 @@ export async function parserCheckpointStatements(
 ): Promise<PreparedStatement[]> {
   const encoded = JSON.stringify(state);
   const chunked = utf8(encoded).length > MAX_PAYLOAD_BYTES;
-  const context = JSON.stringify({ mycoParserMeta: metadata ?? null, mycoParserState: chunked ? { chunked: true, digest: await sha256HexOf(utf8(encoded)) } : state });
+  const context = JSON.stringify({ ...metadata, mycoParserMeta: metadata ?? null,
+    mycoParserRepair: state.repair,
+    mycoParserReplyUnfinished: state.reply !== undefined ? 1 : 0,
+    mycoParserReplyLatestAt: state.reply === undefined ? null : state.reply.parts.reduce((latest, part) => Math.max(latest, part.createdAt), 0),
+    mycoParserUnfinished: Object.keys(state.pending ?? {}).length > 0 || state.reply !== undefined ? 1 : 0,
+    mycoParserState: chunked ? { chunked: true, digest: await sha256HexOf(utf8(encoded)) } : state });
   const guard = 'EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ? AND parsed_offset = ? AND parser_context = ?)';
   const guarded = [target.projectId, target.transcriptId, to, context];
   const statements: PreparedStatement[] = [advance(context)];
@@ -59,4 +64,21 @@ export function restoreParserCheckpointStatement(db: RelationalStore, row: Recor
     SELECT ${columns.map(() => '?').join(', ')} WHERE EXISTS (SELECT 1 FROM transcripts
       WHERE project_id = ? AND transcript_id = ? AND parsed_offset = ? AND parser_context IS ?) RETURNING rowid`)
     .bind(...columns.map((column) => row[column] ?? null), parent.project_id, parent.transcript_id, parent.parsed_offset, parent.parser_context);
+}
+
+interface TerminalFence extends CheckpointTarget { size: number; lastReceivedAt?: number }
+/** Integer overflow aborts the whole transaction before a stale terminal batch writes any row. */
+export async function terminalCheckpointBatch(db: RelationalStore, target: TerminalFence, statements: PreparedStatement[]) {
+  const stable = `EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ?
+    AND parsed_offset = ? AND size = ? AND last_received_at = ?)`;
+  const values = [target.projectId, target.transcriptId, target.parsedOffset, target.size, target.lastReceivedAt];
+  try {
+    const result = await db.batch([db.prepare(`SELECT CASE WHEN ${stable} THEN 1 ELSE abs(-9223372036854775808) END AS terminal_checkpoint_stable`).bind(...values), ...statements]);
+    return result.slice(1);
+  } catch (error) {
+    if (!String(error).includes('integer overflow')) throw error;
+    const current = await db.prepare(`SELECT ${stable} AS stable`).bind(...values).first<{ stable: number }>();
+    if (current?.stable !== 0) throw error;
+    return null;
+  }
 }

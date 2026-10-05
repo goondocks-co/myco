@@ -55,6 +55,8 @@ export interface ParserInput {
   transcriptMeta?: Record<string, unknown>;
   /** Mutable continuation committed at the same byte as the parse cursor. Absent for a complete-file parse. */
   state?: ParserState;
+  /** A source lifecycle boundary closes the retained turn and unanswered calls. */
+  terminal?: 'session_end' | 'idle' | 'complete_file' | 'turn_end';
 }
 
 export interface PendingCall {
@@ -68,18 +70,27 @@ export interface PendingCall {
 
 export interface ParserState {
   pending?: Record<string, PendingCall>;
+  reply?: { parts: ReplyPart[]; promptId?: string; chars: number; bytes: number };
   planPosition?: number;
   legacyReplies?: { until: number; remaining?: string; promptId?: string };
+  repair?: { version: number; fromVersion: number; status: 'replaying' | 'raw_absent' | 'raw_prefix_pruned' | 'raw_gap' };
 }
 
 /** A declared complete transcript records calls whose results never arrived. */
-export function unfinishedCalls(pending: Iterable<PendingCall>): DerivedEvent[] {
+export function unfinishedCalls(pending: Iterable<PendingCall>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
   return [...pending].map((call) => ({
     kind: 'tool.failure',
     payload: { toolCallId: call.toolCallId, promptId: call.promptId, toolName: call.toolName, input: call.input,
-      success: false, errorMessage: 'tool call has no result in the transcript' },
+      success: false, errorMessage },
     createdAt: call.createdAt, offset: call.offset,
   }));
+}
+
+/** An output retains the source call identity after a terminal or count-bound flush. */
+export async function callForResult(sessionId: string, sourceId: string, pending: Map<string, PendingCall>, at: { offset: number; createdAt: number; promptId?: string }): Promise<PendingCall> {
+  const held = pending.get(sourceId);
+  pending.delete(sourceId);
+  return held ?? { toolCallId: await uuidv5('tool-call', sessionId, sourceId), toolName: 'unknown', input: {}, ...at };
 }
 
 /** Pending calls and plan positions survive read boundaries; a read boundary never closes a call. */
@@ -128,6 +139,8 @@ export interface TranscriptParser {
   fidelity: Fidelity;
   /** Declared by an agent that continues a conversation under a new id; absent for one that does not. */
   continuation?: Continuation;
+  /** A vendor record that explicitly closes the assistant turn. */
+  endsTurn?(value: Record<string, unknown>): boolean;
   /** Metadata from the beginning of the recording, retained across parse windows. */
   headerContext?(lines: readonly ParsedLine[]): Record<string, unknown>;
   /**

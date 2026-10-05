@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import {
-  BACKUP_TABLES, backupArtifact, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
+  BACKUP_TABLES, backupArtifact, BackupAdmissionError, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
   EMPTY_ONLY_TABLES, EXCLUDED_TABLES, listBackups, previewRestore, pruneBackups,
   restoreBackup, restoreArtifact, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
@@ -103,7 +103,7 @@ describe('create, list, preview', () => {
     const { db, bucket, sqlite, now } = seeded();
     sqlite.query(`UPDATE projects SET name = ? WHERE project_id = 'proj_bk'`)
       .run('界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3)));
-    await expect(createBackup(db, bucket, { producer: 'test', now })).rejects.toThrow(BackupTooLargeError);
+    await expect(createBackup(db, bucket, { producer: 'test', now })).rejects.toThrow(BackupAdmissionError);
     expect(bucket.objects.size).toBe(0);
     expect(await listBackups(db, bucket)).toEqual([]);
     sqlite.close();

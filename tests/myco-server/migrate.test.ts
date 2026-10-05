@@ -77,7 +77,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0067_v67.sql': 'fd1348570100dce0ccb4d580b8880764c1b5118868ad23b1fdfe0ab88b2284f4',
   '0068_v68.sql': '0140d5ef41ef8f07301a3e1fdf0c34414b3070b5c264c01c97a9da18ec85e178',
   '0069_v69.sql': '37ad86138c143f8b83e4420127ecfcc90207234e1812551cd867bb50c06d526c',
-  '0070_v70.sql': '9ee071db9835d46d2e226e0e5387dacf6cdb7d98bf64f093977abba8bc69867a',
+  '0070_v70.sql': '167c3f343185d9270b55240cf0c08736f140e73a8c2b948d5f6c99f08e26a5bf',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -606,6 +606,7 @@ describe('versioned schema steps', () => {
         // A blob row registers a generation: a UUID.
         // A step row names a kind and an outcome from its own vocabulary.
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
+          : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
           : t === 'transcript_parser_state_chunks' && c.name === 'chunk_count' ? '1'
           : t === 'agent_run_steps' && c.name === 'kind' ? `'read'` : t === 'agent_run_steps' && c.name === 'outcome' ? `'ok'` : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();

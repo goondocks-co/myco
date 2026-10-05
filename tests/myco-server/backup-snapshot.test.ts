@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { Miniflare } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { backupCheckpointRestoreScenario, HOSTED_SQL_FUNCTION_ARGUMENT_CEILING, snapshotFunctionBounds, snapshotRefusals, snapshotScenario } from './helpers/backup-snapshot.js';
+import { backupCheckpointRestoreScenario, HOSTED_SQL_FUNCTION_ARGUMENT_CEILING, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './helpers/backup-snapshot.js';
 
 type Outcome = Awaited<ReturnType<typeof snapshotScenario>>;
 function check(result: Outcome, boundary: 'table' | 'page') {
@@ -43,12 +43,32 @@ function checkCheckpoint(result: Awaited<ReturnType<typeof backupCheckpointResto
   expect(result.freshStateMatches).toBe(true);
 }
 
+function checkAdmission(result: Awaited<ReturnType<typeof snapshotAdmission>>) {
+  expect(result.rows.error).toContain('10001 rows');
+  expect(result.rows.error).toContain('myco server backup');
+  expect(result.rows.serialization).toBe(0);
+  expect(result.rows.payloadScans).toBe(0);
+  expect(result.bytes.error).toContain('conservative bytes');
+  expect(result.bytes.error).toContain('myco server backup');
+  expect(result.bytes.serialization).toBe(0);
+  expect(result.bytes.metadataSizes).toBeGreaterThan(0);
+  expect(result.bytes.payloadScans).toBe(0);
+  expect(result.race.interleaved).toBe(true);
+  expect(result.race.error).toContain('10001 rows');
+  expect(result.race.transferred).toBe(0);
+  expect(result.byteRace.interleaved).toBe(true);
+  expect(result.byteRace.error).toContain('conservative bytes');
+  expect(result.byteRace.transferred).toBe(0);
+  expect(result.accepted).toEqual({ rows: 8, exact: true });
+}
+
 describe('relational backup snapshot', () => {
   for (const boundary of ['table', 'page'] as const) {
     it(`native SQLite: capture, tombstone and editorial writes at the ${boundary} boundary restore one committed snapshot`, async () => {
       const source = sqliteEnv();
       const target = sqliteEnv();
       try {
+        checkAdmission(await snapshotAdmission(source.db));
         checkCheckpoint(await backupCheckpointRestoreScenario(source.db, target.db, source.bucket, boundary === 'page'));
         checkFunctions(await snapshotFunctionBounds(source.db));
         check(await snapshotScenario(source.db, target.db, source.bucket, boundary), boundary);
@@ -67,13 +87,14 @@ describe('relational backup snapshot', () => {
       if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
       const mf = new Miniflare({
         modules: [
-          { type: 'ESModule', path: 'worker.js', contents: `import { backupCheckpointRestoreScenario, snapshotFunctionBounds, snapshotRefusals, snapshotScenario } from './snapshot.js';
+          { type: 'ESModule', path: 'worker.js', contents: `import { backupCheckpointRestoreScenario, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './snapshot.js';
             export default { async fetch(request, env) {
               try {
+                const admission = await snapshotAdmission(env.DB);
                 const checkpoint = await backupCheckpointRestoreScenario(env.DB, env.TARGET, env.BUCKET, '${boundary}' === 'page');
                 const functions = await snapshotFunctionBounds(env.DB);
                 const result = await snapshotScenario(env.DB, env.TARGET, env.BUCKET, '${boundary}');
-                return Response.json({ result, refusal: await snapshotRefusals(env.DB, env.BUCKET), functions, checkpoint });
+                return Response.json({ admission, result, refusal: await snapshotRefusals(env.DB, env.BUCKET), functions, checkpoint });
               }
               catch(e) { return Response.json({ error: String(e.stack) }, { status: 500 }); }
             } };` },
@@ -87,8 +108,9 @@ describe('relational backup snapshot', () => {
           for (const step of SCHEMA_STEPS) await db.batch(step.statements.map((sql) => db.prepare(sql)));
         }
         const response = await mf.dispatchFetch('http://snapshot/');
-        const answer = await response.json() as { result: Outcome; refusal: Awaited<ReturnType<typeof snapshotRefusals>>; functions: Awaited<ReturnType<typeof snapshotFunctionBounds>>; checkpoint: Awaited<ReturnType<typeof backupCheckpointRestoreScenario>> };
+        const answer = await response.json() as { admission: Awaited<ReturnType<typeof snapshotAdmission>>; result: Outcome; refusal: Awaited<ReturnType<typeof snapshotRefusals>>; functions: Awaited<ReturnType<typeof snapshotFunctionBounds>>; checkpoint: Awaited<ReturnType<typeof backupCheckpointRestoreScenario>> };
         expect({ status: response.status, error: response.status === 200 ? undefined : answer }).toEqual({ status: 200, error: undefined });
+        checkAdmission(answer.admission);
         check(answer.result, boundary);
         checkCheckpoint(answer.checkpoint);
         checkFunctions(answer.functions);

@@ -18,7 +18,7 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  unfinishedCalls, parserContinuation, blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, parserContinuation, blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -121,7 +121,7 @@ export const piParser: TranscriptParser = {
 
       if (role === 'toolResult') {
         const callId = str(message.toolCallId);
-        const call = callId === undefined ? undefined : pending.get(callId);
+        const call = callId === undefined ? undefined : await callForResult(input.sessionId, callId, pending, { promptId, createdAt, offset });
         const name = str(message.toolName) ?? call?.toolName;
         if (name === undefined) continue;
         if (callId !== undefined) pending.delete(callId);
@@ -147,7 +147,6 @@ export const piParser: TranscriptParser = {
       // `session` also carries the working directory attribution reads.
     }
 
-    if (input.state === undefined) events.push(...unfinishedCalls(pending.values()));
 
     continuation.save(planPosition);
     return events;

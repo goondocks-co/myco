@@ -3,7 +3,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { parseTranscripts, rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { parseTranscripts, rereadTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { legacyReplies } from '@myco-server-worker/ingest/legacy-replies.js';
 import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -79,27 +79,24 @@ export async function ingestContinuityRuntime(db: RelationalStore, blobs: BlobSt
     if (agent === 'claude-code') {
       const project = 'proj_continuity_legacy';
       const texts = ['first legacy reply ', ' second legacy reply'];
-      const legacyRecords = [records[0], ...texts.map((text) => ({ type: 'assistant', timestamp: TIME, message: { content: [{ type: 'text', text }] } }))];
+      const legacyRecords = [records[0], ...texts.map((text) => ({ type: 'assistant', timestamp: TIME, message: { content: [{ type: 'text', text }] } })), records[4]];
       const legacyText = legacyRecords.map((record) => JSON.stringify(record) + '\n').join('');
       const bytes = await ship(project, legacyText, 0);
-      const oldRows = (await db.prepare('SELECT response_id, event_id FROM responses WHERE project_id = ? ORDER BY rowid').bind(project).all<{ response_id: string; event_id: string }>()).results;
-      if (oldRows.length !== 2) throw new Error('legacy fixture has no two assistant records');
-      await db.batch([
-        db.prepare('UPDATE responses SET text = ? WHERE project_id = ? AND response_id = ?').bind(texts.join('\n\n').trim(), project, oldRows[0].response_id),
-        db.prepare('DELETE FROM responses WHERE project_id = ? AND response_id = ?').bind(project, oldRows[1].response_id),
-        db.prepare('DELETE FROM events WHERE project_id = ? AND event_id = ?').bind(project, oldRows[1].event_id),
-        db.prepare('UPDATE transcripts SET parser_version = 3 WHERE project_id = ?').bind(project),
-      ]);
+      const oldText = texts.join('\n\n').trim();
+      const oldRows = (await db.prepare('SELECT response_id, text FROM responses WHERE project_id = ? ORDER BY rowid').bind(project).all<{ response_id: string; text: string }>()).results;
+      if (oldRows.length !== 1 || oldRows[0].text !== oldText) throw new Error('legacy fixture did not close its joined reply');
+      await db.prepare('UPDATE transcripts SET parser_version = 3 WHERE project_id = ?').bind(project).run();
       const foreign = await legacyReplies(db, project, 'another-transcript', [{
         kind: 'response', offset: 0, createdAt: NOW, payload: { responseId: oldRows[0].response_id, text: texts[0].trim() },
       }], { legacyReplies: { until: bytes } }, () => {});
       if (foreign.size !== 0) throw new Error('legacy coverage crossed transcript ownership');
       await rereadTranscripts(db, { projectId: project, sessionId });
       await ship(project, JSON.stringify({ type: 'assistant', timestamp: TIME, message: { content: [{ type: 'text', text: 'later reply' }] } }) + '\n', bytes);
+      await parseTranscripts(env, NOW + TRANSCRIPT_IDLE_MS);
       await rereadTranscripts(db, { projectId: project, sessionId });
-      await parseTranscripts(env, NOW);
+      await parseTranscripts(env, NOW + TRANSCRIPT_IDLE_MS);
       const held = (await db.prepare('SELECT text FROM responses WHERE project_id = ? ORDER BY rowid').bind(project).all<{ text: string }>()).results;
-      if (JSON.stringify(held) !== JSON.stringify([{ text: texts.join('\n\n').trim() }, { text: 'later reply' }])) throw new Error('legacy reread duplicated reply text');
+      if (JSON.stringify(held) !== JSON.stringify([{ text: oldText }, { text: 'later reply' }])) throw new Error('legacy reread duplicated reply text');
     }
     const whole = await snapshot('proj_continuity_whole');
     const split = await snapshot('proj_continuity_split');
