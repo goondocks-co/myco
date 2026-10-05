@@ -77,7 +77,7 @@ describe('a repository\'s pending lock', () => {
   async function holdPendingLock(mycoHome: string, rootKey: string, holdMs: number): Promise<{ exited: Promise<number> }> {
     const script = path.join(mycoHome, 'hold.ts');
     const module = path.resolve('packages/myco/src/member/pending.ts');
-    fs.writeFileSync(script, `import { withPendingLock } from ${JSON.stringify(module)};\nwithPendingLock(${JSON.stringify(rootKey)}, ${JSON.stringify(mycoHome)}, () => { process.stdout.write('held'); const until = Date.now() + ${holdMs}; while (Date.now() < until) { /* hold */ } }, 'https://s');\n`);
+    fs.writeFileSync(script, `import { withPendingLock } from ${JSON.stringify(module)};\nwithPendingLock(${JSON.stringify(rootKey)}, ${JSON.stringify(mycoHome)}, () => { process.stdout.write('held'); const until = Date.now() + ${holdMs}; while (Date.now() < until) { /* hold */ } });\n`);
     const child = Bun.spawn([process.execPath, script], { stdout: 'pipe', stderr: 'ignore' });
     await (child.stdout as ReadableStream<Uint8Array>).getReader().read();
     return { exited: child.exited };

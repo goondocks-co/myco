@@ -368,7 +368,7 @@ const INLINE_WAIT_MS = 100;
 async function shipInline(run: HookRun, opts: HookMainOptions, appended: HookAppended): Promise<void> {
   const { projectId, serverUrl } = run.credential;
   const entry = run.credential.source === 'registry' ? undefined : environmentEntry(run.credential, run.mycoHome);
-  const pass = helperPass(run.credential, run.mycoHome, { fetch: opts.fetch, now: run.now, entry });
+  const pass = helperPass(run.credential, run.mycoHome, { fetch: opts.fetch, now: run.now, entry, migrateLegacy: false });
   for (;;) {
     const left = run.budget.deadline - run.now();
     if (left <= 0) return;

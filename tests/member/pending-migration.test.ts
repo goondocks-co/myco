@@ -9,7 +9,7 @@ import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/m
 import { drainEntryBacklog } from '@myco/member/backlog.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
@@ -145,7 +145,7 @@ describe('pending migration', () => {
   it('leaves held migration for the next helper when a pending writer owns the repository lock', () => {
     const f = fixture();
     appendPending(f.repo, 'busy', [sessionStartEvent(f.context('busy'), { startedAt: f.opts.now, originPath: f.repo.root })], undefined, f.opts);
-    const taken = LifecycleLock.acquire(path.join(path.dirname(f.held.dir), `.${f.repo.rootKey}.lock`), { command: 'test pending writer' });
+    const taken = LifecycleLock.acquire(path.join(f.mycoHome, 'member', 'pending', `.${f.repo.rootKey}.lock`), { command: 'test pending writer' });
     if (!taken.acquired) throw new Error('failed to acquire pending writer fixture');
     try {
       expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(0);
@@ -157,7 +157,7 @@ describe('pending migration', () => {
   it('appends joined capture while the pending migration owns the repository lock', () => {
     const f = fixture();
     join(f);
-    const taken = LifecycleLock.acquire(path.join(path.dirname(f.held.dir), `.${f.repo.rootKey}.lock`), { command: 'test pending migration' });
+    const taken = LifecycleLock.acquire(path.join(f.mycoHome, 'member', 'pending', `.${f.repo.rootKey}.lock`), { command: 'test pending migration' });
     if (!taken.acquired) throw new Error('failed to acquire pending migration fixture');
     try {
       const source = new URL('../../packages/myco/src/member/pending.ts', import.meta.url).href;
@@ -188,10 +188,10 @@ describe('pending migration', () => {
     const event = promptEvent(f.context('referenced'), { promptId: mintId(), text: LARGE });
     appendPending(f.repo, 'referenced', [event], undefined, f.opts);
     expect(flushPending(f.repo.rootKey, f.live, f.opts)).toBe(1);
-    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(false);
+    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, serverUrl: 'https://s', now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(false);
     expect(fs.existsSync(event.blobSource!.path)).toBe(true);
     updateSessionState(f.live.dir, 'referenced', (state) => { state.highWater = 1; }, f.opts.now);
-    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(true);
+    expect(expirePending(f.repo.rootKey, { mycoHome: f.mycoHome, serverUrl: 'https://s', now: f.opts.now + 2 * PENDING_TTL_MS })).toBe(true);
   });
 
   it('carries held capture-loss totals into the joined project before retiring pending metadata', () => {

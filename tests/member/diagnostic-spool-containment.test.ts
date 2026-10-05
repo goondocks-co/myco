@@ -117,7 +117,7 @@ describe('a registry entry carrying such an id', () => {
 describe('an id a project really carries', () => {
   it('still names its own directory under the spool root, and reads it', () => {
     const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, { mycoHome });
-    expect(spool.dir).toBe(path.join(mycoHome, 'member', 'spool', deploymentKeyFor('https://deployment.example'), 'proj_1'));
+    expect(spool.dir).toBe(path.join(mycoHome, 'member', 'spool', `d-${deploymentKeyFor('https://deployment.example')}`, 'proj_1'));
     expect(spool.readSpool()).toEqual({ readable: true, sessions: [] });
 
     writeRegistryEntry(entry('proj_1'), { mycoHome });
@@ -128,7 +128,7 @@ describe('an id a project really carries', () => {
   it('admits the punctuation the grammar allows', () => {
     for (const id of ['proj_1', 'a.b-c_d', 'A'.repeat(64)]) {
       expect(isProjectId(id)).toBe(true);
-      expect(spoolDirFor({ projectId: id, serverUrl: 'https://deployment.example' }, mycoHome)).toBe(path.join(mycoHome, 'member', 'spool', deploymentKeyFor('https://deployment.example'), id));
+      expect(spoolDirFor({ projectId: id, serverUrl: 'https://deployment.example' }, mycoHome)).toBe(path.join(mycoHome, 'member', 'spool', `d-${deploymentKeyFor('https://deployment.example')}`, id));
     }
   });
 });

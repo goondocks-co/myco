@@ -32,6 +32,7 @@ import { drainEntryBacklog } from '../member/backlog.js';
 import type { HelperPass } from '../member/helper.js';
 import { CONNECT_TIMEOUT_CAP_MS } from '../member/constants.js';
 import { defaultMembership } from '../member/default-deployment.js';
+import { assertDeploymentTokenPair } from '../member/token-pairing.js';
 import { IMPORT_DEADLINE, runImport } from '../member/import.js';
 import { forgetConnectRoot, machineAutoJoinLeaves, seedMachineSettings } from '../member/machine-settings.js';
 import { clearMissingMembership, listMissingMemberships } from '../member/no-membership.js';
@@ -79,6 +80,7 @@ const STATE_TIMEOUT_MS = 10_000;
  * many records moved.
  */
 export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: string; now: () => number; fetch?: FetchLike; tell: boolean }): Promise<number> {
+  assertDeploymentTokenPair(entry, opts.mycoHome);
   const rootKey = rootKeyFor(entry.root, opts.mycoHome);
   // Joined again: a repository left with `myco member leave` is captured from now on, and a join a hook asked for is
   // made.
@@ -103,6 +105,7 @@ type AttemptRun = MemberCliDeps & { mycoHome: string; now: () => number; importN
 /** Join one repository, or record why it did not. The caller holds the repository's lock. */
 async function joinRepository(root: string, membership: DeploymentMembership, deps: AttemptRun): Promise<AutoJoinResult> {
   const { mycoHome, now } = deps;
+  assertDeploymentTokenPair(membership, mycoHome);
   const binding = readRegistryEntryResult(root, mycoHome, { upgrade: true });
   if (binding.status === 'unavailable') return { root, result: 'binding-unavailable' };
   if (binding.status === 'present') {
@@ -336,7 +339,8 @@ export async function runAutoJoin(args: readonly string[], deps: MemberCliDeps =
  * it. Joining it again, or connecting it again from "Needs you", ends the opt-out. The Deployment is told without
  * waiting; a Deployment not reached keeps its row until a month passes.
  */
-export function optOut(root: string, membership: { serverUrl: string; token: string } | null, opts: { mycoHome: string; now: number; fetch?: FetchLike }): Promise<unknown> {
+export async function optOut(root: string, membership: { serverUrl: string; token: string } | null, opts: { mycoHome: string; now: number; fetch?: FetchLike }): Promise<unknown> {
+  if (membership !== null) assertDeploymentTokenPair(membership, opts.mycoHome);
   const rootKey = rootKeyFor(root, opts.mycoHome);
   markLeft(rootKey, opts.mycoHome, opts.now);
   // Nothing asked for it before is made: no join, and no past sessions brought.
@@ -345,7 +349,7 @@ export function optOut(root: string, membership: { serverUrl: string; token: str
   discardPending(rootKey, opts.mycoHome);
   // Whatever auto-join found before is forgotten: connected again, the repository starts from nothing.
   forgetAutoJoinState(rootKey, opts.mycoHome);
-  if (membership === null) return Promise.resolve();
+  if (membership === null) return;
   forgetConnectRoot(membership.serverUrl, rootKey, opts.mycoHome);
   const client = new ServerClient({ serverUrl: membership.serverUrl, token: membership.token }, opts.fetch ?? globalThis.fetch);
   return postRoute(client, { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: STATE_TIMEOUT_MS }, UNCAPTURED_STATE_PATH, { rootKey, state: 'left' }).catch(() => null);

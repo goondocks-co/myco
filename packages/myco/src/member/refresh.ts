@@ -42,6 +42,7 @@ import {
   acquireRegistryLock, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, TOKEN_SCOPED_FIELDS, type DeploymentMembership, type RegistryEntry,
 } from './registry.js';
 import { refreshCredential, type ClientRecord, type FetchLike } from './transport.js';
+import { assertDeploymentTokenPair } from './token-pairing.js';
 
 export type RefreshStatus =
   | 'refreshed' | 'not-due' | 'busy' | 'no-entry'
@@ -159,6 +160,7 @@ export async function refreshMembership(serverUrl: string, opts: RefreshOptions)
       held = { ...held, refreshRetries: { ...retries, [build]: now() }, updatedAt: now() };
       writeDeploymentMembership(held, { mycoHome, locked: true });
     }
+    assertDeploymentTokenPair(held, mycoHome);
     const outcome = await refreshCredential({ serverUrl: held.serverUrl, token: held.token, projectId: opts.projectId }, opts.fetch ?? globalThis.fetch, opts.budget);
     const write = (next: Partial<DeploymentMembership>): DeploymentMembership | null => {
       writeDeploymentMembership({ ...held, ...next, updatedAt: now() }, { mycoHome, locked: true });
@@ -240,6 +242,7 @@ async function confirmNonRotating(serverUrl: string, before: DeploymentMembershi
     const held = readDeploymentMembership(serverUrl, mycoHome);
     if (!held) return { status: 'no-entry', membership: null };
     if (held.token !== before.token || held.nonRotating !== true || typeof held.refusedAt === 'number') return { status: 'non-rotating', membership: held };
+    assertDeploymentTokenPair(held, mycoHome);
     const outcome = await refreshCredential({ serverUrl: held.serverUrl, token: held.token, projectId: opts.projectId }, opts.fetch ?? globalThis.fetch, opts.budget);
     if (outcome.class !== 'unauthorized') return { status: 'non-rotating', membership: held };
     stderr(`this machine's credential for ${held.serverUrl} does not rotate and the server no longer accepts it — ${REJOIN_HINT}`);

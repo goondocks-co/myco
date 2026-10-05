@@ -9,7 +9,7 @@ import { appendPending, appendPendingTurnEnd, expirePending, flushPending, PENDI
 import { registryEntryPath, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 
 const LARGE = 'capture'.repeat(50_000);

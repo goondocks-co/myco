@@ -25,7 +25,7 @@ beforeEach(() => {
   mycoHome = tempMycoHome();
   temps.push(mycoHome);
   process.env.MYCO_HOME = mycoHome;
-  spoolRoot = path.join(mycoHome, 'member', 'spool', deploymentKeyFor('https://s'));
+  spoolRoot = path.join(mycoHome, 'member', 'spool', `d-${deploymentKeyFor('https://s')}`);
   fs.mkdirSync(spoolRoot, { recursive: true, mode: 0o700 });
   outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-outside-')));
   temps.push(outside);

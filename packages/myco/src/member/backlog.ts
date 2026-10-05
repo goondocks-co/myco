@@ -304,6 +304,8 @@ export async function drainEntryBacklog(
   opts: {
     mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
     credentialSource?: 'registry' | 'env';
+    /** Inline hooks leave retained-journal migration for a detached helper or an explicit drain. */
+    migrateLegacy?: boolean;
     /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
     force?: boolean;
     /**
@@ -328,15 +330,17 @@ export async function drainEntryBacklog(
   if (current.root !== '') {
     attemptHeldMigrationForCapture(() => flushHeldCapture(current.root, current, { mycoHome: opts.mycoHome, now: now(), deadline: budget.deadline }));
   }
-  const migration = migrateLegacySpool(current, opts.mycoHome);
-  if (migration.status === 'held') process.stderr.write(`[myco] member: legacy capture for ${current.projectId} held locally: ${migration.reason}\n`);
+  const migration = opts.migrateLegacy === false ? null : migrateLegacySpool(current, opts.mycoHome, now());
+  if (migration?.status === 'held') process.stderr.write(`[myco] member: legacy capture for ${current.projectId} held locally: ${migration.reason}\n`);
+  for (const reason of migration?.sidecarHolds ?? []) process.stderr.write(`[myco] member: legacy optional state for ${current.projectId} held locally: ${reason}\n`);
+  for (const file of migration?.ignoredSidecars ?? []) process.stderr.write(`[myco] member: legacy temporary artifact for ${current.projectId} ignored: ${file}\n`);
   const spool = new MemberSpool(current, { mycoHome: opts.mycoHome });
-  const report = await drainBacklog(spool, new ServerClient(current, fetchImpl), budget, {
+  const report = await drainBacklog(spool, new ServerClient(current, fetchImpl, { credentialSource: opts.credentialSource }), budget, {
     force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst,
     // A 401 on a live send: another process may have rotated this root's token, so the registry is re-read and the
     // record retried once.
     onUnauthorized: registryCredential ? async () => rotatedCredential(current.root, current, opts.mycoHome) : undefined,
-    clientFor: (record) => new ServerClient(record, fetchImpl),
+    clientFor: (record) => new ServerClient(record, fetchImpl, { credentialSource: opts.credentialSource }),
   });
   // A refused token is asked once whether it still rotates, so a refusal that is final is recorded and said.
   if (registryCredential && report.endedBy === 'unauthorized' && canStartRequest(budget, now())) {

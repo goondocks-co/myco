@@ -376,12 +376,8 @@ describe('choosing which Deployment to import into', () => {
     const other = path.join(os.tmpdir(), 'myco-import-two-b');
     const r = await rig([cwd]);
     try {
-      // A second Deployment, bound to another checkout. The registry is one
-      // file per root named by a hash of the root, so its order is a hash —
-      // taking the first entry imports into whichever Deployment that hash
-      // happened to sort first, which on this machine may hold no bindings at
-      // all and import nothing while reporting every transcript unplaced.
-      registerTestMember({ mycoHome: r.mycoHome, token: r.env.token, tokenId: r.env.tokenId, projectId: 'proj_9', serverUrl: 'https://other.invalid', root: other });
+      const secondary = await memberRig({ projectId: 'proj_9' });
+      registerTestMember({ mycoHome: r.mycoHome, token: secondary.token, tokenId: secondary.tokenId, projectId: 'proj_9', serverUrl: 'https://other.invalid', root: other });
 
       const report = await r.run();
       expect(report.refused).toBeUndefined();

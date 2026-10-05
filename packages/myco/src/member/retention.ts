@@ -1,4 +1,7 @@
 import { legacyTranscriptDestination } from './transcript-routing.js';
+import { isRoutedSpoolNamespace } from './routing.js';
+import { deploymentKeyFor } from './registry.js';
+import { listRetiredLegacySpoolDirs } from './spool-migration.js';
 /**
  * Unacknowledged records remain in their active journal for delivery regardless
  * of age. Session state is retired only after its event journal has been
@@ -23,13 +26,13 @@ import { BUFFER_QUARANTINE_DIRNAME } from './spool.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { longestDeclaredHookTimeoutMs } from './budget.js';
 import { CaptureLossLedger } from './capture-loss.js';
-import { isProjectId, MEMBER_DIR_MODE, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import { isProjectId, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
 import type { OutboundEvent } from './envelope.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
-import { pointerBehind, pointersOf, readSessionState, readSessionStateUnlocked, readSessionStateResultUnlocked, retireSessionFiles, updateSessionState, type TranscriptPointer } from './session-state.js';
-import { BLOBS_DIRNAME, blobSourceOf, SPOOL_DIRNAME, WIRE_FIELDS, type MemberSpool, type SpoolRecord } from './spool.js';
+import { pointerBehind, pointersOf, readSessionState, readSessionStateResultUnlocked, retireSessionFiles, updateSessionState, type TranscriptPointer } from './session-state.js';
+import { blobSourceOf, SPOOL_DIRNAME, WIRE_FIELDS, type MemberSpool, type SpoolRecord } from './spool.js';
 import { readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
@@ -153,8 +156,11 @@ function classifyArchivedRecords(spool: MemberSpool, file: string, base: string)
         const original = path.join(spool.blobsDirFor(sessionId), source.sha256);
         const legacy = path.join(spool.blobsDir, source.sha256);
         const pending = path.relative(path.join(memberRoot(spool.mycoHome), 'pending'), path.resolve(source.path)).split(path.sep);
-        const pendingSource = pending.length === 4 && /^[a-f0-9]{16,64}$/.test(pending[0])
-          && pending[1] === 'blobs' && pending[2] === sessionId && pending[3] === source.sha256;
+        const pendingTail = pending.slice(-3);
+        const pendingSource = pendingTail[0] === 'blobs' && pendingTail[1] === sessionId && pendingTail[2] === source.sha256
+          && (pending.length === 4 && /^[a-f0-9]{16,64}$/.test(pending[0])
+            || pending.length === 5 && spool.routing !== null && pending[0] === deploymentKeyFor(spool.routing.serverUrl)
+              && /^[a-f0-9]{16,64}$/.test(pending[1]));
         if (path.resolve(source.path) !== path.resolve(original) && path.resolve(source.path) !== path.resolve(legacy)
             && !pendingSource) throw new Error('unexpected staged path');
         assertMemberPathContained(source.path, spool.mycoHome);
@@ -352,13 +358,12 @@ export function behindTranscriptPaths(mycoHome: string): Set<string> {
       throw error;
     }
   };
-  const directories: string[] = [];
+  const directories: string[] = listRetiredLegacySpoolDirs(mycoHome);
   for (const entry of readDir(spoolRoot, true)) {
-    if (!isProjectId(entry.name)) continue;
+    if (!isProjectId(entry.name) && !isRoutedSpoolNamespace(entry.name)) continue;
     const dir = path.join(spoolRoot, entry.name);
     if (!entry.isDirectory()) throw new Error(`Spool directory is unavailable: ${dir}`);
-    directories.push(dir);
-    if (!/^[0-9a-f]{16}$/.test(entry.name)) continue;
+    if (!isRoutedSpoolNamespace(entry.name)) { directories.push(dir); continue; }
     for (const child of readDir(dir)) {
       if (child.isDirectory() && isProjectId(child.name)) directories.push(path.join(dir, child.name));
     }

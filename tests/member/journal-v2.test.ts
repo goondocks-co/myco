@@ -26,7 +26,7 @@ import { prunePluginTranscripts } from '@myco/member/retention.js';
 import { isTurnEndMark, JOURNAL_VERSION, MemberSpool, turnEndSatisfied, type SpoolRecord, type TurnEndMark } from '@myco/member/spool.js';
 import { listBufferSessionIds } from '@myco/capture/buffer.js';
 import { shipSessionTranscripts, transcriptPointerFor } from '@myco/member/transcript.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { isPrivateMode } from '@myco/member/store.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 

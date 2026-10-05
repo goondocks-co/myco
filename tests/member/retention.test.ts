@@ -1,3 +1,4 @@
+import { deploymentKeyFor } from '@myco/member/registry.js';
 /**
  * Retention keeps unacknowledged journals and their payloads deliverable at
  * every age. Delivered session state and unreferenced staged bytes may age out.
@@ -17,7 +18,7 @@ import { applySpoolRetention, pruneDeliveredSessionState, sweepStagedBlobs } fro
 import { drainBacklog, sessionTried } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 
 let mycoHome: string;
@@ -90,8 +91,8 @@ describe('spool retention', () => {
     const rig = await memberRig();
     const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-archived-pending-source';
-    const pendingDir = path.join(mycoHome, 'member', 'pending', 'a'.repeat(16));
-    const pending = new MemberSpool({ projectId: 'pending', serverUrl: 'https://s' }, { mycoHome, dir: pendingDir });
+    const pendingDir = path.join(mycoHome, 'member', 'pending', deploymentKeyFor('https://s'), 'a'.repeat(16));
+    const pending = new MemberSpool(null, { mycoHome, dir: pendingDir });
     const bytes = new Uint8Array([137, 80, 78, 71, 4, 5, 6]);
     const source = pending.stagerFor(sessionId)(bytes, 'image/png');
     spool.append(sessionId, attachmentEvent(ctxFor(spool, sessionId), { blobSource: source, attachmentId: mintId() }));

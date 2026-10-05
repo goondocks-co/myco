@@ -15,7 +15,8 @@ import { REFUSAL_RETRY_INITIAL_MS, REFUSAL_RETRY_MAX_MS, UNCLASSIFIED_REFUSAL_HO
 import { mintId, promptEvent, sessionStartEvent, type EnvelopeContext, type OutboundEvent } from '@myco/member/envelope.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, runHook } from './helpers/hooks.js';
 

@@ -20,7 +20,7 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { helperPass } from '@myco/member/helper-pass.js';

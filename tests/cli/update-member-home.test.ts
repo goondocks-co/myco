@@ -1,3 +1,4 @@
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 /**
  * `myco update` in a member home refreshes the agents the member's provisioning recorded, for the Deployment it
  * recorded, and runs none of 1.4's machine-wide passes over it (#1478, #1499). A home with no record is told how to set
@@ -17,7 +18,7 @@ let agentHome: string;
 const saved = { HOME: process.env.HOME, MYCO_HOME: process.env.MYCO_HOME };
 const settings = () => path.join(agentHome, '.claude', 'settings.json');
 const member = (serverUrl: string) =>
-  writeDeploymentMembership({ serverUrl, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: home });
+  writeDeploymentMembership({ serverUrl, token: serverUrl === 'https://myco.example' ? 'A'.repeat(43) : 'B'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: home });
 beforeEach(() => {
   home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-member-')));
   agentHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-agents-')));
@@ -25,6 +26,7 @@ beforeEach(() => {
   process.env.MYCO_HOME = home;
   fs.mkdirSync(path.join(agentHome, '.claude'), { recursive: true });
   member('https://myco.example');
+  recordDefaultDeployment('https://myco.example', { mycoHome: home });
 });
 afterEach(() => {
   for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

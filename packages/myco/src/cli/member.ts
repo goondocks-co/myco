@@ -14,6 +14,7 @@ import { seedMachineSettings } from '../member/machine-settings.js';
 import { listAutoJoinStates } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
+import { selectedDeploymentMembership } from '../member/token-pairing.js';
 import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -374,19 +375,24 @@ async function connectFolder(
   if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory; run this inside the repository to connect`);
   const chosen = homeChoiceFor(deps, root);
   const mycoHome = chosen.home;
-  const memberships = listDeploymentMemberships(mycoHome)
-    .filter((m) => parsed.serverUrl === undefined || deploymentUrl(m.serverUrl) === deploymentUrl(parsed.serverUrl));
+  const selected = selectedDeploymentMembership(mycoHome, parsed.serverUrl);
+  const memberships = selected === null ? [] : [selected];
   // A pin chose this home: say so before anything reads its credential, and refuse where it holds none. A pin that sends
   // the folder away from this machine's own home never has one of that home's memberships picked for it.
+  if (parsed.serverUrl === undefined && pinnedElsewhere(chosen, deps.env)) {
+    const known = listDeploymentMemberships(mycoHome);
+    if (known.length > 0) return fail(pinnedElsewhereRefusal(chosen, root, known.map((membership) => deploymentUrl(membership.serverUrl))));
+  }
   const pinnedRefusal = memberships.length === 0 ? pinnedHomeRefusal(chosen, root, parsed.serverUrl === undefined ? 'membership' : `membership of ${parsed.serverUrl}`) : null;
   if (pinnedRefusal !== null) return fail(pinnedRefusal);
-  if (parsed.serverUrl === undefined && pinnedElsewhere(chosen, deps.env)) return fail(pinnedElsewhereRefusal(chosen, root, memberships.map((m) => deploymentUrl(m.serverUrl))));
   const pinnedLine = pinnedHomeLine(chosen, root);
   if (pinnedLine !== null) out(pinnedLine);
   if (memberships.length === 0) {
+    const known = listDeploymentMemberships(mycoHome);
+    if (parsed.serverUrl === undefined && known.length > 1) return fail(`this machine is a member of ${known.length} Deployments; name one (${known.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
+    if (parsed.serverUrl === undefined && known.length === 1) return fail(`no default Deployment is recorded; name ${deploymentUrl(known[0].serverUrl)} to connect this folder`);
     return fail(parsed.serverUrl === undefined ? 'this machine is not signed in to a Deployment — run `myco login <invite link>` first' : `this machine is not signed in to ${parsed.serverUrl} — run \`myco login <invite link>\` first`);
   }
-  if (memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one (${memberships.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
   const membership = memberships[0];
   const serverUrl = membership.serverUrl;
   const client = new ServerClient({ serverUrl, token: membership.token }, deps.fetch ?? globalThis.fetch);
@@ -718,8 +724,8 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     if (record === null) {
       // Said once: the empty record written here keeps later refreshes quiet until the person provisions.
       out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
-      const membership = listDeploymentMemberships(mycoHome)[0];
-      if (membership !== undefined) recordNoAgents(mycoHome, membership.serverUrl);
+      const membership = selectedDeploymentMembership(mycoHome);
+      if (membership !== null) recordNoAgents(mycoHome, membership.serverUrl);
       return true;
     }
     const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot });
@@ -736,7 +742,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     const manifest = loadManifests().find((candidate) => candidate.name === agent);
     if (manifest === undefined) return fail(`unknown agent "${agent}"`);
     const installer = globalInstaller(manifest, null, mycoHome, deps);
-    const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? listDeploymentMemberships(mycoHome)[0]?.serverUrl;
+    const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
     if (recordedServer !== undefined) installer.forDeployment(recordedServer);
     const lease = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member provision --remove' });
     if (!lease.acquired) return fail('a helper is provisioning agents; retry when it finishes');
@@ -762,9 +768,11 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   let serverUrl = binding?.serverUrl;
   if (serverUrl === undefined) {
     const memberships = listDeploymentMemberships(mycoHome);
-    const named = serverArg === undefined ? memberships : memberships.filter((m) => deploymentUrl(m.serverUrl) === deploymentUrl(serverArg!));
+    const selected = selectedDeploymentMembership(mycoHome, serverArg);
+    const named = selected === null ? [] : [selected];
+    if (serverArg === undefined && named.length === 0 && memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one with --server (${memberships.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
+    if (serverArg === undefined && named.length === 0 && memberships.length === 1) return fail(`no default Deployment is recorded; name ${deploymentUrl(memberships[0].serverUrl)} with --server`);
     if (named.length === 0) return fail(serverArg === undefined ? 'no membership recorded on this machine — sign in with `myco login <invite link>` first' : `no membership recorded for ${serverArg}`);
-    if (named.length > 1) return fail(`this machine is a member of ${named.length} Deployments; name one with --server (${named.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
     serverUrl = named[0].serverUrl;
   }
   const folder = binding === null ? null : root;
@@ -816,10 +824,11 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
     process.exitCode = 2;
     return false;
   }
+  // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
+  void optOut(root, readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
+    .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry.serverUrl)} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
-  // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
-  void optOut(root, defaultMembership(mycoHome) ?? readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch });
   out(`left ${entry.projectId} for ${root}; auto-join leaves it alone until you join it again`);
   // The last binding on a Deployment takes its membership with it, and a worker
   // service left behind would restart all day with nothing to claim under.

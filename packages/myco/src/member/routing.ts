@@ -13,6 +13,11 @@ export interface MemberRoutingIdentity {
 
 export const ROUTING_FILE = 'destination.json';
 export const LEGACY_MIGRATION_FILE = '.legacy-migration.json';
+export const ROUTED_SPOOL_PREFIX = 'd-';
+
+export function isRoutedSpoolNamespace(name: string): boolean {
+  return /^d-[0-9a-f]{16}$/.test(name);
+}
 
 export function memberRoutingIdentity(route: MemberRoutingIdentity): MemberRoutingIdentity {
   if (!isProjectId(route.projectId) || typeof route.serverUrl !== 'string' || route.serverUrl.length === 0) throw new Error('Invalid member routing identity');
@@ -29,7 +34,7 @@ export function sameRoutingIdentity(left: MemberRoutingIdentity, right: MemberRo
 }
 
 export function routedSpoolDir(route: MemberRoutingIdentity, mycoHome: string): string {
-  const dir = path.join(memberRoot(mycoHome), 'spool', routingKey(route));
+  const dir = path.join(memberRoot(mycoHome), 'spool', `${ROUTED_SPOOL_PREFIX}${routingKey(route)}`);
   return dir;
 }
 
@@ -70,9 +75,9 @@ export function listSpoolDestinationsResult(mycoHome: string): { destinations: M
     }
   };
   const destinations: MemberRoutingIdentity[] = [];
-  for (const deployment of names(root, 'spool').filter((name) => /^[0-9a-f]{16}$/.test(name))) {
+  for (const deployment of names(root, 'spool').filter(isRoutedSpoolNamespace)) {
     for (const projectId of names(path.join(root, deployment), deployment).filter(isProjectId)) {
-      const key = `${deployment}/${projectId}`;
+      const key = `${deployment.slice(ROUTED_SPOOL_PREFIX.length)}/${projectId}`;
       const dir = path.join(root, deployment, projectId);
       try {
         assertMemberPathContained(dir, mycoHome);

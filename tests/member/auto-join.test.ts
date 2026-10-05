@@ -24,7 +24,7 @@ import { readRegistryEntry, registryEntryPath, REGISTRY_VERSION, writeDeployment
 import { MemberSpool } from '@myco/member/spool.js';
 import { readCaptureLoss } from '@myco/member/capture-loss.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { joinPass, runAutoJoin } from '@myco/cli/member-auto-join.js';
 import { helperPass } from '@myco/cli/member-helper.js';

@@ -30,7 +30,7 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { readSessionState } from '@myco/member/session-state.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { deadlineBudget } from '@myco/member/budget.js';
 import type { FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';

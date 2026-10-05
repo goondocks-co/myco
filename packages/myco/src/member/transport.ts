@@ -10,6 +10,7 @@ import { deploymentScopedHeaders, LINEAGE_REPLAYED_CODE, MEMBER_CODES, MEMBER_PR
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
 import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import type { MemberTokenSource } from './token-pairing.js';
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -146,7 +147,7 @@ export class ServerClient {
   private readonly base: string;
   private readonly protocol: number;
 
-  constructor(private readonly record: DeploymentRecord & { projectId?: string }, private readonly fetchImpl: FetchLike = globalThis.fetch, opts: { protocol?: number } = {}) {
+  constructor(private readonly record: DeploymentRecord & { projectId?: string }, private readonly fetchImpl: FetchLike = globalThis.fetch, private readonly opts: { protocol?: number; credentialSource?: MemberTokenSource } = {}) {
     this.record = { ...record };
     this.base = record.serverUrl.replace(/\/+$/, '');
     this.protocol = opts.protocol ?? MEMBER_PROTOCOL;
@@ -158,6 +159,14 @@ export class ServerClient {
 
   get projectId(): string | undefined {
     return this.record.projectId;
+  }
+
+  get credentialSource(): MemberTokenSource {
+    return this.opts.credentialSource ?? 'registry';
+  }
+
+  tokenMatches(token: string): boolean {
+    return this.record.token === token;
   }
 
   /** The headers a request in `scope` carries; a Project-scoped request from a client that names no Project is a caller's bug. */

@@ -26,6 +26,7 @@ import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { admitMemberServerUrl } from './server-url.js';
 import { adoptPendingTranscript } from './transcript-routing.js';
+import { isRoutedSpoolNamespace } from './routing.js';
 
 export const PENDING_DIRNAME = 'pending';
 /** How long capture waits for its repository to join before it is discarded. */
@@ -494,13 +495,11 @@ function liveReferencesPending(pendingPath: string, mycoHome: string): boolean {
   const spoolDirs: string[] = [];
   for (const name of names) {
     const child = path.join(spoolRoot, name);
-    if (isProjectId(name)) {
-      spoolDirs.push(child);
-    } else if (DEPLOYMENT_KEY.test(name)) {
+    if (isRoutedSpoolNamespace(name)) {
       assertMemberPathContained(child, mycoHome);
       try { spoolDirs.push(...fs.readdirSync(child).filter(isProjectId).map((projectId) => path.join(child, projectId))); }
       catch { return true; }
-    }
+    } else if (isProjectId(name)) spoolDirs.push(child);
   }
   for (const dir of spoolDirs) {
     assertMemberPathContained(dir, mycoHome);

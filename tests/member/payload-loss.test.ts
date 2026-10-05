@@ -6,7 +6,7 @@ import { REFUSAL_RETRY_INITIAL_MS } from '@myco/member/constants.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { projectDiagnostics } from '@myco/member/diagnostics.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
 import { runStatus } from '@myco/cli/member.js';
@@ -19,7 +19,7 @@ describe('payload loss disposition', () => {
   it('confirms deletion across retries, sends blob_absent, delivers the tail and reports one visible loss', async () => {
     const mycoHome = tempMycoHome();
     const rig = await memberRig();
-    const entry = registerTestMember({ root: '/repo-loss', token: rig.token, projectId: 'proj_1', mycoHome });
+    const entry = registerTestMember({ root: '/repo-loss', serverUrl: 'https://s', token: rig.token, projectId: 'proj_1', mycoHome });
     const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'deleted', stage: spool.stagerFor('deleted') };
     const lost = promptEvent(ctx, { promptId: mintId(), text: TEXT });

@@ -21,7 +21,8 @@ import { buildIdentity, refreshDue, refreshMemberCredential, refreshMembership, 
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { deliveryNotice } from '@myco/member/delivery-notice.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
 

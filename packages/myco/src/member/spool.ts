@@ -29,8 +29,9 @@ import {
   writeSessionStateUnlocked, type SessionState, type SessionStateRead,
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
-import { memberRoutingIdentity, pinSpoolDestination, LEGACY_MIGRATION_FILE, ROUTING_FILE, routedSpoolDir, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
+import { memberRoutingIdentity, pinSpoolDestination, ROUTING_FILE, routedSpoolDir, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import type { ClientRecord, Outcome, ServerClient } from './transport.js';
+import { assertClientTokenPair } from './token-pairing.js';
 import { publishStagedBlob } from './staged-blobs.js';
 import { payloadDisposition, type PayloadRetry } from './payload-disposition.js';
 import { recordSessionLoss } from './capture-loss.js';
@@ -911,14 +912,13 @@ export class MemberSpool {
   // ---------------------------------------------------------------------------
 
   /** Check the persisted spool identity and the client before any delivery. */
-  assertClientDestination(client: Pick<ServerClient, 'serverUrl' | 'projectId'>): void {
+  assertClientDestination(client: ServerClient): void {
     const destination = readPrivateJson<MemberRoutingIdentity>(path.join(this.dir, ROUTING_FILE));
     if (!destination.ok || this.routing === null || !sameRoutingIdentity(destination.value, this.routing)) throw new Error('Member spool destination is unavailable or mismatched');
-    const migration = readPrivateJson<{ version: number; state: string; destination: MemberRoutingIdentity }>(path.join(this.dir, LEGACY_MIGRATION_FILE));
-    if (migration.ok ? migration.value?.version !== 1 || migration.value.state !== 'validated' || !migration.value.destination || !sameRoutingIdentity(migration.value.destination, this.routing) : migration.reason !== 'missing') throw new Error('Member spool migration has not been validated');
     if (this.routing === null || client.projectId === undefined || !sameRoutingIdentity(this.routing, { serverUrl: client.serverUrl, projectId: client.projectId })) {
       throw new Error('Member capture client does not match its buffered destination');
     }
+    assertClientTokenPair(client, this.mycoHome);
   }
 
   /** Upload verified or repaired bytes; unavailable records receive their own bounded retry disposition. */

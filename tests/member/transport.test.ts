@@ -11,7 +11,8 @@ import { CLASSIFIERS } from '@myco-server-worker/telemetry.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { mintId, promptEvent, transcriptSegmentEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { MEMBER_PROTOCOL } from '@myco/member/constants.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, olderServerAtQuota, tempStager } from './helpers/server.js';
 
 const budget = { connectTimeoutMs: 2_000, requestTimeoutMs: 4_000 };

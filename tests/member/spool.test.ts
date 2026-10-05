@@ -17,7 +17,8 @@ import { readSessionState, updateSessionState } from '@myco/member/session-state
 import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
 import { shipTranscriptSegments } from '@myco/member/transcript.js';
-import { ServerClient, type FetchLike } from '@myco/member/transport.js';
+import { type FetchLike } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, olderServerAtQuota, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch } from './helpers/hooks.js';
 

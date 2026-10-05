@@ -28,7 +28,7 @@ import { readRegistryEntry, writeDeploymentMembership } from '@myco/member/regis
 import { emptySessionState, readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';

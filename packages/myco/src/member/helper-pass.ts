@@ -18,6 +18,8 @@ import { ServerClient, type FetchLike } from './transport.js';
 /** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
 export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps: {
   fetch?: FetchLike; now?: () => number;
+  /** Full retained-journal migration is deferred while an inline hook owns the pass. */
+  migrateLegacy?: boolean;
   /** The membership to deliver under, for a credential the registry does not hold (a sandbox's environment). */
   entry?: RegistryEntry;
 } = {}): HelperPass {
@@ -35,11 +37,11 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
     // Every answer the Deployment gives this pass keeps the features the hooks emit by current.
     const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now });
     const prefetch = async () => spool.shouldDial(now(), force)
-      ? prefetchContext({ spool, client: new ServerClient(deps.entry === undefined ? await liveEntry(entry, mycoHome, fetchImpl, now, budget) : entry, fetchImpl), serverUrl: entry.serverUrl, mycoHome, budget, now })
+      ? prefetchContext({ spool, client: new ServerClient(deps.entry === undefined ? await liveEntry(entry, mycoHome, fetchImpl, now, budget) : entry, fetchImpl, { credentialSource: deps.entry === undefined ? 'registry' : 'env' }), serverUrl: entry.serverUrl, mycoHome, budget, now })
       : null;
     // Prompts a harness writes only to its transcript, appended before the drain that delivers them.
     backfillTranscriptPrompts(spool, now);
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' });
+    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' });
     let prefetched: Awaited<ReturnType<typeof prefetch>> = null;
     try { prefetched = await prefetch(); }
     catch (error) { process.stderr.write(`[myco] helper: context prefetch failed: ${error instanceof Error ? error.message : String(error)}\n`); }
