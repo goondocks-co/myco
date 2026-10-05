@@ -1,14 +1,11 @@
-/** Complete name components that introduce a secret value. */
-const SECRET_COMPONENTS: ReadonlySet<string> = new Set([
-  'password', 'passwd', 'passphrase', 'passcode', 'pass', 'pwd', 'pw', 'pin', 'secret', 'token',
-  'credential', 'credentials', 'creds', 'key', 'apikey', 'accesskey', 'auth', 'authorization', 'bearer',
-]);
+import { SECRET_COMPONENT_TABLE, TOKEN_QUANTITY_TABLE, UPPER_SECRET_SUFFIXES } from './secret-label-tables.js';
+
+const SECRET_COMPONENTS: ReadonlySet<string> = new Set(SECRET_COMPONENT_TABLE);
+const TOKEN_QUANTITIES: ReadonlySet<string> = new Set(TOKEN_QUANTITY_TABLE);
 const MAX_COMPONENT_CHARS = Math.max(...[...SECRET_COMPONENTS].map((name) => name.length));
 const LABEL_CHAR = /^[A-Za-z0-9_-]+$/;
-const UPPER_SECRET_SUFFIXES = ['PASSWORD', 'PASSWD', 'PASSPHRASE', 'PASSCODE', 'TOKEN', 'SECRET', 'CREDENTIAL', 'CREDENTIALS', 'APIKEY', 'ACCESSKEY', 'AUTHORIZATION'];
 const JOINT_WORDS: ReadonlySet<string> = new Set(['is', 'was', 'are']);
 const ELISION = '…';
-const TOKEN_QUANTITIES: ReadonlySet<string> = new Set(['tokenbudget', 'tokenlimit', 'tokencount', 'tokensbudget', 'tokenslimit', 'tokenscount']);
 
 const URL_OPEN = /[A-Za-z][A-Za-z0-9+.-]*:\/\//y;
 const lower = (char: string): boolean => char >= 'a' && char <= 'z';
