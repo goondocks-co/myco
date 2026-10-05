@@ -33,7 +33,7 @@ import { pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WOR
 import { catalogResolution, pruneModelCatalogs } from './model-catalogs.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, workerRunLeaseExpiry, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
@@ -57,8 +57,7 @@ import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, u
 /** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
 export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
-/** How long a run may outlive its own bound before the Deployment treats its runtime as gone: the hosted hold releases the container at this margin, and the sweep fails the run at the same one. */
-export const RUN_OVERRUN_MARGIN_MS = 120_000;
+export { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
 export { MAX_RUN_ERROR_CHARS } from '../constants.js';
 /** What a run whose runtime would not start carries, before the refusal's own word. */
 export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
@@ -1013,7 +1012,8 @@ export async function claimNextRun(
 export async function renewLease(env: ServerEnv, worker: { tokenId: string; now: number }, run: { projectId: string; runId: string; attemptId?: string }): Promise<{ held: boolean; expiresAt: number }> {
   const expiresAt = worker.now + WORKER_LEASE_MS;
   const held = await renewRunLease(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now, run.attemptId);
-  return { held, expiresAt };
+  const stored = held ? await workerRunLeaseExpiry(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, worker.now, run.attemptId) : null;
+  return { held: stored !== null, expiresAt: stored ?? expiresAt };
 }
 
 /**

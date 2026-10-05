@@ -3,11 +3,14 @@
  *
  * A harness starts helpers of its own — a background `git fetch`, a server, a shell — and a signal sent to the
  * harness alone leaves them running after it exits. So every harness a worker starts, for a run or for a listing,
- * leads a group of its own, and stopping it signals the whole group: SIGTERM first, SIGKILL to whatever is still in
- * the group once `STOP_GRACE_MS` has passed, then the leader's `close` is waited for, bounded by the same grace.
- * Windows has no process groups, so there the harness alone is signalled.
+ * leads a group of its own, and stopping it signals helpers that remain in that group: SIGTERM first, SIGKILL to
+ * whatever is still in the group once `STOP_GRACE_MS` has passed, then the leader's `close` is waited for, bounded
+ * by the same grace.
+ * Windows signals only the harness leader; descendant termination is not guaranteed.
  */
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { beginRunProcess } from './run-directory.js';
 
 /** How long a group is given to end on SIGTERM before what remains of it is killed. */
 export const STOP_GRACE_MS = 2_000;
@@ -56,6 +59,52 @@ export function spawnGroup(command: string, args: readonly string[], options: Sp
     child.once('error', () => resolve());
   }));
   return child;
+}
+
+export interface OwnedProcess {
+  child: ChildProcess;
+  /** The leader's status after its group and streams have been disposed. */
+  exit: Promise<number>;
+  /** Stop the group once and await its bounded disposal. */
+  dispose(): Promise<void>;
+  /** Surface a failed ownership registration inside the consumer's disposal scope. */
+  assertStarted(): void;
+  /** Whether disposal interrupted an open stdout pipe. */
+  pipesClosed(): boolean;
+}
+
+/** Own a harness's group until disposal, including helpers holding pipes after the leader exits. */
+export function spawnOwnedGroup(command: string, args: readonly string[], options: SpawnOptions, signal: AbortSignal, runDirectory?: string): OwnedProcess {
+  const cwd = options.cwd === undefined || typeof options.cwd === 'string' ? options.cwd : fileURLToPath(options.cwd);
+  const allocation = runDirectory ?? cwd;
+  const registration = allocation === undefined ? null : beginRunProcess(allocation);
+  let child: ChildProcess;
+  try { child = spawnGroup(command, args, options); } catch (error) { registration?.cancelled(); throw error; }
+  let disposal: Promise<void> | undefined;
+  let pipesClosed = false;
+  const dispose = (): Promise<void> => {
+    disposal ??= stopGroup(child).finally(() => {
+      pipesClosed = child.stdout !== null && !child.stdout.destroyed;
+      for (const pipe of [child.stdin, child.stdout, child.stderr]) pipe?.destroy();
+      signal.removeEventListener('abort', abort);
+    });
+    return disposal;
+  };
+  let resolveExit: (code: number) => void;
+  let rejectExit: (error: unknown) => void;
+  const exit = new Promise<number>((resolve, reject) => { resolveExit = resolve; rejectExit = reject; });
+  const finish = (code: number): void => { void dispose().then(() => { resolveExit(code); }, rejectExit); };
+  const abort = (): void => { void dispose().catch(rejectExit); };
+  child.once('exit', (code) => { finish(code ?? -1); });
+  child.once('error', () => { finish(-1); });
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  let failure: { error: unknown } | undefined;
+  try {
+    if (child.pid === undefined) registration?.cancelled();
+    else registration?.started(child.pid);
+  } catch (error) { failure = { error }; abort(); }
+  return { child, exit, dispose, assertStarted: () => { if (failure !== undefined) throw failure.error; }, pipesClosed: () => pipesClosed };
 }
 
 /** A wait of `ms`, the one timer a stop holds. */

@@ -18,7 +18,7 @@ import { accountingEvents } from '../accounting.js';
  * it: a run agent of the run's own, or a configuration directory of the run's
  * own. The run's grant then answers every call the harness makes.
  */
-import { spawnGroup, stopGroup } from '../process-group.js';
+import { spawnOwnedGroup } from '../process-group.js';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { harnessById, type Harness } from '../harnesses.js';
@@ -397,18 +397,17 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
         return;
       }
       const { launch, asking } = launched;
-      const child = spawnGroup(command, args, {
+      const owner = spawnOwnedGroup(command, args, {
         cwd: grant.source?.root ?? spec.scratchDir,
         env: launchEnvironment({ ...launch.env, ...grant.env }, launch.omitInherited),
         stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      }, signal, spec.scratchDir);
+      const { child } = owner;
       let errors = '';
       const exited: { status: { exitCode: number | null; signal: string | null } | null } = { status: null };
       child.once('close', (code, signal) => { exited.status = { exitCode: code, signal }; });
       child.stderr?.setEncoding('utf8');
       child.stderr?.on('data', (chunk: string) => { errors = heldStderr(errors, chunk); });
-      const stop = (): void => { void stopGroup(child); };
-      signal.addEventListener('abort', stop, { once: true });
       // A write to a harness that has exited fails on its stdin; the exit itself
       // closes the connection, and the failed write is kept with its diagnostics.
       child.stdin?.on('error', (error) => { errors = heldStderr(errors, `\nwriting to the harness failed: ${error.message}`); });
@@ -419,13 +418,13 @@ export function acpDriver(id: string, writeHome?: RunHomeWriter): Driver {
         onClose: (closed) => { child.once('close', closed); child.once('error', closed); },
       };
       try {
+        owner.assertStarted();
         // A harness that went away mid-turn ends with the status its process exited with.
         for await (const event of turnOver(channel, id, spec, () => errors, listRunTools, { grant, signal, asking })) {
           yield event.kind === 'ended' && event.code === 'crashed' && exited.status !== null ? { ...event, ...exited.status } : event;
         }
       } finally {
-        signal.removeEventListener('abort', stop);
-        void stopGroup(child);
+        await owner.dispose();
       }
     },
   };

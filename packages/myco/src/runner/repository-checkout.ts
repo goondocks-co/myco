@@ -27,6 +27,8 @@ export interface RepositoryCheckoutRequest {
   gitPath?: string;
   /** A new directory owned by the caller's run; an existing path is refused. */
   destination?: string;
+  /** Caller-owned destinations use their disposal authority when supplied. */
+  removeDestination?: () => void | Promise<void>;
   /** Git fetch depth, bounded by the source-reading policy. */
   historyDepth?: number;
   /** Hash every committed regular file into `digests`. */
@@ -120,7 +122,10 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
   let ownsRoot = false;
   const dispose = async () => {
     try {
-      if (ownsRoot && request.destination !== undefined) await rm(root, { recursive: true, force: true });
+      if (ownsRoot && request.destination !== undefined) {
+        if (request.removeDestination !== undefined) await request.removeDestination();
+        else await rm(root, { recursive: true, force: true });
+      }
     } finally { await rm(directory, { recursive: true, force: true }); }
   };
   try {

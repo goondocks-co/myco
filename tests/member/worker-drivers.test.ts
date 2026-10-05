@@ -11,7 +11,7 @@
  * the detector and `myco doctor` read, and the shape of the model they answer in.
  */
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, existsSync } from "../support/fenced-fs.mjs";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
@@ -133,7 +133,7 @@ describe('the run credential', () => {
       expect(previous.scratchDir).not.toBe(current.scratchDir);
       discardRunDir(previous.scratchDir);
       expect(readFileSync(current.mcpConfigPath, 'utf8')).toContain('current_run_token');
-    } finally { discardRunDir(root); }
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('reaches the run\'s own configuration file and nothing else, readable only by the worker', () => {

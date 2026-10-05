@@ -82,8 +82,8 @@ describe('the lease on a run', () => {
 describe('a renewal names the attempt it renews', () => {
   it('renews the attempt a worker names and no earlier one, and renews as before for a worker that names none', async () => {
     const r = await rig();
-    // The Deployment's pipeline reads the real clock, so the claims are placed around it.
-    const now = Date.now();
+    // The first attempt expires before the real clock used by the Deployment pipeline.
+    const now = Date.now() - WORKER_LEASE_MS - 1;
     const mac = await r.worker('mem_mac', 'sirkirby_mac');
     const first = await r.claim(mac, now);
     if (!first.claimed) throw new Error('not claimed');

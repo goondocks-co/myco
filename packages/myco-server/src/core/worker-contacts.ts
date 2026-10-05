@@ -4,7 +4,7 @@
  * The one writer and the one reader of `worker_contacts`. The claim records
  * contact whatever it answers, a lease renewal refreshes the liveness of the
  * report already held, the fleet read joins both against the leases that
- * decide busy, and the machine read takes each machine's newest report.
+ * decide busy, and the machine read takes each machine's latest explicit offers and contact.
  *
  * It holds only what the claim already carries: the harnesses a worker reports,
  * whether it reports each logged in, the capabilities it names, and the outcome
@@ -132,10 +132,13 @@ function parseCapabilities(raw: unknown): string[] | null {
 function unchanged(stored: WorkerContact | null, offers: readonly ReportedHarness[], capabilities: readonly string[], reason: ContactOutcome | null): boolean {
   if (stored === null || stored.offers === null || stored.capabilities === null) return false;
   if (stored.lastReason !== reason) return false;
-  if (stored.offers.length !== offers.length || stored.capabilities.length !== capabilities.length) return false;
-  return stored.offers.every((offer, i) => offer.id === offers[i]?.id && offer.authenticated === offers[i]?.authenticated
-      && JSON.stringify(offer.profile) === JSON.stringify(offers[i]?.profile))
+  return sameOffers(stored.offers, offers) && stored.capabilities.length === capabilities.length
     && stored.capabilities.every((capability, i) => capability === capabilities[i]);
+}
+
+function sameOffers(left: readonly ReportedHarness[], right: readonly ReportedHarness[]): boolean {
+  return left.length === right.length && left.every((offer, i) => offer.id === right[i]?.id
+    && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile));
 }
 
 /** One worker's stored observation, or null when it has never been recorded. */
@@ -161,8 +164,8 @@ export async function readWorkerContact(db: RelationalStore, credentialId: strin
  * a lease renewal, which is the only contact a busy worker makes. A renewal
  * names no outcome and no offer of its own: it refreshes the liveness of what
  * the worker last reported rather than erasing it. An unchanged observation
- * inside `CONTACT_THROTTLE_MS` is skipped; a changed one is written at once.
- * Answers whether a row is written.
+ * inside `CONTACT_THROTTLE_MS` is skipped while the machine's latest offers agree. Explicit offers advance a monotonic
+ * revision in `updated_at`; renewals preserve unsupplied fields and advance only liveness. Answers whether a row is written.
  */
 export async function recordWorkerContact(
   db: RelationalStore,
@@ -175,19 +178,43 @@ export async function recordWorkerContact(
   const offers = contact.offers === undefined ? (stored?.offers ?? null) : boundedOffers(contact.offers);
   const capabilities = contact.capabilities === undefined ? (stored?.capabilities ?? null) : boundedCapabilities(contact.capabilities);
   const reason = contact.reason ?? stored?.lastReason ?? null;
+  let skipRevision: number | null = null;
   if (offers !== null && capabilities !== null
-    && unchanged(stored, offers, capabilities, reason) && contact.now - stored!.lastSeenAt < CONTACT_THROTTLE_MS) return false;
-  await db.prepare(
-    `INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    && unchanged(stored, offers, capabilities, reason) && contact.now - stored!.lastSeenAt < CONTACT_THROTTLE_MS) {
+    if (contact.offers === undefined) return false;
+    const { results } = await machineContactsStatement(db).all<Record<string, unknown>>();
+    const machineId = contact.machineId ?? results.find((row) => row.credential_id === contact.credentialId)?.machine_id;
+    if (machineId == null) return false;
+    const observation = machineOfferObservationsOf(results).get(String(machineId));
+    if (observation !== undefined && observation.offers !== null && sameOffers(observation.offers, offers)) skipRevision = observation.revision;
+  }
+  const result = await db.prepare(
+    `WITH observation AS (
+       SELECT ? AS credential_id, ? AS machine_id, ? AS offers, ? AS capabilities, ? AS reason, ? AS seen_at,
+              ? AS explicit_offers, ? AS explicit_capabilities, ? AS explicit_reason, ? AS skip_revision
+     ), machine_revision AS (
+       SELECT COALESCE(MAX(w.updated_at), 0) AS revision
+         FROM worker_contacts w CROSS JOIN member_credentials c ON c.id = w.credential_id CROSS JOIN observation o
+        WHERE COALESCE(w.machine_id, c.machine_id) IS COALESCE(o.machine_id, (SELECT machine_id FROM member_credentials WHERE id = o.credential_id))
+     )
+     INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at)
+     SELECT credential_id, machine_id, offers, capabilities, reason, seen_at,
+            CASE WHEN explicit_offers = 1 THEN MAX(seen_at, revision + 1) ELSE seen_at END
+       FROM observation CROSS JOIN machine_revision
+      WHERE skip_revision IS NULL OR revision != skip_revision
      ON CONFLICT (credential_id) DO UPDATE SET
-       machine_id = excluded.machine_id, offers = excluded.offers, capabilities = excluded.capabilities,
-       last_reason = excluded.last_reason, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at`,
+       machine_id = excluded.machine_id,
+       offers = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.offers ELSE worker_contacts.offers END,
+       capabilities = CASE WHEN (SELECT explicit_capabilities FROM observation) = 1 THEN excluded.capabilities ELSE worker_contacts.capabilities END,
+       last_reason = CASE WHEN (SELECT explicit_reason FROM observation) = 1 THEN excluded.last_reason ELSE worker_contacts.last_reason END,
+       last_seen_at = MAX(worker_contacts.last_seen_at, excluded.last_seen_at),
+       updated_at = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.updated_at ELSE worker_contacts.updated_at END`,
   ).bind(
     contact.credentialId, contact.machineId, offers === null ? null : JSON.stringify(offers), capabilities === null ? null : JSON.stringify(capabilities),
-    reason, contact.now, contact.now,
+    reason, contact.now, contact.offers === undefined ? 0 : 1, contact.capabilities === undefined ? 0 : 1,
+    contact.reason === undefined ? 0 : 1, skipRevision,
   ).run();
-  return true;
+  return result.meta.changes > 0;
 }
 
 /**
@@ -239,9 +266,9 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
   });
 }
 
-/** A machine's newest worker report, and the latest run its worker started. */
+/** A machine's latest explicit offers, contact and run. */
 export interface MachineContact {
-  /** The harnesses the newest report offered. */
+  /** The harnesses the latest readable explicit report offered. */
   offers: ReportedHarness[] | null;
   lastSeenAt: number;
   /** When a run leased by any credential the machine reported from last started; null when none has. */
@@ -250,31 +277,73 @@ export interface MachineContact {
 
 /**
  * Every worker report with the machine it came from, newest first: the machine the worker named, or else the one its
- * credential joined as. Each carries the latest start of a run its credential leased, sought down the lease index by
- * that one credential; the index is named, as statistics that see every run unleased would walk the runs instead.
+ * credential joined as, ordered by contact time or explicit offer revision. Each carries the latest start of a run its
+ * credential leased, sought down the lease index by that one credential; the index is named, as statistics that see
+ * every run unleased would walk the runs instead.
  */
-export function machineContactsStatement(db: RelationalStore): PreparedStatement {
+export function machineContactsStatement(db: RelationalStore, order: 'contact' | 'offers' = 'contact'): PreparedStatement {
   return db.prepare(
-    `SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.offers, w.last_seen_at,
+    `SELECT COALESCE(w.machine_id, c.machine_id) AS machine_id, w.credential_id, w.offers, w.updated_at AS offer_revision, w.last_seen_at,
             (SELECT MAX(r.started_at) FROM agent_runs r INDEXED BY idx_agent_runs_lease WHERE r.leased_by = w.credential_id) AS last_run_at
        FROM worker_contacts w
       CROSS JOIN member_credentials c ON c.id = w.credential_id
-      ORDER BY w.last_seen_at DESC`,
+      ORDER BY ${order === 'offers' ? 'w.updated_at' : 'w.last_seen_at'} DESC`,
   );
 }
 
-/** Each machine's newest report, and its latest run across every report, from what `machineContactsStatement` answers. */
+interface MachineOfferObservation {
+  offers: ReportedHarness[] | null;
+  revision: number;
+  explicitRevision: number;
+}
+
+/** Machine liveness is independent of the revision of its latest readable offer report. */
+function machineOfferObservationsOf(rows: readonly unknown[]): Map<string, MachineOfferObservation> {
+  const observations = new Map<string, MachineOfferObservation>();
+  for (const row of rows as Record<string, unknown>[]) {
+    if (row.machine_id == null) continue;
+    const machineId = String(row.machine_id);
+    const revision = Number(row.offer_revision);
+    const offers = parseOffers(row.offers);
+    const held = observations.get(machineId);
+    if (held === undefined) observations.set(machineId, { offers, revision, explicitRevision: offers === null ? -Infinity : revision });
+    else {
+      held.revision = Math.max(held.revision, revision);
+      if (offers !== null && revision > held.explicitRevision) {
+        held.offers = offers;
+        held.explicitRevision = revision;
+      }
+    }
+  }
+  return observations;
+}
+
+/** Each machine's latest offers, contact and run, from what `machineContactsStatement` answers. */
 export function machineContactsOf(rows: readonly unknown[]): Map<string, MachineContact> {
+  const offers = machineOfferObservationsOf(rows);
   const contacts = new Map<string, MachineContact>();
   for (const row of rows as Record<string, unknown>[]) {
     if (row.machine_id == null) continue;
     const machineId = String(row.machine_id);
     const run = row.last_run_at == null ? null : Number(row.last_run_at);
+    const seen = Number(row.last_seen_at);
     const held = contacts.get(machineId);
-    if (held === undefined) contacts.set(machineId, { offers: parseOffers(row.offers), lastSeenAt: Number(row.last_seen_at), lastRunAt: run });
-    else if (run !== null && (held.lastRunAt === null || run > held.lastRunAt)) held.lastRunAt = run;
+    if (held === undefined) contacts.set(machineId, { offers: offers.get(machineId)!.offers, lastSeenAt: seen, lastRunAt: run });
+    else {
+      held.lastSeenAt = Math.max(held.lastSeenAt, seen);
+      if (run !== null && (held.lastRunAt === null || run > held.lastRunAt)) held.lastRunAt = run;
+    }
   }
   return contacts;
+}
+
+/**
+ * Each machine's latest readable offer report. Unknown reports preserve the latest explicit observation; a machine
+ * with only unknown reports answers null, and a machine with no contact is absent from the map.
+ */
+export async function readMachineOffers(db: RelationalStore): Promise<Map<string, ReportedHarness[] | null>> {
+  const { results } = await machineContactsStatement(db).all<Record<string, unknown>>();
+  return new Map(Array.from(machineOfferObservationsOf(results), ([machineId, observation]) => [machineId, observation.offers]));
 }
 
 /** The latest instant any worker reported in, or null when none ever has. */

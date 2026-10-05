@@ -457,47 +457,49 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
   ];
   const started = startHarness(harness.binary, ['exec', '--json', '--skip-git-repo-check', ...selection, spec.prompt], { cwd: spec.scratchDir, env: launch.env, omitInherited: launch.omitInherited, signal });
 
-  let terminal: Extract<RunEvent, { kind: 'ended' }> | null = null;
-  let threadId: string | null = null;
-  let accounting: WorkerUsage | null = null;
-  for await (const line of jsonLines(started.lines)) {
-    const type = stringOf(line.type);
-    if (type === 'thread.started') {
-      threadId = stringOf(line.thread_id);
-      yield { kind: 'started', harness: harness.id, sessionId: threadId };
-    } else if (type === 'item.started' || type === 'item.updated' || type === 'item.completed') {
-      const item = recordOf(line.item);
-      const itemType = item === null ? null : stringOf(item.type);
-      // An error item is one item among many, never the end of the turn and
-      // never a call: only a tool's own item is a call.
-      if (item === null || itemType === null || (!CALL_ITEMS.includes(itemType) && !OTHER_ITEMS.includes(itemType))) {
-        yield { kind: 'unrecognized', shape: `${type}/${itemType ?? 'untyped'}` };
-      } else if (type === 'item.completed' && itemType === 'agent_message') {
-        yield { kind: 'message', role: 'assistant', text: stringOf(item.text) ?? '' };
-      } else if (CALL_ITEMS.includes(itemType) && type !== 'item.updated') {
-        yield callEvent(item, itemType, type === 'item.started' ? 'started' : toolStatus(stringOf(item.status)));
+  try {
+    let terminal: Extract<RunEvent, { kind: 'ended' }> | null = null;
+    let threadId: string | null = null;
+    let accounting: WorkerUsage | null = null;
+    for await (const line of jsonLines(started.lines)) {
+      const type = stringOf(line.type);
+      if (type === 'thread.started') {
+        threadId = stringOf(line.thread_id);
+        yield { kind: 'started', harness: harness.id, sessionId: threadId };
+      } else if (type === 'item.started' || type === 'item.updated' || type === 'item.completed') {
+        const item = recordOf(line.item);
+        const itemType = item === null ? null : stringOf(item.type);
+        // An error item is one item among many, never the end of the turn and
+        // never a call: only a tool's own item is a call.
+        if (item === null || itemType === null || (!CALL_ITEMS.includes(itemType) && !OTHER_ITEMS.includes(itemType))) {
+          yield { kind: 'unrecognized', shape: `${type}/${itemType ?? 'untyped'}` };
+        } else if (type === 'item.completed' && itemType === 'agent_message') {
+          yield { kind: 'message', role: 'assistant', text: stringOf(item.text) ?? '' };
+        } else if (CALL_ITEMS.includes(itemType) && type !== 'item.updated') {
+          yield callEvent(item, itemType, type === 'item.started' ? 'started' : toolStatus(stringOf(item.status)));
+        }
+      } else if (type === null || !READ_LINES.includes(type)) {
+        yield { kind: 'unrecognized', shape: type ?? 'untyped' };
+      } else if (type === 'turn.completed') {
+        const usage = recordOf(line.usage);
+        accounting = {
+          inputTokens: usage === null ? null : numberOf(usage.input_tokens),
+          outputTokens: usage === null ? null : numberOf(usage.output_tokens),
+          cachedTokens: usage === null ? null : numberOf(usage.cached_input_tokens),
+          costUsd: null,
+        };
+        terminal = { kind: 'ended', stop: 'end_turn', detail: null };
+      } else if (type === 'turn.failed') {
+        terminal = { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
       }
-    } else if (type === null || !READ_LINES.includes(type)) {
-      yield { kind: 'unrecognized', shape: type ?? 'untyped' };
-    } else if (type === 'turn.completed') {
-      const usage = recordOf(line.usage);
-      accounting = {
-        inputTokens: usage === null ? null : numberOf(usage.input_tokens),
-        outputTokens: usage === null ? null : numberOf(usage.output_tokens),
-        cachedTokens: usage === null ? null : numberOf(usage.cached_input_tokens),
-        costUsd: null,
-      };
-      terminal = { kind: 'ended', stop: 'end_turn', detail: null };
-    } else if (type === 'turn.failed') {
-      terminal = { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
     }
-  }
-  const code = await started.exit;
-  yield* accountingEvents(() => {
-    const identity = codexSessionIdentity(harness, home, spec.scratchDir, threadId, accounting, launched);
-    return identity === null ? [] : [{ kind: 'identity', identity }];
-  });
-  if (accounting !== null) yield { kind: 'usage', ...accounting };
-  const exitSignal = started.signal();
-  yield terminal ?? { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
+    const code = await started.exit;
+    yield* accountingEvents(() => {
+      const identity = codexSessionIdentity(harness, home, spec.scratchDir, threadId, accounting, launched);
+      return identity === null ? [] : [{ kind: 'identity', identity }];
+    });
+    if (accounting !== null) yield { kind: 'usage', ...accounting };
+    const exitSignal = started.signal();
+    yield terminal ?? { kind: 'ended', stop: 'error', detail: `the harness completed no turn and exited ${code}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
+  } finally { await started.dispose(); }
 }

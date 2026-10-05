@@ -122,6 +122,7 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 | `<projectRoot>/.myco/` + `<projectRoot>/.agents/myco-*.cjs` | `ProjectVault` (`packages/myco/src/vault/project-vault.ts`) — pairs every manifest write with `project.local.toml` + `.gitignore`; refuses cross-identity overwrites; sweeps retired launchers on remove. |
 | `myco.yaml` (every tier) | `updateConfig()` / `saveConfig()` (`packages/myco/src/config/loader.ts`) — runs Zod validation; see also the `safe-config-updates` skill. |
 | Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries, and per-agent skill symlinks. |
+| Worker attempt directories and harness process ownership | `runner/run-directory.ts` — allocates a private attempt manifest before credentials, records process launches, and disposes or recovers only directories with no live owner. |
 | Native Deployment volume, configuration and credentials | `LocalVolume` (`packages/myco/src/server/local-volume.ts`) — holds an exclusive lease for lifecycle mutations and the entire serving lifetime; native recovery publishes only into a fresh directory. |
 | Member capture loss counts (`<MYCO_HOME>/member/spool/<project>/capture-losses.json`) | `CaptureLossLedger` (`packages/myco/src/member/capture-loss.ts`) — serializes bounded loss accounting; session receipts queue dispositions through `recordSessionLoss()`. |
 

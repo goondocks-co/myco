@@ -44,8 +44,8 @@ const MEMBER_ENTRIES: readonly string[] = ['hooks/**', 'member/**', 'runner/**']
  * already-allowlisted module moves a number. Both halves are checked — the count
  * exactly, and enough clears or awaits to account for every site.
  *
- * This list only shrinks. A new module, or a higher count, is a new timer on the
- * machine, and that is the thing this gate exists to make someone argue for.
+ * Every admitted timer is bounded by the active request or claimed attempt,
+ * or by a caller waiting between requests. Each entry pins its termination.
  */
 const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' | 'awaited'; bound: string }>> = {
   'packages/myco/src/member/capture.ts': {
@@ -64,7 +64,7 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
     calls: 1, form: 'awaited', bound: 'the sleep between polls of one join code, injectable by a caller',
   },
   'packages/myco/src/runner/loop.ts': {
-    calls: 3, form: 'cleared', bound: "one claimed run's budget, its lease heartbeat, and the sleep between empty claims",
+    calls: 5, form: 'cleared', bound: "one claimed run's budget, lease heartbeat, accepted lease expiry and cleanup bound, and the sleep between empty claims",
   },
   'packages/myco/src/runner/process-group.ts': {
     calls: 1, form: 'awaited', bound: "the waits while a stopped harness's process group ends, bounded by the stop's grace",

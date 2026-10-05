@@ -136,91 +136,94 @@ export const claudeCodeDriver: Driver = {
       ...isolation,
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
-    ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);
+    ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : await startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);
 
-    const accountingEnv = launchEnvironment({ ...launch.env, ...env }, omitInherited);
-    const accounting = new ClaudeAccounting(harness, accountingEnv);
-    let ended = false;
-    let failure: string | null = null;
-    /** The error code of the last request the harness retried, which is what its exit says nothing else about. */
-    let retried: string | null = null;
-    /** The tool each call id named, so a result can be read back as that call's outcome. */
-    const calls = new Map<string, string>();
-    /** Calls whose outcome has been reported: the harness reports a refusal on a system line, on the call's result and on the turn's result. */
-    const reported = new Set<string>();
-    /** Whether this is the first report of a call's outcome, recording it; a call with no id cannot be matched, so each of its reports is its own. */
-    const firstReport = (id: string | null): boolean => {
-      if (id === null) return true;
-      if (reported.has(id)) return false;
-      reported.add(id);
-      return true;
-    };
-    for await (const line of jsonLines(started.lines)) {
-      const type = stringOf(line.type);
-      if (type === 'system' && stringOf(line.subtype) === 'init') {
-        yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
-        yield* accounting.events(line);
-      } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
-        const id = stringOf(line.tool_use_id);
-        if (firstReport(id)) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error', refused: true, ...callOf(id) };
-      } else if (type === 'assistant') {
-        // An in-band error carries its code, and on a request the harness gave up on, the harness's own words for it.
-        const failed = stringOf(line.error);
-        if (failed !== null) failure ??= line.is_api_error_message === true ? [failed, ...blocksOf(recordOf(line.message)).map((block) => stringOf(block.text)).filter((text): text is string => text !== null)].join(': ') : failed;
-        yield* accounting.events(line);
-        for (const block of blocksOf(recordOf(line.message))) {
-          const kind = stringOf(block.type);
-          if (kind === 'text') {
-            const said = stringOf(block.text);
-            if (said !== null) yield { kind: 'message', role: 'assistant', text: said };
-          } else if (kind === 'tool_use') {
-            const name = stringOf(block.name) ?? 'tool';
-            const id = stringOf(block.id);
-            const input = recordOf(block.input);
-            if (id !== null) calls.set(id, name);
-            yield { kind: 'tool_call', name, status: 'started', ...callOf(id), ...(input === null ? {} : { input }) };
+    try {
+      const accountingEnv = launchEnvironment({ ...launch.env, ...env }, omitInherited);
+      const accounting = new ClaudeAccounting(harness, accountingEnv);
+      let ended = false;
+      let failure: string | null = null;
+      /** The error code of the last request the harness retried, which is what its exit says nothing else about. */
+      let retried: string | null = null;
+      /** The tool each call id named, so a result can be read back as that call's outcome. */
+      const calls = new Map<string, string>();
+      /** Calls whose outcome has been reported: the harness reports a refusal on a system line, on the call's result and on the turn's result. */
+      const reported = new Set<string>();
+      /** Whether this is the first report of a call's outcome, recording it; a call with no id cannot be matched, so each of its reports is its own. */
+      const firstReport = (id: string | null): boolean => {
+        if (id === null) return true;
+        if (reported.has(id)) return false;
+        reported.add(id);
+        return true;
+      };
+      for await (const line of jsonLines(started.lines)) {
+        const type = stringOf(line.type);
+        if (type === 'system' && stringOf(line.subtype) === 'init') {
+          yield { kind: 'started', harness: harness.id, sessionId: stringOf(line.session_id) };
+          yield* accounting.events(line);
+        } else if (type === 'system' && stringOf(line.subtype) === 'permission_denied') {
+          const id = stringOf(line.tool_use_id);
+          if (firstReport(id)) yield { kind: 'tool_call', name: stringOf(line.tool_name) ?? 'tool', status: 'error', refused: true, ...callOf(id) };
+        } else if (type === 'assistant') {
+          // An in-band error carries its code, and on a request the harness gave up on, the harness's own words for it.
+          const failed = stringOf(line.error);
+          if (failed !== null) failure ??= line.is_api_error_message === true ? [failed, ...blocksOf(recordOf(line.message)).map((block) => stringOf(block.text)).filter((text): text is string => text !== null)].join(': ') : failed;
+          yield* accounting.events(line);
+          for (const block of blocksOf(recordOf(line.message))) {
+            const kind = stringOf(block.type);
+            if (kind === 'text') {
+              const said = stringOf(block.text);
+              if (said !== null) yield { kind: 'message', role: 'assistant', text: said };
+            } else if (kind === 'tool_use') {
+              const name = stringOf(block.name) ?? 'tool';
+              const id = stringOf(block.id);
+              const input = recordOf(block.input);
+              if (id !== null) calls.set(id, name);
+              yield { kind: 'tool_call', name, status: 'started', ...callOf(id), ...(input === null ? {} : { input }) };
+            }
           }
+        } else if (type === 'user') {
+          for (const block of blocksOf(recordOf(line.message))) {
+            if (stringOf(block.type) !== 'tool_result') continue;
+            const id = stringOf(block.tool_use_id);
+            if (!firstReport(id)) continue;
+            const name = (id === null ? undefined : calls.get(id)) ?? 'tool';
+            if (block.is_error !== true) { yield { kind: 'tool_call', name, status: 'ok', ...callOf(id) }; continue; }
+            const exitCode = exitCodeOf(block.content);
+            yield { kind: 'tool_call', name, status: 'error', ...callOf(id), ...(exitCode === undefined ? {} : { exitCode }), ...(timedOutOf(block.content) ? { timedOut: true as const } : {}) };
+          }
+        } else if (type === 'result') {
+          yield* accounting.events(line);
+          ended = true;
+          // A refused call outside the grant is the harness keeping the run to
+          // its tools, and is reported as that call's failure. A refusal of a
+          // granted tool is the run kept from its own work, and ends the run.
+          // File calls are classified by their physical targets; shell rules
+          // leave argument refusals to the run's Git boundary.
+          const refusals = refusalsOf(line);
+          for (const { tool, id } of refusals) {
+            if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error', refused: true, ...callOf(id) };
+          }
+          const refused = refusals.filter(({ tool, input }) => grantsWhole(grant, tool) || (permissions.source !== null && sourceToolAllows(permissions.source, tool, input ?? {}))).map(({ tool }) => tool);
+          if (refused.length > 0) {
+            const names = [...new Set(refused)];
+            yield { kind: 'ended', stop: 'error', detail: `permission refused for ${names.join(', ')}`, code: 'permission_refused', names };
+            break;
+          }
+          const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
+          yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
+        } else {
+          if (type === 'system' && stringOf(line.subtype) === 'api_retry') retried = stringOf(line.error) ?? retried;
+          yield { kind: 'unrecognized', shape: shapeOf(line) };
         }
-      } else if (type === 'user') {
-        for (const block of blocksOf(recordOf(line.message))) {
-          if (stringOf(block.type) !== 'tool_result') continue;
-          const id = stringOf(block.tool_use_id);
-          if (!firstReport(id)) continue;
-          const name = (id === null ? undefined : calls.get(id)) ?? 'tool';
-          if (block.is_error !== true) { yield { kind: 'tool_call', name, status: 'ok', ...callOf(id) }; continue; }
-          const exitCode = exitCodeOf(block.content);
-          yield { kind: 'tool_call', name, status: 'error', ...callOf(id), ...(exitCode === undefined ? {} : { exitCode }), ...(timedOutOf(block.content) ? { timedOut: true as const } : {}) };
-        }
-      } else if (type === 'result') {
-        yield* accounting.events(line);
-        ended = true;
-        // A refused call outside the grant is the harness keeping the run to
-        // its tools, and is reported as that call's failure. A refusal of a
-        // granted tool is the run kept from its own work, and ends the run.
-        // File calls are classified by their physical targets; shell rules
-        // leave argument refusals to the run's Git boundary.
-        const refusals = refusalsOf(line);
-        for (const { tool, id } of refusals) {
-          if (firstReport(id)) yield { kind: 'tool_call', name: tool, status: 'error', refused: true, ...callOf(id) };
-        }
-        const refused = refusals.filter(({ tool, input }) => grantsWhole(grant, tool) || (permissions.source !== null && sourceToolAllows(permissions.source, tool, input ?? {}))).map(({ tool }) => tool);
-        if (refused.length > 0) {
-          const names = [...new Set(refused)];
-          yield { kind: 'ended', stop: 'error', detail: `permission refused for ${names.join(', ')}`, code: 'permission_refused', names };
-          break;
-        }
-        const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
-        yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
-      } else {
-        if (type === 'system' && stringOf(line.subtype) === 'api_retry') retried = stringOf(line.error) ?? retried;
-        yield { kind: 'unrecognized', shape: shapeOf(line) };
+
       }
-    }
-    const code = await started.exit;
-    if (!ended) {
-      const retrying = retried === null ? '' : ` after retrying on ${retried}`;
-      const exitSignal = started.signal();
-      yield { kind: 'ended', stop: 'error', detail: failure ?? `the harness wrote no result and exited ${code}${retrying}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
-    }
+      const code = await started.exit;
+      if (!ended) {
+        const retrying = retried === null ? '' : ` after retrying on ${retried}`;
+        const exitSignal = started.signal();
+        yield { kind: 'ended', stop: 'error', detail: failure ?? `the harness wrote no result and exited ${code}${retrying}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
+      }
+    } finally { await started.dispose(); }
   },
 };

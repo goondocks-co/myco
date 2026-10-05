@@ -258,10 +258,21 @@ async function lineageInactive(db: RelationalStore, tokenId: string, nowMs: numb
   return row !== null && row.issued_at + MEMBER_LINEAGE_IDLE_MS <= nowMs;
 }
 
-/** A successor's first authenticated use, as one batch: the successor takes over its predecessor's stored-bytes count (`carriedBytes`: the counter plus live blob reservations; nothing when the predecessor row is gone) and records the instant; the predecessor is revoked. Every statement guards itself, so a repeat changes nothing. */
+/** A successor's first authenticated use atomically transfers live worker leases and stored bytes, records the instant, and revokes the predecessor. The attempt identity and completed-run attribution stay unchanged. */
 export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAuth, 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
   const held = carriedBytes(auth.predecessorId, nowMs);
   await db.batch([
+    db.prepare(`UPDATE agent_runs SET leased_by = ?
+                  WHERE leased_by = ? AND status = 'running' AND lease_expires_at > ?
+                    AND EXISTS (
+                      SELECT 1 FROM member_credentials successor
+                      JOIN member_credentials predecessor ON predecessor.id = successor.predecessor_id
+                       WHERE successor.id = ? AND predecessor.id = ?
+                         AND successor.first_used_at IS NULL AND successor.revoked_at IS NULL
+                         AND successor.member_id = predecessor.member_id
+                         AND successor.machine_id IS predecessor.machine_id
+                         AND successor.lineage_root = predecessor.lineage_root
+                    )`).bind(auth.tokenId, auth.predecessorId, nowMs, auth.tokenId, auth.predecessorId),
     db.prepare(`UPDATE member_credentials SET bytes_written = COALESCE(${held.sql}, 0), first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(...held.params, nowMs, auth.tokenId),
     db.prepare(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).bind(nowMs, auth.predecessorId),
   ]);

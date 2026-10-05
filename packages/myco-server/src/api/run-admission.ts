@@ -2,7 +2,8 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { HARNESS_MEMBER_ID } from '../core/harness.js';
-import { staleAfter } from '../core/jobs-run.js';
+import { runDeadline } from '../core/run-deadline.js';
+export { runDeadline } from '../core/run-deadline.js';
 import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../core/runs.js';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
@@ -60,12 +61,6 @@ function closeRetry(run: RunRow, path: string, offer: Record<string, unknown>): 
   if (!isTerminalRunStatus(update.status) || Object.keys(update).some(key => !Object.hasOwn(RUN_UPDATE_FIELDS, key))) return null;
   const decoded = decodeRunUpdate(update as Record<string, unknown>, run.harness);
   return decoded === null ? null : endedAnswer(run.status, decoded.status);
-}
-
-/** The deadline of the dispatch's current attempt. */
-export function runDeadline(run: RunRow): number {
-  const attemptAt = run.resumedAt ?? run.startedAt;
-  return attemptAt === null ? 0 : staleAfter(attemptAt, run.runContext);
 }
 
 /** The runtime's write authority, derived from pipeline admission. */
