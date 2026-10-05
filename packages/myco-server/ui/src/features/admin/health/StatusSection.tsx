@@ -1,4 +1,4 @@
-import { Card, ErrorState, HealthDot, LoadingState, StatusChip } from '../../../design';
+import { Card, HealthDot, StatusChip, ReadState, ReadUnavailable } from '../../../design';
 import type { useStatus } from '../../../hooks/use-status';
 import type { StatusResponse } from '../../../lib/api';
 import { formatCount } from '../../../lib/format';
@@ -18,7 +18,7 @@ export interface StatusSectionProps {
 /** Whether the database is at the schema this server expects, in one line. */
 function schemaLine(schema: StatusResponse['schema']): { tone: 'ok' | 'bad'; words: string } {
   if (schema.matches) return { tone: 'ok', words: `The database is at the version this server expects (${schema.expected}).` };
-  if (schema.found === null) return { tone: 'bad', words: 'The database could not be reached.' };
+  if (schema.found === null) return { tone: 'bad', words: 'The database version could not be read.' };
   return { tone: 'bad', words: `The database holds version ${schema.found}; this server expects ${schema.expected}. Some pages may fail until they match.` };
 }
 
@@ -27,20 +27,24 @@ function schemaLine(schema: StatusResponse['schema']): { tone: 'ok' | 'bad'; wor
  * sources search by meaning passes over, each named with why. Nothing while there is neither.
  */
 function SearchByMeaning({ now }: { now: number }) {
-  const sw = useEmbeddingSwitch().data;
-  const passed = usePassedOver().data;
+  const switchRead = useEmbeddingSwitch();
+  const passedRead = usePassedOver();
+  const sw = switchRead.data;
+  const passed = passedRead.data;
   const switching = sw !== undefined && sw !== null;
   const leftOut = passed !== undefined && passed.count > 0;
-  if (!switching && !leftOut) return null;
+  if (!switching && !leftOut && !switchRead.error && !passedRead.error && !switchRead.isPending && !passedRead.isPending) return null;
   return (
     <div className="flex flex-col gap-s2" data-health-search-rebuild="">
       <h3 className="t-h3 text-ink">Search by meaning</h3>
-      {switching && <Card><EmbeddingSwitchPanel sw={sw} now={now} /></Card>}
-      {leftOut && (
-        <Card data-health-passed-over="">
-          <PassedOverSources list={passed} lede={`Search by meaning leaves out ${formatCount(passed.count, 'source')}. Search by words still finds ${passed.count === 1 ? 'it' : 'them'}.`} />
-        </Card>
-      )}
+      <ReadState data={sw} pending={switchRead.isPending} error={switchRead.error} onRetry={() => void switchRead.refetch()} label="search rebuilding">
+        {(value) => value === null ? null : <Card><EmbeddingSwitchPanel sw={value} now={now} /></Card>}
+      </ReadState>
+      <ReadState data={passed} pending={passedRead.isPending} error={passedRead.error} onRetry={() => void passedRead.refetch()} label="sources left out of search">
+        {(value) => value.count === 0 ? null : <Card data-health-passed-over="">
+          <PassedOverSources list={value} lede={`Search by meaning leaves out ${formatCount(value.count, 'source')}. Search by words still finds ${value.count === 1 ? 'it' : 'them'}.`} />
+        </Card>}
+      </ReadState>
     </div>
   );
 }
@@ -54,14 +58,14 @@ export function StatusSection({ status, now, projectName }: StatusSectionProps) 
   const data = status.data;
   return (
     <AdminSection id={HEALTH_ANCHORS.status} title="Status" description="Whether this server is set up to hold memory, and what it has received.">
-      {status.isPending ? <LoadingState label="Reading this server’s status" count={3} />
-        : data === undefined ? <ErrorState error={status.error} onRetry={() => void status.refetch()} />
-        : <StatusBody data={data} now={now} projectName={projectName} />}
+      <ReadState data={data} pending={status.isPending} error={status.error} onRetry={() => void status.refetch()} label="server status">
+        {(value) => <StatusBody data={value} now={now} projectName={projectName} onRetry={() => void status.refetch()} />}
+      </ReadState>
     </AdminSection>
   );
 }
 
-function StatusBody({ data, now, projectName }: { data: StatusResponse; now: number; projectName: StatusSectionProps['projectName'] }) {
+function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse; now: number; projectName: StatusSectionProps['projectName']; onRetry: () => void }) {
   const schema = schemaLine(data.schema);
   const backlog = backlogWords(data.transcriptBacklog);
   const projects = [...data.projects].sort((a, b) => (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1));
@@ -72,6 +76,8 @@ function StatusBody({ data, now, projectName }: { data: StatusResponse; now: num
           <span className="flex h-lh shrink-0 items-center"><HealthDot tone={schema.tone} label={schema.tone === 'ok' ? 'Current' : 'Needs attention'} /></span>
           <span>{schema.words}</span>
         </p>
+        {data.unavailable?.includes('schema') && <ReadUnavailable label="the database version" onRetry={onRetry} />}
+        {data.unavailable?.includes('transcriptBacklog') && <ReadUnavailable label="transcripts waiting to be processed" onRetry={onRetry} />}
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
 
@@ -96,7 +102,7 @@ function StatusBody({ data, now, projectName }: { data: StatusResponse; now: num
 
       <div className="flex flex-col gap-s2">
         <h3 className="t-h3 text-ink">What each project last sent</h3>
-        {projects.length === 0 ? (
+        {data.unavailable?.includes('projects') ? <ReadUnavailable label="what projects last sent" onRetry={onRetry} /> : projects.length === 0 ? (
           <p className="t-small text-muted">Nothing has been received yet.</p>
         ) : (
           <RowCard label="What each project last sent">

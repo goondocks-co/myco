@@ -6,7 +6,9 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isAdmin } from '../auth/roles.js';
 import { renameMachine } from '../auth/enrollment.js';
-import { listMachines } from '../read/machines.js';
+import { listMachines, machineActivity, machineInScope, type MachineScope } from '../read/machines.js';
+import { revokeMachineCredentialsAsMember } from '../auth/tokens.js';
+import { paging } from './sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 
@@ -28,8 +30,28 @@ export function machineName(value: unknown): string | null {
 }
 
 export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = isAdmin(ctx.member.role) ? { all: true as const } : { all: false as const, memberId: ctx.member.id };
-  return ok({ machines: await listMachines(env.db, ctx.now, scope) });
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  return ok(await listMachines(env.db, ctx.now, machineScope(ctx), page));
+}
+
+function machineScope(ctx: OwnerContext): MachineScope {
+  return isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id };
+}
+
+/** A claim's events across its credential history, in one bounded merged page. */
+export async function handleMachineActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  if (page.cursor !== undefined && !/^[0-9]+:[^:]+:.+$/.test(page.cursor)) return badRequest('malformed cursor');
+  if (!(await machineInScope(env.db, ctx.params.machineId, machineScope(ctx)))) return notFound();
+  return ok(await machineActivity(env.db, ctx.params.machineId, page));
+}
+
+/** Stop every live credential on a machine through the credential revocation authority. */
+export async function handleStopMachine(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if (!(await machineInScope(env.db, ctx.params.machineId, machineScope(ctx)))) return notFound();
+  return ok(await revokeMachineCredentialsAsMember(env.db, ctx.member, ctx.params.machineId, ctx.now));
 }
 
 /** Rename a machine. Another member's machine answers as an unknown one does, so the answer tells no one which ids exist. */

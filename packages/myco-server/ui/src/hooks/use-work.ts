@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
 import type { TodaySporePage, WorkAnswer } from '../features/today/wire';
 import type { SessionResponse } from './use-sessions';
@@ -127,6 +127,29 @@ export function useWorkWhileRunning(query: Omit<WorkQuery, 'live'>, options: { e
     refetchInterval: (state) => (workHasLiveRun(state.state.data) ? LIVE_REFRESH_MS : false),
     refetchIntervalInBackground: false,
   });
+}
+
+/** Cursor pages of the run evidence; the first page is the Work read already on screen. */
+export function useWorkEvidence(query: Omit<WorkQuery, 'live'>, first: WorkAnswer | undefined) {
+  const path = workPath(query);
+  const result = useInfiniteQuery({
+    queryKey: ['work-evidence', query.projectId ?? 'all', query.since, query.until, first?.cursor, first?.runs[0]?.id],
+    initialPageParam: null as string | null,
+    initialData: first === undefined ? undefined : { pages: [first], pageParams: [null] },
+    enabled: false,
+    queryFn: ({ pageParam, signal }) => fetchJson<WorkAnswer>(
+      pageParam === null ? path : `${path}&cursor=${encodeURIComponent(pageParam)}`, signal,
+    ),
+    getNextPageParam: (last) => last.cursor ?? undefined,
+  });
+  return {
+    rows: first === undefined ? [] : [first.runs, ...(result.data?.pages.slice(1).map((page) => page.runs) ?? [])].flat(),
+    hasMore: result.hasNextPage,
+    isFetchingMore: result.isFetchingNextPage,
+    error: result.error,
+    expanded: (result.data?.pages.length ?? 0) > 1,
+    more: () => { void result.fetchNextPage({ cancelRefetch: false }); },
+  };
 }
 
 /** Whether any run the window counts is still to finish: queued or running. */

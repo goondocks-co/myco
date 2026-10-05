@@ -7,7 +7,7 @@ import { activityFeed } from '../read/activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
-import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
+import { listTurns, parseOrigins, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, type TurnCollection } from '../read/turns.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
@@ -120,7 +120,7 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   return ok(await query(env.db, scope, sessionId, page));
 }
 
-/** A session's turns of the named origins (`origins=user,system,…`; `user` alone when unnamed), oldest first. An origin the wire does not admit is refused. */
+/** A session's turns of the named origins; `order=desc` reads backward, and `turn` resolves a named prompt directly. */
 export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();
@@ -131,7 +131,10 @@ export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Pro
   if (page instanceof Response) return page;
   const origins = parseOrigins(ctx.url.searchParams.get('origins'));
   if (origins === null) return badRequest('origins must name prompt origins');
-  return ok(await listTurns(env.db, scope, sessionId, { ...page, origins }));
+  const order = ctx.url.searchParams.get('order');
+  if (order !== null && order !== 'asc' && order !== 'desc') return badRequest('order must be asc or desc');
+  const promptId = ctx.url.searchParams.get('turn') ?? undefined;
+  return ok(await listTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId }));
 }
 
 /** One turn's body: the prompt, its responses, attachments and steering children. */
@@ -140,6 +143,14 @@ export async function handleSessionTurn(env: ServerEnv, ctx: OwnerContext): Prom
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
+  const collection = ctx.url.searchParams.get('collection');
+  if (collection !== null) {
+    if (!TURN_COLLECTIONS.includes(collection as TurnCollection)) return badRequest('unknown turn collection');
+    const page = paging(ctx.url);
+    if (page instanceof Response) return page;
+    if (!(await promptInSession(env.db, scope, sessionId, ctx.params.promptId))) return notFound();
+    return ok(await turnCollection(env.db, scope, sessionId, ctx.params.promptId, collection as TurnCollection, page));
+  }
   const detail = await turnDetail(env.db, scope, sessionId, ctx.params.promptId);
   return detail === null ? notFound() : ok(detail);
 }

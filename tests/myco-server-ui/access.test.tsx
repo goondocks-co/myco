@@ -13,8 +13,10 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { formatRelative, formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 import { FLEET_WORDS } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
+import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
 import { invitationExpiry } from '../../packages/myco-server/ui/src/features/admin/people/words';
 import { rawIdsIn } from '../helpers/raw-ids';
+import { machineRows } from './machine-fixtures';
 
 // jsdom lays nothing out, so it has no scrollIntoView; Radix's select calls it as it opens.
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
@@ -66,6 +68,8 @@ const status = (workers: Record<string, unknown> = {}) => ({
 
 /** A Deployment whose credentials answer per purpose, as the route does. */
 function accessServer(credentials: { member?: unknown[]; run?: unknown[] }, routes: Record<string, Endpoint> = {}) {
+  const members = credentials.member ?? [];
+  const machines = machineRows(members as CredentialRow[]);
   return server({
     '/auth/me': () => Response.json(ME),
     '/api/projects': () => Response.json({ projects: [] }),
@@ -76,6 +80,7 @@ function accessServer(credentials: { member?: unknown[]; run?: unknown[] }, rout
       rows: url?.searchParams.get('purpose') === 'run' ? credentials.run ?? [] : credentials.member ?? [],
       cursor: null,
     }),
+    '/api/machines': () => Response.json({ machines, cursor: null }),
     ...routes,
   });
 }
@@ -260,12 +265,12 @@ describe('machines', () => {
     });
     mount('/people');
     const machines = await screen.findByRole('list', { name: 'Machines' });
-    // Two runtimes of one machine are one row; the runtime that named no machine and Lin's desk are rows of their own.
+    // Two runtimes of one claimed machine are one row; a credential with no claim is not a machine.
     const triggers = within(machines).getAllByRole('button', { name: /^More for / });
-    expect(triggers.map((t) => t.getAttribute('aria-label'))).toEqual(['More for Ada’s MacBook', 'More for Lin’s desk', 'More for A machine']);
+    expect(triggers.map((t) => t.getAttribute('aria-label'))).toEqual(['More for Lin’s desk', 'More for Ada’s MacBook']);
     const offers = [];
     for (const trigger of triggers) offers.push((await menuItems(trigger)).includes('Its settings'));
-    expect(offers).toEqual([true, false, false]);
+    expect(offers).toEqual([false, true]);
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
     expect(await within(dialog).findByText('None: only each agent’s own plan folder.')).toBeTruthy();
@@ -418,59 +423,58 @@ describe('machines', () => {
     const { posts } = accessServer({
       member: [credential(), credential({ id: 'mt_Yq7rT2uV5wX8zA1b', lineageRoot: 'mt_Yq7rT2uV5wX8zA1b', lineageStartedAt: NOW_MS - 2 * 86_400_000 })],
     }, {
-      '/api/credentials/mt_Xr4pQ9sLw2Ze8KbN/revoke': () => Response.json({ revoked: true }),
-      '/api/credentials/mt_Yq7rT2uV5wX8zA1b/revoke': () => Response.json({ revoked: true }),
+      '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 2, revokedBy: ADA }),
     });
     mount('/people');
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
     const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
     expect(dialog.textContent).toContain(REJOIN_FOR_ADMIN);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
-    await waitFor(() => expect(posts.map((p) => p.path).sort()).toEqual(['/api/credentials/mt_Xr4pQ9sLw2Ze8KbN/revoke', '/api/credentials/mt_Yq7rT2uV5wX8zA1b/revoke']));
+    await waitFor(() => expect(posts.map((p) => p.path)).toEqual(['/api/machines/ada_5a2d54af/stop']));
   });
 
   it('keeps a refused stop in view, in words', async () => {
-    accessServer({ member: [credential()] }, { '/api/credentials/mt_Xr4pQ9sLw2Ze8KbN/revoke': () => new Response(null, { status: 503 }) });
+    accessServer({ member: [credential()] }, { '/api/machines/ada_5a2d54af/stop': () => new Response(null, { status: 503 }) });
     mount('/people');
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
     const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe('Stopped 0 of 1 sign-in; this machine can still write. The server refused (503). Try again.');
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
   });
 
-  it('says exactly how far a stop got when a later sign-in fails, and tries again only the one that did not stop', async () => {
-    // Three live sign-ins on one machine; the second refuses.
+  it('retries one machine-scoped stop after a refusal', async () => {
     const ids = ['mt_StopOne1aaaaaaaa', 'mt_StopTwo2bbbbbbbb', 'mt_StopThree3cccccc'];
     const asked: string[] = [];
-    let secondFails = true;
-    const revoke = (id: string) => () => {
-      asked.push(id);
-      return id === ids[1] && secondFails ? new Response(null, { status: 503 }) : Response.json({ revoked: true });
+    let fails = true;
+    const stop = () => {
+      asked.push('machine');
+      return fails ? new Response(null, { status: 503 }) : Response.json({ revoked: 3, revokedBy: ADA });
     };
     accessServer(
       { member: ids.map((id, i) => credential({ id, lineageRoot: id, lineageStartedAt: NOW_MS - (i + 1) * 60_000 })) },
-      Object.fromEntries(ids.map((id) => [`/api/credentials/${id}/revoke`, revoke(id)])),
+      { '/api/machines/ada_5a2d54af/stop': stop },
     );
     mount('/people');
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
     const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe('Stopped 2 of 3 sign-ins; this machine can still write. The server refused (503). Try again.');
-    // Every sign-in was asked, the third after the second failed.
-    expect([...asked].sort()).toEqual([...ids].sort());
-    secondFails = false;
-    asked.length = 0;
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
+    expect(asked).toEqual(['machine']);
+    fails = false;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Stop Ada’s MacBook?' })).toBeNull());
-    expect(asked).toEqual([ids[1]]);
+    expect(asked).toEqual(['machine', 'machine']);
   });
 
-  it('builds machines from every page of sign-ins, so a live one on a later page counts', async () => {
-    // Page one holds an expired sign-in of the machine; its live one is on page two.
-    const expired = credential({ id: 'mt_OldPage1xxxxxxx', lineageRoot: 'mt_OldPage1xxxxxxx', live: false, expiresAt: NOW_MS - 1_000 });
-    const live = credential({ id: 'mt_NewPage2yyyyyyy', lineageRoot: 'mt_NewPage2yyyyyyy', lineageStartedAt: NOW_MS - 90 * 86_400_000 });
+  it('uses the canonical summary when a live sign-in lies beyond the first credential page', async () => {
     const asked: string[] = [];
     accessServer({}, {
+      '/api/machines': () => Response.json({ machines: [{
+        machineId: 'ada_5a2d54af', name: 'Ada’s MacBook', live: true, member: { id: ADA, label: 'Ada', revoked: false },
+        claimedAt: NOW_MS - 90 * 86_400_000, credentialCount: 2, liveCredentialCount: 1, bytesWritten: 0,
+        firstSeenAt: NOW_MS - 90 * 86_400_000, standing: 'allowed', stoppedBy: null,
+        offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null,
+      }], cursor: null }),
       '/api/credentials': (_init, url) => {
         if (url?.searchParams.get('purpose') === 'run') return Response.json({ rows: [], cursor: null });
         const cursor = url?.searchParams.get('cursor') ?? null;
@@ -481,7 +485,7 @@ describe('machines', () => {
     mount('/people');
     const machines = await screen.findByRole('list', { name: 'Machines' });
     await waitFor(() => expect(machines.textContent).toContain('allowed to write'));
-    expect(asked).toEqual(['first', 'page-2']);
+    expect(asked).toEqual([]);
     expect(within(machines).getAllByRole('listitem')).toHaveLength(1);
     expect(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' })).toBeTruthy();
   });
@@ -492,8 +496,7 @@ describe('machines', () => {
     const event = (eventId: string, kind: string, createdAt: number) => ({ eventId, projectId: 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11', sessionId: '0f3c2a1b-1111-4222-8333-444455556666', kind, createdAt, receivedAt: createdAt });
     accessServer({ member: [second, first] }, {
       '/api/projects': () => Response.json({ projects: [{ projectId: 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11', name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: NOW_MS, archivedAt: null, archivedBy: null }] }),
-      [`/api/credentials/${first.id}/activity`]: () => Response.json({ rows: [event('e-old', 'prompt', NOW_MS - 9 * 86_400_000)], cursor: null }),
-      [`/api/credentials/${second.id}/activity`]: () => Response.json({ rows: [event('e-new', 'session.start', NOW_MS - 60_000)], cursor: null }),
+      '/api/machines/ada_5a2d54af/activity': () => Response.json({ rows: [event('e-new', 'session.start', NOW_MS - 60_000), event('e-old', 'prompt', NOW_MS - 9 * 86_400_000)], cursor: null }),
     });
     mount('/people');
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'What it wrote' }));

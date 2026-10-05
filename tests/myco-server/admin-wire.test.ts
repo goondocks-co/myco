@@ -13,6 +13,7 @@ import type { MemberRow } from '../../packages/myco-server/src/auth/members-admi
 import type { InvitationRow } from '../../packages/myco-server/src/auth/enrollment.ts';
 import type { GrantRow } from '../../packages/myco-server/src/auth/grants.ts';
 import type { ActivityRow, CredentialRow, credentialActivity, listCredentials } from '../../packages/myco-server/src/read/credentials.ts';
+import type { MachineRow, listMachines, machineActivity } from '../../packages/myco-server/src/read/machines.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -23,6 +24,8 @@ type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 type CredentialsAnswer = Awaited<ReturnType<typeof listCredentials>>;
 /** `GET /api/credentials/{id}/activity`: the page `handleCredentialActivity` sends. */
 type ActivityAnswer = Awaited<ReturnType<typeof credentialActivity>>;
+type MachinesAnswer = Awaited<ReturnType<typeof listMachines>>;
+type MachineActivityAnswer = Awaited<ReturnType<typeof machineActivity>>;
 /** `POST /api/enrollment`: the body `handleMintInvitation` answers. */
 type MintAnswer = { key: string; id: string; expiresAt: number; role: 'admin' | 'member'; projectId: string | null };
 
@@ -40,8 +43,11 @@ const READS: [
   Reads<CredentialRow, Ui.CredentialRow>,
   Reads<CredentialsAnswer, Ui.CredentialPage>,
   Reads<ActivityAnswer, Ui.ActivityPage>,
+  Reads<MachineRow, Ui.MachineRow>,
+  Reads<MachinesAnswer, Ui.MachinesAnswer>,
+  Reads<MachineActivityAnswer, Ui.ActivityPage>,
   Reads<{ grants: GrantRow[] }, Ui.GrantsAnswer>,
-] = [true, true, true, true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true, true, true, true, true, true];
 
 describe("the admin pages' shared wire shapes", () => {
   it('are held to the server declarations by the tests typecheck', () => {
