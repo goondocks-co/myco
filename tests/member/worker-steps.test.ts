@@ -1,3 +1,4 @@
+import { CORPUS } from '../helpers/secret-corpus.ts';
 /**
  * A worker's step log: what each harness's calls read as, what the log never holds, and how it reaches the Deployment.
  *
@@ -525,4 +526,32 @@ describe('a step log on its way to the Deployment', () => {
     expect(detail?.attempts.map((attempt) => attempt.steps)).toEqual([null]);
     rmSync(w.stepRoot, { recursive: true, force: true });
   });
+});
+
+
+describe('command payloads through the worker and Deployment', () => {
+  it('keeps slash-bearing payloads out of the durable outbox and server rows while retaining a declared file path', async () => {
+    const cases = CORPUS.filter((leak) => leak.secrets.some((secret) => secret === 'private/customer-note' || secret === 'customer-note.json'));
+    const commands = [...cases.map((leak) => leak.command), 'ls -l /etc'];
+    const lines = commands.flatMap((command, i) => [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `payload_${i}`, name: 'Bash', input: { command } }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `payload_${i}`, content: 'fixture output' }] } }),
+    ]);
+    const w = await wire({ lines });
+    try {
+      w.refuse(true);
+      expect((await w.attach(true)).driven).toBe(1);
+      const [file] = w.outbox();
+      expect(file).toBeDefined();
+      const artifact = readFileSync(file!, 'utf8');
+      for (const leak of cases) for (const secret of leak.secrets) expect(artifact).not.toContain(secret);
+      expect(artifact).toContain('ls -l /etc');
+      w.refuse(false);
+      await w.attach(false);
+      const rows = JSON.stringify(w.stored());
+      for (const leak of cases) for (const secret of leak.secrets) expect(rows).not.toContain(secret);
+      expect(rows).toContain('ls -l /etc');
+      expect(w.outbox()).toEqual([]);
+    } finally { w.e.sqlite.close(); }
+  }, 20_000);
 });

@@ -19,6 +19,17 @@ export interface Leak { name: string; command: string; secrets: readonly string[
 
 /** Each input, and the values of it no path may ever store. */
 export const CORPUS: readonly Leak[] = [
+  { name: 'a slash-bearing printf payload', command: 'printf %s private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'a slash-bearing data flag value', command: 'curl --data private/customer-note https://fixture.invalid', secrets: ['private/customer-note'] },
+  { name: 'a file-shaped data flag value', command: 'curl --data customer-note.json https://fixture.invalid', secrets: ['customer-note.json'] },
+  { name: 'an unknown flag value', command: 'tool --message private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'a slash-bearing search pattern', command: 'rg -n private/customer-note src/', secrets: ['private/customer-note'] },
+  { name: 'a file-shaped search pattern', command: 'grep -i customer-note.json src/a.ts', secrets: ['customer-note.json'] },
+  { name: 'a slash-bearing unknown positional', command: 'tool private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'an application payload after its script', command: 'node app.js private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'a payload after a runtime eval flag', command: 'node -e ignored private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'a payload forwarded to an npm test script', command: 'npm test -- private/customer-note', secrets: ['private/customer-note'] },
+  { name: 'a path-shaped test filter', command: 'bun test private/customer-note', secrets: ['private/customer-note'] },
   // Plain and short positional words.
   { name: 'a plain word echoed', command: 'echo S3cret', secrets: ['S3cret'] },
   { name: 'a lowercase word echoed', command: 'echo letmein77', secrets: ['letmein77'] },
@@ -145,6 +156,20 @@ export const OPENAI_LETTERS = ['sk', 'abcdefghijklmnop'].join('-');
  * a password-file record; and a key or a label broken by zero-width characters. Agent prose keeps none of them.
  */
 export const PROSE: readonly Leak[] = [
+  { name: 'indented JSON output', command: 'Read the configuration:\n\n    {"clientPassword":"piano-harbor","note":"customer-content"}\n\nUpdated the policy.', secrets: ['piano-harbor', 'customer-content'] },
+  { name: 'tab-indented YAML output', command: 'Read the configuration:\n\tclientPassword: piano-harbor\n\tnote: customer-content\nUpdated the policy.', secrets: ['piano-harbor', 'customer-content'] },
+  { name: 'blockquote output', command: 'Read the response:\n> customer-content\n> another copied line\nUpdated the policy.', secrets: ['customer-content', 'another copied line'] },
+  { name: 'a camelCase password label', command: 'clientPassword: piano-harbor', secrets: ['piano-harbor'] },
+  { name: 'a camelCase token label', command: 'serviceAccessToken is piano-harbor', secrets: ['piano-harbor'] },
+  { name: 'a camelCase API key label', command: 'clientApiKey: piano-harbor', secrets: ['piano-harbor'] },
+  { name: 'an empty JSON key', command: 'Observed {"":"customer-content"} and updated the policy.', secrets: ['customer-content'] },
+  { name: 'an escaped JSON key', command: `Observed ${JSON.stringify({ 'escaped"key': 'customer-content' })} and updated the policy.`, secrets: ['customer-content'] },
+  { name: 'nested structured JSON output', command: 'Observed {"note":"customer-content","nested":{"mode":"private-mode"}} and updated the policy.', secrets: ['customer-content', 'private-mode'] },
+  { name: 'a primitive-first JSON array', command: 'Observed [0,"customer-content"] and updated the policy.', secrets: ['customer-content'] },
+  { name: 'a boolean-first JSON array', command: 'Observed [true,"customer-content"] and updated the policy.', secrets: ['customer-content'] },
+  { name: 'structured array output', command: 'Observed ["customer-content", {"mode":"private-mode"}] and updated the policy.', secrets: ['customer-content', 'private-mode'] },
+  { name: 'unclosed structured output', command: 'Observed {"note":"customer-content", "nested": {"mode":"private-mode"', secrets: ['customer-content', 'private-mode'] },
+  { name: 'unfenced structured JSON output', command: 'Observed {"note":"customer-content","mode":"private-mode"} and updated the policy.', secrets: ['customer-content', 'private-mode'] },
   { name: 'a quoted secret of several words', command: 'The secret is "alpha beta gamma" for now.', secrets: ['alpha', 'beta', 'gamma'] },
   { name: 'a passphrase of several words', command: 'passphrase: my dog spot', secrets: ['my dog spot', 'dog', 'spot'] },
   { name: 'a password in a table cell', command: '| name | value |\n| DB_PASSWORD | p@ss w0rd |\n| HOST | db |', secrets: ['p@ss', 'w0rd'] },
@@ -168,4 +193,16 @@ export const PROSE: readonly Leak[] = [
   { name: 'a shadow line', command: 'deploy:$6$saltsalt$hashhashhash:19000:0:99999:7:::', secrets: ['saltsalt', 'hashhash'] },
   { name: 'a label broken by a zero-width space', command: 'pass​word: hunter22', secrets: ['hunter22'] },
   { name: 'a key broken by a zero-width joiner', command: `the key was ${OPENAI_KEY.slice(0, 10)}‍${OPENAI_KEY.slice(10)}`, secrets: [OPENAI_KEY.slice(10), OPENAI_KEY.slice(0, 10)] },
+];
+
+/** Arbitrary diagnostic payloads, including ordinary content with no key-like shape. */
+export const DIAGNOSTIC_PAYLOADS: readonly Leak[] = [
+  { name: 'a diagnostic sentence impersonation', command: 'the worker could not start the run (no_driver: customer_note)', secrets: ['customer_note'] },
+  { name: 'a whitespace-prefixed quota echo', command: `${' '.repeat(200)}AiError: 4006 daily free allocation; customer-content piano-harbor`, secrets: ['customer-content', 'piano-harbor'] },
+  { name: 'a whitespace-prefixed input echo', command: `${' '.repeat(200)}AiError: 3010 invalid or incomplete input; customer-content piano-harbor`, secrets: ['customer-content', 'piano-harbor'] },
+  { name: 'a file excerpt', command: 'customer-content from the confidential document', secrets: ['customer-content', 'confidential document'] },
+  { name: 'a provider echo', command: 'password=piano-harbor; input=customer-content', secrets: ['piano-harbor', 'customer-content'] },
+  { name: 'a provider JSON body', command: '{"clientPassword":"piano-harbor","input":"customer-content"}', secrets: ['piano-harbor', 'customer-content'] },
+  { name: 'a provider quota echo', command: 'AiError: 4006 daily free allocation; customer-content piano-harbor', secrets: ['customer-content', 'piano-harbor'] },
+  { name: 'a provider input echo', command: 'AiError: 3010 invalid or incomplete input; customer-content piano-harbor', secrets: ['customer-content', 'piano-harbor'] },
 ];

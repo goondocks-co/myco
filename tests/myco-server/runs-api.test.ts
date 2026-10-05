@@ -233,7 +233,7 @@ describe('POST /runs/report', () => {
     await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
     const written = await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'container-smoke', summary: 'the finding', details: '{"n":1}' });
     expect(written).toEqual({ persisted: true, recorded: true });
-    expect(sqlite.query(`SELECT action, summary, details FROM agent_reports WHERE run_id = 'r1'`).all()).toEqual([{ action: 'container-smoke', summary: 'the finding', details: '{"n":1}' }]);
+    expect(sqlite.query(`SELECT action, summary, details FROM agent_reports WHERE run_id = 'r1'`).all()).toEqual([{ action: 'container-smoke', summary: 'the finding', details: '…' }]);
 
     const foreign = await post('/runs/report', { runId: 'r_unknown', agentId: AGENT, action: 'container-smoke', summary: 's' });
     expect(foreign.persisted).toBe(false);

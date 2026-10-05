@@ -144,6 +144,7 @@ describe('a harness diagnostic, stored as a coded reason', () => {
  * it stored, as its own words, with the run. Inline code, a code fence and a here-document never keep one.
  */
 const PLAIN_WORDS: ReadonlySet<string> = new Set([
+  'private/customer-note', 'customer-note.json',
   'letmein77', 'literal-secret-value', '123456', 'AUTH', 'qwerty', 'lowercasesecret', 'hunter22', 'hunter2', 'assword', 'oken',
   'secrets/prod.env', 'prod-signing', 'Bearer', 'X-Api-Key', 'root', 'deployer', 'openai', 'Winter', 'Coming', 'vllkbsi5',
   'Summer2024', 'hunterpass', 'rotation',

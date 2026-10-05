@@ -12,10 +12,10 @@
  *   `-c` script only where it is one `KNOWN_PROGRAMS` lists, or a path;
  * - a subcommand is kept only where it is the program's first positional word, before any `--`, and one the program's
  *   entry in `SUBCOMMANDS` lists;
- * - a flag keeps its name and never its value: `-x` reads `-x`, `-xVALUE` reads `-x…`, `--name=VALUE` reads
- *   `--name=…`; a word is never read as a flag's value or not, so the word after a flag is kept only where it is a path,
- *   and never after a flag whose name says it carries a secret (token, secret, pass, key, auth, credential);
- * - any other argument is kept only where it is a path: `.` or `..`, or a word that holds a `/` or ends in an extension
+ * - a flag keeps its name: `-x` reads `-x`, `-xVALUE` reads `-x…`, `--name=VALUE` reads
+ *   `--name=…`; a separate value is omitted unless the command declares a path-taking flag; declared boolean flags
+ *   take no value; secret-named flags never keep a value;
+ * - a positional argument is kept only in a declared path-taking role and where it is a path: `.` or `..`, or a word that holds a `/` or ends in an extension
  *   `FILE_EXTENSIONS` lists; it holds no `@ : = ? &`, and is not key-like taken whole;
  * - a URL reads as its scheme and host alone, and as its scheme alone where the host is key-like;
  * - after a redirection (`<`, `<<`, `<<<`, `>`, `>>`) every word reads `…` up to the next command, and each command of
@@ -26,7 +26,7 @@
  * Masking known access-key shapes (`redactSecrets`) is a second layer a caller applies after this one.
  */
 
-import { EXTENSION_TABLE, PROGRAM_TABLE, SUBCOMMAND_TABLE } from './command-tables.js';
+import { BOOLEAN_FLAG_TABLE, EXTENSION_TABLE, PATH_FLAG_TABLE, PATH_PROGRAM_TABLE, PATH_SUBCOMMAND_TABLE, PROGRAM_TABLE, FIRST_PATH_PROGRAM_TABLE, SEARCH_PROGRAM_TABLE, SUBCOMMAND_TABLE } from './command-tables.js';
 import { PROVIDER_KEY_PREFIXES } from './redact-secrets.js';
 
 /** The programs whose first positional word is a subcommand a reader needs, each with the subcommands it is read as. */
@@ -167,11 +167,11 @@ function unquoted(token: string, spaces = false): string | null {
   return (!spaces && /\s/.test(inner)) || inner.includes(first) ? null : inner;
 }
 
-/** An argument in its allowed shape: a URL as its scheme and host, a path as it stands, anything else `…`. */
-function argument(token: string): string {
+/** An argument: a URL as its scheme and host, a path only in a declared path role, anything else `…`. */
+function argument(token: string, path: boolean): string {
   const bare = unquoted(token);
   if (bare === null || bare === '') return ELIDED;
-  return urlShape(bare) ?? (pathLike(bare) ? bare : ELIDED);
+  return urlShape(bare) ?? (path && pathLike(bare) ? bare : ELIDED);
 }
 
 /**
@@ -211,7 +211,9 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
   let name = '';
   let positionals = 0;
   let afterFlag = false;
-  let secretNext = false;
+  let pathNext = false;
+  let subcommandName = '';
+  let firstPathAllowed = true;
   let redirected = false;
   let endOfFlags = false;
   let scriptNext = false;
@@ -219,7 +221,7 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
   for (const token of tokens) {
     if (COMMAND_BREAKS.has(token)) {
       out.push(token);
-      atProgram = true; first = false; name = ''; positionals = 0; afterFlag = false; secretNext = false; redirected = false; endOfFlags = false; scriptNext = false;
+      atProgram = true; first = false; name = ''; positionals = 0; afterFlag = false; pathNext = false; subcommandName = ''; firstPathAllowed = true; redirected = false; endOfFlags = false; scriptNext = false;
       continue;
     }
     if (GROUPS.has(token)) {
@@ -253,19 +255,29 @@ function shapeWords(tokens: readonly string[], depth: number): string[] {
       out.push(script === null ? ELIDED : shapeLine(script, depth + 1) ?? ELIDED);
       continue;
     }
-    if (!endOfFlags && token === '--') { out.push(token); endOfFlags = true; afterFlag = false; secretNext = false; continue; }
+    if (!endOfFlags && token === '--') { out.push(token); endOfFlags = true; afterFlag = false; pathNext = false; continue; }
     if (!endOfFlags && token.startsWith('-') && token.length > 1) {
       out.push(flag(token));
-      afterFlag = true;
-      secretNext = secretFlag(token) && !token.includes('=');
+      if (FIRST_PATH_PROGRAM_TABLE.includes(name)) firstPathAllowed = false;
+      afterFlag = !token.includes('=') && BOOLEAN_FLAG_TABLE[name]?.includes(token) !== true;
+      pathNext = afterFlag && !secretFlag(token) && PATH_FLAG_TABLE[name]?.includes(token) === true;
       scriptNext = SHELLS.has(name) && SHELL_SCRIPT_FLAG.test(token);
       continue;
     }
-    if (secretNext) { out.push(ELIDED); secretNext = false; afterFlag = false; continue; }
-    if (!afterFlag) positionals += 1;
+    if (afterFlag) {
+      out.push(pathNext ? argument(token, true) : ELIDED);
+      pathNext = false; afterFlag = false;
+      continue;
+    }
+    positionals += 1;
     const bare = unquoted(token);
-    const subcommand = !afterFlag && !endOfFlags && positionals === 1 && bare !== null && SUBCOMMANDS[name]?.has(bare) === true;
-    out.push(subcommand ? bare! : argument(token));
+    const subcommand = !endOfFlags && positionals === 1 && bare !== null && SUBCOMMANDS[name]?.has(bare) === true;
+    if (subcommand) subcommandName = bare!;
+    const path = PATH_PROGRAM_TABLE.includes(name)
+      || (FIRST_PATH_PROGRAM_TABLE.includes(name) && firstPathAllowed && positionals === 1)
+      || (SEARCH_PROGRAM_TABLE.includes(name) && positionals > 1)
+      || PATH_SUBCOMMAND_TABLE[name]?.includes(subcommandName) === true;
+    out.push(subcommand ? bare! : argument(token, path));
     afterFlag = false;
   }
   return out;

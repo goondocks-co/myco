@@ -51,3 +51,35 @@ export const EXTENSION_TABLE: readonly string[] = [
   'patch', 'diff', 'bak', 'tmp', 'out', 'err', 'pid', 'plist', 'jar', 'vsix', 'map', 'snap', 'bin', 'dat', 'mp4', 'mp3', 'wav', 'ttf', 'woff',
   'woff2', 'otf', 'dockerfile', 'makefile', 'cmake', 'gradle', 'properties', 'storyboard', 'junit',
 ];
+
+/** Commands whose positional arguments name filesystem paths. */
+export const PATH_PROGRAM_TABLE = ['ls', 'cat', 'head', 'tail', 'less', 'more', 'wc', 'stat', 'file', 'diff', 'cp', 'mv', 'rm', 'mkdir', 'rmdir', 'touch', 'du', 'tree', 'realpath', 'readlink', 'basename', 'dirname'];
+
+/** Commands whose first positional argument is a search pattern and subsequent arguments name paths. */
+export const SEARCH_PROGRAM_TABLE = ['rg', 'grep', 'egrep', 'ag'];
+
+/** Subcommands whose subsequent positional arguments name paths. */
+export const PATH_SUBCOMMAND_TABLE: Readonly<Record<string, readonly string[]>> = {
+  git: ['add', 'diff', 'restore', 'rm', 'mv', 'ls-files'],
+};
+
+/** Flags with no separate value, scoped to the command that declares them. */
+export const BOOLEAN_FLAG_TABLE: Readonly<Record<string, readonly string[]>> = {
+  ls: ['-l', '-a', '-h', '-la', '-al', '--all', '--long'],
+  cat: ['-n', '-b', '-s'],
+  cp: ['-r', '-R', '-f', '-i', '-a'], mv: ['-f', '-i'], rm: ['-r', '-R', '-f', '-rf'],
+  rg: ['-n', '-i', '-l', '-q', '-c', '--line-number', '--ignore-case', '--files', '--hidden'],
+  grep: ['-n', '-i', '-l', '-q', '-c', '-r', '-R', '-v'],
+  egrep: ['-n', '-i', '-l', '-q', '-c'], ag: ['-n', '-i', '-l'],
+  git: ['--oneline', '--cached', '--stat', '--name-only', '--staged'],
+};
+
+/** Flags whose one separate value names a filesystem path. */
+export const PATH_FLAG_TABLE: Readonly<Record<string, readonly string[]>> = {
+  git: ['-C', '--git-dir', '--work-tree'],
+  openssl: ['-in', '-out'],
+  curl: ['--output', '-o', '--cacert'],
+};
+
+/** Commands whose first positional, with no preceding flags, names a script file or working directory. */
+export const FIRST_PATH_PROGRAM_TABLE = ['node', 'tsx', 'cd', 'pushd'];
