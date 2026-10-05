@@ -28,6 +28,35 @@ async function withPrivateFile(attempt: (file: string, home: string, scope: Retu
   }
 }
 
+function inheritedDescriptorProbe(file: string, home: string, body: string): string {
+  const childHome = path.join(home, 'child-home');
+  fs.mkdirSync(childHome);
+  const code = `
+    import fs from 'node:fs';
+    import { installFilesystemFence } from ${JSON.stringify(path.resolve('tests/setup/filesystem-fence.ts'))};
+    installFilesystemFence(${JSON.stringify(home)});
+    ${body}
+  `;
+  const launcher = `
+    const fs = require('node:fs');
+    const fd = fs.openSync(${JSON.stringify(file)}, 'r');
+    const child = require('node:child_process').spawnSync('bun', ['-e', ${JSON.stringify(code)}], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', fd],
+    });
+    fs.closeSync(fd);
+    process.stdout.write(child.stdout);
+    process.stderr.write(child.stderr);
+    process.exit(child.status ?? 1);
+  `;
+  const result = spawnSync('node', ['-e', launcher], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: childHome, CODEX_HOME: path.join(childHome, '.codex'),
+      CLAUDE_CONFIG_DIR: path.join(childHome, '.claude'), MYCO_HOME: path.join(childHome, '.myco') },
+  });
+  expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+  return result.stdout;
+}
+
 const syncMutations: Record<string, (fd: number) => unknown> = {
   fchmodSync: (fd) => fs.fchmodSync(fd, 0o666),
   fchownSync: (fd) => fs.fchownSync(fd, process.getuid?.() ?? 0, process.getgid?.() ?? 0),
@@ -78,34 +107,73 @@ describe('filesystem descriptor fence', () => {
     expect(() => fs.fchmodSync(1, 0o666)).toThrow(/TEST SAFETY.*untracked file descriptor/);
   });
   it('blocks metadata writes through an inherited protected descriptor', () => withPrivateFile(async (file, home) => {
-    const childHome = path.join(home, 'child-home');
-    fs.mkdirSync(childHome);
-    const code = `
-      import fs from 'node:fs';
-      import { installFilesystemFence } from ${JSON.stringify(path.resolve('tests/setup/filesystem-fence.ts'))};
-      installFilesystemFence(${JSON.stringify(home)});
+    const output = inheritedDescriptorProbe(file, home, `
       try { fs.fchmodSync(3, 0o666); console.log('mutation permitted'); }
       catch (error) { console.log(error.message); }
-    `;
-    const launcher = `
-      const fs = require('node:fs');
-      const fd = fs.openSync(${JSON.stringify(file)}, 'r');
-      const child = require('node:child_process').spawnSync('bun', ['-e', ${JSON.stringify(code)}], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', fd],
-      });
-      fs.closeSync(fd);
-      process.stdout.write(child.stdout);
-      process.stderr.write(child.stderr);
-      process.exit(child.status ?? 1);
-    `;
-    const result = spawnSync('node', ['-e', launcher], {
-      encoding: 'utf8',
-      env: { ...process.env, HOME: childHome, CODEX_HOME: path.join(childHome, '.codex'),
-        CLAUDE_CONFIG_DIR: path.join(childHome, '.claude'), MYCO_HOME: path.join(childHome, '.myco') },
-    });
-    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
-    expect(result.stdout).toMatch(/TEST SAFETY.*untracked file descriptor 3/);
+    `);
+    expect(output).toMatch(/TEST SAFETY.*untracked file descriptor 3/);
   }));
+
+  for (const form of ['read', 'write'] as const) {
+    for (const destination of ['protected', 'scratch'] as const) {
+      it(`preserves ${form} custom-open ${destination} descriptor ownership`, () => withPrivateFile(async (file, home) => {
+        const actual = destination === 'protected' ? file : path.join(home, 'custom-open-scratch');
+        const nominal = path.join(home, 'custom-open-nominal');
+        if (destination === 'scratch') fs.writeFileSync(actual, 'scratch', { mode: PRIVATE_MODE });
+        fs.writeFileSync(nominal, 'nominal');
+        let calls = 0;
+        const customFs = {
+          open(_target: unknown, flags: string | number, _mode: unknown, callback: (error: NodeJS.ErrnoException | null, fd: number) => void) {
+            calls++;
+            fs.open(actual, destination === 'protected' ? 'r' : flags, callback);
+          },
+          read: fs.read.bind(fs), write: fs.write.bind(fs), writev: fs.writev.bind(fs), close: fs.close.bind(fs),
+        };
+        const stream = form === 'read' ? fs.createReadStream(nominal, { fs: customFs })
+          : fs.createWriteStream(nominal, { fs: customFs });
+        try {
+          const fd = await new Promise<number>((resolve, reject) => { stream.once('open', resolve); stream.once('error', reject); });
+          expect(calls).toBe(1);
+          expect(fs.fstatSync(fd).ino).toBe(fs.statSync(actual).ino);
+          if (destination === 'protected') expect(() => fs.fchmodSync(fd, 0o666)).toThrow(/TEST SAFETY/);
+          else {
+            fs.fchmodSync(fd, 0o666);
+            expect(fs.statSync(actual).mode & 0o777).toBe(0o666);
+            if (form === 'write') {
+              await new Promise<void>((resolve, reject) => {
+                stream.once('close', resolve); stream.once('error', reject);
+                (stream as fs.WriteStream).end('scratch write');
+              });
+              expect(fs.readFileSync(actual, 'utf8')).toBe('scratch write');
+            }
+          }
+        } finally {
+          if (!stream.closed) await new Promise<void>((resolve, reject) => {
+            stream.once('close', resolve); stream.once('error', reject); stream.destroy();
+          });
+        }
+      }));
+    }
+    it(`refuses mutation through an untracked ${form} custom-open descriptor`, () => withPrivateFile(async (file, home) => {
+      const nominal = path.join(home, 'untracked-stream-nominal');
+      fs.writeFileSync(nominal, 'nominal');
+      const output = inheritedDescriptorProbe(file, home, `
+        let calls = 0;
+        const customFs = {
+          open(_target, _flags, _mode, callback) { calls++; callback(null, 3); },
+          read: fs.read.bind(fs), write: fs.write.bind(fs), writev: fs.writev.bind(fs), close: fs.close.bind(fs),
+        };
+        const stream = fs.${form === 'read' ? 'createReadStream' : 'createWriteStream'}(${JSON.stringify(nominal)}, { fs: customFs });
+        const fd = await new Promise((resolve, reject) => { stream.once('open', resolve); stream.once('error', reject); });
+        const protectedInode = fs.fstatSync(fd).ino === fs.statSync(${JSON.stringify(file)}).ino;
+        let message = '';
+        try { fs.fchmodSync(fd, 0o666); } catch (error) { message = error.message; }
+        await new Promise((resolve, reject) => { stream.once('close', resolve); stream.once('error', reject); stream.destroy(); });
+        console.log(JSON.stringify({ calls, protectedInode, message }));
+      `);
+      expect(JSON.parse(output)).toEqual({ calls: 1, protectedInode: true, message: expect.stringMatching(/TEST SAFETY.*untracked file descriptor/) });
+    }));
+  }
   it('tracks named promise-open handles for protected and scratch files', () => withPrivateFile(async (file, home) => {
     const privateHandle = await promiseOpen(file, 'r');
     try { expect(() => privateHandle.chmod(0o666)).toThrow(/TEST SAFETY/); }

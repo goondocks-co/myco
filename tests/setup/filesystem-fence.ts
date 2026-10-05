@@ -168,13 +168,17 @@ wrap(FS, 'renameSync', [0, 1]); // moving a protected path away is also a mutati
   }
 }
 // Stream descriptors retain their opening targets.
+function trackStream<T extends fs.ReadStream | fs.WriteStream>(stream: T, targets: string[], customOpen: boolean): T {
+  stream.on('open', (fd: number) => {
+    if (!customOpen && !descriptorPaths.has(fd)) descriptorPaths.set(fd, targets);
+  });
+  return stream;
+}
 {
   const original = fs.createReadStream;
   fs.createReadStream = ((target, options) => {
     const targets = descriptorTargets(target);
-    const stream = original(target, options);
-    stream.on('open', (fd: number) => descriptorPaths.set(fd, targets));
-    return stream;
+    return trackStream(original(target, options), targets, typeof options === 'object' && options?.fs !== undefined);
   }) as typeof fs.createReadStream;
 }
 {
@@ -184,9 +188,7 @@ wrap(FS, 'renameSync', [0, 1]); // moving a protected path away is also a mutati
     const hit = offending(target) ?? (anonymousOutputStream('write', fd) ? null : offending(fd));
     if (hit) deny('createWriteStream', hit);
     const targets = descriptorTargets(target);
-    const stream = original(target, options);
-    stream.on('open', (fd: number) => descriptorPaths.set(fd, targets));
-    return stream;
+    return trackStream(original(target, options), targets, typeof options === 'object' && options?.fs !== undefined);
   }) as typeof fs.createWriteStream;
 }
 // callback-form fs writers — same path-arg indices as their sync counterparts
