@@ -72,7 +72,9 @@ done
 auth_token() { printf '%s' "${GITHUB_TOKEN:-${GH_TOKEN:-}}"; }
 
 # Authorization travels through stdin; curl's arguments contain no credentials.
-gh_request() {
+gh_request() (
+  # The caller retains its tracing state outside this credential-handling subshell.
+  set +x
   _token="$(auth_token)"
   # Curl config values must be single-line to prevent extra config directives.
   case "$_token" in
@@ -87,11 +89,11 @@ gh_request() {
       _escaped_token="$(printf '%s' "$_token" | sed 's/\\/\\\\/g; s/"/\\"/g')"
       printf 'header = "Authorization: Bearer %s"\n' "$_escaped_token"
     fi
-  } | curl --config - \
+  } | curl -q --config - \
       -H "Accept: application/vnd.github+json" \
       -H "User-Agent: myco-installer/${REPO}" \
       "$@"
-}
+)
 
 # Token-aware curl wrapper.
 gh_curl() { gh_request -fsSL "$@"; }

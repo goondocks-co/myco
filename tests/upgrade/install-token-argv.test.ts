@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from '../support/fenced-fs.mjs';
 
+import { assertPrivate, assertTokenFree } from '../support/installer-token-gate.js';
+
+const SHELLS = ['/bin/sh', '/bin/bash', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])];
 const FAKE_TOKEN = 'ghp_fake_installer_1644';
 const BINARY = '#!/bin/sh\nexit 0\n';
 const CHECKSUM = createHash('sha256').update(BINARY).digest('hex');
@@ -12,7 +15,7 @@ const INSTALLER = resolve('docs/install.sh');
 
 type CurlCall = { argv: string[]; config: string };
 
-function install(shell: string, os: string, tokens: Record<string, string>, fail = false) {
+function install(shell: string, os: string, tokens: Record<string, string>, fail = false, trace = false) {
   const root = mkdtempSync(join(tmpdir(), 'myco-install-token-'));
   const home = join(root, 'home');
   const bin = join(root, 'tools');
@@ -48,7 +51,7 @@ if (argv.includes('-w')) {
 }
 `);
   try {
-    const result = spawnSync(shell, [INSTALLER], {
+    const result = spawnSync(shell, [...(trace ? ['-x'] : []), INSTALLER], {
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -59,7 +62,9 @@ if (argv.includes('-w')) {
       },
       timeout: 15_000,
     });
-    if (result.status !== (fail ? 22 : 0)) throw new Error(`Installer failed: ${result.status}: ${result.stderr} ${result.stdout}`);
+    const secrets = Object.values(tokens).flatMap(token => [token, token.replaceAll('\\', '\\\\').replaceAll('"', '\\"')]);
+    assertTokenFree(result.stdout + result.stderr, secrets);
+    expect(result.status === (fail ? 22 : 0), 'installer exit status must match the scenario').toBe(true);
     const calls: CurlCall[] = readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     return { result, calls, tempFiles: readdirSync(temp) };
   } finally {
@@ -67,20 +72,8 @@ if (argv.includes('-w')) {
   }
 }
 
-function assertPrivate(calls: CurlCall[], token: string) {
-  for (const call of calls) {
-    expect(call.argv.join('\n')).not.toContain(FAKE_TOKEN);
-    expect(call.argv).toContain('--config');
-    expect(call.argv[call.argv.indexOf('--config') + 1]).toBe('-');
-    expect(call.argv).toContain('Accept: application/vnd.github+json');
-    expect(call.argv).toContain('User-Agent: myco-installer/goondocks-co/myco');
-    const escaped = token.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-    expect(call.config).toBe(token ? `header = "Authorization: Bearer ${escaped}"\n` : '');
-  }
-}
-
 describe('installer GitHub credentials stay out of spawned curl argv', () => {
-  for (const shell of ['/bin/sh', '/bin/bash', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])]) {
+  for (const shell of SHELLS) {
     for (const os of ['Darwin', 'Linux']) {
       for (const [name, tokens, token] of [
         ['no token', {}, ''],
@@ -92,7 +85,7 @@ describe('installer GitHub credentials stay out of spawned curl argv', () => {
         it(`${shell} ${os}: ${name}`, () => {
           const { result, calls, tempFiles } = install(shell, os, tokens);
           expect(result.status).toBe(0);
-          expect(calls).toHaveLength(3);
+          expect(calls.length).toBe(3);
           assertPrivate(calls, token);
           expect(tempFiles).toEqual([]);
         });
@@ -100,10 +93,20 @@ describe('installer GitHub credentials stay out of spawned curl argv', () => {
     }
   }
 
+  for (const shell of SHELLS) {
+    for (const name of ['GITHUB_TOKEN', 'GH_TOKEN']) {
+      it(`shell tracing stays credential-free and resumes afterwards: ${shell} ${name}`, () => {
+        const { result, calls } = install(shell, 'Linux', { [name]: `${FAKE_TOKEN}\"\\` }, false, true);
+        assertPrivate(calls, `${FAKE_TOKEN}\"\\`);
+        expect(result.stderr.includes('+ chmod +x'), 'caller tracing must resume after credential handling').toBe(true);
+      });
+    }
+  }
+
   it('preserves curl failures and leaves no credential files', () => {
     const { result, calls, tempFiles } = install('/bin/sh', 'Linux', { GH_TOKEN: FAKE_TOKEN }, true);
     expect(result.status).toBe(22);
-    expect(calls).toHaveLength(2);
+    expect(calls.length).toBe(2);
     assertPrivate(calls, FAKE_TOKEN);
     expect(tempFiles).toEqual([]);
   });
