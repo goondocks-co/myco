@@ -72,25 +72,66 @@ export const D1_EXPORT_STALL_MS = 60_000;
  * the same export for its download again, and resumes the bytes already on disk where the download serves a range.
  */
 export const D1_EXPORT_DOWNLOAD_ATTEMPTS = 4;
-/** New whole exports admitted by one backup run, including its snapshot retries. */
+/** New whole exports admitted under one recovery hold, including process and snapshot retries. */
 export const D1_EXPORT_START_LIMIT = 2;
 
-/** Admission budget shared by every snapshot attempt of a backup run; bookmark polls consume none. */
+type AdmissionContext = Pick<D1ExportContext, 'accountId' | 'databaseId' | 'recordDir' | 'holdToken'>;
+const admissionSchema = z.object({ accountId: z.string(), databaseId: z.string(), holdToken: z.string(),
+  started: z.number().int().min(0).max(D1_EXPORT_START_LIMIT) });
+type AdmissionRecord = z.infer<typeof admissionSchema>;
+
+const admissionPath = (recordDir: string, databaseId: string, holdToken: string) => path.join(recordDir,
+  `d1-admissions-${createHash('sha256').update(JSON.stringify([databaseId, holdToken])).digest('hex')}.json`);
+
+/** One admission writer; held captures persist every start before its request, and bookmark polls consume none. */
 export class D1ExportStartBudget {
   private started = 0;
 
-  admit(): () => void {
-    if (this.started >= D1_EXPORT_START_LIMIT) {
-      throw new Error(`new D1 export limit (${D1_EXPORT_START_LIMIT}) reached for this backup run; no further export was started. `
-        + 'Each new export pauses D1 queries. The recovery hold and recorded export remain available for resumption; resolve the failure before running backup again.');
+  /** Initializes a newly acquired hold's budget; an existing budget is never reset. */
+  constructor(freshHold?: AdmissionContext) {
+    if (freshHold?.holdToken && this.read(freshHold) === null) this.write(freshHold, 0);
+  }
+
+  private read(context: AdmissionContext): number | null {
+    if (!context.holdToken) return this.started;
+    let raw: string;
+    try { raw = fs.readFileSync(admissionPath(context.recordDir, context.databaseId, context.holdToken), 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+    const record = admissionSchema.parse(JSON.parse(raw));
+    if (record.accountId !== context.accountId || record.databaseId !== context.databaseId || record.holdToken !== context.holdToken) {
+      throw new Error('D1 export admission record belongs to another recovery hold or source');
     }
-    this.started += 1;
+    return record.started;
+  }
+
+  private write(context: AdmissionContext, started: number): void {
+    if (!context.holdToken) { this.started = started; return; }
+    writeRecord(admissionPath(context.recordDir, context.databaseId, context.holdToken),
+      { accountId: context.accountId, databaseId: context.databaseId, holdToken: context.holdToken, started });
+  }
+
+  admit(context: AdmissionContext): () => void {
+    const started = this.read(context);
+    if (started === null) throw new Error('D1 export admission count is unavailable for this recovery hold; no new export was started. '
+      + 'Resume its recorded export, or explicitly abandon the hold before starting a new recovery attempt.');
+    if (started >= D1_EXPORT_START_LIMIT) {
+      throw new Error(`new D1 export limit (${D1_EXPORT_START_LIMIT}) reached for this recovery attempt; no further export was started. `
+        + 'Each new export pauses D1 queries. Resume its recorded export, or explicitly abandon this recovery hold before starting a new recovery attempt.');
+    }
+    this.write(context, started + 1);
     let refused = false;
     return () => {
       if (refused) return;
+      const current = this.read(context);
+      if (current === null || current < 1) throw new Error('D1 export admission count is unavailable for authentication-refusal refund');
+      this.write(context, current - 1);
       refused = true;
-      this.started -= 1;
     };
+  }
+
+  /** A confirmed released hold ends its admission budget, independently of any kept export record. */
+  static release(recordDir: string, databaseId: string, holdToken: string): void {
+    fs.rmSync(admissionPath(recordDir, databaseId, holdToken), { force: true });
   }
 }
 
@@ -232,11 +273,11 @@ function readRecord(file: string, marginMs: number): ExportRecord | null {
 }
 
 /** Write `record` in place of the one before it, on disk before this returns: it is what stops a second export. */
-function writeRecord(file: string, record: ExportRecord): void {
+function writeRecord(file: string, record: ExportRecord | AdmissionRecord): void {
   const temporary = `${file}.${process.pid}.tmp`;
   const handle = fs.openSync(temporary, 'w', 0o600);
   try {
-    fs.writeSync(handle, `${JSON.stringify(record)}\n`);
+    fs.writeFileSync(handle, `${JSON.stringify(record)}\n`);
     fs.fsyncSync(handle);
   } finally {
     fs.closeSync(handle);
@@ -287,7 +328,7 @@ function exporter(context: D1ExportContext) {
       const used = context.login.current();
       const headers = new Headers(await used);
       headers.set('content-type', 'application/json');
-      const refusedStart = bookmark === null ? startBudget.admit() : () => {};
+      const refusedStart = bookmark === null ? startBudget.admit(context) : () => {};
       if (attempt > 0) beforeRetry?.();
       let response: Response;
       try {
@@ -348,7 +389,12 @@ function exporter(context: D1ExportContext) {
    * rewritten from the start otherwise, never spliced. Null once the whole result is in `part`.
    */
   const downloadOnce = async (signedUrl: string, part: string, served: { etag: string | null; total: number | null }): Promise<null | { error: ObjectReadError; gone: boolean }> => {
-    const offset = fs.existsSync(part) ? fs.statSync(part).size : 0;
+    let offset = fs.existsSync(part) ? fs.statSync(part).size : 0;
+    const strong = (etag: string | null): etag is string => etag !== null && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(etag);
+    if (offset > 0 && (!strong(served.etag) || served.total === null)) {
+      fs.rmSync(part, { force: true });
+      offset = 0;
+    }
     const controller = new AbortController();
     const waiting = async <T>(operation: () => Promise<T>): Promise<T> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -392,9 +438,9 @@ function exporter(context: D1ExportContext) {
       const etag = response.headers.get('etag');
       let resumed = false;
       if (response.status === 206) {
-        const same = !encoded && range !== null && Number(range[1]) === offset
-          && (served.total === null || Number(range[2]) === served.total)
-          && (served.etag === null || etag === null || etag === served.etag);
+        const same = offset > 0 && !encoded && range !== null && Number(range[1]) === offset
+          && served.total !== null && Number(range[2]) === served.total
+          && strong(served.etag) && strong(etag) && etag === served.etag;
         if (!same) {
           await response.body.cancel().catch(() => {});
           fs.rmSync(part, { force: true });
@@ -630,6 +676,7 @@ export function releaseD1Export(context: D1ExportContext): void {
  * under it can use the result any longer. A result kept under another hold, and an export still running, stay.
  */
 export function releaseKeptD1Export(recordDir: string, databaseId: string, holdToken: string): void {
+  D1ExportStartBudget.release(recordDir, databaseId, holdToken);
   const file = exportRecordPath(recordDir, databaseId);
   let recorded: ExportRecord | null;
   try { recorded = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS); } catch { return; }

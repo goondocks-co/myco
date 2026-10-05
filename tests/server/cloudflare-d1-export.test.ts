@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
   D1_QUERY_ATTEMPTS, D1ExportStartBudget, exportD1, exportRecordPath, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
@@ -80,6 +81,8 @@ beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-d1-export-'
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 /** The record this machine keeps of its running export, as a test writes or reads it. */
+const heldContext = (holdToken = 'hold-1') => ({ accountId: ACCOUNT, databaseId: DATABASE, recordDir: dir, holdToken });
+const admissions = () => JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir).find((name) => name.startsWith('d1-admissions-'))!), 'utf8')) as { started: number };
 const recordFile = () => exportRecordPath(dir, DATABASE);
 const recorded = () => JSON.parse(fs.readFileSync(recordFile(), 'utf8')) as Record<string, unknown>;
 /** Whether no export this machine recorded may still run: no record, or one whose result is downloaded and held. */
@@ -134,11 +137,70 @@ describe('a D1 export that never completes', () => {
 });
 
 describe('an export a retry resumes', () => {
+  it('persists admission before the POST, keeps uncertain and ended starts charged, and cannot reset an active hold', async () => {
+    const held = heldContext();
+    const budget = new D1ExportStartBudget(held);
+    const api = provider(() => 'error');
+    const seen: number[] = [];
+    api.control.seen = (bookmark) => { if (bookmark === null) seen.push(admissions().started); };
+    await expect(run(async () => { expect(admissions().started).toBe(1); throw new TypeError('lost start answer'); },
+      { holdToken: held.holdToken, startBudget: budget })).rejects.toBeInstanceOf(D1ExportUnsettled);
+    clock += D1_EXPORT_CANCEL_MARGIN_MS;
+    await expect(run(api.fetch, { holdToken: held.holdToken, startBudget: new D1ExportStartBudget(held) })).rejects.toBeInstanceOf(D1ExportFailed);
+    expect(seen).toEqual([2]);
+    expect(admissions().started).toBe(2);
+    await expect(run(api.fetch, { holdToken: held.holdToken, startBudget: new D1ExportStartBudget(held) })).rejects.toThrow('new D1 export limit (2) reached');
+    expect(api.started()).toBe(1);
+  });
+
+  it('resumes a legacy held export but refuses a new start when its admission count is unavailable', async () => {
+    const api = provider(() => 'complete');
+    api.jobs.push({ bookmark: 'bm-old', state: 'active' });
+    record({ bookmark: 'bm-old', startedAt: clock, lastPolledAt: clock, holdToken: 'hold-1' });
+    await run(api.fetch, { holdToken: 'hold-1' });
+    expect(api.started()).toBe(0);
+    releaseD1Export({ ...heldContext(), output: path.join(dir, 'd1.sql'), login });
+    await expect(run(api.fetch, { holdToken: 'hold-1' })).rejects.toThrow('admission count is unavailable');
+    expect(api.started()).toBe(0);
+  });
+
+  it('keeps a provider-ended start charged when the refusal is not authentication', async () => {
+    const held = heldContext();
+    const api = provider();
+    api.control.startAnswer = () => Response.json({ success: true, result: { success: true, status: 'error', error: 'provider reset' } });
+    new D1ExportStartBudget(held);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(run(api.fetch, { holdToken: held.holdToken })).rejects.toBeInstanceOf(D1ExportFailed);
+      expect(admissions().started).toBe(attempt + 1);
+    }
+    await expect(run(api.fetch, { holdToken: held.holdToken })).rejects.toThrow('new D1 export limit (2) reached');
+    expect(api.started()).toBe(2);
+  });
+
+  it('does not POST when the durable admission write fails or its record is damaged', async () => {
+    const held = heldContext();
+    const budget = new D1ExportStartBudget(held);
+    const api = provider(() => 'complete');
+    const renameFile = fs.renameSync.bind(fs);
+    const rename = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).includes('d1-admissions-')) throw new Error('admission disk unavailable');
+      renameFile(from, to);
+    });
+    try {
+      await expect(run(api.fetch, { holdToken: held.holdToken, startBudget: budget })).rejects.toThrow('admission disk unavailable');
+    } finally { rename.mockRestore(); }
+    expect(api.started()).toBe(0);
+    const file = fs.readdirSync(dir).find((name) => name.startsWith('d1-admissions-') && name.endsWith('.json'))!;
+    fs.writeFileSync(path.join(dir, file), 'damaged');
+    await expect(run(api.fetch, { holdToken: held.holdToken })).rejects.toThrow();
+    expect(api.started()).toBe(0);
+  });
+
   it('retains the recovery-hold export cap across the restart-1/restart-2 subprocess sequence', async () => {
-    const child = new URL('./helpers/d1-export-restart-child.ts', import.meta.url).pathname;
+    const child = fileURLToPath(new URL('./helpers/d1-export-restart-child.ts', import.meta.url));
     const phase = async (name: string) => {
-      const process = Bun.spawn([Bun.argv[0]!, '--no-env-file', child, dir, name], { stdout: 'pipe', stderr: 'pipe' });
-      const [code, output, errors] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+      const childProcess = Bun.spawn([Bun.argv[0]!, '--no-env-file', child, dir, name], { stdout: 'pipe', stderr: 'pipe' });
+      const [code, output, errors] = await Promise.all([childProcess.exited, new Response(childProcess.stdout).text(), new Response(childProcess.stderr).text()]);
       expect({ code, errors }).toEqual({ code: 0, errors: '' });
       return JSON.parse(output);
     };
@@ -150,8 +212,9 @@ describe('an export a retry resumes', () => {
 
   it('does not charge an explicitly refused login against the new-export budget', async () => {
     const api = provider(() => 'complete');
-    const startBudget = new D1ExportStartBudget();
-    await run(api.fetch, { startBudget });
+    const holdToken = 'hold-refund';
+    const startBudget = new D1ExportStartBudget(heldContext(holdToken));
+    await run(api.fetch, { startBudget, holdToken });
     releaseD1Export({ accountId: ACCOUNT, databaseId: DATABASE, output: path.join(dir, 'd1.sql'), recordDir: dir, login });
     let refused = false;
     const fetch: CloudflareFetch = async (url, init) => {
@@ -161,7 +224,8 @@ describe('an export a retry resumes', () => {
       }
       return api.fetch(url, init);
     };
-    await run(fetch, { startBudget });
+    await run(fetch, { startBudget: new D1ExportStartBudget(), holdToken });
+    expect(admissions().started).toBe(2);
     expect(refused).toBe(true);
     expect(api.started()).toBe(2);
   });
@@ -425,10 +489,10 @@ describe('a download that trickles, then stalls', () => {
         return new Response(new ReadableStream({
           start(controller) { controller.enqueue(whole.slice(0, 8)); },
           pull() { return new Promise(() => {}); },
-        }), { status: 200, headers: { 'content-length': String(whole.byteLength) } });
+        }), { status: 200, headers: { 'content-length': String(whole.byteLength), etag: '"fixture"' } });
       }
       const from = Number(/^bytes=(\d+)-$/.exec(range)![1]);
-      return new Response(whole.slice(from), { status: 206, headers: { 'content-range': `bytes ${from}-${whole.byteLength - 1}/${whole.byteLength}` } });
+      return new Response(whole.slice(from), { status: 206, headers: { 'content-range': `bytes ${from}-${whole.byteLength - 1}/${whole.byteLength}`, etag: '"fixture"' } });
     });
     await run(fetch, { stallMs: 25, pollMs: 0 });
     expect({
@@ -494,10 +558,10 @@ describe('a download that closes before its length', () => {
       if (range === null) {
         // The connection closes cleanly after the first bytes, short of the length the answer declared.
         return new Response(new ReadableStream({ start(controller) { controller.enqueue(whole.slice(0, 10)); controller.close(); } }),
-          { status: 200, headers: { 'content-length': String(whole.byteLength) } });
+          { status: 200, headers: { 'content-length': String(whole.byteLength), etag: '"fixture"' } });
       }
       const from = Number(/^bytes=(\d+)-$/.exec(range)![1]);
-      return new Response(whole.slice(from), { status: 206, headers: { 'content-range': `bytes ${from}-${whole.byteLength - 1}/${whole.byteLength}` } });
+      return new Response(whole.slice(from), { status: 206, headers: { 'content-range': `bytes ${from}-${whole.byteLength - 1}/${whole.byteLength}`, etag: '"fixture"' } });
     };
     await run(fetch, { pollMs: 0 });
     expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), ranges, started: api.started() })
@@ -534,10 +598,10 @@ function servedInTurn(api: ReturnType<typeof provider>, answers: Array<(range: s
 const WHOLE = new TextEncoder().encode('-- export bm-1, twenty\n');
 /** The first `n` bytes of the whole, then a clean close short of the declared length. */
 const cutAt = (n: number, headers: Record<string, string> = {}) => () =>
-  new Response(new ReadableStream({ start(c) { c.enqueue(WHOLE.slice(0, n)); c.close(); } }), { headers: { 'content-length': String(WHOLE.byteLength), ...headers } });
-const whole = (headers: Record<string, string> = {}) => () => new Response(WHOLE, { headers: { 'content-length': String(WHOLE.byteLength), ...headers } });
+  new Response(new ReadableStream({ start(c) { c.enqueue(WHOLE.slice(0, n)); c.close(); } }), { headers: { 'content-length': String(WHOLE.byteLength), etag: '"fixture"', ...headers } });
+const whole = (headers: Record<string, string> = {}) => () => new Response(WHOLE, { headers: { 'content-length': String(WHOLE.byteLength), etag: '"fixture"', ...headers } });
 const ranged = (start: number, total: number, headers: Record<string, string> = {}) => () =>
-  new Response(WHOLE.slice(start), { status: 206, headers: { 'content-range': `bytes ${start}-${WHOLE.byteLength - 1}/${total}`, ...headers } });
+  new Response(WHOLE.slice(start), { status: 206, headers: { 'content-range': `bytes ${start}-${WHOLE.byteLength - 1}/${total}`, etag: '"fixture"', ...headers } });
 
 describe('a resumed download that does not match what it resumes', () => {
   const output = () => fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8');
@@ -749,7 +813,7 @@ describe('an export this machine already downloaded', () => {
     const sync = spyOn(fs, 'fsyncSync').mockImplementation((fd: number) => { seen.push(`sync ${opened.get(fd)}`); syncFile(fd); });
     const rename = spyOn(fs, 'renameSync').mockImplementation((from: fs.PathLike, to: fs.PathLike) => { seen.push(`rename ${String(from)}`); renameFile(from, to); });
     try {
-      await run(p.fetch, { holdToken: 'hold-1' });
+      await run(p.fetch, { holdToken: 'hold-1', startBudget: new D1ExportStartBudget(heldContext('hold-1')) });
     } finally { open.mockRestore(); sync.mockRestore(); rename.mockRestore(); }
     // The downloaded bytes are flushed before the rename publishes them, and the rename before the record says so.
     const part = `${sqlFile()}.part`;
@@ -796,7 +860,7 @@ describe('an export this machine already downloaded', () => {
     fs.writeFileSync(sqlFile(), '-- kept\n');
     const p = provider(() => 'complete');
     const reports: string[] = [];
-    await run(p.fetch, { holdToken: 'hold-new', report: (line) => reports.push(line) });
+    await run(p.fetch, { holdToken: 'hold-new', startBudget: new D1ExportStartBudget(heldContext('hold-new')), report: (line) => reports.push(line) });
     expect(p.started()).toBe(1);
     expect(reports.join('\n')).toContain('taken under another recovery hold');
     expect(recorded()).toMatchObject({ holdToken: 'hold-new', result: resultOf('-- export bm-1\n') });

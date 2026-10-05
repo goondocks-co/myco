@@ -841,8 +841,16 @@ describe('a transient Cloudflare failure during the snapshot', () => {
       expect(f.exports()).toHaveLength(2);
       expect(f.source.sqlite.query('SELECT released_at FROM recovery_holds WHERE holder=\'operator\'').all()).toEqual([{ released_at: null }]);
       expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
-      expect((await f.backup()).status).toBe('complete');
+      const admissions = () => fs.readdirSync(path.join(f.mycoHome, 'server', 'cloudflare')).filter((name) => name.startsWith('d1-admissions-'));
+      expect(admissions()).toHaveLength(1);
+      await expect(f.backup()).rejects.toThrow('new D1 export limit (2) reached');
+      expect(f.exports()).toHaveLength(2);
+      const owner = cloudflareRecoveryHoldOf({ accountId: f.record.accountId, mycoHome: f.mycoHome, runner: f.runner, fetch: f.fetchObject });
+      expect((await abandonRecoveryHold(f.destination, owner)).state).toBe('released');
+      expect(admissions()).toHaveLength(0);
+      expect((await f.backup({ destination: path.join(f.root, 'fresh-attempt') })).status).toBe('complete');
       expect(f.exports()).toHaveLength(3);
+      expect(admissions()).toHaveLength(0);
     } finally { f.cleanup(); }
   });
 

@@ -41,12 +41,17 @@ export class ProducerExporting extends CaptureRefusedBeforeSnapshot {
  * is released explicitly.
  */
 function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: string }, record: DeploymentRecord): RecoveryHoldOwner {
+  const databaseId = record.databaseId;
+  if (databaseId === undefined) throw new Error('recovery hold requires the recorded D1 database');
   const reading = async (token: string): Promise<RecoveryHoldReading> => {
     const rows = z.array(z.object({
       holder: z.string().nullable(), acquired_at: z.number().nullable(), released_at: z.number().nullable(),
       release_reason: z.string().nullable(), deployment_id: z.string().nullable(), schema_version: z.string().nullable(),
     })).parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.reading(token), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
     const { hold, source } = recoveryHoldOf(token, rows[0] ?? null);
+    if (hold?.holder === 'operator' && hold.releasedAt !== null) {
+      releaseKeptD1Export(provider.configDir, databaseId, token);
+    }
     return {
       state: hold === null ? 'absent' : hold.holder !== 'operator' ? 'other-holder' : hold.releasedAt === null ? 'open' : 'released',
       source,
@@ -55,6 +60,7 @@ function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: st
   return {
     locator: `${record.accountId}/${record.databaseId}`,
     acquire: async (token) => {
+      new D1ExportStartBudget({ accountId: record.accountId, databaseId, recordDir: provider.configDir, holdToken: token });
       await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.acquire(token, Date.now(), 'operator'), timeoutMs: D1_STATEMENT_TIMEOUT_MS });
       return reading(token);
     },
@@ -66,10 +72,7 @@ function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: st
     },
     release: async (token, reason) => {
       await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.releaseOperator(token, Date.now(), reason), timeoutMs: D1_STATEMENT_TIMEOUT_MS });
-      const answered = await reading(token);
-      // A released hold takes the export result kept under it along: no capture under that hold can use it again.
-      if (answered.state === 'released' && record.databaseId !== undefined) releaseKeptD1Export(provider.configDir, record.databaseId, token);
-      return answered;
+      return reading(token);
     },
   };
 }
