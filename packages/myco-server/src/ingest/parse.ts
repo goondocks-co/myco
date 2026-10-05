@@ -218,17 +218,25 @@ function contextFromStored(raw: unknown): Record<string, unknown> | null {
  */
 export type ParseFailure = Extract<Classifier, 'parse'> | 'event_refused' | 'blob_absent' | 'record_too_large';
 
-/** Which half of the queue a selection draws from: transcripts a hook shipped, or ones an import sent. */
-export type Lane = 'live' | 'imported';
+/** Live uploads, imported history, and a cursor rereading recorded bytes. */
+export type Lane = 'live' | 'imported' | 'repair';
 
-/**
- * The order each half is read in. Live transcripts go oldest receipt first, so the session being worked in is read
- * as it grows. Imported ones go smallest remaining first: a backlog of many short sessions and a few long ones
- * finishes the short ones in minutes instead of waiting behind the longest.
- */
+/** A reread with no segment received after its last pass stays behind live uploads. */
+const REREAD_UNTIL = `COALESCE(json_extract(parser_context, '$.mycoLegacyResponseUntil'),
+  json_extract(parser_context, '$.mycoParserRereadUntil'), json_extract(parser_context, '$.mycoParserState.legacyReplies.until'),
+  CASE WHEN json_extract(parser_context, '$.mycoParserState.chunked') = 1 THEN size ELSE 0 END)`;
+/** Unknown byte baselines require a live pass when receipt and service instants overlap. */
+const REPAIR_WORK = `(${REREAD_UNTIL}) > parsed_offset
+  AND CASE WHEN json_type(parser_context, '$.mycoParserReadSize') IS NOT NULL
+    THEN size <= json_extract(parser_context, '$.mycoParserReadSize')
+    ELSE COALESCE(last_received_at < parsed_at, 0) END`;
+
+/** Unserved transcripts lead; live and repair passes rotate by their last parse instant. */
+const LAST_SERVICE_ORDER = 'parsed_at, last_received_at, transcript_id';
 const LANE_ORDER: Record<Lane, { where: string; order: string }> = {
-  live: { where: 'imported_at IS NULL', order: 'last_received_at, transcript_id' },
+  live: { where: `imported_at IS NULL AND NOT (${REPAIR_WORK})`, order: LAST_SERVICE_ORDER },
   imported: { where: 'imported_at IS NOT NULL', order: 'size - parsed_offset, transcript_id' },
+  repair: { where: `imported_at IS NULL AND (${REPAIR_WORK})`, order: LAST_SERVICE_ORDER },
 };
 
 
@@ -798,7 +806,8 @@ const FIRST_HELD_BYTE = `SELECT MIN(s.base_offset) FROM transcript_segments s WH
 export const TRANSCRIPT_REPAIRS_PER_WAKE = 4;
 const repairCandidateSql = (version: number | '?' = '?'): string => `parser_version > 0 AND parser_version < ${version} AND parsed_offset > 0
   AND json_type(parser_context, '$.mycoLegacyResponseUntil') IS NULL`;
-const REREAD_CONTEXT = `json_set(COALESCE(parser_context, '{}'), '$.mycoLegacyResponseUntil', parsed_offset,
+const REREAD_CONTEXT = `json_set(COALESCE(parser_context, '{}'), '$.mycoLegacyResponseUntil', MAX(parsed_offset, ${REREAD_UNTIL}),
+  '$.mycoParserReadSize', COALESCE(json_extract(parser_context, '$.mycoParserReadSize'), MAX(parsed_offset, ${REREAD_UNTIL})),
   '$.mycoParserMeta', CASE WHEN json_type(parser_context, '$.mycoParserMeta') IS NOT NULL
     THEN json_extract(parser_context, '$.mycoParserMeta') ELSE json(parser_context) END,
   '$.mycoParserState', json('{}'), '$.mycoParserUnfinished', 0, '$.mycoParserReplyUnfinished', 0)`;
@@ -977,22 +986,23 @@ export async function withinBytes<T, R>(items: readonly T[], bytesOf: (item: T) 
 /**
  * The job: passes over the transcripts that need one until the platform's budget or its wall time is spent.
  *
- * Live transcripts are read first, and while imported ones wait, live reading takes at most half the budget: the
- * session being worked in still reads within seconds, and an import backlog moves every pass however busy live
- * capture is. A half with nothing left hands its share to the other. The answer says whether work remains, which the
- * tick answers with a wake soon after this one.
+ * Live transcripts are read first within half the call and wall budget while background lanes wait. Repair takes
+ * one pass with a quarter of the call and wall budget; imports may spend the remainder. Empty background lanes return the remaining budget to live work. Pending work asks the tick to wake again soon.
  */
 export async function parseTranscripts(env: ServerEnv, now: number, options: ParseJobOptions = {}): Promise<JobOutcome> {
   const budget = options.budget ?? env.platform.jobBudget;
   const clock = options.clock ?? Date.now;
   const deadline = clock() + budget.wallMs;
   const liveShare = Math.max(1, Math.floor(budget.calls / 2));
-  const done: Record<Lane, boolean> = { live: false, imported: false };
+  const liveDeadline = deadline - Math.ceil(budget.wallMs / 2);
+  const repairShare = Math.max(1, Math.floor(budget.calls / 4));
+  const done: Record<Lane, boolean> = { live: false, imported: false, repair: false };
   let spent = budget.calls >= 2 && clock() < deadline ? await prepareParserRepairs(env.db) : 0;
   let liveSpent = 0;
   let derived = 0;
   while (spent < budget.calls && clock() < deadline) {
-    const lane: Lane | null = !done.live && (done.imported || liveSpent < liveShare) ? 'live' : !done.imported ? 'imported' : null;
+    const lane: Lane | null = !done.live && ((done.imported && done.repair) || (liveSpent === 0 || (liveSpent < liveShare && clock() < liveDeadline))) ? 'live'
+      : !done.repair ? 'repair' : !done.imported ? 'imported' : null;
     if (lane === null) break;
     // Imported transcripts are read several at a time: each call waits on a round trip, not on the store.
     const targets = await nextTargets(env.db, lane, lane === 'imported' ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1, now);
@@ -1002,14 +1012,17 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
       done[lane] = true;
       continue;
     }
-    // A live pass takes what is left of the live share while imports wait, and the rest of the budget when none do;
-    // passes read side by side share what their half may spend.
-    const allowance = lane === 'live' && !done.imported ? Math.max(1, liveShare - liveSpent) : budget.calls - spent;
+    // Live passes reserve budget for background lanes; concurrent imports share their allowance.
+    const backgroundWaiting = !done.imported || !done.repair;
+    const allowance = lane === 'repair' ? repairShare
+      : lane === 'live' && backgroundWaiting ? Math.max(1, liveShare - liveSpent) : budget.calls - spent;
+    const passDeadline = lane === 'repair' ? Math.min(deadline, clock() + Math.floor(budget.wallMs / 4))
+      : lane === 'live' && backgroundWaiting ? liveDeadline : deadline;
     const each = Math.max(1, Math.floor(Math.min(allowance, budget.calls - spent) / targets.length));
     // Side by side only while their segment bytes fit the budget, so full segments are read one at a time.
     const reports = await withinBytes(targets, passBytes, TRANSCRIPT_PARSE_CONCURRENT_BYTES, async (target) => {
       options.passes?.started(target.transcriptId, passBytes(target));
-      try { return await parseOnce(env, target, now, { calls: each, deadline, clock }); } finally { options.passes?.ended(target.transcriptId); }
+      try { return await parseOnce(env, target, now, { calls: each, deadline: passDeadline, clock }); } finally { options.passes?.ended(target.transcriptId); }
     });
     for (const report of reports) {
       spent += report.calls;
@@ -1018,7 +1031,8 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
     }
     // Passes that moved nothing and failed nothing have no more to give this run; their half is finished for this run
     // rather than read again.
-    if (reports.every((report) => report.nextOffset === null && report.failure === null)) done[lane] = true;
+    if (lane === 'repair') done.live = false;
+    if (lane === 'repair' || reports.every((report) => report.nextOffset === null && report.failure === null)) done[lane] = true;
   }
   const more = (await pendingTranscripts(env.db, now)).transcripts > 0;
   return { changed: derived, more };

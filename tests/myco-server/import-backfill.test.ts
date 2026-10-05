@@ -167,7 +167,7 @@ describe('an imported transcript in the store', () => {
 
   it('selects each half through the partial backlog index, so a store of finished transcripts is never scanned', () => {
     const { sqlite } = sqliteEnv();
-    for (const lane of ['live', 'imported'] as const) {
+    for (const lane of ['live', 'imported', 'repair'] as const) {
       const plan = (sqlite.query(`EXPLAIN QUERY PLAN ${laneSelectionSql(lane).replace('?', String(PARSER_VERSION))}`).all() as { detail: string }[]).map((r) => r.detail);
       expect({ lane, indexed: plan.some((d) => /^SEARCH transcripts USING INDEX idx_transcripts_backlog \(imported_at/.test(d)) }).toEqual({ lane, indexed: true });
     }

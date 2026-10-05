@@ -24,6 +24,7 @@ import { grants } from './scenarios/grants.ts';
 import { workerWire } from './scenarios/worker-wire.ts';
 import { codexRecording } from './scenarios/codex-recording.ts';
 import { transcriptReread } from './scenarios/transcript-reread.ts';
+import { transcriptRepairPriority, transcriptLiveService } from './scenarios/transcript-repair-priority.ts';
 import { transcriptBacklog } from './scenarios/transcript-backlog.ts';
 import { toolBlobRetention } from './scenarios/tool-blob-retention.ts';
 import { titlingBackfill } from './scenarios/titling-backfill.ts';
@@ -57,7 +58,7 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [rawClaimsParity, rawBackfillParity, rawPrivacy, restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [rawClaimsParity, rawBackfillParity, rawPrivacy, restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
