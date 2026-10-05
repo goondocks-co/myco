@@ -146,8 +146,8 @@ describe('agent-run-retention', () => {
     const f = fixture();
     for (let i = 0; i < JOB_BATCH + 5; i++) f.seedRun({ id: `r${String(i).padStart(4, '0')}`, completedAt: NOW - 40 * DAY });
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    expect((await runTick(f.env, NOW)).jobs[0]).toEqual({ name: 'agent-run-retention', changed: JOB_BATCH, failed: null, more: false });
-    expect((await runTick(f.env, NOW)).jobs[0]).toEqual({ name: 'agent-run-retention', changed: 5, failed: null, more: false });
+    expect((await runTick(f.env, NOW)).jobs.find((job) => job.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: JOB_BATCH, failed: null, more: false });
+    expect((await runTick(f.env, NOW)).jobs.find((job) => job.name === 'agent-run-retention')).toEqual({ name: 'agent-run-retention', changed: 5, failed: null, more: false });
     expect(f.count('agent_runs')).toBe(0);
   });
 });

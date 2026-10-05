@@ -1,3 +1,4 @@
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -82,6 +83,7 @@ describe('member raw-claims CLI', () => {
     expect(f.stderr.join('\n')).not.toContain(TOKEN);
     expect(f.stdout).toEqual([]);
     if (code === 'not_owner') expect(f.stderr.join('\n')).toContain('only the recorded Deployment owner');
+    if (code === 'unauthorized') expect(f.stderr.join('\n')).toContain(REJOIN_HINT);
   });
 
   it('refuses persisted:false on HTTP 200 before showing an apparently valid preview', async () => {

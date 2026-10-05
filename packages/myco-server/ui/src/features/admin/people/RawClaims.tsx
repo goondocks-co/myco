@@ -1,15 +1,25 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { RawClaimOutcome, RawClaimPreview } from '@goondocks/myco-shared/raw-claims';
-import { Button, Card, ConfirmDialog, EmptyState, ErrorState, LoadingState } from '../../../design';
+import { Button, Card, ConfirmDialog, DataTable, EmptyState, ErrorState, Input, LoadingState, type DataTableColumn } from '../../../design';
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
+import { projectPath } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
 
 const CLAIM_LABEL = 'Claim raw data with no recorded uploader';
 const CLAIM_KEY = ['raw-claims'] as const;
 const RAW_READS = ['sessions', 'session', 'turn', 'transcript', 'blobs'] as const;
 const KIND_NAMES = { blob: 'Raw blobs', event: 'Capture events', transcript: 'Transcripts' } as const;
+type PreviewRow = RawClaimPreview['projects'][number]['kinds'][number] & { projectId: string; projectName: string };
+const previewDate = (at: number | null) => at === null ? 'Unknown' : formatDateTime(at);
+const PREVIEW_COLUMNS: readonly DataTableColumn<PreviewRow>[] = [
+  { key: 'project', header: 'Project', cell: (row) => row.projectName },
+  { key: 'kind', header: 'Kind', cell: (row) => KIND_NAMES[row.kind], width: 'md' },
+  { key: 'count', header: 'Count', cell: (row) => row.count.toLocaleString(), align: 'end', width: 'sm' },
+  { key: 'oldest', header: 'Oldest', cell: (row) => previewDate(row.oldestAt), width: 'md' },
+  { key: 'newest', header: 'Newest', cell: (row) => previewDate(row.newestAt), width: 'md' },
+];
 
 function claimError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -23,20 +33,10 @@ function claimError(error: unknown): string {
 
 function Preview({ preview }: { preview: RawClaimPreview }) {
   return (
-    <div className="overflow-x-auto">
-      <table aria-label="Raw data with no recorded uploader" className="w-full t-small text-left">
-        <thead><tr>{['Project', 'Kind', 'Count', 'Oldest', 'Newest'].map((label) => <th key={label} className="px-s3 py-s2 font-medium">{label}</th>)}</tr></thead>
-        <tbody>{preview.projects.flatMap((project) => project.kinds.map((kind) => (
-          <tr key={`${project.projectId}:${kind.kind}`} className="border-t border-line">
-            <td className="px-s3 py-s2">{project.name}</td>
-            <td className="px-s3 py-s2">{KIND_NAMES[kind.kind]}</td>
-            <td className="px-s3 py-s2">{kind.count.toLocaleString()}</td>
-            <td className="px-s3 py-s2">{kind.oldestAt === null ? 'Unknown' : formatDateTime(kind.oldestAt)}</td>
-            <td className="px-s3 py-s2">{kind.newestAt === null ? 'Unknown' : formatDateTime(kind.newestAt)}</td>
-          </tr>
-        )))}</tbody>
-      </table>
-    </div>
+    <DataTable label="Raw data with no recorded uploader" columns={PREVIEW_COLUMNS}
+      groups={[{ key: 'preview', label: 'Raw data to claim', rows: preview.projects.flatMap((project) => project.kinds.map((kind) => ({ ...kind, projectId: project.projectId, projectName: project.name }))) }]}
+      rowKey={(row) => `${row.projectId}:${row.kind}`} rowHref={(row) => projectPath(row.projectId, '/sessions')}
+      phoneMeta={(row) => `${KIND_NAMES[row.kind]} · Count: ${row.count.toLocaleString()} · Oldest: ${previewDate(row.oldestAt)} · Newest: ${previewDate(row.newestAt)}`} />
   );
 }
 
@@ -79,7 +79,7 @@ export function RawClaims() {
         confirmLabel={CLAIM_LABEL} tone="primary" pending={claim.isPending} confirmDisabled={!confirmed || review?.complete !== true}
         onConfirm={() => { if (confirmed && review?.complete === true && !claim.isPending) claim.mutate(review.revision); }}>
         {review !== null && <Preview preview={review} />}
-        <label className="flex items-start gap-s2 t-small"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed these projects, kinds, counts and dates and want to claim this raw data.</label>
+        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed these projects, kinds, counts and dates and want to claim this raw data.</label>
       </ConfirmDialog>
     </AdminSection>
   );

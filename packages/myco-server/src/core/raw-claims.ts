@@ -47,10 +47,15 @@ export const effectiveRawOwnerSql = (owner: string, provenance: string, revision
     AND (${candidate} IS NULL OR rc.owner_member_id = ${candidate})
     ORDER BY rc.cutoff_revision LIMIT 1))`;
 
+/** A claim's reviewed revision fixes which ownership evidence its reader must consider. */
+export const rawClaimCutoffSql = (owner: string, revision: string): string => `(SELECT rc.cutoff_revision FROM raw_claims rc
+  WHERE rc.owner_member_id = ${owner} AND rc.min_revision <= ${revision} AND rc.cutoff_revision >= ${revision}
+  ORDER BY rc.cutoff_revision LIMIT 1)`;
+
 /** A missing raw identity admits only an unowned snapshot or its existing claimant. */
-export const claimableRawIdentitySql = (project: string, kind: string, id: string, claimant = 'NULL'): string => `NOT EXISTS (
+export const claimableRawIdentitySql = (project: string, kind: string, id: string, claimant = 'NULL', cutoff = 'NULL'): string => `NOT EXISTS (
   SELECT 1 FROM raw_resources other WHERE other.project_id = ${project} AND other.kind = ${kind}
-    AND other.resource_id = ${id} AND (other.provenance <> 'missing'
+    AND other.resource_id = ${id} AND (${cutoff} IS NULL OR other.revision <= ${cutoff}) AND (other.provenance <> 'missing'
       OR (other.claim_member_id IS NOT NULL AND other.claim_member_id IS NOT ${claimant === 'NULL' ? '(SELECT member_id FROM deployment_ownership WHERE id = 1)' : claimant})
       OR (${effectiveRawOwnerSql('other.owner_member_id', 'other.provenance', 'other.revision', 'other.claim_member_id')} IS NOT NULL
         AND ${effectiveRawOwnerSql('other.owner_member_id', 'other.provenance', 'other.revision', 'other.claim_member_id')} IS NOT ${claimant})))`;

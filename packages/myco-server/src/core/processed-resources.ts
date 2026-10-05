@@ -1,4 +1,4 @@
-import { claimableRawIdentitySql, effectiveRawOwnerSql } from './raw-claims.js';
+import { claimableRawIdentitySql, effectiveRawOwnerSql, rawClaimCutoffSql } from './raw-claims.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 /** The projected fields whose complete bodies are Deployment-shared. */
@@ -18,7 +18,7 @@ export const processedReferenceSql = (alias: string, field: { blob: string }): s
       OR EXISTS (SELECT 1 FROM raw_resources r JOIN member_credentials c ON c.id = ${alias}.token_id
         WHERE r.project_id = b.project_id AND r.kind = 'blob' AND r.resource_id = b.key
           AND r.classification = 'raw' AND ${effectiveRawOwnerSql('r.owner_member_id', 'r.provenance', 'r.revision', 'r.claim_member_id')} = c.member_id
-          AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'c.member_id')}))
+          AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'c.member_id', rawClaimCutoffSql('c.member_id', 'r.revision'))}))
       OR EXISTS (SELECT 1 FROM events e WHERE e.project_id = ${alias}.project_id AND e.event_id = ${alias}.event_id
         AND e.producer_adapter = '${TRANSCRIPT_PARSE_ADAPTER}')))`;
 

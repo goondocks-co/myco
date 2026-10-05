@@ -203,5 +203,14 @@ export const rawClaimsParity: ParityScenario = {
     const outdated = await request('/api/raw-claims', owner.headers, { revision: preview.revision });
     expect({ status: outdated.status, body: await outdated.json() }).toEqual({ status: 409, body: { error: 'revision_conflict' } });
     expect(await target.sql('SELECT COUNT(*) AS n FROM raw_claims')).toEqual([{ n: 1 }]);
+    await upload(unknownA.projectId, other.token, unknownA.text);
+    for (const admitted of [owner, other]) {
+      const shared = await request(blobRoute(unknownA), admitted.headers);
+      expect(shared.status).toBe(200);
+      expect(await shared.text()).toBe(unknownA.text);
+      expect(shared.headers.get('cache-control')).toBe('private, no-store');
+    }
+    expect((await request(blobRoute(unknownA), admin.headers)).status).toBe(404);
+    expect(await target.sql('SELECT COUNT(*) AS n FROM raw_claims')).toEqual([{ n: 1 }]);
   },
 };

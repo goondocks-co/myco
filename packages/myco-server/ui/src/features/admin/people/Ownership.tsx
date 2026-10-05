@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-claims';
-import { Button, Card, ConfirmDialog, ErrorState, LoadingState, Select } from '../../../design';
+import { Button, Card, ConfirmDialog, ErrorState, Input, LoadingState, Select } from '../../../design';
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { ME_KEY } from '../../../lib/query-client';
 import { AdminSection } from '../AdminFrame';
@@ -40,7 +40,7 @@ export function Ownership({ candidates }: { candidates: Array<{ id: string; name
       <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); } }} title="Record server owner"
         description={`Record ${review?.name ?? ''} as this server’s owner. This choice can be made once.`} confirmLabel="Record server owner" tone="primary" pending={record.isPending} confirmDisabled={!confirmed}
         onConfirm={() => { if (review !== null && confirmed && !record.isPending) record.mutate({ revision: review.revision, ownerMemberId: review.ownerMemberId }); }}>
-        <label className="flex items-start gap-s2 t-small"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected person and want to record them as the server owner.</label>
+        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected person and want to record them as the server owner.</label>
       </ConfirmDialog>
     </AdminSection>
   );

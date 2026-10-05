@@ -1,4 +1,4 @@
-import { claimableRawIdentitySql, effectiveRawOwnerSql } from './raw-claims.js';
+import { claimableRawIdentitySql, effectiveRawOwnerSql, rawClaimCutoffSql } from './raw-claims.js';
 import type { ServerEnv } from './adapters.js';
 import { getBlob, type BlobRow } from '../read/blobs.js';
 import type { ReadScope } from '../read/scope.js';
@@ -20,7 +20,7 @@ export const rawMemberResourceSql = (project: string, kind: RawResource['kind'],
   : `EXISTS (SELECT 1 FROM raw_resources r JOIN members m ON m.id = ${effectiveRawOwnerSql('r.owner_member_id', 'r.provenance', 'r.revision', 'r.claim_member_id')}
       WHERE r.project_id = ${project} AND r.kind = '${kind}' AND r.resource_id = ${id} AND r.classification = 'raw'
         AND m.id = ${member} AND m.revoked_at IS NULL
-        AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'm.id')}))`;
+        AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'm.id', rawClaimCutoffSql('m.id', 'r.revision'))}))`;
 
 /** User raw reads are admitted by historical upload evidence and the requester's current membership. */
 export class RawResourceReader {

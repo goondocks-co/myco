@@ -5,6 +5,8 @@ import { rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { bootstrapOwnership, claimUnknownRaw, rawClaimPreview, ownershipPreview } from '@myco-server-worker/core/raw-claims.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
+import { registerBlob } from './helpers/d1.js';
 import { backupArtifact, createBackup, restoreArtifact, BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
@@ -23,6 +25,55 @@ async function complete(e: ReturnType<typeof sqliteEnv>) {
 const reader = (e: ReturnType<typeof sqliteEnv>, memberId: string) => new RawResourceReader(e.serverEnv, { projectId: 'proj_1' }, { kind: 'member', memberId });
 
 describe('explicit owner claim of missing raw uploader', () => {
+  it('excludes a missing reference when another member already owns the same hash at review', async () => {
+    const e = sqliteEnv();
+    try {
+      const text = 'bytes already owned by another member';
+      const bytes = new TextEncoder().encode(text);
+      const key = await sha256Hex(text);
+      const object = registerBlob(e.sqlite, { projectId: 'proj_1', key, size: bytes.length, tokenId: 'missing-upload' });
+      e.bucket.seed(object, { size: bytes.length, bytes });
+      const other = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
+      const upload = await worker.fetch(new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(other.token,
+        { 'content-type': 'text/plain', 'content-length': String(bytes.length) }), body: bytes }), e.env);
+      expect(await upload.json()).toMatchObject({ stored: true, duplicate: true });
+      missing(e, 'claimable-other-identity', 1);
+      await bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', 1);
+      await complete(e);
+      const preview = await rawClaimPreview(e.db, 'mem_machine_1');
+      expect(preview.projects[0]!.kinds.find((kind) => kind.kind === 'blob')!.count).toBe(1);
+      await claimUnknownRaw(e.db, 'mem_machine_1', preview.revision, 2);
+      expect(await reader(e, 'mem_machine_1').allows({ kind: 'blob', id: key }, 'read')).toBe(false);
+      const held = await reader(e, 'mem_machine_2').blob(key);
+      expect(held).not.toBeNull(); expect(await new Response(held!.body).text()).toBe(text);
+      expect((await rawClaimPreview(e.db, 'mem_machine_1')).projects).toEqual([]);
+    } finally { e.sqlite.close(); }
+  });
+
+  it('preserves an explicit claim when a second member later uploads the same complete bytes', async () => {
+    const e = sqliteEnv();
+    try {
+      const text = 'historical bytes with two legitimate owners';
+      const bytes = new TextEncoder().encode(text);
+      const key = await sha256Hex(text);
+      const object = registerBlob(e.sqlite, { projectId: 'proj_1', key, size: bytes.length, tokenId: 'missing-upload' });
+      e.bucket.seed(object, { size: bytes.length, bytes });
+      await bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', 1);
+      await complete(e);
+      await claimUnknownRaw(e.db, 'mem_machine_1', (await rawClaimPreview(e.db, 'mem_machine_1')).revision, 2);
+      expect(await reader(e, 'mem_machine_1').allows({ kind: 'blob', id: key }, 'read')).toBe(true);
+      const other = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
+      const upload = await worker.fetch(new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(other.token,
+        { 'content-type': 'text/plain', 'content-length': String(bytes.length) }), body: bytes }), e.env);
+      expect(await upload.json()).toMatchObject({ stored: true, duplicate: true });
+      for (const actor of ['mem_machine_1','mem_machine_2']) {
+        const held = await reader(e, actor).blob(key);
+        expect(held).not.toBeNull(); expect(await new Response(held!.body).text()).toBe(text);
+      }
+      expect((await rawClaimPreview(e.db, 'mem_machine_1')).projects).toEqual([]);
+    } finally { e.sqlite.close(); }
+  });
+
   it('continues pending provenance work on a quiet Deployment without a dashboard activity stamp', async () => {
     const e = sqliteEnv();
     try {

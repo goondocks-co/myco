@@ -1,4 +1,5 @@
 import type { RawClaimPreview } from '@goondocks/myco-shared/raw-claims';
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, type CredentialSource } from '../member/constants.js';
 import { openDeploymentRequests, type MemberVerbDeps } from './deployment-reader.js';
 
@@ -8,7 +9,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   not_owner: 'only the recorded Deployment owner may claim raw data',
   backfill_pending: 'uploader checks are still running; wait for them to finish and review a new preview',
   revision_conflict: 'the raw data changed; review a new preview and pass its revision explicitly',
-  unauthorized: 'the Deployment refused this credential; sign in again',
+  unauthorized: `the Deployment refused this credential; ${REJOIN_HINT}`,
   route_missing: 'this Deployment does not support raw claims; update it',
 };
 
