@@ -190,8 +190,10 @@ describe('an export a retry resumes', () => {
       await expect(run(api.fetch, { holdToken: held.holdToken, startBudget: budget })).rejects.toThrow('admission disk unavailable');
     } finally { rename.mockRestore(); }
     expect(api.started()).toBe(0);
+    releaseD1Export({ ...held, output: path.join(dir, 'd1.sql'), login });
     const file = fs.readdirSync(dir).find((name) => name.startsWith('d1-admissions-') && name.endsWith('.json'))!;
     fs.writeFileSync(path.join(dir, file), 'damaged');
+    expect(() => new D1ExportStartBudget(held)).toThrow();
     await expect(run(api.fetch, { holdToken: held.holdToken })).rejects.toThrow();
     expect(api.started()).toBe(0);
   });
