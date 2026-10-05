@@ -39,10 +39,11 @@ export function machineOfWorker(machines: readonly Machine[], worker: WorkerLike
 export const MACHINE_LIST_KEY = ['machines'] as const;
 
 /** Claims the viewer may see, one bounded server page at a time. */
-export function useMachines() {
+export function useMachines(options: { enabled?: boolean } = {}) {
   const query = useInfiniteQuery({
     queryKey: MACHINE_LIST_KEY,
     initialPageParam: null as string | null,
+    enabled: options.enabled ?? true,
     queryFn: ({ pageParam, signal }) => fetchJson<MachinesAnswer>(`/api/machines?limit=50${pageParam === null ? '' : `&cursor=${encodeURIComponent(pageParam)}`}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
   });

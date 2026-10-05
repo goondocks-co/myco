@@ -13,13 +13,12 @@ import {
 import { useRouteProject } from './route-project';
 
 /**
- * The admin pages: People & machines, Settings in its five sections, a
- * project's settings and Health, each shown to a member who is not an admin as
- * a page for an admin; and My machines, for every member.
- * The addresses these pages replaced are in `routes/moved.tsx`.
+ * People & machines shows the directory to every member. Settings in its five
+ * sections, a project's settings and Health require an admin; My machines is
+ * available to every member.
  */
 export const adminRoutes: RouteObject[] = [
-  { path: PEOPLE_PATH, element: <AdminOnly title="People & machines"><PeoplePage /></AdminOnly> },
+  { path: PEOPLE_PATH, element: <PeoplePage /> },
   { path: MY_MACHINES_PATH, element: <MyMachinesPage /> },
   ...SETTINGS_SECTIONS.map((section): RouteObject => ({ path: section.to, element: <SettingsRoute section={section.id} /> })),
   { path: `/p/:projectId${PROJECT_SETTINGS_SUFFIX}`, element: <ProjectSettingsRoute /> },

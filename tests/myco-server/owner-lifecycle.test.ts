@@ -187,7 +187,7 @@ describe('owner lifecycle mutation gates', () => {
       const header = JSON.parse(text.split('\n')[0]!) as { deploymentId: string };
       dest.sqlite.run("UPDATE schema_meta SET value=? WHERE key='deployment_id'", [header.deploymentId]);
       dest.sqlite.run('DELETE FROM members');
-      await restoreArtifact(dest.db, { text });
+      await restoreArtifact(dest.db, { authorization: { kind: 'recovery' }, text });
       expect(await ownershipPreview(dest.db)).toMatchObject({ ownerMemberId: ADMIN, revision: '2' });
       expect(await memberByGithubId(dest.db, '9002')).toMatchObject({ id: ADMIN, role: 'admin' });
       expect(dest.sqlite.query('SELECT * FROM deployment_ownership_audit ORDER BY revision').all()).toEqual(source.sqlite.query('SELECT * FROM deployment_ownership_audit ORDER BY revision').all());
@@ -204,7 +204,7 @@ describe('owner lifecycle mutation gates', () => {
         { format: BACKUP_FORMAT, deploymentId: lineage, schemaVersion: 73, createdAt: NOW, producer: 'audit-collision', counts: {} },
         ...rows,
       ].map(row => JSON.stringify(row)).join('\n');
-      await restoreArtifact(f.db, { text: artifact([
+      await restoreArtifact(f.db, { authorization: { kind: 'recovery' }, text: artifact([
         { t: 'deployment_ownership', r: { id: 1, member_id: ADMIN, revision: 2, bootstrap_mode: 'selection' } },
         { t: 'deployment_ownership_audit', r: { revision: 2, member_id: ADMIN, actor_id: OWNER,
           previous_member_id: OWNER, operation: 'transfer', created_at: NOW } },
@@ -215,7 +215,7 @@ describe('owner lifecycle mutation gates', () => {
       expect(f.sqlite.query('SELECT revision,member_id,actor_id FROM deployment_ownership_audit ORDER BY revision').all())
         .toEqual([{ revision: 1, member_id: OWNER, actor_id: OWNER }, { revision: 2, member_id: ADMIN, actor_id: OWNER }]);
 
-      await restoreArtifact(f.db, { text: artifact([
+      await restoreArtifact(f.db, { authorization: { kind: 'recovery' }, text: artifact([
         { t: 'members', r: { id: MEMBER, role: 'member', role_revision: 2, github_id: '9003', created_at: NOW } },
         { t: 'member_role_audit', r: { member_id: MEMBER, revision: 2, previous_role: 'admin',
           role: 'member', actor_id: OWNER, created_at: NOW } },
@@ -306,7 +306,7 @@ describe('owner bootstrap and migration gates', () => {
         { t: 'members', r: { id: OWNER, role: 'admin', github_id: null, created_at: NOW } },
         { t: 'machine_claims', r: { machine_id: 'machine_legacy', member_id: OWNER, claimed_at: NOW } },
       ].map(row => JSON.stringify(row)).join('\n');
-      await expect(restoreArtifact(db, { text: artifact })).rejects.toThrow('restore interrupted');
+      await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: artifact })).rejects.toThrow('restore interrupted');
       expect(sqlite.query('SELECT bootstrap_mode FROM deployment_ownership').get()).toEqual({ bootstrap_mode: 'selection' });
       const key = (await issueIdentityLinkAuthority(db, OWNER, NOW))!;
       expect(await spendIdentityLinkAuthority(db, key.key, '583231', NOW)).toMatchObject({ ok: true });

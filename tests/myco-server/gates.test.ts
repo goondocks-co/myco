@@ -20,6 +20,7 @@ import { CLOCK_NAME, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cl
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
 import { isDeploymentAccessPath } from './helpers/access-paths.js';
+import { isForeignKeyChildIndex } from './helpers/foreign-key-indexes.js';
 import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
@@ -535,9 +536,13 @@ describe('gates', () => {
     // An index read by a Deployment-wide access path leads with what it is read
     // by; the set of those, each with its read, is declared once in
     // `helpers/access-paths.ts` and shared with the v2-table gate.
-    for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !isDeploymentAccessPath(x))) {
-      expect(s).toMatch(/\(project_id/);
-    }
+    const { sqlite } = sqliteEnv();
+    try {
+      for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !isDeploymentAccessPath(x))) {
+        const index = /INDEX IF NOT EXISTS (\w+) ON (\w+)/.exec(s)!;
+        if (!isForeignKeyChildIndex(sqlite, index[2]!, index[1]!)) expect(s).toMatch(/\(project_id/);
+      }
+    } finally { sqlite.close(); }
   });
 
   it('re-applies every schema statement but ADD COLUMN over an up-to-date database, so a half-applied migration can be re-run', () => {
@@ -995,7 +1000,7 @@ describe('gates', () => {
     const offenders: string[] = [];
     for (const file of files(SRC)) {
       const rel = file.slice(SRC.length + 1);
-      if (rel === join('db', 'schema.ts')) continue;
+      if (/^db\/schema(?:-v\d+)?\.ts$/.test(rel.replaceAll(sep, '/'))) continue;
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (!/\bmember_tokens\b/.test(line)) continue;
         if (rel === 'telemetry.ts' && line.includes('member_tokens_quota')) continue;

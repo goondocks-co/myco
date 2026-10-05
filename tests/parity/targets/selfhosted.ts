@@ -7,12 +7,13 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { serve } from '@myco-server-worker/entry/bun.js';
+import { createBunHandler, serve, type BunServerOptions } from '@myco-server-worker/entry/bun.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, lit, memberHeadersFor, volumeSql, type ParityTarget } from '../harness.ts';
+import { stopRaceFixture } from '../owner-review/stop-race.ts';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
-export async function bootSelfhosted(): Promise<ParityTarget> {
+export async function bootSelfhosted(options: { stopRace?: boolean } = {}): Promise<ParityTarget> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-'));
   const databasePath = path.join(root, 'myco.sqlite');
 
@@ -31,7 +32,7 @@ export async function bootSelfhosted(): Promise<ParityTarget> {
   const wrapKey = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
   // The recording launch: the run row takes the recorder's mark and nothing starts, so the queue is proven without a runtime.
   const sql = volumeSql(databasePath);
-  const started = await serve({
+  const serverOptions: BunServerOptions = {
     harnessLaunch: async (spec) => { await sql(`UPDATE agent_runs SET harness = 'record' WHERE id = ${lit(spec.runId)}`); },
     databasePath,
     blobDir: path.join(root, 'blobs'),
@@ -45,7 +46,18 @@ export async function bootSelfhosted(): Promise<ParityTarget> {
     SECRET_WRAP_KEY: wrapKey,
     GITHUB_CLIENT_ID: 'parity-client',
     GITHUB_CLIENT_SECRET: 'parity-secret',
-  });
+  };
+  const started = options.stopRace === true ? await (async () => {
+    const handler = await createBunHandler(serverOptions);
+    const race = stopRaceFixture();
+    handler.env.db = race.wrap(handler.env.db);
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, development: false,
+      fetch: async (request) => await race.endpoint(request) ?? handler.fetch(request),
+      error: () => new Response(null, { status: 503 }),
+    });
+    handler.bind(server);
+    return { port: server.port, env: handler.env, stop: async () => { server.stop(); await handler.close(); } };
+  })() : await serve(serverOptions);
   const url = `http://127.0.0.1:${started.port}`;
   const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
 

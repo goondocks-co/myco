@@ -237,11 +237,35 @@ describe('explicit initial ownership', () => {
     ]));
   });
 
+  it('shows roles read-only to an ordinary member through the People route', async () => {
+    const { requests } = deployment({ owner: false, role: 'member' });
+    const people = await screen.findByRole('list', { name: 'Members' });
+    expect(within(people).getByText('Member')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'People & machines' })).toBeTruthy();
+    expect(within(people).queryByRole('button', { name: /More for/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Transfer server ownership' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Invite a teammate' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a machine' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Open invitations' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Myco’s runs' })).toBeNull();
+    expect(requests.some((request) => ['/api/enrollment', '/api/machines', '/api/credentials', '/api/ownership'].includes(request.path))).toBe(false);
+    expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
+  });
+
   it('shows roles read-only to a nonowner admin', async () => {
-    deployment({ owner: false });
+    const { requests } = deployment({ owner: false });
+    expect(await screen.findByRole('button', { name: 'Invite a teammate' })).toBeTruthy();
     fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
-    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: 'Make admin' })).toBeNull();
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).queryByRole('menuitem', { name: 'Make admin' })).toBeNull();
+    expect(within(menu).getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
+    expect(within(menu).getByRole('menuitem', { name: 'Add a machine for them' })).toBeTruthy();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More for Unlinked' }), { key: 'Enter' });
+    expect(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Connect GitHub' })).toBeTruthy();
     expect(screen.getByText('Member')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Transfer server ownership' })).toBeNull();
+    expect(requests.some((request) => request.path === '/api/ownership')).toBe(true);
   });
 
   it('owner can review an admin demotion but cannot demote or remove themselves', async () => {

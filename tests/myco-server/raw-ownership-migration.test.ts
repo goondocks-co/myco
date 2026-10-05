@@ -43,7 +43,7 @@ describe('raw ownership schema step 71', () => {
         counts: { transcripts: 1, transcript_segments: 2 } };
       // Artifact row order is independent of the restore capability's table order.
       const text = [header, { t: 'transcripts', r: transcript }, ...segments.map((r) => ({ t: 'transcript_segments', r }))].map((row) => JSON.stringify(row)).join('\n');
-      await restoreArtifact(db, { text });
+      await restoreArtifact(db, { authorization: { kind: 'recovery' }, text });
       expect(sqlite.query("SELECT owner_member_id FROM raw_resources WHERE kind = 'transcript' AND resource_id = 'restored'").get())
         .toEqual({ owner_member_id: null });
       expect(sqlite.query('SELECT COUNT(*) AS n FROM transcript_segments').get()).toEqual({ n: 2 });

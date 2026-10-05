@@ -13,6 +13,7 @@ import {
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
 import { backupRetentionPolicy } from '../core/backup-retention.js';
+import { RestoreAuthorizationError } from '../core/restore-authorization.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 
 
@@ -62,10 +63,12 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
     const outcome = await restoreBackup(env.db, env.blobs, {
       id: ctx.params.backupId,
       allowForeignLineage: body.allowForeignLineage === true,
+      authorization: { kind: 'member', memberId: ctx.member.id },
     });
     if (outcome === null) return notFound();
     return ok({ applied: true, ...outcome });
   } catch (err) {
+    if (err instanceof RestoreAuthorizationError) return Response.json({ error: err.code }, { status: err.code === 'owner_pending' ? 409 : 403 });
     if (err instanceof BackupLineageError) {
       return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
     }
@@ -109,9 +112,10 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   }
   try {
     assertBackupSize(body.artifact);
-    const outcome = await restoreArtifact(env.db, { text: body.artifact, allowForeignLineage: body.allowForeignLineage === true });
+    const outcome = await restoreArtifact(env.db, { text: body.artifact, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id } });
     return ok({ applied: true, ...outcome });
   } catch (err) {
+    if (err instanceof RestoreAuthorizationError) return Response.json({ error: err.code }, { status: err.code === 'owner_pending' ? 409 : 403 });
     if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
     if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
     if (err instanceof BackupObjectsMissingError) return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });

@@ -269,9 +269,9 @@ export const freshOwnerLink: ParityScenario = {
   },
 };
 
-/** An interrupted recovery keeps imported memberships in explicit-selection mode. */
+/** An interrupted owner-authorized restore preserves the selected owner and committed earlier chunks. */
 export const interruptedRestoreOwner: ParityScenario = {
-  name: 'owner lifecycle: interrupted restore holds imported administrator for explicit owner selection',
+  name: 'owner lifecycle: interrupted restore preserves selected owner and imported administrator',
   dedicated: { timeoutMs: 240_000 },
   async run(target) {
     const restoredId = 'mem_owner_parity_restored';
@@ -286,6 +286,12 @@ export const interruptedRestoreOwner: ParityScenario = {
       { t: 'members', r: { id: restoredId, label: 'restored admin', role: 'admin', role_revision: 0, created_at: now } },
       { t: 'machine_claims', r: { machine_id: machineId, member_id: restoredId, claimed_at: now } },
     ].map((record) => JSON.stringify(record)).join('\n') + '\n';
+    const ownerless = await request(target, '/api/backups/restore-upload', target.ownerHeaders(), { artifact });
+    expect({ status: ownerless.status, body: await ownerless.json() }).toEqual({ status: 409, body: { error: 'owner_pending' } });
+    expect(await target.sql(`SELECT id FROM members WHERE id = ${lit(restoredId)}`)).toEqual([]);
+    await target.sql("UPDATE deployment_ownership SET bootstrap_mode = 'selection' WHERE id = 1");
+    const selectedOwner = await request(target, '/api/ownership', target.ownerHeaders(), { ownerMemberId: MEMBER_ID, revision: '0' });
+    expect(selectedOwner.status).toBe(200);
     await target.sql(`CREATE TRIGGER interrupted_owner_restore BEFORE INSERT ON machine_claims
       WHEN NEW.machine_id = ${lit(machineId)} BEGIN SELECT RAISE(ABORT, 'interrupted owner restore'); END`);
     try {
@@ -298,7 +304,7 @@ export const interruptedRestoreOwner: ParityScenario = {
     expect(await target.sql(`SELECT id,role,github_id FROM members WHERE id = ${lit(restoredId)}`))
       .toEqual([{ id: restoredId, role: 'admin', github_id: null }]);
     expect(await target.sql('SELECT member_id,revision,bootstrap_mode FROM deployment_ownership WHERE id = 1'))
-      .toEqual([{ member_id: null, revision: 0, bootstrap_mode: 'selection' }]);
+      .toEqual([{ member_id: MEMBER_ID, revision: 1, bootstrap_mode: 'selection' }]);
 
     const issued = await request(target, `/api/members/${restoredId}/link-github`, target.ownerHeaders(), {});
     expect(issued.status).toBe(201);
@@ -308,13 +314,13 @@ export const interruptedRestoreOwner: ParityScenario = {
     expect((await request(target, '/auth/link', restoredHeaders, { key, confirm: true })).status).toBe(200);
     const pending = await ownership(target, restoredHeaders);
     expect({ owner: pending.ownerMemberId, revision: pending.revision, proposal: pending.proposalMemberId })
-      .toEqual({ owner: null, revision: '0', proposal: null });
-    expect(await target.sql('SELECT COUNT(*) AS n FROM deployment_ownership_audit')).toEqual([{ n: 0 }]);
-    const selected = await request(target, '/api/ownership', restoredHeaders, { ownerMemberId: restoredId, revision: pending.revision });
-    expect(selected.status).toBe(200);
-    expect((await selected.json() as OwnershipPreview).ownerMemberId).toBe(restoredId);
-    expect(await target.sql('SELECT revision,member_id,actor_id FROM deployment_ownership_audit'))
-      .toEqual([{ revision: 1, member_id: restoredId, actor_id: restoredId }]);
+      .toEqual({ owner: MEMBER_ID, revision: '1', proposal: null });
+    expect(await target.sql('SELECT COUNT(*) AS n FROM deployment_ownership_audit')).toEqual([{ n: 1 }]);
+    const transferred = await request(target, '/api/ownership/transfer', target.ownerHeaders(), { member_id: restoredId, expected_revision: pending.revision });
+    expect(transferred.status).toBe(200);
+    expect((await transferred.json() as OwnershipPreview).ownerMemberId).toBe(restoredId);
+    expect(await target.sql('SELECT revision,member_id,actor_id FROM deployment_ownership_audit ORDER BY revision'))
+      .toEqual([{ revision: 1, member_id: MEMBER_ID, actor_id: MEMBER_ID }, { revision: 2, member_id: restoredId, actor_id: MEMBER_ID }]);
   },
 };
 
@@ -334,9 +340,9 @@ export const restoredAuditAuthority: ParityScenario = {
       return [{ format: 'myco-backup/1', deploymentId, schemaVersion, createdAt: now, producer: 'parity', counts }, ...rows]
         .map((row) => JSON.stringify(row)).join('\n') + '\n';
     };
-    const restore = async (rows: Array<{ t: string; r: Record<string, unknown> }>) => {
-      const response = await request(target, '/api/backups/restore-upload', target.ownerHeaders(), { artifact: artifact(rows) });
-      expect([200, 400, 409]).toContain(response.status);
+    const restore = async (rows: Array<{ t: string; r: Record<string, unknown> }>, headers: Record<string, string>) => {
+      const response = await request(target, '/api/backups/restore-upload', headers, { artifact: artifact(rows) });
+      expect(response.status).toBe(200);
     };
 
     const selected = await request(target, '/api/ownership', target.ownerHeaders(), { ownerMemberId: MEMBER_ID, revision: '0' });
@@ -350,7 +356,7 @@ export const restoredAuditAuthority: ParityScenario = {
       { t: 'deployment_ownership', r: { id: 1, member_id: admin.id, revision: 2, bootstrap_mode: 'selection' } },
       { t: 'deployment_ownership_audit', r: { revision: 2, member_id: admin.id, actor_id: MEMBER_ID,
         created_at: now, previous_member_id: MEMBER_ID, operation: 'transfer' } },
-    ]);
+    ], target.ownerHeaders());
     expect(await target.sql('SELECT member_id,revision FROM deployment_ownership WHERE id = 1')).toEqual([{ member_id: MEMBER_ID, revision: 1 }]);
     expect(await target.sql('SELECT revision,member_id,actor_id FROM deployment_ownership_audit ORDER BY revision'))
       .toEqual([{ revision: 1, member_id: MEMBER_ID, actor_id: MEMBER_ID }]);
@@ -364,7 +370,7 @@ export const restoredAuditAuthority: ParityScenario = {
     await restore([
       { t: 'members', r: { id: member.id, label: 'member', role: 'member', role_revision: 2, github_id: ACTORS[2].sub, created_at: now } },
       { t: 'member_role_audit', r: { member_id: member.id, revision: 2, previous_role: 'admin', role: 'member', actor_id: admin.id, created_at: now } },
-    ]);
+    ], admin.headers);
     expect(await target.sql(`SELECT role,role_revision FROM members WHERE id = ${lit(member.id)}`)).toEqual([{ role: 'admin', role_revision: 1 }]);
     expect(await target.sql(`SELECT revision,role,actor_id FROM member_role_audit WHERE member_id = ${lit(member.id)} ORDER BY revision`))
       .toEqual([{ revision: 1, role: 'admin', actor_id: MEMBER_ID }]);

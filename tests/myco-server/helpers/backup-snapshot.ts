@@ -67,7 +67,7 @@ export async function snapshotScenario(db: RelationalStore, target: RelationalSt
   };
   const saved = await createBackup(observed, blobs, { producer: 'snapshot-gate', now: 1500 });
   const artifact = (await backupArtifact(db, blobs, saved.id))!;
-  await restoreArtifact(target, { text: artifact.text, allowForeignLineage: true });
+  await restoreArtifact(target, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
   const restored = await target.prepare(`SELECT session_id, title FROM sessions WHERE project_id = ? ORDER BY session_id`).bind(PROJECT).all();
   const prompts = await target.prepare(`SELECT session_id, text FROM prompt_batches WHERE project_id = ? ORDER BY session_id`).bind(PROJECT).all();
   const orphans = await target.prepare(`SELECT COUNT(*) AS n FROM prompt_batches p WHERE p.project_id = ? AND NOT EXISTS
@@ -224,11 +224,11 @@ export async function backupCheckpointRestoreScenario(db: RelationalStore, fresh
   const artifact = (await backupArtifact(db, blobs, saved.id))!;
   await checkpoint(100, sameCursor ? 100 : 200, newState);
   const advanced = await held(db);
-  await restoreArtifact(db, { text: artifact.text });
-  await restoreArtifact(db, { text: artifact.text });
+  await restoreArtifact(db, { authorization: { kind: 'recovery' }, text: artifact.text });
+  await restoreArtifact(db, { authorization: { kind: 'recovery' }, text: artifact.text });
   const live = await held(db);
-  await restoreArtifact(fresh, { text: artifact.text, allowForeignLineage: true });
-  await restoreArtifact(fresh, { text: artifact.text, allowForeignLineage: true });
+  await restoreArtifact(fresh, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+  await restoreArtifact(fresh, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
   const restored = await held(fresh);
   return {
     oldChunks: older.chunks.length, newChunks: advanced.chunks.length,

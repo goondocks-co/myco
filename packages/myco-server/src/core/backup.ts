@@ -22,6 +22,7 @@ import type { BlobRef } from './blob-references.js';
 import { assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
+import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
 export const BACKUP_KEY_PREFIX = 'backups/';
@@ -404,11 +405,11 @@ async function restoreTranscriptReference(
  */
 export async function restoreBackup(
   db: RelationalStore, blobs: BlobStore,
-  opts: { id: string; allowForeignLineage?: boolean },
+  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization },
 ): Promise<RestoreOutcome | null> {
   const artifact = await readArtifact(db, blobs, opts.id);
   if (artifact === null) return null;
-  return restoreArtifact(db, { text: artifact.text, allowForeignLineage: opts.allowForeignLineage });
+  return restoreArtifact(db, { text: artifact.text, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization });
 }
 
 /**
@@ -417,7 +418,7 @@ export async function restoreBackup(
  */
 export async function restoreArtifact(
   db: RelationalStore,
-  opts: { text: string; allowForeignLineage?: boolean },
+  opts: { text: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization },
 ): Promise<RestoreOutcome> {
   const lines = opts.text.split('\n').filter((l) => l.length > 0);
   const header = JSON.parse(lines[0]!) as BackupHeader;
@@ -435,6 +436,8 @@ export async function restoreArtifact(
     rows.push(portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
   }
+
+  db = await authorizeRestore(db, opts.authorization, byTable.keys());
 
   // Blob rows are never inserted: each must already be registered here, with the bytes its own row names. Checked
   // before any table is written, so a refused artifact changes nothing.
@@ -511,6 +514,7 @@ export async function restoreArtifact(
             ? await restoreTranscriptReference(db, row, transcriptRows.get(identity), transcriptSegments.get(identity) ?? [], insert)
             : (await insert.all()).results.length;
         } catch (error) {
+          if (error instanceof RestoreAuthorizationError) throw error;
           throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
         }
       }
@@ -566,6 +570,7 @@ export async function restoreArtifact(
           ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
           : await db.batch(statements);
       } catch (err) {
+        if (err instanceof RestoreAuthorizationError) throw err;
         const missing = await unregisteredAmong(db, references);
         if (missing.length > 0) throw new BackupObjectsMissingError(missing.length);
         throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));

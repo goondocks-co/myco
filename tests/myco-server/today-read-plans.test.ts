@@ -284,10 +284,13 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   });
 
   it('renames a machine in one write to its claim, sought by key', async () => {
-    for (const admin of [true, false]) {
-      const rename = await plans(async (db) => { await renameMachine(db, { memberId: 'mem_1', admin }, 'm_1', 'x'); });
-      expect(rename.length).toBe(3);
-      for (const { store, plan } of rename) expect({ store, plan }).toEqual({ store, plan: 'SEARCH machine_claims USING INDEX sqlite_autoindex_machine_claims_1 (machine_id=?)' });
+    const rename = await plans(async (db) => { await renameMachine(db, { memberId: 'mem_1' }, 'm_1', 'x'); });
+    expect(rename.length).toBe(3);
+    for (const { plan } of rename) {
+      expect(plan).toContain('SEARCH machine_claims USING INDEX sqlite_autoindex_machine_claims_1 (machine_id=?)');
+      expect(plan).toContain('SEARCH write_actor USING INDEX sqlite_autoindex_members_1 (id=?)');
+      expect(plan).toContain('SEARCH o USING INTEGER PRIMARY KEY (rowid=?)');
+      expect(plan).not.toMatch(/\bSCAN\b|USE TEMP B-TREE/);
     }
   });
 
