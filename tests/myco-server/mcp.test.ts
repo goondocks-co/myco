@@ -10,7 +10,7 @@ import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
-import { isServedTool, isWriteOp, PROJECT_PIVOT } from '@myco-server-worker/core/tool-catalogue.js';
+import { isServedTool, isWriteOp, PROJECT_PIVOT, UNSERVED_OPS } from '@myco-server-worker/core/tool-catalogue.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/read/sessions.js';
 import { upsertDigest } from '@myco-server-worker/core/digests.js';
@@ -105,7 +105,14 @@ describe('POST /mcp', () => {
     const res = await worker.fetch(post(t1.token, rpc('tools/list')), env);
     expect(res.status).toBe(200);
     const body = await res.json() as any;
-    expect(body.result.tools).toEqual(TOOL_DEFINITIONS.map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })));
+    expect(body.result.tools).toEqual(TOOL_DEFINITIONS.map((d) => {
+      const op = d.inputSchema.properties.op;
+      const unserved = UNSERVED_OPS[d.name];
+      const inputSchema = op?.enum && unserved
+        ? { ...d.inputSchema, properties: { ...d.inputSchema.properties, op: { ...op, enum: op.enum.filter((value) => typeof value === 'string' && !Object.hasOwn(unserved, value)) } } }
+        : d.inputSchema;
+      return { name: d.name, description: d.description, inputSchema, annotations: d.annotations };
+    }));
   });
 
   it('answers an unknown tool, bad arguments, an undeclared op and a not-yet-served op as JSON-RPC errors named in data.code', async () => {

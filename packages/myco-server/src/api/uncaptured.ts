@@ -2,7 +2,7 @@
  * Connect a repository a member's machine could not capture, from "Needs you" (#1547).
  *
  * `POST /api/uncaptured/{machineId}/{rootKey}/connect`, optionally with `{ projectId }`: the member the machine belongs
- * to, or an admin, tells that machine to join the repository. With a project named, the repository joins it, and its
+ * to tells that machine to join the repository. With a project named, the repository joins it, and its
  * remote, where it has one, is bound to it, so every other clone and worktree of it joins the same project. With none,
  * it joins the project its remote names or one created for it, which only an admin may ask of a Deployment that keeps
  * project creation with admins. Nothing is joined here: the machine joins at a hook in that repository, within minutes.
@@ -96,9 +96,8 @@ export interface ConnectAnswer {
 export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const machineId = ctx.params.machineId!;
   const rootKey = ctx.params.rootKey!;
-  const admin = isAdmin(ctx.member.role);
   const row = await getUncaptured(env.db, machineId, rootKey);
-  if (row === null || (!admin && row.member.id !== ctx.member.id)) return notFound();
+  if (row === null || row.member.id !== ctx.member.id) return notFound();
   const body = ctx.request.headers.get('content-length') === '0' ? {} : await readJsonObject(ctx.request) ?? {};
   const projectId = body.projectId === undefined ? null : body.projectId;
   if (projectId !== null && typeof projectId !== 'string') return badRequest('projectId must be a project id');
@@ -109,13 +108,13 @@ export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext)
     const project = (await listVisibleProjects(env.db, ctx.member)).find((p) => p.projectId === projectId);
     if (project === undefined) return badRequest('projectId names no project that accepts capture');
     if (holder !== null && holder.projectId !== projectId) return refuse(409, 'remote_bound', 'this repository\'s remote already belongs to another project');
-    if (holder === null && row.remote !== null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
   } else if (holder === null && !(await mayCreateProjects(env.db, row.member.id))) {
     // The machine's own member creates the project when it joins; one who may not is answered here, not at the join.
     return refuse(400, 'auto_create_off', 'this server creates projects only on the dashboard: name the project to connect it to');
   }
   const written = await connectMachineRoot(env.db, machineId, rootKey, projectId ?? '', ctx.member.id, ctx.now);
   if (!written.applied) return written.reason === 'absent' ? notFound() : badRequest(written.detail ?? 'the connection could not be recorded');
+  if (projectId !== null && holder === null && row.remote !== null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
   // Connected: the machine joins at a hook in the repository, and "Needs you" has nothing more to ask.
   await clearUncapturedStatement(env.db, machineId, rootKey).run();
   emit({ kind: 'repository_connected', machineId, actor: ctx.member.id });

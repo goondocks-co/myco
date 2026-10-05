@@ -178,7 +178,7 @@ describe('every route that mints an authority able to outlive the credential (#1
   it('is the only member route that reaches a minter or a secret opener: every call site is pinned by the function that makes it, and the door that reaches it', () => {
     // A minter answers a new token or key; an opener answers a decrypted secret. Each call site is named here by the
     // function that makes it, with the door that reaches it, so a new caller fails this gate until it is placed.
-    const MINTERS = new Set(['issueIdentityLinkAuthority', 'issueEnrollmentAuthority', 'issueExternalGrant', 'rotateExternalGrant', 'mintInsert', 'issueMemberToken', 'openProviderCredential', 'openHarnessCredential']);
+    const MINTERS = new Set(['enrollmentInsert', 'issueIdentityLinkAuthority', 'issueEnrollmentAuthority', 'issueExternalGrant', 'rotateExternalGrant', 'mintInsert', 'issueMemberToken', 'openProviderCredential', 'openHarnessCredential']);
     const OPENERS = new Set(['secrets.get', 'repositories.access']);
     const sites: string[] = [];
     const walk = (dir: string): void => {
@@ -205,6 +205,7 @@ describe('every route that mints an authority able to outlive the credential (#1
     expect([...new Set(sites)].sort()).toEqual([
       'api/access.ts handleIssueMemberLink -> issueIdentityLinkAuthority', // owner session, an admin's
       'api/access.ts handleMintInvitation -> issueEnrollmentAuthority', // owner session
+      'auth/enrollment.ts issueEnrollmentAuthority -> enrollmentInsert',
       'api/grants.ts handleMintGrant -> issueExternalGrant', // owner session
       'api/grants.ts handleRotateGrant -> rotateExternalGrant', // owner session
       'auth/join.ts handleJoin -> mintInsert', // an enrollment key, no member credential

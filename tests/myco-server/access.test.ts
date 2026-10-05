@@ -37,7 +37,7 @@ describe('membership is a boundary at authentication', () => {
 
   it('voids an invitation for a member revoked after the mint, and names it revoked', async () => {
     const e = sqliteEnv();
-    const issued = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', memberId: 'mem_machine_2' });
+    const issued = await issueEnrollmentAuthority(e.db, NOW, { issuer: { kind: 'operator' }, role: 'member', memberId: 'mem_machine_2' });
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
     expect(await spendEnrollmentAuthority(e.db, issued.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
   });
@@ -46,11 +46,13 @@ describe('membership is a boundary at authentication', () => {
 describe('revoking a member', () => {
   it('ends everything live that is theirs in one attributed transaction, and leaves machine claims alone', async () => {
     const e = sqliteEnv();
+    e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
+    e.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'");
     const env = { ...e.env, ...OWNER_ENV };
     const cred = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, NOW);
-    const forThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', memberId: 'mem_machine_2' });
-    const byThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2' });
-    const byThemForOther = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2', memberId: 'mem_machine_3' });
+    const forThem = await issueEnrollmentAuthority(e.db, NOW, { issuer: { kind: 'operator' }, role: 'member', memberId: 'mem_machine_2' });
+    const byThem = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', issuer: { kind: 'member', memberId: 'mem_machine_2' } });
+    const byThemForOther = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', issuer: { kind: 'member', memberId: 'mem_machine_2' }, memberId: 'mem_machine_3' });
     const link = (await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW, { issuedBy: PRINCIPAL.id }))!;
     e.sqlite.query(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_2', 'mem_machine_2', ?)`).run(NOW);
 
@@ -79,6 +81,7 @@ describe('revoking a member', () => {
   it('is flat and serialised: with two linked members, the first revocation wins and the second is refused as the last member', async () => {
     const e = sqliteEnv();
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
+    e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
     const [a, b] = await Promise.all([revokeMember(e.db, 'mem_machine_2', 'mem_machine_1', NOW), revokeMember(e.db, 'mem_machine_1', 'mem_machine_2', NOW)]);
     expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL`).get()).toEqual({ c: 1 });
@@ -141,6 +144,7 @@ describe('members and invitations', () => {
 
   it('mints an attributed invitation once, bounds its life, validates its member, lists it live, and revokes it naming who', async () => {
     const e = sqliteEnv();
+    e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
     const env = { ...e.env, ...OWNER_ENV };
     const minted = await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_machine_2', ttlMinutes: 30 }), env);
     expect(minted.status).toBe(201);
@@ -184,7 +188,7 @@ describe('a revoked minter', () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
     e.sqlite.query(`UPDATE members SET github_id = '9002' WHERE id = 'mem_machine_2'`).run();
-    const minted = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', createdByMember: 'mem_machine_2' });
+    const minted = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', issuer: { kind: 'member', memberId: 'mem_machine_2' } });
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
     expect((await (await worker.fetch(await asOwner('/api/enrollment'), env)).json() as { invitations: unknown[] }).invitations).toEqual([]);
     expect(await spendEnrollmentAuthority(e.db, minted.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });

@@ -77,7 +77,7 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 61;
+const PLANNED_STATEMENTS = 64;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
 const ID_ROLES = { key: 7, prompt: 10, group: 1 };

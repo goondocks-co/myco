@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, listInvitations, revokeEnrollmentAuthority } from '../auth/enrollment.js';
+import { ENROLLMENT_TTL_MS, EnrollmentAuthorizationError, issueEnrollmentAuthority, listInvitations, revokeEnrollmentAuthority } from '../auth/enrollment.js';
 import { ADMIN_IDENTITY_LINK_TTL_MS, issueIdentityLinkAuthority, memberLinkState } from '../auth/identity-link.js';
 import { listMembers, memberState, revokeMember } from '../auth/members-admin.js';
 import { revokeCredentialAsMember } from '../auth/tokens.js';
@@ -12,6 +12,8 @@ import { HARNESS_MEMBER_ID, MEMBER_ID, MINUTE_MS } from '../constants.js';
 import { asMemberRole, forbiddenToMember, isAdmin } from '../auth/roles.js';
 import { isProjectId } from '../pipeline.js';
 import { paging } from './sessions.js';
+import { memberSubject } from '../auth/authorization.js';
+import { credentialListScope } from '../auth/http-authorization.js';
 
 /** The longest invitation the dashboard mints, in minutes: one day. */
 export const MAX_INVITATION_MINUTES = 1440;
@@ -58,8 +60,8 @@ export async function handleInvitations(env: ServerEnv, ctx: OwnerContext): Prom
  * invitation for a new member, or for another runtime of an existing one. The
  * key is answered once.
  *
- * `role` defaults to `member` on this surface, which is the safe half of the
- * grammar: an admin who wants to mint another admin says so. `projectId` binds
+ * `role` defaults to `member`. An existing member keeps their effective authority.
+ * Invitations that grant admin or owner authority require the owner. `projectId` binds
  * the invitation to one Project, which a sandbox requires and a person does
  * not — an invitation without one admits a person to the Deployment, and a
  * sandbox presenting it is refused rather than bound to a guess.
@@ -92,7 +94,13 @@ export async function handleMintInvitation(env: ServerEnv, ctx: OwnerContext): P
     projectId = body.projectId;
   }
 
-  const issued = await issueEnrollmentAuthority(env.db, ctx.now, { role, ttlMs, createdByMember: ctx.member.id, memberId, projectId });
+  let issued;
+  try {
+    issued = await issueEnrollmentAuthority(env.db, ctx.now, { role, ttlMs, issuer: { kind: 'member', memberId: ctx.member.id }, memberId, projectId });
+  } catch (error) {
+    if (error instanceof EnrollmentAuthorizationError) return forbiddenToMember();
+    throw error;
+  }
   emit({ kind: 'invitation_issued', invitationId: issued.id, memberId, createdBy: ctx.member.id });
   return Response.json({ key: issued.key, id: issued.id, expiresAt: issued.expiresAt, role, projectId }, { status: 201 });
 }
@@ -104,15 +112,15 @@ export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext):
 }
 
 /**
- * The Deployment's credentials, paginated, optionally narrowed to one purpose: every one to an admin, and a
- * member's own to a member. `token_hash` is never selected, so there is nothing here to redact.
+ * The Deployment's credentials, paginated under the individual credential read policy.
+ * `token_hash` is never selected.
  */
 export async function handleCredentials(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   const purpose = ctx.url.searchParams.get('purpose');
   if (purpose !== null && purpose !== 'run' && purpose !== 'member') return badRequest('purpose must be run or member');
-  const own = isAdmin(ctx.member.role) ? {} : { memberId: ctx.member.id };
+  const own = await credentialListScope(env, await memberSubject(env.db, ctx.member.id, 'http'));
   return ok(await listCredentials(env.db, ctx.now, { ...page, ...(purpose === null ? {} : { purpose }), ...own }));
 }
 
