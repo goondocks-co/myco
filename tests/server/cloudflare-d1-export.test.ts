@@ -20,6 +20,8 @@ import { transientReadFailure } from '@myco/server/object-read.js';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
 import { D1_EXPORT_ANSWERS } from '../helpers/d1-export-answers.ts';
 import type { CloudflareFetch, OperatorLogin } from '@myco/server/cloudflare.js';
+import { Database } from 'bun:sqlite';
+import { buildSnapshotDatabase } from '@myco/server/recovery-snapshot.js';
 
 const POLL_CEILING = 5_000;
 
@@ -132,6 +134,20 @@ describe('a D1 export that never completes', () => {
 });
 
 describe('an export a retry resumes', () => {
+  it('retains the recovery-hold export cap across the restart-1/restart-2 subprocess sequence', async () => {
+    const child = new URL('./helpers/d1-export-restart-child.ts', import.meta.url).pathname;
+    const phase = async (name: string) => {
+      const process = Bun.spawn([Bun.argv[0]!, '--no-env-file', child, dir, name], { stdout: 'pipe', stderr: 'pipe' });
+      const [code, output, errors] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+      expect({ code, errors }).toEqual({ code: 0, errors: '' });
+      return JSON.parse(output);
+    };
+    expect(await phase('restart-1')).toMatchObject({ starts: 2, recordExists: true });
+    const resumed = await phase('restart-2');
+    expect(resumed.starts).toBe(2);
+    expect(resumed.errors.join('\n')).toContain('new D1 export limit (2) reached');
+  });
+
   it('does not charge an explicitly refused login against the new-export budget', async () => {
     const api = provider(() => 'complete');
     const startBudget = new D1ExportStartBudget();
@@ -525,6 +541,29 @@ const ranged = (start: number, total: number, headers: Record<string, string> = 
 
 describe('a resumed download that does not match what it resumes', () => {
   const output = () => fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8');
+
+  for (const [first, second] of [[null, null], [null, '"v2"'], ['"v1"', null], ['W/"v1"', 'W/"v1"'], ['"v1"', 'W/"v1"'], ['"v1"', '"v2"']] as const) {
+    it(`takes the whole replacement object instead of splicing with validators ${first} / ${second}`, async () => {
+      const api = provider(() => 'complete');
+      const a = "CREATE TABLE t(v TEXT);\nINSERT INTO t VALUES('AAAA');\n";
+      const b = a.replace('AAAA', 'BBBB');
+      const offset = a.length - 6;
+      const served = servedInTurn(api, [
+        () => new Response(a.slice(0, offset), { headers: { 'content-length': String(a.length), ...(first === null ? {} : { etag: first }) } }),
+        (range) => range === null
+          ? new Response(b, { headers: { 'content-length': String(b.length), ...(second === null ? {} : { etag: second }) } })
+          : new Response(b.slice(offset), { status: 206, headers: { 'content-range': `bytes ${offset}-${b.length - 1}/${b.length}`, ...(second === null ? {} : { etag: second }) } }),
+        () => new Response(b, { headers: { 'content-length': String(b.length), etag: '"v2"' } }),
+      ]);
+      await run(served.fetch, { pollMs: 0 });
+      expect(output()).toBe(b);
+      expect(api.started()).toBe(1);
+      const snapshot = path.join(dir, 'snapshot.sqlite');
+      await buildSnapshotDatabase(snapshot, path.join(dir, 'd1.sql'), [{ type: 'table', name: 't', sql: 'CREATE TABLE t(v TEXT)', storage: 'table' }]);
+      const db = new Database(snapshot, { readonly: true });
+      try { expect(db.query('SELECT v FROM t').get()).toEqual({ v: 'BBBB' }); } finally { db.close(); }
+    });
+  }
 
   it('refuses a range that starts anywhere but where its bytes stopped, and starts again from the first byte rather than splicing', async () => {
     const api = provider(() => 'complete');
