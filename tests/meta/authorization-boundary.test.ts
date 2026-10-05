@@ -29,14 +29,86 @@ function boundaryViolations(source: string, module: string): string[] {
   const ast = ts.createSourceFile(module, source, ts.ScriptTarget.Latest, true);
   const violations: string[] = [];
   const blobAliases = new Set(['blobs']);
+  const registryAliases = new Set(['entry', 'route']);
+  const blobCalls = new Set<string>();
+  const dispatchCalls = new Set<string>();
+  const dispatchProperties = new Set(['handler', 'credential', 'deployment', 'unbound', 'grant', 'run']);
+  const unwrap = (node: ts.Expression): ts.Expression => {
+    while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAsExpression(node)
+      || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) node = node.expression;
+    return node;
+  };
+  const access = (node: ts.Expression): { receiver: ts.Expression; property: string | undefined } | null => {
+    node = unwrap(node);
+    if (ts.isPropertyAccessExpression(node)) return { receiver: node.expression, property: node.name.text };
+    if (ts.isElementAccessExpression(node)) {
+      const property = node.argumentExpression && unwrap(node.argumentExpression);
+      return { receiver: node.expression, property: property && (ts.isStringLiteral(property) || ts.isNoSubstitutionTemplateLiteral(property)) ? property.text : undefined };
+    }
+    return null;
+  };
+  const isBlob = (node: ts.Expression): boolean => {
+    node = unwrap(node);
+    return ts.isIdentifier(node) && blobAliases.has(node.text) || access(node)?.property === 'blobs';
+  };
+  const isRegistry = (node: ts.Expression): boolean => {
+    node = unwrap(node);
+    if (ts.isIdentifier(node)) return registryAliases.has(node.text) || ['ROUTES', 'TOOL_REGISTRY', 'RUN_TOOL_REGISTRY'].includes(node.text);
+    const held = access(node);
+    return held !== null && (isRegistry(held.receiver) || held.property === 'route' && unwrap(held.receiver).getText(ast) === 'matched');
+  };
+  const isBlobCall = (node: ts.Expression): boolean => {
+    node = unwrap(node);
+    if (ts.isIdentifier(node)) return blobCalls.has(node.text);
+    const held = access(node);
+    if (held && isBlob(held.receiver) && (held.property === 'get' || held.property === undefined)) return true;
+    if (held && (held.property === undefined || held.property === 'call' || held.property === 'apply') && isBlobCall(held.receiver)) return true;
+    return ts.isCallExpression(node) && access(node.expression)?.property === 'bind'
+      && isBlobCall(access(node.expression)!.receiver);
+  };
+  const isDispatchCall = (node: ts.Expression): boolean => {
+    node = unwrap(node);
+    if (ts.isIdentifier(node)) return dispatchCalls.has(node.text);
+    const held = access(node);
+    if (held && (held.property === 'handler' || isRegistry(held.receiver) && (held.property === undefined || dispatchProperties.has(held.property)))) return true;
+    if (held && (held.property === undefined || held.property === 'call' || held.property === 'apply') && isDispatchCall(held.receiver)) return true;
+    return ts.isCallExpression(node) && access(node.expression)?.property === 'bind'
+      && isDispatchCall(access(node.expression)!.receiver);
+  };
+  const remember = (name: string, expression: ts.Expression): void => {
+    if (isBlob(expression)) blobAliases.add(name);
+    if (isRegistry(expression)) registryAliases.add(name);
+    if (isBlobCall(expression)) blobCalls.add(name);
+    if (isDispatchCall(expression)) dispatchCalls.add(name);
+  };
   const aliases = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const from = node.initializer.getText(ast);
-      if (/(?:^|\.)blobs$/.test(from) || blobAliases.has(from)) blobAliases.add(node.name.text);
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (ts.isIdentifier(node.name)) remember(node.name.text, node.initializer);
+      else if (ts.isObjectBindingPattern(node.name)) {
+        for (const item of node.name.elements) {
+          if (!ts.isIdentifier(item.name)) continue;
+          if (item.dotDotDotToken) { remember(item.name.text, node.initializer); continue; }
+          const computed = item.propertyName !== undefined && ts.isComputedPropertyName(item.propertyName);
+          const property = item.propertyName && ts.isComputedPropertyName(item.propertyName)
+            ? unwrap(item.propertyName.expression) : item.propertyName ?? item.name;
+          const name = ts.isIdentifier(property) && !computed || ts.isStringLiteral(property) || ts.isNoSubstitutionTemplateLiteral(property) ? property.text : undefined;
+          if (name === 'blobs') blobAliases.add(item.name.text);
+          if (name === 'route' && unwrap(node.initializer).getText(ast) === 'matched') registryAliases.add(item.name.text);
+          if (isBlob(node.initializer) && (name === 'get' || name === undefined)) blobCalls.add(item.name.text);
+          if (isRegistry(node.initializer) && (name === undefined || dispatchProperties.has(name))) dispatchCalls.add(item.name.text);
+        }
+      }
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) {
+      remember(node.left.text, node.right);
     }
     ts.forEachChild(node, aliases);
   };
-  aliases(ast);
+  let priorAliases = -1;
+  while (priorAliases !== blobAliases.size + registryAliases.size + blobCalls.size + dispatchCalls.size) {
+    priorAliases = blobAliases.size + registryAliases.size + blobCalls.size + dispatchCalls.size;
+    aliases(ast);
+  }
   function visit(node: ts.Node): void {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       const binding = node.importClause?.namedBindings;
@@ -61,15 +133,11 @@ function boundaryViolations(source: string, module: string): string[] {
       && /(?:\/api\/|\/tools\/)/.test(node.moduleSpecifier.text) && !node.isTypeOnly) {
       violations.push(`${module}: handler re-export outside declaring registry`);
     }
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const receiver = node.expression.expression.getText(ast);
-      const name = node.expression.name.text;
-      if ((name === 'handler' || (['credential', 'deployment', 'unbound', 'grant', 'run'].includes(name)
-        && /^(?:entry|route|matched\.route)$/.test(receiver)))
-        && module !== 'pipeline.ts' && module !== 'mcp/server.ts') {
+    if (ts.isCallExpression(node)) {
+      if (isDispatchCall(node.expression) && module !== 'pipeline.ts' && module !== 'mcp/server.ts') {
         violations.push(`${module}: registry dispatch outside authorization chokepoint`);
       }
-      if (name === 'get' && (/(?:^|\.)blobs$/.test(receiver) || blobAliases.has(receiver)) && !RAW_READ_CAPABILITIES.has(module)) {
+      if (isBlobCall(node.expression) && !RAW_READ_CAPABILITIES.has(module)) {
         violations.push(`${module}: blob read outside declared serving/processing/backup capability`);
       }
     }
@@ -208,9 +276,28 @@ describe('authorization registry and bypass boundary', () => {
       "const handler = await import('./api/spores.js');",
       'entry.handler(input, context);', 'route.handler(env, context);', 'route.run(env, context);',
       'env.blobs.get(key);', 'blobs.get(key);', 'const raw = env.blobs; raw.get(key);',
+      "route['handler'](env, ctx);", 'route[operation](env, ctx);', 'entry[operation](input, ctx);',
+      "env.blobs['get'](key);", "env['blobs'].get(key);", "env['blobs']['get'](key);",
+      "const raw = env['blobs']; raw.get(key);", 'env.blobs[operation](key);',
+      "const raw = env['blobs']; const copy = raw; copy[operation](key);",
+      "let raw; raw = env['blobs']; raw['get'](key);",
+      "const { blobs: raw } = env; raw['get'](key);", 'const { get: load } = env.blobs; load(key);',
+      "const { ['get']: load } = env.blobs; load(key);",
+      'const { [operation]: load } = env.blobs; load(key);', 'const load = env.blobs.get; load(key);',
+      'const load = env.blobs.get.bind(env.blobs); load(key);',
+      'const load = env.blobs.get; load.call(env.blobs, key);',
+      'const { handler: invoke } = route; invoke(env, ctx);', 'const invoke = route.handler; invoke(env, ctx);',
+      'const invoke = route.handler; invoke[operation](env, ctx);',
+      'const current = route; current[operation](env, ctx);', "matched['route']['handler'](env, ctx);",
+      'TOOL_REGISTRY[tool].ops[op][operation](input, ctx);',
     ]) expect(boundaryViolations(source, 'new-entry.ts').length).toBeGreaterThan(0);
     expect(boundaryViolations("import type { MemberHandler } from './routes.js';", 'new-entry.ts')).toEqual([]);
     expect(boundaryViolations('env.blobs.get(key);', 'core/raw-resources.ts')).toEqual([]);
+    expect(boundaryViolations("const raw = env['blobs']; raw['get'](key);", 'core/raw-resources.ts')).toEqual([]);
+    expect(boundaryViolations("route['handler'](env, ctx);", 'pipeline.ts')).toEqual([]);
+    expect(boundaryViolations('env.blobs.put(key, bytes);', 'new-entry.ts')).toEqual([]);
+    expect(boundaryViolations("const { ['put']: save } = env.blobs; save(key, bytes);", 'new-entry.ts')).toEqual([]);
+    expect(boundaryViolations('ordinary.get(key); database.run();', 'new-entry.ts')).toEqual([]);
   });
 
   it('serves raw resources through the uploader capability and keeps the pipeline and MCP dispatch tied to authorization', () => {
