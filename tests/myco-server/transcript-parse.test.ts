@@ -109,6 +109,69 @@ describe('repair lane priority', () => {
     (sqlite.query(laneSelectionSql(lane, 100, NOW).replace('?', String(PARSER_VERSION))).all() as { transcript_id: string }[])
       .map((row) => row.transcript_id);
 
+  const append = async (r: Awaited<ReturnType<typeof rig>>, transcriptId: string, sessionId: string, text: string, at: number, baseOffset = 0) => {
+    const bytes = new TextEncoder().encode(text);
+    const key = await sha256HexOf(bytes);
+    const objectKey = registerBlob(r.sqlite, { projectId: PROJECT, key, size: bytes.length, tokenId: r.tokenId, receivedAt: at });
+    await r.serverEnv.blobs.put(objectKey, new Blob([bytes]).stream());
+    const receipt = await ingestEvent(r.serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, now: at, bodyBytes: 0 }, {
+      eventId: crypto.randomUUID(), sessionId, kind: 'transcript.segment', channel: 'cli', createdAt: at,
+      producer: { adapter: 'claude-code', version: '1' }, payload: { transcriptId, baseOffset, length: bytes.length, blob: key, agent: 'claude-code' },
+    });
+    expect(receipt.persisted).toBe(true);
+  };
+
+  it('admits same-millisecond growth on a real deployed-format chunked checkpoint before an older repair', async () => {
+    const text = line({ type: 'user', promptId: uuid(70_000), message: { content: 'large pending calls' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 8 }, (_, i) => ({ type: 'tool_use', id: `large-${i}`, name: 'Read', input: { path: 'r'.repeat(50_000) } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(text);
+    const size = Buffer.byteLength(text);
+    await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+      agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+    const stored = r.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+    expect(JSON.parse(stored.parser_context).mycoParserState.chunked).toBe(true);
+    expect(count(r.sqlite, 'transcript_parser_state_chunks')).toBeGreaterThan(0);
+    r.sqlite.run("UPDATE transcripts SET parser_context = json_remove(parser_context, '$.mycoParserRereadUntil', '$.mycoParserReadSize')");
+    const old = 'tx_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    await append(r, old, 'older-repair', body(1), NOW - 10_000);
+    r.sqlite.run('UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = ? WHERE transcript_id = ?', [NOW - 10_000, PARSER_VERSION, old]);
+    await rereadTranscripts(r.serverEnv.db, { projectId: PROJECT, sessionId: 'older-repair' });
+    await append(r, TRANSCRIPT, SESSION, line({ type: 'user', promptId: uuid(70_001), message: { content: 'fresh after chunked checkpoint' }, timestamp: new Date(NOW).toISOString() }), NOW, size);
+    expect(selected(r.sqlite, 'live')).toEqual([TRANSCRIPT]);
+    expect(selected(r.sqlite, 'repair')).toEqual([old]);
+    expect(await pendingCount(r.serverEnv.db)).toBe(2);
+    const passes: string[] = [];
+    await parseTranscripts(r.serverEnv, NOW + 1, { budget: { calls: 24, wallMs: 10_000 }, clock: () => 0,
+      passes: { started: (id) => { passes.push(id); }, ended: () => {} } });
+    expect(passes[0]).toBe(TRANSCRIPT);
+    expect(passes).toContain(old);
+    expect(r.sqlite.query('SELECT text FROM prompt_batches WHERE session_id = ? AND text = ?').get(SESSION, 'fresh after chunked checkpoint')).toEqual({ text: 'fresh after chunked checkpoint' });
+  });
+
+  it('serves shorter continuous live uploads within two wakes while a faster-growing transcript stays pending', async () => {
+    const r = await rig(body(2_000), TRANSCRIPT_PARSE_BYTES_PER_READ);
+    const short = 'tx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    let lastShortPass = -1;
+    for (let tick = 0; tick < 6; tick += 1) {
+      const large = r.sqlite.query('SELECT size FROM transcripts WHERE transcript_id = ?').get(TRANSCRIPT) as { size: number };
+      const prior = r.sqlite.query('SELECT size FROM transcripts WHERE transcript_id = ?').get(short) as { size: number } | null;
+      await append(r, TRANSCRIPT, SESSION, body(1_000), NOW + tick * 3, large.size);
+      await append(r, short, 'short-growing', line({ type: 'user', promptId: uuid(60_000 + tick), message: { content: `fresh short ${tick}` }, timestamp: new Date(NOW + tick * 3 + 1).toISOString() }), NOW + tick * 3 + 1, prior?.size ?? 0);
+      const passes: string[] = [];
+      await parseTranscripts(r.serverEnv, NOW + tick * 3 + 2, { budget: { calls: 6, wallMs: 10_000 }, clock: () => 0,
+        passes: { started: (id) => { passes.push(id); }, ended: () => {} } });
+      if (passes.includes(short)) lastShortPass = tick;
+      expect(tick - lastShortPass).toBeLessThan(2);
+      const active = r.sqlite.query('SELECT parsed_offset, size FROM transcripts WHERE transcript_id = ?').get(TRANSCRIPT) as { parsed_offset: number; size: number };
+      expect(active.parsed_offset).toBeLessThan(active.size);
+      const ids = (['live', 'imported', 'repair'] as const).flatMap((lane) => selected(r.sqlite, lane));
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(await pendingCount(r.serverEnv.db)).toBe(ids.length);
+    }
+    expect(r.sqlite.query('SELECT COUNT(*) AS n FROM prompt_batches WHERE session_id = ?').get('short-growing')).toEqual({ n: 6 });
+  });
+
   it.each(['upgrade', 'manual'] as const)('parses a newly received live segment on the next tick beside a large %s reread, then completes the repair', async (mode) => {
     const { sqlite, serverEnv, tokenId } = await rig(body(2_000), TRANSCRIPT_PARSE_BYTES_PER_READ);
     sqlite.run('UPDATE transcripts SET parsed_offset = size, parsed_at = ?, parser_version = ?', [NOW, mode === 'upgrade' ? 3 : PARSER_VERSION]);
@@ -182,9 +245,18 @@ describe('repair lane priority', () => {
     { mycoParserState: { chunked: true } },
   ])('selects an already deployed repair checkpoint in its repair lane: %j', async (context) => {
     const { sqlite, serverEnv } = await rig(body(2));
-    sqlite.run('UPDATE transcripts SET parsed_at = ?, parser_version = ?, parser_context = ?', [NOW, PARSER_VERSION, JSON.stringify(context)]);
+    sqlite.run('UPDATE transcripts SET parsed_at = ?, parser_version = ?, parser_context = ?', [NOW + 1, PARSER_VERSION, JSON.stringify(context)]);
     expect(selected(sqlite, 'live')).toEqual([]);
     expect(selected(sqlite, 'repair')).toEqual([TRANSCRIPT]);
+    expect(await pendingCount(serverEnv.db)).toBe(1);
+  });
+
+  it.each([NOW, null])('admits a deployed checkpoint with an unknown byte baseline and ambiguous last service %j', async (parsedAt) => {
+    const { sqlite, serverEnv } = await rig(body(2));
+    sqlite.run('UPDATE transcripts SET parsed_at = ?, parser_version = ?, parser_context = ?',
+      [parsedAt, PARSER_VERSION, JSON.stringify({ mycoParserState: { chunked: true } })]);
+    expect(selected(sqlite, 'live')).toEqual([TRANSCRIPT]);
+    expect(selected(sqlite, 'repair')).toEqual([]);
     expect(await pendingCount(serverEnv.db)).toBe(1);
   });
 

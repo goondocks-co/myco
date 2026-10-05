@@ -225,16 +225,18 @@ export type Lane = 'live' | 'imported' | 'repair';
 const REREAD_UNTIL = `COALESCE(json_extract(parser_context, '$.mycoLegacyResponseUntil'),
   json_extract(parser_context, '$.mycoParserRereadUntil'), json_extract(parser_context, '$.mycoParserState.legacyReplies.until'),
   CASE WHEN json_extract(parser_context, '$.mycoParserState.chunked') = 1 THEN size ELSE 0 END)`;
+/** Unknown byte baselines require a live pass when receipt and service instants overlap. */
 const REPAIR_WORK = `(${REREAD_UNTIL}) > parsed_offset
   AND CASE WHEN json_type(parser_context, '$.mycoParserReadSize') IS NOT NULL
     THEN size <= json_extract(parser_context, '$.mycoParserReadSize')
-    ELSE last_received_at <= COALESCE(parsed_at, last_received_at) END`;
+    ELSE COALESCE(last_received_at < parsed_at, 0) END`;
 
-/** Live receipts are FIFO; repair passes rotate by their last parse instant. */
+/** Unserved transcripts lead; live and repair passes rotate by their last parse instant. */
+const LAST_SERVICE_ORDER = 'parsed_at, last_received_at, transcript_id';
 const LANE_ORDER: Record<Lane, { where: string; order: string }> = {
-  live: { where: `imported_at IS NULL AND NOT (${REPAIR_WORK})`, order: 'last_received_at, transcript_id' },
+  live: { where: `imported_at IS NULL AND NOT (${REPAIR_WORK})`, order: LAST_SERVICE_ORDER },
   imported: { where: 'imported_at IS NOT NULL', order: 'size - parsed_offset, transcript_id' },
-  repair: { where: `imported_at IS NULL AND (${REPAIR_WORK})`, order: 'parsed_at, last_received_at, transcript_id' },
+  repair: { where: `imported_at IS NULL AND (${REPAIR_WORK})`, order: LAST_SERVICE_ORDER },
 };
 
 
