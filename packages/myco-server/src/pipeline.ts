@@ -136,7 +136,7 @@ const refuseOversized = (bound: number) => Response.json({ error: 'bad_request',
 /** The request with its body read under the same cap the member path enforces, or null when it exceeds it. A body-less method passes through untouched. */
 async function boundedRequest(request: Request, bound: number): Promise<Request | null> {
   if (request.method === 'GET' || request.method === 'HEAD') return request;
-  const body = await readBoundedBody(request, bound, 'cancel');
+  const body = await readBoundedBody(request, bound);
   if (!body.ok) return null;
   return new Request(request.url, { method: request.method, headers: request.headers, body: body.text });
 }

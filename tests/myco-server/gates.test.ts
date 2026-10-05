@@ -1203,8 +1203,7 @@ describe('gates', () => {
     expect({ puts: e.bucket.puts, gets: e.bucket.gets, deletes: e.bucket.deletes, pending: e.deferred.pending }).toEqual({ puts: [], gets: [], deletes: [], pending: [] });
 
     let oversizedPulls = 0;
-    const overflowAt = Math.floor(MAX_BODY_BYTES / (64 * 1024)) + 1;
-    const chunks = overflowAt + 2;
+    const chunks = Math.floor(MAX_BODY_BYTES / (64 * 1024)) + 1;
     const oversized = new ReadableStream<Uint8Array>({
       pull(controller) {
         oversizedPulls += 1;
@@ -1216,7 +1215,7 @@ describe('gates', () => {
       method: 'PUT', body: oversized, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
     expect({ status: bounded.status, pulled: oversizedPulls, body: await bounded.json() })
-      .toEqual({ status: 400, pulled: overflowAt, body: { error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
+      .toEqual({ status: 400, pulled: chunks + 1, body: { error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
     expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
     e.sqlite.close();
   });

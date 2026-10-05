@@ -6,8 +6,8 @@ export type BoundedBody = { ok: true; text: string; bytes: number } | { ok: fals
 
 const decoder = new TextDecoder();
 
-/** Reads at most `max` bytes into memory. Declared oversized bodies are refused unread; streamed overflow is drained or cancelled as the caller declares. */
-export async function readBoundedBody(request: Request, max: number, overflow: 'drain' | 'cancel' = 'drain'): Promise<BoundedBody> {
+/** Reads a request body up to `max` bytes. A body whose declared content-length exceeds `max` is refused without being read. Once reading has begun, an oversized stream is read to its end and discarded — never cancelled, never released, never left partially read. */
+export async function readBoundedBody(request: Request, max: number): Promise<BoundedBody> {
   const declared = request.headers.get('content-length');
   if (declared !== null && Number(declared) > max) {
     return { ok: false, reason: `body exceeds ${max} bytes` };
@@ -17,8 +17,7 @@ export async function readBoundedBody(request: Request, max: number, overflow: '
   const reader = request.body.getReader();
   const read = await collectBounded(reader, max);
   if (!read.ok) {
-    if (overflow === 'cancel') await reader.cancel();
-    else await drain(reader);
+    await drain(reader);
     return { ok: false, reason: `body exceeds ${max} bytes` };
   }
   return { ok: true, text: decoder.decode(read.bytes), bytes: read.bytes.byteLength };

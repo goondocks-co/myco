@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { MAX_BODY_BYTES } from '../packages/myco-server/src/ingest/body.js';
 import { seededSqlite, sqliteD1 } from '../tests/myco-server/helpers/d1.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '../packages/myco-server/src/constants.js';
 import { wrappingKeyFromText } from '../packages/myco-server/src/platform/wrapping-key.js';
@@ -65,11 +64,6 @@ const sessionPost = async (path: string, body: unknown, sub = MEMBER_SUB) => ser
 assert.equal((await sessionPost('/api/enrollment', { role: 'owner' })).status, 403);
 assert.equal((await sessionPost('/api/enrollment', { role: 'owner' }, '583231')).status, 400);
 assert.equal((await sessionPost('/api/enrollment', { role: 'admin' }, '583231')).status, 403);
-let overflowPulls = 0;
-const overflowAt = Math.floor(MAX_BODY_BYTES / (64 * 1024)) + 1;
-const oversized = new ReadableStream<Uint8Array>({ pull(controller) { overflowPulls += 1; if (overflowPulls > overflowAt + 2) controller.close(); else controller.enqueue(new Uint8Array(64 * 1024)); } }, { highWaterMark: 0 });
-assert.equal((await server.handleRequest(new Request('https://smoke/api/settings/agent.power', { method: 'PUT', headers: { cookie: await ownerCookie(now, MEMBER_SUB), origin: 'https://smoke' }, body: oversized, duplex: 'half' } as RequestInit), env)).status, 400);
-assert.equal(overflowPulls, overflowAt);
 assert.equal((await sessionPost('/api/harness/dispatch', { task: 'title-summary', projectId: 'proj_1', fresh: true })).status, 403);
 assert.equal((await sessionPost('/api/harness/dispatch', { task: 'title-summary', projectId: 'missing-project' })).status, 400);
 const smokePlanKey = 'ffffffff-ffff-4fff-afff-ffffffffffff';
