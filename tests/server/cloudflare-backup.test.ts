@@ -825,6 +825,25 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     } finally { f.cleanup(); }
   });
 
+  it('caps new whole exports at two across snapshot retries and preserves the hold for a later run', async () => {
+    const f = fixture();
+    try {
+      const fetch: CloudflareFetch = async (url, init) => {
+        const answer = await f.fetchObject(url, init);
+        if (url.endsWith('/export') && JSON.parse(String(init.body)).current_bookmark) {
+          return Response.json({ success: true, result: { success: true, status: 'error', error: 'provider reset' } });
+        }
+        return answer;
+      };
+      await expect(f.backup({ fetch })).rejects.toThrow('new D1 export limit (2) reached');
+      expect(f.exports()).toHaveLength(2);
+      expect(f.source.sqlite.query('SELECT released_at FROM recovery_holds WHERE holder=\'operator\'').all()).toEqual([{ released_at: null }]);
+      expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('snapshot');
+      expect((await f.backup()).status).toBe('complete');
+      expect(f.exports()).toHaveLength(3);
+    } finally { f.cleanup(); }
+  });
+
   it('keeps the production snapshot bound: four captures, waiting 15 s, 60 s and 120 s between them', () => {
     expect(RECOVERY_RETRY.snapshots).toEqual({ attempts: 4, backoffMs: [15_000, 60_000, 120_000] });
   });
