@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from '../support/fenced-fs.mjs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { driverFor } from '@myco/runner/drivers/registry.js';
@@ -27,8 +27,10 @@ function alive(pid: number): boolean {
   return !execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
 }
 
-function fixture(id: string, leaveLeader: boolean, detachedHelper = false): { dir: string; pids: () => number[]; cleanup: () => void } {
+function fixture(id: string, leaveLeader: boolean, detachedHelper = false): { dir: string; bin: string; pids: () => number[]; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'myco-process-owner-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(bin);
   const pidFile = join(dir, 'pids.json');
   const helperReady = join(dir, 'helper.pid');
   const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(helperReady)}, String(process.pid)); setInterval(() => {}, 1000);`;
@@ -63,9 +65,9 @@ if (!${JSON.stringify(leaveLeader)}) {
 }
 `);
   const harness = HARNESSES.find((entry) => entry.id === id)!;
-  writeFileSync(join(dir, harness.binary), `#!/bin/sh\nexec '${process.execPath}' '${script}'\n`, { mode: 0o755 });
+  writeFileSync(join(bin, harness.binary), `#!/bin/sh\nexec '${process.execPath}' '${script}'\n`, { mode: 0o755 });
   const pids = (): number[] => existsSync(pidFile) ? JSON.parse(readFileSync(pidFile, 'utf8')) as number[] : [];
-  return { dir, pids, cleanup: () => {
+  return { dir, bin, pids, cleanup: () => {
     for (const pid of [...pids(), ...(existsSync(helperReady) ? [Number(readFileSync(helperReady, 'utf8'))] : [])]) {
       try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
@@ -88,7 +90,7 @@ describe('a harness process owner', () => {
         it(`${harness.id} awaits ${detached ? 'detached helper pipe disposal' : 'leader and TERM-ignoring descendant cleanup'} on ${ending}`, async () => {
           const f = fixture(harness.id, ending === 'leader exit', detached);
           const previousPath = process.env.PATH;
-          process.env.PATH = `${f.dir}:${previousPath ?? ''}`;
+          process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
           const server = Bun.serve({ port: 0, fetch: async (request) => {
             const body = await request.json() as { id: number; method: string };
             return Response.json({ jsonrpc: '2.0', id: body.id, result: body.method === 'tools/list' ? { tools: [] } : { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } } });
@@ -145,7 +147,7 @@ describe('a harness process owner', () => {
   it('stops a TERM-ignoring helper on leader exit before its inherited pipes close', async () => {
     const f = fixture('claude-code', true);
     const stopping = new AbortController();
-    const started = startHarness(join(f.dir, 'claude'), [], { cwd: f.dir, env: {}, signal: stopping.signal });
+    const started = startHarness(join(f.bin, 'claude'), [], { cwd: f.dir, env: {}, signal: stopping.signal });
     try {
       const lines: string[] = [];
       await bounded((async () => { for await (const line of started.lines) lines.push(line); })());
@@ -159,14 +161,14 @@ describe('a harness process owner', () => {
     const f = fixture('claude-code', false);
     const stopping = new AbortController();
     stopping.abort();
-    const started = startHarness(join(f.dir, 'claude'), [], { cwd: f.dir, env: {}, signal: stopping.signal });
+    const started = startHarness(join(f.bin, 'claude'), [], { cwd: f.dir, env: {}, signal: stopping.signal });
     try { expect(await bounded(started.exit)).not.toBe(0); } finally { f.cleanup(); }
   }, BOUND_MS * 2);
 
   it('awaits process cleanup when its line iterator is returned directly', async () => {
     const f = fixture('claude-code', false);
     const stopping = new AbortController();
-    const started = startHarness(join(f.dir, 'claude'), [], { cwd: f.dir, env: {}, signal: stopping.signal });
+    const started = startHarness(join(f.bin, 'claude'), [], { cwd: f.dir, env: {}, signal: stopping.signal });
     const lines = started.lines[Symbol.asyncIterator]();
     try {
       expect((await bounded(lines.next())).done).toBe(false);
@@ -182,7 +184,7 @@ describe('a harness process owner', () => {
     writeFileSync(script, `
 import { startHarness } from ${JSON.stringify(source)};
 const stopping = new AbortController();
-const started = startHarness(${JSON.stringify(join(f.dir, 'claude'))}, [], { cwd: ${JSON.stringify(f.dir)}, env: {}, signal: stopping.signal });
+const started = startHarness(${JSON.stringify(join(f.bin, 'claude'))}, [], { cwd: ${JSON.stringify(f.dir)}, env: {}, signal: stopping.signal });
 const lines = started.lines[Symbol.asyncIterator]();
 await lines.next();
 const pending = lines.next();

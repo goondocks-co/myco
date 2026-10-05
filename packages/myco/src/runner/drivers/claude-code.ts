@@ -136,7 +136,7 @@ export const claudeCodeDriver: Driver = {
       ...isolation,
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
-    ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);
+    ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : await startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);
 
     try {
       const accountingEnv = launchEnvironment({ ...launch.env, ...env }, omitInherited);
