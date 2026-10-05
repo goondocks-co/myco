@@ -6,7 +6,7 @@ import type { ParserState } from './parsers/index.js';
 /** Four UTF-8 bytes per code unit keep every chunk under the row's encoded-byte bound. */
 export const PARSER_CHECKPOINT_CHARS = Math.floor(MAX_PAYLOAD_BYTES / 4);
 
-interface CheckpointTarget { projectId: string; transcriptId: string; parsedOffset: number }
+interface CheckpointTarget { projectId: string; transcriptId: string; parsedOffset: number; size?: number }
 
 export async function readParserCheckpoint(db: RelationalStore, target: CheckpointTarget, digest: unknown): Promise<ParserState> {
   const { results } = await db.prepare(`SELECT chunk_index, chunk_count, payload FROM transcript_parser_state_chunks
@@ -28,6 +28,7 @@ export async function parserCheckpointStatements(
   const chunked = utf8(encoded).length > MAX_PAYLOAD_BYTES;
   const context = JSON.stringify({ ...metadata, mycoParserMeta: metadata ?? null,
     mycoParserRepair: state.repair,
+    mycoParserRereadUntil: state.legacyReplies?.until ?? 0, mycoParserReadSize: target.size,
     mycoParserReplyUnfinished: state.reply !== undefined ? 1 : 0,
     mycoParserReplyLatestAt: state.reply === undefined ? null : state.reply.parts.reduce((latest, part) => Math.max(latest, part.createdAt), 0),
     mycoParserUnfinished: Object.keys(state.pending ?? {}).length > 0 || state.reply !== undefined ? 1 : 0,
