@@ -31,6 +31,7 @@ const originalRealpath = fs.realpathSync.bind(fs);
 const originalReadlink = fs.readlinkSync.bind(fs);
 const originalExists = fs.existsSync.bind(fs);
 const originalFstat = fs.fstatSync.bind(fs);
+const originalLstat = fs.lstatSync.bind(fs);
 const METADATA_LOOKUP_ATTEMPTS = 3;
 function retryInterrupted<T>(lookup: () => T): T {
   for (let attempt = 1; ; attempt += 1) {
@@ -96,10 +97,13 @@ function offending(p: unknown, includesParents = false): FenceHit | null {
   else return null;
   let s: string;
   try { s = path.resolve(raw); } catch { return null; }
-  for (const target of [s, resolvedTarget(s)]) {
+  return offendingPaths([s, resolvedTarget(s)], includesParents);
+}
+function offendingPaths(targets: string[], includesParents: boolean): FenceHit | null {
+  for (const target of targets) {
     for (const pre of [...scopes].flat()) {
       if (target === pre || target.startsWith(pre + path.sep)
-        || (includesParents && pre.startsWith(target.endsWith(path.sep) ? target : target + path.sep))) return { path: s, boundary: 'home' };
+        || (includesParents && pre.startsWith(target.endsWith(path.sep) ? target : target + path.sep))) return { path: targets[0]!, boundary: 'home' };
     }
     for (const scope of tempScopes) {
       if (within(target, scope.root)) continue;
@@ -109,13 +113,33 @@ function offending(p: unknown, includesParents = false): FenceHit | null {
         for (const [index, name] of names.entries()) {
           if (TEST_TEMP_NAME.test(name) && (index === names.length - 1
             || !originalExists(path.join(dir, ...names.slice(0, index + 1))))) {
-            return { path: s, boundary: 'temp' };
+            return { path: targets[0]!, boundary: 'temp' };
           }
         }
       }
     }
   }
   return null;
+}
+// Unreadable fixture leaves resolve through a readable parent and non-symlink metadata.
+export function assertUnfencedFixtureMutationAllowed(target: string): string {
+  if (!path.isAbsolute(target) || path.normalize(target) !== target) {
+    throw new Error('TEST SAFETY: permission fixtures require a normalized absolute path');
+  }
+  for (let ancestor = target; ; ancestor = path.dirname(ancestor)) {
+    if (retryInterrupted(() => originalLstat(ancestor)).isSymbolicLink()) {
+      throw new Error('TEST SAFETY: permission fixtures must not traverse a symbolic link');
+    }
+    if (path.dirname(ancestor) === ancestor) break;
+  }
+  const canonical = path.join(retryInterrupted(() => originalRealpath(path.dirname(target))), path.basename(target));
+  const hit = offendingPaths([target, canonical], true);
+  if (hit) deny('permissionFixture', hit);
+  const stat = retryInterrupted(() => originalLstat(target));
+  if (stat.nlink > 1 && !stat.isDirectory()) {
+    throw new Error('TEST SAFETY: permission fixtures must not mutate a hard-linked file');
+  }
+  return canonical;
 }
 function deny(fnName: string, hit: FenceHit): never {
   throw new Error(

@@ -92,7 +92,7 @@ describe('filesystem fence metadata retries', () => {
 describe('permission fixture boundary', () => {
   it('refuses to change permissions directly in the test temp root', () => {
     expect(() => setFixturePermissions(path.join(os.tmpdir(), 'not-a-private-fixture'), 0o600))
-      .toThrow(/private directory under the test temp root/);
+      .toThrow(/owned fixture allocation/);
   });
   it('refuses to change permissions outside the test temp root', () => {
     const directory = fs.mkdtempSync(path.resolve('target/permission-fixture-'));
@@ -100,7 +100,7 @@ describe('permission fixture boundary', () => {
     fs.writeFileSync(file, 'private fixture', { mode: 0o644 });
     const mode = fs.statSync(file).mode;
     try {
-      expect(() => setFixturePermissions(file, 0o600)).toThrow(/private directory under the test temp root/);
+      expect(() => setFixturePermissions(file, 0o600)).toThrow(/owned fixture allocation/);
       expect(fs.statSync(file).mode).toBe(mode);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

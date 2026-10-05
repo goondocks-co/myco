@@ -1,3 +1,4 @@
+import { allocateOwnedFixture } from '../support/owned-fixtures.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
 import { runPermissionFixture } from '../helpers/permission-fixture.js';
@@ -109,7 +110,7 @@ describe('secrets', () => {
   let testDir: string;
 
   beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-secrets-test-'));
+    testDir = allocateOwnedFixture('myco-secrets-test-');
   });
 
   afterEach(() => {

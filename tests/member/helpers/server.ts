@@ -3,6 +3,7 @@
  * D1, one member token per machine, and a `fetch` with the global signature
  * that the member transport takes by injection. Nothing here opens a socket.
  */
+import { allocateOwnedFixture } from '../../support/owned-fixtures.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -147,7 +148,7 @@ export function tempStager(dir: string = removeWhenTestsEnd(fs.mkdtempSync(path.
  * It is removed when the file's tests are done.
  */
 export function tempMycoHome(): string {
-  const home = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-home-')));
+  const home = removeWhenTestsEnd(allocateOwnedFixture('myco-member-home-'));
   fs.writeFileSync(path.join(home, 'machine_id'), TEST_MACHINE_ID, 'utf-8');
   return home;
 }

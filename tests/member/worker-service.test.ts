@@ -8,10 +8,10 @@
  * comes back, it restarts all day into a refusal, a second install interrupts
  * the worker the first one started, or an uninstall leaves a unit behind.
  */
+import { allocateOwnedFixture } from '../support/owned-fixtures.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import { setFixturePermissions } from '../helpers/permission-fixture.js';
-import os from 'node:os';
 import path from 'node:path';
 import { defaultSpec, installService, renderUnit, servicePaths, statusOfService, uninstallService, type ServiceRunner } from '@myco/server/service.js';
 import {
@@ -48,7 +48,7 @@ let scratch: string;
 let home: string;
 let mycoHome: string;
 beforeEach(() => {
-  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worker-service-'));
+  scratch = allocateOwnedFixture('myco-worker-service-');
   home = path.join(scratch, 'home');
   mycoHome = path.join(home, '.myco-dev');
   fs.mkdirSync(mycoHome, { recursive: true });
