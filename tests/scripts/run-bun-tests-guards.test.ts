@@ -476,7 +476,7 @@ describe('run-bun-tests guards', () => {
     const ready = path.join(base, 'ready');
     fs.mkdirSync(ready);
     const canonical = fs.readFileSync(path.join(REPO, 'bunfig.toml'), 'utf8');
-    const env = { MYCO_RUNNER_REPORT_DIR: reports, MYCO_RUNNER_CONFIG_READY_DIR: ready };
+    const env = { MYCO_RUNNER_REPORT_DIR: reports, MYCO_RUNNER_CONFIG_READY_DIR: ready, MYCO_TEST_STRICT_TEMP: '1' };
     const [node, dom] = await Promise.all([
       runRunner('tests/fixtures/runner/node_config_isolation_test.ts', env),
       runRunner('tests/fixtures/runner/dom_config_isolation_test.tsx', env),
