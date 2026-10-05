@@ -10,7 +10,7 @@ const cost = (mode: string) => JSON.parse(execFileSync(process.execPath, [fixtur
 
 it('projects 1 MiB adversarial prose and redaction within an owned subprocess deadline', () => {
   const measured = cost('shared');
-  expect(measured.timings).toHaveLength(3);
+  expect(measured.timings).toHaveLength(5);
   expect(measured.timings.every((elapsed) => elapsed < WALL_DEADLINE_MS)).toBe(true);
 }, WALL_DEADLINE_MS + 2000);
 

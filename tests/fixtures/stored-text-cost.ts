@@ -5,7 +5,7 @@ const mode = process.argv[2];
 const timings: number[] = [];
 if (mode === 'shared') {
   const chars = 1024 * 1024;
-  for (const input of ['a-'.repeat(chars / 2), ' '.repeat(chars), '!'.repeat(chars) + 'x']) {
+  for (const input of ['a-'.repeat(chars / 2), ' '.repeat(chars), '!'.repeat(chars) + 'x', 'token_budget: 1 '.repeat(Math.ceil(chars / 16)), 'token_budget: 1; '.repeat(Math.ceil(chars / 17))]) {
     const at = performance.now();
     agentProse(input, 4096, { singleLine: true });
     redactSecrets(input);

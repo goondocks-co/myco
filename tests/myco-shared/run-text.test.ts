@@ -294,6 +294,14 @@ describe('agent prose, bounded and masked', () => {
     }
   });
 
+  it('keeps declared decimal token quantities in displayed instructions', () => {
+    const quantities = 'Keep max_tokens=4096 and token_budget: 12000; token_limit=8000.';
+    expect(redactSecrets(quantities)).toBe(quantities);
+    for (const leak of PROSE.filter((case_) => case_.name.startsWith('token quantity payload'))) {
+      expect(leaksIn(leak, redactSecrets(leak.command))).toEqual([]);
+    }
+  });
+
   it('is cut to its bound and is null where nothing is left', () => {
     expect(agentProse('word '.repeat(100), 20)).toHaveLength(20);
     expect(agentProse('word '.repeat(100), 20)!.endsWith('…')).toBe(true);

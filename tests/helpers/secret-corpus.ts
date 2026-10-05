@@ -159,6 +159,8 @@ export const OPENAI_LETTERS = ['sk', 'abcdefghijklmnop'].join('-');
  * a password-file record; and a key or a label broken by zero-width characters. Agent prose keeps none of them.
  */
 export const PROSE: readonly Leak[] = [
+  ...['1 customer-content', '12000; customer-content'].map((value) => ({ name: `token quantity payload ${value}`, command: `Read the policy.\ntoken_budget: ${value}\nUpdated the policy.`, secrets: ['customer-content'] })),
+  { name: 'text in a token quantity', command: 'Read the policy.\ntoken_budget: "customer-fragment" Updated the policy.', secrets: ['customer-fragment'] },
   ...['DBPASSWORD', 'ACCESSTOKEN', 'CLIENTAPIKEY'].map((label) => ({ name: `uppercase ${label}`, command: `Read the policy.\n${label}: "hunter22" Updated the policy.`, secrets: ['hunter22'] })),
   ...['\n', '\r\n'].map((newline) => ({ name: `a quoted secret across ${newline === '\n' ? 'LF' : 'CRLF'}`, command: `Read the policy.\nclientPassword: "customer-fragment${newline}piano-harbor"\nUpdated the policy.`, secrets: ['customer-fragment', 'piano-harbor'] })),
   { name: 'a compatibility Unicode secret label', command: 'Read the policy.\nclientＰassword: piano-harbor\nUpdated the policy.', secrets: ['piano-harbor'] },

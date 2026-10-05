@@ -8,6 +8,8 @@ const LABEL_CHAR = /^[A-Za-z0-9_-]+$/;
 const UPPER_SECRET_SUFFIXES = ['PASSWORD', 'PASSWD', 'PASSPHRASE', 'PASSCODE', 'TOKEN', 'SECRET', 'CREDENTIAL', 'CREDENTIALS', 'APIKEY', 'ACCESSKEY', 'AUTHORIZATION'];
 const JOINT_WORDS: ReadonlySet<string> = new Set(['is', 'was', 'are']);
 const ELISION = '…';
+const TOKEN_QUANTITIES: ReadonlySet<string> = new Set(['tokenbudget', 'tokenlimit', 'tokencount', 'tokensbudget', 'tokenslimit', 'tokenscount']);
+
 const URL_OPEN = /[A-Za-z][A-Za-z0-9+.-]*:\/\//y;
 const lower = (char: string): boolean => char >= 'a' && char <= 'z';
 const upper = (char: string): boolean => char >= 'A' && char <= 'Z';
@@ -19,6 +21,30 @@ function character(text: string, at: number): { original: string; comparison: st
   if (point === undefined) return { original: '', comparison: '', end: at };
   const original = String.fromCodePoint(point);
   return { original, comparison: point < 128 ? original : original.normalize('NFKC'), end: at + original.length };
+}
+
+/** A line's complete sequence of decimal token quantities, joined only by declared fields. */
+function decimalQuantityEnd(text: string, at: number): number | null {
+  const spaces = () => { while (text[at] === ' ' || text[at] === '\t' || text[at] === '\r') at += 1; };
+  const ended = () => at === text.length || text[at] === '\n';
+  while (at < text.length) {
+    const numberAt = at;
+    while (digit(text[at] ?? '')) at += 1;
+    if (at === numberAt) return null;
+    spaces();
+    if (text[at] === '.') { at += 1; spaces(); return ended() ? at : null; }
+    if (ended()) return at;
+    if (text[at] !== ';') return null;
+    at += 1; spaces();
+    if (ended()) return at;
+    const nameAt = at;
+    while (LABEL_CHAR.test(text[at] ?? '')) at += 1;
+    if (!TOKEN_QUANTITIES.has(text.slice(nameAt, at).replace(/[_-]/g, '').toLowerCase())) return null;
+    spaces();
+    if (text[at] !== ':' && text[at] !== '=') return null;
+    at += 1; spaces();
+  }
+  return null;
 }
 
 /** A secret-bearing flag stem, including attached protocol names such as passin and passout. */
@@ -88,6 +114,11 @@ export function maskSecretLabels(input: string, replacement: string, options: { 
     if (valueAt === text.length || text[valueAt] === '|') continue;
     const opener = character(text, valueAt);
     const quote = /^["']$/.test(opener.comparison) ? opener.comparison : '';
+    const quantity = quote === '' && TOKEN_QUANTITIES.has(label.join('').replace(/[_-]/g, '').toLowerCase());
+    if (quantity) {
+      const quantityEnd = decimalQuantityEnd(text, valueAt);
+      if (quantityEnd !== null) { at = quantityEnd; continue; }
+    }
     let end = valueAt;
     let closed = false;
     if (quote !== '') {
@@ -99,7 +130,7 @@ export function maskSecretLabels(input: string, replacement: string, options: { 
         if (char.comparison === quote) { closed = true; break; }
       }
     } else {
-      const line = options.unquoted === 'line' && text[start] !== '-';
+      const line = quantity || (options.unquoted === 'line' && text[start] !== '-');
       while (end < text.length && text[end] !== '|' && (line ? text[end] !== '\n' : !/^\s$/.test(text[end]!))) end += 1;
     }
     const keptQuotes = quote !== '' && options.keepQuotes === true;
