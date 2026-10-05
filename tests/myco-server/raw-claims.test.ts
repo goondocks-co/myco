@@ -12,6 +12,7 @@ import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 function missing(e: ReturnType<typeof sqliteEnv>, id: string, at: number, token = 'lost-token') {
+  e.sqlite.run("INSERT OR IGNORE INTO sessions (project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1','history','lost-token',0,0)");
   e.sqlite.run(`INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation) VALUES ('proj_1',?,1,'text/plain',?,?,'00000000-0000-4000-8000-000000000001')`, [id, token, at]);
   e.sqlite.run(`INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
     VALUES ('proj_1',?,'history',?,'notification','cli','raw bytes','digest',?,?)`, [id, token, at, at]);
@@ -218,9 +219,12 @@ describe('explicit owner claim of missing raw uploader', () => {
     try {
       await bootstrapOwnership(source.db, 'mem_machine_1', 'mem_machine_1', '0', 1);
       source.sqlite.run('UPDATE raw_provenance_state SET revision = 10000 WHERE id = 1');
-      const event = (e: ReturnType<typeof sqliteEnv>, id: string, token: string) => e.sqlite.run(`INSERT INTO events
+      const event = (e: ReturnType<typeof sqliteEnv>, id: string, token: string) => {
+        e.sqlite.run("INSERT OR IGNORE INTO sessions (project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1','history','source-missing',0,0)");
+        e.sqlite.run(`INSERT INTO events
         (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
         VALUES ('proj_1',?,'history',?,'notification','cli','full raw bytes','digest',1,1)`, [id, token]);
+      };
       event(source, 'source-claimed', 'source-missing');
       const preview = await rawClaimPreview(source.db, 'mem_machine_1');
       await claimUnknownRaw(source.db, 'mem_machine_1', preview.revision, 2);
@@ -252,7 +256,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       await claimUnknownRaw(e.db, 'mem_machine_1', (await rawClaimPreview(e.db, 'mem_machine_1')).revision, 2);
       const transcript = { project_id: 'proj_1', transcript_id: 'legacy-retained', session_id: 'history', machine_id: 'missing-old-machine',
         size: 10, segment_count: 2, first_received_at: 3, last_received_at: 3, token_id: 'missing-old-token' };
-      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(e.db), schemaVersion: 69, createdAt: 3, producer: 'legacy', counts: { transcripts: 1 } };
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(e.db), schemaVersion: 70, createdAt: 3, producer: 'legacy', counts: { transcripts: 1 } };
       await restoreArtifact(e.db, { text: [header, { t: 'transcripts', r: transcript }].map((r) => JSON.stringify(r)).join('\n') });
       expect(e.sqlite.query('SELECT complete FROM raw_provenance_backfill').get()).toEqual({ complete: 0 });
       await complete(e);
@@ -273,6 +277,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       source.sqlite.run("UPDATE members SET github_id = 'other-human' WHERE id = 'mem_machine_2'");
       await bootstrapOwnership(source.db, 'mem_machine_2', 'mem_machine_2', '0', 1);
       await bootstrapOwnership(destination.db, 'mem_machine_1', 'mem_machine_1', '0', 1);
+      source.sqlite.run("INSERT INTO sessions (project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1','history','missing-token',0,0)");
       source.sqlite.run(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,first_received_at,last_received_at,token_id)
         VALUES ('proj_1','foreign-claimed','history','missing-machine',0,1,1,'missing-token')`);
       await complete(source);
@@ -290,7 +295,7 @@ describe('explicit owner claim of missing raw uploader', () => {
   it('rejects ownership restore without its matching immutable receipt before selecting an owner', async () => {
     const e = sqliteEnv();
     try {
-      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(e.db), schemaVersion: 70, createdAt: 1, producer: 'test', counts: { deployment_ownership: 1 } };
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(e.db), schemaVersion: 71, createdAt: 1, producer: 'test', counts: { deployment_ownership: 1 } };
       const text = [header, { t: 'deployment_ownership', r: { id: 1, member_id: 'mem_machine_1', revision: 1 } }].map((r) => JSON.stringify(r)).join('\n');
       await expect(restoreArtifact(e.db, { text })).rejects.toThrow('matching audit receipt');
       expect(await ownershipPreview(e.db)).toEqual({ ownerMemberId: null, revision: '0' });

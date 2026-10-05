@@ -14,7 +14,7 @@ const MAX_PASSES = 200;
 function historical(): Database {
   const sqlite = new Database(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const step of SCHEMA_STEPS.filter((step) => step.version < 70)) for (const statement of step.statements) sqlite.exec(statement);
+  for (const step of SCHEMA_STEPS.filter((step) => step.version < 71)) for (const statement of step.statements) sqlite.exec(statement);
   for (const statement of historicalBackfillSql(NOW)) sqlite.exec(statement);
   return sqlite;
 }
@@ -50,7 +50,7 @@ describe('bounded raw provenance backfill correction gates', () => {
   it('attests the selected page before advancing past a concurrent earlier insertion', async () => {
     const sqlite = historical();
     try {
-      for (const statement of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(statement);
+      for (const statement of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(statement);
       const db = sqliteD1(sqlite);
       const selected = sqlite.query('SELECT project_id, key FROM blobs ORDER BY project_id, key LIMIT 100').all();
       const injectedKey = '0'.repeat(63) + '-';
@@ -81,7 +81,7 @@ describe('bounded raw provenance backfill correction gates', () => {
     const sqlite = historical();
     try {
       const before = await fingerprint(sqlite, 'events');
-      for (const statement of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(statement);
+      for (const statement of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(statement);
       expect(count(sqlite, 'raw_resources')).toBe(0);
       expect(count(sqlite, 'processed_resources')).toBe(0);
       expect(count(sqlite, 'events')).toBe(HISTORICAL_EVENTS + HISTORICAL_PLANS);
@@ -102,7 +102,7 @@ describe('bounded raw provenance backfill correction gates', () => {
   it('bounds every pass, persists its checkpoint across a restart, retains pruned ownership and preserves source bytes', async () => {
     let sqlite = historical();
     try {
-      for (const statement of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(statement);
+      for (const statement of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(statement);
       expect(count(sqlite, 'raw_resources')).toBe(0);
       const originals = await Promise.all(['blobs', 'events', 'transcripts', 'transcript_segments', 'plans'].map(async (table) => ({ table, hash: await fingerprint(sqlite, table) })));
       const { RAW_BACKFILL_BATCH, rawBackfill } = await import('@myco-server-worker/core/raw-backfill.js');

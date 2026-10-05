@@ -799,6 +799,9 @@
     "spores: session and prompt on a save, lineage both ways, the injection under its turn": 3101,
     "backup: create, verified list, preview, converging restore, and cross-deployment adoption": 2883,
     "session turns: capture keyed to prompts, turns read, turn body, tool calls on their own, rail summaries and filters": 355,
-    "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 60000
+    "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 60000,
+    "raw backfill: bounded historical provenance, retained transcript ownership and completion on native and D1": 250000,
+    "raw claims: explicit owner bootstrap, reviewed unknown-only claims and projectless CLI on native and D1": 60000,
+    "raw privacy: uploader provenance, filtered transcripts, verified dedup, shared processed bodies and browser revocation": 100000
   }
 }

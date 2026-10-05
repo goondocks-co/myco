@@ -17,7 +17,7 @@ async function finishBackfill(sqlite: Database): Promise<void> {
 function historical() {
   const sqlite = new Database(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const step of SCHEMA_STEPS.filter((step) => step.version < 70)) for (const sql of step.statements) sqlite.exec(sql);
+  for (const step of SCHEMA_STEPS.filter((step) => step.version < 71)) for (const sql of step.statements) sqlite.exec(sql);
   sqlite.run("INSERT INTO projects (project_id, name, created_at) VALUES ('p','p',0)");
   sqlite.run("INSERT INTO members (id, created_at) VALUES ('a',0),('b',0)");
   sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES ('ma','a',0),('mb','b',0)");
@@ -27,18 +27,18 @@ function historical() {
   return sqlite;
 }
 
-describe('raw ownership schema step 70', () => {
+describe('raw ownership schema step 71', () => {
   it('restores a legacy mixed transcript without prematurely granting raw ownership', async () => {
     const sqlite = historical();
     try {
-      for (const sql of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(sql);
+      for (const sql of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
       sqlite.run("INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation) VALUES ('p','restored-blob',12,'text/plain','ca',0,'00000000-0000-4000-8000-000000000001')");
       const transcript = { project_id: 'p', transcript_id: 'restored', session_id: 'session', machine_id: 'ma', size: 24, segment_count: 2,
         first_received_at: 0, last_received_at: 0, token_id: 'ca' };
       const segments = ['ca', 'cb'].map((token_id, index) => ({ project_id: 'p', transcript_id: 'restored', base_offset: index * 12,
         length: 12, blob_key: 'restored-blob', event_id: `restored-${index}`, created_at: 0, received_at: 0, token_id }));
-      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: 69, createdAt: 0, producer: 'test',
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: 70, createdAt: 0, producer: 'test',
         counts: { transcripts: 1, transcript_segments: 2 } };
       // Artifact row order is independent of the restore capability's table order.
       const text = [header, { t: 'transcripts', r: transcript }, ...segments.map((r) => ({ t: 'transcript_segments', r }))].map((row) => JSON.stringify(row)).join('\n');
@@ -63,7 +63,7 @@ describe('raw ownership schema step 70', () => {
       sqlite.run("INSERT INTO transcript_segments (project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id) VALUES ('p','mixed',0,12,'known','event',0,0,'cb')");
       const bytes = sqlite.query('SELECT * FROM blobs').all();
       const transcripts = sqlite.query('SELECT * FROM transcripts').all();
-      for (const sql of SCHEMA_STEPS.find((step) => step.version === 70)!.statements) sqlite.exec(sql);
+      for (const sql of SCHEMA_STEPS.find((step) => step.version === 71)!.statements) sqlite.exec(sql);
       await finishBackfill(sqlite);
       expect(sqlite.query('SELECT * FROM blobs').all()).toEqual(bytes);
       expect(sqlite.query('SELECT * FROM transcripts').all()).toEqual(transcripts);

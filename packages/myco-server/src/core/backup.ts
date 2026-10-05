@@ -303,13 +303,12 @@ interface RestoreProgress {
 const RESTORE_OWNER = 'table_name = ? AND artifact_hash = ? AND next_row = ?';
 
 type ArtifactRow = Record<string, unknown>;
-const transcriptIdentity = (row: ArtifactRow) => JSON.stringify([row.project_id, row.transcript_id]);
 type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, parents: ReadonlyMap<string, ArtifactRow>) => PreparedStatement;
 
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
   transcript_parser_state_chunks(db, row, parents) {
-    const parent = parents.get(transcriptIdentity(row));
+    const parent = parents.get(transcriptIdentity(row.project_id, row.transcript_id));
     if (parent === undefined) throw new BackupApplyError('transcript_parser_state_chunks', 'a checkpoint row names no transcript in the artifact');
     return restoreParserCheckpointStatement(db, row, parent);
   },
@@ -452,7 +451,7 @@ export async function restoreArtifact(
   }
 
   const outcome: RestoreOutcome = { tables: {} };
-  const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row), row]));
+  const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
   const hash = await sha256Hex(opts.text);
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,

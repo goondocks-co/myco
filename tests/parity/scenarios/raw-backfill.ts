@@ -64,7 +64,7 @@ export const rawBackfillParity: ParityScenario = {
     const now = Date.now();
     const credential = (await target.sql(`SELECT id FROM member_credentials WHERE token_hash = ${lit(await sha256Hex(target.memberToken))}`))[0]?.id;
     expect(typeof credential).toBe('string');
-    const schema = SCHEMA_STEPS.find((step) => step.version === 70)!;
+    const schema = SCHEMA_STEPS.find((step) => step.version === 71)!;
     const names = schema.statements.flatMap((statement) => {
       const match = /CREATE TRIGGER (?:IF NOT EXISTS )?([A-Za-z0-9_]+)/.exec(statement);
       return match === null ? [] : [match[1]];

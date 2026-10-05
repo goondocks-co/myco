@@ -251,7 +251,7 @@ export const RENDERABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jp
 const seg = (value: string) => encodeURIComponent(value);
 const project = (projectId: string) => `/api/projects/${seg(projectId)}`;
 
-const RAW_READ_CACHE_VERSION = 70;
+const RAW_READ_CACHE_VERSION = 71;
 export const blobUrl = (projectId: string, key: string) => `${project(projectId)}/blobs/${seg(key)}?raw=${RAW_READ_CACHE_VERSION}`;
 
 export type ProcessedBodyKind = 'prompt' | 'response' | 'plan' | 'tool-input' | 'tool-output' | 'attachment';

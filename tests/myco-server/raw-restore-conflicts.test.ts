@@ -26,6 +26,7 @@ function blob(e: Fixture, key: string, bytes = BODY) {
 }
 
 function transcript(e: Fixture, options: { machine?: string; token?: string; path?: string; segments?: number; blob?: string } = {}) {
+  e.sqlite.run(`INSERT OR IGNORE INTO sessions (project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES ('proj_1',?,?,1,1)`, [SESSION_ID, options.token ?? TOKEN_ID]);
   const segments = options.segments ?? 0;
   for (let index = 0; index < segments; index++) {
     e.sqlite.run(`INSERT INTO transcript_segments (project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)

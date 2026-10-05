@@ -46,7 +46,7 @@ const KEY_TEXT = 'a'.repeat(64);
 const KEY_IMG = 'b'.repeat(64);
 const KEY_SVG = 'c'.repeat(64);
 const KEY_SEG = 'd'.repeat(64);
-const BLOB = (key: string) => `/api/projects/x/blobs/${key}?raw=70`;
+const BLOB = (key: string) => `/api/projects/x/blobs/${key}?raw=71`;
 const P1 = '00000000-0000-7000-8000-000000000001';
 const P2 = '00000000-0000-7000-8000-000000000002';
 const P3 = '00000000-0000-7000-8000-000000000003';
