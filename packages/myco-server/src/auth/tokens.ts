@@ -201,6 +201,19 @@ export async function revokeCredentialAsMember(
   return { revoked, revokedBy };
 }
 
+/** End every credential of a claimed machine in one attributed write. */
+export async function revokeMachineCredentialsAsMember(
+  db: RelationalStore, actor: DashboardMember, machineId: string, nowMs: number,
+): Promise<{ revoked: number; revokedBy: string }> {
+  const result = await db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
+      WHERE machine_id = ? AND revoked_at IS NULL
+        AND EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id
+          ${isAdmin(actor.role) ? '' : 'AND mc.member_id = ?'})`)
+    .bind(nowMs, actor.id, machineId, ...(isAdmin(actor.role) ? [] : [actor.id])).run();
+  emit({ kind: 'credential_revoked', machineId, revokedBy: actor.id, revoked: result.meta.changes > 0, rows: result.meta.changes });
+  return { revoked: result.meta.changes, revokedBy: actor.id };
+}
+
 /**
  * Revoke a credential only when it belongs to the named member. The dispatch
  * path mints a credential for the harness member per run and releases it when

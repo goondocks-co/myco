@@ -75,26 +75,44 @@ export interface OutcomeCounts {
   failed: number;
   /** Runs that finished, having produced something or not. */
   finished: number;
+  /** Full-window run statuses when available. */
+  runs?: Record<string, number>;
 }
 
 export function outcomeHeadline(kind: OutcomeKind, c: OutcomeCounts): string {
+  const running = (c.runs?.running ?? 0) + (c.runs?.claimed ?? 0);
+  const queued = c.runs?.queued ?? 0;
+  const completed = c.runs?.completed ?? Math.max(0, c.finished - c.failed);
+  const skipped = c.runs?.skipped ?? 0;
   switch (kind) {
     case 'learn':
       if (c.spores > 0) return `Learned ${count(c.spores, 'spore')}${c.sessions > 0 ? ` from ${count(c.sessions, 'session')}` : ''}`;
+      if (running > 0) return 'Learning from recent sessions now';
+      if (queued > 0) return 'Waiting to learn from recent sessions';
       if (c.failed > 0 && c.failed === c.finished) return 'Couldn’t learn from recent sessions';
-      return c.finished > 0 ? 'Read new sessions and found nothing new to keep' : 'Learning hasn’t run yet';
+      if (completed > 0) return 'Read new sessions and found nothing new to keep';
+      return skipped > 0 ? 'Learning was held off' : 'Learning hasn’t run yet';
     case 'seed':
       if (c.spores > 0) return `Learned ${count(c.spores, 'spore')} from the project’s code`;
+      if (running > 0) return 'Learning from the project’s code now';
+      if (queued > 0) return 'Waiting to learn from the project’s code';
       if (c.failed > 0 && c.failed === c.finished) return 'Couldn’t learn from the project’s code';
-      return 'Read the project’s code and found nothing new to keep';
+      if (completed > 0) return 'Read the project’s code and found nothing new to keep';
+      return skipped > 0 ? 'Learning from the code was held off' : 'Learning from the code hasn’t run yet';
     case 'title':
       if (c.sessions > 0) return `Titled and summarized ${count(c.sessions, 'session')}`;
+      if (running > 0) return 'Titling sessions now';
+      if (queued > 0) return 'Waiting to title sessions';
       if (c.failed > 0 && c.failed === c.finished) return 'Couldn’t title sessions';
-      return c.finished > 0 ? 'Checked for sessions to title; none needed one' : 'Titling hasn’t run yet';
+      if (completed > 0) return 'Checked for sessions to title; none needed one';
+      return skipped > 0 ? 'Titling was held off' : 'Titling hasn’t run yet';
     case 'map':
       if (c.maps > 0) return `Updated the code map ${times(c.maps)}`;
+      if (running > 0) return 'Updating the code map now';
+      if (queued > 0) return 'Waiting to update the code map';
       if (c.failed > 0 && c.failed === c.finished) return 'Couldn’t update the code map';
-      return c.finished > 0 ? 'Checked the code map; nothing to change' : 'The code map hasn’t been updated yet';
+      if (completed > 0) return 'Checked the code map; nothing to change';
+      return skipped > 0 ? 'The code map update was held off' : 'The code map hasn’t been updated yet';
   }
 }
 

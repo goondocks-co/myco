@@ -1,4 +1,4 @@
-import { Card, CommandBlock, ErrorState, HealthDot, LoadingState } from '../../../design';
+import { Card, CommandBlock, ErrorState, HealthDot, ReadState } from '../../../design';
 import type { useStatus } from '../../../hooks/use-status';
 import type { WorkerStatus } from '../../../lib/api';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
@@ -22,9 +22,12 @@ export function WorkersSection({ status, now, projectName }: WorkersSectionProps
   const workers = status.data?.workers;
   return (
     <AdminSection id={HEALTH_ANCHORS.workers} title="Workers" description="The machines that run Myco’s work: learning, titling and code map updates.">
-      {status.isPending ? <LoadingState label="Reading the workers" count={2} />
-        : workers === undefined ? <ErrorState error={status.error} onRetry={() => void status.refetch()} />
-        : <Fleet workers={workers} machines={machines.machines} now={now} projectName={projectName} />}
+      <ReadState data={workers} pending={status.isPending} error={status.error} onRetry={() => void status.refetch()} label="workers">
+        {(value) => <>
+          {machines.error && <ErrorState error={machines.error} onRetry={machines.retry}><p>Couldn’t read machine names.</p></ErrorState>}
+          <Fleet workers={value} machines={machines.machines} now={now} projectName={projectName} />
+        </>}
+      </ReadState>
     </AdminSection>
   );
 }

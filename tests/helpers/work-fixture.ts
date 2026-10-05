@@ -33,7 +33,7 @@ export const S2 = '1c7a1a66-9b47-5e1f-8d2c-7c2e1e4a3b22';
 const RANGE_NONE = { tokens: null, costUsd: null, durationMs: null };
 
 export const outcome = (over: Partial<WorkOutcome> & Pick<WorkOutcome, 'kind' | 'task'>): WorkOutcome => ({
-  projectId: P, runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 0 }, failedWithOutput: 0, failed: 0, latestAt: NOW - HOUR,
+  projectId: P, runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 0 }, failedWithOutput: 0, failed: 0, failure: null, latestAt: NOW - HOUR,
   tokens: 0, costUsd: 0, runsWithoutCost: 0, spend: RANGE_NONE, map: null, ...over,
 });
 
@@ -58,6 +58,7 @@ export const WEEK_WORK: WorkAnswer = {
     }),
     outcome({
       kind: 'map', task: 'canopy-map', runs: { completed: 1, failed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 }, failed: 1,
+      failure: { runs: 1, since: NOW - 3.5 * HOUR, latestAt: NOW - 3.5 * HOUR, latestRunId: 'run_5e0b1c2d3f', producedSince: 0 },
       latestAt: NOW - 3.5 * HOUR, tokens: 1_600_000, costUsd: 2.1,
       spend: { tokens: [500_000, 2_000_000], costUsd: [1, 2.3], durationMs: [4 * MINUTE, 10 * MINUTE] },
       map: { branch: 'main', commit: '8194811abcdef0123', generatedAt: NOW - 20 * HOUR, sourceRunId: 'run_c19f7a0e55' },
@@ -72,6 +73,7 @@ export const WEEK_WORK: WorkAnswer = {
     workRun({ id: 'run_c19f7a0e55', kind: 'map', task: 'canopy-map', at: NOW - 20 * HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } }),
   ],
   truncated: false,
+  cursor: null,
   upkeep: { task: 'embedding-reconcile', lastSuccessAt: NOW - 80 * MINUTE, failedInWindow: 1, unrecovered: null },
 };
 

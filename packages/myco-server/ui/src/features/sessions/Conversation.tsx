@@ -1,67 +1,53 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Button, EmptyState, ErrorState, LoadingState, Switch } from '../../design';
-import { PROMPT_ORIGINS, TURN_PAGE, useAllTurns, type PromptOrigin } from '../../hooks/use-sessions';
+import { PROMPT_ORIGINS, useTurns, useNamedTurn, type PromptOrigin } from '../../hooks/use-sessions';
 import { Turn } from './Turn';
-import { count } from './words';
 
 /** The prompts a person typed: what the conversation shows by default. */
 export const PERSON_ONLY: readonly PromptOrigin[] = ['user'];
 
-/**
- * A session's conversation, read top to bottom: the prompts a person typed by
- * default, every prompt on request. It opens on the latest turns; a longer
- * session keeps its earlier turns above them, a page at a time. A link that
- * names a turn (`?turn=`) brings it into view, showing every prompt when only
- * that list holds it.
- */
+/** A conversation opens at its newest page and reads earlier turns on request. A named turn is read independently. */
 export function Conversation({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const [showAll, setShowAll] = useState(false);
-  const [pagesShown, setPagesShown] = useState(1);
   const toggleId = useId();
-  const turns = useAllTurns(projectId, sessionId, showAll ? PROMPT_ORIGINS : PERSON_ONLY);
+  const turns = useTurns(projectId, sessionId, showAll ? PROMPT_ORIGINS : PERSON_ONLY);
   const [params] = useSearchParams();
   const wanted = params.get('turn');
-  const wantedAt = wanted === null ? -1 : turns.rows.findIndex((t) => t.promptId === wanted);
-  const first = Math.max(0, turns.rows.length - TURN_PAGE * pagesShown);
-
-  // A named turn above the shown ones is shown; one the person-typed list does not hold widens it once.
-  const widened = useRef(false);
-  useEffect(() => {
-    if (wanted === null || turns.walking || turns.isPending) return;
-    if (wantedAt >= 0) {
-      if (wantedAt < first) setPagesShown(Math.ceil((turns.rows.length - wantedAt) / TURN_PAGE));
-      return;
-    }
-    if (!showAll && !widened.current) { widened.current = true; setShowAll(true); }
-  }, [wanted, wantedAt, first, turns.walking, turns.isPending, turns.rows.length, showAll]);
-
-  const earlier = first;
+  const named = useNamedTurn(projectId, sessionId, wanted);
+  const target = named.data?.rows[0];
+  useEffect(() => { if (target !== undefined && target.origin !== 'user') setShowAll(true); }, [target]);
+  const rows = [...new Map([...turns.rows, ...(target === undefined ? [] : [target])].map((row) => [row.promptId, row])).values()]
+    .sort((a, b) => a.createdAt - b.createdAt || a.promptId.localeCompare(b.promptId));
   return (
     <div className="flex flex-col gap-s4">
       <div className="flex items-center justify-end gap-s2">
         <label htmlFor={toggleId} className="t-small text-muted">Show prompts from the system and sub-agents</label>
-        <Switch id={toggleId} checked={showAll} onCheckedChange={(next) => { setShowAll(next); setPagesShown(1); }} />
+        <Switch id={toggleId} checked={showAll} onCheckedChange={setShowAll} />
       </div>
-      {turns.isPending || turns.walking ? (
+      {wanted !== null && named.error && <ErrorState error={named.error} onRetry={() => { void named.refetch(); }} />}
+      {wanted !== null && named.isPending && <p role="status" className="t-small text-muted">Reading the linked turn…</p>}
+      {wanted !== null && named.isSuccess && target === undefined && <p className="t-small text-muted">The linked turn is unavailable in this session.</p>}
+      {turns.isPending ? (
         <LoadingState label="Loading the conversation" count={3} />
-      ) : turns.error ? (
+      ) : turns.error && rows.length === 0 ? (
         <ErrorState error={turns.error} onRetry={turns.retry} />
-      ) : turns.rows.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState title={showAll ? 'Nothing captured in this session yet.' : 'No prompts a person typed. Show the prompts from the system and sub-agents to see what ran.'} />
       ) : (
         <>
-          {earlier > 0 && (
-            <Button variant="secondary" className="w-fit" onClick={() => setPagesShown((n) => n + 1)}>
-              Show {count(Math.min(earlier, TURN_PAGE), 'earlier turn')}
+          {turns.error && <ErrorState error={turns.error} onRetry={turns.retry} />}
+          {turns.hasMore && (
+            <Button variant="secondary" className="w-fit" onClick={turns.more} disabled={turns.isFetchingMore}>
+              {turns.isFetchingMore ? 'Reading earlier turns…' : 'Show earlier turns'}
             </Button>
           )}
+          {target !== undefined && !turns.rows.some((row) => row.promptId === target.promptId) && <p className="t-small text-muted">The linked turn is shown alongside the latest turns. More turns may sit between them.</p>}
           <ol aria-label="Conversation" className="flex flex-col gap-s8">
-            {turns.rows.slice(first).map((turn) => (
-              <Turn key={turn.promptId} projectId={projectId} sessionId={sessionId} turn={turn} scrollTo={turn.promptId === wanted} />
+            {rows.map((turn) => (
+              <Turn key={turn.promptId} projectId={projectId} sessionId={sessionId} turn={turn} scrollTo={turn.promptId === (target?.promptId ?? wanted)} />
             ))}
           </ol>
-          {!turns.complete && <p className="t-small text-muted">This conversation holds more turns than are listed here.</p>}
         </>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { ActionLink, Button, Card, Disclosure, HealthDot, errorWords, Skeleton } from '../../design';
+import { ActionLink, Button, Card, Disclosure, HealthDot, errorWords, Skeleton, ReadState } from '../../design';
 import { ConnectDialog, connectedWords, losingWork, RepositoryGroup, RepositoryItem, repositoriesTitle, type ConnectTarget } from './Repositories';
 import type { AttentionAnswer, AttentionItem, UncapturedRootItem } from './wire';
 import { ATTENTION_CHECKS, attentionWords, listed, repositoryWords, type NeedsYouWords } from './words';
@@ -118,9 +118,31 @@ function shown(props: NeedsYouProps, rows: readonly Row[], connectedLine: string
   return props.admin || rows.length > 0 || connectedLine !== null || Boolean(props.repositories.error);
 }
 
+/** Failed refreshes retain the last checked facts while naming every unread source. */
+function ReadChecks({ props }: { props: NeedsYouProps }) {
+  return <>
+    {props.admin && Boolean(props.error) && <ReadState data={props.answer} pending={false} error={props.error} onRetry={props.onRetry} label="what needs you">{() => null}</ReadState>}
+    {Boolean(props.repositories.error) && <ReadState data={props.repositories.items} pending={false} error={props.repositories.error} onRetry={props.onRetry} label="repositories">{() => null}</ReadState>}
+    <Unchecked answer={props.answer} repositories={props.repositories} />
+    {(props.answer?.unavailable.length ?? 0) > 0 && <Button size="sm" variant="ghost" onClick={props.onRetry}>Retry</Button>}
+  </>;
+}
+
+function EmptyChecks({ props, connected, dialog, phone = false }: { props: NeedsYouProps; connected: string | null; dialog: ReactNode; phone?: boolean }) {
+  const incomplete = (props.admin && Boolean(props.error)) || Boolean(props.repositories.error) || (props.answer?.unavailable.length ?? 0) > 0;
+  return <Card data-needs-you="" className={phone ? 'flex flex-col gap-s2 px-s4 py-s3' : 'flex flex-col gap-s2'}>
+    <div className="flex items-center gap-s3">
+      {phone && <HealthDot tone={incomplete ? 'faint' : 'ok'} label={incomplete ? 'Not every check could be read' : 'All clear'} />}
+      <h2 className={phone ? 't-body font-medium text-ink' : 't-h2 text-ink'}>{incomplete ? 'Some checks could not be read' : 'Nothing needs you'}</h2>
+    </div>
+    <ReadChecks props={props} />
+    <Connected words={connected} />{dialog}
+  </Card>;
+}
+
 /** "Needs you" on a wide screen: every item, or one line when there is nothing. */
 export function NeedsYouPanel(props: NeedsYouProps) {
-  const { admin, answer, error, onRetry, repositories, viewerId, projects } = props;
+  const { admin, answer, error, onRetry, viewerId, projects } = props;
   const connecting = useConnecting(viewerId);
   if (waiting(props)) {
     if (!admin) return null;
@@ -137,28 +159,19 @@ export function NeedsYouPanel(props: NeedsYouProps) {
   if (admin && answer === undefined && rows.length === 0) {
     return <Card data-needs-you=""><Failed error={error} onRetry={onRetry} /></Card>;
   }
-  if (rows.length === 0) {
-    return (
-      <Card className="flex flex-col gap-s2" data-needs-you="">
-        <h2 className="t-h2 text-ink">Nothing needs you</h2>
-        <Connected words={connecting.done} />
-        <Unchecked answer={answer} repositories={repositories} />
-        {dialog}
-      </Card>
-    );
-  }
+  if (rows.length === 0) return <EmptyChecks props={props} connected={connecting.done} dialog={dialog} />;
+
   return (
     <Card className="flex flex-col gap-s3" data-needs-you="">
       <div className="flex items-baseline gap-s2">
         <h2 className="t-h2 text-ink">Needs you</h2>
         <span className="t-small text-muted">{rows.length}</span>
       </div>
-      {admin && answer === undefined && <Failed error={error} onRetry={onRetry} />}
+      <ReadChecks props={props} />
       <Connected words={connecting.done} />
       <ul className="flex flex-col gap-s3">
         {rows.map((row) => row.render(connecting.open))}
       </ul>
-      <Unchecked answer={answer} repositories={repositories} />
       {dialog}
     </Card>
   );
@@ -166,32 +179,20 @@ export function NeedsYouPanel(props: NeedsYouProps) {
 
 /** "Needs you" on a phone: one line at the top of the page that opens to the items. */
 export function NeedsYouSummary(props: NeedsYouProps) {
-  const { admin, answer, error, onRetry, repositories, viewerId, projects } = props;
+  const { admin, answer, error, onRetry, viewerId, projects } = props;
   const connecting = useConnecting(viewerId);
   if (waiting(props)) return null;
   const rows = rowsOf(props);
   if (!shown(props, rows, connecting.done)) return null;
   const dialog = <ConnectDialog item={connecting.target} viewerId={viewerId} projects={projects} onClose={connecting.close} onConnected={connecting.connected} />;
   if (admin && answer === undefined && rows.length === 0) return <Card data-needs-you=""><Failed error={error} onRetry={onRetry} /></Card>;
-  if (rows.length === 0) {
-    return (
-      <Card className="flex flex-col gap-s2 px-s4 py-s3" data-needs-you="">
-        <div className="flex items-center gap-s3">
-          {repositories.error || (answer?.unavailable.length ?? 0) > 0
-            ? <HealthDot tone="faint" label="Not every check could be read" />
-            : <HealthDot tone="ok" label="All clear" />}
-          <h2 className="t-body font-medium text-ink">Nothing needs you</h2>
-        </div>
-        <Connected words={connecting.done} />
-        <Unchecked answer={answer} repositories={repositories} />
-        {dialog}
-      </Card>
-    );
-  }
+  if (rows.length === 0) return <EmptyChecks props={props} connected={connecting.done} dialog={dialog} phone />;
+
   const worst = rows.some((row) => row.tone === 'bad') ? 'bad' : 'warn';
   const first = rows[0]!;
   return (
     <Card className="px-s4 py-s3" data-needs-you="">
+      <ReadChecks props={props} />
       <Disclosure
         summary={(
           <span className="flex min-w-0 items-center gap-s3 text-left">
@@ -203,13 +204,11 @@ export function NeedsYouSummary(props: NeedsYouProps) {
           </span>
         )}
       >
-        {admin && answer === undefined && <Failed error={error} onRetry={onRetry} />}
         <Connected words={connecting.done} />
         <ul className="flex flex-col gap-s3 pt-s2">
           {rows.map((row) => row.render(connecting.open))}
         </ul>
-        <Unchecked answer={answer} repositories={repositories} />
-      </Disclosure>
+        </Disclosure>
       {dialog}
     </Card>
   );

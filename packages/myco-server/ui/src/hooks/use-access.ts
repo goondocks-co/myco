@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, patchJson, postJson } from '../lib/api';
 import type { InvitationsAnswer, MembersAnswer, MintedInvitation } from '../features/admin/wire';
-import { MACHINE_CREDENTIALS_KEY } from '../features/admin/machines';
+import { MACHINE_LIST_KEY } from '../features/admin/machines';
 export { usePaged } from './use-paged';
 
 export type { ActivityRow, CredentialRow, InvitationRow, MemberRow } from '../features/admin/wire';
@@ -45,14 +45,14 @@ export interface RevokeOutcome {
 }
 
 /** The reads a machine's name appears in, by the first part of their query key. */
-export const MACHINE_NAME_READS = [MACHINE_CREDENTIALS_KEY[0], 'status', 'today', 'sessions', 'session', 'work', 'runs', 'run'] as const;
+export const MACHINE_NAME_READS = [MACHINE_LIST_KEY[0], 'status', 'today', 'sessions', 'session', 'work', 'runs', 'run'] as const;
 
 /** One mutation per access act; each refreshes the lists it changes. */
 export function useAccessActions() {
   const client = useQueryClient();
   const refresh = (...keys: string[]) => Promise.all(keys.map((k) => client.invalidateQueries({ queryKey: [k] })));
   return {
-    revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials') }),
+    revokeMember: useMutation({ mutationFn: (id: string) => postJson<{ revoked: boolean }>(`/api/members/${encodeURIComponent(id)}/revoke`), onSuccess: () => refresh('members', 'invitations', 'credentials', 'machines') }),
     // A minted key lives only in the page's own state: the mutation keeps no copy once it has answered.
     mintInvitation: useMutation({ gcTime: 0, mutationFn: (body: { memberId?: string; ttlMinutes: number }) => postJson<MintedInvitation>('/api/enrollment', body), onSuccess: () => refresh('invitations') }),
     // The link's key lives only in the page's own state, as an invitation's does.
@@ -77,6 +77,10 @@ export function useAccessActions() {
         return outcome;
       },
       onSettled: () => refresh('credentials', 'members'),
+    }),
+    stopMachine: useMutation({
+      mutationFn: (machineId: string) => postJson<{ revoked: number; revokedBy: string }>(`/api/machines/${encodeURIComponent(machineId)}/stop`),
+      onSettled: () => refresh('machines', 'members', 'status'),
     }),
     /**
      * Renames a machine, then refreshes every read that names it: the machine

@@ -49,6 +49,25 @@ async function harness() {
 const window = `since=${SINCE}&until=${NOW}`;
 
 describe('Myco\'s work', () => {
+  it('reports queued code learning as pending work with no produced outcome', async () => {
+    const { sqlite, runAt, get } = await harness();
+    try {
+      runAt('proj_1', 'run_seed_queued', 'vault-seed', 'queued', { queuedAt: NOW - HOUR });
+      const { status, body } = await get(`/api/work?${window}`);
+      expect(status).toBe(200);
+      expect(body.outcomes).toMatchObject([{
+        projectId: 'proj_1', kind: 'seed', task: 'vault-seed',
+        runs: { queued: 1 }, outcome: { spores: 0, sessions: 0, maps: 0 }, failed: 0, failure: null,
+      }]);
+      expect(body.runs).toEqual([]);
+      const listed = await get('/api/projects/proj_1/runs?task=vault-seed');
+      expect(listed.status).toBe(200);
+      expect(listed.body.rows).toMatchObject([{
+        id: 'run_seed_queued', status: 'queued', queuedAt: NOW - HOUR, startedAt: null, completedAt: null,
+      }]);
+    } finally { sqlite.close(); }
+  });
+
   it('labels a partition model in work reads', async () => {
     const { sqlite, run, get } = await harness();
     try {
@@ -101,6 +120,7 @@ describe('Myco\'s work', () => {
       runs: { completed: 2, failed: 2 },
       outcome: { spores: 3, sessions: 3, maps: 0 },
       failedWithOutput: 1, failed: 1,
+      failure: { runs: 1, since: NOW - 3 * HOUR + 1000, latestAt: NOW - 3 * HOUR + 1000, latestRunId: 'run_l3', producedSince: 0 },
       latestAt: NOW - 2 * HOUR + 120_000,
       tokens: 4500, costUsd: 2.25, runsWithoutCost: 1,
       spend: { tokens: [1000, 3000], costUsd: [0.5, 1.5], durationMs: [60_000, 120_000] },
@@ -195,6 +215,50 @@ describe('Myco\'s work', () => {
     const { body } = await get(`/api/work?${window}`);
     expect(body.runs).toHaveLength(MAX_WORK_RUNS);
     expect(body.truncated).toBe(false);
+  });
+
+  it('keeps a Project failure authoritative beyond the evidence cap and retrieves the next page', async () => {
+    const { sqlite, run, wrote, get } = await harness();
+    try {
+      run('proj_1', 'older_failure', { task: 'canopy-map', status: 'failed', at: SINCE + HOUR, error: 'source unavailable' });
+      for (let i = 0; i < MAX_WORK_RUNS; i += 1) {
+        const id = `newer_${i}`;
+        run('proj_2', id, { task: 'canopy-map', status: 'completed', at: NOW - HOUR + i });
+        wrote('proj_2', id, 'myco_run_map', { op: 'write' });
+      }
+      const { body } = await get(`/api/work?${window}`);
+      expect(body.runs).toHaveLength(MAX_WORK_RUNS);
+      expect(body.runs.some((row: { id: string }) => row.id === 'older_failure')).toBe(false);
+      expect(body.truncated).toBe(true);
+      expect(body.cursor).toBeString();
+      expect(body.outcomes.find((row: { projectId: string }) => row.projectId === 'proj_1').failure)
+        .toMatchObject({ runs: 1, latestRunId: 'older_failure', producedSince: 0 });
+      expect(body.outcomes.find((row: { projectId: string }) => row.projectId === 'proj_2').failure).toBeNull();
+
+      const next = await get(`/api/work?${window}&cursor=${encodeURIComponent(body.cursor)}`);
+      expect(next.status).toBe(200);
+      expect(next.body.runs.map((row: { id: string }) => row.id)).toEqual(['older_failure']);
+      expect(next.body.cursor).toBeNull();
+      expect(next.body.outcomes).toEqual(body.outcomes);
+      expect((await get(`/api/work?${window}&project=proj_1`)).body.runs.map((row: { id: string }) => row.id)).toEqual(['older_failure']);
+      expect((await get(`/api/work?${window}&cursor=oops`)).status).toBe(400);
+    } finally { sqlite.close(); }
+  });
+
+  it('answers a failure only when the same Project and task later publishes output', async () => {
+    const { sqlite, run, wrote, get } = await harness();
+    try {
+      run('proj_1', 'failed_first', { task: 'canopy-map', status: 'failed', at: NOW - 4 * HOUR });
+      run('proj_2', 'other_project', { task: 'canopy-map', status: 'completed', at: NOW - 3 * HOUR });
+      wrote('proj_2', 'other_project', 'myco_run_map', { op: 'write' });
+      let answer = (await get(`/api/work?${window}`)).body;
+      expect(answer.outcomes.find((row: { projectId: string }) => row.projectId === 'proj_1').failure.producedSince).toBe(0);
+
+      run('proj_1', 'recovered_here', { task: 'canopy-map', status: 'completed', at: NOW - 2 * HOUR });
+      wrote('proj_1', 'recovered_here', 'myco_run_map', { op: 'write' });
+      answer = (await get(`/api/work?${window}`)).body;
+      expect(answer.outcomes.find((row: { projectId: string }) => row.projectId === 'proj_1').failure.producedSince).toBe(1);
+    } finally { sqlite.close(); }
   });
 
   it('windows, shows and counts a run at one instant: when it ended, else when it queued, the window\'s end excluded', async () => {

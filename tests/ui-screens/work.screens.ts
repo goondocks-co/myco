@@ -63,8 +63,8 @@ async function expectFixtureWeek(page: Page, role: 'admin' | 'member'): Promise<
   }
   for (const machine of Object.values(MACHINE_IDS)) await expect(main).not.toContainText(machine);
   await expect(main).not.toContainText(/\b[Aa] machine\b/);
-  await expect(learn.locator('[data-kept]')).toContainText('One run stopped early');
-  await expect(learn.locator('[data-kept]')).toContainText('It kept the 2 spores it had saved, so there’s nothing to do.');
+  await expect(learn.locator('[data-kept]')).toContainText('One learning run stopped early');
+  await expect(learn.locator('[data-kept]')).toContainText('The spores saved from recent sessions are kept.');
 
   const map = card(page, 'map');
   const failure = map.locator('[data-failure="open"]');

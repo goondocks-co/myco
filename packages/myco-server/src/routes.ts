@@ -5,7 +5,7 @@ import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleasePr
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
-import { handleMachines, handleRenameMachine } from './api/machines.js';
+import { handleMachineActivity, handleMachines, handleRenameMachine, handleStopMachine } from './api/machines.js';
 import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
@@ -303,6 +303,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetProjectCapability },
   // A machine's own settings (#1393): any member may ask, and the handlers answer only the member who claims the machine.
   { method: 'GET', path: '/api/machines', auth: 'session', authority: 'member', handler: handleMachines },
+  { method: 'GET', path: '/api/machines/{machineId}/activity', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'session', authority: 'member', handler: handleMachineActivity },
+  { method: 'POST', path: '/api/machines/{machineId}/stop', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/stop$/, auth: 'session', authority: 'member', handler: handleStopMachine },
   { method: 'GET', path: '/api/uncaptured', auth: 'session', authority: 'member', handler: handleListUncaptured },
   { method: 'POST', path: '/api/uncaptured/{machineId}/{rootKey}/connect', pattern: /^\/api\/uncaptured\/(?<machineId>[A-Za-z0-9._-]{1,64})\/(?<rootKey>[0-9a-f]{16,64})\/connect$/, auth: 'session', authority: 'member', handler: handleConnectUncaptured },
   { method: 'PATCH', path: '/api/machines/{machineId}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'member', handler: handleRenameMachine },

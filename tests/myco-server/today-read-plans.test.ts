@@ -26,7 +26,7 @@ import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 type Statement = { sql: string; params: unknown[] };
 
 /** A store that answers no rows and remembers every statement, with the values bound to it, batched or not. */
-function recordingStore(): { db: RelationalStore; statements: Statement[] } {
+function recordingStore(machineClaim = false): { db: RelationalStore; statements: Statement[] } {
   const statements: Statement[] = [];
   const db: RelationalStore = {
     prepare(sql: string): PreparedStatement {
@@ -35,7 +35,8 @@ function recordingStore(): { db: RelationalStore; statements: Statement[] } {
       const statement: PreparedStatement = {
         bind(...values: unknown[]) { record.params = values; return statement; },
         first: async () => null,
-        all: async () => ({ results: [] }),
+        all: async <T = Record<string, unknown>>() => ({ results: (machineClaim && /FROM machine_claims mc\b/.test(sql)
+          ? [{ machine_id: 'm_1', member_id: 'mem_1', claimed_at: 1, label: null, member_label: null, member_revoked_at: null }] : []) as T[] }),
         run: async () => ({ results: [], meta: { changes: 0 } }),
       };
       return statement;
@@ -59,15 +60,15 @@ const planOf = (db: Database, { sql, params }: Statement): string =>
   (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...params as never[]) as Array<{ detail: string }>).map((r) => r.detail).join('\n');
 
 /** The statements `read` issues. */
-async function captured(read: (db: RelationalStore) => Promise<unknown>): Promise<Statement[]> {
-  const { db, statements } = recordingStore();
+async function captured(read: (db: RelationalStore) => Promise<unknown>, machineClaim = false): Promise<Statement[]> {
+  const { db, statements } = recordingStore(machineClaim);
   await read(db);
   return statements;
 }
 
 /** Every statement `read` issues, explained on each store. */
-async function plans(read: (db: RelationalStore) => Promise<unknown>): Promise<Array<{ store: string; sql: string; plan: string }>> {
-  const statements = await captured(read);
+async function plans(read: (db: RelationalStore) => Promise<unknown>, machineClaim = false): Promise<Array<{ store: string; sql: string; plan: string }>> {
+  const statements = await captured(read, machineClaim);
   return Object.entries(STORES).flatMap(([store, db]) => statements.map((s) => ({ store, sql: s.sql.replace(/\s+/g, ' '), plan: planOf(db, s) })));
 }
 
@@ -225,8 +226,12 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
 
   it('reads Myco\'s work through the runs-by-task index and finds what a run wrote by its author, scanning nothing', async () => {
     const read = await plans((db) => readWork(db, ALL, 1_789_000_000_000, 1_790_000_000_000));
-    expect(read).toHaveLength(6 * 3);
-    for (const { store, sql, plan } of read) expect({ store, sql, scans: tableScans(plan), plan }).toEqual({ store, sql, scans: [], plan });
+    expect(read).toHaveLength(7 * 3);
+    for (const { store, sql, plan } of read) {
+      // The grouped failure summary has one row per Project and task.
+      const scans = tableScans(plan).filter((line) => line !== 'SCAN g');
+      expect({ store, sql, scans, plan }).toEqual({ store, sql, scans: [], plan });
+    }
     const byRuns = read.filter(({ plan }) => /\br USING/.test(plan));
     expect(byRuns.length).toBeGreaterThanOrEqual(4 * 3);
     for (const { store, sql, plan } of byRuns) {
@@ -253,19 +258,23 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
 
   it('reads the machines from their claims and the worker reports, seeking every run, session and credential, every store alike', async () => {
     for (const scope of [{ all: true as const }, { all: false as const, memberId: 'mem_1' }]) {
-      const read = await plans((db) => listMachines(db, 1_790_000_000_000, scope));
+      const read = await plans((db) => listMachines(db, 1_790_000_000_000, scope), true);
       for (const { store, sql, plan } of read) {
-        // The claims are the Deployment's machines, the reports one row per worker credential kept 30 days, and the live
-        // credentials the partial index holding only them: the reads that walk rows, and nothing else does.
-        const walks = /^SCAN (?:mc|machine_claims|w USING INDEX idx_worker_contacts_seen|member_credentials USING INDEX idx_member_credentials_live_successor)$/;
-        expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter((step) => walks.test(step)) });
+        const walks = /^SCAN (?:mc(?: USING INDEX idx_machine_claims_claimed)?|machine_claims|w USING INDEX idx_worker_contacts_seen|json_each VIRTUAL TABLE INDEX 1:)$/;
+        const boundedWindow = sql.includes('ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root');
+        const allowed = (step: string) => walks.test(step) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
+        expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter(allowed) });
       }
       for (const { store, plan } of reading(read, 'sessions')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH sessions USING COVERING INDEX idx_sessions_capture \(last_received_at>\?\)/) });
       }
       for (const { store, plan } of reading(read, 'member_credentials')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/member_credentials USING INDEX idx_member_credentials_live_successor/) });
+        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });
       }
+      const summary = read.find(({ sql }) => sql.includes('AS credential_count'));
+      expect(summary?.sql).toMatch(/ROW_NUMBER\(\) OVER \(PARTITION BY c\.machine_id, c\.lineage_root ORDER BY c\.issued_at DESC, c\.id DESC\)/);
+      expect(summary?.sql).not.toContain('INDEXED BY idx_member_credentials_lineage');
+      expect(summary?.plan).not.toContain('idx_member_credentials_lineage');
       for (const { store, plan } of reading(read, 'worker_contacts')) {
         expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX sqlite_autoindex_member_credentials_1 \(id=\?\)[\s\S]*SEARCH r USING (?:COVERING )?INDEX idx_agent_runs_lease \(leased_by=\?\)/) });
       }

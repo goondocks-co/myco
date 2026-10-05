@@ -72,8 +72,10 @@ describe('the machines a member reads', () => {
   it('answers an admin every machine, named by its newest live credential, with what its worker and agents last did', async () => {
     const { env, now } = await seeded();
     const read = await machines(env, ADMIN);
-    expect(read.map((m) => m.machineId)).toEqual(['m_admin', 'm_member', 'm_gone']);
-    const [admin, member, gone] = read;
+    expect(read.map((m) => m.machineId)).toEqual(['m_admin', 'm_gone', 'm_member']);
+    const admin = read.find((m) => m.machineId === 'm_admin')!;
+    const member = read.find((m) => m.machineId === 'm_member')!;
+    const gone = read.find((m) => m.machineId === 'm_gone')!;
     expect(admin).toMatchObject({
       name: 'studio', live: true, member: { id: 'mem_machine_1', label: 'machine_1', revoked: false },
       offers: [{ id: 'codex', authenticated: true }], lastContactAt: now - 60_000, lastCaptureAt: now - 10 * 60_000, lastRunAt: now - 30 * 60_000,
@@ -87,8 +89,98 @@ describe('the machines a member reads', () => {
 
   it('answers a member their own machines alone', async () => {
     const { env } = await seeded();
-    expect((await machines(env, MEMBER_SUB)).map((m) => m.machineId)).toEqual(['m_member', 'm_gone']);
+    expect((await machines(env, MEMBER_SUB)).map((m) => m.machineId)).toEqual(['m_gone', 'm_member']);
     expect((await request(env, null, 'GET', '/api/machines')).status).toBe(401);
+  });
+
+  it('pages claims without walking 5,000 credential rows and totals their standing on the server', async () => {
+    const { env, sqlite, now } = await seeded();
+    sqlite.exec('BEGIN');
+    for (let i = 0; i < 5_000; i++) {
+      sqlite.run(`INSERT INTO member_credentials
+        (id, member_id, token_hash, machine_id, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at, bytes_written)
+        VALUES (?, 'mem_machine_2', ?, 'm_member', 'persistent', ?, ?, ?, ?, 1)`,
+      [`history_${i}`, `hash_${i}`, now - i, now + HOUR, `history_${i}`, now - i]);
+    }
+    sqlite.exec('COMMIT');
+    const first = await request(env, ADMIN, 'GET', '/api/machines?limit=1');
+    expect(first.status).toBe(200);
+    const head = await first.json() as { machines: Machine[]; cursor: string | null };
+    expect(head.machines.map((m) => m.machineId)).toEqual(['m_admin']);
+    expect(head.cursor).not.toBeNull();
+    const second = await request(env, ADMIN, 'GET', `/api/machines?limit=1&cursor=${encodeURIComponent(head.cursor!)}`);
+    const middle = await second.json() as { machines: Machine[]; cursor: string | null };
+    expect(middle.machines.map((m) => m.machineId)).toEqual(['m_gone']);
+    const third = await request(env, ADMIN, 'GET', `/api/machines?limit=1&cursor=${encodeURIComponent(middle.cursor!)}`);
+    const tail = await third.json() as { machines: Array<Machine & { credentialCount: number; liveCredentialCount: number; bytesWritten: number; standing: string }>; cursor: string | null };
+    expect(tail.cursor).toBeNull();
+    expect(tail.machines[0]).toMatchObject({ machineId: 'm_member', credentialCount: 5_003, liveCredentialCount: 5_003, bytesWritten: 5_000, standing: 'allowed' });
+    expect((await request(env, ADMIN, 'GET', '/api/machines?cursor=bad')).status).toBe(400);
+  });
+
+  it('merges activity through one bounded machine cursor and refuses another member\'s machine', async () => {
+    const { env, sqlite, now } = await seeded();
+    sqlite.exec('BEGIN');
+    for (let i = 0; i < 500; i++) {
+      sqlite.run(`INSERT INTO member_credentials
+        (id, member_id, token_hash, machine_id, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at, bytes_written)
+        VALUES (?, 'mem_machine_2', ?, 'm_member', 'persistent', ?, ?, ?, ?, 0)`,
+      [`activity_${i}`, `activity_hash_${i}`, now - i, now + HOUR, `activity_${i}`, now - i]);
+      if (i < 75) sqlite.run(`INSERT INTO events
+        (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
+        VALUES ('proj_1', ?, 's1', ?, 'prompt', 'cli', '{}', ?, ?, ?)`,
+      [`event_${i}`, `activity_${i}`, `event_hash_${i}`, now - i, now - i]);
+    }
+    sqlite.exec('COMMIT');
+    const path = '/api/machines/m_member/activity?limit=50';
+    const first = await request(env, MEMBER_SUB, 'GET', path);
+    expect(first.status).toBe(200);
+    const head = await first.json() as { rows: Array<{ eventId: string }>; cursor: string | null };
+    expect(head.rows).toHaveLength(50);
+    expect(head.rows[0]!.eventId).toBe('event_0');
+    expect(head.cursor).not.toBeNull();
+    const second = await request(env, MEMBER_SUB, 'GET', `${path}&cursor=${encodeURIComponent(head.cursor!)}`);
+    const tail = await second.json() as { rows: Array<{ eventId: string }>; cursor: string | null };
+    expect(tail.rows).toHaveLength(25);
+    expect(tail.rows.at(-1)!.eventId).toBe('event_74');
+    expect(tail.cursor).toBeNull();
+    const denied = await request(env, MEMBER_SUB, 'GET', '/api/machines/m_admin/activity');
+    const absent = await request(env, MEMBER_SUB, 'GET', '/api/machines/m_unknown/activity');
+    expect({ status: denied.status, body: await denied.json() }).toEqual({ status: absent.status, body: await absent.json() });
+    expect((await request(env, MEMBER_SUB, 'GET', `${path}&cursor=1:bad`)).status).toBe(400);
+  });
+
+  it('stops every live credential on its own machine in one attributed operation', async () => {
+    const { env, sqlite, now } = await seeded();
+    const denied = await request(env, MEMBER_SUB, 'POST', '/api/machines/m_admin/stop');
+    expect(denied.status).toBe(404);
+    const stop = await request(env, MEMBER_SUB, 'POST', '/api/machines/m_member/stop');
+    expect(stop.status).toBe(200);
+    expect(await stop.json()).toMatchObject({ revokedBy: 'mem_machine_2' });
+    expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')).toMatchObject({ live: false, standing: 'stopped' });
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE machine_id = 'm_member' AND revoked_at IS NULL`).get()).toEqual({ n: 0 });
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE machine_id = 'm_member' AND revoked_by = 'mem_machine_2' AND revoked_at >= ?`).get(now)).toEqual({ n: 3 });
+  });
+
+  it('counts carried bytes once per lineage and takes standing from the newest issued credential', async () => {
+    const { env, sqlite, now } = await seeded();
+    sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('m_rotation', 'mem_machine_2', ?)`, [now - HOUR]);
+    const held = 100 * 1_048_576;
+    sqlite.run(`INSERT INTO member_credentials
+      (id, member_id, token_hash, machine_id, runtime_kind, issued_at, expires_at, revoked_at, revoked_by, lineage_root, lineage_started_at, bytes_written)
+      VALUES ('z_predecessor', 'mem_machine_2', 'hash_predecessor', 'm_rotation', 'persistent', ?, ?, ?, 'mem_machine_2', 'z_predecessor', ?, ?),
+             ('a_successor', 'mem_machine_2', 'hash_successor', 'm_rotation', 'persistent', ?, ?, NULL, NULL, 'z_predecessor', ?, ?)`,
+    [now - HOUR, now - HOUR / 2, now - HOUR / 4, now - HOUR, held,
+      now - HOUR / 2, now - 1, now - HOUR, held]);
+    const machine = (await machines(env, MEMBER_SUB)).find((row) => row.machineId === 'm_rotation') as Machine & { bytesWritten: number; standing: string };
+    expect(machine).toMatchObject({ bytesWritten: held, live: false, standing: 'expired' });
+  });
+
+  it('does not call a credential live after its member is removed', async () => {
+    const { env, sqlite, now } = await seeded();
+    sqlite.run(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`, [now]);
+    const machine = (await machines(env, ADMIN)).find((row) => row.machineId === 'm_member');
+    expect(machine).toMatchObject({ live: false, member: { revoked: true }, standing: 'stopped', stoppedBy: null });
   });
 });
 
@@ -103,7 +195,7 @@ describe('renaming a machine', () => {
     expect((await (await request(env, ADMIN, 'PATCH', '/api/machines/m_member', { label: '  Chris’s laptop  ' })).json()) as Record<string, unknown>).toEqual({ machineId: 'm_member', name: 'Chris’s laptop' });
     expect(claimLabel(sqlite, 'm_member')).toBe('Chris’s laptop');
     expect(credentials()).toEqual(before);
-    expect((await machines(env, MEMBER_SUB))[0]!.name).toBe('Chris’s laptop');
+    expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')!.name).toBe('Chris’s laptop');
 
     expect((await request(env, MEMBER_SUB, 'PATCH', '/api/machines/m_member', { label: 'mine' })).status).toBe(200);
     // Another member's machine answers as an unknown one does.

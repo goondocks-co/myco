@@ -53,6 +53,7 @@ const base = (extra: Record<string, () => Response> = {}) => ({
   '/api/backups': () => Response.json({ backups: [] }),
   '/api/maintenance': () => Response.json({ checks: [] }),
   '/api/credentials': () => Response.json({ rows: [], cursor: null }),
+  '/api/machines': () => Response.json({ machines: [], cursor: null }),
   ...extra,
 });
 

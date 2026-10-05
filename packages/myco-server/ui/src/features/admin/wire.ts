@@ -81,6 +81,31 @@ export interface CredentialPage {
   cursor: string | null;
 }
 
+/** `GET /api/machines`: a bounded page of canonical machine claims. */
+export interface MachineRow {
+  machineId: string;
+  name: string | null;
+  live: boolean;
+  member: { id: string; label: string | null; revoked: boolean };
+  claimedAt: number;
+  credentialCount: number;
+  liveCredentialCount: number;
+  bytesWritten: number;
+  firstSeenAt: number;
+  standing: 'allowed' | 'stopped' | 'replayed' | 'expired';
+  stoppedBy: string | null;
+  offers: Array<{ id: string; authenticated: boolean; profile?: unknown }> | null;
+  lastContactAt: number | null;
+  capture: Array<{ agent: string | null; lastEventAt: number; projectId: string }>;
+  lastCaptureAt: number | null;
+  lastRunAt: number | null;
+}
+
+export interface MachinesAnswer {
+  machines: readonly MachineRow[];
+  cursor: string | null;
+}
+
 /** `GET /api/credentials/{id}/activity`: one event a credential wrote. */
 export interface ActivityRow {
   eventId: string;

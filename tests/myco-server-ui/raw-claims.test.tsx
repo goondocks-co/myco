@@ -37,6 +37,7 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; previ
       ] });
       case '/api/enrollment': return Response.json({ invitations: [] });
       case '/api/credentials': return Response.json({ rows: [], cursor: null });
+      case '/api/machines': return Response.json({ machines: [], cursor: null });
       case '/api/ownership': return options.ownership?.(init) ?? Response.json({ ownerMemberId: OWNER, revision: 'owner-r1' });
       case '/api/raw-claims': return method === 'POST' ? options.claim?.(body) ?? Response.json({ claimId: 'claim_one', preview: { revision: 'claimed-r2', complete: true, projects: [] } }) : Response.json(options.preview?.() ?? PREVIEW);
       default: return new Response(null, { status: 404 });
@@ -151,7 +152,7 @@ describe('explicit initial ownership', () => {
     fireEvent.click(within(dialog).getByRole('checkbox'));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record server owner' }));
     await screen.findByText('An owner is already recorded. This choice cannot replace them.');
-    expect(screen.getByRole('alert').textContent).toContain('Ownership changed. Review it again before recording an owner.');
+    expect(screen.getByText('Ownership changed. Review it again before recording an owner.').closest('[role="alert"]')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Record server owner' })).toBeNull();
     expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
   });

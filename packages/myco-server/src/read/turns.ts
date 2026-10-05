@@ -8,7 +8,7 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { injectionForPrompt, type PromptInjection } from '../core/injection.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
-import { ATTACHMENT_QUERY, PLAN_QUERY, RESPONSE_QUERY, listChildren, type AttachmentRow, type PlanRow, type ResponseRow } from './children.js';
+import { ATTACHMENT_QUERY, TURN_PLAN_QUERY, RESPONSE_QUERY, listChildren, listChildrenByPrompt, type AttachmentRow, type PlanRow, type ResponseRow } from './children.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** How much of a prompt's inline text the list row carries. */
@@ -52,18 +52,23 @@ export interface TurnChild {
   prompt: TurnPrompt;
   responses: ResponseRow[];
   toolCallCount: number;
+  responsesCursor: string | null;
 }
 
 export interface TurnDetail {
   prompt: TurnPrompt;
   responses: ResponseRow[];
   attachments: AttachmentRow[];
-  /** The plans this prompt produced, oldest update first. */
+  /** The plans this prompt produced, in immutable key order. */
   plans: PlanRow[];
   /** The observations Myco served with this prompt, with their spores hydrated; null when it served none. */
   injection: PromptInjection | null;
   children: TurnChild[];
+  cursors: Record<TurnCollection, string | null>;
 }
+
+export const TURN_COLLECTIONS = ['responses', 'attachments', 'plans', 'children'] as const;
+export type TurnCollection = (typeof TURN_COLLECTIONS)[number];
 
 /** The origins a query names, or null when one is not an origin the wire admits. Absent means the default. */
 export function parseOrigins(raw: string | null): readonly string[] | null {
@@ -95,21 +100,26 @@ const PLAN_COUNT = `(SELECT COUNT(*) FROM plans p WHERE p.project_id = pb.projec
 const ATTACHMENT_COUNT = `(SELECT COUNT(*) FROM attachments a WHERE a.project_id = pb.project_id AND a.session_id = pb.session_id AND a.prompt_id = pb.prompt_id)`;
 const CHILD_COUNT = `(SELECT COUNT(*) FROM prompt_batches c WHERE c.project_id = pb.project_id AND c.session_id = pb.session_id AND c.parent_prompt_id = pb.prompt_id)`;
 
-/** A session's top-level prompts of the named origins, oldest first, keyset-paged over `idx_prompt_batches_turns`. */
-export async function listTurns(db: RelationalStore, scope: ReadScope, sessionId: string, opts: { origins?: readonly string[]; limit?: number; cursor?: string } = {}): Promise<Page<TurnRow>> {
-  const k = keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction: 'ASC' });
+/** A session's top-level prompts, keyset-paged in the requested direction; a named prompt resolves to its turn. */
+export async function listTurns(db: RelationalStore, scope: ReadScope, sessionId: string, opts: { origins?: readonly string[]; limit?: number; cursor?: string; order?: 'ASC' | 'DESC'; promptId?: string } = {}): Promise<Page<TurnRow>> {
+  const direction = opts.order ?? 'ASC';
+  const k = keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction });
   if (k === null) return { rows: [], cursor: null };
   const origins = opts.origins ?? DEFAULT_ORIGINS;
   if (origins.length === 0) return { rows: [], cursor: null };
   const conditions = ['pb.project_id = ?', 'pb.session_id = ?', 'pb.parent_prompt_id IS NULL', `pb.origin IN (${origins.map(() => '?').join(', ')})`];
   const params: unknown[] = [scope.projectId, sessionId, ...origins];
+  if (opts.promptId !== undefined) {
+    conditions.push(`pb.prompt_id = (SELECT COALESCE(parent_prompt_id, prompt_id) FROM prompt_batches WHERE project_id = ? AND session_id = ? AND prompt_id = ?)`);
+    params.push(scope.projectId, sessionId, opts.promptId);
+  }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const { results } = await db
     .prepare(`SELECT pb.prompt_id, pb.origin, pb.prompt_kind, pb.thread_label, substr(pb.text, 1, ${TURN_PREVIEW_CHARS}) AS preview, length(pb.text) AS text_chars, pb.blob_key, pb.created_at,
                      ${TOOL_CALL_COUNT} AS tool_call_count, ${RESPONSE_COUNT} AS response_count, ${CHILD_COUNT} AS child_count, ${PLAN_COUNT} AS plan_count, ${ATTACHMENT_COUNT} AS attachment_count
                 FROM prompt_batches pb
                WHERE ${conditions.join(' AND ')}
-               ORDER BY pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
+               ORDER BY pb.created_at ${direction}, pb.prompt_id ${direction} LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   const rows: TurnRow[] = results.map((r) => ({
@@ -148,22 +158,43 @@ export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionI
   if (row === null) return null;
   const prompt = toPrompt(row);
   const body = { limit: TURN_BODY_LIMIT };
-  const [responses, attachments, plans, injection, childRows] = await Promise.all([
+  const [responses, attachments, plans, injection, children] = await Promise.all([
     listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId }),
     listChildren(db, ATTACHMENT_QUERY, scope, sessionId, { ...body, promptId }),
-    listChildren(db, PLAN_QUERY, scope, sessionId, { ...body, promptId }),
+    listChildren(db, TURN_PLAN_QUERY, scope, sessionId, { ...body, promptId }),
     injectionForPrompt(db, scope, sessionId, promptId),
-    db.prepare(`SELECT ${PROMPT_COLUMNS}, ${TOOL_CALL_COUNT} AS tool_call_count FROM prompt_batches pb
-                 WHERE pb.project_id = ? AND pb.session_id = ? AND pb.parent_prompt_id = ?
-                 ORDER BY pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
-      .bind(scope.projectId, sessionId, promptId, TURN_BODY_LIMIT)
-      .all<Record<string, unknown>>(),
+    listSteeringChildren(db, scope, sessionId, promptId, body),
   ]);
-  const children: TurnChild[] = [];
-  for (const child of childRows.results) {
-    const childPrompt = toPrompt(child);
-    const childResponses = await listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId: childPrompt.promptId });
-    children.push({ prompt: childPrompt, responses: [...childResponses.rows], toolCallCount: child.tool_call_count as number });
+  return {
+    prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], injection, children: [...children.rows],
+    cursors: { responses: responses.cursor, attachments: attachments.cursor, plans: plans.cursor, children: children.cursor },
+  };
+}
+
+/** A bounded page of steering prompts, with each prompt's first reply page hydrated in one read. */
+export async function listSteeringChildren(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<TurnChild>> {
+  const k = keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction: 'ASC' });
+  if (k === null) return { rows: [], cursor: null };
+  const { results } = await db.prepare(`SELECT ${PROMPT_COLUMNS}, ${TOOL_CALL_COUNT} AS tool_call_count FROM prompt_batches pb
+    WHERE pb.project_id = ? AND pb.session_id = ? AND pb.parent_prompt_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
+    ORDER BY pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
+    .bind(scope.projectId, sessionId, promptId, ...k.params, k.limit + 1).all<Record<string, unknown>>();
+  const children = page(results, k.limit, (r) => ({ createdAt: r.created_at as number, id: r.prompt_id as string }));
+  const replies = await listChildrenByPrompt(db, RESPONSE_QUERY, scope, sessionId, children.rows.map((r) => r.prompt_id as string), TURN_BODY_LIMIT);
+  return { cursor: children.cursor, rows: children.rows.map((r) => {
+    const prompt = toPrompt(r);
+    const responses = replies.get(prompt.promptId)!;
+    return { prompt, responses: [...responses.rows], responsesCursor: responses.cursor, toolCallCount: r.tool_call_count as number };
+  }) };
+}
+
+/** A turn collection's continuation, confined to the prompt's Project and session. */
+export function turnCollection(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, collection: TurnCollection, opts: { limit?: number; cursor?: string }) {
+  const bounded = { ...opts, limit: Math.min(opts.limit ?? TURN_BODY_LIMIT, TURN_BODY_LIMIT), promptId };
+  switch (collection) {
+    case 'responses': return listChildren(db, RESPONSE_QUERY, scope, sessionId, bounded);
+    case 'attachments': return listChildren(db, ATTACHMENT_QUERY, scope, sessionId, bounded);
+    case 'plans': return listChildren(db, TURN_PLAN_QUERY, scope, sessionId, bounded);
+    case 'children': return listSteeringChildren(db, scope, sessionId, promptId, bounded);
   }
-  return { prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], injection, children };
 }

@@ -334,15 +334,17 @@ describe('the session reading page', () => {
 
   const routes = (over: Routes = {}, me: unknown = ADMIN): Routes => base({
     '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port.\nIt now asks the kernel for one.', endedAt: NOW - 20 * MINUTE }, { outcome: OUTCOME, release: { state: 'released', confidence: 'high', ref: 'refs/tags/v1.2.0', reason: null, checkedAt: NOW, latestCheck: null } }),
-    '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([
+    '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([
       turn({ promptId: P1, preview: `Please rename the project card ${'x'.repeat(130)}`, textChars: 30_000, toolCallCount: 1, responseCount: 1 }),
       turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, toolCallCount: 2, responseCount: 0, childCount: 1, createdAt: NOW - 1000 }),
     ]),
-    '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200': () => page([
+    '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200&order=desc': () => page([
       turn({ promptId: P1, preview: 'Please rename the project card', toolCallCount: 1, responseCount: 1 }),
       turn({ promptId: P2, origin: 'system', preview: '<system-reminder>injected</system-reminder>', textChars: 40, toolCallCount: 0, responseCount: 0, createdAt: NOW - 2000 }),
       turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, toolCallCount: 2, responseCount: 0, childCount: 1, createdAt: NOW - 1000 }),
     ]),
+    [`/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${P1}`]: () => page([turn({ promptId: P1 })]),
+    [`/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${P2}`]: () => page([turn({ promptId: P2, origin: 'system' })]),
     [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
       prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: `Please rename the project card ${'x'.repeat(130)}\n\nAnd the rest of a long prompt.`, blobKey: null, createdAt: NOW - 3000 },
       responses: [{ responseId: 'r1', promptId: P1, text: 'done', blobKey: null, createdAt: NOW - 1000, orderedAt: NOW - 1000 }],
@@ -475,14 +477,14 @@ describe('the session reading page', () => {
   });
 
   it('says nothing came of a session yet, and why, whether it is open or ended', async () => {
-    server(base({ '/api/projects/x/sessions/s1': () => detail({ label: 'Try the login flow' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]) }));
+    server(base({ '/api/projects/x/sessions/s1': () => detail({ label: 'Try the login flow' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([]) }));
     mount('/p/x/sessions/s1');
     expect((await screen.findByText(/^Nothing yet/)).textContent).toBe('Nothing yet. Myco learns from a session once it ends.');
     // Open and untitled: headed by what the person typed, marked Untitled, and the summary waits for the end.
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('UntitledTry the login flow');
     expect(screen.getByText('Myco writes a summary once the session ends.')).toBeTruthy();
     cleanup();
-    server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'stopped' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([]) }));
+    server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'stopped' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([]) }));
     mount('/p/x/sessions/s1');
     expect((await screen.findByText(/^Nothing yet/)).textContent).toBe('Nothing yet. Myco hasn’t learned anything from this session.');
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('UntitledUntitled session');
@@ -640,26 +642,205 @@ describe('the session reading page', () => {
     expect(requested).not.toContain(BLOB(KEY_TEXT));
   });
 
-  it('opens a long conversation on its latest turns, keeping the earlier ones a page at a time above them', async () => {
-    const many = Array.from({ length: 450 }, (_, i) => turn({ promptId: `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`, preview: `prompt ${i}`, createdAt: NOW - (450 - i) * MINUTE, toolCallCount: 0, responseCount: 0 }));
-    const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200';
+  it('gate 1643.1: continues every turn collection and steering replies, retaining content when a page fails', async () => {
+    const prompt = (id: string, text: string) => ({ promptId: id, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text, blobKey: null, createdAt: NOW });
+    const replies = (offset: number, length: number, parent = P1) => Array.from({ length }, (_, i) => ({ responseId: `${parent}-reply-${offset + i}`, promptId: parent, text: `Reply ${parent} ${offset + i}`, blobKey: null, createdAt: NOW, orderedAt: NOW }));
+    const attachments = (offset: number, length: number) => Array.from({ length }, (_, i) => ({ attachmentId: `file-${offset + i}`, promptId: P1, blobKey: KEY_TEXT, mediaType: 'application/pdf', byteSize: 1, description: `File ${offset + i}`, createdAt: NOW, orderedAt: NOW }));
+    const plans = (offset: number, length: number) => Array.from({ length }, (_, i) => ({ planKey: `plan-${offset + i}`, promptId: P1, title: `Plan ${offset + i}`, status: 'draft', content: null, blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW }));
+    const children = (offset: number, length: number) => Array.from({ length }, (_, i) => ({ prompt: prompt(`child-${offset + i}`, `Steering ${offset + i}`), toolCallCount: 0, responses: offset + i === 0 ? replies(0, 50, 'child-0') : [], responsesCursor: offset + i === 0 ? 'child-next' : null }));
+    let failReplies = true;
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
     const { requested } = server(routes({
-      [path]: () => page(many.slice(0, 200), 'p2'),
-      [`${path}&cursor=p2`]: () => page(many.slice(200, 400), 'p3'),
-      [`${path}&cursor=p3`]: () => page(many.slice(400)),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ responseCount: 51, childCount: 51, attachmentCount: 51, planCount: 51, toolCallCount: 0 })]),
+      [turnPath]: () => Response.json({ prompt: prompt(P1, 'Turn with many parts'), responses: replies(0, 50), attachments: attachments(0, 50), plans: plans(0, 50), children: children(0, 50), injection: null, cursors: { responses: 'next', attachments: 'next', plans: 'next', children: 'next' } }),
+      [`${turnPath}?collection=responses&cursor=next`]: () => failReplies ? new Response(null, { status: 503 }) : page(replies(50, 1)),
+      [`${turnPath}?collection=attachments&cursor=next`]: () => page(attachments(50, 1)),
+      [`${turnPath}?collection=plans&cursor=next`]: () => page(plans(50, 1)),
+      [`${turnPath}?collection=children&cursor=next`]: () => page(children(50, 1)),
+      '/api/projects/x/sessions/s1/turns/child-0?collection=responses&cursor=child-next': () => page(replies(50, 1, 'child-0')),
+    }));
+    mount('/p/x/sessions/s1', new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    const body = await screen.findByText('Turn with many parts');
+    const card = body.closest('li')!;
+    for (const label of ['attachments', 'plans', 'steering prompts']) fireEvent.click(within(card).getByRole('button', { name: `Show more ${label}` }));
+    expect(await screen.findByText('Download File 50')).toBeTruthy();
+    expect(await screen.findByText('Plan 50')).toBeTruthy();
+    expect(await screen.findByText('Steering 50')).toBeTruthy();
+    const firstChild = screen.getAllByTestId('turn-child')[0]!;
+    fireEvent.click(within(firstChild).getByRole('button', { name: 'Show more replies' }));
+    expect(await screen.findByText('Reply child-0 50')).toBeTruthy();
+    fireEvent.click(within(card).getByRole('button', { name: 'Show more replies' }));
+    expect(await within(card).findByRole('alert')).toBeTruthy();
+    expect(within(card).getByText(`Reply ${P1} 0`)).toBeTruthy();
+    failReplies = false;
+    fireEvent.click(within(card).getByRole('button', { name: 'Retry reading replies' }));
+    expect(await screen.findByText(`Reply ${P1} 50`)).toBeTruthy();
+    expect(requested.filter((path) => path.includes('collection=children'))).toHaveLength(1);
+  });
+
+  it('gate 1643.1: reopening a paged turn refreshes retained replies and discovers late continuations', async () => {
+    let total = 51;
+    let failRefresh = false;
+    const replies = (start: number, end: number) => Array.from({ length: end - start }, (_, i) => ({ responseId: `reply-${start + i}`, promptId: P1, text: `Retained reply ${start + i}`, blobKey: null, createdAt: NOW, orderedAt: NOW }));
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ responseCount: total, toolCallCount: 0 })]),
+      [turnPath]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Turn receiving late replies', blobKey: null, createdAt: NOW },
+        responses: replies(1, 51), attachments: [], plans: [], children: [], injection: null,
+        cursors: { responses: 'next', attachments: null, plans: null, children: null },
+      }),
+      [`${turnPath}?collection=responses`]: () => failRefresh ? new Response(null, { status: 503 }) : page(replies(1, 51), 'next'),
+      [`${turnPath}?collection=responses&cursor=next`]: () => page(replies(51, Math.min(total + 1, 101)), total > 100 ? 'last' : null),
+      [`${turnPath}?collection=responses&cursor=last`]: () => page(replies(101, total + 1)),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount('/p/x/sessions/s1', client);
+    await screen.findByText('Turn receiving late replies');
+    expect(requested.filter((path) => path.includes('collection='))).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Show more replies' }));
+    expect(await screen.findByText('Retained reply 51')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Show more replies' })).toBeNull();
+    cleanup();
+
+    total = 52;
+    mount('/p/x/sessions/s1', client);
+    expect(await screen.findByText('Retained reply 52')).toBeTruthy();
+    expect(requested.filter((path) => path.includes('collection=') && !path.includes('collection=responses'))).toHaveLength(0);
+    cleanup();
+
+    total = 101;
+    mount('/p/x/sessions/s1', client);
+    expect(await screen.findByText('Retained reply 100')).toBeTruthy();
+    expect(screen.queryByText('Retained reply 101')).toBeNull();
+    expect(requested.filter((path) => path.endsWith('cursor=last'))).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Show more replies' }));
+    expect(await screen.findByText('Retained reply 101')).toBeTruthy();
+    cleanup();
+
+    failRefresh = true;
+    mount('/p/x/sessions/s1', client);
+    expect(await screen.findByText(/More replies could not be read/)).toBeTruthy();
+    expect(screen.getByText('Retained reply 101')).toBeTruthy();
+    failRefresh = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry reading replies' }));
+    await waitFor(() => expect(screen.queryByText(/More replies could not be read/)).toBeNull());
+    expect(screen.getByText('Retained reply 101')).toBeTruthy();
+  });
+
+  for (const refresh of ['cached', 'failed', 'fresh'] as const) {
+    it(`gate 1643.1: inserted first-page replies appear once with ${refresh} parent detail and retained continuations`, async () => {
+      let changed = false;
+      const reply = (id: number) => ({ responseId: `insert-reply-${id}`, promptId: P1, text: `Inserted-page reply ${id}`, blobKey: null, createdAt: NOW, orderedAt: NOW });
+      const original = Array.from({ length: 61 }, (_, i) => reply(i + 1));
+      const inserted = reply(25.5);
+      const current = () => changed ? [...original.slice(0, 25), inserted, ...original.slice(25)] : original;
+      const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+      const body = () => Response.json({
+        prompt: { promptId: P1, origin: 'user', text: 'A turn with shifting pages', blobKey: null, createdAt: NOW },
+        responses: current().slice(0, 50), attachments: [], plans: [], children: [], injection: null,
+        cursors: { responses: changed ? 'new' : 'old', attachments: null, plans: null, children: null },
+      });
+      const { requested } = server(routes({
+        '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ responseCount: 62, toolCallCount: 0 })]),
+        [turnPath]: () => changed && refresh === 'failed' ? new Response(null, { status: 503 }) : body(),
+        [`${turnPath}?collection=responses`]: () => page(current().slice(0, 50), changed ? 'new' : 'old'),
+        [`${turnPath}?collection=responses&cursor=old`]: () => page(original.slice(50)),
+        [`${turnPath}?collection=responses&cursor=new`]: () => page([current()[49]!, ...current().slice(50)]),
+      }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+      mount('/p/x/sessions/s1', client);
+      await screen.findByText('A turn with shifting pages');
+      expect(requested.some((path) => path.includes('collection='))).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Show more replies' }));
+      expect(await screen.findByText('Inserted-page reply 61')).toBeTruthy();
+      changed = true;
+      if (refresh === 'fresh') {
+        await act(async () => { await client.invalidateQueries({ queryKey: ['turn', 'x', 's1', P1], exact: true }); });
+      } else {
+        cleanup();
+        if (refresh === 'failed') client.setQueryDefaults(['turn', 'x', 's1', P1], { staleTime: 0 });
+        mount('/p/x/sessions/s1', client);
+      }
+      expect(await screen.findByText('Inserted-page reply 25.5')).toBeTruthy();
+      await waitFor(() => expect(screen.getAllByTestId('turn-response')).toHaveLength(62));
+      for (const row of [...original, inserted]) expect(screen.getAllByText(row.text)).toHaveLength(1);
+      expect(screen.queryByRole('button', { name: 'Show more replies' })).toBeNull();
+      if (refresh === 'failed') expect(await screen.findByText(/Showing the last successful this turn read/)).toBeTruthy();
+      if (refresh === 'cached') expect(requested.filter((path) => path === turnPath)).toHaveLength(1);
+    });
+  }
+
+  it('gate 1643.1: overlapping plan identities retain the latest status and every final plan', async () => {
+    const plan = (id: number, status = 'draft') => ({ planKey: `merge-plan-${id}`, promptId: P1, title: `Merge plan ${id}`, status, content: null, blobKey: null, originPath: null, progress: '', updatedBy: null, createdAt: NOW, updatedAt: NOW, orderedAt: NOW });
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ planCount: 51, toolCallCount: 0 })]),
+      [turnPath]: () => Response.json({ prompt: { promptId: P1, text: 'Plans sharing page boundaries', blobKey: null, origin: 'user', createdAt: NOW }, responses: [], attachments: [], children: [], injection: null, plans: Array.from({ length: 50 }, (_, i) => plan(i + 1)), cursors: { plans: 'next' } }),
+      [`${turnPath}?collection=plans&cursor=next`]: () => page([plan(1, 'completed'), plan(51)]),
     }));
     mount('/p/x/sessions/s1');
-    // The pages are walked to the end, and the latest 200 turns are shown, newest last.
+    await screen.findByText('Plans sharing page boundaries');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more plans' }));
+    expect(await screen.findByText('Merge plan 51')).toBeTruthy();
+    expect(screen.getAllByText('Merge plan 1')).toHaveLength(1);
+    expect(screen.getByText('Merge plan 1').closest('[data-plan-line]')?.getAttribute('data-plan-line')).toBe('completed');
+    expect(screen.getByTestId('turn-plans').children).toHaveLength(51);
+  });
+
+  it('gate 1643.3: an initial turn-body failure offers a manual retry that reads the body', async () => {
+    let failed = true;
+    const turnPath = `/api/projects/x/sessions/s1/turns/${P1}`;
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ toolCallCount: 0 })]),
+      [turnPath]: () => failed ? new Response(null, { status: 503 }) : Response.json({ prompt: { promptId: P1, text: 'Recovered turn', blobKey: null, origin: 'user', createdAt: NOW }, responses: [{ responseId: 'recovered', text: 'Recovered reply', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null }),
+    }));
+    mount('/p/x/sessions/s1');
+    const card = await screen.findByTestId(`turn-${P1}`);
+    expect(await within(card).findByText(/Couldn’t read this turn/)).toBeTruthy();
+    failed = false;
+    fireEvent.click(within(card).getByRole('button', { name: 'Retry' }));
+    expect(await within(card).findByText('Recovered reply')).toBeTruthy();
+    expect(within(card).queryByRole('alert')).toBeNull();
+    expect(requested.filter((path) => path === turnPath)).toHaveLength(2);
+  });
+
+  it('gate 1643.2: opens 5,001 turns at the newest page, then reads earlier pages only on request', async () => {
+    const many = Array.from({ length: 5001 }, (_, i) => turn({ promptId: `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`, preview: `prompt ${i}`, createdAt: NOW - (5001 - i) * MINUTE, toolCallCount: 0, responseCount: 0 }));
+    const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc';
+    const { requested } = server(routes({
+      [path]: () => page(many.slice(-200).reverse(), 'older'),
+      [`${path}&cursor=older`]: () => page(many.slice(-400, -200).reverse(), 'more-older'),
+    }));
+    mount('/p/x/sessions/s1');
     await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(200));
-    expect(requested.filter((p) => p.startsWith(path))).toHaveLength(3);
-    expect(screen.getAllByTestId(/^turn-0000/).at(-1)!.textContent).toContain('prompt 449');
-    expect(screen.getAllByTestId(/^turn-0000/)[0]!.textContent).toContain('prompt 250');
-    expect(within(screen.getByRole('tablist')).getByRole('tab', { name: /Conversation/ }).textContent).toBe('Conversation450');
-    fireEvent.click(screen.getByRole('button', { name: 'Show 200 earlier turns' }));
+    expect(requested.filter((p) => p.startsWith(path))).toHaveLength(1);
+    expect(screen.getAllByTestId(/^turn-0000/).at(-1)!.textContent).toContain('prompt 5000');
+    expect(screen.getAllByTestId(/^turn-0000/)[0]!.textContent).toContain('prompt 4801');
+    expect(within(screen.getByRole('tablist')).getByRole('tab', { name: /Conversation/ }).textContent).toBe('Conversation');
+    fireEvent.click(screen.getByRole('button', { name: 'Show earlier turns' }));
     await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(400));
-    fireEvent.click(screen.getByRole('button', { name: 'Show 50 earlier turns' }));
-    await waitFor(() => expect(screen.getAllByTestId(/^turn-0000/)).toHaveLength(450));
-    expect(screen.queryByRole('button', { name: /earlier turn/ })).toBeNull();
+    expect(requested.filter((p) => p.startsWith(path))).toHaveLength(2);
+    expect(screen.getAllByTestId(/^turn-0000/)[0]!.textContent).toContain('prompt 4601');
+    expect(screen.getByRole('button', { name: 'Show earlier turns' })).toBeTruthy();
+  });
+
+  it('gate 1643.2: reads named turns on either side of the first page through bounded lookups', async () => {
+    const path = '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc';
+    for (const position of [0, 5000]) {
+      const id = `00000000-0000-7000-8000-${String(position).padStart(12, '0')}`;
+      const lookup = `/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${id}`;
+      const { requested } = server(routes({
+        [path]: () => page([turn({ promptId: P3, preview: 'Latest turn' })], 'older'),
+        [lookup]: () => page([turn({ promptId: id, preview: `Linked turn ${position}`, textChars: `Linked turn ${position}`.length, createdAt: position })]),
+      }));
+      mount(`/p/x/sessions/s1?turn=${id}`);
+      expect(await screen.findByText(`Linked turn ${position}`)).toBeTruthy();
+      expect(requested.filter((p) => p.startsWith(path))).toHaveLength(1);
+      expect(requested.filter((p) => p === lookup)).toHaveLength(1);
+      expect(screen.getByText(/More turns may sit between them/)).toBeTruthy();
+      cleanup();
+    }
   });
 
   it('reads a turn’s tool calls only when they open, then shows how each went', async () => {
@@ -699,7 +880,7 @@ describe('the session reading page', () => {
       cleanup();
 
       mount(`/p/x/sessions/s1?turn=${P2}`);
-      await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200'));
+      await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200&order=desc'));
       await waitFor(() => expect(screen.getByRole('switch', { name: 'Show prompts from the system and sub-agents' }).getAttribute('aria-checked')).toBe('true'));
     } finally {
       Element.prototype.scrollIntoView = original;
@@ -708,7 +889,7 @@ describe('the session reading page', () => {
 
   it('shows what Myco added to a prompt as one folded line, opening on the spores it served', async () => {
     server(routes({
-      '/api/projects/x/sessions/s1/turns?origins=user&limit=200': () => page([turn({ promptId: P1, preview: 'Please rename the project card' })]),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ promptId: P1, preview: 'Please rename the project card' })]),
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
         prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Please rename the project card', blobKey: null, createdAt: NOW - 3000 },
         responses: [], attachments: [], plans: [], children: [],

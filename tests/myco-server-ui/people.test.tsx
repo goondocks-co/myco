@@ -13,12 +13,13 @@ import { matchRoute } from '@myco-server-worker/routes.js';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { machinesFrom } from '../../packages/myco-server/ui/src/features/admin/machines';
+import type { Machine } from '../../packages/myco-server/ui/src/features/admin/machines';
 import { MachineList } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import { canRename, MACHINE_NAME_MAX, machineNameProblem } from '../../packages/myco-server/ui/src/features/admin/people/rename';
 import { machineName, MACHINE_NAME_MAX as SERVER_NAME_MAX } from '@myco-server-worker/api/machines.js';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
 import { rawIdsIn } from '../helpers/raw-ids';
+import { machineRows } from './machine-fixtures';
 
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
 
@@ -68,6 +69,7 @@ function mount(path: string) {
 const me = (id: string, label: string, role: 'admin' | 'member') => ({ sub: '1', login: 'someone', member: { id, label, role } });
 
 function deployment(viewer: ReturnType<typeof me>, credentials: CredentialRow[], extra: Record<string, (init?: RequestInit, url?: URL) => Response> = {}) {
+  const machineAnswer = (rows: CredentialRow[]) => ({ machines: machineRows(rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id)), cursor: null });
   return server({
     '/auth/me': () => Response.json(viewer),
     '/api/projects': () => Response.json({ projects: [{ projectId: PROJECT, name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: NOW_MS, archivedAt: null, archivedBy: null }] }),
@@ -75,6 +77,7 @@ function deployment(viewer: ReturnType<typeof me>, credentials: CredentialRow[],
     '/api/enrollment': () => Response.json({ invitations: [{ id: 'en_Pq8sT3vW', memberId: LIN, createdBy: 'mem_harness', createdAt: NOW_MS, expiresAt: NOW_MS + 3_600_000, role: 'member', projectId: null }] }),
     '/api/status': () => Response.json({ schema: { expected: 1, found: 1, matches: true }, target: 'bun', capabilities: [], projects: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] } }),
     '/api/credentials': (_init, url) => Response.json({ rows: url?.searchParams.get('purpose') === 'run' ? [] : credentials.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id), cursor: null }),
+    '/api/machines': () => Response.json(machineAnswer(credentials)),
     ...extra,
   });
 }
@@ -84,42 +87,6 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
   const [method, pathname] = line.split(' ') as [string, string];
   const matched = matchRoute(method, pathname);
   return matched !== null && matched.route.auth === 'session' && matched.route.authority === 'admin';
-});
-
-describe('machinesFrom', () => {
-  it('groups a member\'s runtimes by machine, names each by its newest live runtime, and leaves runs out', () => {
-    const machines = machinesFrom([
-      credential({ id: 'mt_new', lineageRoot: 'mt_new', runtimeLabel: 'Studio (renamed)', lineageStartedAt: NOW_MS - DAY }),
-      credential({ id: 'mt_old', lineageRoot: 'mt_old', runtimeLabel: 'Studio', lineageStartedAt: NOW_MS - 5 * DAY, live: false, revokedAt: NOW_MS - 2 * DAY, revokedBy: ADA }),
-      credential({ id: 'mt_run', lineageRoot: 'mt_run', purpose: 'run', machineId: 'harness', runtimeLabel: null }),
-    ]);
-    expect(machines).toHaveLength(1);
-    expect(machines[0]).toMatchObject({ name: 'Studio (renamed)', named: true, standing: 'allowed', firstSeenAt: NOW_MS - 5 * DAY });
-    expect(machines[0]!.live.map((c) => c.id)).toEqual(['mt_new']);
-    expect(machines[0]!.credentials.map((c) => c.id)).toEqual(['mt_new', 'mt_old']);
-  });
-
-  it('names the only machine without a name "A machine", and several by their place', () => {
-    expect(machinesFrom([credential({ runtimeLabel: null })]).map((m) => [m.name, m.named])).toEqual([['A machine', false]]);
-    const machines = machinesFrom([
-      credential({ id: 'mt_a', lineageRoot: 'mt_a', machineId: 'm_a', runtimeLabel: '  ', lineageStartedAt: NOW_MS - DAY }),
-      credential({ id: 'mt_b', lineageRoot: 'mt_b', machineId: 'm_b', runtimeLabel: 'Desk', lineageStartedAt: NOW_MS - 2 * DAY }),
-      credential({ id: 'mt_c', lineageRoot: 'mt_c', machineId: null, runtimeLabel: null, lineageStartedAt: NOW_MS - 3 * DAY }),
-    ]);
-    expect(machines.map((m) => m.name)).toEqual(['Machine 1', 'Desk', 'Machine 2']);
-  });
-
-  it('lists machines allowed to write first, newest first, and says where each stopped one stands', () => {
-    const machines = machinesFrom([
-      credential({ id: 'mt_1', lineageRoot: 'mt_1', machineId: 'm_1', runtimeLabel: 'Replayed', lineageStartedAt: NOW_MS, live: false, revokedAt: NOW_MS, revokedBy: 'lineage-replay' }),
-      credential({ id: 'mt_2', lineageRoot: 'mt_2', machineId: 'm_2', runtimeLabel: 'Old', lineageStartedAt: NOW_MS - 9 * DAY }),
-      credential({ id: 'mt_3', lineageRoot: 'mt_3', machineId: 'm_3', runtimeLabel: 'Ran out', lineageStartedAt: NOW_MS - DAY, live: false }),
-      credential({ id: 'mt_4', lineageRoot: 'mt_4', machineId: 'm_4', runtimeLabel: 'Stopped', lineageStartedAt: NOW_MS - 2 * DAY, live: false, revokedAt: NOW_MS, revokedBy: LIN }),
-    ]);
-    expect(machines.map((m) => [m.name, m.standing, m.stoppedBy])).toEqual([
-      ['Old', 'allowed', null], ['Replayed', 'replayed', null], ['Ran out', 'expired', null], ['Stopped', 'stopped', LIN],
-    ]);
-  });
 });
 
 describe('People & machines', () => {
@@ -154,7 +121,7 @@ describe('People & machines', () => {
 
   it('shows what a machine wrote: what, where and when, with its session linked and no id shown', async () => {
     deployment(me(ADA, 'Ada', 'admin'), [credential()], {
-      '/api/credentials/mt_Xr4pQ9sLw2Ze8KbN/activity': () => Response.json({ rows: [
+      '/api/machines/ada_5a2d54af/activity': () => Response.json({ rows: [
         { eventId: 'ev_1', projectId: PROJECT, sessionId: SESSION, kind: 'prompt', createdAt: NOW_MS - 5 * 60_000, receivedAt: NOW_MS },
         { eventId: 'ev_2', projectId: 'proj_ffffffffffffffffffffffffffffffff', sessionId: SESSION, kind: 'mystery', createdAt: NOW_MS - 2 * 3_600_000, receivedAt: NOW_MS },
       ], cursor: null }),
@@ -170,6 +137,78 @@ describe('People & machines', () => {
     expect(within(rows).getAllByRole('link', { name: 'Open session' })[0]!.getAttribute('href')).toBe(`/p/${PROJECT}/sessions/${SESSION}`);
     expect(dialog.textContent).toContain('2.0 MB in all');
     expect(rawIdsIn(dialog)).toEqual([]);
+  });
+
+  it('shows a machine from one summary read and pages its merged activity with one request at a time', async () => {
+    const history = Array.from({ length: 5_000 }, (_, i) => credential({ id: `past_${i}`, lineageRoot: `past_${i}` }));
+    const credentialPurposes: Array<string | null> = [];
+    const events = Array.from({ length: 55 }, (_, i) => ({
+      eventId: `event_${i}`, projectId: PROJECT, sessionId: SESSION, kind: 'prompt', createdAt: NOW_MS - i, receivedAt: NOW_MS - i,
+    }));
+    const asked = deployment(me(ADA, 'Ada', 'admin'), [credential()], {
+      '/api/credentials': (_init, url) => {
+        credentialPurposes.push(url?.searchParams.get('purpose') ?? null);
+        const start = Number(url?.searchParams.get('cursor') ?? 0);
+        return Response.json({ rows: history.slice(start, start + 50), cursor: start + 50 < history.length ? String(start + 50) : null });
+      },
+      '/api/machines/ada_5a2d54af/activity': (_init, url) => {
+        const start = Number(url?.searchParams.get('cursor') ?? 0);
+        return Response.json({ rows: events.slice(start, start + 50), cursor: start + 50 < events.length ? String(start + 50) : null });
+      },
+    });
+    mount('/people');
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada’s MacBook' }), { key: 'Enter' });
+    expect(asked.filter((line) => line === 'GET /api/machines')).toHaveLength(1);
+    expect(credentialPurposes).not.toContain('member');
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'What it wrote' }));
+    const dialog = await screen.findByRole('dialog', { name: 'What Ada’s MacBook wrote' });
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(50));
+    expect(asked.filter((line) => line === 'GET /api/machines/ada_5a2d54af/activity')).toHaveLength(1);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(55));
+    expect(asked.filter((line) => line === 'GET /api/machines/ada_5a2d54af/activity')).toHaveLength(2);
+  });
+
+  it('keeps the first machine activity page with an error and retry when the next page fails', async () => {
+    let failNext = true;
+    deployment(me(ADA, 'Ada', 'admin'), [credential()], {
+      '/api/machines/ada_5a2d54af/activity': (_init, url) => url?.searchParams.has('cursor')
+        ? failNext ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ rows: [
+          { eventId: 'ev_2', projectId: PROJECT, sessionId: SESSION, kind: 'response', createdAt: NOW_MS - 2, receivedAt: NOW_MS - 2 },
+        ], cursor: null })
+        : Response.json({ rows: [{ eventId: 'ev_1', projectId: PROJECT, sessionId: SESSION, kind: 'prompt', createdAt: NOW_MS - 1, receivedAt: NOW_MS - 1 }], cursor: '2:next' }),
+    });
+    mount('/people');
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada’s MacBook' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'What it wrote' }));
+    const dialog = await screen.findByRole('dialog', { name: 'What Ada’s MacBook wrote' });
+    await within(dialog).findByText('Prompt');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show more' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('Couldn’t refresh it.');
+    expect(within(dialog).getByText('Prompt')).toBeTruthy();
+    failNext = false;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+    await within(dialog).findByText('Reply');
+  });
+
+  it('keeps a cached machine summary visible with an error and retry when the next page fails', async () => {
+    let failNext = true;
+    const ada = credential();
+    const lin = credential({ id: 'mt_Lq2wE4rT6yU8iO0p', lineageRoot: 'mt_Lq2wE4rT6yU8iO0p', memberId: LIN, machineId: 'lin_77aa00bb', runtimeLabel: 'Lin’s build box' });
+    deployment(me(ADA, 'Ada', 'admin'), [ada], {
+      '/api/machines': (_init, url) => url?.searchParams.has('cursor')
+        ? failNext ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ machines: machineRows([lin]), cursor: null })
+        : Response.json({ machines: machineRows([ada]), cursor: '1:ada_5a2d54af' }),
+    });
+    mount('/people');
+    const machines = await screen.findByRole('list', { name: 'Machines' });
+    await within(machines).findByText('Ada’s MacBook');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Showing the last successful machines read. Couldn’t refresh it.');
+    expect(within(machines).getByText('Ada’s MacBook')).toBeTruthy();
+    failNext = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await within(machines).findByText('Lin’s build box');
   });
 });
 
@@ -223,7 +262,7 @@ describe('Renaming a machine', () => {
     let rows = [credential(), LINS];
     const sent: unknown[] = [];
     const asked = deployment(viewer, [], {
-      '/api/credentials': () => Response.json({ rows: rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id), cursor: null }),
+      '/api/machines': () => Response.json({ machines: machineRows(rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id)), cursor: null }),
       '/api/machines/lin_77aa00bb': (init) => {
         const body = JSON.parse(String(init?.body));
         sent.push({ method: init?.method, body });
@@ -256,7 +295,7 @@ describe('Renaming a machine', () => {
     const machines = await screen.findByRole('list', { name: 'Machines' });
     await waitFor(() => expect(machines.textContent).toContain('build-02'));
     expect(machines.textContent).not.toContain('Lin’s build box');
-    expect(asked.slice(before)).toEqual(expect.arrayContaining(['GET /api/credentials', 'GET /api/status']));
+    expect(asked.slice(before)).toEqual(expect.arrayContaining(['GET /api/machines', 'GET /api/status']));
   });
 
   it('says what is wrong with a name before sending it, and sends nothing', async () => {
@@ -305,7 +344,15 @@ describe('Renaming a machine', () => {
     deployment(me(LIN, LIN, 'member'), [LINS]);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const paging = { isPending: false, error: null, hasMore: false, isFetchingMore: false, more: () => undefined, retry: () => undefined };
-    const listed = machinesFrom([LINS, credential(), credential({ id: 'mt_Uu7yT6rE5wQ4aS3d', lineageRoot: 'mt_Uu7yT6rE5wQ4aS3d', memberId: LIN, machineId: 'lin_99cc11dd', runtimeLabel: null, lineageStartedAt: NOW_MS - 2 * DAY })]);
+    const rows = machineRows([LINS, credential(), credential({ id: 'mt_Uu7yT6rE5wQ4aS3d', lineageRoot: 'mt_Uu7yT6rE5wQ4aS3d', memberId: LIN, machineId: 'lin_99cc11dd', runtimeLabel: null, lineageStartedAt: NOW_MS - 2 * DAY })]);
+    const unnamed = rows.filter((row) => row.name === null);
+    const listed: Machine[] = rows.map((row) => ({
+      key: row.machineId, machineId: row.machineId,
+      name: row.name ?? (unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.findIndex((item) => item.machineId === row.machineId) + 1}`),
+      named: row.name !== null, memberId: row.member.id, standing: row.standing, stoppedBy: row.stoppedBy,
+      firstSeenAt: row.firstSeenAt, liveCredentialCount: row.liveCredentialCount,
+      credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
+    }));
     render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><MachineList machines={listed} viewerId={LIN} nameOf={() => null} showOwner paging={paging} empty="none" /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
     // useMe answers before the menu is read, so the viewer's role is known.
     await waitFor(() => expect(client.getQueryData(['me'])).toBeDefined());

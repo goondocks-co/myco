@@ -10,8 +10,8 @@ import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/wo
 /**
  * Myco's work: what the Deployment's own runs produced over a window, read across Projects.
  *
- * One read serves the dashboard's Today page and its Myco's work page, so a count a page shows and the runs it lists
- * come from one snapshot: every statement of the read goes in one batch.
+ * One read serves the dashboard's Today page and its Myco's work page. Full-window counts and each page of run
+ * evidence come from one snapshot: every statement of the read goes in one batch.
  *
  * **The outcome, not the status.** A run is counted by what it left in the store: the spores it wrote (`spores.author`
  * names the run), the session title it landed and the map it wrote (each a write the run recorded). A learning run
@@ -68,6 +68,8 @@ export interface WorkOutcome {
   failedWithOutput: number;
   /** Failed runs that produced nothing. */
   failed: number;
+  /** Failed runs without output in this window, and later successful output in this Project and task. */
+  failure: { runs: number; since: number; latestAt: number; latestRunId: string; producedSince: number } | null;
   /** The latest instant a run of this kind is shown at (`at` on a listed run). */
   latestAt: number | null;
   /** Tokens and cost as the runs themselves reported them, and how many runs that started and finished reported no cost. */
@@ -123,8 +125,10 @@ export interface WorkAnswer {
   window: { since: number; until: number };
   outcomes: WorkOutcome[];
   runs: WorkRun[];
-  /** Whether more runs matched than `MAX_WORK_RUNS`; the counts in `outcomes` cover them all either way. */
+  /** Whether another run-evidence page follows this one; `outcomes` covers the whole window. */
   truncated: boolean;
+  /** Fetches the next page of run evidence for the same window and Project set. */
+  cursor: string | null;
   upkeep: Upkeep;
 }
 
@@ -135,6 +139,7 @@ const list = (values: readonly unknown[]): string => values.map(() => '?').join(
  * entered the queue, else when it started. A run belongs to the window its outcome landed in.
  */
 const RUN_AT = 'COALESCE(r.completed_at, r.queued_at, r.started_at)';
+const runAt = (alias: string): string => `COALESCE(${alias}.completed_at, ${alias}.queued_at, ${alias}.started_at)`;
 /** The index every read of a window's runs goes through: by Project, task and status. */
 const RUNS_BY_TASK = 'agent_runs r INDEXED BY idx_agent_runs_task';
 
@@ -198,7 +203,7 @@ export async function readUpkeep(db: RelationalStore, set: ProjectSet, since: nu
 }
 
 /** What the Deployment's runs produced in the set's Projects over the window, its end excluded. */
-export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number): Promise<WorkAnswer> {
+export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number, cursor?: { at: number; projectId: string; id: string }): Promise<WorkAnswer> {
   const projects = projectsDriving(set, 'r.project_id');
   const window = `${RUN_AT} >= ? AND ${RUN_AT} < ?`;
   const scoped = (tasks: readonly string[]) => ({
@@ -212,7 +217,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
 
   // `CROSS JOIN` keeps the window's runs as the outer loop, so the rows a run wrote are sought by that run rather than
   // every row of its Project being read to find them.
-  const [aggregate, sporeOutcome, titleOutcome, mapHeads, listed, upkeep] = await db.batch([
+  const [aggregate, sporeOutcome, titleOutcome, mapHeads, listed, failures, upkeep] = await db.batch([
     db.prepare(
       `SELECT r.project_id, r.task, r.status, COUNT(*) AS runs, MAX(${RUN_AT}) AS latest_at,
               SUM(COALESCE(r.tokens_used, 0)) AS tokens, SUM(COALESCE(r.cost_usd, 0)) AS cost,
@@ -249,8 +254,27 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
               CASE WHEN r.status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason
          FROM ${RUNS_BY_TASK}
         WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
-        ORDER BY at DESC, r.id DESC LIMIT ?`,
-    ).bind(...SPORE_TASKS, ...SPORE_TASKS, TITLING_TASK, ...all.params, MAX_WORK_RUNS + 1),
+          ${cursor === undefined ? '' : `AND (${RUN_AT} < ? OR (${RUN_AT} = ? AND (r.project_id < ? OR (r.project_id = ? AND r.id < ?))))`}
+        ORDER BY at DESC, r.project_id DESC, r.id DESC LIMIT ?`,
+    ).bind(...SPORE_TASKS, ...SPORE_TASKS, TITLING_TASK, ...all.params,
+      ...(cursor === undefined ? [] : [cursor.at, cursor.at, cursor.projectId, cursor.projectId, cursor.id]), MAX_WORK_RUNS + 1),
+    db.prepare(
+      `WITH failed AS (
+         SELECT r.project_id, r.task, r.id, ${RUN_AT} AS at
+           FROM ${RUNS_BY_TASK}
+          WHERE ${all.sql} AND r.status = 'failed' AND NOT ${PRODUCED_SQL}
+       ), grouped AS (
+         SELECT project_id, task, COUNT(*) AS runs, MIN(at) AS since, MAX(at) AS latest_at
+           FROM failed GROUP BY project_id, task
+       )
+       SELECT g.project_id, g.task, g.runs, g.since, g.latest_at,
+              (SELECT f.id FROM failed f WHERE f.project_id = g.project_id AND f.task = g.task
+                ORDER BY f.at DESC, f.id DESC LIMIT 1) AS latest_run_id,
+              (SELECT COUNT(*) FROM agent_runs s WHERE s.project_id = g.project_id AND s.task = g.task
+                AND s.status = 'completed' AND ${producedSql('s')}
+                AND ${runAt('s')} > g.latest_at AND ${runAt('s')} < ?) AS produced_since
+         FROM grouped g`,
+    ).bind(...all.params, until),
     upkeepStatement(db, set, since, until),
   ]);
 
@@ -259,6 +283,10 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
   const titlesBy = new Map((titleOutcome.results as Record<string, unknown>[]).map((r) => [String(r.project_id), num(r.sessions)]));
   const mapsBy = new Map((mapHeads.results as Record<string, unknown>[]).map((r) => [String(r.project_id), {
     branch: String(r.repository_branch), commit: String(r.repository_commit), generatedAt: num(r.generated_at), sourceRunId: String(r.source_run_id),
+  }]));
+  const failuresBy = new Map((failures.results as Record<string, unknown>[]).map((r) => [key(r.project_id, r.task), {
+    runs: num(r.runs), since: num(r.since), latestAt: num(r.latest_at),
+    latestRunId: String(r.latest_run_id), producedSince: num(r.produced_since),
   }]));
 
   const outcomes = new Map<string, WorkOutcome>();
@@ -276,7 +304,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
           sessions: kind === 'title' ? titlesBy.get(projectId) ?? 0 : num(written?.sessions),
           maps: 0,
         },
-        failedWithOutput: 0, failed: 0, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
+        failedWithOutput: 0, failed: 0, failure: failuresBy.get(key(projectId, task)) ?? null, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
         spend: { tokens: null, costUsd: null, durationMs: null },
         map: kind === 'map' ? mapsBy.get(projectId) ?? null : null,
       };
@@ -337,11 +365,14 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     };
   });
 
+  const hasMore = rows.length > MAX_WORK_RUNS;
+  const last = runs.at(-1);
   return {
     window: { since, until },
     outcomes: [...outcomes.values()].sort((a, b) => (b.latestAt ?? 0) - (a.latestAt ?? 0) || a.projectId.localeCompare(b.projectId) || a.task.localeCompare(b.task)),
     runs,
-    truncated: rows.length > MAX_WORK_RUNS,
+    truncated: hasMore,
+    cursor: hasMore && last !== undefined && last.at !== null ? JSON.stringify([last.at, last.projectId, last.id]) : null,
     upkeep: upkeepOf(upkeep.results as Record<string, unknown>[]),
   };
 }

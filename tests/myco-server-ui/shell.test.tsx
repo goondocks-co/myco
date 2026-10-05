@@ -221,7 +221,7 @@ describe('the nav', () => {
 
   it('titles My machines in a member\'s compact header', async () => {
     screenWidth(390);
-    server({ ...signedIn(MEMBER), '/api/members': () => Response.json({ members: [] }), '/api/credentials': () => Response.json({ rows: [], cursor: null }) });
+    server({ ...signedIn(MEMBER), '/api/members': () => Response.json({ members: [] }), '/api/credentials': () => Response.json({ rows: [], cursor: null }), '/api/machines': () => Response.json({ machines: [], cursor: null }) });
     mount('/me/machines');
     // The shell's own header: the page's header renders beside it at once, and jsdom reads that as a banner too.
     await waitFor(() => expect(document.querySelector('header[data-shell]')?.textContent).toContain('My machines'));
@@ -372,7 +372,7 @@ describe('the scope switcher', () => {
 
   it('shows no switcher on a page for the whole server, and says it applies to every project', async () => {
     for (const path of ['/settings', '/status/health', '/people', '/me/machines']) {
-      server({ ...signedIn(), '/api/credentials': () => Response.json({ rows: [], cursor: null }) });
+      server({ ...signedIn(), '/api/credentials': () => Response.json({ rows: [], cursor: null }), '/api/machines': () => Response.json({ machines: [], cursor: null }) });
       mount(path);
       await waitFor(() => expect({ path, line: document.querySelector('[data-scope-deployment]')?.textContent }).toEqual({ path, line: 'Applies to every project.' }));
       expect(document.querySelector('[data-scope-switcher]')).toBeNull();

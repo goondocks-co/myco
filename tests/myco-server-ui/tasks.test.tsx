@@ -55,28 +55,21 @@ function mount(path: string, settings = false) {
 }
 
 describe('the Tasks view reads the registry', () => {
-  it('uses one visible project for a member reading all task descriptions', async () => {
-    const projects = { ...PROJECTS, projects: Array.from({ length: 70 }, (_, index) => ({ ...PROJECTS.projects[0]!, projectId: `project-${index}` })) };
-    const asked = server(TASKS, { member: true, projects });
-    mount('/work/tasks');
-    await screen.findByRole('heading', { name: TASKS[0]!.name });
-    expect(asked.find((url) => url.pathname === '/api/tasks')?.searchParams.getAll('project')).toEqual(['project-0']);
+  it('finding 7: members read all projects without selecting a representative, in every order', async () => {
+    for (const projects of [PROJECTS, { ...PROJECTS, projects: [...PROJECTS.projects].reverse() }, { ...PROJECTS, projects: [{ ...PROJECTS.projects[0]!, archivedAt: 1 }, ...PROJECTS.projects] }]) {
+      const asked = server(TASKS, { member: true, projects });
+      mount('/work/tasks');
+      await screen.findByRole('heading', { name: TASKS[0]!.name });
+      expect(asked.find((url) => url.pathname === '/api/tasks')?.searchParams.getAll('project')).toEqual([]);
+      cleanup();
+    }
   });
 
-  it('asks a member without projects to pick a project instead of loading forever', async () => {
-    const asked = server(TASKS, { member: true, projects: { ...PROJECTS, projects: [] } });
-    mount('/work/tasks');
-    await screen.findByText('Pick a project to see its tasks');
-    expect(asked.some((url) => url.pathname === '/api/tasks')).toBe(false);
-    expect(screen.queryByText('Loading tasks')).toBeNull();
-  });
-
-  it('surfaces the project read failure when a member reads all tasks', async () => {
+  it('reads all-project descriptions independently of the project switcher read', async () => {
     const asked = server(TASKS, { member: true, failProjects: true });
     mount('/work/tasks');
-    await screen.findAllByRole('alert');
-    expect(asked.some((url) => url.pathname === '/api/tasks')).toBe(false);
-    expect(screen.queryByText('Loading tasks')).toBeNull();
+    await screen.findByRole('heading', { name: TASKS[0]!.name });
+    expect(asked.find((url) => url.pathname === '/api/tasks')?.searchParams.getAll('project')).toEqual([]);
   });
 
   it('renders every returned task and every displayed fact from its registry row', async () => {

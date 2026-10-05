@@ -88,6 +88,7 @@ export const today: ParityScenario = {
       // Every rule reads on this target's store; only the recovery producer, which a target may not run, may be unreadable.
       expect((needs.body.unavailable as string[]).filter((kind) => kind !== 'backup_overdue')).toEqual([]);
       expect((needs.body.items as { kind: string }[]).filter((i) => i.kind === 'schema_mismatch')).toEqual([]);
+      await dashboardHonesty(target, member, at);
     } finally {
       await target.sql(`DELETE FROM spores WHERE project_id = ${lit(target.projectId)} AND id = ${lit(sporeId)}`);
       await target.sql(`DELETE FROM agent_runs WHERE project_id = ${lit(target.projectId)} AND id = ${lit(runId)}`);
@@ -96,3 +97,59 @@ export const today: ParityScenario = {
     }
   },
 };
+
+
+/** Full-window work state and all-project task scope through each target's HTTP API. */
+async function dashboardHonesty(target: ParityTarget, member: Record<string, string>, at: number) {
+  const a = `proj_honesty_a_${at}`;
+  const b = `proj_honesty_b_${at}`;
+  const failed = `run_honesty_failed_${at}`;
+  const read = async <T,>(path: string): Promise<T> => {
+    const response = await fetch(`${target.url}${path}`, { headers: member });
+    expect(response.status).toBe(200);
+    return await response.json() as T;
+  };
+  await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES (${lit(a)},'Honesty A',${at}), (${lit(b)},'Honesty B',${at})`);
+  try {
+    await target.sql(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by)
+      VALUES (${lit(a)},'canopy',0,${at},'fixture'), (${lit(b)},'canopy',1,${at},'fixture')`);
+    const tasks = async () => {
+      const data = await read<{ tasks: Array<{ task: string; availabilityNote: string | null }> }>('/api/tasks');
+      const counts = (await target.sql(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id=p.project_id AND pc.capability='canopy' AND pc.enabled=1) THEN 0 ELSE 1 END) AS off
+        FROM projects p WHERE archived_at IS NULL`))[0]!;
+      const expected = counts.off === 0 ? null : counts.total === 1 ? 'Switched off for this project'
+        : counts.off === counts.total ? 'Switched off for every project' : `Switched off for ${counts.off} of ${counts.total} selected projects`;
+      expect(data.tasks.find((task) => task.task === 'canopy-map')?.availabilityNote)
+        .toBe(expected);
+    };
+    await tasks();
+    await target.sql(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,started_at,completed_at)
+      VALUES (${lit(a)},${lit(failed)},'agent_parity_today','canopy-map','failed',${at},${at})`);
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<200)
+      INSERT INTO agent_runs (project_id,id,agent_id,task,status,started_at,completed_at)
+      SELECT ${lit(b)},'run_honesty_' || ${at} || '_' || i,'agent_parity_today','canopy-map','completed',${at}+i,${at}+i FROM n`);
+    await target.sql(`INSERT INTO agent_run_events (project_id,run_id,event_type,tool_name,outcome,payload,recorded_at)
+      SELECT project_id,id,'run_write','myco_run_map','written','{}',completed_at FROM agent_runs WHERE project_id=${lit(b)}`);
+    const query = `/api/work?project=${a}&project=${b}&since=${at-1}&until=${at+1000}`;
+    interface Work { runs: Array<{ id: string }>; cursor: string | null; outcomes: Array<{ projectId: string; kind: string; runs: Record<string, number>; outcome: { spores: number }; failure: { runs: number; latestRunId: string; producedSince: number } | null }> }
+    const first = await read<Work>(query);
+    expect(first.runs).toHaveLength(200);
+    expect(first.cursor).not.toBeNull();
+    expect(first.runs.some((run) => run.id === failed)).toBe(false);
+    expect(first.outcomes.find((outcome) => outcome.projectId === a)?.failure).toMatchObject({ runs: 1, latestRunId: failed, producedSince: 0 });
+    const next = await read<Work>(`${query}&cursor=${encodeURIComponent(first.cursor!)}`);
+    expect(next.runs.map((run) => run.id)).toEqual([failed]);
+    expect(next.cursor).toBeNull();
+    expect(next.outcomes).toEqual(first.outcomes);
+    await target.sql(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at)
+      VALUES (${lit(a)},'run_honesty_queued','agent_parity_today','vault-seed','queued',${at})`);
+    const queued = (await read<Work>(query)).outcomes.find((outcome) => outcome.kind === 'seed');
+    expect(queued).toMatchObject({ runs: { queued: 1 }, outcome: { spores: 0 }, failure: null });
+    await target.sql(`UPDATE projects SET archived_at=${at+1000} WHERE project_id=${lit(a)}`);
+    await tasks();
+  } finally {
+    await target.sql(`UPDATE agent_runs SET status='failed', completed_at=${at+1000} WHERE project_id=${lit(a)} AND status='queued'`);
+    await target.sql(`UPDATE projects SET archived_at=${at+1000} WHERE project_id IN (${lit(a)},${lit(b)})`);
+  }
+}

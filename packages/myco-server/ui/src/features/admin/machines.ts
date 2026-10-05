@@ -1,29 +1,17 @@
-/**
- * Machines, as the admin pages list them.
- *
- * The server has no list of machines yet: a machine is known by the
- * credentials its runtimes signed in with, each naming the machine and, when
- * `myco login` gave one, the name the runtime took. So the machines here are
- * built from `/api/credentials`, grouped by machine. When the server lists
- * machines with their names itself, `useMachines` reads that list instead and
- * every page above it stays as it is.
- */
-import { useEffect, useMemo } from 'react';
-import { usePaged } from '../../hooks/use-paged';
-import type { WorkerRow } from '../../lib/api';
-import type { CredentialRow } from './wire';
+/** Machines as the canonical claim summary names them. */
+import { useMemo } from 'react';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { fetchJson, type WorkerRow } from '../../lib/api';
+import type { MachinesAnswer } from './wire';
 
 /** What a worker says of where it runs. */
 export type WorkerLike = Pick<WorkerRow, 'credentialId' | 'machineId'>;
 
-/** The `revokedBy` of a credential the Deployment ended because it was used from two places; no member acted. */
-export const LINEAGE_REPLAY_ACTOR = 'lineage-replay';
-
-/** Where a machine stands, from its credentials: allowed to write, stopped, or run out. */
+/** Where a machine stands in its server summary. */
 export type MachineStanding = 'allowed' | 'stopped' | 'replayed' | 'expired';
 
 export interface Machine {
-  /** The machine's id, or its first credential's for a runtime that named no machine. Never shown. */
+  /** The claim's id. Never shown. */
   key: string;
   machineId: string | null;
   /** What the machine is called: the name its runtime took, else "A machine" or "Machine 2". */
@@ -32,94 +20,47 @@ export interface Machine {
   named: boolean;
   /** The member it belongs to. */
   memberId: string;
-  /** Its credentials, newest first. */
-  credentials: CredentialRow[];
-  /** Those that authenticate now. */
-  live: CredentialRow[];
   standing: MachineStanding;
   /** Who stopped it, as a member id, when a member did. */
   stoppedBy: string | null;
   /** When it first signed in. */
   firstSeenAt: number;
+  liveCredentialCount: number;
+  credentialCount: number;
+  bytesWritten: number;
 }
 
-function standingOf(credentials: readonly CredentialRow[]): { standing: MachineStanding; stoppedBy: string | null } {
-  if (credentials.some((c) => c.live)) return { standing: 'allowed', stoppedBy: null };
-  const newest = credentials[0];
-  if (newest !== undefined && newest.revokedAt !== null) {
-    return newest.revokedBy === LINEAGE_REPLAY_ACTOR
-      ? { standing: 'replayed', stoppedBy: null }
-      : { standing: 'stopped', stoppedBy: newest.revokedBy };
-  }
-  return { standing: 'expired', stoppedBy: null };
-}
-
-const hasLabel = (c: CredentialRow): boolean => c.runtimeLabel !== null && c.runtimeLabel.trim() !== '';
-
-/**
- * A member's runtimes grouped by the machine they run on, newest first and the
- * machines allowed to write before the rest. A machine takes the name of its
- * newest live runtime that gave one, else of any that did; a machine with no
- * name reads "A machine" when it is the only one, else "Machine 1",
- * "Machine 2" in the order listed. Run credentials belong to runs, not
- * machines, and are left out.
- */
-export function machinesFrom(rows: readonly CredentialRow[]): Machine[] {
-  const groups = new Map<string, CredentialRow[]>();
-  for (const row of rows) {
-    if (row.purpose !== 'member') continue;
-    const key = row.machineId ?? `lineage:${row.lineageRoot}`;
-    const group = groups.get(key) ?? [];
-    group.push(row);
-    groups.set(key, group);
-  }
-  const built = [...groups.entries()].map(([key, credentials]) => {
-    const sorted = [...credentials].sort((a, b) => b.lineageStartedAt - a.lineageStartedAt);
-    const live = sorted.filter((c) => c.live);
-    const label = (live.find(hasLabel) ?? sorted.find(hasLabel))?.runtimeLabel?.trim() ?? null;
-    return {
-      key,
-      machineId: sorted[0]!.machineId,
-      label,
-      memberId: sorted[0]!.memberId,
-      credentials: sorted,
-      live,
-      ...standingOf(sorted),
-      firstSeenAt: Math.min(...sorted.map((c) => c.lineageStartedAt)),
-      latest: sorted[0]!.lineageStartedAt,
-    };
-  });
-  built.sort((a, b) => Number(b.live.length > 0) - Number(a.live.length > 0) || b.latest - a.latest || a.key.localeCompare(b.key));
-  const unnamed = built.filter((m) => m.label === null).map((m) => m.key);
-  return built.map(({ label, latest: _latest, ...machine }) => ({
-    ...machine,
-    name: label ?? (unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.indexOf(machine.key) + 1}`),
-    named: label !== null,
-  }));
-}
-
-/** The machine a worker runs on: the one holding its credential, else the one it names. */
+/** The machine a worker names. */
 export function machineOfWorker(machines: readonly Machine[], worker: WorkerLike): Machine | undefined {
-  return machines.find((m) => m.credentials.some((c) => c.id === worker.credentialId))
-    ?? (worker.machineId === null ? undefined : machines.find((m) => m.machineId === worker.machineId));
+  return worker.machineId === null ? undefined : machines.find((m) => m.machineId === worker.machineId);
 }
 
-/** The query key every read of the machines' credentials shares, so a stop refreshes each page that lists them. */
-export const MACHINE_CREDENTIALS_KEY = ['credentials', 'member'] as const;
+/** The query key every machine summary read shares. */
+export const MACHINE_LIST_KEY = ['machines'] as const;
 
-/**
- * The machines the viewer may see: every member's to an admin, their own to a
- * member (the server answers a member only their own credentials). The
- * credentials are read 50 at a time until the server says there are no more,
- * since a machine's live sign-in can sit on any page; until then the read
- * counts as pending, so no page lists machines from part of the list.
- */
+/** Claims the viewer may see, one bounded server page at a time. */
 export function useMachines() {
-  const paged = usePaged<CredentialRow>(MACHINE_CREDENTIALS_KEY, '/api/credentials?purpose=member&limit=50');
-  const { hasMore, isFetchingMore, error, more } = paged;
-  useEffect(() => {
-    if (hasMore && !isFetchingMore && error === null) more();
-  }, [hasMore, isFetchingMore, error, more, paged.rows.length]);
-  const machines = useMemo(() => machinesFrom(paged.rows), [paged.rows]);
-  return { ...paged, isPending: paged.isPending || (hasMore && error === null), machines };
+  const query = useInfiniteQuery({
+    queryKey: MACHINE_LIST_KEY,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => fetchJson<MachinesAnswer>(`/api/machines?limit=50${pageParam === null ? '' : `&cursor=${encodeURIComponent(pageParam)}`}`, signal),
+    getNextPageParam: (last) => last.cursor ?? undefined,
+  });
+  const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((answer) => answer.machines) ?? []).map((row) => [row.machineId, row])).values()], [query.data]);
+  const machines = useMemo(() => {
+    const unnamed = rows.filter((row) => row.name === null);
+    return rows.map((row): Machine => ({
+      key: row.machineId, machineId: row.machineId,
+      name: row.name ?? (unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.findIndex((item) => item.machineId === row.machineId) + 1}`),
+      named: row.name !== null, memberId: row.member.id,
+      standing: row.standing, stoppedBy: row.stoppedBy, firstSeenAt: row.firstSeenAt,
+      liveCredentialCount: row.liveCredentialCount, credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
+    }));
+  }, [rows]);
+  return {
+    machines, isPending: query.isPending, error: query.error, hasMore: query.hasNextPage,
+    isFetchingMore: query.isFetchingNextPage,
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
+    retry: () => { void (query.isFetchNextPageError ? query.fetchNextPage({ cancelRefetch: false }) : query.refetch()); },
+  };
 }

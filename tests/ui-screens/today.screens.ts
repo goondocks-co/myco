@@ -84,7 +84,7 @@ async function expectCapture(page: Page, viewport: ViewportName, role: 'admin' |
     return;
   }
   await expect(capture).toContainText('Ada’s studio Mac');
-  await expect(capture.getByRole('list', { name: 'Agents on Ada’s studio Mac' }).getByRole('img', { name: 'Sending now' })).toHaveCount(1);
+  await expect(capture.getByRole('list', { name: 'Agents on Ada’s studio Mac' }).getByRole('img', { name: 'Received recently' })).toHaveCount(1);
   // Another member's machine is listed by its member, never by its name: the server serves the name only to its own member.
   await expect(capture.getByRole('list', { name: 'Other machines' })).toContainText('Lin');
   await expect(capture).not.toContainText('Lin’s build box');

@@ -1,3 +1,4 @@
+import { ReadState } from '../design';
 import { failureWords } from '../features/work/words';
 import { type ReactNode } from 'react';
 import { Navigate, Outlet, useLocation, useSearchParams } from 'react-router-dom';
@@ -151,6 +152,7 @@ function Timeline({ entries, pending, error, onRetry, work, scoped, projectName,
     if (pending) return <LoadingState label="Loading the day" count={4} />;
     return <ErrorState error={error} onRetry={onRetry} />;
   }
+  if (error) return <ReadState data={entries} pending={pending} error={error} onRetry={onRetry} label="the day">{(retained) => <Timeline entries={retained} pending={false} error={null} onRetry={onRetry} work={work} scoped={scoped} projectName={projectName} truncated={truncated} quiet="No entries in the last successful read" earlier={earlier} now={now} />}</ReadState>;
   if (entries.length === 0) {
     return truncated ? <p className="t-small text-muted" data-truncated="">{TRUNCATED}</p> : <EmptyState title={quiet} action={earlier} />;
   }

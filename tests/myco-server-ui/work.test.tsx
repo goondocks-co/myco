@@ -8,7 +8,7 @@ import { TASK_DESCRIPTIONS } from './task-fixture';
  * The clock is held at a fixed afternoon so every instant sits on the day it names.
  */
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -97,11 +97,34 @@ const location = () => screen.getByTestId('location').textContent;
 const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
 
 describe('what Myco’s work came to', () => {
+  it('names queued, running, skipped, completed, produced and failed states for every outcome', () => {
+    const states = {
+      learn: ['Waiting to learn from recent sessions', 'Learning from recent sessions now', 'Learning was held off', 'Read new sessions and found nothing new to keep', 'Learned 1 spore', 'Couldn’t learn from recent sessions'],
+      title: ['Waiting to title sessions', 'Titling sessions now', 'Titling was held off', 'Checked for sessions to title; none needed one', 'Titled and summarized 1 session', 'Couldn’t title sessions'],
+      map: ['Waiting to update the code map', 'Updating the code map now', 'The code map update was held off', 'Checked the code map; nothing to change', 'Updated the code map once', 'Couldn’t update the code map'],
+      seed: ['Waiting to learn from the project’s code', 'Learning from the project’s code now', 'Learning from the code was held off', 'Read the project’s code and found nothing new to keep', 'Learned 1 spore from the project’s code', 'Couldn’t learn from the project’s code'],
+    } as const;
+    for (const kind of ['learn', 'title', 'map', 'seed'] as const) {
+      const base = { spores: 0, sessions: 0, maps: 0, produced: 0, failed: 0, finished: 0 };
+      const output = kind === 'learn' || kind === 'seed' ? { spores: 1 } : kind === 'title' ? { sessions: 1 } : { maps: 1 };
+      expect([
+        outcomeHeadline(kind, { ...base, runs: { queued: 1 } }),
+        outcomeHeadline(kind, { ...base, runs: { running: 1 } }),
+        outcomeHeadline(kind, { ...base, runs: { skipped: 1 } }),
+        outcomeHeadline(kind, { ...base, runs: { completed: 1 }, finished: 1 }),
+        outcomeHeadline(kind, { ...base, ...output, runs: { completed: 1 }, finished: 1, produced: 1 }),
+        outcomeHeadline(kind, { ...base, runs: { failed: 1 }, finished: 1, failed: 1 }),
+      ]).toEqual(states[kind]);
+    }
+  });
+
   it('sums each kind of work across projects: outcomes, failures, recoveries, spend and cost', () => {
     const answer: WorkAnswer = {
       ...WEEK_WORK,
       outcomes: [
-        ...WEEK_WORK.outcomes,
+        ...WEEK_WORK.outcomes.map((entry) => entry.kind === 'map'
+          ? { ...entry, failure: { ...entry.failure!, producedSince: 1 } }
+          : entry),
         outcome({ projectId: P2, kind: 'learn', task: 'extract-curate', runs: { completed: 1, queued: 1 }, outcome: { spores: 3, sessions: 2, maps: 0 }, latestAt: NOW - MINUTE, tokens: 10_000, costUsd: 0.25, runsWithoutCost: 1, spend: { tokens: [10_000, 12_000], costUsd: [0.2, 1.4], durationMs: [MINUTE, 20 * MINUTE] } }),
       ],
       runs: [...WEEK_WORK.runs, workRun({ id: 'run_map0000new', kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } })],
@@ -115,7 +138,7 @@ describe('what Myco’s work came to', () => {
     expect(learn!.failures).toEqual([]);
     // A map update that failed and was followed by one that worked has recovered.
     expect(map!.failures.map((run) => run.id)).toEqual(['run_5e0b1c2d3f']);
-    expect(map!.failureGroups).toEqual([{ projectId: P, failures: [map!.failures[0]!], producedSince: 1 }]);
+    expect(map!.failureGroups).toMatchObject([{ projectId: P, count: 1, failures: [map!.failures[0]!], producedSince: 1 }]);
     expect(costOf([learn!, title!, map!])).toEqual({ costUsd: 1.75 + 0 + 2.1, tokens: 70_000 + 4_000 + 1_600_000, runs: 4 + 2 + 2, runsWithoutCost: 3 });
     // The headline is the outcome, never the status: a failed run that kept spores still learned them.
     expect(outcomeHeadline('learn', learn!)).toBe('Learned 9 spores from 6 sessions');
@@ -140,6 +163,72 @@ describe('what Myco’s work came to', () => {
 });
 
 describe('Myco’s work', () => {
+  it('keeps a queued code-learning card in waiting language', async () => {
+    server(week({ work: {
+      ...WEEK_WORK,
+      outcomes: [outcome({ kind: 'seed', task: 'vault-seed', runs: { queued: 1 }, latestAt: NOW - HOUR })],
+      runs: [],
+    } }));
+    mount(`/p/${P}/work`);
+    const seed = await findCard('seed');
+    expect(within(seed).getByRole('heading', { level: 2 }).textContent).toBe('Waiting to learn from the project’s code');
+    expect(seed.textContent).not.toContain('Read the project’s code');
+  });
+
+  for (const { kind, task, output, noun, saved } of [
+    { kind: 'learn', task: 'extract-curate', output: { spores: 1, sessions: 1, maps: 0 }, noun: 'learning run', saved: 'spores saved from recent sessions' },
+    { kind: 'seed', task: 'vault-seed', output: { spores: 1, sessions: 0, maps: 0 }, noun: 'run over the code', saved: 'spores saved from the project’s code' },
+    { kind: 'title', task: 'title-summary', output: { spores: 0, sessions: 1, maps: 0 }, noun: 'titling run', saved: 'session titles and summaries written' },
+    { kind: 'map', task: 'canopy-map', output: { spores: 0, sessions: 0, maps: 1 }, noun: 'code map update', saved: 'code map updates written' },
+  ] as const) {
+    it(`keeps the full-window saved-output failure visible for ${kind} beyond the 200-run page`, async () => {
+      const runs = Array.from({ length: 200 }, (_, i) => workRun({
+        id: `run_${kind}_${i}`, kind, task, at: NOW - i * MINUTE, outcome: output,
+      }));
+      const cursor = JSON.stringify([runs[199]!.at, P, runs[199]!.id]);
+      const older = workRun({
+        id: `run_${kind}_older`, kind, task, status: 'failed', result: 'failed_with_output',
+        at: NOW - 201 * MINUTE, outcome: output,
+        failure: { cause: 'Stopped after saving output', source: 'error' },
+      });
+      const first: WorkAnswer = {
+        ...WEEK_WORK,
+        outcomes: [outcome({
+          kind, task, runs: { completed: 200, failed: 1 }, failedWithOutput: 1,
+          outcome: { spores: 201 * output.spores, sessions: 201 * output.sessions, maps: 201 * output.maps },
+        })],
+        runs, truncated: true, cursor,
+      };
+      server({
+        ...week({ work: first }),
+        '/api/work': (url) => Response.json(url.searchParams.get('cursor') === cursor
+          ? { ...first, runs: [older], truncated: false, cursor: null }
+          : first),
+      });
+      mount('/work');
+      const panel = await findCard(kind);
+      await waitFor(() => expect(panel.querySelector('[data-kept]')).not.toBeNull());
+      expect(panel.querySelector('[data-kept]')!.textContent).toBe(`One ${noun} stopped early. The ${saved} are kept.`);
+      fireEvent.click(within(document.querySelector('[data-work-evidence]') as HTMLElement).getByRole('button', { name: 'Show more' }));
+      await waitFor(() => expect(panel.querySelectorAll('[data-run-line]')).toHaveLength(201));
+      expect(panel.querySelector('[data-kept]')!.textContent).toContain(`One ${noun} stopped early`);
+      expect(panel.querySelector('[data-kept]')!.textContent).toContain(`The ${saved} are kept.`);
+    });
+  }
+
+  it('surfaces a failed per-task run read with a retry', async () => {
+    server({
+      ...week(),
+      [`/api/projects/${P}/runs`]: (url) => url.searchParams.get('task') === 'canopy-map'
+        ? new Response('unavailable', { status: 503 })
+        : Response.json({ rows: TASK_RUNS[url.searchParams.get('task') ?? ''] ?? [], cursor: null }),
+    });
+    mount(`/p/${P}/work`);
+    const map = await findCard('map');
+    await waitFor(() => expect(map.textContent).toContain('Couldn’t read code map updates.'));
+    expect(within(map).getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+
   it('tells the week as outcomes, each with its evidence, its latest runs and any failure beside it', async () => {
     const asked = server(week());
     mount(`/p/${P}/work`);
@@ -168,7 +257,7 @@ describe('Myco’s work', () => {
     expect(lines[2]!.textContent).toContain('Ada’s studio Mac · by Lin');
     expect(within(lines[2]!).getByRole('link').getAttribute('href')).toBe(`/p/${P}/work/runs/run_a2c4e6f801`);
     // The run that stopped early but kept its spores is a quiet note: nothing to do.
-    expect(learn.querySelector('[data-kept]')!.textContent).toBe('One run stopped early: saved 2 spores from 3 sessions before the turn budget ran out. It kept the 2 spores it had saved, so there’s nothing to do.');
+    expect(learn.querySelector('[data-kept]')!.textContent).toBe('One learning run stopped early: saved 2 spores from 3 sessions before the turn budget ran out. The spores saved from recent sessions are kept.');
     expect(learn.querySelector('[data-failure]')).toBeNull();
 
     // Titles: the sessions by their titles.
@@ -260,6 +349,58 @@ describe('Myco’s work', () => {
     expect(failure.getAttribute('data-failure')).toBe('open');
     expect(failure.textContent).toContain('1 code map update failed this week in Myco');
     expect(document.querySelector('[data-lede]')!.textContent).toContain('1 code map update failed, and none has worked since.');
+  });
+
+  it('describes mixed recovery across Projects without claiming none worked', async () => {
+    const second = outcome({
+      projectId: P2, kind: 'map', task: 'canopy-map',
+      runs: { completed: 1, failed: 1 }, failed: 1,
+      outcome: { spores: 0, sessions: 0, maps: 1 },
+      failure: { runs: 1, since: NOW - 4 * HOUR, latestAt: NOW - 4 * HOUR, latestRunId: 'run_atlasfailed', producedSince: 1 },
+    });
+    server(week({ work: { ...WEEK_WORK, outcomes: [...WEEK_WORK.outcomes, second] } }));
+    mount('/work');
+    await waitFor(() => expect(document.querySelector('[data-lede]')).not.toBeNull());
+    expect(document.querySelector('[data-lede]')!.textContent).toContain('2 code map updates failed; some projects have worked since, while others are still waiting for a successful run.');
+  });
+
+  it('shows an older Project failure beyond the work evidence page and retrieves it', async () => {
+    const cursor = JSON.stringify([NOW - HOUR, P2, 'run_atlasmap01']);
+    const latest = workRun({ id: 'run_atlasmap01', projectId: P2, kind: 'map', task: 'canopy-map', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 1 } });
+    const first: WorkAnswer = {
+      ...WEEK_WORK,
+      outcomes: [...WEEK_WORK.outcomes, outcome({ projectId: P2, kind: 'map', task: 'canopy-map', runs: { completed: 1 }, outcome: { spores: 0, sessions: 0, maps: 1 } })],
+      runs: [latest],
+      truncated: true,
+      cursor,
+    };
+    let current = first;
+    const asked = server({
+      ...week({ work: first }),
+      '/api/work': (url) => Response.json(url.searchParams.get('cursor') === cursor
+        ? { ...first, runs: [WEEK_WORK.runs.find((run) => run.id === 'run_5e0b1c2d3f')], truncated: false, cursor: null }
+        : current),
+    });
+    mount('/work');
+    const map = await findCard('map');
+    await waitFor(() => expect(map.querySelector('[data-failure]')).not.toBeNull());
+    expect(map.querySelector('[data-failure]')!.textContent).toContain('1 code map update failed this week in Myco');
+    expect(map.querySelector('[data-failure]')!.textContent).toContain('Showing 0 of 1 failed runs here');
+    expect(document.querySelector('[data-lede]')!.textContent).toContain('none has worked since');
+    fireEvent.click(within(document.querySelector('[data-work-evidence]') as HTMLElement).getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(within(map).getByRole('list', { name: 'Latest code map updates' }).textContent).toContain('Failed'));
+    expect(asked.filter((url) => url.pathname === '/api/work').map((url) => url.searchParams.get('cursor'))).toContain(cursor);
+    const updated = { ...latest, status: 'failed', result: 'failed' as const, outcome: { spores: 0, sessions: 0, maps: 0 }, failure: { cause: 'The new attempt failed', source: 'error' as const } };
+    current = {
+      ...first,
+      outcomes: first.outcomes.map((entry) => entry.projectId === P2 && entry.kind === 'map'
+        ? { ...entry, runs: { failed: 1 }, failed: 1, outcome: { spores: 0, sessions: 0, maps: 0 },
+          failure: { runs: 1, since: latest.at!, latestAt: latest.at!, latestRunId: latest.id, producedSince: 0 } }
+        : entry),
+      runs: [updated],
+    };
+    await act(async () => { await client.invalidateQueries({ queryKey: ['work', 'all', WEEK.since, WEEK.until] }); });
+    await waitFor(() => expect(within(map).getByRole('list', { name: 'Latest code map updates' }).querySelectorAll('[data-run-line="bad"]')).toHaveLength(2));
   });
 
   it('shows every run of a task on "Show all", a page at a time, and links each project’s from the page across projects', async () => {

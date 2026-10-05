@@ -6,12 +6,12 @@ import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 import { progressOf } from './plans.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
-/** A child projection read: its table, the columns to select, and the id column that breaks a tie on `created_at`. Ordered oldest-first — a session reads forward in time. */
+/** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
 export interface ChildQuery<T> {
   table: string;
   columns: string;
   idColumn: string;
-  /** The column the table's session index orders by. `plans` carries BOTH `created_at` and `updated_at` and is indexed on the latter, so each table names its own. */
+  /** The numeric ordering expression paired with the identity in a page cursor. */
   orderColumn: string;
   map: (row: Record<string, unknown>) => T;
 }
@@ -41,6 +41,30 @@ export async function listChildren<T>(
   const rows = results.map((row) => ({ ...query.map(row), orderedAt: row.order_at as number, __id: row[query.idColumn] as string }));
   const paged = page(rows, limit, (r) => ({ createdAt: r.orderedAt, id: r.__id }));
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };
+}
+
+/** First pages for several prompts, each bounded independently, in one scoped query. */
+export async function listChildrenByPrompt<T>(db: RelationalStore, query: ChildQuery<T>, scope: ReadScope, sessionId: string, promptIds: readonly string[], limit: number): Promise<Map<string, Page<T & { orderedAt: number }>>> {
+  const pages = new Map<string, Page<T & { orderedAt: number }>>();
+  if (promptIds.length === 0) return pages;
+  const { results } = await db.prepare(`SELECT * FROM (
+    SELECT ${query.columns}, ${query.orderColumn} AS order_at, ${query.idColumn},
+      ROW_NUMBER() OVER (PARTITION BY prompt_id ORDER BY ${query.orderColumn} ASC, ${query.idColumn} ASC) AS page_row
+    FROM ${query.table} WHERE project_id = ? AND session_id = ? AND prompt_id IN (SELECT value FROM json_each(?))
+  ) WHERE page_row <= ? ORDER BY prompt_id, order_at ASC, ${query.idColumn} ASC`)
+    .bind(scope.projectId, sessionId, JSON.stringify(promptIds), limit + 1).all<Record<string, unknown>>();
+  const grouped = new Map<string, Record<string, unknown>[]>();
+  for (const r of results) {
+    const id = r.prompt_id as string;
+    const rows = grouped.get(id) ?? [];
+    rows.push(r);
+    grouped.set(id, rows);
+  }
+  for (const id of promptIds) {
+    const result = page(grouped.get(id) ?? [], limit, (r) => ({ createdAt: r.order_at as number, id: r[query.idColumn] as string }));
+    pages.set(id, { cursor: result.cursor, rows: result.rows.map((r) => ({ ...query.map(r), orderedAt: r.order_at as number })) });
+  }
+  return pages;
 }
 
 export interface PromptRow { promptId: string; text: string | null; blobKey: string | null; origin: string; promptKind: string | null; parentPromptId: string | null; threadLabel: string | null; createdAt: number; orderedAt: number }
@@ -115,6 +139,9 @@ export const PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = {
     updatedBy: (r.updated_by as string | null) ?? null,
   }),
 };
+
+/** A fixed numeric cursor prefix leaves turn plans ordered solely by their immutable plan key. */
+export const TURN_PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = { ...PLAN_QUERY, orderColumn: 'CAST(0 AS INTEGER)' };
 
 export const ATTACHMENT_QUERY: ChildQuery<Omit<AttachmentRow, 'orderedAt'>> = {
   table: 'attachments', columns: 'attachment_id, prompt_id, blob_key, media_type, byte_size, description, created_at', idColumn: 'attachment_id', orderColumn: 'created_at',
