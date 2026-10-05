@@ -365,6 +365,7 @@ export function createServer(deps: ServerDeps) {
         if (!authorization.allowed) {
           if (matched.route.authority === 'admin' && subject.role === 'member') return forbiddenToMember();
           if (matched.route.path === '/api/enrollment' && authorization.action === null) return badRequest('role must be admin or member');
+          if (authorization.resource?.kind === 'enrollment' && authorization.resource.targetRevoked === true) return Response.json({ error: 'member_revoked' }, { status: 409 });
           if (matched.route.path === '/api/harness/dispatch') {
             if (authorization.action === 'admin' && subject.role === 'member') return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
             return badRequest('the project is not on this server');

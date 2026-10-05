@@ -31,7 +31,7 @@ const rig = async (opts: { sourceLimit?: number } = {}) => {
   return {
     e, now, members, seededMembers,
     join: (body: unknown) => worker.fetch(joinRequest(body), e.env),
-    key: (options: Partial<Parameters<typeof issueEnrollmentAuthority>[2]> = {}) => issueEnrollmentAuthority(e.db, now, { role: 'member', ...options }),
+    key: (options: Partial<Parameters<typeof issueEnrollmentAuthority>[2]> = {}) => issueEnrollmentAuthority(e.db, now, { issuer: { kind: 'operator' }, role: 'member', ...options }),
     credential: (id: string) => e.sqlite.query(`SELECT member_id, machine_id, runtime_label, runtime_kind, predecessor_id, bytes_written FROM member_credentials WHERE id = ?`).get(id) as Record<string, unknown>,
   };
 };
@@ -137,7 +137,7 @@ describe('member join', () => {
     const r = await rig();
     const spent = await r.key();
     expect((await json(await r.join({ key: spent.key, machineId: 'machine_ok' }))).joined).toBe(true);
-    const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2, { role: 'member' });
+    const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS * 2, { issuer: { kind: 'operator' }, role: 'member' });
     const revoked = await r.key();
     await revokeEnrollmentAuthority(r.e.db, revoked.id, r.now, 'mem_machine_1');
 
@@ -294,7 +294,7 @@ describe('a refused join leaves no trace', () => {
   it('leaves no write at all when the key itself is refused', async () => {
     const r = await rig();
     const before = counts(r.e);
-    const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS - 60_000, { role: 'member' });
+    const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS - 60_000, { issuer: { kind: 'operator' }, role: 'member' });
     const answer = await json(await r.join({ key: expired.key, machineId: 'fresh_machine' }));
     expect(answer).toMatchObject({ joined: false, code: 'enrollment_expired' });
     expect(counts(r.e)).toEqual(before);
@@ -335,7 +335,7 @@ describe('a refused join leaves no trace', () => {
     // Each key is refused on its own terms even though the identity is also held.
     const spent = await r.key();
     expect((await json(await r.join({ key: spent.key, machineId: 'another_machine' }))).joined).toBe(true);
-    const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS - 60_000, { role: 'member' });
+    const expired = await issueEnrollmentAuthority(r.e.db, r.now - ENROLLMENT_TTL_MS - 60_000, { issuer: { kind: 'operator' }, role: 'member' });
     const revoked = await r.key();
     await revokeEnrollmentAuthority(r.e.db, revoked.id, r.now, 'mem_admin');
 

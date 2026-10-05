@@ -3,7 +3,8 @@ import { RawResourceReader } from '../core/raw-resources.js';
 import { projectExists } from '../read/sessions.js';
 import { parseJsonObject } from '../api/scope.js';
 import { linkedAdmin } from './identity-link.js';
-import { authorize, authorizeDeclaration, credentialResource, declaredAction, deploymentIdentity, machineResource, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
+import { MEMBER_ID } from '../constants.js';
+import { authorize, authorizeDeclaration, credentialResource, declaredAction, deploymentIdentity, enrollmentResource, machineResource, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
 
 export function httpPolicy(resource: AuthorizationDeclaration['resource'], action: AuthorizationDeclaration['action'], resolver: AuthorizationDeclaration['resolver'], subjects: AuthorizationDeclaration['subjects'] = ['member']): AuthorizationDeclaration {
   return { resource, action, resolver, subjects, transport: 'http' };
@@ -11,7 +12,11 @@ export function httpPolicy(resource: AuthorizationDeclaration['resource'], actio
 
 export const invitationAction: AuthorizationDeclaration['action'] = {
   actions: ['admin', 'owner'],
-  resolve: input => input.role === 'admin' ? 'owner' : input.role === undefined || input.role === 'member' ? 'admin' : null,
+  resolve: (input, resource) => {
+    if (input.role !== undefined && input.role !== 'member' && input.role !== 'admin') return null;
+    if (resource?.grantedRole === 'admin' || resource?.grantedRole === 'owner' || input.role === 'admin') return 'owner';
+    return input.memberId !== undefined && resource === undefined ? null : 'admin';
+  },
 };
 
 export const runDispatchAction: AuthorizationDeclaration['action'] = {
@@ -43,6 +48,9 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
   const resource: AuthorizationResource = { kind: declaration.resource, deploymentId: await deploymentIdentity(env.db), exists: true };
   const params = input.params ?? {};
   const parsed = parseJsonObject(input.body ?? '') ?? {};
+  if (declaration.resolver === 'enrollment') {
+    return enrollmentResource(env.db, typeof parsed.memberId === 'string' && MEMBER_ID.test(parsed.memberId) ? parsed.memberId : null, parsed.role === 'admin' ? 'admin' : 'member');
+  }
   const action = declaredAction(declaration, parsed);
   const projectId = params.projectId ?? input.projectId ?? (declaration.resource === 'run' && typeof parsed.projectId === 'string' ? parsed.projectId : undefined);
   if (projectId !== undefined) resource.projectId = projectId;
@@ -110,5 +118,5 @@ export async function httpAuthorizationDecision(env: ServerEnv, declaration: Aut
   if (declaration === undefined) return { allowed: false };
   const resource = await resolveHttpResource(env, declaration, subject, input);
   const body = parseJsonObject(input.body ?? '') ?? {};
-  return { allowed: authorizeDeclaration(subject, declaration, body, resource), resource, action: declaredAction(declaration, body) };
+  return { allowed: authorizeDeclaration(subject, declaration, body, resource), resource, action: declaredAction(declaration, body, resource) };
 }

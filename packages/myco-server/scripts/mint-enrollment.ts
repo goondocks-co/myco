@@ -40,7 +40,7 @@ const id = `${ENROLLMENT_ID_PREFIX}${b64url(crypto.getRandomValues(new Uint8Arra
 
 const now = Date.now();
 const { db, statements } = sqlCapture();
-const { statement, expiresAt } = enrollmentInsert(db, now, ttlMinutes * 60_000, null, await sha256Hex(key), id, 'admin', null, projectId);
+const { statement, expiresAt } = enrollmentInsert(db, now, ttlMinutes * 60_000, { kind: 'operator' }, await sha256Hex(key), id, 'admin', null, projectId);
 await statement.run();
 
 console.log(`-- enrollment authority ${id}; expires_at ${expiresAt} (${ttlMinutes} minutes)`);

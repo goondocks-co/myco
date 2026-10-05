@@ -92,7 +92,7 @@ describe('a sandbox holding only a join code (G4g)', () => {
   it('redeems the code on its first hook, starts no helper, and delivers everything at the turn\'s end, in the hook', async () => {
     // The emitted sandbox settings declare `env`; the redeemed membership resolves from the registry all the same.
     for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete process.env[key];
-    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { role: 'member', projectId: 'proj_1' });
+    const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     const spy = recordingFetch(rig.fetch);
     const tx = transcript('sess-code');

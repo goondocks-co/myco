@@ -238,14 +238,14 @@ describe('renaming a machine', () => {
     expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')!.name).toBe('Renamed');
 
     // A later sign-in sends its host name again, and the machine keeps the name it holds.
-    const invite = await issueEnrollmentAuthority(db, now, { role: 'member', memberId: 'mem_machine_2' });
+    const invite = await issueEnrollmentAuthority(db, now, { issuer: { kind: 'operator' }, role: 'member', memberId: 'mem_machine_2' });
     const again = await request(env, null, 'POST', '/members/join', { key: invite.key, machineId: 'm_member', runtimeLabel: 'laptop-again', runtimeKind: 'persistent' });
     expect(((await again.json()) as { joined: boolean }).joined).toBe(true);
     expect(claimLabel(sqlite, 'm_member')).toBe('Renamed');
     expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')!.name).toBe('Renamed');
 
     // A machine's first sign-in names it after the host it sends.
-    const fresh = await issueEnrollmentAuthority(db, now, { role: 'member', memberId: 'mem_machine_2' });
+    const fresh = await issueEnrollmentAuthority(db, now, { issuer: { kind: 'operator' }, role: 'member', memberId: 'mem_machine_2' });
     await request(env, null, 'POST', '/members/join', { key: fresh.key, machineId: 'm_new', runtimeLabel: 'fresh-host', runtimeKind: 'persistent' });
     expect(claimLabel(sqlite, 'm_new')).toBe('fresh-host');
   });

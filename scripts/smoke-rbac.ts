@@ -78,6 +78,26 @@ assert.equal((await (await memberPost('/members/link-github', { unexpected: true
 assert.equal((await (await memberPost('/members/raw-claims', { revision: '0' })).json() as { code: string }).code, 'not_owner');
 fixture.sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1', revision=1 WHERE id=1");
 fixture.sqlite.run("UPDATE members SET role='admin', github_id='770003' WHERE id='mem_machine_3'");
+for (const body of [{ memberId: 'mem_machine_1', role: 'member' }, { memberId: 'mem_machine_3' }]) {
+  const before = fixture.sqlite.query('SELECT COUNT(*) AS count FROM enrollment_authorities').get();
+  assert.equal((await sessionPost('/api/enrollment', body, '770003')).status, 403);
+  assert.deepEqual(fixture.sqlite.query('SELECT COUNT(*) AS count FROM enrollment_authorities').get(), before);
+}
+const rightful = await sessionPost('/api/enrollment', { memberId: 'mem_machine_3', role: 'member' }, '583231');
+assert.equal(rightful.status, 201);
+const invitation = await rightful.json() as { key: string };
+const joinInvitation = async (key: string, machineId: string) => server.handleRequest(new Request('https://smoke/members/join', {
+  method: 'POST', body: JSON.stringify({ key, machineId }),
+}), env);
+assert.equal((await (await joinInvitation(invitation.key, 'smoke-enrolled-admin')).json() as { joined: boolean }).joined, true);
+const ordinary = await sessionPost('/api/enrollment', { memberId: 'mem_machine_2' }, '770003');
+assert.equal(ordinary.status, 201);
+fixture.sqlite.run("UPDATE members SET role='admin' WHERE id='mem_machine_2'");
+const pending = await ordinary.json() as { key: string };
+const refused = await (await joinInvitation(pending.key, 'smoke-promoted-target')).json() as { joined: boolean; code: string };
+assert.deepEqual({ joined: refused.joined, code: refused.code }, { joined: false, code: 'enrollment_revoked' });
+assert.equal((fixture.sqlite.query("SELECT COUNT(*) AS count FROM machine_claims WHERE machine_id='smoke-promoted-target'").get() as { count: number }).count, 0);
+fixture.sqlite.run("UPDATE members SET role='member' WHERE id='mem_machine_2'");
 const ownerCredential = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
 fixture.sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES ('machine_1','mem_machine_1',?)", [now]);
 for (const [sub, visible] of [['583231', true], ['770003', false]] as const) {

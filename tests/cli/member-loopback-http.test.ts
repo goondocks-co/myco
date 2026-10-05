@@ -57,7 +57,7 @@ const proxied: string[] = [];
 async function invitation(): Promise<{ id: string; code: string }> {
   const db = new Database(databasePath);
   try {
-    const issued = await issueEnrollmentAuthority(sqliteRelationalStore(db), Date.now(), { role: 'member', projectId: PROJECT });
+    const issued = await issueEnrollmentAuthority(sqliteRelationalStore(db), Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: PROJECT });
     return { id: issued.id, code: `${loopback}/join#${issued.key}` };
   } finally {
     db.close();

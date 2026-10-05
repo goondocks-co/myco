@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
+import { MEMBER_ROLES_SQL } from './roles.js';
 
 export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'internal'] as const;
 export type SubjectKind = typeof SUBJECT_KINDS[number];
@@ -40,14 +41,16 @@ export interface AuthorizationResource {
   uploader?: boolean;
   protectedOwner?: boolean;
   bootstrapAllowed?: boolean;
+  grantedRole?: 'owner' | 'admin' | 'member';
+  targetRevoked?: boolean;
 }
 
 export interface AuthorizationDeclaration {
   subjects: readonly SubjectKind[];
   transport: Transport;
   resource: ResourceKind;
-  resolver: 'deployment' | 'project' | 'machine' | 'credential' | 'member' | 'run' | 'raw' | 'protocol';
-  action: Action | { actions: readonly Action[]; resolve(input: Record<string, unknown>): Action | null };
+  resolver: 'deployment' | 'project' | 'machine' | 'credential' | 'member' | 'run' | 'raw' | 'protocol' | 'enrollment';
+  action: Action | { actions: readonly Action[]; resolve(input: Record<string, unknown>, resource?: AuthorizationResource): Action | null };
 }
 
 export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly AuthorizationDeclaration['resolver'][]>> = {
@@ -55,7 +58,7 @@ export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly Authoriz
   directory: ['deployment'], member: ['member', 'deployment'], credential: ['credential', 'deployment', 'machine'],
   machine: ['machine', 'deployment'], 'machine-settings': ['machine'], project: ['project', 'deployment'],
   processed: ['project', 'deployment'], plan: ['project', 'deployment'], spore: ['project', 'deployment'],
-  raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment'], backup: ['deployment'],
+  raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment', 'enrollment'], backup: ['deployment'],
 };
 
 export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>> = {
@@ -89,6 +92,7 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (!subject.memberId || !subject.role || !['owner', 'admin', 'member'].includes(subject.role)) return false;
   const admin = subject.role === 'owner' || subject.role === 'admin';
+  if (resource.kind === 'enrollment' && (resource.grantedRole === 'owner' || resource.grantedRole === 'admin') && subject.role !== 'owner') return false;
   if (action === 'owner') return subject.transport === 'http' && subject.role === 'owner';
   if (action === 'bootstrap') return subject.transport === 'http' && admin && resource.bootstrapAllowed === true && resource.ownerMemberId === subject.memberId;
   if (action === 'admin') return subject.transport === 'http' && admin && (resource.protectedOwner !== true || subject.role === 'owner');
@@ -112,16 +116,16 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   return action === 'read';
 }
 
-export function declaredAction(declaration: AuthorizationDeclaration, input: Record<string, unknown>): Action | null {
+export function declaredAction(declaration: AuthorizationDeclaration, input: Record<string, unknown>, resource?: AuthorizationResource): Action | null {
   if (typeof declaration.action === 'string') return ACTIONS.includes(declaration.action) ? declaration.action : null;
-  const action = declaration.action.resolve(input);
+  const action = declaration.action.resolve(input, resource);
   return action !== null && declaration.action.actions.includes(action) && ACTIONS.includes(action) ? action : null;
 }
 
 export function authorizeDeclaration(subject: AuthorizationSubject, declaration: AuthorizationDeclaration | undefined, input: Record<string, unknown>, resource: AuthorizationResource): boolean {
   if (declaration === undefined || declaration.transport !== subject.transport || !declaration.subjects.includes(subject.kind)
     || declaration.resource !== resource.kind || !RESOURCE_RESOLVERS[declaration.resource]?.includes(declaration.resolver)) return false;
-  const action = declaredAction(declaration, input);
+  const action = declaredAction(declaration, input, resource);
   return action !== null && authorize(subject, action, resource);
 }
 
@@ -129,6 +133,34 @@ export async function deploymentIdentity(db: RelationalStore): Promise<string> {
   const row = await db.prepare("SELECT value FROM schema_meta WHERE key = 'deployment_id'").first<{ value: string }>();
   if (!row?.value) throw new Error('Deployment identity is missing');
   return row.value;
+}
+
+/** An existing recipient keeps its role; the ownership singleton determines owner authority. */
+export async function enrollmentResource(db: RelationalStore, memberId: string | null, role: 'admin' | 'member'): Promise<AuthorizationResource> {
+  const resource: AuthorizationResource = { kind: 'enrollment', deploymentId: await deploymentIdentity(db), exists: true, grantedRole: role };
+  if (memberId === null) return resource;
+  const row = await db.prepare(`SELECT m.role, m.revoked_at, o.member_id AS owner FROM members m
+    LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?`).bind(memberId)
+    .first<{ role: string; revoked_at: number | null; owner: string | null }>();
+  resource.exists = row !== null && row.revoked_at === null && (row.role === 'admin' || row.role === 'member');
+  resource.targetRevoked = row !== null && row.revoked_at !== null;
+  resource.ownerMemberId = memberId;
+  resource.grantedRole = row?.owner === memberId ? 'owner' : row?.role === 'admin' ? 'admin' : row?.role === 'member' ? 'member' : undefined;
+  return resource;
+}
+
+/** Every enrollment write resolves issuer, recipient and ownership authority at SQL execution. Null issuer denotes operator issuance. */
+export function enrollmentAuthorityPredicate(alias: string): string {
+  return `${alias}.role IN (${MEMBER_ROLES_SQL})
+    AND (${alias}.member_id IS NULL OR EXISTS (SELECT 1 FROM members recipient
+      WHERE recipient.id = ${alias}.member_id AND recipient.revoked_at IS NULL AND recipient.role IN (${MEMBER_ROLES_SQL})))
+    AND (${alias}.created_by_member IS NULL OR EXISTS (SELECT 1 FROM members issuer
+      WHERE issuer.id = ${alias}.created_by_member AND issuer.revoked_at IS NULL AND issuer.role IN (${MEMBER_ROLES_SQL})
+        AND (issuer.role = 'admin' OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id))
+        AND (EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id)
+          OR (${alias}.role = 'member' AND NOT EXISTS (SELECT 1 FROM members recipient
+            LEFT JOIN deployment_ownership o ON o.id = 1 WHERE recipient.id = ${alias}.member_id
+              AND (recipient.role = 'admin' OR recipient.id = o.member_id))))))`;
 }
 
 /** A machine claim and the owner's current control credential boundary. */

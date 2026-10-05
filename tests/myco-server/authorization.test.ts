@@ -73,6 +73,43 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
 }
 
 describe('Deployment authorization policy', () => {
+  it('resolves every invitation target authority before selecting its finite action', async () => {
+    const e = sqliteEnv();
+    try {
+      e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
+      e.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_2'");
+      const declaration = ROUTES.find(route => route.path === '/api/enrollment' && route.method === 'POST')!.authorization;
+      const subject = await memberSubject(e.db, 'mem_machine_3', 'http');
+      for (const [memberId, grantedRole] of [[undefined, 'member'], ['mem_machine_2', 'member'], ['mem_machine_3', 'admin'], ['mem_machine_1', 'owner']] as const) {
+        for (const role of [undefined, 'member', 'admin'] as const) {
+          const input = { ...(memberId === undefined ? {} : { memberId }), ...(role === undefined ? {} : { role }) };
+          const resolved = await resolveHttpResource(e.serverEnv, declaration, subject, { body: JSON.stringify(input) });
+          const effectiveRole = memberId === undefined && role === 'admin' ? 'admin' : grantedRole;
+          const action = effectiveRole === 'member' && role !== 'admin' ? 'admin' : 'owner';
+          expect({ grantedRole: resolved.grantedRole, action: declaredAction(declaration, input, resolved) }).toEqual({ grantedRole: effectiveRole, action });
+          expect(await authorizeHttp(e.serverEnv, declaration, subject, { body: JSON.stringify(input) })).toBe(action === 'admin');
+        }
+      }
+    } finally { e.sqlite.close(); }
+  });
+
+  it('enumerates resulting enrollment authority across every actor, action and transport', () => {
+    const expected: Record<string, Partial<Record<'owner' | 'admin' | 'member', readonly Action[]>>> = {
+      owner: { member: ['admin', 'owner'], admin: ['admin', 'owner'], owner: ['admin', 'owner'] },
+      admin: { member: ['admin'] },
+    };
+    for (const [actor, subject] of Object.entries(SUBJECTS)) {
+      for (const transport of ['http', 'mcp'] as const) {
+        for (const grantedRole of ['member', 'admin', 'owner'] as const) {
+          for (const action of ACTIONS) {
+            expect({ actor, transport, grantedRole, action, admitted: authorize({ ...subject, transport }, action, { ...resource('enrollment'), grantedRole }) })
+              .toEqual({ actor, transport, grantedRole, action, admitted: transport === 'http' && (expected[actor]?.[grantedRole]?.includes(action) ?? false) });
+          }
+        }
+      }
+    }
+  });
+
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {
     expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup'].sort());
     expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'].sort());

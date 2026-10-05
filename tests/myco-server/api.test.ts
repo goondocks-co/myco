@@ -306,8 +306,9 @@ describe('GET /api/status', () => {
 });
 
 describe('project creation', () => {
-  it('onboards a project, and a member then mints an invitation for a runtime', async () => {
+  it('onboards a project, and the owner then mints an invitation for its runtime', async () => {
     const e = sqliteEnv();
+    e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
     const created = await worker.fetch(await asOwnerPost('/api/projects', { projectId: 'proj_new', name: 'New' }), { ...e.env, ...OWNER_ENV });
     expect(created.status).toBe(201);
     const minted = await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_machine_1' }), { ...e.env, ...OWNER_ENV });
