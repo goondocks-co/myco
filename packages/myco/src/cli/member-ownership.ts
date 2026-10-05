@@ -39,7 +39,7 @@ export async function runOwnership(args: readonly string[], deps: MemberVerbDeps
   if (ownerMemberId === undefined && transferMemberId === undefined) return true;
   if (preview.value.revision !== revision) return fail('ownership changed; review a new preview and pass its revision explicitly');
   if (transferMemberId !== undefined && preview.value.ownerMemberId === null) return fail('no owner is recorded; use --owner to record one first');
-  if (ownerMemberId !== undefined && preview.value.ownerMemberId !== null) return fail('an owner is already recorded; use --transfer');
+  if (ownerMemberId !== undefined && preview.value.ownerMemberId !== null && preview.value.ownerMemberId !== ownerMemberId) return fail('an owner is already recorded; use --transfer');
   const target = ownerMemberId ?? transferMemberId!;
   const candidates = preview.value.candidates;
   if (!Array.isArray(candidates) || !candidates.some((candidate) => typeof candidate === 'object' && candidate !== null && candidate.memberId === target && candidate.role === 'admin')) return fail('the selected member is not an eligible connected admin in this preview');

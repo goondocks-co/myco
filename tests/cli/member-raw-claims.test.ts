@@ -121,6 +121,21 @@ describe('explicit ownership CLI', () => {
     expect(f.stderr.join('\n')).toContain('ownership changed');
   });
 
+  it('replays the recorded owner through the bootstrap operation and requires transfer for a different owner', async () => {
+    for (const selected of ['mem_selected', 'mem_other']) {
+      const f = fixture();
+      const fetch = f.deps.fetch!;
+      f.deps.fetch = async (input, init) => {
+        const response = await fetch(input, init);
+        if (new Request(input, init).method === 'POST') return response;
+        return Response.json({ ...await response.json(), ownerMemberId: 'mem_selected', proposalMemberId: null });
+      };
+      expect(await runOwnership(['--credential', 'env', '--owner', selected, '--revision', 'ownership-r1'], f.deps)).toBe(selected === 'mem_selected');
+      expect(f.requests.map((request) => request.method)).toEqual(selected === 'mem_selected' ? ['GET', 'POST'] : ['GET']);
+      if (selected === 'mem_other') expect(f.stderr.join('\n')).toContain('use --transfer');
+    }
+  });
+
   it('transfers only to a candidate from a reviewed current owner preview', async () => {
     const f = fixture();
     f.deps.fetch = async (input, init) => {
