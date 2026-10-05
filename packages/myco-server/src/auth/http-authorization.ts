@@ -3,7 +3,7 @@ import { RawResourceReader } from '../core/raw-resources.js';
 import { projectExists } from '../read/sessions.js';
 import { parseJsonObject } from '../api/scope.js';
 import { linkedAdmin } from './identity-link.js';
-import { authorize, authorizeDeclaration, declaredAction, deploymentIdentity, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
+import { authorize, authorizeDeclaration, credentialResource, declaredAction, deploymentIdentity, machineResource, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
 
 export function httpPolicy(resource: AuthorizationDeclaration['resource'], action: AuthorizationDeclaration['action'], resolver: AuthorizationDeclaration['resolver'], subjects: AuthorizationDeclaration['subjects'] = ['member']): AuthorizationDeclaration {
   return { resource, action, resolver, subjects, transport: 'http' };
@@ -58,19 +58,11 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
   }
   if (declaration.resolver === 'machine') {
     const machineId = params.machineId ?? input.machineId;
-    const claim = await env.db.prepare('SELECT member_id FROM machine_claims WHERE machine_id = ?').bind(machineId ?? '').first<{ member_id: string }>();
-    resource.exists = claim !== null;
-    resource.id = machineId;
-    resource.ownerMemberId = claim?.member_id;
-    resource.claimantMemberId = claim?.member_id;
+    Object.assign(resource, await machineResource(env.db, declaration.resource as 'machine' | 'machine-settings' | 'credential', machineId ?? ''));
   }
   if (declaration.resolver === 'credential') {
     const id = params.id ?? input.tokenId;
-    const row = await env.db.prepare('SELECT c.member_id, o.member_id AS owner FROM member_credentials c LEFT JOIN deployment_ownership o ON o.id = 1 WHERE c.id = ?').bind(id ?? '').first<{ member_id: string; owner: string | null }>();
-    resource.exists = row !== null;
-    resource.id = id;
-    resource.ownerMemberId = row?.member_id;
-    resource.protectedOwner = row !== null && row.member_id === row.owner;
+    Object.assign(resource, await credentialResource(env.db, id ?? ''));
   }
   if (declaration.resolver === 'member') {
     const id = params.memberId ?? subject.memberId;

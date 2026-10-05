@@ -369,10 +369,11 @@ export function createServer(deps: ServerDeps) {
             if (authorization.action === 'admin' && subject.role === 'member') return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
             return badRequest('the project is not on this server');
           }
-          if (authorization.resource?.exists === false && matched.route.authorization?.resource !== 'credential') return Response.json({ error: 'not_found' }, { status: 404 });
+          if (authorization.resource?.exists === false && (matched.route.authorization?.resource !== 'credential' || matched.route.authorization.resolver === 'machine')) return Response.json({ error: 'not_found' }, { status: 404 });
           if (matched.route.path.endsWith('/connect')) return Response.json({ error: 'not_found' }, { status: 404 });
           if (matched.route.authorization?.resource === 'machine-settings') return Response.json({ applied: false, reason: 'forbidden', detail: 'only the member this machine belongs to reaches its settings' }, { status: 403 });
-          if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.action === 'edit') return Response.json({ revoked: false, revokedBy: member?.id });
+          if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.resolver === 'machine') return Response.json({ error: 'not_found' }, { status: 404 });
+          if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.action === 'edit') return Response.json({ revoked: matched.route.authorization.resolver === 'machine' ? 0 : false, revokedBy: member?.id });
           if (authorization.action === 'owner') return Response.json({ error: 'not_owner' }, { status: 403 });
           if (matched.route.authority === 'admin') return forbiddenToMember();
           return Response.json({ error: 'not_found' }, { status: 404 });
@@ -659,7 +660,7 @@ export function createServer(deps: ServerDeps) {
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
       const subject = await memberSubject(env.db, auth.memberId, 'http');
       if (!await authorizeHttp(env, route.authorization, subject, { machineId, tokenId: auth.tokenId, body: body.text })) {
-        if (!subject.live && (route.path === '/worker/lease' || route.path === '/worker/end')) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
+        if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
       return await route.deployment(env, { memberId: auth.memberId, machineId, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });
@@ -709,7 +710,7 @@ export function createServer(deps: ServerDeps) {
     const context = { projectId, memberId: auth.memberId, machineId: auth.machineId,
       tokenId: auth.tokenId, expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
       runtime: auth.runtime, body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: new URL(request.url).origin };
-    if (route.retired === true) return Response.json({ persisted: false, code: 'route_retired', reason: `${route.path} is retired: ${RETIRED_RUN_ROUTES[route.path]}` });
+    if (route.retired === true) return refuse(auth, shapeOf(route), `${route.path} is retired: ${RETIRED_RUN_ROUTES[route.path]}`, 'route_retired');
     const admission = await admitRunControl(env, auth, projectId, route.path, body.text, now);
     if (!admission.held) return receipt(refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run'));
     if (!await authorizeHttp(env, route.authorization, await runSubject(env, admission.run, auth.tokenId), { projectId, run: admission.run, body: body.text })) return receipt(refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope'));

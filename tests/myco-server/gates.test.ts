@@ -1198,7 +1198,7 @@ describe('gates', () => {
     const res = await worker.fetch(new Request('https://s/api/backups/restore-upload', {
       method: 'POST', body, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
-    expect({ status: res.status, pulled, body: await res.json() }).toEqual({ status: 403, pulled: 5, body: { error: 'not_admin' } });
+    expect({ status: res.status, pulled, body: await res.json() }).toEqual({ status: 403, pulled: 5, body: { error: 'not_admin', reason: 'this action is for an admin' } });
     expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
     expect({ puts: e.bucket.puts, gets: e.bucket.gets, deletes: e.bucket.deletes, pending: e.deferred.pending }).toEqual({ puts: [], gets: [], deletes: [], pending: [] });
 

@@ -8,6 +8,10 @@ export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'm
 export type ResourceKind = typeof RESOURCE_KINDS[number];
 export type Transport = 'http' | 'mcp';
 
+/** Owner control credentials are mutable only by that owner at the SQL write. */
+export const OWNER_CONTROL_CREDENTIAL_WRITE = `NOT EXISTS (SELECT 1 FROM deployment_ownership o
+  WHERE o.id = 1 AND o.member_id = member_credentials.member_id AND o.member_id <> ?)`;
+
 export interface AuthorizationSubject {
   kind: SubjectKind;
   deploymentId: string;
@@ -48,7 +52,7 @@ export interface AuthorizationDeclaration {
 
 export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly AuthorizationDeclaration['resolver'][]>> = {
   protocol: ['protocol'], settings: ['deployment', 'project'], secret: ['deployment', 'project'],
-  directory: ['deployment'], member: ['member', 'deployment'], credential: ['credential', 'deployment'],
+  directory: ['deployment'], member: ['member', 'deployment'], credential: ['credential', 'deployment', 'machine'],
   machine: ['machine', 'deployment'], 'machine-settings': ['machine'], project: ['project', 'deployment'],
   processed: ['project', 'deployment'], plan: ['project', 'deployment'], spore: ['project', 'deployment'],
   raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment'], backup: ['deployment'],
@@ -99,7 +103,7 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (resource.kind === 'credential' || resource.kind === 'machine') {
     if (action === 'capture') return resource.claimantMemberId === subject.memberId;
-    if (resource.protectedOwner === true && subject.role !== 'owner' && resource.ownerMemberId !== subject.memberId) return false;
+    if (resource.kind === 'credential' && resource.protectedOwner === true && subject.role !== 'owner' && resource.ownerMemberId !== subject.memberId) return false;
     return admin || resource.ownerMemberId === subject.memberId;
   }
   if (action === 'capture') return resource.kind === 'machine-settings' ? resource.claimantMemberId === subject.memberId : ['processed', 'plan'].includes(resource.kind);
@@ -125,6 +129,23 @@ export async function deploymentIdentity(db: RelationalStore): Promise<string> {
   const row = await db.prepare("SELECT value FROM schema_meta WHERE key = 'deployment_id'").first<{ value: string }>();
   if (!row?.value) throw new Error('Deployment identity is missing');
   return row.value;
+}
+
+/** A machine claim and the owner's current control credential boundary. */
+export async function machineResource(db: RelationalStore, kind: 'machine' | 'machine-settings' | 'credential', machineId: string): Promise<AuthorizationResource> {
+  const row = await db.prepare('SELECT mc.member_id, o.member_id AS owner FROM machine_claims mc LEFT JOIN deployment_ownership o ON o.id = 1 WHERE mc.machine_id = ?')
+    .bind(machineId).first<{ member_id: string; owner: string | null }>();
+  return { kind, deploymentId: await deploymentIdentity(db), exists: row !== null, id: machineId,
+    ownerMemberId: row?.member_id, claimantMemberId: row?.member_id,
+    protectedOwner: row !== null && row.member_id === row.owner };
+}
+
+/** A credential's recorded member and current owner protection. */
+export async function credentialResource(db: RelationalStore, tokenId: string): Promise<AuthorizationResource> {
+  const row = await db.prepare('SELECT c.member_id, o.member_id AS owner FROM member_credentials c LEFT JOIN deployment_ownership o ON o.id = 1 WHERE c.id = ?')
+    .bind(tokenId).first<{ member_id: string; owner: string | null }>();
+  return { kind: 'credential', deploymentId: await deploymentIdentity(db), exists: row !== null, id: tokenId,
+    ownerMemberId: row?.member_id, protectedOwner: row !== null && row.member_id === row.owner };
 }
 
 export async function memberSubject(db: RelationalStore, memberId: string, transport: Transport): Promise<AuthorizationSubject> {

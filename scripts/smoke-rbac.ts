@@ -79,6 +79,7 @@ assert.equal((await (await memberPost('/members/raw-claims', { revision: '0' }))
 fixture.sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1', revision=1 WHERE id=1");
 fixture.sqlite.run("UPDATE members SET role='admin', github_id='770003' WHERE id='mem_machine_3'");
 const ownerCredential = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+fixture.sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES ('machine_1','mem_machine_1',?)", [now]);
 for (const [sub, visible] of [['583231', true], ['770003', false]] as const) {
   const headers = { cookie: await ownerCookie(now, sub) };
   const page = await (await server.handleRequest(new Request('https://smoke/api/credentials', { headers }), env)).json() as { rows: Array<{ id: string }> };
@@ -86,6 +87,10 @@ for (const [sub, visible] of [['583231', true], ['770003', false]] as const) {
   assert.equal(page.rows.some(row => row.id === ownerCredential.tokenId), visible);
   assert.equal((await server.handleRequest(new Request(`https://smoke/api/credentials/${ownerCredential.tokenId}/activity`, { headers }), env)).status, visible ? 200 : 404);
 }
+assert.equal((await sessionPost('/api/machines/machine_1/stop', {}, '770003')).status, 404);
+assert.equal((fixture.sqlite.query('SELECT revoked_at FROM member_credentials WHERE id = ?').get(ownerCredential.tokenId) as { revoked_at: number | null }).revoked_at, null);
+assert.equal((await sessionPost('/api/machines/machine_1/stop', {}, '583231')).status, 200);
+assert.equal((fixture.sqlite.query('SELECT revoked_by FROM member_credentials WHERE id = ?').get(ownerCredential.tokenId) as { revoked_by: string }).revoked_by, 'mem_machine_1');
 const coverage = { routes: ROUTES.length, retired: RETIRED_ROUTES.length, memberOps: Object.values(TOOL_REGISTRY).reduce((n, t) => n + Object.keys(t.ops).length, 0), runOps: Object.values(RUN_TOOL_REGISTRY).reduce((n, t) => n + Object.keys(t.ops).length, 0) };
 assert.ok(ROUTES.every((r) => r.authorization !== undefined));
 assert.ok(RETIRED_ROUTES.every((r) => r.authorization.action === 'never'));

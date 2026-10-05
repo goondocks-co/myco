@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken, refreshMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, refreshMemberToken, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
@@ -160,6 +160,20 @@ describe('the machines a member reads', () => {
     expect((await machines(env, MEMBER_SUB)).find((m) => m.machineId === 'm_member')).toMatchObject({ live: false, standing: 'stopped' });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE machine_id = 'm_member' AND revoked_at IS NULL`).get()).toEqual({ n: 0 });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE machine_id = 'm_member' AND revoked_by = 'mem_machine_2' AND revoked_at >= ?`).get(now)).toEqual({ n: 3 });
+  });
+
+  it('protects owner control credentials in both the machine stop route and its guarded writer', async () => {
+    const { env, sqlite, db, now } = await seeded();
+    try {
+      sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1', revision=1 WHERE id=1");
+      sqlite.run("UPDATE members SET role='admin', github_id='770003' WHERE id='mem_machine_3'");
+      const actor = { id: 'mem_machine_3', role: 'admin' as const, label: null };
+      expect((await request(env, '770003', 'POST', '/api/machines/m_admin/stop')).status).toBe(404);
+      expect(await revokeMachineCredentialsAsMember(db, actor, 'm_admin', now)).toEqual({ revoked: 0, revokedBy: actor.id });
+      expect(sqlite.query("SELECT COUNT(*) AS n FROM member_credentials WHERE machine_id='m_admin' AND revoked_at IS NULL").get()).toEqual({ n: 1 });
+      expect((await request(env, '583231', 'POST', '/api/machines/m_admin/stop')).status).toBe(200);
+      expect(sqlite.query("SELECT COUNT(*) AS n FROM member_credentials WHERE machine_id='m_admin' AND revoked_at IS NULL").get()).toEqual({ n: 0 });
+    } finally { sqlite.close(); }
   });
 
   it('counts carried bytes once per lineage and takes standing from the newest issued credential', async () => {
