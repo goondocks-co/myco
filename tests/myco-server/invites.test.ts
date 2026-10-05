@@ -186,15 +186,19 @@ describe('who administers membership', () => {
     expect(live(theirs.tokenId).revoked_at).not.toBe(null);
   });
 
-  it('mints at member unless an admin asks for an admin, and refuses any other role', async () => {
+  it('mints at member, reserves admin grants to the owner, and refuses any other role', async () => {
     const r = rig();
     expect(await json(await r.call(await asOwnerPost('/api/enrollment', {})))).toMatchObject({ role: 'member', projectId: null });
+    expect((await r.call(await asOwnerPost('/api/enrollment', { role: 'admin' }))).status).toBe(403);
+    expect(r.authorities()).toHaveLength(1);
+    r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
     expect(await json(await r.call(await asOwnerPost('/api/enrollment', { role: 'admin' })))).toMatchObject({ role: 'admin' });
     expect((await r.call(await asOwnerPost('/api/enrollment', { role: 'owner' }))).status).toBe(400);
   });
 
   it('mints against a known Project only, and lists what each live invitation grants and binds', async () => {
     const r = rig();
+    r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
     expect((await r.call(await asOwnerPost('/api/enrollment', { projectId: 'no_such_project' }))).status).toBe(404);
     expect(await json(await r.call(await asOwnerPost('/api/enrollment', { projectId: 'proj_1', role: 'admin' })))).toMatchObject({ role: 'admin', projectId: 'proj_1' });
 

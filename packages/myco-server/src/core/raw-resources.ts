@@ -32,7 +32,7 @@ export class RawResourceReader {
     const row = await this.env.db.prepare(`SELECT ${rawMemberResourceSql('?', resource.kind, '?', '?')} AS admitted`)
       .bind(this.scope.projectId, resource.id, this.subject.memberId).first<{ admitted: number }>();
     const subject = await memberSubject(this.env.db, this.subject.memberId, 'http');
-    return authorize(subject, 'read', { kind: 'raw', exists: true, deploymentId: await deploymentIdentity(this.env.db), projectId: this.scope.projectId, id: resource.id, uploader: row?.admitted === 1 });
+    return authorize(subject, action === 'enumerate' ? 'enumerate' : 'read', { kind: 'raw', exists: true, deploymentId: await deploymentIdentity(this.env.db), projectId: this.scope.projectId, id: resource.id, uploader: row?.admitted === 1 });
   }
 
   async blob(key: string): Promise<{ row: BlobRow; body: ReadableStream<Uint8Array> } | null> {

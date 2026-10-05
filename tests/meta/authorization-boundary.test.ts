@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
-import { ACTIONS, RESOURCE_ACTIONS, RESOURCE_KINDS, SUBJECT_KINDS, type AuthorizationDeclaration } from '@myco-server-worker/auth/authorization.js';
+import { ACTIONS, RESOURCE_ACTIONS, RESOURCE_KINDS, RESOURCE_RESOLVERS, SUBJECT_KINDS, type AuthorizationDeclaration } from '@myco-server-worker/auth/authorization.js';
 import { ROUTES, RETIRED_ROUTES } from '@myco-server-worker/routes.js';
 import { NO_OP, TOOL_REGISTRY, type RegistryEntry } from '@myco-server-worker/mcp/registry.js';
 import { RUN_TOOL_REGISTRY } from '@myco-server-worker/mcp/run-surface.js';
@@ -88,6 +88,7 @@ function validDeclaration(where: string, declaration: AuthorizationDeclaration |
   expect(new Set(declaration.subjects).size).toBe(declaration.subjects.length);
   for (const subject of declaration.subjects) expect(SUBJECT_KINDS.includes(subject)).toBe(true);
   expect(['deployment', 'project', 'machine', 'credential', 'member', 'run', 'raw', 'protocol']).toContain(declaration.resolver);
+  expect(RESOURCE_RESOLVERS[declaration.resource]).toContain(declaration.resolver);
   const actions = typeof declaration.action === 'string' ? [declaration.action] : declaration.action.actions;
   expect(actions.length).toBeGreaterThan(0);
   expect(new Set(actions).size).toBe(actions.length);

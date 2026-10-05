@@ -12,6 +12,8 @@ import { HARNESS_MEMBER_ID, MEMBER_ID, MINUTE_MS } from '../constants.js';
 import { asMemberRole, forbiddenToMember, isAdmin } from '../auth/roles.js';
 import { isProjectId } from '../pipeline.js';
 import { paging } from './sessions.js';
+import { memberSubject } from '../auth/authorization.js';
+import { credentialListScope } from '../auth/http-authorization.js';
 
 /** The longest invitation the dashboard mints, in minutes: one day. */
 export const MAX_INVITATION_MINUTES = 1440;
@@ -104,15 +106,15 @@ export async function handleRevokeInvitation(env: ServerEnv, ctx: OwnerContext):
 }
 
 /**
- * The Deployment's credentials, paginated, optionally narrowed to one purpose: every one to an admin, and a
- * member's own to a member. `token_hash` is never selected, so there is nothing here to redact.
+ * The Deployment's credentials, paginated under the individual credential read policy.
+ * `token_hash` is never selected.
  */
 export async function handleCredentials(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   const purpose = ctx.url.searchParams.get('purpose');
   if (purpose !== null && purpose !== 'run' && purpose !== 'member') return badRequest('purpose must be run or member');
-  const own = isAdmin(ctx.member.role) ? {} : { memberId: ctx.member.id };
+  const own = await credentialListScope(env, await memberSubject(env.db, ctx.member.id, 'http'));
   return ok(await listCredentials(env.db, ctx.now, { ...page, ...(purpose === null ? {} : { purpose }), ...own }));
 }
 

@@ -6,7 +6,8 @@ import {
 } from '@myco-server-worker/auth/authorization.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
-import { authorizeHttp, resolveHttpResource } from '@myco-server-worker/auth/http-authorization.js';
+import { authorizeHttp, credentialListScope, resolveHttpResource } from '@myco-server-worker/auth/http-authorization.js';
+import { listCredentials } from '@myco-server-worker/read/credentials.js';
 import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -27,7 +28,7 @@ const SUBJECTS: Readonly<Record<string, AuthorizationSubject>> = {
 
 const resource = (kind: ResourceKind): AuthorizationResource => ({
   kind, deploymentId: DEPLOYMENT, exists: true, projectId: 'project-a', ownerMemberId: MEMBER,
-  claimantMemberId: MEMBER, requestedBy: MEMBER, uploader: true,
+  claimantMemberId: MEMBER, requestedBy: MEMBER, uploader: true, bootstrapAllowed: true,
   runId: 'run-a', tokenId: 'credential-a', attempt: 2,
 });
 
@@ -37,11 +38,11 @@ const MEMBER_ACTIONS: Readonly<Partial<Record<ResourceKind, readonly Action[]>>>
   credential: ['read', 'edit'], machine: ['read', 'edit', 'capture'],
   'machine-settings': ['claimant.read', 'claimant.edit', 'capture'],
   project: ['read'], processed: ['read', 'capture'], plan: ['read', 'edit', 'status', 'capture'],
-  spore: ['read', 'edit'], raw: ['read', 'enumerate'], run: ['read'],
+  spore: ['read', 'edit'], raw: ['read', 'enumerate'], 'raw-index': ['enumerate'], run: ['read'],
 };
 const PRIVILEGED_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
-  settings: ['admin'], secret: ['admin'], member: ['admin'], credential: ['admin'],
-  project: ['admin'], processed: ['admin'], grant: ['admin'], enrollment: ['admin'], backup: ['admin'],
+  settings: ['admin'], secret: ['admin'], credential: ['admin'],
+  project: ['admin'], processed: ['admin'], grant: ['admin'], enrollment: ['admin'], backup: ['admin'], run: ['admin'], member: ['admin', 'bootstrap'],
 };
 const OWNER_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
   member: ['owner'], raw: ['owner'], enrollment: ['owner'],
@@ -64,6 +65,7 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
   return [
     ...base,
     ...(kind === 'project' ? ['create' as const] : []),
+    ...(kind === 'raw' ? ['append' as const] : []),
     ...(kind === 'run' ? ['dispatch' as const, 'cancel' as const] : []),
     ...(actor === 'owner' || actor === 'admin' ? PRIVILEGED_HTTP[kind] ?? [] : []),
     ...(actor === 'owner' ? OWNER_HTTP[kind] ?? [] : []),
@@ -72,8 +74,8 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
 
 describe('Deployment authorization policy', () => {
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {
-    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'run', 'grant', 'enrollment', 'backup'].sort());
-    expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'edit', 'status', 'admin', 'owner', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'].sort());
+    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup'].sort());
+    expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'].sort());
     expect(new Set(Object.values(SUBJECTS).map((s) => s.kind))).toEqual(new Set(SUBJECT_KINDS));
     for (const [actor, initial] of Object.entries(SUBJECTS)) {
       for (const transport of ['http', 'mcp'] as const) {
@@ -116,6 +118,7 @@ describe('Deployment authorization policy', () => {
       for (const transport of ['http', 'mcp'] as const) {
         const subject = { ...SUBJECTS[actor], transport };
         expect(authorize(subject, 'read', { ...resource('raw'), uploader: false })).toBe(false);
+        expect(authorize(subject, 'enumerate', { ...resource('raw'), uploader: false })).toBe(false);
         expect(authorize(subject, 'read', { ...resource('raw'), uploader: undefined })).toBe(false);
         expect(authorize(subject, 'read', resource('raw'))).toBe(['owner', 'admin', 'member'].includes(actor));
       }
@@ -183,8 +186,13 @@ describe('Deployment authorization policy', () => {
       expect(await resolveHttpResource(e.serverEnv, credentialDeclaration, admin, credentialInput)).toMatchObject({ exists: true, protectedOwner: true, ownerMemberId: 'mem_machine_1' });
       expect(await authorizeHttp(e.serverEnv, memberDeclaration, admin, memberInput)).toBe(false);
       expect(await authorizeHttp(e.serverEnv, credentialDeclaration, admin, credentialInput)).toBe(false);
+      expect(await authorizeHttp(e.serverEnv, { ...credentialDeclaration, action: 'read' }, admin, credentialInput)).toBe(false);
       expect(await authorizeHttp(e.serverEnv, memberDeclaration, owner, memberInput)).toBe(true);
       expect(await authorizeHttp(e.serverEnv, credentialDeclaration, owner, credentialInput)).toBe(true);
+      const sibling = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 100);
+      expect((await listCredentials(e.db, 100, await credentialListScope(e.serverEnv, admin))).rows.map(row => row.id)).toEqual([sibling.tokenId]);
+      expect((await listCredentials(e.db, 100, await credentialListScope(e.serverEnv, owner))).rows.map(row => row.id).sort()).toEqual([credential.tokenId, sibling.tokenId].sort());
+      await expect(credentialListScope(e.serverEnv, { ...admin, live: false })).rejects.toThrow('Credential collection access refused');
       expect(await authorizeHttp(e.serverEnv, memberDeclaration, owner, { params: { memberId: 'missing' } })).toBe(false);
       expect(await authorizeHttp(e.serverEnv, credentialDeclaration, owner, { params: { id: 'missing' } })).toBe(false);
     } finally { e.sqlite.close(); }

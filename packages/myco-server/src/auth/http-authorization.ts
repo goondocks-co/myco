@@ -2,7 +2,8 @@ import type { ServerEnv } from '../core/adapters.js';
 import { RawResourceReader } from '../core/raw-resources.js';
 import { projectExists } from '../read/sessions.js';
 import { parseJsonObject } from '../api/scope.js';
-import { authorizeDeclaration, declaredAction, deploymentIdentity, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
+import { linkedAdmin } from './identity-link.js';
+import { authorize, authorizeDeclaration, declaredAction, deploymentIdentity, type AuthorizationDeclaration, type AuthorizationResource, type AuthorizationSubject } from './authorization.js';
 
 export function httpPolicy(resource: AuthorizationDeclaration['resource'], action: AuthorizationDeclaration['action'], resolver: AuthorizationDeclaration['resolver'], subjects: AuthorizationDeclaration['subjects'] = ['member']): AuthorizationDeclaration {
   return { resource, action, resolver, subjects, transport: 'http' };
@@ -10,8 +11,22 @@ export function httpPolicy(resource: AuthorizationDeclaration['resource'], actio
 
 export const invitationAction: AuthorizationDeclaration['action'] = {
   actions: ['admin', 'owner'],
-  resolve: input => input.role === 'admin' ? 'owner' : 'admin',
+  resolve: input => input.role === 'admin' ? 'owner' : input.role === undefined || input.role === 'member' ? 'admin' : null,
 };
+
+export const runDispatchAction: AuthorizationDeclaration['action'] = {
+  actions: ['dispatch', 'admin'], resolve: input => input.fresh === true ? 'admin' : 'dispatch',
+};
+
+/** Credential collections apply the individual read policy before pagination. */
+export async function credentialListScope(env: ServerEnv, subject: AuthorizationSubject): Promise<{ memberId?: string; excludedMemberId?: string }> {
+  const resource: AuthorizationResource = { kind: 'credential', deploymentId: await deploymentIdentity(env.db), exists: true };
+  if (!authorize(subject, 'read', { ...resource, ownerMemberId: subject.memberId })) throw new Error('Credential collection access refused');
+  if (!authorize(subject, 'read', resource)) return { memberId: subject.memberId };
+  const owner = await env.db.prepare('SELECT member_id FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null }>();
+  return owner?.member_id && !authorize(subject, 'read', { ...resource, protectedOwner: true, ownerMemberId: owner.member_id })
+    ? { excludedMemberId: owner.member_id } : {};
+}
 
 export interface HttpResourceInput {
   params?: Record<string, string>;
@@ -27,14 +42,19 @@ export interface HttpResourceInput {
 export async function resolveHttpResource(env: ServerEnv, declaration: AuthorizationDeclaration, subject: AuthorizationSubject, input: HttpResourceInput): Promise<AuthorizationResource> {
   const resource: AuthorizationResource = { kind: declaration.resource, deploymentId: await deploymentIdentity(env.db), exists: true };
   const params = input.params ?? {};
-  const projectId = params.projectId ?? input.projectId;
-  if (projectId !== undefined) resource.projectId = projectId;
   const parsed = parseJsonObject(input.body ?? '') ?? {};
   const action = declaredAction(declaration, parsed);
+  const projectId = params.projectId ?? input.projectId ?? (declaration.resource === 'run' && typeof parsed.projectId === 'string' ? parsed.projectId : undefined);
+  if (projectId !== undefined) resource.projectId = projectId;
   if (declaration.resolver === 'project' && projectId !== undefined) {
     resource.exists = await projectExists(env.db, projectId);
     // Capture admission precedes the additive Project registration operation.
-    if (action === 'capture') resource.exists = true;
+    if (action === 'capture' || action === 'append') resource.exists = true;
+  }
+  if (declaration.resolver === 'project' && projectId === undefined) resource.exists = false;
+  if (action === 'append' && declaration.resource === 'raw') {
+    const uploader = await env.db.prepare('SELECT member_id FROM member_credentials WHERE id = ?').bind(input.tokenId ?? '').first<{ member_id: string }>();
+    resource.ownerMemberId = uploader?.member_id;
   }
   if (declaration.resolver === 'machine') {
     const machineId = params.machineId ?? input.machineId;
@@ -53,11 +73,16 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
     resource.protectedOwner = row !== null && row.member_id === row.owner;
   }
   if (declaration.resolver === 'member') {
-    const id = params.memberId;
+    const id = params.memberId ?? subject.memberId;
     const row = await env.db.prepare('SELECT m.id, o.member_id AS owner FROM members m LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?').bind(id ?? '').first<{ id: string; owner: string | null }>();
     resource.exists = row !== null;
     resource.id = row?.id;
     resource.protectedOwner = row !== null && row.id === row.owner;
+    resource.ownerMemberId = row?.id;
+    if (action === 'bootstrap') {
+      const linked = await env.db.prepare(`SELECT 1 FROM members la WHERE ${linkedAdmin('la')} LIMIT 1`).first();
+      resource.bootstrapAllowed = linked === null;
+    }
   }
   if (declaration.resolver === 'deployment' && (resource.kind === 'machine' || resource.kind === 'credential')) resource.ownerMemberId = subject.memberId;
   if (declaration.resolver === 'run') {
@@ -86,7 +111,12 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
 }
 
 export async function authorizeHttp(env: ServerEnv, declaration: AuthorizationDeclaration | undefined, subject: AuthorizationSubject, input: HttpResourceInput): Promise<boolean> {
-  if (declaration === undefined) return false;
+  return (await httpAuthorizationDecision(env, declaration, subject, input)).allowed;
+}
+
+export async function httpAuthorizationDecision(env: ServerEnv, declaration: AuthorizationDeclaration | undefined, subject: AuthorizationSubject, input: HttpResourceInput): Promise<{ allowed: boolean; resource?: AuthorizationResource; action?: ReturnType<typeof declaredAction> }> {
+  if (declaration === undefined) return { allowed: false };
   const resource = await resolveHttpResource(env, declaration, subject, input);
-  return authorizeDeclaration(subject, declaration, parseJsonObject(input.body ?? '') ?? {}, resource);
+  const body = parseJsonObject(input.body ?? '') ?? {};
+  return { allowed: authorizeDeclaration(subject, declaration, body, resource), resource, action: declaredAction(declaration, body) };
 }

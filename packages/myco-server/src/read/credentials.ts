@@ -40,7 +40,7 @@ export interface ActivityRow {
 export async function listCredentials(
   db: RelationalStore,
   nowMs: number,
-  opts: { limit?: number; cursor?: string; purpose?: CredentialPurpose; memberId?: string } = {},
+  opts: { limit?: number; cursor?: string; purpose?: CredentialPurpose; memberId?: string; excludedMemberId?: string } = {},
 ): Promise<Page<CredentialRow>> {
   const k = keyset(opts, { order: 'lineage_started_at', id: 'id', direction: 'DESC' });
   if (k === null) return { rows: [], cursor: null };
@@ -55,6 +55,10 @@ export async function listCredentials(
   if (opts.memberId !== undefined) {
     conditions.push('member_id = ?');
     params.push(opts.memberId);
+  }
+  if (opts.excludedMemberId !== undefined) {
+    conditions.push('member_id <> ?');
+    params.push(opts.excludedMemberId);
   }
   if (k.where !== '') conditions.push(k.where);
   const { results } = await db
