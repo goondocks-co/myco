@@ -15,6 +15,8 @@ import { memberName, peopleOf, useMemberNames } from '../members';
 import type { CredentialRow, InvitationRow, MemberRow } from '../wire';
 import { InviteDialog, type InviteTarget } from './InviteDialog';
 import { MachineList } from './MachineList';
+import { RawClaims } from './RawClaims';
+import { Ownership } from './Ownership';
 import { invitationExpiry, machinesCount, shortDate } from './words';
 
 /** Where each part of People & machines sits on its page. */
@@ -113,6 +115,8 @@ export function PeoplePage() {
       </AdminSection>
 
       <InviteDialog target={invite} onClose={() => setInvite(null)} people={choices} />
+      {me.data?.owner === true && <RawClaims />}
+      {me.data?.owner === false && <Ownership candidates={live.filter((person) => person.role === 'admin' && person.linked).map((person) => ({ id: person.id, name: nameOfPerson(person) }))} />}
     </AdminPage>
   );
 }

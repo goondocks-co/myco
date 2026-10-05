@@ -5,7 +5,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost } from './helpers/owner.js';
-import { MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken, MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
 
 /** The principal the chokepoint takes. Unread today; present so a grant check is one edit. */
 describe('api scope resolution', () => {
@@ -249,7 +249,8 @@ describe('blob bytes', () => {
   it('serves stored bytes in scope and 404s a blob recorded under another project', async () => {
     const e = sqliteEnv();
     const key = 'a'.repeat(64);
-    e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_2', key, size: 5, mediaType: 'text/plain; charset=utf-8', tokenId: 't1' }), { size: 5, contentType: 'text/plain; charset=utf-8' });
+    const token = await issueMemberToken(e.db, { memberId: PRINCIPAL.id, machineId: 'machine_1' }, Date.now());
+    e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_2', key, size: 5, mediaType: 'text/plain; charset=utf-8', tokenId: token.tokenId }), { size: 5, contentType: 'text/plain; charset=utf-8' });
 
     const wrong = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(wrong.status).toBe(404);
@@ -316,14 +317,15 @@ describe('project creation', () => {
 });
 
 describe('blob bytes are never executable on the owner origin', () => {
-  const store = (e: ReturnType<typeof sqliteEnv>, key: string, mediaType: string) => {
-    e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_1', key, size: 5, mediaType, tokenId: 't1' }), { size: 5, contentType: mediaType });
+  const store = async (e: ReturnType<typeof sqliteEnv>, key: string, mediaType: string) => {
+    const token = await issueMemberToken(e.db, { memberId: PRINCIPAL.id, machineId: 'machine_1' }, Date.now());
+    e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_1', key, size: 5, mediaType, tokenId: token.tokenId }), { size: 5, contentType: mediaType });
   };
 
   it('refuses to reflect a member-chosen html type', async () => {
     const e = sqliteEnv();
     const key = 'c'.repeat(64);
-    store(e, key, 'text/html');
+    await store(e, key, 'text/html');
     const res = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/octet-stream');
@@ -333,7 +335,7 @@ describe('blob bytes are never executable on the owner origin', () => {
   it('carries a no-script policy whatever the type', async () => {
     const e = sqliteEnv();
     const key = 'd'.repeat(64);
-    store(e, key, 'image/png');
+    await store(e, key, 'image/png');
     const res = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(res.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
@@ -343,9 +345,11 @@ describe('blob bytes are never executable on the owner origin', () => {
   it('keeps its own cache-control through the security stamp', async () => {
     const e = sqliteEnv();
     const key = 'e'.repeat(64);
-    store(e, key, 'image/png');
+    await store(e, key, 'image/png');
     const res = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
-    expect(res.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(res.headers.get('vary')).toBe('Cookie, Authorization');
   });
 
   it('leaves every other response no-store', async () => {

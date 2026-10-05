@@ -14,6 +14,7 @@ import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
 import { EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE } from '@myco-server-worker/db/schema-v20.js';
+import { processedResourceProofSql } from '@myco-server-worker/core/processed-resources.js';
 import { RELEASE_REVISION_COLUMNS } from '@myco-server-worker/db/schema-v49.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -172,7 +173,10 @@ describe('embedding revisions follow the values a vector is built from', () => {
     const f = fixture();
     const current = f.sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'embedding_sources'`).get() as { sql: string };
     // The view a database serves is the one built from the presented session sources.
-    expect(current.sql).toBe(embeddingSourcesView(SOURCES_WITH_PRESENTED_SESSION_DATE).replace('CREATE VIEW IF NOT EXISTS', 'CREATE VIEW'));
+    const admittedSources = SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
+      ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')})` }
+      : source);
+    expect(current.sql).toBe(embeddingSourcesView(admittedSources).replace('CREATE VIEW IF NOT EXISTS', 'CREATE VIEW'));
     for (const sources of [EMBEDDING_SOURCES, SOURCES_WITH_PRESENTED_SESSION_DATE]) {
       for (const s of sources) {
         const exceptions = SOURCE_EXCEPTIONS[s.table] ?? {};

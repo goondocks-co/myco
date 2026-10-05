@@ -8,7 +8,7 @@ import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInS
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
 import { listTurns, parseOrigins, promptInSession, turnDetail } from '../read/turns.js';
-import { listSegments, listTranscripts } from '../read/transcript.js';
+import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
 import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
@@ -218,14 +218,10 @@ export async function handleTranscript(env: ServerEnv, ctx: OwnerContext): Promi
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const transcripts = await listTranscripts(env.db, scope, sessionId);
-  if (transcripts.length === 0) return notFound();
-  const withSegments = [];
-  for (const transcript of transcripts) {
-    withSegments.push({ ...transcript, segments: await listSegments(env.db, scope, transcript.transcriptId) });
-  }
-  const primary = withSegments.find((t) => t.role !== 'subagent') ?? withSegments[0];
-  return ok({ transcript: primary, transcripts: withSegments, segments: primary.segments });
+  const withSegments = await new RawResourceReader(env, scope, { kind: 'member', memberId: ctx.member.id }).transcripts(sessionId);
+  if (withSegments.length === 0) return Response.json({ error: 'not_found' }, { status: 404, headers: RAW_CACHE_HEADERS });
+  const primary = withSegments.find((t) => t.role !== 'subagent') ?? withSegments[0]!;
+  return Response.json({ transcript: primary, transcripts: withSegments, segments: primary.segments }, { headers: RAW_CACHE_HEADERS });
 }
 
 /**

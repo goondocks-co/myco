@@ -1,3 +1,4 @@
+import { rawBackfillPending } from './raw-backfill.js';
 /**
  * One wake of the Deployment's intelligence.
  *
@@ -133,6 +134,7 @@ async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): P
 export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
+  if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
   const backlog = await pendingTranscripts(env.db, now);
   if (backlog.transcripts - backlog.imported.transcripts > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });

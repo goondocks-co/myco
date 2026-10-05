@@ -1,7 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { ActionLink, Disclosure, ErrorState, ExternalLink, FactRow, FactsPanel, LoadingState, ShowMore } from '../../design';
 import {
-  blobUrl, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, useSessionChildren, useTranscript, useTurns,
+  blobUrl, processedBodyUrl, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, useSessionChildren, useTranscript, useTurns,
   type AttachmentRow, type ContextInjectionRow, type TranscriptRecord, type TurnRow,
 } from '../../hooks/use-sessions';
 import { formatBytes } from '../../lib/format';
@@ -173,9 +173,9 @@ function Attachments({ projectId, sessionId, now }: { projectId: string; session
             {group.rows.map((a) => (
               <li key={a.attachmentId} className="flex flex-col gap-s2 rounded-card border border-line bg-surface-1 p-s3">
                 {RENDERABLE_IMAGE_TYPES.includes(a.mediaType) ? (
-                  <img src={blobUrl(projectId, a.blobKey)} alt={a.description ?? 'An attached image'} className="max-h-[256px] w-auto rounded-control" />
+                  <img src={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} alt={a.description ?? 'An attached image'} className="max-h-[256px] w-auto rounded-control" />
                 ) : (
-                  <ExternalLink href={blobUrl(projectId, a.blobKey)} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
+                  <ExternalLink href={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
                 )}
                 <span className="t-meta text-muted">{a.mediaType} · {formatBytes(a.byteSize)} · {dateTime(a.createdAt, now)}</span>
               </li>

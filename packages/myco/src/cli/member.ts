@@ -101,6 +101,15 @@ Ops:
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
                      link to open in a browser within ten minutes. --open hands it to the browser as well.
+  raw-claims [--credential registry|env] [--server <url>] [--apply --revision <reviewed-revision>]
+                     Preview raw data with no recorded uploader, by project, kind, count and date.
+                     Only the recorded owner may claim it. Review the preview, then explicitly apply
+                     its revision to make that data private to you. No captured content is printed.
+                     Uses the recorded default Deployment or --server. Env needs only
+                     MYCO_SERVER_URL and MYCO_MEMBER_TOKEN; neither command needs a Project.
+  ownership [--credential registry|env] [--server <url>] [--owner <member-id> --revision <reviewed-revision>]
+                     Preview this Deployment's recorded owner. When none is recorded, an admin can
+                     explicitly record a live admin with a connected GitHub account as its owner.
   auto-join (--root <dir> | --sweep)
                      Join a repository with no connection to this machine's default Deployment, or
                      record why it cannot; --sweep does it for every repository met before. Your
@@ -1376,6 +1385,8 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
     case 'export': await runExport(rest, deps); return;
     case 'refresh': await runRefresh(rest, deps); return;
     case 'link-github': await runLinkGithub(rest, deps); return;
+    case 'raw-claims': if (!await (await import('./member-raw-claims.js')).runRawClaims(rest, deps)) process.exitCode = 2; return;
+    case 'ownership': if (!await (await import('./member-ownership.js')).runOwnership(rest, deps)) process.exitCode = 2; return;
     case 'provision': {
       let refresh: { result: KeepCurrentResult | null; home: string } | undefined;
       runProvision(rest, deps, (result, home) => { refresh = { result, home }; });

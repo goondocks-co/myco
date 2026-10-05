@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./raw-claims": {
+      "import": "./dist/raw-claims.js",
+      "types": "./dist/raw-claims.d.ts"
+    },
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"

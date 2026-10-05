@@ -1,4 +1,5 @@
 import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { processedResourceProofSql } from '../core/processed-resources.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { PLAN_STATUSES } from '../ingest/kinds.js';
 import { clampLimit, containsPattern, encodeCursor, inListChunks, keyset, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
@@ -12,7 +13,7 @@ export interface ProjectPlanRow {
   status: string;
   content: string | null;
   blobKey: string | null;
-  /** The stored object the plan's registered blob names, or null when it has none. */
+  /** The registered object admitted by this plan's processed-field provenance, or null. */
   objectKey: string | null;
   originPath: string | null;
   /** `checked/total` over the plan's task list, or `N/A` when it has none. */
@@ -36,7 +37,10 @@ export function progressOf(content: string | null): string {
   return total === 0 ? 'N/A' : `${checked}/${total}`;
 }
 
-const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key, ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} AS object_key, origin_path, updated_by, created_at, updated_at`;
+const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key,
+  CASE WHEN ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')}
+    THEN ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} END AS object_key,
+  origin_path, updated_by, created_at, updated_at`;
 
 function toPlan(row: Record<string, unknown>, tags: string[]): ProjectPlanRow {
   return {

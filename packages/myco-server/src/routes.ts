@@ -1,3 +1,6 @@
+import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, handleMemberRawClaim, handleOwnershipPreview, handleOwnership, handleMemberOwnershipPreview, handleMemberOwnership } from './api/raw-claims.js';
+import type { RawAction, RawResource } from './core/raw-resources.js';
+import { handleProcessedBody } from './api/processed.js';
 import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
 import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
 import { handleProjectMap, handleRunMap } from './api/canopy.js';
@@ -104,7 +107,7 @@ export type Route =
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
-  | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'admin' | 'member'; maxBodyBytes?: number; handler: OwnerHandler }
+  | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'admin' | 'member'; raw?: { resource: RawResource['kind']; action: RawAction }; maxBodyBytes?: number; handler: OwnerHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'account'; handler: SessionHandler };
 
 /**
@@ -190,6 +193,14 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
   // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.
   { method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberStatus },
+  { method: 'GET', path: '/members/raw-claims', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberRawClaimPreview },
+  { method: 'POST', path: '/members/raw-claims', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberRawClaim },
+  { method: 'GET', path: '/members/ownership', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberOwnershipPreview },
+  { method: 'POST', path: '/members/ownership', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', mintsAuthority: true, credential: handleMemberOwnership },
+  { method: 'GET', path: '/api/raw-claims', auth: 'session', authority: 'admin', handler: handleRawClaimPreview },
+  { method: 'POST', path: '/api/raw-claims', auth: 'session', authority: 'admin', handler: handleRawClaim },
+  { method: 'GET', path: '/api/ownership', auth: 'session', authority: 'admin', handler: handleOwnershipPreview },
+  { method: 'POST', path: '/api/ownership', auth: 'session', authority: 'admin', handler: handleOwnership },
   { method: 'GET', path: '/auth/me', auth: 'session', authority: 'account', handler: handleMe },
   { method: 'POST', path: '/auth/link', auth: 'session', authority: 'account', handler: handleLink },
   { method: 'GET', path: '/api/status', auth: 'session', authority: 'member', handler: handleStatus },
@@ -203,7 +214,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/sessions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions$/, auth: 'session', authority: 'member', handler: handleProjectSessions },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleSession },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/{child}', pattern: new RegExp(String.raw`^/api/projects/(?<projectId>[A-Za-z0-9._-]{1,64})/sessions/(?<sessionId>[^/]{1,384})/(?<child>${CHILD_SEGMENTS.join('|')})$`), auth: 'session', authority: 'member', handler: handleSessionChildren },
-  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'session', authority: 'member', handler: handleTranscript },
+  { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'session', authority: 'member', raw: { resource: 'transcript', action: 'enumerate' }, handler: handleTranscript },
   { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/status$/, auth: 'session', authority: 'admin', handler: handleSetPlanStatus },
   { method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/title', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/title$/, auth: 'session', authority: 'admin', handler: handleTitleSession },
   // #1147 — transcript-first ingest
@@ -213,7 +224,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns$/, auth: 'session', authority: 'member', handler: handleSessionTurns },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'session', authority: 'member', handler: handleSessionTurn },
   { method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/turns/{promptId}/tool-calls', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/turns\/(?<promptId>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/tool-calls$/, auth: 'session', authority: 'member', handler: handleSessionTurnToolCalls },
-  { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'session', authority: 'member', handler: handleBlobRead },
+  { method: 'GET', path: '/api/projects/{projectId}/processed/{kind}/{id}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/processed\/(?<kind>prompt|response|plan|tool-input|tool-output|attachment)\/(?<id>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleProcessedBody },
+  { method: 'GET', path: '/api/projects/{projectId}/blobs/{key}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'session', authority: 'member', raw: { resource: 'blob', action: 'read' }, handler: handleBlobRead },
   { method: 'GET', path: '/api/members', auth: 'session', authority: 'member', handler: handleMembers },
   { method: 'POST', path: '/api/members/{memberId}/revoke', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/revoke$`), auth: 'session', authority: 'admin', handler: handleRevokeMember },
   { method: 'POST', path: '/api/members/{memberId}/link-github', pattern: new RegExp(`^\\/api\\/members\\/(?<memberId>${MEMBER_ID_SEGMENT})\\/link-github$`), auth: 'session', authority: 'admin', handler: handleIssueMemberLink },
