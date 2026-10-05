@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { exportD1, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
+import { D1ExportStartBudget, exportD1, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -41,12 +41,17 @@ export class ProducerExporting extends CaptureRefusedBeforeSnapshot {
  * is released explicitly.
  */
 function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: string }, record: DeploymentRecord): RecoveryHoldOwner {
+  const databaseId = record.databaseId;
+  if (databaseId === undefined) throw new Error('recovery hold requires the recorded D1 database');
   const reading = async (token: string): Promise<RecoveryHoldReading> => {
     const rows = z.array(z.object({
       holder: z.string().nullable(), acquired_at: z.number().nullable(), released_at: z.number().nullable(),
       release_reason: z.string().nullable(), deployment_id: z.string().nullable(), schema_version: z.string().nullable(),
     })).parse(await queryCloudflareDatabase({ ...provider, sql: recoveryHoldSql.reading(token), timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
     const { hold, source } = recoveryHoldOf(token, rows[0] ?? null);
+    if (hold?.holder === 'operator' && hold.releasedAt !== null) {
+      releaseKeptD1Export(provider.configDir, databaseId, token);
+    }
     return {
       state: hold === null ? 'absent' : hold.holder !== 'operator' ? 'other-holder' : hold.releasedAt === null ? 'open' : 'released',
       source,
@@ -55,6 +60,7 @@ function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: st
   return {
     locator: `${record.accountId}/${record.databaseId}`,
     acquire: async (token) => {
+      new D1ExportStartBudget({ accountId: record.accountId, databaseId, recordDir: provider.configDir, holdToken: token });
       await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.acquire(token, Date.now(), 'operator'), timeoutMs: D1_STATEMENT_TIMEOUT_MS });
       return reading(token);
     },
@@ -66,10 +72,7 @@ function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: st
     },
     release: async (token, reason) => {
       await runCloudflareStatement({ ...provider, sql: recoveryHoldSql.releaseOperator(token, Date.now(), reason), timeoutMs: D1_STATEMENT_TIMEOUT_MS });
-      const answered = await reading(token);
-      // A released hold takes the export result kept under it along: no capture under that hold can use it again.
-      if (answered.state === 'released' && record.databaseId !== undefined) releaseKeptD1Export(provider.configDir, record.databaseId, token);
-      return answered;
+      return reading(token);
     },
   };
 }
@@ -121,6 +124,7 @@ export async function backupCloudflareDeployment(
   // machine's own Cloudflare state, with the same rendered bindings the snapshot uses.
   const holdConfigFile = path.join(configDir, 'wrangler.recovery-hold.toml');
   fs.writeFileSync(holdConfigFile, config, { mode: 0o600 });
+  const startBudget = new D1ExportStartBudget();
   return createRecoveryBundle(options.destination, {
     source,
     hold: cloudflareRecoveryHold({ ...options, configDir, configFile: holdConfigFile, databaseName }, record),
@@ -128,7 +132,7 @@ export async function backupCloudflareDeployment(
       // The export's SQL is kept beside its record rather than in the attempt's work directory: once it is downloaded,
       // an attempt after a failed step takes it again instead of exporting again (`releaseD1Export` gives it up).
       const sqlPath = exportResultPath(configDir, databaseId);
-      const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, holdToken, ...options.d1Export };
+      const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, holdToken, startBudget, ...options.d1Export };
       // Every read here goes over the export's own API and login (`queryD1`), each retried inside its own bound.
       const read = (sql: string) => queryD1(exportContext, sql);
       // Read after this backup's own hold is open: a producer that opened its hold first is found here, and one that
