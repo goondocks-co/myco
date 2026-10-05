@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { engineAssertions, runTick } from '@myco-server-worker/core/tick.js';
+import { CHAINED_WAKE_MS, engineAssertions, runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { bootstrapOwnership, claimUnknownRaw, rawClaimPreview, ownershipPreview } from '@myco-server-worker/core/raw-claims.js';
@@ -83,6 +83,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       const woke = await runTick(e.serverEnv, now);
       expect(woke.state).toBe('sleep');
       expect(woke.jobs.find((job) => job.name === 'raw-provenance-backfill')).toMatchObject({ failed: null, more: true });
+      expect(woke.nextWakeMs).toBe(CHAINED_WAKE_MS);
       await complete(e);
       expect(await engineAssertions(e.serverEnv, now)).not.toContainEqual({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
     } finally { e.sqlite.close(); }
