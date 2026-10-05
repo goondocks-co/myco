@@ -7,6 +7,7 @@ import { describe, it, expect } from 'bun:test';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 import { expandRoot, manifestTranscriptDiscovery, sessionIdFromTranscriptPath } from '@myco/symbionts/transcript-discovery.js';
 import { memberOwnedTranscriptRoots } from '@myco/member/retention.js';
+import { snippetModule } from '../support/plugin-snippet.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 
 /**
@@ -159,15 +160,7 @@ describe('native plugin transcripts', () => {
         // Run the shipped plugin's session-open path and read what it wrote.
         const env = sandboxEnv();
         const mod = snippetModule(env);
-        const source = fs.readFileSync(path.join(TEMPLATES, agent, 'plugin.ts'), 'utf-8');
-        const record = source.slice(source.indexOf('type: "session"'));
-        const fields = record.slice(0, record.indexOf('});'));
-        // The record the template composes, evaluated rather than restated.
-        const built = new Function('sessionId', 'AGENT', 'directory', 'nowIso',
-          `return { ${fields.replace(/\bsessionId,/, 'sessionId,').replace(/\bagent: AGENT,/, 'agent: AGENT,')} };`,
-        )('s', agent, '/repo', () => 'now') as Record<string, unknown>;
-        expect({ agent, claimed: mod.holdsSessionClaim('/repo', agent, 's') }).toEqual({ agent, claimed: true });
-        mod.appendTranscriptLine('/repo', agent, 's', built);
+        expect(mod.initializeTranscriptSession('/repo', agent, 's').status).toBe('committed');
         file = mod.transcriptPathFor('/repo', agent, 's');
       } else {
         file = path.resolve(import.meta.dirname ?? __dirname, '../fixtures/pi-parse-basic.jsonl');
@@ -206,42 +199,6 @@ describe('pi tool registration', () => {
  * Every gate below drives real plugin code rather than a restatement of it:
  * a rename or a changed rule inside the snippet moves what these observe.
  */
-function snippetModule(
-  env: NodeJS.ProcessEnv,
-  spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [],
-  noted: string[] = [],
-  execImpl?: (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { status: number | null; stdout: string; stderr: string },
-  routingKey: string | null | (() => string | null) = ROUTING_KEY,
-) {
-  const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
-  const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
-  return new Function(
-    'readFileSync', 'appendFileSync', 'mkdirSync', 'statSync', 'lstatSync', 'accessSync', 'openSync', 'closeSync',
-    'writeSync', 'unlinkSync', 'fsConstants', 'join', 'dirname', 'resolve', 'homedir', 'spawnSync', 'process',
-    `${js}; return { transcriptPathFor, appendTranscriptLine, holdsSessionClaim, releaseSessionClaim, runMycoHook };`,
-  )(
-    fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
-    fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
-    (_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
-      if (args[0] === 'member' && args[1] === 'routing-key') {
-        const key = typeof routingKey === 'function' ? routingKey() : routingKey;
-        return key === null ? { status: 1, stdout: '', stderr: 'no route' } : { status: 0, stdout: `${key}\n`, stderr: '' };
-      }
-      if (execImpl) return execImpl(_bin, args, opts);
-      spawns.push({ env: opts?.env, args });
-      return { status: 0, stdout: '{}', stderr: '' };
-    },
-    { ...process, env, platform: process.platform, stderr: { write: (line: string) => { noted.push(String(line)); return true; } } },
-  ) as {
-    transcriptPathFor: (d: string, a: string, s: string) => string;
-    appendTranscriptLine: (d: string, a: string, s: string, r: Record<string, unknown>) => void;
-    holdsSessionClaim: (d: string, a: string, s: string) => boolean;
-    releaseSessionClaim: (d: string, a: string, s: string) => void;
-    runMycoHook: (d: string, a: string, s: string, v: string, p: Record<string, unknown>) => unknown;
-    CLAIM_STALE_MS: number;
-  };
-}
-
 /** A member home of its own, so one gate's claims and transcripts never reach another's. */
 function sandboxEnv(): NodeJS.ProcessEnv {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-gate-'));
@@ -358,7 +315,7 @@ describe('one instance speaks for a session', () => {
       .split('{{mycoCredentialSource}}').join('registry');
     fs.writeFileSync(script, [
       'import { spawnSync } from "node:child_process";',
-      'import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";',
+      'import { accessSync, appendFileSync, closeSync, constants as fsConstants, fstatSync, readSync, renameSync, rmdirSync, readdirSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";',
       'import { homedir } from "node:os";',
       'import { dirname, join, resolve } from "node:path";',
       snippet,
