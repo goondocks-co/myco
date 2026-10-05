@@ -15,6 +15,7 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
  */
 export const objectLifecycle: ParityScenario = {
   name: 'object lifecycle: generation names, clock-owned deletion, expired authority, and a recovery hold',
+  dedicated: { timeoutMs: 180_000 },
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
