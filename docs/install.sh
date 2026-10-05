@@ -71,42 +71,35 @@ done
 # Returns the effective GitHub token: GITHUB_TOKEN takes precedence over GH_TOKEN.
 auth_token() { printf '%s' "${GITHUB_TOKEN:-${GH_TOKEN:-}}"; }
 
-# Token-aware curl wrapper.
-gh_curl() {
+# Authorization travels through stdin; curl's arguments contain no credentials.
+gh_request() {
   _token="$(auth_token)"
-  if [ -n "$_token" ]; then
-    curl -fsSL -H "Authorization: Bearer $_token" \
-               -H "Accept: application/vnd.github+json" \
-               -H "User-Agent: myco-installer/${REPO}" \
-               "$@"
-  else
-    curl -fsSL -H "Accept: application/vnd.github+json" \
-               -H "User-Agent: myco-installer/${REPO}" \
-               "$@"
-  fi
+  # Curl config values must be single-line to prevent extra config directives.
+  case "$_token" in
+    *'
+'*|*"$(printf '\r')"*)
+      error "GitHub token must not contain line breaks."
+      return 1
+      ;;
+  esac
+  {
+    if [ -n "$_token" ]; then
+      _escaped_token="$(printf '%s' "$_token" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+      printf 'header = "Authorization: Bearer %s"\n' "$_escaped_token"
+    fi
+  } | curl --config - \
+      -H "Accept: application/vnd.github+json" \
+      -H "User-Agent: myco-installer/${REPO}" \
+      "$@"
 }
 
-# Same wrapper but writes HTTP status to a variable via a temp file.
-# Usage: gh_curl_status OUTFILE URL  — exits 0 even on HTTP error; caller checks $HTTP_STATUS
+# Token-aware curl wrapper.
+gh_curl() { gh_request -fsSL "$@"; }
+
+# Usage: gh_curl_status OUTFILE URL — caller checks $HTTP_STATUS, including HTTP errors.
 gh_curl_status() {
   _out="$1"; shift
-  _token="$(auth_token)"
-  if [ -n "$_token" ]; then
-    HTTP_STATUS="$(curl -sSL \
-      -H "Authorization: Bearer $_token" \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: myco-installer/${REPO}" \
-      -w '%{http_code}' \
-      -o "$_out" \
-      "$@" 2>/dev/null)" || true
-  else
-    HTTP_STATUS="$(curl -sSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: myco-installer/${REPO}" \
-      -w '%{http_code}' \
-      -o "$_out" \
-      "$@" 2>/dev/null)" || true
-  fi
+  HTTP_STATUS="$(gh_request -sSL -w '%{http_code}' -o "$_out" "$@" 2>/dev/null)" || true
 }
 
 # ---------------------------------------------------------------------------
