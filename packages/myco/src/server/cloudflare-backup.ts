@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { exportD1, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
+import { D1ExportStartBudget, exportD1, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -121,6 +121,7 @@ export async function backupCloudflareDeployment(
   // machine's own Cloudflare state, with the same rendered bindings the snapshot uses.
   const holdConfigFile = path.join(configDir, 'wrangler.recovery-hold.toml');
   fs.writeFileSync(holdConfigFile, config, { mode: 0o600 });
+  const startBudget = new D1ExportStartBudget();
   return createRecoveryBundle(options.destination, {
     source,
     hold: cloudflareRecoveryHold({ ...options, configDir, configFile: holdConfigFile, databaseName }, record),
@@ -128,7 +129,7 @@ export async function backupCloudflareDeployment(
       // The export's SQL is kept beside its record rather than in the attempt's work directory: once it is downloaded,
       // an attempt after a failed step takes it again instead of exporting again (`releaseD1Export` gives it up).
       const sqlPath = exportResultPath(configDir, databaseId);
-      const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, holdToken, ...options.d1Export };
+      const exportContext = { accountId: record.accountId, databaseId, output: sqlPath, recordDir: configDir, login: operator, fetch: options.fetch, report: options.report, holdToken, startBudget, ...options.d1Export };
       // Every read here goes over the export's own API and login (`queryD1`), each retried inside its own bound.
       const read = (sql: string) => queryD1(exportContext, sql);
       // Read after this backup's own hold is open: a producer that opened its hold first is found here, and one that

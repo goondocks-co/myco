@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
-  D1_QUERY_ATTEMPTS, exportD1, exportRecordPath, exportResultPath, queryD1, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
+  D1_QUERY_ATTEMPTS, D1ExportStartBudget, exportD1, exportRecordPath, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
@@ -132,6 +132,24 @@ describe('a D1 export that never completes', () => {
 });
 
 describe('an export a retry resumes', () => {
+  it('does not charge an explicitly refused login against the new-export budget', async () => {
+    const api = provider(() => 'complete');
+    const startBudget = new D1ExportStartBudget();
+    await run(api.fetch, { startBudget });
+    releaseD1Export({ accountId: ACCOUNT, databaseId: DATABASE, output: path.join(dir, 'd1.sql'), recordDir: dir, login });
+    let refused = false;
+    const fetch: CloudflareFetch = async (url, init) => {
+      if (!refused && url === ENDPOINT && !JSON.parse(String(init.body)).current_bookmark) {
+        refused = true;
+        return new Response(null, { status: 401 });
+      }
+      return api.fetch(url, init);
+    };
+    await run(fetch, { startBudget });
+    expect(refused).toBe(true);
+    expect(api.started()).toBe(2);
+  });
+
   it('asks again at once after a poll that did not land, and takes the one export\'s result', async () => {
     let asked = 0;
     const api = provider(() => (++asked >= 3 ? 'complete' : 'active'));

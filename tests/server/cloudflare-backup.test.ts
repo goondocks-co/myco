@@ -830,7 +830,9 @@ describe('a transient Cloudflare failure during the snapshot', () => {
     try {
       const fetch: CloudflareFetch = async (url, init) => {
         const answer = await f.fetchObject(url, init);
-        if (url.endsWith('/export') && JSON.parse(String(init.body)).current_bookmark) {
+        if (url.startsWith('https://signed.fixture/d1/')) return new Response(null, { status: 404 });
+        const bookmark = url.endsWith('/export') ? JSON.parse(String(init.body)).current_bookmark : undefined;
+        if (bookmark && f.exports().find((job) => job.bookmark === bookmark)!.polls > 1) {
           return Response.json({ success: true, result: { success: true, status: 'error', error: 'provider reset' } });
         }
         return answer;
