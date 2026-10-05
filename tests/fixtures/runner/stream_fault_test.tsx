@@ -2,8 +2,8 @@
  * A DOM-config test that keeps writing output, for the runner's exit gate
  * (`tests/scripts/run-bun-tests-guards.test.ts`). The `_test.tsx` suffix
  * matches Bun's test pattern but not the runner's `*.test.*` discovery, so
- * only an explicit target runs it, which the runner does under the swapped
- * DOM bunfig. It runs only when the gate sets MYCO_RUNNER_STREAM_FAULT_FIXTURE.
+ * only an explicit target runs it, which the runner does with explicit DOM preloads.
+ * It runs only when the gate sets MYCO_RUNNER_STREAM_FAULT_FIXTURE.
  *
  * It writes its pid to MYCO_RUNNER_STREAM_FAULT_READY_FILE, then prints a line
  * every 100ms until it is killed. When the gate closes the runner's stdout,

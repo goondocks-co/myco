@@ -1,6 +1,6 @@
 // Bootstrap a JSDOM environment for component tests. Bun has no built-in
 // `--dom-env` flag (as of 1.3.13), so we install JSDOM globals up-front via
-// the [test] preload hook referenced from `bunfig.dom.toml`.
+// the runner's --preload flag or the bunfig.dom.toml test preload.
 
 // React dedupe: the UI package has its own node_modules/react, which causes
 // two React instances when tests import `@testing-library/react` (root) and

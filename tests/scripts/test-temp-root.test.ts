@@ -9,6 +9,97 @@ const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-temp-snapshot-'));
 afterAll(() => fs.rmSync(parent, { recursive: true, force: true }));
 
 describe('system temp leak snapshot', () => {
+  it('retries transient Windows retirement locks and surfaces permanent failures', () => {
+    const keys = ['MYCO_TEST_RUN_ROOT', 'MYCO_TEST_SYSTEM_TEMP_DIRS', 'TMPDIR', 'TEMP', 'TMP'];
+    const saved = new Map(keys.map((key) => [key, process.env[key]]));
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const fixture = fs.mkdtempSync(path.join(parent, 'locks-'));
+    const rename = fs.renameSync.bind(fs);
+    const codes = ['EPERM', 'EACCES', 'EBUSY'];
+    let attempts = 0;
+    const renameSpy = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      const code = codes[attempts++];
+      if (code) throw Object.assign(new Error('fixture retirement lock'), { code });
+      rename(from, to);
+    });
+    const waitSpy = spyOn(Atomics, 'wait').mockImplementation(() => 'timed-out');
+    try {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const run = createTestTempRun({ parent: fixture, directories: [fixture] });
+      expect(run.finish()).toEqual([]);
+      expect(attempts).toBeGreaterThan(1);
+      expect(waitSpy).toHaveBeenCalled();
+      expect(fs.readdirSync(fixture)).toEqual([]);
+      renameSpy.mockImplementation(() => { throw Object.assign(new Error('fixture permanent refusal'), { code: 'EINVAL' }); });
+      waitSpy.mockClear();
+      const failed = createTestTempRun({ parent: fixture, directories: [fixture] });
+      expect(() => failed.finish()).toThrow('fixture permanent refusal');
+      expect(waitSpy).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(failed.root, '.owner'), 'utf8')).toBe(`${process.pid}\n`);
+    } finally {
+      renameSpy.mockRestore();
+      waitSpy.mockRestore();
+      Object.defineProperty(process, 'platform', platform);
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a sibling while its owner marker is removed during cleanup', () => {
+    const keys = ['MYCO_TEST_RUN_ROOT', 'MYCO_TEST_SYSTEM_TEMP_DIRS', 'TMPDIR', 'TEMP', 'TMP'];
+    const saved = new Map(keys.map((key) => [key, process.env[key]]));
+    const fixture = fs.mkdtempSync(path.join(parent, 'cleanup-'));
+    const before = snapshotTestTemps([fixture]);
+    const run = createTestTempRun({ parent: fixture, directories: [fixture] });
+    const remove = fs.rmSync.bind(fs);
+    let scanned = false;
+    const removeSpy = spyOn(fs, 'rmSync').mockImplementation((file, options) => {
+      const marker = path.join(String(file), '.owner');
+      if (fs.existsSync(marker)) {
+        fs.unlinkSync(marker);
+        scanned = true;
+        expect(newTestTemps(before, 0, path.join(fixture, 'other-root'))).toEqual([]);
+      }
+      remove(file, options);
+    });
+    try {
+      run.finish();
+      expect(scanned).toBe(true);
+      expect(fs.readdirSync(fixture)).toEqual([]);
+    } finally {
+      removeSpy.mockRestore();
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a sibling retired between its directory listing and owner read', () => {
+    const fixture = fs.mkdtempSync(path.join(parent, 'retire-'));
+    const before = snapshotTestTemps([fixture]);
+    const root = path.join(fixture, 'mt-live00');
+    const retired = path.join(fixture, `.mt-cleanup-${process.ppid}-mt-live00`);
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, '.owner'), `${process.ppid}\n`);
+    const read = fs.readFileSync.bind(fs);
+    const readSpy = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (String(file) === path.join(root, '.owner')) fs.renameSync(root, retired);
+      return (read as (...args: unknown[]) => unknown)(file, ...args);
+    }) as typeof fs.readFileSync);
+    try {
+      expect(newTestTemps(before, 0, path.join(fixture, 'other-root'))).toEqual([]);
+      expect(fs.existsSync(path.join(retired, '.owner'))).toBe(true);
+    } finally {
+      readSpy.mockRestore();
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('reports only new test prefixes born during the run and ignores live sibling roots', () => {
     fs.mkdirSync(path.join(parent, 'myco-before'));
     fs.mkdirSync(path.join(parent, 'myco-old-birth'));
@@ -84,6 +175,25 @@ describe('system temp leak snapshot', () => {
       readSpy.mockRestore();
       killSpy.mockRestore();
       warnSpy.mockRestore();
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers partially deleted retired roots while preserving live owners and unknown names', () => {
+    const fixture = fs.mkdtempSync(path.join(parent, 'recover-'));
+    const dead = spawnSync(process.execPath, ['-e', '0']);
+    expect(dead.status).toBe(0);
+    const abandoned = `.mt-cleanup-${dead.pid}-mt-gone00`;
+    const live = `.mt-cleanup-${process.pid}-mt-live00`;
+    for (const name of [abandoned, live, '.mt-cleanup-unknown']) {
+      fs.mkdirSync(path.join(fixture, name));
+      fs.writeFileSync(path.join(fixture, name, 'remaining-data'), 'retain until owned cleanup');
+    }
+    try {
+      expect(sweepStaleRunRoots(fixture)).toBe(1);
+      expect(fs.readdirSync(fixture).sort()).toEqual([live, '.mt-cleanup-unknown'].sort());
+      expect(fs.readFileSync(path.join(fixture, live, 'remaining-data'), 'utf8')).toBe('retain until owned cleanup');
+    } finally {
       fs.rmSync(fixture, { recursive: true, force: true });
     }
   });

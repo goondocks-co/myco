@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Drives `bun test` in two passes: non-tsx tests (pure Node environment) and
-// tsx tests (jsdom via a dedicated bunfig). Honors MYCO_TEST_PROFILE=fast |
+// tsx tests (jsdom via an explicit preload). Honors MYCO_TEST_PROFILE=fast |
 // integration to match the former vitest-side configuration.
 
 import { spawnSync, spawn } from 'node:child_process';
@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
+import { SaxesParser } from 'saxes';
 import { parseShard, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -18,27 +20,49 @@ import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup 
 // Per-run temp root
 // ---------------------------------------------------------------------------
 // The runner owns the root before loading test modules or starting subprocesses.
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PARENT_TMPDIR = os.tmpdir();
 const tempRun = createTestTempRun();
 const RUN_ROOT = tempRun.root;
+const BUNDLE_DIR = path.join(REPO, 'target', 'test-bundles', `node-env-${path.basename(RUN_ROOT)}`);
 process.env.MYCO_TEST_RUN_PARENT_TMPDIR = PARENT_TMPDIR;
 
 /** Kills the running group's process tree; null between groups. */
 let killActiveGroup = null;
-/** Puts the canonical bunfig back while a group runs under a swapped one; null otherwise. */
-let restoreSwappedBunfig = null;
+let runReportDir = null;
+let interrupted = false;
+let observedFailure = false;
+let reportFailurePersistenceError = null;
+let inspectActiveStreamTails = null;
 // However the runner exits (the end of the run, a signal, an uncaught error),
-// the group it was running dies with it, the bunfig is put back and the root
-// goes.
-process.on('exit', () => finishTestTempRun(tempRun, () => {
-  try { killActiveGroup?.('SIGKILL'); }
-  finally {
-    try { stopRegisteredTestProcesses(RUN_ROOT); }
-    finally { restoreSwappedBunfig?.(); }
+// the group it was running dies with it and the root goes.
+process.on('exit', () => {
+  inspectActiveStreamTails?.();
+  try {
+    finishTestTempRun(tempRun, () => {
+      try { killActiveGroup?.('SIGKILL'); }
+      finally {
+        try { stopRegisteredTestProcesses(RUN_ROOT); }
+        finally { fs.rmSync(BUNDLE_DIR, { recursive: true, force: true }); }
+      }
+    });
+  } finally {
+    if (runReportDir) {
+      try {
+        const outcome = process.exitCode ? (interrupted && !observedFailure ? 'interrupted' : 'failed') : 'success';
+        pruneRunReports(path.dirname(runReportDir), runReportDir, outcome);
+        publishReportOutcome(runReportDir, outcome);
+      } catch (error) {
+        process.exitCode ||= 1;
+        console.error(`[run-bun-tests] FAIL: cannot finalize report lifecycle: ${error.message}`);
+        try { publishReportOutcome(runReportDir, 'failed'); }
+        catch (statusError) { console.error(`[run-bun-tests] FAIL: cannot record failed report: ${statusError.message}`); }
+      }
+    }
   }
-}));
+});
 for (const [signal, number] of [['SIGINT', 2], ['SIGTERM', 15], ['SIGHUP', 1]]) {
-  process.on(signal, () => process.exit(128 + number));
+  process.on(signal, () => { interrupted = true; process.exit(128 + number); });
 }
 
 // Node reads the account home independently of HOME; Bun's userInfo follows HOME.
@@ -150,8 +174,6 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 // 600s is more than twice the slowest of them.
 const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
 // Test prerequisites share the run's temp root and leak gate.
 const generated = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'], {
   cwd: REPO, env: process.env, stdio: 'inherit',
@@ -159,34 +181,40 @@ const generated = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco
 if (generated.error) throw generated.error;
 if (generated.status !== 0) process.exit(generated.status ?? 1);
 
-/**
- * Warn when the Bun running the suite is not the Bun that ships.
- *
- * CI and the release build take their Bun from `.bun-version`; a developer's
- * is whatever is on PATH. That difference is invisible and it hides real bugs:
- * `node:http`/`node:https` behaviour varies BETWEEN Bun versions as well as
- * between Bun and Node, and the transport reasons about those semantics. Three
- * defects in the team transport were of exactly this shape — a probe that
- * never settles, a timer that never arms, a teardown that never fires — each
- * correct under Node and wrong under the shipping runtime.
- *
- * A warning, not a failure: a mismatched Bun is usually fine, and blocking
- * local runs over it would cost more than it saves. The point is that nobody
- * should be able to read a green local suite and not know which runtime
- * produced it.
- */
+function resolveBunExecutable() {
+  const extensions = process.platform === 'win32'
+    ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')]
+    : [''];
+  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `bun${extension}`);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return fs.realpathSync(candidate);
+      } catch { /* try the next PATH entry */ }
+    }
+  }
+  throw new Error('[run-bun-tests] Bun executable is not available on the test PATH');
+}
+
+const BUN_EXECUTABLE = resolveBunExecutable();
+const bunVersionResult = spawnSync(BUN_EXECUTABLE, ['--version'], { encoding: 'utf8' });
+const BUN_VERSION = bunVersionResult.stdout?.trim() ?? '';
+if (bunVersionResult.error || bunVersionResult.status !== 0 || !/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(BUN_VERSION)) {
+  throw new Error(`[run-bun-tests] cannot read version of ${BUN_EXECUTABLE}: ${bunVersionResult.error?.message ?? bunVersionResult.stderr?.trim() ?? 'invalid output'}`);
+}
+
+/** Compare the exact executable used for every test phase with the release pin. */
 function warnOnBunVersionSkew() {
-  const running = process.versions?.bun;
-  if (!running) return;
   let pinned;
   try {
     pinned = fs.readFileSync(path.join(REPO, '.bun-version'), 'utf-8').trim();
   } catch {
     return; // no pin to compare against
   }
-  if (!pinned || pinned === running) return;
+  if (!pinned || pinned === BUN_VERSION) return;
   console.warn(
-    `[run-bun-tests] WARNING: running Bun ${running}, but .bun-version pins ${pinned} — `
+    `[run-bun-tests] WARNING: running Bun ${BUN_VERSION} (${BUN_EXECUTABLE}), but .bun-version pins ${pinned} — `
     + 'CI and the release binary use the pinned one. Runtime behaviour differs between Bun '
     + 'versions, so a green run here is not proof of a green run there.',
   );
@@ -470,9 +498,7 @@ function writeNodeBundleTargets(files) {
     groups.get(key).push(file);
   }
 
-  const bundleDir = path.join(REPO, 'target', 'test-bundles', 'node-env');
-  fs.rmSync(bundleDir, { recursive: true, force: true });
-  fs.mkdirSync(bundleDir, { recursive: true });
+  fs.mkdirSync(BUNDLE_DIR, { recursive: true });
 
   const bundledTargets = [];
   let bundledFileCount = 0;
@@ -484,7 +510,7 @@ function writeNodeBundleTargets(files) {
     }
 
     bundledFileCount += groupFiles.length;
-    const relativeBundle = path.join('target', 'test-bundles', 'node-env', `${bundleSlug(key)}.test.ts`);
+    const relativeBundle = path.join('target', 'test-bundles', path.basename(BUNDLE_DIR), `${bundleSlug(key)}.test.ts`);
     const absoluteBundle = path.join(REPO, relativeBundle);
     const imports = groupFiles
       .sort()
@@ -496,7 +522,7 @@ function writeNodeBundleTargets(files) {
 
   if (bundledTargets.length > 0) {
     console.log(
-      `[run-bun-tests] bundled node env: ${bundledFileCount} files -> ${bundledTargets.length} bundles; ${isolated.length} files stay isolated`,
+      `[run-bun-tests] bundled node env: ${bundledFileCount} files -> ${bundledTargets.length} bundles in ${path.relative(REPO, BUNDLE_DIR)}; ${isolated.length} files stay isolated`,
     );
   }
 
@@ -854,14 +880,98 @@ function buildArgs() {
 const REPORT_DIR = process.env.MYCO_RUNNER_REPORT_DIR
   ? path.resolve(process.env.MYCO_RUNNER_REPORT_DIR)
   : path.join(REPO, 'target', 'test-reports');
+const REPORT_OWNER_FILE = '.runner-owner.json';
+const REPORT_OUTCOME_FILE = '.runner-outcome.json';
+const SUCCESS_REPORT_RETAIN = 3;
+const INTERRUPTED_REPORT_RETAIN = 2;
+
+function publishReportOutcome(dir, status) {
+  const temporary = path.join(dir, `${REPORT_OUTCOME_FILE}.${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ status, finishedAt: Date.now() }));
+    fs.renameSync(temporary, path.join(dir, REPORT_OUTCOME_FILE));
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function recordObservedFailure() {
+  if (observedFailure) return;
+  observedFailure = true;
+  if (!runReportDir) return;
+  try { publishReportOutcome(runReportDir, 'failed'); }
+  catch (error) {
+    reportFailurePersistenceError = error;
+    process.exitCode ||= 1;
+    console.error(`[run-bun-tests] FAIL: cannot persist failed report ${runReportDir}: ${error.message}`);
+  }
+}
+
+function ownerIsGone(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return error.code === 'ESRCH'; }
+}
+
+function warnReportMetadata(dir, field, error) {
+  const reason = error instanceof SyntaxError ? 'invalid JSON' : (typeof error?.code === 'string' ? error.code : 'invalid shape');
+  console.warn(`[run-bun-tests] WARN: preserving report ${dir}: ${field} ${reason}`);
+}
+
+function pruneRunReports(parent, current, currentOutcome = null) {
+  const candidates = { success: [], interrupted: [] };
+  for (const name of fs.readdirSync(parent)) {
+    if (!/^run-[A-Za-z0-9]{6}$/.test(name)) continue;
+    const dir = path.join(parent, name);
+    if (dir === current) continue;
+    try { if (!fs.lstatSync(dir).isDirectory()) continue; }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    let owner;
+    try { owner = JSON.parse(fs.readFileSync(path.join(dir, REPORT_OWNER_FILE), 'utf8')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') warnReportMetadata(dir, 'owner', error);
+      continue;
+    }
+    if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !Number.isFinite(owner.createdAt)) {
+      warnReportMetadata(dir, 'owner', null);
+      continue;
+    }
+    if (!ownerIsGone(owner.pid)) continue;
+    let outcome;
+    try { outcome = JSON.parse(fs.readFileSync(path.join(dir, REPORT_OUTCOME_FILE), 'utf8')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') { warnReportMetadata(dir, 'outcome', error); continue; }
+    }
+    if (outcome !== undefined && (!outcome || !['success', 'failed', 'interrupted'].includes(outcome.status) || !Number.isFinite(outcome.finishedAt))) {
+      warnReportMetadata(dir, 'outcome', null);
+      continue;
+    }
+    const status = outcome?.status ?? 'interrupted';
+    if (!(status in candidates)) continue;
+    candidates[status].push({ dir, time: outcome?.finishedAt ?? owner.createdAt });
+  }
+  for (const [status, keep] of [['success', SUCCESS_REPORT_RETAIN], ['interrupted', INTERRUPTED_REPORT_RETAIN]]) {
+    const ordered = candidates[status].sort((a, b) => b.time - a.time || b.dir.localeCompare(a.dir));
+    // The current terminal run consumes one slot of its retention class.
+    for (const { dir } of ordered.slice(keep - Number(currentOutcome === status))) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+  }
+}
+
+fs.mkdirSync(REPORT_DIR, { recursive: true });
+const RUN_REPORT_DIR = fs.mkdtempSync(path.join(REPORT_DIR, 'run-'));
+fs.writeFileSync(path.join(RUN_REPORT_DIR, REPORT_OWNER_FILE), JSON.stringify({ pid: process.pid, createdAt: Date.now() }), { flag: 'wx' });
+runReportDir = RUN_REPORT_DIR;
+pruneRunReports(REPORT_DIR, RUN_REPORT_DIR);
 function reportPath(label) {
-  return path.join(REPORT_DIR, `${label.replace(/\s+/g, '-')}.junit.xml`);
+  return path.join(RUN_REPORT_DIR, `${label.replace(/\s+/g, '-')}.junit.xml`);
 }
 function logPath(label) {
-  return path.join(REPORT_DIR, `${label.replace(/\s+/g, '-')}.log`);
+  return path.join(RUN_REPORT_DIR, `${label.replace(/\s+/g, '-')}.log`);
 }
 function hangPath(label) {
-  return path.join(REPORT_DIR, `${label.replace(/[\s/]+/g, '-')}.hang.txt`);
+  return path.join(RUN_REPORT_DIR, `${label.replace(/[\s/]+/g, '-')}.hang.txt`);
 }
 
 // Groups killed at their wall-clock budget, in run order.
@@ -956,35 +1066,9 @@ function captureHangDiagnostics(pids, hangFile, heading) {
 }
 
 
-function resetReportDir() {
-  fs.rmSync(REPORT_DIR, { recursive: true, force: true });
-  fs.mkdirSync(REPORT_DIR, { recursive: true });
-}
-
-async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
+async function runPhase(label, extraArgs, preloads, { isolate, files }) {
   if (extraArgs === null || extraArgs.length === 0) return 0;
-  // `BUN_CONFIG_FILE` is not observed by `bun test` for the bunfig; the only
-  // reliable way to swap configs is to move the file on disk for the
-  // duration of the run.
-  const canonical = path.join(REPO, 'bunfig.toml');
-  const backup = path.join(REPO, '.bunfig.toml.runner-backup');
-  let swapped = false;
-  const restoreBunfig = () => {
-    if (!swapped) return;
-    swapped = false;
-    restoreSwappedBunfig = null;
-    fs.rmSync(canonical, { force: true });
-    if (fs.existsSync(backup)) fs.renameSync(backup, canonical);
-  };
-  if (bunfig && bunfig !== canonical) {
-    if (fs.existsSync(canonical)) fs.renameSync(canonical, backup);
-    fs.copyFileSync(bunfig, canonical);
-    swapped = true;
-    restoreSwappedBunfig = restoreBunfig;
-  }
-  try {
     console.log(`\n=== bun test (${label}) ===`);
-    fs.mkdirSync(REPORT_DIR, { recursive: true });
     const reportFile = reportPath(label);
     const teeFile = logPath(label);
     fs.writeFileSync(teeFile, ''); // start empty so re-runs don't append stale data
@@ -994,6 +1078,7 @@ async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
     // reporter drops (file-load errors, unhandled rejections, etc.).
     const args = [
       'test',
+      ...preloads.flatMap((preload) => ['--preload', preload]),
       ...(isolate ? ['--isolate'] : []),
       // Default per-test timeout, raised from bun's 5s. The suite creates real
       // vault schemas and reads real files per test, and shared CI runners
@@ -1020,21 +1105,23 @@ async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
     const deadlineMs = Date.now() + GROUP_BUDGET_MS;
     const hangFile = hangPath(label);
     fs.rmSync(hangFile, { force: true });
-    let { status, wedged, overBudget } = await runWithTeeAndHeartbeat('bun', args, teeFile, label, { deadlineMs, hangFile });
-    for (let attempt = 1; wedged && !overBudget && attempt <= WEDGE_RETRIES && Date.now() < deadlineMs; attempt += 1) {
+    let { status, wedged, overBudget, evidenceError, streamFailure } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile });
+    for (let attempt = 1; wedged && !overBudget && !evidenceError && !streamFailure && attempt <= WEDGE_RETRIES && Date.now() < deadlineMs; attempt += 1) {
       const note = `[run-bun-tests] RETRYING ${label} after wedge-kill (attempt ${attempt}/${WEDGE_RETRIES})\n`;
       process.stderr.write(note);
       fs.writeFileSync(teeFile, ''); // fresh log for the retry
-      ({ status, wedged, overBudget } = await runWithTeeAndHeartbeat('bun', args, teeFile, label, { deadlineMs, hangFile }));
+      ({ status, wedged, overBudget, evidenceError, streamFailure } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile }));
     }
     if (overBudget) {
       overBudgetGroups.push({ label, files, hangFile });
       writeOverBudgetJunit(reportFile, label, files);
     }
-    return status;
-  } finally {
-    restoreBunfig();
-  }
+    const evidence = evaluatePhaseEvidence([{ label, file: reportFile, log: teeFile }]);
+    if (status !== 0 || evidence.failures > 0 || evidence.invalid.length > 0) recordObservedFailure();
+    if (evidence.failures > 0 || evidence.invalid.length > 0) {
+      console.error(`[run-bun-tests] FAIL: ${label} completion evidence: ${evidence.invalid.join('; ') || `${evidence.failures} JUnit failure(s)/error(s)`}`);
+    }
+    return status || (reportFailurePersistenceError ? 1 : 0);
 }
 
 /**
@@ -1054,20 +1141,14 @@ async function runPhase(label, extraArgs, bunfig, { isolate, files }) {
  * useful for jumping to the failing file.
  */
 function parseFailuresFromJunit(file) {
-  if (!fs.existsSync(file)) return [];
-  let xml;
-  try {
-    xml = fs.readFileSync(file, 'utf8');
-  } catch {
-    return [];
-  }
+  const xml = fs.readFileSync(file, 'utf8');
   const failures = [];
   const pairedTestcasePattern =
     /<testcase\b([^>]*?)(?<!\/)\s*>([\s\S]*?)<\/testcase>/g;
   for (const match of xml.matchAll(pairedTestcasePattern)) {
     const attrs = match[1];
     const body = match[2];
-    if (!/<failure\b/.test(body)) continue;
+    if (!/<(?:failure|error)\b/.test(body)) continue;
     const name = attrs.match(/\bname="([^"]*)"/)?.[1] ?? '(unnamed)';
     const classname = attrs.match(/\bclassname="([^"]*)"/)?.[1] ?? '';
     const sourceFile = attrs.match(/\bfile="([^"]*)"/)?.[1] ?? '';
@@ -1075,8 +1156,8 @@ function parseFailuresFromJunit(file) {
     // Bun's `<failure>` is usually `<failure type="AssertionError" />` with
     // no message attribute; the human-readable message is on stdout. We
     // still try to surface `message` and `type` when present.
-    const failureMessage = body.match(/<failure[^>]*\bmessage="([^"]*)"/)?.[1] ?? '';
-    const failureType = body.match(/<failure[^>]*\btype="([^"]*)"/)?.[1] ?? '';
+    const failureMessage = body.match(/<(?:failure|error)[^>]*\bmessage="([^"]*)"/)?.[1] ?? '';
+    const failureType = body.match(/<(?:failure|error)[^>]*\btype="([^"]*)"/)?.[1] ?? '';
     failures.push({
       name: decodeXmlEntities(name),
       classname: decodeXmlEntities(classname),
@@ -1094,6 +1175,17 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
   return new Promise((resolve) => {
+    let evidenceError = null;
+    let streamFailure = false;
+    function appendEvidence(text) {
+      if (evidenceError) return;
+      try { fs.appendFileSync(teeFile, text); }
+      catch (error) {
+        evidenceError = error;
+        recordObservedFailure();
+        process.stderr.write(`[run-bun-tests] FAIL: cannot append mandatory log ${teeFile}: ${error.message}\n`);
+      }
+    }
     // POSIX phase termination signals the detached process group and its workers.
     // Tests reading stdin receive EOF.
     const child = spawn(command, args, {
@@ -1149,7 +1241,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       captured = table === null ? null : new Map(pids.map((pid) => [pid, table.get(pid).started]));
       process.stderr.write(`${heading}\n[run-bun-tests] sampling ${pids.length} process(es) of ${label} into ${hangFile}\n`);
       const diagnostics = captureHangDiagnostics(pids, hangFile, heading);
-      try { fs.appendFileSync(teeFile, `${heading}\n${diagnostics}`); } catch { /* best-effort */ }
+      appendEvidence(`${heading}\n${diagnostics}`);
       killPhaseTree('SIGTERM');
       // Escalate shortly after, in case anything ignored SIGTERM. The timer is
       // held, and the group waits for it, so the runner never moves on or exits
@@ -1172,12 +1264,13 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       // Mirror to the log file. Sync append: chunks are small, sync
       // I/O here matches the prior runWithTee behavior (shell tee was
       // also sync per write).
-      try { fs.appendFileSync(teeFile, text); } catch { /* best-effort */ }
+      appendEvidence(text);
       // Track the last non-empty line for the watchdog heartbeat.
       const combined = tailRef.value + text;
       const lines = combined.split(/\r?\n/);
       tailRef.value = lines.pop() ?? '';
       for (const line of lines) {
+        if (outputHasFailureMarker(line)) { streamFailure = true; recordObservedFailure(); }
         const trimmed = line.trim();
         if (trimmed) {
           lastNonEmptyLine = trimmed;
@@ -1187,6 +1280,13 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
     }
     const stdoutRef = { value: stdoutTail };
     const stderrRef = { value: stderrTail };
+    function inspectStreamTails() {
+      if (outputHasFailureMarker(stdoutRef.value) || outputHasFailureMarker(stderrRef.value)) {
+        streamFailure = true;
+        recordObservedFailure();
+      }
+    }
+    inspectActiveStreamTails = inspectStreamTails;
     child.stdout.on('data', (c) => ingest(c, process.stdout, stdoutRef));
     child.stderr.on('data', (c) => ingest(c, process.stderr, stderrRef));
 
@@ -1208,7 +1308,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       if (sinceLastOutput >= WATCHDOG_QUIET_MS) {
         const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output; last line: ${lastNonEmptyLine || '(none)'}\n`;
         process.stderr.write(msg);
-        try { fs.appendFileSync(teeFile, msg); } catch { /* best-effort */ }
+        appendEvidence(msg);
       }
     }
     // The budget fires on time even when it falls between heartbeat ticks.
@@ -1233,6 +1333,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       if (settled) return;
       if (process.platform !== 'win32' && child.pid) stopTestProcessGroup(child.pid, 'SIGKILL');
       settled = true;
+      inspectActiveStreamTails = null;
       killActiveGroup = null;
       clearInterval(watchdog);
       clearTimeout(budgetTimer);
@@ -1243,8 +1344,10 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       const verb = killedForBudget ? 'KILLED (over budget)' : killedForHang ? 'KILLED (wedged)' : 'FINISHED';
       const completion = `[run-bun-tests] ${verb} ${label} in ${totalMs}ms (exit ${exit})${tail}\n`;
       process.stderr.write(completion);
-      try { fs.appendFileSync(teeFile, completion); } catch { /* best-effort */ }
-      const outcome = { status: exit, wedged: killedForHang, overBudget: killedForBudget };
+      inspectStreamTails();
+      appendEvidence(completion);
+      if (streamFailure) process.stderr.write(`[run-bun-tests] FAIL: ${label} stream reported a failure or error\n`);
+      const outcome = { status: exit || evidenceError || streamFailure || reportFailurePersistenceError ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure };
       if (escalation === null) resolve(outcome);
       else escalation.then(() => resolve(outcome));
     }
@@ -1288,7 +1391,7 @@ function parseFailuresFromLog(file) {
   if (!fs.existsSync(file)) return [];
   let text;
   try {
-    text = fs.readFileSync(file, 'utf8');
+    text = stripVTControlCharacters(fs.readFileSync(file, 'utf8'));
   } catch {
     return [];
   }
@@ -1338,7 +1441,9 @@ function printFailureSummary(phaseStatuses) {
     // 1. JUnit-sourced asserted failures with file:line metadata. Collect the
     //    set of (file, line) pairs they already cover so log-sourced errors
     //    at the same location aren't duplicated.
-    const junitFailures = parseFailuresFromJunit(junitFile);
+    let junitFailures = [];
+    try { junitFailures = parseFailuresFromJunit(junitFile); }
+    catch { /* evidence error is reported by evaluatePhaseEvidence */ }
     const junitFailureLocations = new Set();
     const junitFailureFiles = new Set();
     for (const f of junitFailures) {
@@ -1509,11 +1614,12 @@ if (process.env.MYCO_RUNNER_DRY_RUN === '1') {
 }
 
 const phaseReports = [];
-resetReportDir();
+const NODE_PRELOAD = './tests/setup/sandbox-preload.ts';
+const DOM_PRELOADS = ['./tests/setup/jsdom.ts', NODE_PRELOAD];
 
 let nonDomStatus = 0;
 for (const phase of nonDomPhases) {
-  const status = await runPhase(phase.label, phase.args, path.join(REPO, 'bunfig.toml'), { isolate: phase.isolate, files: groupFiles(phase.args) });
+  const status = await runPhase(phase.label, phase.args, [NODE_PRELOAD], { isolate: phase.isolate, files: groupFiles(phase.args) });
   nonDomStatus ||= status;
   phaseReports.push({
     label: phase.label,
@@ -1528,7 +1634,7 @@ if (dom !== null) {
   domStatus = await runPhase(
     'jsdom',
     dom,
-    path.join(REPO, 'bunfig.dom.toml'),
+    DOM_PRELOADS,
     { isolate: true, files: groupFiles(dom) },
   );
   phaseReports.push({
@@ -1538,28 +1644,70 @@ if (dom !== null) {
   });
 }
 
-// Aggregate JUnit failures+errors across every phase report as a backstop against
-// bun silently exiting 0 when tests fail (observed: 93 JUnit failures, exit 0).
-// The runner exits non-zero if EITHER bun reported a non-zero exit code OR the
-// JUnit aggregate shows any failure or error. Both must be zero for a green run.
-function aggregateJunitFailures(reports) {
-  let total = 0;
-  for (const { file } of reports) {
-    if (!fs.existsSync(file)) continue;
-    let xml;
-    try { xml = fs.readFileSync(file, 'utf8'); } catch { continue; }
-    for (const m of xml.matchAll(/<testsuite\b[^>]*/g)) {
-      const failures = Number(m[0].match(/\bfailures="(\d+)"/)?.[1] ?? 0);
-      const errors = Number(m[0].match(/\berrors="(\d+)"/)?.[1] ?? 0);
-      total += failures + errors;
+function readJunitEvidence(file) {
+  const xml = fs.readFileSync(file, 'utf8');
+  const parser = new SaxesParser();
+  let root = '';
+  let suiteCount = 0;
+  let suiteDepth = 0;
+  let declaredTests = 0;
+  let caseCount = 0;
+  let declaredFailures = 0;
+  let failureNodes = 0;
+  parser.on('error', (error) => { throw error; });
+  parser.on('opentag', ({ name, attributes }) => {
+    if (!root) root = name;
+    if (name === 'testsuite') {
+      suiteCount += 1;
+      if (suiteDepth === 0) {
+        for (const field of ['tests', 'failures']) {
+          if (!/^\d+$/.test(attributes[field] ?? '')) throw new Error(`testsuite ${field} must be a nonnegative integer`);
+        }
+        if (attributes.errors !== undefined && !/^\d+$/.test(attributes.errors)) throw new Error('testsuite errors must be a nonnegative integer');
+        declaredTests += Number(attributes.tests);
+        declaredFailures += Number(attributes.failures) + Number(attributes.errors ?? 0);
+      }
+      suiteDepth += 1;
     }
-  }
-  return total;
+    if (name === 'testcase') caseCount += 1;
+    if (name === 'failure' || name === 'error') failureNodes += 1;
+  });
+  parser.on('closetag', ({ name }) => { if (name === 'testsuite') suiteDepth -= 1; });
+  parser.write(xml).close();
+  if (!['testsuites', 'testsuite'].includes(root) || suiteCount === 0) throw new Error('missing JUnit testsuite');
+  if (declaredTests === 0 || caseCount === 0) throw new Error('JUnit records zero executed tests');
+  if (caseCount !== declaredTests) throw new Error(`JUnit declares ${declaredTests} tests but records ${caseCount} testcases`);
+  return Math.max(declaredFailures, failureNodes);
 }
 
-const junitFailureCount = aggregateJunitFailures(phaseReports);
-const exitCode = nonDomStatus || domStatus || (junitFailureCount > 0 ? 1 : 0);
+function outputHasFailureMarker(text) {
+  const log = stripVTControlCharacters(text);
+  return /^\s*[1-9]\d*\s+(?:fail|error)\b/m.test(log)
+    || /^\(fail\)\s+/m.test(log)
+    || /^error:\s+\S/m.test(log);
+}
+
+function readLogEvidence(file) {
+  return outputHasFailureMarker(fs.readFileSync(file, 'utf8'));
+}
+
+function evaluatePhaseEvidence(reports) {
+  let failures = 0;
+  const invalid = [];
+  for (const { label, file, log } of reports) {
+    try { failures += readJunitEvidence(file); }
+    catch (error) { invalid.push(`${label} JUnit ${file}: ${error.message}`); }
+    try {
+      if (readLogEvidence(log)) invalid.push(`${label} log ${log}: Bun reported a failure or error`);
+    } catch (error) { invalid.push(`${label} log ${log}: ${error.message}`); }
+  }
+  return { failures, invalid };
+}
+
+const { failures: junitFailureCount, invalid: invalidEvidence } = evaluatePhaseEvidence(phaseReports);
+const exitCode = nonDomStatus || domStatus || (observedFailure || junitFailureCount > 0 || invalidEvidence.length > 0 || reportFailurePersistenceError ? 1 : 0);
 if (exitCode !== 0) {
+  for (const issue of invalidEvidence) console.error(`[run-bun-tests] FAIL: ${issue}`);
   if (junitFailureCount > 0 && (nonDomStatus || domStatus) === 0) {
     // bun exited 0 but JUnit reports failures — the false-green scenario.
     console.error(
@@ -1569,4 +1717,4 @@ if (exitCode !== 0) {
   printFailureSummary(phaseReports);
   printOverBudgetSummary();
 }
-process.exit(exitCode);
+process.exitCode = exitCode;

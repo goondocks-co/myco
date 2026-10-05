@@ -71,12 +71,6 @@ describe('non-Bun test command temp boundary', () => {
       const parent = fs.mkdtempSync(path.join(scratch, 'locked-root-'));
       const ready = path.join(parent, 'ready.json');
       const held = path.join(parent, 'held');
-      const preload = path.join(parent, 'cleanup-budget.mjs');
-      fs.writeFileSync(preload, `
-        import fs from 'node:fs';
-        const rm = fs.rmSync;
-        fs.rmSync = (target, options) => rm(target, { ...options, maxRetries: 10 });
-      `);
       const script = `
         const fs = require('node:fs'), path = require('node:path');
         const file = path.join(process.env.TMPDIR, 'locked.tmp');
@@ -84,8 +78,8 @@ describe('non-Bun test command temp boundary', () => {
         fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify(file));
         const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(held)})) clearInterval(timer); }, 20);
       `;
-      const args = [...(mutation ? ['--import', pathToFileURL(preload).href] : []), 'scripts/run-test-command.mjs', 'node', '-e', script];
-      const wrapper = spawn('node', args, { env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const args = ['scripts/run-test-command.mjs', 'node', '-e', script];
+      const wrapper = spawn('node', args, { env: { ...process.env, MYCO_TEST_CLEANUP_RETRIES: mutation ? '10' : '30', TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: ['ignore', 'pipe', 'pipe'] });
       let stderr = '';
       wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
       const exited = new Promise((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
@@ -101,7 +95,7 @@ describe('non-Bun test command temp boundary', () => {
           try { [IO.File]::WriteAllText(${quote(held)}, 'held'); Start-Sleep -Milliseconds 7000 } finally { $handle.Dispose() }
         `], { stdio: 'ignore' });
         const released = new Promise((resolve, reject) => { holder!.on('error', reject); holder!.on('close', resolve); });
-        expect({ status: await exited, stderr }).toEqual({ status: mutation ? 1 : 0, stderr: mutation ? expect.stringContaining('EBUSY') : '' });
+        expect({ status: await exited, stderr }).toEqual({ status: mutation ? 1 : 0, stderr: mutation ? expect.stringMatching(/EBUSY|EPERM|EACCES/) : '' });
         expect(await released).toBe(0);
         expect(fs.existsSync(path.dirname(file))).toBe(mutation);
       } finally {

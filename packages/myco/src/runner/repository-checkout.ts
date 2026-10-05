@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import fs from 'node:fs';
 import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,7 +61,7 @@ export async function hashCommittedFiles(root: string, paths: readonly string[],
     signal.throwIfAborted();
     if (UNLISTABLE_PATH.test(path)) continue;
     const hash = createHash('sha256');
-    for await (const chunk of createReadStream(join(root, path), { signal })) hash.update(chunk as Buffer);
+    for await (const chunk of fs.createReadStream(join(root, path), { signal })) hash.update(chunk as Buffer);
     digests.push({ path, sha256: hash.digest('hex') });
   }
   return digests.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));

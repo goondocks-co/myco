@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript-v6';
 
-const mutators = /^(write|append|mkdir|mkdtemp|rm|rmdir|unlink|rename|copyFile|cp|symlink|link|chmod|chown|lchmod|lchown|truncate|utimes|lutimes|fchmod|fchown|ftruncate|open|createWriteStream)/;
+const mutators = /^(write|append|mkdir|mkdtemp|rm|rmdir|unlink|rename|copyFile|cp|symlink|link|chmod|chown|lchmod|lchown|truncate|utimes|lutimes|fchmod|fchown|ftruncate|futimes|open|createWriteStream|createReadStream)/;
 function violations(source: string, name: string): string[] {
   const file = ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true);
   const errors: string[] = [];
@@ -44,6 +44,7 @@ it('refuses builtin named mutators and namespace imports throughout tests and pa
 });
 it('detects aliases and namespace imports while permitting reads and types', () => {
   expect(violations("import { writeFileSync as save } from 'node:fs'", 'fixture.ts')).toHaveLength(1);
+  expect(violations("import { futimesSync, createReadStream } from 'node:fs'", 'fixture.ts')).toHaveLength(2);
   expect(violations("import * as fs from 'fs'", 'fixture.ts')).toHaveLength(1);
   expect(violations("const fs = await import('node:fs')", 'fixture.ts')).toHaveLength(1);
   expect(violations("import fs, { readFileSync, type PathLike } from 'node:fs'", 'fixture.ts')).toEqual([]);

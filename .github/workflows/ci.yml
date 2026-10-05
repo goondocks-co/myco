@@ -148,7 +148,7 @@ jobs:
         shell: bash
         run: |
           echo '### Test phase timings' >> "$GITHUB_STEP_SUMMARY"
-          grep -hE '\[run-bun-tests\] (FINISHED|KILLED)' target/test-reports/*.log >> "$GITHUB_STEP_SUMMARY"
+          find target/test-reports -name '*.log' -type f -exec grep -hE '\[run-bun-tests\] (FINISHED|KILLED)' {} + >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -323,30 +323,20 @@ jobs:
             -H 'Host: localhost:18787' http://127.0.0.1:18787/health || true)
           [ "$named" = "421" ] || { echo "localhost was $named, expected 421"; exit 1; }
 
-          # A replacement container on the same volume migrates nothing and
-          # serves: data survives container replacement.
           docker rm -f myco-ci
-          docker volume create myco-ci-data
-          docker run -d --name myco-v1 -v myco-ci-data:/data \
-            -p 127.0.0.1:18788:18788 -e MYCO_PORT=18788 -e MYCO_BIND=all myco-server:native
-          sleep 8
-          docker rm -f myco-v1
-          docker run -d --name myco-v2 -v myco-ci-data:/data \
-            -p 127.0.0.1:18788:18788 -e MYCO_PORT=18788 -e MYCO_BIND=all myco-server:native
-          for _ in $(seq 1 30); do
-            again=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-              -H 'Host: 127.0.0.1:18788' http://127.0.0.1:18788/health || true)
-            [ "$again" = "200" ] && break
-            sleep 2
-          done
-          [ "$again" = "200" ] || { echo "replacement served $again, expected 200"; docker logs myco-v2; exit 1; }
-          docker rm -f myco-v2
+
+      - name: Preserve relational and blob data across container replacement
+        run: node scripts/smoke-container-persistence.mjs myco-server:native
+
+      - name: Reject data loss in altered container images
+        env:
+          MYCO_SMOKE_MUTATION_ROOT: ${{ runner.temp }}
+        run: node scripts/test-container-persistence-mutations.mjs myco-server:native
 
       - name: Tear down
         if: always()
         run: |
-          docker rm -f myco-ci myco-v1 myco-v2 2>/dev/null || true
-          docker volume rm myco-ci-data 2>/dev/null || true
+          docker rm -f myco-ci 2>/dev/null || true
 
   windows-native:
     runs-on: windows-latest

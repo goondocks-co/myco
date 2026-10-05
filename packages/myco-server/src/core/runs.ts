@@ -727,29 +727,6 @@ export async function applyRunUpdate(
   return result.meta.changes;
 }
 
-/**
- * Retire the resumability of failed runs equivalent to this one.
- *
- * Equivalence is agent, task, Project and `dry_run` together. **`dry_run` is
- * part of it**: a dry run and a real run of the same task are not the same work,
- * and treating them as equivalent would let a dry run retire a real run's
- * resumability.
- */
-export async function supersedeEquivalentResumableRuns(
-  db: RelationalStore,
-  scope: ReadScope,
-  excludeRunId: string,
-  match: { agentId: string; taskName: string; dryRun: boolean },
-): Promise<number> {
-  const result = await db
-    .prepare(`UPDATE agent_runs SET resumable = 0, resume_status = 'superseded'
-       WHERE project_id = ? AND id != ? AND resumable = 1 AND status = 'failed'
-         AND agent_id = ? AND task = ? AND dry_run = ?`)
-    .bind(scope.projectId, excludeRunId, match.agentId, match.taskName, match.dryRun ? 1 : 0)
-    .run();
-  return result.meta.changes;
-}
-
 export interface ReportRow {
   id: number;
   runId: string;
