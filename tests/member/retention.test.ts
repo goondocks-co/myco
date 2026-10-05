@@ -1,3 +1,4 @@
+import { deploymentKeyFor } from '@myco/member/registry.js';
 /**
  * Retention keeps unacknowledged journals and their payloads deliverable at
  * every age. Delivered session state and unreferenced staged bytes may age out.
@@ -17,7 +18,7 @@ import { applySpoolRetention, pruneDeliveredSessionState, sweepStagedBlobs } fro
 import { drainBacklog, sessionTried } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 
 let mycoHome: string;
@@ -44,7 +45,7 @@ const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../pa
 describe('spool retention', () => {
   it('replays an old quarantined journal and blob, then removes the archive only after acknowledgement', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-archived-replay';
     const ctx = ctxFor(spool, sessionId);
     const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
@@ -88,10 +89,10 @@ describe('spool retention', () => {
 
   it('replays an archived journal whose staged bytes still live in pending capture', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-archived-pending-source';
-    const pendingDir = path.join(mycoHome, 'member', 'pending', 'a'.repeat(16));
-    const pending = new MemberSpool('pending', { mycoHome, dir: pendingDir });
+    const pendingDir = path.join(mycoHome, 'member', 'pending', deploymentKeyFor('https://s'), 'a'.repeat(16));
+    const pending = new MemberSpool(null, { mycoHome, dir: pendingDir });
     const bytes = new Uint8Array([137, 80, 78, 71, 4, 5, 6]);
     const source = pending.stagerFor(sessionId)(bytes, 'image/png');
     spool.append(sessionId, attachmentEvent(ctxFor(spool, sessionId), { blobSource: source, attachmentId: mintId() }));
@@ -112,7 +113,7 @@ describe('spool retention', () => {
 
   it('leaves archive recovery and live capture untouched after the hook budget expires', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-budgeted-archive';
     const archivedEvent = promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'older' });
     spool.append(sessionId, archivedEvent);
@@ -134,7 +135,7 @@ describe('spool retention', () => {
 
   it('delivers a healthy archive and visibly accounts for another entirely damaged journal', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const archiveDir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
     fs.mkdirSync(archiveDir);
     fs.writeFileSync(path.join(archiveDir, 'a-damaged.jsonl'), '{not-json}\n');
@@ -154,7 +155,7 @@ describe('spool retention', () => {
 
   it('delivers records after a damaged line inside an archived journal', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-partial-archive';
     const ctx = ctxFor(spool, sessionId);
     spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'before damage' }));
@@ -178,7 +179,7 @@ describe('spool retention', () => {
 
   it('accounts for a missing archived payload and cleans the archive after terminal delivery', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-archived-missing';
     const ctx = ctxFor(spool, sessionId);
     const source = ctx.stage(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
@@ -210,7 +211,7 @@ describe('spool retention', () => {
   for (const code of ['EACCES', 'EIO'] as const) {
     it(`retries an archived payload that reports ${code} and delivers its later record`, async () => {
       const rig = await memberRig();
-      const spool = new MemberSpool('proj_1', { mycoHome });
+      const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
       const sessionId = `sess-archived-${code}`;
       const ctx = ctxFor(spool, sessionId);
       const source = ctx.stage(new Uint8Array([7, 8, 9]), 'application/octet-stream');
@@ -250,7 +251,7 @@ describe('spool retention', () => {
   for (const fault of ['protocol', 'unreadable', 'deployment'] as const) {
     it(`delivers old and fresh capture after a ${fault} hold, even beyond both retention windows`, async () => {
       const rig = await memberRig();
-      const spool = new MemberSpool('proj_1', { mycoHome });
+      const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
       const sessionId = `sess-held-${fault}`;
       const t0 = Date.now() - OLD_HOLD_WINDOW - DAY;
       const journal = path.join(spool.dir, `${sessionId}.jsonl`);
@@ -303,7 +304,7 @@ describe('spool retention', () => {
   }
 
   it('keeps an unacknowledged journal active beyond both age windows', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     spool.append('sess-old', promptEvent(ctxFor(spool, 'sess-old'), { promptId: mintId(), text: 'old' }));
     const file = path.join(spool.dir, 'sess-old.jsonl');
     const t0 = Date.now();
@@ -319,7 +320,7 @@ describe('spool retention', () => {
   });
 
   it('keeps the high-water and unconsumed turn-end marks while an old journal receives new events', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-q');
     const mark = (atSize: number) => ({ slot: 'primary' as const, transcriptId: 'tx_' + 'q'.repeat(32), atSize });
     for (const text of ['one', 'two', 'three']) spool.append('sess-q', promptEvent(ctx, { promptId: mintId(), text }));
@@ -341,7 +342,7 @@ describe('spool retention', () => {
 
   it('keeps an active session through partial delivery and releases a fully acknowledged journal', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const ctx = ctxFor(spool, 'sess-live');
     for (let i = 0; i < 3; i++) spool.append('sess-live', promptEvent(ctx, { promptId: mintId(), text: `p${i}` }));
     let calls = 0;
@@ -363,7 +364,7 @@ describe('spool retention', () => {
 
   it('keeps the state of a session whose transcript bytes are undelivered, and lets it go once its transcript file is gone', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
     const t0 = Date.now();
     const file = path.join(fs.mkdtempSync(path.join(mycoHome, 'tx-')), 'sess-tx.jsonl');
@@ -387,7 +388,7 @@ describe('spool retention', () => {
 
   it('never prunes a state whose transcript is behind its file, even once its backlog mark is gone', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
     const t0 = Date.now();
     const file = path.join(fs.mkdtempSync(path.join(mycoHome, 'tx-')), 'sess-unmarked.jsonl');
@@ -402,7 +403,7 @@ describe('spool retention', () => {
   });
 
   it('keeps a stuck session and its transcript state in the active backlog', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const t0 = Date.now();
     const file = path.join(fs.mkdtempSync(path.join(mycoHome, 'tx-')), 'sess-stuck.jsonl');
     fs.writeFileSync(file, 'x\n');
@@ -418,7 +419,7 @@ describe('spool retention', () => {
 
   it('prunes the state of a session delivered long ago only after a drain that delivered everything, and never one still holding records', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
     const t0 = Date.now();
     spool.append('sess-done', promptEvent(ctxFor(spool, 'sess-done'), { promptId: mintId(), text: 'done' }));
@@ -444,7 +445,7 @@ describe('spool retention', () => {
   });
 
   it('keeps a session that is still appending after a long outage', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const t0 = Date.now();
     spool.appendAndRecord('sess-offline', [promptEvent(ctxFor(spool, 'sess-offline'), { promptId: mintId(), text: 'first' })], undefined, t0);
     // A recent append leaves both the old and new records available.
@@ -458,7 +459,7 @@ describe('spool retention', () => {
 
   it('an acknowledgement moves the clock forward; nothing else does', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const t0 = Date.now();
     spool.appendAndRecord('sess-ack', [promptEvent(ctxFor(spool, 'sess-ack'), { promptId: mintId(), text: 'p' })], undefined, t0);
     expect(readSessionState(spool.dir, 'sess-ack').lastAckAt).toBeUndefined();
@@ -469,7 +470,7 @@ describe('spool retention', () => {
 
   it('releases staged blob bytes once no live hook could still name them, and sweeps what a stopped drain left', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const source = spool.stagerFor('sess-blob')(new Uint8Array([137, 80, 78, 71]), 'image/png');
     spool.append('sess-blob', attachmentEvent(ctxFor(spool, 'sess-blob'), { blobSource: source, attachmentId: mintId() }));
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
@@ -489,7 +490,7 @@ describe('spool retention', () => {
 
   it('never reclaims bytes another session staged and has not committed yet: the attachment still uploads', async () => {
     const rig = await memberRig();
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     // Session A's Stop is mid-parse: the bytes are staged, the record and its
     // `attachmentKeys` receipt have not been committed.
     const source = spool.stagerFor('sess-A')(new Uint8Array([137, 80, 78, 71, 1, 2, 3]), 'image/png');
@@ -508,7 +509,7 @@ describe('spool retention', () => {
   });
 
   it('re-staging a sha restarts its grace: the mtime says when a hook last named the bytes, not when they were first written', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const stage = spool.stagerFor('sess-restage');
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const source = stage(bytes, 'application/octet-stream');
@@ -526,7 +527,7 @@ describe('spool retention', () => {
   });
 
   it('a bare file left directly under blobs/ by a project-wide-dir build is reclaimed under the same grace', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const legacy = path.join(spool.blobsDir, 'a'.repeat(64));
     fs.mkdirSync(spool.blobsDir, { recursive: true });
     fs.writeFileSync(legacy, 'bytes', { mode: 0o600 });
@@ -539,7 +540,7 @@ describe('spool retention', () => {
   });
 
   it('keeps staged bytes for an old unacknowledged attachment until it delivers', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const t0 = Date.now();
     const source = spool.stagerFor('sess-q')(new Uint8Array([137, 80, 78, 71, 9]), 'image/png');
     spool.appendAndRecord('sess-q', [attachmentEvent(ctxFor(spool, 'sess-q'), { blobSource: source, attachmentId: mintId() })], undefined, t0);
@@ -555,7 +556,7 @@ describe('spool retention', () => {
   });
 
   it('does not sweep staged bytes while their active journal is unreadable', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-unreadable-journal';
     const source = spool.stagerFor(sessionId)(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
     spool.append(sessionId, attachmentEvent(ctxFor(spool, sessionId), { blobSource: source, attachmentId: mintId() }));
@@ -572,7 +573,7 @@ describe('spool retention', () => {
   });
 
   it('keeps every staged byte when a readable journal contains a torn record', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-torn-journal';
     const orphan = spool.stagerFor(sessionId)(new Uint8Array([5, 6, 7, 8]), 'application/octet-stream');
     spool.append(sessionId, promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'complete' }));
@@ -589,7 +590,7 @@ describe('spool retention', () => {
   });
 
   it('does not delete a byte refreshed by a concurrent session stager', async () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const sessionId = 'sess-racing-stage';
     const source = spool.stagerFor(sessionId)(new Uint8Array([9, 8, 7, 6]), 'application/octet-stream');
     spool.append(sessionId, promptEvent(ctxFor(spool, sessionId), { promptId: mintId(), text: 'live' }));
@@ -597,7 +598,7 @@ describe('spool retention', () => {
     fs.utimesSync(source.path, old, old);
     const marker = path.join(mycoHome, 'stager-finished');
     const spoolModule = path.resolve(SRC, 'spool.ts');
-    const script = `import fs from 'node:fs'; import { MemberSpool } from ${JSON.stringify(spoolModule)}; new MemberSpool('proj_1', { mycoHome: ${JSON.stringify(mycoHome)} }).stagerFor(${JSON.stringify(sessionId)})(new Uint8Array([9, 8, 7, 6]), 'application/octet-stream'); fs.writeFileSync(${JSON.stringify(marker)}, 'done');`;
+    const script = `import fs from 'node:fs'; import { MemberSpool } from ${JSON.stringify(spoolModule)}; new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome: ${JSON.stringify(mycoHome)} }).stagerFor(${JSON.stringify(sessionId)})(new Uint8Array([9, 8, 7, 6]), 'application/octet-stream'); fs.writeFileSync(${JSON.stringify(marker)}, 'done');`;
     const realStat = fs.statSync.bind(fs);
     let child: ReturnType<typeof spawn> | undefined;
     let finished: Promise<number | null> | undefined;
@@ -623,7 +624,7 @@ describe('spool retention', () => {
   });
 
   it('preserves quarantined journals and staged bytes already written by an earlier retention pass', () => {
-    const spool = new MemberSpool('proj_1', { mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
     const archived = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'sess-archived.jsonl');
     const blob = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME, 'blobs', 'sess-archived', 'a'.repeat(64));
     fs.mkdirSync(path.dirname(blob), { recursive: true });

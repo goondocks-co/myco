@@ -320,7 +320,7 @@ describe('a joined member with no 1.4 vault', () => {
     const status = describeWorkerService(SERVER_URL, { ...worker(), mycoHome })!;
     fs.mkdirSync(path.dirname(status.outLog), { recursive: true });
     fs.writeFileSync(status.outLog, ['worker attached', 'claimed run r_1', 'run r_1 ended'].join('\n') + '\n');
-    new MemberSpool(PROJECT, { mycoHome }).appendRefused({ eventId: '0f0e0d0c-0b0a-4908-8706-050403020100', sessionId: 'sess-1', kind: 'session.start', code: 'parse', reason: 'bad', at: Date.UTC(2026, 8, 24) });
+    new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).appendRefused({ eventId: '0f0e0d0c-0b0a-4908-8706-050403020100', sessionId: 'sess-1', kind: 'session.start', code: 'parse', reason: 'bad', at: Date.UTC(2026, 8, 24) });
 
     const ran = await verb('logs', ['--tail', '2'], rig.fetch);
 

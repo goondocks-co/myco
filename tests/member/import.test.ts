@@ -1,3 +1,7 @@
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { spoolDirFor } from '@myco/member/spool.js';
+import { routingKey } from '@myco/member/routing.js';
+import { writeRegistryEntry } from '@myco/member/registry.js';
 /**
  * Importing a machine's existing history, against the real worker.
  *
@@ -303,17 +307,77 @@ describe('importing a machine of several projects', () => {
 });
 
 describe('choosing which Deployment to import into', () => {
+  it('offers identical plugin session ids only to their pinned Deployment, including after a repository rebind', async () => {
+    const aUrl = 'https://import-a.invalid';
+    const bUrl = 'https://import-b.invalid';
+    const projectId = 'proj_same';
+    const sessionId = 'same-session';
+    const a = await memberRig({ projectId });
+    const b = await memberRig({ projectId });
+    const mycoHome = tempMycoHome();
+    const previousMycoHome = process.env.MYCO_HOME;
+    process.env.MYCO_HOME = mycoHome;
+    try {
+      const roots = [path.join(mycoHome, 'repo-a'), path.join(mycoHome, 'repo-b')];
+      for (const root of roots) fs.mkdirSync(root);
+      const entries = [
+        registerTestMember({ mycoHome, root: roots[0], serverUrl: aUrl, projectId, token: a.token, tokenId: a.tokenId }),
+        registerTestMember({ mycoHome, root: roots[1], serverUrl: bUrl, projectId, token: b.token, tokenId: b.tokenId }),
+      ];
+      for (const entry of entries) {
+        const scope = path.join(mycoHome, 'member', 'transcripts', routingKey(entry));
+        const file = path.join(scope, 'opencode', `${sessionId}.jsonl`);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(path.join(scope, 'destination.json'), `${JSON.stringify({ serverUrl: entry.serverUrl, projectId })}\n`, { mode: 0o600 });
+        fs.writeFileSync(file, line({ type: 'user', cwd: entry.root, message: { role: 'user', content: entry.serverUrl } }));
+        age(file);
+      }
+
+      const decoyHome = path.join(mycoHome, 'decoy-home');
+      const decoyScope = path.join(decoyHome, 'member', 'transcripts', routingKey(entries[0]));
+      fs.mkdirSync(path.join(decoyScope, 'opencode'), { recursive: true });
+      fs.writeFileSync(path.join(decoyScope, 'destination.json'), JSON.stringify({ serverUrl: aUrl, projectId }), { mode: 0o600 });
+      fs.writeFileSync(path.join(decoyScope, 'opencode', `${sessionId}.jsonl`), line({ type: 'user', cwd: roots[0], message: { role: 'user', content: 'foreign member home' } }));
+      process.env.MYCO_HOME = decoyHome;
+      const offers: Array<{ serverUrl: string; sessions: string[] }> = [];
+      const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const request = new Request(input, init);
+        const serverUrl = request.url.startsWith(aUrl) ? aUrl : bUrl;
+        expect(request.headers.get('authorization') === `Bearer ${serverUrl === aUrl ? a.token : b.token}`).toBe(true);
+        if (new URL(request.url).pathname === '/import/plan') {
+          const body = await request.clone().json() as { candidates: Array<{ sessionId: string }> };
+          offers.push({ serverUrl, sessions: body.candidates.map((candidate) => candidate.sessionId) });
+        }
+        return (serverUrl === aUrl ? a : b).fetch(request);
+      };
+      const run = (serverUrl: string) => runImport({ serverUrl, agent: 'opencode', dryRun: true }, {
+        fetch, mycoHome, machineId: TEST_MACHINE_ID, now: Date.now,
+      });
+
+      await run(aUrl);
+      await run(bUrl);
+      expect(offers).toEqual([
+        { serverUrl: aUrl, sessions: [sessionId] },
+        { serverUrl: bUrl, sessions: [sessionId] },
+      ]);
+
+      writeRegistryEntry({ ...entries[1], root: roots[0] }, { mycoHome });
+      offers.length = 0;
+      await run(bUrl);
+      expect(offers).toEqual([{ serverUrl: bUrl, sessions: [sessionId] }]);
+    } finally {
+      if (previousMycoHome === undefined) delete process.env.MYCO_HOME;
+      else process.env.MYCO_HOME = previousMycoHome;
+    }
+  });
+
   it('imports into the Deployment it was given, on a machine that belongs to two', async () => {
     const cwd = path.join(os.tmpdir(), 'myco-import-two-a');
     const other = path.join(os.tmpdir(), 'myco-import-two-b');
     const r = await rig([cwd]);
     try {
-      // A second Deployment, bound to another checkout. The registry is one
-      // file per root named by a hash of the root, so its order is a hash —
-      // taking the first entry imports into whichever Deployment that hash
-      // happened to sort first, which on this machine may hold no bindings at
-      // all and import nothing while reporting every transcript unplaced.
-      registerTestMember({ mycoHome: r.mycoHome, token: r.env.token, tokenId: r.env.tokenId, projectId: 'proj_9', serverUrl: 'https://other.invalid', root: other });
+      const secondary = await memberRig({ projectId: 'proj_9' });
+      registerTestMember({ mycoHome: r.mycoHome, token: secondary.token, tokenId: secondary.tokenId, projectId: 'proj_9', serverUrl: 'https://other.invalid', root: other });
 
       const report = await r.run();
       expect(report.refused).toBeUndefined();
@@ -324,6 +388,18 @@ describe('choosing which Deployment to import into', () => {
     } finally {
       r.restore();
     }
+  });
+
+  it('requires an explicit default or repository binding even with one Deployment', async () => {
+    const cwd = path.join(os.tmpdir(), 'myco-import-single-bound');
+    const r = await rig([cwd]);
+    try {
+      const deps = { fetch: r.env.fetch, mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, cwd: os.tmpdir() };
+      expect((await runImport({ dryRun: true }, deps)).refused).toContain('--server');
+      expect((await runImport({ dryRun: true }, { ...deps, cwd })).refused).toBeUndefined();
+      recordDefaultDeployment('https://member-test.invalid', { mycoHome: r.mycoHome });
+      expect((await runImport({ dryRun: true }, deps)).refused).toBeUndefined();
+    } finally { r.restore(); }
   });
 
   it('refuses rather than guessing when a machine belongs to two and nothing names one', async () => {
@@ -435,7 +511,7 @@ describe('what an import leaves behind, and what stops it', () => {
     const r = await rig([cwd], 1);
     try {
       await r.run();
-      const spoolDir = path.join(r.mycoHome, 'member', 'spool', 'proj_1');
+      const spoolDir = spoolDirFor({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, r.mycoHome);
       const states = fs.readdirSync(spoolDir).filter((f) => f.endsWith('.state.json'));
       expect(states.length).toBe(1);
       // Stamped, so retention has a clock to age it on. State with no

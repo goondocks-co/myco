@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { kickHelper, type KickOutcome } from './helper.js';
-import { listRegistryEntries } from './registry.js';
+import { listRoutingEntries, routingKey, type MemberRoutingIdentity } from './routing.js';
 import { MemberSpool } from './spool.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
 
@@ -34,20 +34,21 @@ function sweptRecently(spool: MemberSpool, now: number): boolean {
 }
 
 /** Kick every other project's helper that has work waiting; answers each project kicked, with what its kick did. */
-export function kickWaitingProjects(mycoHome: string, self: string, opts: { now?: () => number; spawn?: DetachedSpawn } = {}): Array<{ projectId: string; outcome: KickOutcome }> {
+export function kickWaitingProjects(mycoHome: string, self: MemberRoutingIdentity | string, opts: { now?: () => number; spawn?: DetachedSpawn } = {}): Array<{ projectId: string; outcome: KickOutcome }> {
   const now = opts.now ?? Date.now;
   const kicked: Array<{ projectId: string; outcome: KickOutcome }> = [];
-  const projects = new Set(listRegistryEntries(mycoHome).map((entry) => entry.projectId));
-  for (const projectId of projects) {
-    if (projectId === self) continue;
-    const spool = new MemberSpool(projectId, { mycoHome });
+  const projects = new Map(listRoutingEntries(mycoHome).map((entry) => [routingKey(entry), entry]));
+  for (const [key, route] of projects) {
+    if (typeof self !== 'string' && key === routingKey(self)) continue;
+    const { projectId, serverUrl } = route;
+    const spool = new MemberSpool(route, { mycoHome });
     if (!fs.existsSync(spool.dir) || !holdsWork(spool) || !spool.shouldDial(now(), false) || sweptRecently(spool, now())) continue;
     try {
       fs.writeFileSync(path.join(spool.dir, HELPER_SWEPT_FILE), '', { mode: 0o600 });
       const at = new Date(now());
       fs.utimesSync(path.join(spool.dir, HELPER_SWEPT_FILE), at, at);
     } catch { /* the mark only spares a second kick */ }
-    kicked.push({ projectId, outcome: kickHelper({ projectId, mycoHome, reason: 'capture', spawn: opts.spawn, now }) });
+    kicked.push({ projectId, outcome: kickHelper({ projectId, serverUrl, mycoHome, reason: 'capture', spawn: opts.spawn, now }) });
   }
   return kicked;
 }

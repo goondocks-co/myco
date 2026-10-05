@@ -21,6 +21,7 @@ let dir: string;
 let root: string;
 let home: string;
 let savedHome: string | undefined;
+const ROUTING_KEY = '0123456789abcdef/project';
 beforeEach(() => {
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-opencode-contract-')));
   root = path.join(dir, 'proj');
@@ -30,6 +31,7 @@ beforeEach(() => {
   // The binary mints a prompt id per prompt, as `myco hook user-prompt-submit` does.
   fs.writeFileSync(path.join(home, 'bin', 'myco'), [
     '#!/bin/sh',
+    `if [ "$1 $2" = "member routing-key" ]; then printf '%s\\n' '${ROUTING_KEY}'; exit 0; fi`,
     'cat > /dev/null',
     `if [ "$2" = user-prompt-submit ]; then n=$(($(cat '${dir}/n' 2>/dev/null || echo 0) + 1)); echo $n > '${dir}/n'; printf '{"promptId":"prompt-%s"}' $n; else printf '{}'; fi`,
   ].join('\n'), { mode: 0o755 });
@@ -71,7 +73,7 @@ describe('the OpenCode member plugin under opencode\'s plugin contract', () => {
       await event('session.idle', { sessionID });
     }
 
-    const transcript = path.join(home, 'member', 'transcripts', 'opencode', `${sessionID}.jsonl`);
+    const transcript = path.join(home, 'member', 'transcripts', ROUTING_KEY, 'opencode', `${sessionID}.jsonl`);
     const raw = fs.readFileSync(transcript, 'utf8');
     let offset = 0;
     const lines = raw.split('\n').filter(Boolean).map((line) => {
@@ -94,7 +96,7 @@ describe('the OpenCode member plugin under opencode\'s plugin contract', () => {
   it('ends every session it opened when its instance is disposed, so a new instance takes the session at once', async () => {
     const first = await (await loadPlugin('?instance=1'))({ client: { session: { prompt: async () => ({}) } }, directory: root, worktree: root });
     await first.event({ event: { type: 'session.created', properties: { info: { id: 'ses_disposed' } } } });
-    const claim = path.join(home, 'member', 'claims', 'opencode-ses_disposed.lock');
+    const claim = path.join(home, 'member', 'claims', ROUTING_KEY, 'opencode-ses_disposed.lock');
     expect(fs.existsSync(claim)).toBe(true);
     await first.event({ event: { type: 'server.instance.disposed', properties: { directory: root } } });
     expect(fs.existsSync(claim)).toBe(false);
@@ -104,7 +106,7 @@ describe('the OpenCode member plugin under opencode\'s plugin contract', () => {
       { sessionID: 'ses_disposed', messageID: 'msg_again' },
       { message: { id: 'msg_again', sessionID: 'ses_disposed', role: 'user' }, parts: [{ id: 'prt_again', messageID: 'msg_again', sessionID: 'ses_disposed', type: 'text', text: 'again' }] },
     );
-    const lines = fs.readFileSync(path.join(home, 'member', 'transcripts', 'opencode', 'ses_disposed.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const lines = fs.readFileSync(path.join(home, 'member', 'transcripts', ROUTING_KEY, 'opencode', 'ses_disposed.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     expect(lines.filter((l) => l.type === 'prompt').map((l) => l.text)).toEqual(['again']);
   });
 });

@@ -1,3 +1,4 @@
+import { assertMemberTranscriptDestination } from './transcript-routing.js';
 /**
  * Prompts a harness writes only to its transcript, captured by the member helper (#1561): a harness whose manifest
  * declares `capture.promptsFromTranscript` has no prompt hook, and writes its transcript after the hook that starts an
@@ -39,6 +40,7 @@ export function backfillTranscriptPrompts(spool: MemberSpool, now: () => number)
     const request = state.promptBackfill;
     // Only a hook of a harness that names itself asks (`hooks/session-start.ts`): its agent is in the state.
     if (request === undefined || state.agent === undefined) continue;
+    assertMemberTranscriptDestination(request.transcriptPath, spool.routing!, spool.mycoHome);
     const agent = state.agent;
     const prompts = readPromptsFromTranscript(agent, request.transcriptPath);
     if (prompts.length === 0) continue;

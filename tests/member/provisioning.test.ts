@@ -265,7 +265,7 @@ describe('myco member join / leave', () => {
 
   it('leave forgets the membership and purge removes its spool while preserving global hooks for other projects', async () => {
     await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot, '--provision', 'claude-code'], { env: { JOIN_TOKEN: rig.token } });
-    const spool = new MemberSpool(PROJECT, { mycoHome });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://server.example' }, { mycoHome });
     fs.writeFileSync(path.join(spool.dir, 'sess-keep.jsonl'), '{}\n');
     const out: string[] = [];
     const deps = { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {} };

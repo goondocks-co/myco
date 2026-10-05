@@ -21,6 +21,7 @@ import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 
 const MEMBER_FLAG = Symbol.for('myco.member-extension');
 const TOOLS = '[{"name":"myco_search","description":"search","inputSchema":{"type":"object","properties":{"query":{"description":"q"}}}},{"name":"myco_fail","description":"fails","inputSchema":{"type":"object","properties":{}}}]';
+const ROUTING_KEY = '0123456789abcdef/project';
 
 let dir: string;
 let root: string;
@@ -37,6 +38,7 @@ beforeEach(() => {
   execFileSync('git', ['init', '-q', root]);
   fs.writeFileSync(path.join(home, 'bin', 'myco'), [
     '#!/bin/sh',
+    `if [ "$1 $2" = "member routing-key" ]; then printf '%s\\n' '${ROUTING_KEY}'; exit 0; fi`,
     `printf '%s' "$*" >> '${log}'`,
     `if [ "$1" = hook ]; then printf ' stdin=' >> '${log}'; cat >> '${log}'; printf '{}'; fi`,
     `if [ "$1 $2" = "tool list" ]; then printf '%s' '${TOOLS}'; fi`,
@@ -119,7 +121,7 @@ describe('the Pi member extension under Pi\'s callback contract', () => {
     (await loadExtension('?process=1'))(first.pi);
     await first.handlers.get('session_start')!({ type: 'session_start', reason: 'startup' }, ctx);
     await first.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, ctx);
-    expect(fs.existsSync(path.join(home, 'member', 'claims', 'pi-0192f1a2-3b4c-7d8e-9f00-aabbccddeeff.lock'))).toBe(false);
+    expect(fs.existsSync(path.join(home, 'member', 'claims', ROUTING_KEY, 'pi-0192f1a2-3b4c-7d8e-9f00-aabbccddeeff.lock'))).toBe(false);
 
     const second = fakePi();
     (await loadExtension('?process=2'))(second.pi);

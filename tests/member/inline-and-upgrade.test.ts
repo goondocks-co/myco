@@ -20,7 +20,7 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { unboundedBudget } from '@myco/member/budget.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { helperPass } from '@myco/member/helper-pass.js';
@@ -60,7 +60,7 @@ const transcript = (id: string): string => {
 };
 /** A start that must never happen. */
 const noStart: DetachedSpawn = () => { throw new Error('no helper may be started here'); };
-const spool = () => new MemberSpool('proj_1', { mycoHome });
+const spool = () => new MemberSpool({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, { mycoHome });
 
 describe('a sandbox (G4g)', () => {
   it('captures from the environment\'s credential without a request, and delivers everything at the turn\'s end, in the hook', async () => {
@@ -148,13 +148,13 @@ describe('a turn\'s end that ships inline', () => {
     expect(spool().depth('sess-held')).toBe(1);
     // That helper takes the lock, clears the marks, and delivers only after a while.
     let passStarted = false;
-    const deliver = helperPass('proj_1', mycoHome, { fetch: rig.fetch });
+    const deliver = helperPass({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, mycoHome, { fetch: rig.fetch });
     const holder = runHelper({
-      projectId: 'proj_1', mycoHome, contained: true, lingerMs: 0,
+      projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid', mycoHome, contained: true, lingerMs: 0,
       pass: async (deadline, o) => { passStarted = true; await Bun.sleep(400); return deliver(deadline, o); },
     });
     while (!passStarted) await Bun.sleep(5);
-    expect(fs.existsSync(helperPaths('proj_1', mycoHome).dirty)).toBe(false);
+    expect(fs.existsSync(helperPaths('proj_1', mycoHome, 'https://s').dirty)).toBe(false);
     // The turn's end finds that helper holding the work, and ships inline: it waits for it, never past its budget.
     await runHook('stop', { session_id: 'sess-held', last_assistant_message: 'done', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
     expect(rig.rows('prompt_batches')).toBe(1);
@@ -171,9 +171,9 @@ describe('a turn\'s end that ships inline', () => {
     updateSessionState(spool().dir, 'sess-own', (state) => { state.transcriptRetry = { at: Date.now() + 600_000, backoffMs: 600_000 }; });
     // A helper the harness's job holds takes the lock and keeps it for eight seconds, delivering as it goes.
     let passStarted = false;
-    const deliver = helperPass('proj_1', mycoHome, { fetch: rig.fetch });
+    const deliver = helperPass({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, mycoHome, { fetch: rig.fetch });
     const holder = runHelper({
-      projectId: 'proj_1', mycoHome, contained: true, lingerMs: 8_000, deadlineMs: 8_000,
+      projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid', mycoHome, contained: true, lingerMs: 8_000, deadlineMs: 8_000,
       pass: async (deadline, o) => { passStarted = true; await Bun.sleep(300); return deliver(deadline, o); },
     });
     while (!passStarted) await Bun.sleep(5);
@@ -198,9 +198,9 @@ describe('a turn\'s end that ships inline', () => {
       return rig.fetch(req);
     };
     let passStarted = false;
-    const deliver = helperPass('proj_1', mycoHome, { fetch: slowBlobs });
+    const deliver = helperPass({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, mycoHome, { fetch: slowBlobs });
     const holder = runHelper({
-      projectId: 'proj_1', mycoHome, contained: true, lingerMs: 3_000, deadlineMs: 6_000,
+      projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid', mycoHome, contained: true, lingerMs: 3_000, deadlineMs: 6_000,
       pass: async (deadline, o) => { passStarted = true; await Bun.sleep(200); return deliver(deadline, o); },
     });
     while (!passStarted) await Bun.sleep(5);
@@ -244,7 +244,7 @@ describe('a journal across builds (G4h)', () => {
     });
     fs.mkdirSync(s.dir, { recursive: true });
     fs.writeFileSync(path.join(s.dir, 'sess-old.jsonl'), `${lines.join('\n')}\n`, { mode: 0o600 });
-    const drained = await s.drainSession('sess-old', new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch), unboundedBudget());
+    const drained = await s.drainSession('sess-old', new ServerClient({ serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, rig.fetch), unboundedBudget());
     expect(drained).toMatchObject({ acked: 2, endedBy: 'drained' });
     expect(fs.existsSync(path.join(s.dir, 'sess-old.jsonl'))).toBe(false);
   });

@@ -78,7 +78,7 @@ describe('a report reading a link to nothing', () => {
   });
 
   it('answers unavailable for a session state, rather than one never written', () => {
-    const dir = spoolDirFor('proj_1', mycoHome);
+    const dir = spoolDirFor({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, mycoHome);
     fs.mkdirSync(dir, { recursive: true });
     const file = sessionStatePath(dir, 'sess-a');
     fs.writeFileSync(file, JSON.stringify({ version: 1, highWater: 2, prompts: {} }), { mode: 0o600 });
@@ -90,7 +90,7 @@ describe('a report reading a link to nothing', () => {
   });
 
   it('still reads a state never written as missing', () => {
-    const dir = spoolDirFor('proj_1', mycoHome);
+    const dir = spoolDirFor({ projectId: 'proj_1', serverUrl: 'https://deployment.example' }, mycoHome);
     fs.mkdirSync(dir, { recursive: true });
 
     expect(readSessionStateResultUnlocked(dir, 'sess-a')).toMatchObject({ ok: false, reason: 'missing' });

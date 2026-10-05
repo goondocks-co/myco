@@ -30,7 +30,7 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { readSessionState } from '@myco/member/session-state.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { ServerClient } from '@myco/member/transport.js';
+import { ServerClient } from './helpers/env-client.js';
 import { deadlineBudget } from '@myco/member/budget.js';
 import type { FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -62,7 +62,7 @@ const transcript = (id: string): string => {
   fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
   return file;
 };
-const spool = () => new MemberSpool('proj_1', { mycoHome });
+const spool = () => new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
 /** The context a hook answered, whether its harness takes JSON or plain text. */
 const contextOf = (stdout: string): string => {
   try {
@@ -281,7 +281,7 @@ describe('Deployment feature scope', () => {
   const serverUrl = 'https://member-test.invalid';
   function advertise(projectId: string, features: Array<'turn'>, at: number, url = serverUrl) {
     registerTestMember({ mycoHome, token: rig.token, projectId, serverUrl: url, root: path.join(mycoHome, projectId) });
-    const project = new MemberSpool(projectId, { mycoHome });
+    const project = new MemberSpool({ projectId, serverUrl: url }, { mycoHome });
     updateProjectContext(project.dir, mycoHome, (cache) => { cache.features = features; cache.featuresAt = at; });
   }
   it('uses the newest advertisement, isolates Deployments, and honors feature withdrawal', () => {
@@ -302,7 +302,7 @@ describe('Deployment feature scope', () => {
   it('follows response order despite equal or backwards clocks and later context block writes', async () => {
     advertise('proj_1', [], 1);
     advertise('proj_new', ['turn'], 1);
-    const other = new MemberSpool('proj_new', { mycoHome });
+    const other = new MemberSpool({ projectId: 'proj_new', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     let at = 1;
     const answer = (features: string, spoolDir: string) => watchingFeatures(async () => Response.json({}, {
       headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features },
@@ -367,7 +367,7 @@ describe('Deployment feature scope', () => {
     advertise('proj_1', ['turn'], 0);
     updateProjectContext(spool().dir, mycoHome, (cache) => { delete cache.featuresAt; });
     advertise('proj_new', [], 0);
-    updateProjectContext(new MemberSpool('proj_new', { mycoHome }).dir, mycoHome, (cache) => { delete cache.featuresAt; });
+    updateProjectContext(new MemberSpool({ projectId: 'proj_new', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, mycoHome, (cache) => { delete cache.featuresAt; });
     expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
   });
   it('rejects a delayed older answer even when the newer answer leaves features unchanged', async () => {

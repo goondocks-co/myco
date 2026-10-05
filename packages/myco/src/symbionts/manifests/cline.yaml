@@ -22,9 +22,9 @@ capture:
   # from the events it sees in process, and Myco's retention pass ages it.
   transcriptDiscovery:
     roots:
-      - "@memberHome/member/transcripts/cline"
+      - "@memberHome/member/transcripts"
     patterns:
-      - "{sessionId}.jsonl"
+      - "*/*/cline/{sessionId}.jsonl"
     transcriptCwdPath: "cwd"
     retention: member
   rules:

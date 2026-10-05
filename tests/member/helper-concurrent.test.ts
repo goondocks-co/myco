@@ -61,10 +61,10 @@ describe('many hooks kicking the helper at once (G4d)', () => {
     const startsBy = new Map<string, number>(PROJECTS.map((p) => [p, 0]));
     const spawnFor = (projectId: string): DetachedSpawn => () => {
       startsBy.set(projectId, startsBy.get(projectId)! + 1);
-      const pass = helperPass(projectId, mycoHome, { fetch: rigs.get(projectId)!.fetch });
+      const pass = helperPass({ projectId: projectId, serverUrl: `https://${projectId}.test` }, mycoHome, { fetch: rigs.get(projectId)!.fetch });
       // A detached helper takes 100 to 375 ms to start and reach its lock (measured on the macOS VM and the Windows PC).
       runs.push(sleep(START_MS_MIN + Math.floor(Math.random() * (START_MS_MAX - START_MS_MIN))).then(() => runHelper({
-        projectId, mycoHome, lingerMs: 40, pollMs: 5,
+        projectId, serverUrl: `https://${projectId}.test`, mycoHome, lingerMs: 40, pollMs: 5,
         pass: async (deadline, opts) => {
           const now = active.get(projectId)! + 1;
           active.set(projectId, now);
@@ -81,13 +81,13 @@ describe('many hooks kicking the helper at once (G4d)', () => {
     await Promise.all(Array.from({ length: SESSIONS }, async (_, s) => {
       const projectId = PROJECTS[s % PROJECTS.length];
       const sessionId = `sess-${s}`;
-      const spool = new MemberSpool(projectId, { mycoHome });
+      const spool = new MemberSpool({ projectId: projectId, serverUrl: `https://${projectId}.test` }, { mycoHome });
       const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
       for (let h = 0; h < HOOKS; h++) {
         const event = promptEvent(ctx, { promptId: mintId(), text: `${sessionId} hook ${h} ${'z'.repeat(h * 40)}` });
         sent.get(projectId)!.push(event.envelope.eventId);
         spool.append(sessionId, event);
-        const outcome = kickHelper({ projectId, mycoHome, spawn: spawnFor(projectId) });
+        const outcome = kickHelper({ projectId, serverUrl: `https://${projectId}.test`, mycoHome, spawn: spawnFor(projectId) });
         if (outcome.kind === 'started') kicks.started += 1;
         else if (outcome.kind === 'running') kicks.running += 1;
         else if (outcome.kind === 'starting') kicks.starting += 1;
@@ -117,9 +117,9 @@ describe('many hooks kicking the helper at once (G4d)', () => {
       expect(held.map((r) => r.event_id).sort()).toEqual([...sent.get(projectId)!].sort());
       // Every record arrived whole: its text is the one its hook wrote.
       for (const row of held) expect((JSON.parse(row.payload) as { text: string }).text).toMatch(/^sess-\d+ hook \d+ z*$/);
-      const spool = new MemberSpool(projectId, { mycoHome });
+      const spool = new MemberSpool({ projectId: projectId, serverUrl: `https://${projectId}.test` }, { mycoHome });
       expect(spool.sessionIds()).toEqual([]);
-      expect(fs.existsSync(helperPaths(projectId, mycoHome).dirty)).toBe(false);
+      expect(fs.existsSync(helperPaths(projectId, mycoHome, `https://${projectId}.test`).dirty)).toBe(false);
     }
   }, 120_000);
 });

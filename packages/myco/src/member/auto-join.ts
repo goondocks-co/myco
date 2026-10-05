@@ -16,7 +16,7 @@
  * (`takeRepositoryLock`, a `LifecycleLock` the system lets go of when its holder dies), so an attempt run by hand never
  * races it; a connection `myco member join` writes meanwhile is the one that stands (the registry lock).
  *
- * A repository that did not join, or lies outside the folders, is named to the person once per session, in the answer
+ * A repository that did not join, or lies outside the folders, is named to the person once per Deployment and session, in the answer
  * of a hook whose answer reaches the agent.
  */
 import crypto from 'node:crypto';
@@ -28,9 +28,11 @@ import { isSafeProjectRoot } from '../project-root.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { runGitAnswer } from '../utils/git.js';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
-import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
+import { isProjectId } from './constants.js';
+import { deploymentKeyFor, deploymentUrl } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -47,6 +49,95 @@ const STATE_VERSION = 1;
 const SWEEP_MARKER = 'sweep.json';
 const REQUESTS_DIRNAME = 'requests';
 const IMPORTS_DIRNAME = 'imports';
+const ROOT_KEY_PATTERN = /^[0-9a-f]{16,64}$/;
+const DEPLOYMENT_KEY_PATTERN = /^[0-9a-f]{16,64}$/;
+
+function readDirectoryIfPresent(dir: string): string[] | null {
+  try { return fs.readdirSync(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir)) return null;
+    throw error;
+  }
+}
+
+function directoryPresent(dir: string): boolean {
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir)) return false;
+    throw error;
+  }
+  if (!stat.isDirectory()) throw new Error(`Auto-join directory unavailable: ${dir}`);
+  return true;
+}
+
+function scopedFile(bucket: string, rootKey: string, mycoHome: string, serverUrl?: string, projectId?: string): string {
+  if (!ROOT_KEY_PATTERN.test(rootKey)) throw new Error('Invalid auto-join repository key');
+  if (projectId !== undefined && !isProjectId(projectId)) throw new Error('Invalid auto-join project id');
+  return path.join(autoJoinDir(mycoHome), bucket, ...(serverUrl === undefined ? [] : [deploymentKeyFor(serverUrl)]),
+    ...(projectId === undefined ? [] : [projectId]), `${rootKey}.json`);
+}
+
+function scopedFiles(bucket: string, rootKey: string, mycoHome: string, projects = false): string[] {
+  if (!ROOT_KEY_PATTERN.test(rootKey)) throw new Error('Invalid auto-join repository key');
+  const base = path.join(autoJoinDir(mycoHome), bucket);
+  const names = readDirectoryIfPresent(base);
+  if (names === null) return [];
+  const deployments = names.filter((name) => DEPLOYMENT_KEY_PATTERN.test(name));
+  const files: string[] = [];
+  for (const deployment of deployments) {
+    const dir = path.join(base, deployment);
+    if (!directoryPresent(dir)) continue;
+    if (!projects) { files.push(path.join(dir, `${rootKey}.json`)); continue; }
+    const leaves = readDirectoryIfPresent(dir);
+    if (leaves === null) continue;
+    const projectIds = leaves.filter(isProjectId);
+    for (const projectId of projectIds) {
+      if (directoryPresent(path.join(dir, projectId))) files.push(path.join(dir, projectId, `${rootKey}.json`));
+    }
+  }
+  for (const file of files) assertMemberPathContained(file, mycoHome);
+  return files.sort((a, b) => a.length - b.length);
+}
+
+function latestByRoute<T extends { rootKey: string; serverUrl?: string; projectId?: string; at: number }>(
+  rows: readonly T[], includeProject: boolean,
+): T[] {
+  const latest = new Map<string, T>();
+  for (const row of rows) {
+    const key = `${row.serverUrl === undefined ? '' : deploymentUrl(row.serverUrl)}\0${includeProject ? row.projectId ?? '' : ''}\0${row.rootKey}`;
+    if ((latest.get(key)?.at ?? -Infinity) <= row.at) latest.set(key, row);
+  }
+  return [...latest.values()].sort((a, b) => a.at - b.at);
+}
+
+function listedFiles(bucket: string, mycoHome: string, projects = false): string[] {
+  const base = path.join(autoJoinDir(mycoHome), bucket);
+  const names = readDirectoryIfPresent(base);
+  if (names === null) return [];
+  const files: string[] = [];
+  for (const name of names) {
+    if (ROOT_KEY_PATTERN.test(name.slice(0, -'.json'.length)) && name.endsWith('.json')) {
+      files.push(path.join(base, name));
+      continue;
+    }
+    if (!DEPLOYMENT_KEY_PATTERN.test(name)) continue;
+    const dir = path.join(base, name);
+    if (!directoryPresent(dir)) continue;
+    const leaves = readDirectoryIfPresent(dir);
+    if (leaves === null) continue;
+    for (const leaf of leaves) {
+      if (projects) {
+        if (!isProjectId(leaf)) continue;
+        const projectDir = path.join(dir, leaf);
+        if (!directoryPresent(projectDir)) continue;
+        const nested = readDirectoryIfPresent(projectDir);
+        if (nested === null) continue;
+        for (const file of nested) if (ROOT_KEY_PATTERN.test(file.slice(0, -'.json'.length)) && file.endsWith('.json')) files.push(path.join(dir, leaf, file));
+      } else if (ROOT_KEY_PATTERN.test(leaf.slice(0, -'.json'.length)) && leaf.endsWith('.json')) files.push(path.join(dir, leaf));
+    }
+  }
+  for (const file of files) assertMemberPathContained(file, mycoHome);
+  return files.sort((a, b) => a.length - b.length);
+}
 
 /**
  * The member helper's bucket for repositories joining a project (`member/helper.ts`): its lock and marks live in the
@@ -150,7 +241,9 @@ export function autoJoinDir(mycoHome: string): string {
   return path.join(memberRoot(mycoHome), AUTO_JOIN_DIRNAME);
 }
 
-const statePath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), `${rootKey}.json`);
+const statePath = (rootKey: string, mycoHome: string, serverUrl?: string): string => serverUrl === undefined
+  ? path.join(autoJoinDir(mycoHome), `${rootKey}.json`)
+  : scopedFile('states', rootKey, mycoHome, serverUrl);
 const lockPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), `${rootKey}.lock`);
 
 /**
@@ -239,33 +332,57 @@ export function placeRepository(
   return under ? 'eligible' : 'outside_folders';
 }
 
-export function readAutoJoinState(rootKey: string, mycoHome: string): AutoJoinState | null {
-  const read = readPrivateJson<AutoJoinState>(statePath(rootKey, mycoHome));
-  if (!read.ok) return null;
+function readStateFile(file: string): AutoJoinState | null {
+  const read = readPrivateJson<AutoJoinState>(file);
+  if (!read.ok) {
+    if (read.reason !== 'missing') reportSkippedPrivateFile('auto-join state', file, read);
+    return null;
+  }
   const value = read.value;
-  return value?.version === STATE_VERSION && typeof value.attemptAt === 'number' && typeof value.outcome === 'string' ? value : null;
+  if (value?.version === STATE_VERSION && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
+    && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)) return value;
+  reportSkippedPrivateFile('auto-join state', file, { reason: 'invalid' });
+  return null;
+}
+
+export function readAutoJoinState(rootKey: string, mycoHome: string, serverUrl?: string): AutoJoinState | null {
+  if (serverUrl === undefined) {
+    const legacy = readStateFile(statePath(rootKey, mycoHome));
+    return legacy?.rootKey === rootKey ? legacy : null;
+  }
+  const scoped = readStateFile(statePath(rootKey, mycoHome, serverUrl));
+  if (scoped !== null) return scoped.rootKey === rootKey && deploymentUrl(scoped.serverUrl) === deploymentUrl(serverUrl) ? scoped : null;
+  const legacy = readStateFile(statePath(rootKey, mycoHome));
+  return legacy !== null && legacy.rootKey === rootKey && deploymentUrl(legacy.serverUrl) === deploymentUrl(serverUrl) ? legacy : null;
 }
 
 export function writeAutoJoinState(state: Omit<AutoJoinState, 'version'>, mycoHome: string): void {
-  ensureMemberDir(autoJoinDir(mycoHome), mycoHome);
-  const record: AutoJoinState = { version: STATE_VERSION, ...state };
-  writePrivateFileAtomic(statePath(state.rootKey, mycoHome), `${JSON.stringify(record, null, 2)}\n`);
+  const file = statePath(state.rootKey, mycoHome, state.serverUrl);
+  ensureMemberDir(path.dirname(file), mycoHome);
+  const record: AutoJoinState = { version: STATE_VERSION, ...state, serverUrl: deploymentUrl(state.serverUrl) };
+  writePrivateFileAtomic(file, `${JSON.stringify(record, null, 2)}\n`);
+  const legacy = readStateFile(statePath(state.rootKey, mycoHome));
+  if (legacy !== null && deploymentUrl(legacy.serverUrl) === record.serverUrl) fs.rmSync(statePath(state.rootKey, mycoHome), { force: true });
 }
 
 /** Forget what auto-join found of a repository, and the sessions it counted there. */
 export function forgetAutoJoinState(rootKey: string, mycoHome: string): void {
   fs.rmSync(statePath(rootKey, mycoHome), { force: true });
+  for (const file of scopedFiles('states', rootKey, mycoHome)) fs.rmSync(file, { force: true });
   fs.rmSync(seenPath(rootKey, mycoHome), { force: true });
+  for (const file of scopedFiles('sessions', rootKey, mycoHome)) fs.rmSync(file, { force: true });
 }
 
 /** Every repository auto-join has tried, newest attempt first. */
 export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
-  let names: string[];
-  try { names = fs.readdirSync(autoJoinDir(mycoHome)).filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)); } catch { return []; }
-  return names
-    .map((name) => readAutoJoinState(name.slice(0, -'.json'.length), mycoHome))
-    .filter((state): state is AutoJoinState => state !== null)
-    .sort((a, b) => b.attemptAt - a.attemptAt);
+  const legacy = (readDirectoryIfPresent(autoJoinDir(mycoHome)) ?? [])
+    .filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)).map((name) => path.join(autoJoinDir(mycoHome), name));
+  const byRoute = new Map<string, AutoJoinState>();
+  for (const file of [...legacy, ...listedFiles('states', mycoHome)]) {
+    const state = readStateFile(file);
+    if (state !== null) byRoute.set(`${deploymentUrl(state.serverUrl)}\0${state.rootKey}`, state);
+  }
+  return [...byRoute.values()].sort((a, b) => b.attemptAt - a.attemptAt);
 }
 
 /** Whether a repository is due an attempt: never tried, or tried and not joined at least `AUTO_JOIN_RETRY_MS` ago. */
@@ -318,7 +435,7 @@ export function joinStanding(root: string, rootKey: string, serverUrl: string, m
 } {
   const leaves = machineAutoJoinLeaves(serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
-  const state = readAutoJoinState(rootKey, mycoHome);
+  const state = readAutoJoinState(rootKey, mycoHome, serverUrl);
   if (isLeft(rootKey, mycoHome)) {
     if (connectTo === null) return { standing: 'left', leaves, state };
     clearLeft(rootKey, mycoHome);
@@ -330,59 +447,107 @@ export function joinStanding(root: string, rootKey: string, serverUrl: string, m
 /** A repository a hook asked the helper to try joining, when, and for which Deployment. */
 export interface JoinRequest { root: string; rootKey: string; at: number; serverUrl?: string }
 
-const requestPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME, `${rootKey}.json`);
+const requestPath = (rootKey: string, mycoHome: string, serverUrl?: string): string => scopedFile(REQUESTS_DIRNAME, rootKey, mycoHome, serverUrl);
 
 /** Ask the helper to try joining a repository, with the Deployment it was asked for: kept until an attempt is made, one per repository. */
 export function requestJoin(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): void {
-  ensureMemberDir(path.dirname(requestPath(rootKey, mycoHome)), mycoHome);
-  writePrivateFileAtomic(requestPath(rootKey, mycoHome), `${JSON.stringify({ root, rootKey, at: now, serverUrl })}\n`);
+  const file = requestPath(rootKey, mycoHome, serverUrl);
+  ensureMemberDir(path.dirname(file), mycoHome);
+  writePrivateFileAtomic(file, `${JSON.stringify({ root, rootKey, at: now, serverUrl: deploymentUrl(serverUrl) })}\n`);
 }
 
 /** Every repository waiting for an attempt, the oldest asked first. */
 export function listJoinRequests(mycoHome: string): JoinRequest[] {
-  let names: string[];
-  try { names = fs.readdirSync(path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME)).filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)); } catch { return []; }
-  return names
-    .map((name) => readPrivateJson<JoinRequest>(requestPath(name.slice(0, -'.json'.length), mycoHome)))
-    .flatMap((read) => (read.ok && typeof read.value?.root === 'string' && typeof read.value.rootKey === 'string' && typeof read.value.at === 'number' ? [read.value] : []))
-    .sort((a, b) => a.at - b.at);
+  const rows = listedFiles(REQUESTS_DIRNAME, mycoHome)
+    .map((file) => {
+      const read = readPrivateJson<JoinRequest>(file);
+      if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('auto-join request', file, read);
+      return { file, read };
+    })
+    .flatMap(({ file, read }) => {
+      if (!read.ok) return [];
+      const value = read.value;
+      if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+        && typeof value.at === 'number' && path.basename(file) === `${value.rootKey}.json`
+        && (value.serverUrl === undefined || typeof value.serverUrl === 'string')
+        && (path.dirname(file) === path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME)
+          || (value.serverUrl !== undefined && path.basename(path.dirname(file)) === deploymentKeyFor(value.serverUrl)))) return [value];
+      reportSkippedPrivateFile('auto-join request', file, { reason: 'invalid' });
+      return [];
+    });
+  return latestByRoute(rows, false);
 }
 
 /** Drop a repository's request, once an attempt was made for it: a request asked again meanwhile stays. */
 export function clearJoinRequest(request: JoinRequest, mycoHome: string): void {
-  const held = readPrivateJson<JoinRequest>(requestPath(request.rootKey, mycoHome));
-  if (held.ok && held.value?.at !== request.at) return;
-  fs.rmSync(requestPath(request.rootKey, mycoHome), { force: true });
+  for (const file of [requestPath(request.rootKey, mycoHome), ...(request.serverUrl === undefined ? [] : [requestPath(request.rootKey, mycoHome, request.serverUrl)])]) {
+    const held = readPrivateJson<JoinRequest>(file);
+    if (held.ok && typeof held.value?.at === 'number' && held.value.at <= request.at
+      && (held.value.serverUrl === undefined ? request.serverUrl === undefined
+        : request.serverUrl !== undefined && deploymentUrl(held.value.serverUrl) === deploymentUrl(request.serverUrl))) fs.rmSync(file, { force: true });
+  }
 }
 
 /** Drop whatever request a repository holds: it was joined, or left, by other means. */
-export function dropJoinRequest(rootKey: string, mycoHome: string): void {
-  fs.rmSync(requestPath(rootKey, mycoHome), { force: true });
+export function dropJoinRequest(rootKey: string, mycoHome: string, serverUrl?: string): void {
+  if (serverUrl === undefined) {
+    for (const file of [requestPath(rootKey, mycoHome), ...scopedFiles(REQUESTS_DIRNAME, rootKey, mycoHome)]) fs.rmSync(file, { force: true });
+    return;
+  }
+  fs.rmSync(requestPath(rootKey, mycoHome, serverUrl), { force: true });
+  const legacy = requestPath(rootKey, mycoHome);
+  const held = readPrivateJson<JoinRequest>(legacy);
+  if (held.ok && held.value?.serverUrl !== undefined && deploymentUrl(held.value.serverUrl) === deploymentUrl(serverUrl)) fs.rmSync(legacy, { force: true });
 }
 
 /** A joined repository's past sessions, still to bring: the helper's join pass brings them a step at a time. */
 export interface PendingImport { root: string; rootKey: string; projectId: string; serverUrl: string; at: number }
 
-const importPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME, `${rootKey}.json`);
+const importPath = (rootKey: string, mycoHome: string, route?: Pick<PendingImport, 'serverUrl' | 'projectId'>): string =>
+  scopedFile(IMPORTS_DIRNAME, rootKey, mycoHome, route?.serverUrl, route?.projectId);
 
 export function queueImport(record: PendingImport, mycoHome: string): void {
-  ensureMemberDir(path.dirname(importPath(record.rootKey, mycoHome)), mycoHome);
-  writePrivateFileAtomic(importPath(record.rootKey, mycoHome), `${JSON.stringify(record)}\n`);
+  const file = importPath(record.rootKey, mycoHome, record);
+  ensureMemberDir(path.dirname(file), mycoHome);
+  writePrivateFileAtomic(file, `${JSON.stringify({ ...record, serverUrl: deploymentUrl(record.serverUrl) })}\n`);
 }
 
 /** Every joined repository whose past sessions are still to bring, the oldest joined first. */
 export function listPendingImports(mycoHome: string): PendingImport[] {
-  let names: string[];
-  try { names = fs.readdirSync(path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)).filter((name) => /^[0-9a-f]{16,64}\.json$/.test(name)); } catch { return []; }
-  return names
-    .map((name) => readPrivateJson<PendingImport>(importPath(name.slice(0, -'.json'.length), mycoHome)))
-    .flatMap((read) => (read.ok && typeof read.value?.root === 'string' && typeof read.value.rootKey === 'string'
-      && typeof read.value.projectId === 'string' && typeof read.value.serverUrl === 'string' && typeof read.value.at === 'number' ? [read.value] : []))
-    .sort((a, b) => a.at - b.at);
+  const rows = listedFiles(IMPORTS_DIRNAME, mycoHome, true)
+    .map((file) => {
+      const read = readPrivateJson<PendingImport>(file);
+      if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('pending import', file, read);
+      return { file, read };
+    })
+    .flatMap(({ file, read }) => {
+      if (!read.ok) return [];
+      const value = read.value;
+      if (typeof value?.root === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)
+        && isProjectId(value.projectId) && typeof value.serverUrl === 'string' && typeof value.at === 'number'
+        && path.basename(file) === `${value.rootKey}.json`
+        && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
+          || (path.basename(path.dirname(file)) === value.projectId
+            && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) return [value];
+      reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
+      return [];
+    });
+  return latestByRoute(rows, true);
 }
 
-export function clearPendingImport(rootKey: string, mycoHome: string): void {
-  fs.rmSync(importPath(rootKey, mycoHome), { force: true });
+export function clearPendingImport(rootKey: string, mycoHome: string, route?: Pick<PendingImport, 'serverUrl' | 'projectId'> & Partial<Pick<PendingImport, 'at'>>): void {
+  if (route === undefined) {
+    for (const file of [importPath(rootKey, mycoHome), ...scopedFiles(IMPORTS_DIRNAME, rootKey, mycoHome, true)]) fs.rmSync(file, { force: true });
+    return;
+  }
+  const scoped = importPath(rootKey, mycoHome, route);
+  const current = readPrivateJson<PendingImport>(scoped);
+  if (current.ok && (route.at === undefined || current.value?.at === route.at)) fs.rmSync(scoped, { force: true });
+  const legacy = importPath(rootKey, mycoHome);
+  const held = readPrivateJson<PendingImport>(legacy);
+  if (held.ok && held.value?.projectId === route.projectId && typeof held.value.serverUrl === 'string'
+    && deploymentUrl(held.value.serverUrl) === deploymentUrl(route.serverUrl)
+    && (route.at === undefined || held.value.at <= route.at)) fs.rmSync(legacy, { force: true });
 }
 
 const CONNECT_HINT = 'or run `myco member join` in it';
@@ -413,38 +578,43 @@ export function notCapturedNotice(
   }
 }
 
-/** The sessions that met a repository while it had no connection, by a hash of their id, and how many are not yet reported. */
+/** The sessions that met a repository on one Deployment while it had no connection, by a hash of their id, and how many are not yet reported. */
 interface SeenSessions { seen: string[]; unreported: number }
 /** The most sessions a repository remembers having met. */
 const SEEN_SESSIONS_MAX = 500;
-const seenPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), `${rootKey}.sessions.json`);
+const seenPath = (rootKey: string, mycoHome: string, serverUrl?: string): string => serverUrl === undefined
+  ? path.join(autoJoinDir(mycoHome), `${rootKey}.sessions.json`)
+  : scopedFile('sessions', rootKey, mycoHome, serverUrl);
 
-function readSeen(rootKey: string, mycoHome: string): SeenSessions {
-  const read = readPrivateJson<SeenSessions>(seenPath(rootKey, mycoHome));
+function readSeen(rootKey: string, mycoHome: string, serverUrl?: string): SeenSessions {
+  const file = seenPath(rootKey, mycoHome, serverUrl);
+  const read = readPrivateJson<SeenSessions>(file);
+  if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('auto-join sessions', file, read);
   return read.ok && Array.isArray(read.value?.seen) && typeof read.value.unreported === 'number' ? read.value : { seen: [], unreported: 0 };
 }
 
 /** Count a session that met the repository, once. A lost write costs a count, never the hook. */
-export function recordSessionSeen(rootKey: string, sessionId: string, mycoHome: string): void {
+export function recordSessionSeen(rootKey: string, sessionId: string, mycoHome: string, serverUrl?: string): void {
   try {
-    const seen = readSeen(rootKey, mycoHome);
+    const seen = readSeen(rootKey, mycoHome, serverUrl);
     const id = crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 16);
     if (seen.seen.includes(id)) return;
-    ensureMemberDir(autoJoinDir(mycoHome), mycoHome);
-    writePrivateFileAtomic(seenPath(rootKey, mycoHome), `${JSON.stringify({ seen: [...seen.seen, id].slice(-SEEN_SESSIONS_MAX), unreported: seen.unreported + 1 })}\n`);
+    const file = seenPath(rootKey, mycoHome, serverUrl);
+    ensureMemberDir(path.dirname(file), mycoHome);
+    writePrivateFileAtomic(file, `${JSON.stringify({ seen: [...seen.seen, id].slice(-SEEN_SESSIONS_MAX), unreported: seen.unreported + 1 })}\n`);
   } catch {
     // Counted at the next session.
   }
 }
 
 /** How many sessions met the repository after its last report. */
-export const unreportedSessions = (rootKey: string, mycoHome: string): number => readSeen(rootKey, mycoHome).unreported;
+export const unreportedSessions = (rootKey: string, mycoHome: string, serverUrl?: string): number => readSeen(rootKey, mycoHome, serverUrl).unreported;
 
 /** Note that `count` sessions were reported. */
-export function markSessionsReported(rootKey: string, count: number, mycoHome: string): void {
-  const seen = readSeen(rootKey, mycoHome);
+export function markSessionsReported(rootKey: string, count: number, mycoHome: string, serverUrl?: string): void {
+  const seen = readSeen(rootKey, mycoHome, serverUrl);
   if (count <= 0 || seen.unreported === 0) return;
-  writePrivateFileAtomic(seenPath(rootKey, mycoHome), `${JSON.stringify({ ...seen, unreported: Math.max(0, seen.unreported - count) })}\n`);
+  writePrivateFileAtomic(seenPath(rootKey, mycoHome, serverUrl), `${JSON.stringify({ ...seen, unreported: Math.max(0, seen.unreported - count) })}\n`);
 }
 
 const leftPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), 'left', `${rootKey}.json`);
@@ -464,10 +634,10 @@ export function clearLeft(rootKey: string, mycoHome: string): void {
   fs.rmSync(leftPath(rootKey, mycoHome), { force: true });
 }
 
-/** Whether this session has not been told yet, marking it told. A marker that cannot be written tells it again next time. */
-export function noticeOnce(sessionId: string, mycoHome: string, now: number): boolean {
+/** Whether this session has not been told on this Deployment yet, marking it told. A marker that cannot be written tells it again next time. */
+export function noticeOnce(sessionId: string, mycoHome: string, now: number, serverUrl?: string): boolean {
   const dir = path.join(autoJoinDir(mycoHome), 'noticed');
-  const marker = path.join(dir, crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 32));
+  const marker = path.join(dir, crypto.createHash('sha256').update(serverUrl === undefined ? sessionId : `${deploymentUrl(serverUrl)}\0${sessionId}`).digest('hex').slice(0, 32));
   if (fs.existsSync(marker)) return false;
   try {
     ensureMemberDir(dir, mycoHome);

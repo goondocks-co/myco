@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
 
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
-import { expandRoot, manifestTranscriptDiscovery } from '@myco/symbionts/transcript-discovery.js';
+import { expandRoot, manifestTranscriptDiscovery, sessionIdFromTranscriptPath } from '@myco/symbionts/transcript-discovery.js';
 import { memberOwnedTranscriptRoots } from '@myco/member/retention.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 
@@ -27,6 +27,7 @@ const TEMPLATES = path.resolve(
 
 /** The environment every path in these tests resolves against. */
 const ENV = { HOME: '/fixture/myco-fixture-home', MYCO_HOME: '/fixture/myco-fixture-home/.myco' } as NodeJS.ProcessEnv;
+const ROUTING_KEY = '0123456789abcdef/project';
 
 const NATIVE_PLUGIN_AGENTS = ['cline', 'opencode', 'pi'] as const;
 
@@ -59,7 +60,8 @@ describe('native plugin transcripts', () => {
       `${js}; return transcriptPathFor;`,
     )(
       fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
-      fs.constants, path.join, path.dirname, path.resolve, () => ENV.HOME, () => '',
+      fs.constants, path.join, path.dirname, path.resolve, () => ENV.HOME,
+      () => ({ status: 0, stdout: `${ROUTING_KEY}\n`, stderr: '' }),
       { ...process, env: ENV, platform: process.platform },
     ) as (d: string, a: string, s: string) => string;
 
@@ -67,8 +69,9 @@ describe('native plugin transcripts', () => {
       const discovery = manifestTranscriptDiscovery(agent)!;
       if (discovery.retention !== 'member') continue;
       const declared = expandRoot(discovery.roots[0], ENV);
-      const written = path.dirname(composed('/repo', agent, 'sid'));
-      expect({ agent, root: written }).toEqual({ agent, root: declared });
+      const written = composed('/repo', agent, 'sid');
+      expect({ agent, path: written }).toEqual({ agent, path: path.join(declared, ROUTING_KEY, agent, 'sid.jsonl') });
+      expect(sessionIdFromTranscriptPath(discovery, written!, ENV)).toBe('sid');
     }
   });
 
@@ -94,10 +97,9 @@ describe('native plugin transcripts', () => {
   });
 
   it('prunes exactly the stores its own plugin writes', () => {
-    expect(memberOwnedTranscriptRoots(ENV).sort()).toEqual([
-      path.join(ENV.MYCO_HOME!, 'member', 'transcripts', 'cline'),
-      path.join(ENV.MYCO_HOME!, 'member', 'transcripts', 'opencode'),
-    ]);
+    expect(new Set(memberOwnedTranscriptRoots(ENV))).toEqual(new Set([
+      path.join(ENV.MYCO_HOME!, 'member', 'transcripts'),
+    ]));
   });
 
   it('keeps every member-written root clear of the member\'s own state', () => {
@@ -209,6 +211,7 @@ function snippetModule(
   spawns: { env?: NodeJS.ProcessEnv; args: string[] }[] = [],
   noted: string[] = [],
   execImpl?: (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { status: number | null; stdout: string; stderr: string },
+  routingKey: string | null | (() => string | null) = ROUTING_KEY,
 ) {
   const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8');
   const js = new Bun.Transpiler({ loader: 'ts' }).transformSync(snippet.split('{{mycoCredentialSource}}').join('registry'));
@@ -219,7 +222,15 @@ function snippetModule(
   )(
     fs.readFileSync, fs.appendFileSync, fs.mkdirSync, fs.statSync, fs.lstatSync, fs.accessSync, fs.openSync, fs.closeSync,
     fs.writeSync, fs.unlinkSync, fs.constants, path.join, path.dirname, path.resolve, () => env.HOME,
-    execImpl ?? ((_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => { spawns.push({ env: opts?.env, args }); return { status: 0, stdout: '{}', stderr: '' }; }),
+    (_bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      if (args[0] === 'member' && args[1] === 'routing-key') {
+        const key = typeof routingKey === 'function' ? routingKey() : routingKey;
+        return key === null ? { status: 1, stdout: '', stderr: 'no route' } : { status: 0, stdout: `${key}\n`, stderr: '' };
+      }
+      if (execImpl) return execImpl(_bin, args, opts);
+      spawns.push({ env: opts?.env, args });
+      return { status: 0, stdout: '{}', stderr: '' };
+    },
     { ...process, env, platform: process.platform, stderr: { write: (line: string) => { noted.push(String(line)); return true; } } },
   ) as {
     transcriptPathFor: (d: string, a: string, s: string) => string;
@@ -238,6 +249,52 @@ function sandboxEnv(): NodeJS.ProcessEnv {
 }
 
 describe('one instance speaks for a session', () => {
+  it('keeps the same session id separate across routing keys', () => {
+    const env = sandboxEnv();
+    const first = snippetModule(env, [], [], undefined, '0123456789abcdef/project');
+    const second = snippetModule(env, [], [], undefined, 'fedcba9876543210/project');
+    expect(first.holdsSessionClaim('/repo', 'opencode', 'same')).toBe(true);
+    expect(second.holdsSessionClaim('/repo', 'opencode', 'same')).toBe(true);
+    first.appendTranscriptLine('/repo', 'opencode', 'same', { type: 'prompt', text: 'first' });
+    second.appendTranscriptLine('/repo', 'opencode', 'same', { type: 'prompt', text: 'second' });
+    expect(first.transcriptPathFor('/repo', 'opencode', 'same')).not.toBe(second.transcriptPathFor('/repo', 'opencode', 'same'));
+    expect(fs.readFileSync(first.transcriptPathFor('/repo', 'opencode', 'same'), 'utf8')).toContain('first');
+    expect(fs.readFileSync(second.transcriptPathFor('/repo', 'opencode', 'same'), 'utf8')).toContain('second');
+  });
+
+  it('keeps raw capture on its verified destination through a temporary routing refresh failure', () => {
+    const env = sandboxEnv();
+    const noted: string[] = [];
+    let available = true;
+    const mod = snippetModule(env, [], noted, undefined, () => available ? ROUTING_KEY : null);
+    expect(mod.holdsSessionClaim('/repo', 'opencode', 'same')).toBe(true);
+    available = false;
+    mod.appendTranscriptLine('/repo', 'opencode', 'same', { type: 'prompt', text: 'durable while binary unavailable' });
+    const file = mod.transcriptPathFor('/repo', 'opencode', 'same');
+    expect(fs.readFileSync(file, 'utf8')).toContain('durable while binary unavailable');
+    expect(noted.join('')).toContain('remains pinned');
+  });
+
+  it('holds capture when the binary cannot name its route', () => {
+    const env = sandboxEnv();
+    const hooks: { args: string[] }[] = [];
+    const mod = snippetModule(env, hooks, [], undefined, null);
+    mod.appendTranscriptLine('/repo', 'opencode', 'same', { type: 'prompt' });
+    mod.runMycoHook('/repo', 'opencode', 'same', 'session-start', {});
+    expect(hooks).toEqual([]);
+    expect(fs.existsSync(path.join(env.MYCO_HOME!, 'member', 'transcripts'))).toBe(false);
+  });
+
+  it('does not invoke a hook with a transcript path from another route', () => {
+    const env = sandboxEnv();
+    const hooks: { args: string[] }[] = [];
+    const mod = snippetModule(env, hooks);
+    mod.runMycoHook('/repo', 'opencode', 'same', 'session-start', {
+      transcript_path: path.join(env.MYCO_HOME!, 'member', 'transcripts', 'fedcba9876543210/project', 'opencode', 'same.jsonl'),
+    });
+    expect(hooks).toEqual([]);
+  });
+
   it('lets only the first live instance write, so two installs do not double every turn', () => {
     const env = sandboxEnv();
     const first = snippetModule(env);
@@ -262,7 +319,7 @@ describe('one instance speaks for a session', () => {
     first.appendTranscriptLine('/repo', 'opencode', 'ses_2', { type: 'prompt', text: 'x' });
 
     // The runtime that held the session is gone; its claim names a dead pid.
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_2.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_2.lock');
     fs.writeFileSync(claim, `gone-instance ${Date.now() - 60 * 60 * 1000}`);
 
     const resumed = snippetModule(env);
@@ -281,7 +338,7 @@ describe('one instance speaks for a session', () => {
     expect(first.holdsSessionClaim('/repo', 'opencode', 'ses_ended')).toBe(true);
     first.appendTranscriptLine('/repo', 'opencode', 'ses_ended', { type: 'prompt', text: 'one' });
     first.releaseSessionClaim('/repo', 'opencode', 'ses_ended');
-    expect(fs.existsSync(path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_ended.lock'))).toBe(false);
+    expect(fs.existsSync(path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_ended.lock'))).toBe(false);
 
     const resumed = snippetModule(env);
     expect(resumed.holdsSessionClaim('/repo', 'opencode', 'ses_ended')).toBe(true);
@@ -294,11 +351,13 @@ describe('one instance speaks for a session', () => {
   // exit and a stub `process` cannot register that.
   it('gives up its claim when the host process ends without announcing the session, so the next process captures at once', () => {
     const env = sandboxEnv();
+    fs.mkdirSync(path.join(env.MYCO_HOME!, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(env.MYCO_HOME!, 'bin', 'myco'), `#!/bin/sh\nprintf '%s\\n' '${ROUTING_KEY}'\n`, { mode: 0o755 });
     const script = path.join(env.HOME!, 'holder.ts');
     const snippet = fs.readFileSync(path.join(TEMPLATES, '_shared', 'plugin-helpers.ts.snippet'), 'utf-8')
       .split('{{mycoCredentialSource}}').join('registry');
     fs.writeFileSync(script, [
-      'import { execFileSync } from "node:child_process";',
+      'import { spawnSync } from "node:child_process";',
       'import { accessSync, appendFileSync, closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";',
       'import { homedir } from "node:os";',
       'import { dirname, join, resolve } from "node:path";',
@@ -306,8 +365,8 @@ describe('one instance speaks for a session', () => {
       // An ordinary one-shot run: the session is opened and written, and the
       // process ends with no session-end event, exactly as `opencode run` does.
       'const sessionId = process.argv[2];',
-      'if (!holdsSessionClaim("/repo", "opencode", sessionId)) process.exit(3);',
-      'appendTranscriptLine("/repo", "opencode", sessionId, { type: "prompt", text: process.argv[3] });',
+      'if (!holdsSessionClaim(process.env.HOME!, "opencode", sessionId)) process.exit(3);',
+      'appendTranscriptLine(process.env.HOME!, "opencode", sessionId, { type: "prompt", text: process.argv[3] });',
     ].join('\n'));
 
     const run = (turn: string): number => spawnSync(process.execPath, [script, 'ses_exit', turn], {
@@ -315,13 +374,13 @@ describe('one instance speaks for a session', () => {
     }).status ?? -1;
 
     expect(run('one')).toBe(0);
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_exit.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_exit.lock');
     expect(fs.existsSync(claim)).toBe(false);
 
     // A second process resuming the session writes at once, rather than waiting
     // out a claim left by a writer that has gone.
     expect(run('two')).toBe(0);
-    const transcript = path.join(env.MYCO_HOME!, 'member', 'transcripts', 'opencode', 'ses_exit.jsonl');
+    const transcript = path.join(env.MYCO_HOME!, 'member', 'transcripts', ROUTING_KEY, 'opencode', 'ses_exit.jsonl');
     expect(fs.readFileSync(transcript, 'utf-8').split('\n').filter(Boolean)).toHaveLength(2);
     expect(fs.existsSync(claim)).toBe(false);
   });
@@ -332,7 +391,7 @@ describe('one instance speaks for a session', () => {
     const other = snippetModule(env);
     expect(holder.holdsSessionClaim('/repo', 'opencode', 'ses_owned')).toBe(true);
     expect(other.holdsSessionClaim('/repo', 'opencode', 'ses_owned')).toBe(false);
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_owned.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_owned.lock');
     const before = fs.readFileSync(claim, 'utf-8');
 
     other.releaseSessionClaim('/repo', 'opencode', 'ses_owned');
@@ -351,7 +410,7 @@ describe('one instance speaks for a session', () => {
     // is "still writing" rather than "a pid answers".
     const env = sandboxEnv();
     const mod = snippetModule(env);
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_stale.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_stale.lock');
     fs.mkdirSync(path.dirname(claim), { recursive: true });
     // This process is live and is not the holder: exactly the recycled-pid case.
     fs.writeFileSync(claim, `other-instance ${Date.now() - mod.CLAIM_STALE_MS - 1000}`);
@@ -364,7 +423,7 @@ describe('one instance speaks for a session', () => {
   it('leaves a freshly touched claim alone, so a live writer is never displaced', () => {
     const env = sandboxEnv();
     const mod = snippetModule(env);
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_fresh.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_fresh.lock');
     fs.mkdirSync(path.dirname(claim), { recursive: true });
     fs.writeFileSync(claim, `other-instance ${Date.now()}`);
 
@@ -381,7 +440,7 @@ describe('one instance speaks for a session', () => {
     expect(first.holdsSessionClaim('/repo', 'opencode', 'ses_lost')).toBe(true);
     first.appendTranscriptLine('/repo', 'opencode', 'ses_lost', { type: 'prompt', text: 'one' });
 
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_lost.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_lost.lock');
     fs.writeFileSync(claim, `other-instance ${Date.now()}`);
 
     first.appendTranscriptLine('/repo', 'opencode', 'ses_lost', { type: 'prompt', text: 'two' });
@@ -403,7 +462,7 @@ describe('one instance speaks for a session', () => {
 
     // The holder falls idle long enough for its claim to age, and the other
     // instance takes the session through the real path.
-    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', 'opencode-ses_idle.lock');
+    const claim = path.join(env.MYCO_HOME!, 'member', 'claims', ROUTING_KEY, 'opencode-ses_idle.lock');
     const [instance] = fs.readFileSync(claim, 'utf-8').split(/\s+/);
     fs.writeFileSync(claim, `${instance} ${Date.now() - first.CLAIM_STALE_MS - 1000}`);
     expect(second.holdsSessionClaim('/repo', 'opencode', 'ses_idle')).toBe(true);

@@ -1,3 +1,7 @@
+import { legacyTranscriptDestination } from './transcript-routing.js';
+import { isRoutedSpoolNamespace } from './routing.js';
+import { deploymentKeyFor } from './registry.js';
+import { listRetiredLegacySpoolDirs } from './spool-migration.js';
 /**
  * Unacknowledged records remain in their active journal for delivery regardless
  * of age. Session state is retired only after its event journal has been
@@ -22,12 +26,12 @@ import { BUFFER_QUARANTINE_DIRNAME } from './spool.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { longestDeclaredHookTimeoutMs } from './budget.js';
 import { CaptureLossLedger } from './capture-loss.js';
-import { MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
+import { isProjectId, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
 import type { OutboundEvent } from './envelope.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
-import { pointerBehind, pointersOf, readSessionState, readSessionStateUnlocked, retireSessionFiles } from './session-state.js';
+import { pointerBehind, pointersOf, readSessionState, readSessionStateResultUnlocked, retireSessionFiles, updateSessionState, type TranscriptPointer } from './session-state.js';
 import { blobSourceOf, SPOOL_DIRNAME, WIRE_FIELDS, type MemberSpool, type SpoolRecord } from './spool.js';
 import { readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -152,8 +156,11 @@ function classifyArchivedRecords(spool: MemberSpool, file: string, base: string)
         const original = path.join(spool.blobsDirFor(sessionId), source.sha256);
         const legacy = path.join(spool.blobsDir, source.sha256);
         const pending = path.relative(path.join(memberRoot(spool.mycoHome), 'pending'), path.resolve(source.path)).split(path.sep);
-        const pendingSource = pending.length === 4 && /^[a-f0-9]{16,64}$/.test(pending[0])
-          && pending[1] === 'blobs' && pending[2] === sessionId && pending[3] === source.sha256;
+        const pendingTail = pending.slice(-3);
+        const pendingSource = pendingTail[0] === 'blobs' && pendingTail[1] === sessionId && pendingTail[2] === source.sha256
+          && (pending.length === 4 && /^[a-f0-9]{16,64}$/.test(pending[0])
+            || pending.length === 5 && spool.routing !== null && pending[0] === deploymentKeyFor(spool.routing.serverUrl)
+              && /^[a-f0-9]{16,64}$/.test(pending[1]));
         if (path.resolve(source.path) !== path.resolve(original) && path.resolve(source.path) !== path.resolve(legacy)
             && !pendingSource) throw new Error('unexpected staged path');
         assertMemberPathContained(source.path, spool.mycoHome);
@@ -297,34 +304,39 @@ export function prunePluginTranscripts(
   let behind: Set<string> | undefined;
   // A claim names the instance that speaks for a session. It outlives nothing:
   // once past the window no runtime holds it and no transcript needs it.
-  const claims = path.join(home, 'member', 'claims');
-  try {
-    for (const entry of fs.readdirSync(claims, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith('.lock')) continue;
-      const file = path.join(claims, entry.name);
-      try {
-        if (now - fs.statSync(file).mtimeMs < MEMBER_TRANSCRIPT_RETENTION_MS) continue;
-        fs.unlinkSync(file);
-      } catch { /* already gone */ }
-    }
-  } catch { /* no claims taken on this machine */ }
-  for (const root of memberOwnedTranscriptRoots(env, mycoHome)) {
+  const filesUnder = (root: string, suffix: string): string[] => {
+    assertMemberPathContained(root, home);
     let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue; // no transcripts written for this agent yet
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(root)) return [];
+      throw error;
     }
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+    return entries.flatMap((entry) => {
       const file = path.join(root, entry.name);
-      try {
-        if (now - fs.statSync(file).mtimeMs < MEMBER_TRANSCRIPT_RETENTION_MS) continue;
-        // A transcript a session's pointer has not shipped to its end is the only copy of those bytes: it waits.
-        if ((behind ??= behindTranscriptPaths(home)).has(path.resolve(file))) continue;
-        fs.unlinkSync(file);
-        pruned += 1;
-      } catch { /* already gone, or not ours to remove */ }
+      if (entry.isSymbolicLink()) throw new Error(`Member transcript store contains a symbolic link: ${file}`);
+      return entry.isDirectory() ? filesUnder(file, suffix) : entry.isFile() && entry.name.endsWith(suffix) ? [file] : [];
+    });
+  };
+  const claims = path.join(home, 'member', 'claims');
+  for (const file of filesUnder(claims, '.lock')) {
+    if (now - fs.statSync(file).mtimeMs >= MEMBER_TRANSCRIPT_RETENTION_MS) fs.unlinkSync(file);
+  }
+  for (const file of new Set(memberOwnedTranscriptRoots(env, mycoHome).flatMap((root) => filesUnder(root, '.jsonl')))) {
+    let stat: fs.Stats;
+    try { stat = fs.statSync(file); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file)) continue;
+      throw error;
+    }
+    if (now - stat.mtimeMs < MEMBER_TRANSCRIPT_RETENTION_MS) continue;
+    if ((behind ??= behindTranscriptPaths(home)).has(path.resolve(file))) continue;
+    const relative = path.relative(path.join(memberRoot(home), 'transcripts'), file).split(path.sep);
+    if (/^[0-9a-f]{16}$/.test(relative[0] ?? '') && relative[1]?.startsWith('~pending-')) continue;
+    if (!/^[0-9a-f]{16}$/.test(relative[0] ?? '') && legacyTranscriptDestination(file, home) === null) continue;
+    try { fs.unlinkSync(file); pruned += 1; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !pathIsAbsent(file)) throw error;
     }
   }
   return pruned;
@@ -338,19 +350,45 @@ export function prunePluginTranscripts(
 export function behindTranscriptPaths(mycoHome: string): Set<string> {
   const files = new Set<string>();
   const spoolRoot = path.join(memberRoot(mycoHome), SPOOL_DIRNAME);
-  let projects: string[];
-  try { projects = fs.readdirSync(spoolRoot); } catch { return files; }
-  for (const project of projects) {
-    const dir = path.join(spoolRoot, project);
-    let names: string[];
-    try { names = fs.readdirSync(dir); } catch { continue; }
+  const readDir = (dir: string, allowMissing = false): fs.Dirent[] => {
+    assertMemberPathContained(dir, mycoHome);
+    try { return fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (error) {
+      if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir)) return [];
+      throw error;
+    }
+  };
+  const directories: string[] = listRetiredLegacySpoolDirs(mycoHome);
+  for (const entry of readDir(spoolRoot, true)) {
+    if (!isProjectId(entry.name) && !isRoutedSpoolNamespace(entry.name)) continue;
+    const dir = path.join(spoolRoot, entry.name);
+    if (!entry.isDirectory()) throw new Error(`Spool directory is unavailable: ${dir}`);
+    if (!isRoutedSpoolNamespace(entry.name)) { directories.push(dir); continue; }
+    for (const child of readDir(dir)) {
+      if (child.isDirectory() && isProjectId(child.name)) directories.push(path.join(dir, child.name));
+    }
+  }
+  const pointerBehindForPrune = (pointer: TranscriptPointer): boolean => {
+    if (typeof pointer?.path !== 'string' || pointer.path === '' ||
+        !Number.isSafeInteger(pointer.nextOffset) || pointer.nextOffset < 0 ||
+        (pointer.refused !== undefined && typeof pointer.refused !== 'string')) {
+      throw new Error('Spool transcript pointer is invalid');
+    }
+    if (pointer.refused !== undefined) return false;
+    try { return fs.statSync(pointer.path).size > pointer.nextOffset; }
+    catch { return true; }
+  };
+  for (const dir of directories) {
+    const names = readDir(dir);
     for (const name of names) {
-      if (!name.endsWith(STATE_SUFFIX)) continue;
-      try {
-        for (const pointer of pointersOf(readSessionStateUnlocked(dir, name.slice(0, -STATE_SUFFIX.length)))) {
-          if (pointerBehind(pointer)) files.add(path.resolve(pointer.path));
-        }
-      } catch { /* an unreadable state keeps nothing */ }
+      if (!name.name.endsWith(STATE_SUFFIX)) continue;
+      if (!name.isFile()) throw new Error(`Spool session state is unavailable: ${path.join(dir, name.name)}`);
+      const sessionId = name.name.slice(0, -STATE_SUFFIX.length);
+      const read = readSessionStateResultUnlocked(dir, sessionId);
+      if (!read.ok) throw new Error(`Spool session state is ${read.reason}: ${path.join(dir, name.name)}`);
+      for (const pointer of pointersOf(read.state)) {
+        if (pointerBehindForPrune(pointer)) files.add(path.resolve(pointer.path));
+      }
     }
   }
   return files;

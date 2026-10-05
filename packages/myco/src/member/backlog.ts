@@ -23,10 +23,10 @@ import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import type { TranscriptDiscovery } from '../symbionts/manifest-schema.js';
-import { resolveTranscriptPath } from '../symbionts/transcript-discovery.js';
+import { sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
-import { clearNonRotatingRefusal, refreshDue, refreshMemberCredential, rotatedCredential } from './refresh.js';
-import { readRegistryEntry, type RegistryEntry } from './registry.js';
+import { clearNonRotatingRefusal, refreshDue, refreshMembership, rotatedCredential } from './refresh.js';
+import { type RegistryEntry } from './registry.js';
 import { recoverArchivedQuarantine } from './retention.js';
 import { pointerBehind, pointersOf, readSessionState, retryWaiting, turnsFileOf, updateSessionState, type SessionState } from './session-state.js';
 import { HOLD_ENDS, MemberSpool, turnEndIdentity, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
@@ -35,6 +35,8 @@ import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { flushHeldCapture } from './held.js';
 import { attemptHeldMigrationForCapture } from './pending.js';
+import { migrateLegacySpool } from './spool-migration.js';
+import { liveRoutingEntry } from './routing.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
 /** Marks a spool whose session states have been read once for transcripts behind their files. */
@@ -146,8 +148,7 @@ export function agentOfSession(
   if (file === undefined) return null;
   const target = path.resolve(file);
   const matches = manifests.filter((manifest) => {
-    const found = resolveTranscriptPath(manifest.capture?.transcriptDiscovery, sessionId);
-    return found !== null && path.resolve(found) === target;
+    return sessionIdFromTranscriptPath(manifest.capture?.transcriptDiscovery, target) === sessionId;
   });
   return matches.length === 1 ? matches[0].name : null;
 }
@@ -226,6 +227,7 @@ export function consumeSatisfiedTurnEnds(spool: MemberSpool, sessionId: string, 
 
 /** Deliver the backlog inside `budget`, session by session, until it is delivered, the budget is spent, or an answer says the next session would fare no better. A session's own failure never ends the walk. */
 export async function drainBacklog(spool: MemberSpool, client: ServerClient, budget: HookBudget, opts: BacklogOptions): Promise<BacklogReport> {
+  spool.assertClientDestination(client);
   const now = opts.now ?? Date.now;
   const report: BacklogReport = { sessions: [], endedBy: 'done' };
   if (!budget.drains) return report;
@@ -301,6 +303,9 @@ export async function drainEntryBacklog(
   entry: RegistryEntry,
   opts: {
     mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
+    credentialSource?: 'registry' | 'env';
+    /** Inline hooks leave retained-journal migration for a detached helper or an explicit drain. */
+    migrateLegacy?: boolean;
     /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
     force?: boolean;
     /**
@@ -315,27 +320,33 @@ export async function drainEntryBacklog(
 ): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
+  const registryCredential = opts.credentialSource !== 'env';
   let current = entry;
-  if (refreshDue(entry, now())) {
-    await refreshMemberCredential(entry.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: opts.budget ?? unboundedBudget() });
-    current = readRegistryEntry(entry.root, opts.mycoHome) ?? entry;
+  if (registryCredential && refreshDue(entry, now())) {
+    await refreshMembership(entry.serverUrl, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget: opts.budget ?? unboundedBudget(), projectId: entry.projectId });
+    current = liveRoutingEntry(entry, opts.mycoHome);
   }
   const budget = opts.budget ?? unboundedBudget();
-  // What the repository's hooks held before it was connected is delivered with the rest.
-  attemptHeldMigrationForCapture(() => flushHeldCapture(current.root, current.projectId, { mycoHome: opts.mycoHome, now: now(), deadline: budget.deadline }));
-  const spool = new MemberSpool(current.projectId, { mycoHome: opts.mycoHome });
-  const report = await drainBacklog(spool, new ServerClient(current, fetchImpl), budget, {
+  if (current.root !== '') {
+    attemptHeldMigrationForCapture(() => flushHeldCapture(current.root, current, { mycoHome: opts.mycoHome, now: now(), deadline: budget.deadline }));
+  }
+  const migration = opts.migrateLegacy === false ? null : attemptHeldMigrationForCapture(() => migrateLegacySpool(current, opts.mycoHome, now()));
+  if (migration?.status === 'held') process.stderr.write(`[myco] member: legacy capture for ${current.projectId} held locally: ${migration.reason}\n`);
+  for (const reason of migration?.sidecarHolds ?? []) process.stderr.write(`[myco] member: legacy optional state for ${current.projectId} held locally: ${reason}\n`);
+  for (const file of migration?.ignoredSidecars ?? []) process.stderr.write(`[myco] member: legacy temporary artifact for ${current.projectId} ignored: ${file}\n`);
+  const spool = new MemberSpool(current, { mycoHome: opts.mycoHome });
+  const report = await drainBacklog(spool, new ServerClient(current, fetchImpl, { credentialSource: opts.credentialSource }), budget, {
     force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst,
     // A 401 on a live send: another process may have rotated this root's token, so the registry is re-read and the
     // record retried once.
-    onUnauthorized: async () => rotatedCredential(current.root, current, opts.mycoHome),
-    clientFor: (record) => new ServerClient(record, fetchImpl),
+    onUnauthorized: registryCredential ? async () => rotatedCredential(current.root, current, opts.mycoHome) : undefined,
+    clientFor: (record) => new ServerClient(record, fetchImpl, { credentialSource: opts.credentialSource }),
   });
   // A refused token is asked once whether it still rotates, so a refusal that is final is recorded and said.
-  if (report.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
-    await refreshMemberCredential(current.root, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget, force: true });
+  if (registryCredential && report.endedBy === 'unauthorized' && canStartRequest(budget, now())) {
+    await refreshMembership(current.serverUrl, { mycoHome: opts.mycoHome, fetch: fetchImpl, now, budget, force: true, projectId: current.projectId });
   }
   // An acknowledged send is the Deployment accepting this token after all: a refusal recorded against it no longer holds.
-  if (report.sessions.some((s) => (s.events?.acked ?? 0) > 0)) clearNonRotatingRefusal(current.serverUrl, current.token, opts.mycoHome, now);
+  if (registryCredential && report.sessions.some((s) => (s.events?.acked ?? 0) > 0)) clearNonRotatingRefusal(current.serverUrl, current.token, opts.mycoHome, now);
   return report;
 }

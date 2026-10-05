@@ -21,10 +21,9 @@ import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, c
 import { refusalPermanent } from './constants.js';
 import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
-import type { MemberSpool } from './spool.js';
+import { MemberSpool } from './spool.js';
 import { classifyEventAnswer, ServerClient, type FetchLike } from './transport.js';
 import { deadlineBudget } from './budget.js';
-import { spoolDirFor } from './spool.js';
 
 /** The longest one context request may take: the helper is off the hook's path, but a pass still has its deadline. */
 export const CONTEXT_CAP_MS = 8_000;
@@ -88,6 +87,7 @@ export async function prefetchContext(opts: {
   spool: MemberSpool; client: ServerClient; serverUrl: string; mycoHome: string; budget: HookBudget; now: () => number;
 }): Promise<PrefetchReport> {
   const { spool, client, now } = opts;
+  spool.assertClientDestination(client);
   const report: PrefetchReport = { asked: 0, answered: 0 };
   for (const { sessionId, asks } of sessionsWithAsks(spool)) {
     for (const ask of asks) {
@@ -177,10 +177,12 @@ export async function warmProjectContext(
   opts: { mycoHome: string; fetch?: FetchLike; budget?: HookBudget; now?: () => number },
 ): Promise<number> {
   const now = opts.now ?? Date.now;
-  const spoolDir = spoolDirFor(membership.projectId, opts.mycoHome);
+  const spool = new MemberSpool(membership, { mycoHome: opts.mycoHome });
+  const spoolDir = spool.dir;
   const budget = opts.budget ?? deadlineBudget(now() + WARMED.length * CONTEXT_CAP_MS);
   const fetchImpl = watchingFeatures(opts.fetch ?? globalThis.fetch, { serverUrl: membership.serverUrl, spoolDir, mycoHome: opts.mycoHome, now });
   const client = new ServerClient(membership, fetchImpl);
+  spool.assertClientDestination(client);
   let cached = 0;
   for (const kind of WARMED) {
     if (readProjectContext(spoolDir).blocks[kind] !== undefined) continue;

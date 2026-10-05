@@ -28,9 +28,9 @@ capture:
   # a transcript from the events it sees in process, and Myco's retention pass ages it.
   transcriptDiscovery:
     roots:
-      - "@memberHome/member/transcripts/opencode"
+      - "@memberHome/member/transcripts"
     patterns:
-      - "{sessionId}.jsonl"
+      - "*/*/opencode/{sessionId}.jsonl"
     transcriptCwdPath: "cwd"
     retention: member
 registration:

@@ -14,7 +14,8 @@ import { seedMachineSettings } from '../member/machine-settings.js';
 import { listAutoJoinStates } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
-import { listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
+import { selectedDeploymentMembership } from '../member/token-pairing.js';
+import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DoctorCheck } from './doctor.js';
@@ -33,7 +34,10 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
 import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
+import { assignLegacySpoolDestination, listLegacySpools } from '../member/spool-migration.js';
+import { listRoutingEntries, listRoutingEntriesResult, routingEntry, routingKey, type BufferedDestinationIssue } from '../member/routing.js';
 import { memberDiagnostics, projectDiagnostics } from '../member/diagnostics.js';
+import { memberTranscriptRoutingKey } from '../member/transcript-routing.js';
 import { MemberSpool, type DrainResult } from '../member/spool.js';
 import { drainEntryBacklog, type BacklogReport } from '../member/backlog.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
@@ -70,7 +74,11 @@ Ops:
                      --purge is given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
-  helper --project <id> --home <dir>
+  drain --assign-legacy --server <url> --project <id>
+                     Assign held Project-only capture to the named destination, then migrate and drain it.
+  drain --assign-pending --root-key <key> --server <url> --project <id>
+                     Assign legacy pending capture to the named destination, then drain it.
+  helper --project <id> --server <url> --home <dir>
                      The project's helper: ships its spool in passes under the helper lock until nothing is
                      left, then exits (at most 120 s). Hooks start it detached; its log is
                      <home>/logs/helper.log (\`--stderr\` keeps it on stderr).
@@ -141,7 +149,7 @@ const homeChoiceFor = (deps: MemberCliDeps, cwd?: string): ResolvedMycoHome =>
 
 function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry[] {
   const mycoHome = homeFor(deps);
-  if (args.includes('--all')) return listRegistryEntries(mycoHome);
+  if (args.includes('--all')) return listRoutingEntries(mycoHome);
   const root = resolveMemberProjectRoot(deps.cwd);
   const entry = readRegistryEntry(root, mycoHome);
   if (!entry) {
@@ -157,15 +165,21 @@ function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry
  * reported rather than repaired.
  */
 function registrySelection(args: readonly string[], deps: MemberCliDeps): {
-  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number;
+  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number; heldDestinations: BufferedDestinationIssue[];
 } {
   const mycoHome = homeFor(deps);
   const all = args.includes('--all');
-  if (all) return { root: null, all, ...listRegistryEntriesResult(mycoHome) };
+  if (all) {
+    const registry = listRegistryEntriesResult(mycoHome);
+    const bound = new Set(registry.entries.map(routingKey));
+    const routing = listRoutingEntriesResult(mycoHome, registry.entries);
+    const retained = routing.entries.filter((entry) => !bound.has(routingKey(entry)));
+    return { root: null, all, ...registry, entries: [...registry.entries, ...retained], heldDestinations: routing.heldDestinations };
+  }
   const root = projectRootOrNull(deps.cwd);
   const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
   return {
-    root, all,
+    root, all, heldDestinations: [],
     entries: selected?.status === 'present' ? [selected.entry] : [],
     readable: selected?.status !== 'unavailable',
     unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
@@ -361,19 +375,24 @@ async function connectFolder(
   if (!isSafeProjectRoot(root)) return fail(`${root} is not a project directory; run this inside the repository to connect`);
   const chosen = homeChoiceFor(deps, root);
   const mycoHome = chosen.home;
-  const memberships = listDeploymentMemberships(mycoHome)
-    .filter((m) => parsed.serverUrl === undefined || deploymentUrl(m.serverUrl) === deploymentUrl(parsed.serverUrl));
+  const selected = selectedDeploymentMembership(mycoHome, parsed.serverUrl);
+  const memberships = selected === null ? [] : [selected];
   // A pin chose this home: say so before anything reads its credential, and refuse where it holds none. A pin that sends
   // the folder away from this machine's own home never has one of that home's memberships picked for it.
+  if (parsed.serverUrl === undefined && pinnedElsewhere(chosen, deps.env)) {
+    const known = listDeploymentMemberships(mycoHome);
+    if (known.length > 0) return fail(pinnedElsewhereRefusal(chosen, root, known.map((membership) => deploymentUrl(membership.serverUrl))));
+  }
   const pinnedRefusal = memberships.length === 0 ? pinnedHomeRefusal(chosen, root, parsed.serverUrl === undefined ? 'membership' : `membership of ${parsed.serverUrl}`) : null;
   if (pinnedRefusal !== null) return fail(pinnedRefusal);
-  if (parsed.serverUrl === undefined && pinnedElsewhere(chosen, deps.env)) return fail(pinnedElsewhereRefusal(chosen, root, memberships.map((m) => deploymentUrl(m.serverUrl))));
   const pinnedLine = pinnedHomeLine(chosen, root);
   if (pinnedLine !== null) out(pinnedLine);
   if (memberships.length === 0) {
+    const known = listDeploymentMemberships(mycoHome);
+    if (parsed.serverUrl === undefined && known.length > 1) return fail(`this machine is a member of ${known.length} Deployments; name one (${known.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
+    if (parsed.serverUrl === undefined && known.length === 1) return fail(`no default Deployment is recorded; name ${deploymentUrl(known[0].serverUrl)} to connect this folder`);
     return fail(parsed.serverUrl === undefined ? 'this machine is not signed in to a Deployment — run `myco login <invite link>` first' : `this machine is not signed in to ${parsed.serverUrl} — run \`myco login <invite link>\` first`);
   }
-  if (memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one (${memberships.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
   const membership = memberships[0];
   const serverUrl = membership.serverUrl;
   const client = new ServerClient({ serverUrl, token: membership.token }, deps.fetch ?? globalThis.fetch);
@@ -705,8 +724,8 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     if (record === null) {
       // Said once: the empty record written here keeps later refreshes quiet until the person provisions.
       out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
-      const membership = listDeploymentMemberships(mycoHome)[0];
-      if (membership !== undefined) recordNoAgents(mycoHome, membership.serverUrl);
+      const membership = selectedDeploymentMembership(mycoHome);
+      if (membership !== null) recordNoAgents(mycoHome, membership.serverUrl);
       return true;
     }
     const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot });
@@ -723,7 +742,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     const manifest = loadManifests().find((candidate) => candidate.name === agent);
     if (manifest === undefined) return fail(`unknown agent "${agent}"`);
     const installer = globalInstaller(manifest, null, mycoHome, deps);
-    const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? listDeploymentMemberships(mycoHome)[0]?.serverUrl;
+    const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
     if (recordedServer !== undefined) installer.forDeployment(recordedServer);
     const lease = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member provision --remove' });
     if (!lease.acquired) return fail('a helper is provisioning agents; retry when it finishes');
@@ -749,9 +768,11 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   let serverUrl = binding?.serverUrl;
   if (serverUrl === undefined) {
     const memberships = listDeploymentMemberships(mycoHome);
-    const named = serverArg === undefined ? memberships : memberships.filter((m) => deploymentUrl(m.serverUrl) === deploymentUrl(serverArg!));
+    const selected = selectedDeploymentMembership(mycoHome, serverArg);
+    const named = selected === null ? [] : [selected];
+    if (serverArg === undefined && named.length === 0 && memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one with --server (${memberships.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
+    if (serverArg === undefined && named.length === 0 && memberships.length === 1) return fail(`no default Deployment is recorded; name ${deploymentUrl(memberships[0].serverUrl)} with --server`);
     if (named.length === 0) return fail(serverArg === undefined ? 'no membership recorded on this machine — sign in with `myco login <invite link>` first' : `no membership recorded for ${serverArg}`);
-    if (named.length > 1) return fail(`this machine is a member of ${named.length} Deployments; name one with --server (${named.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
     serverUrl = named[0].serverUrl;
   }
   const folder = binding === null ? null : root;
@@ -803,10 +824,11 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
     process.exitCode = 2;
     return false;
   }
+  // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
+  void optOut(root, readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
+    .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry.serverUrl)} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
-  // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
-  void optOut(root, defaultMembership(mycoHome) ?? readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch });
   out(`left ${entry.projectId} for ${root}; auto-join leaves it alone until you join it again`);
   // The last binding on a Deployment takes its membership with it, and a worker
   // service left behind would restart all day with nothing to claim under.
@@ -828,11 +850,11 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
     relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, `${manifest.displayName}'s MCP server`, out, err);
   }
   if (!args.includes('--purge')) {
-    const depth = new MemberSpool(entry.projectId, { mycoHome }).sessionIds().length;
+    const depth = new MemberSpool(entry, { mycoHome }).sessionIds().length;
     out(`spool kept: ${depth} session file(s) — \`myco member drain\` after re-joining, or \`myco member leave --purge\` to discard`);
     return true;
   }
-  fs.rmSync(new MemberSpool(entry.projectId, { mycoHome }).dir, { recursive: true, force: true });
+  fs.rmSync(new MemberSpool(entry, { mycoHome }).dir, { recursive: true, force: true });
   out('spool discarded');
   if (clearJoinRefusals(mycoHome)) out('recorded join refusals cleared: a join code is presented again');
   for (const manifest of loadManifests()) {
@@ -857,11 +879,47 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   const now = deps.now ?? Date.now;
   const mycoHome = homeFor(deps);
   const results: DrainResult[] = [];
-  for (const entry of entriesFor(args, deps)) {
+  let entries: RegistryEntry[];
+  const serverAt = args.indexOf('--server');
+  const projectAt = args.indexOf('--project');
+  if (serverAt >= 0 || projectAt >= 0 || args.includes('--assign-legacy') || args.includes('--assign-pending')) {
+    const serverUrl = serverAt < 0 ? undefined : args[serverAt + 1];
+    const projectId = projectAt < 0 ? undefined : args[projectAt + 1];
+    if (serverUrl === undefined || projectId === undefined || !isProjectId(projectId) || serverUrl.startsWith('--')) {
+      (deps.stderr ?? console.error)('myco member drain: name both --server <url> and --project <id>');
+      process.exitCode = 2;
+      return [];
+    }
+    const entry = routingEntry({ serverUrl, projectId }, mycoHome);
+    if (entry === null) {
+      (deps.stderr ?? console.error)('myco member drain: this home holds no membership for the named Deployment');
+      process.exitCode = 2;
+      return [];
+    }
+    if (args.includes('--assign-legacy')) {
+      const assignment = assignLegacySpoolDestination(entry, mycoHome);
+      out(`legacy ${projectId}: ${assignment.status} to ${deploymentUrl(serverUrl)} — ${assignment.records} record(s) in ${assignment.sessions} session(s)${assignment.reason ? ` (${assignment.reason})` : ''}`);
+      if (assignment.status === 'held') { process.exitCode = 2; return []; }
+    }
+    if (args.includes('--assign-pending')) {
+      const rootAt = args.indexOf('--root-key');
+      const rootKey = rootAt < 0 ? undefined : args[rootAt + 1];
+      if (rootKey === undefined || !/^[0-9a-f]{16,64}$/.test(rootKey)) {
+        (deps.stderr ?? console.error)('myco member drain: name --root-key <key> for the held pending capture');
+        process.exitCode = 2;
+        return [];
+      }
+      assignLegacyPending(rootKey, entry, { mycoHome, now: now() });
+      const copied = flushPending(rootKey, new MemberSpool(entry, { mycoHome }), { mycoHome, now: now() });
+      out(`legacy pending ${rootKey}: assigned to ${deploymentUrl(serverUrl)}/${projectId} — ${copied} record(s) moved`);
+    }
+    entries = [entry];
+  } else entries = entriesFor(args, deps);
+  for (const entry of entries) {
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
     for (const line of backlogLines(entry.projectId, backlog)) out(line);
     // Retention follows the drain so acknowledged archive copies can be removed.
-    const retention = applySpoolRetention(new MemberSpool(entry.projectId, { mycoHome }), now());
+    const retention = applySpoolRetention(new MemberSpool(entry, { mycoHome }), now());
     if (retention.releasedBlobs > 0) out(`${entry.projectId}: released ${retention.releasedBlobs} staged file(s)`);
     results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
   }
@@ -895,7 +953,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     const facts = projectDiagnostics(entry, mycoHome, now());
     const { membership, spool, latch, refusals } = facts;
     out(`project:    ${membership.projectId}`);
-    out(`root:       ${membership.root}`);
+    out(`root:       ${membership.root || 'no repository currently bound'}`);
     out(`server:     ${membership.serverUrl ?? 'unknown'}`);
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
     out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
@@ -917,6 +975,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
     out(`worker:     ${workerServiceWords(describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })).line}`);
   }
+  for (const held of selection.heldDestinations) out(`buffered destination: ${held.key} — ${held.reason}; capture held locally`);
   if (selection.all) {
     if (!selection.readable) err('myco member: the registry directory could not be read');
     else if (selection.unavailableEntries > 0) {
@@ -952,6 +1011,9 @@ function reportRefusedHooks(out: (line: string) => void, deps: MemberCliDeps): v
 function reportAutoJoin(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
   const mycoHome = homeFor(deps);
   const now = (deps.now ?? Date.now)();
+  for (const legacy of listLegacySpools(mycoHome)) {
+    out(`legacy capture: ${legacy.projectId} — ${legacy.records} event(s) in ${legacy.sessions} session(s); ${legacy.destination?.serverUrl ?? 'destination ambiguous'}; ${legacy.reason ?? 'retained locally with migration receipts'}`);
+  }
   const held = readDefaultDeployment(mycoHome);
   out(`default:    ${held === null ? 'none — `myco login` records the Deployment new repositories join' : `${held.serverUrl} (new repositories join it)`}`);
   const mine = (root: string): boolean => selection.all || (selection.root !== null && path.resolve(root) === path.resolve(selection.root));
@@ -962,10 +1024,10 @@ function reportAutoJoin(out: (line: string) => void, selection: { root: string |
     out(`not joined: ${state.root} — ${why} (last tried ${when(state.attemptAt)})`);
   }
   for (const pending of listPending({ mycoHome, now }).filter((p) => mine(p.root))) {
-    out(`pending:    ${pending.root} — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`);
+    out(`pending:    ${pending.root} (${pending.serverUrl ?? 'destination unassigned'}) — ${pending.records} event(s) in ${pending.sessions} session(s) waiting to join since ${when(pending.createdAt)}; ${pending.assignedTo ? `assigned copy retained for ${pending.assignedTo.serverUrl}/${pending.assignedTo.projectId}` : pending.serverUrl === undefined ? `held until explicitly assigned with --root-key ${pending.rootKey} or discarded` : `discarded after ${when(pending.createdAt + PENDING_TTL_MS)}`}`);
   }
   for (const end of listHeldEnds(mycoHome).filter((e) => mine(e.root))) {
-    out(`held no more: ${end.root} — ${end.held === 'full' ? `the ${PENDING_MAX_RECORDS} events kept for it were reached` : `capture older than ${PENDING_TTL_MS / 86_400_000} days was discarded`} (${when(end.at)})`);
+    out(`held no more: ${end.root} (${end.serverUrl ?? 'destination unassigned'}) — ${end.held === 'full' ? `the ${PENDING_MAX_RECORDS} events kept for it were reached` : `capture older than ${PENDING_TTL_MS / 86_400_000} days was discarded`} (${when(end.at)})`);
   }
 }
 
@@ -983,10 +1045,10 @@ function projectRootOrNull(cwd?: string): string | null {
 export async function runExport(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const mycoHome = homeFor(deps);
-  const { root, all, entries, ...registry } = registrySelection(args, deps);
+  const { root, all, entries, heldDestinations, ...registry } = registrySelection(args, deps);
   const { records: missedCapture, ...missedCaptureStore } = missedCaptureSelection(root, all, deps);
   const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
-  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root) : root === null ? [] : [root])];
+  const checkRoots = [...new Set(all ? entries.map((entry) => entry.root).filter((root) => root.length > 0) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
     name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,
     scope: check.scope ?? null, root: check.root ?? (check.scope === 'global' ? null : checkRoot), fixable: check.fixable, fixId: check.fixId ?? null,
@@ -999,7 +1061,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
       .map((check) => toFacts(check, checkRoot))));
   const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
   out(JSON.stringify(memberDiagnostics({
-    mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture,
+    mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture, heldDestinations,
     selection: { root, scope: all ? 'all' : 'root' }, registry, missedCaptureStore, checks,
   }), null, 2));
 }
@@ -1298,6 +1360,16 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
   switch (op) {
     case 'join': await runJoin(rest, deps); return;
     case 'leave': runLeave(rest, deps); return;
+    case 'routing-key': {
+      const source = parseCredentialFlag(rest);
+      if (source === null) { (deps.stderr ?? console.error)('myco member routing-key: declare --credential registry|env'); process.exitCode = 2; return; }
+      const rootAt = rest.indexOf('--root');
+      const cwd = rootAt >= 0 ? rest[rootAt + 1] : deps.cwd ?? process.cwd();
+      if (cwd === undefined) { process.exitCode = 2; return; }
+      try { (deps.stdout ?? console.log)(memberTranscriptRoutingKey(source, cwd, homeFor(deps, cwd), deps.env ?? process.env)); }
+      catch (error) { (deps.stderr ?? console.error)(`myco member routing-key: ${(error as Error).message}`); process.exitCode = 1; }
+      return;
+    }
     case 'drain': await runDrain(rest, deps); return;
     case 'helper': await (await import('./member-helper.js')).runHelperVerb(rest, { fetch: deps.fetch, now: deps.now }); return;
     case 'status': runStatus(rest, deps); return;
