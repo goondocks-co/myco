@@ -28,6 +28,7 @@ export function installFilesystemFence(home: string, additionalRoots: string[] =
 const originalRealpath = fs.realpathSync.bind(fs);
 const originalReadlink = fs.readlinkSync.bind(fs);
 const originalExists = fs.existsSync.bind(fs);
+const originalFstat = fs.fstatSync.bind(fs);
 function resolvedTarget(target: string): string {
   let ancestor = target;
   const suffix: string[] = [];
@@ -116,7 +117,7 @@ function deny(fnName: string, hit: FenceHit): never {
 type AnyFn = (...a: unknown[]) => unknown;
 function anonymousOutputStream(name: string, fd: unknown): boolean {
   if ((fd !== 1 && fd !== 2) || descriptorPaths.has(fd) || !/^(write|writeSync|writev|writevSync)$/.test(name)) return false;
-  const stat = fs.fstatSync(fd);
+  const stat = originalFstat(fd);
   if (!stat.isFIFO() && !stat.isSocket()) return false;
   if (process.platform === 'linux') return /^(?:pipe|socket):\[\d+\]$/.test(originalReadlink(`/proc/self/fd/${fd}`));
   return stat.nlink === 0 || process.platform === 'win32';
