@@ -17,12 +17,13 @@ function rig(agent: string) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-plugin-recovery-'));
   const env = { HOME: home, MYCO_HOME: path.join(home, '.myco') };
   let now = NOW;
+  let elapsed = 0;
   const notes: string[] = [];
-  const load = () => snippetModule(env, [], notes, undefined, ROUTING_KEY, () => now);
+  const load = () => snippetModule(env, [], notes, undefined, ROUTING_KEY, () => now, fs, () => elapsed);
   const first = load();
   const claim = path.join(env.MYCO_HOME, 'member', 'claims', ROUTING_KEY, `${agent}-resumed.lock`);
   const transcript = first.transcriptPathFor('/repo', agent, 'resumed');
-  return { home, env, first, load, claim, transcript, notes, advance: (ms: number) => { now += ms; } };
+  return { home, env, first, load, claim, transcript, notes, setWall: (ms: number) => { now = ms; }, advance: (ms: number) => { now += ms; elapsed += ms; } };
 }
 
 async function parse(text: string, agent: string) {
@@ -94,15 +95,48 @@ describe('plugin capture recovery', () => {
       expect(other.holdsSessionClaim('/repo', agent, 'resumed')).toBe(true);
     });
 
+    it(`${agent}: a displaced holder release preserves the replacement claim before any late append`, () => {
+      const r = rig(agent);
+      expect(r.first.holdsSessionClaim('/repo', agent, 'resumed')).toBe(true);
+      r.advance(r.first.CLAIM_STALE_MS + 1);
+      const replacement = r.load();
+      expect(replacement.holdsSessionClaim('/repo', agent, 'resumed')).toBe(true);
+      const claim = fs.readFileSync(r.claim, 'utf8');
+      r.first.releaseSessionClaim('/repo', agent, 'resumed');
+      expect(fs.readFileSync(r.claim, 'utf8')).toBe(claim);
+      replacement.appendTranscriptLine('/repo', agent, 'resumed', { type: 'prompt', text: 'replacement' });
+      expect(fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line).text)).toEqual(['replacement']);
+    });
+
+    for (const jump of [-60 * 60 * 1000, 60 * 60 * 1000]) {
+      it(`${agent}: monotonic rechecks survive a wall-clock ${jump < 0 ? 'rollback' : 'forward jump'} and fence a renewed holder`, () => {
+        const r = rig(agent);
+        expect(r.first.holdsSessionClaim('/repo', agent, 'resumed')).toBe(true);
+        const resumed = r.load();
+        expect(resumed.appendTranscriptLine('/repo', agent, 'resumed', { type: 'prompt', text: 'healthy' })).toBe('refused');
+        r.first.releaseSessionClaim('/repo', agent, 'resumed');
+        r.setWall(NOW + jump);
+        // Wall time alone cannot trigger a fresh acquisition check.
+        expect(resumed.holdsSessionClaim('/repo', agent, 'resumed')).toBe(false);
+        r.advance(r.first.CLAIM_RECHECK_MS + 1);
+        expect(resumed.appendTranscriptLine('/repo', agent, 'resumed', { type: 'prompt', text: 'healthy' })).toBe('committed');
+        const contender = r.load();
+        expect(contender.appendTranscriptLine('/repo', agent, 'resumed', { type: 'prompt', text: 'duplicate' })).toBe('refused');
+        r.advance(r.first.CLAIM_RECHECK_MS + 1);
+        expect(contender.holdsSessionClaim('/repo', agent, 'resumed')).toBe(false);
+        expect(fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line).text)).toEqual(['healthy']);
+      });
+    }
+
     it(`${agent}: a refused claim rechecks at a bounded cadence when its holder releases`, () => {
       const r = rig(agent);
       expect(r.first.holdsSessionClaim('/repo', agent, 'resumed')).toBe(true);
       const resumed = r.load();
       expect(resumed.holdsSessionClaim('/repo', agent, 'resumed')).toBe(false);
       r.first.releaseSessionClaim('/repo', agent, 'resumed');
-      r.advance(r.first.CLAIM_RECHECK_MS - 1);
+      r.advance(r.first.CLAIM_RECHECK_MS / 2);
       expect(resumed.holdsSessionClaim('/repo', agent, 'resumed')).toBe(false);
-      r.advance(1);
+      r.advance(r.first.CLAIM_RECHECK_MS / 2);
       expect(resumed.holdsSessionClaim('/repo', agent, 'resumed')).toBe(true);
     });
 
@@ -203,4 +237,143 @@ describe('plugin capture recovery', () => {
       await ended;
     }
   });
+});
+
+
+describe('emitted plugin lifecycle recovery', () => {
+  for (const agent of ['cline', 'opencode'] as const) {
+    it(`${agent}: a prompt pins one fresh routing key through initialization and append`, async () => {
+      const r = rig(agent);
+      let route = ROUTING_KEY;
+      let routingCalls = 0;
+      const verbs: string[] = [];
+      const subject = snippetModule(r.env, [], [], (_bin, args) => {
+        verbs.push(args[1]);
+        return { status: 0, stdout: '{}', stderr: '' };
+      }, () => { routingCalls += 1; return route; }, () => NOW, fs, () => 0, agent);
+      const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+      const hooks = agent === 'cline' ? subject.MycoClinePlugin.hooks : await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
+      if (agent === 'cline') subject.MycoClinePlugin.setup({}, ctx);
+      else await hooks.event({ event: { type: 'session.created', properties: { info: { id: 'resumed' } } } });
+      route = 'fedcba9876543210/reassigned';
+      if (agent === 'cline') await hooks.beforeModel({ messages: [{ role: 'user', content: 'new route' }] }, ctx);
+      else await hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text: 'new route' }] });
+      expect(routingCalls).toBe(2);
+      expect(verbs).toEqual(['session-start', 'session-start', 'user-prompt-submit']);
+      const file = path.join(r.env.MYCO_HOME, 'member/transcripts', route, agent, 'resumed.jsonl');
+      expect(fs.readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+        expect.objectContaining({ type: 'session', cwd: '/repo' }), expect.objectContaining({ type: 'prompt', text: 'new route' }),
+      ]);
+      expect(fs.readFileSync(r.transcript, 'utf8')).not.toContain('new route');
+    });
+
+    for (const fault of ['descriptor close', 'gate cleanup'] as const) {
+      it(`${agent}: postcommit ${fault} failure preserves prompt identity and warm callbacks spawn nothing`, async () => {
+        const r = rig(agent);
+        let failCleanup = false;
+        let routingCalls = 0;
+        const verbs: string[] = [];
+        const promptId = '00000000-0000-4000-8000-000000000163';
+        const subject = snippetModule(r.env, [], [], (_bin, args) => {
+          verbs.push(args[1]);
+          return { status: 0, stdout: JSON.stringify({ promptId }), stderr: '' };
+        }, () => { routingCalls += 1; return ROUTING_KEY; }, () => NOW, {
+          ...fs,
+          appendFileSync: (...args: Parameters<typeof fs.appendFileSync>) => {
+            fs.appendFileSync(...args);
+            if (String(args[1]).includes('"type":"prompt"')) failCleanup = true;
+          },
+          closeSync: (fd) => {
+            fs.closeSync(fd);
+            if (failCleanup && fault === 'descriptor close') {
+              failCleanup = false;
+              throw Object.assign(new Error('temporary close failure'), { code: 'EIO' });
+            }
+          },
+          unlinkSync: (file) => {
+            if (failCleanup && fault === 'gate cleanup' && String(file).includes('.operation/owner-')) {
+              failCleanup = false;
+              throw Object.assign(new Error('temporary cleanup failure'), { code: 'EACCES' });
+            }
+            fs.unlinkSync(file);
+          },
+        }, () => 0, agent);
+        const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+        const hooks = agent === 'cline' ? subject.MycoClinePlugin.hooks : await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
+        const prompt = () => agent === 'cline' ? hooks.beforeModel({ messages: [{ role: 'user', content: 'same prompt' }] }, ctx)
+          : hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text: 'same prompt' }] });
+        await prompt();
+        if (agent === 'cline') await prompt();
+        const warmRoutingCalls = routingCalls;
+        const warmHooks = [...verbs];
+        if (agent === 'cline') {
+          await hooks.afterModel({ content: 'response' }, ctx);
+          await hooks.afterTool({ name: 'read', input: {} }, ctx);
+        } else {
+          await hooks['experimental.text.complete']({ sessionID: 'resumed' }, { text: 'response' });
+          await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', args: {} }, {});
+        }
+        expect(routingCalls).toBe(warmRoutingCalls);
+        expect(verbs).toEqual(warmHooks);
+        expect(verbs.filter((verb) => verb === 'user-prompt-submit')).toHaveLength(1);
+        const records = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(records.filter((line) => line.type === 'prompt')).toHaveLength(1);
+        expect(records.filter((line) => line.type === 'response' || line.type === 'tool')).toEqual([
+          expect.objectContaining({ type: 'response', promptId }), expect.objectContaining({ type: 'tool', promptId }),
+        ]);
+        expect(fs.existsSync(`${r.claim}.operation`)).toBe(false);
+      });
+    }
+
+    for (const failure of ['claim', 'header append', 'prompt append', 'session hook'] as const) {
+      it(`${agent}: retries the same prompt after a temporary ${failure} failure without committing completion state`, async () => {
+        const r = rig(agent);
+        let blocked = true;
+        let elapsed = 0;
+        const verbs: string[] = [];
+        const subject = snippetModule(r.env, [], [], (_bin, args) => {
+          verbs.push(args[1]);
+          if (blocked && failure === 'session hook' && args[1] === 'session-start') return { status: 1, stdout: '', stderr: 'temporary failure' };
+          return { status: 0, stdout: JSON.stringify({ promptId: '00000000-0000-4000-8000-000000000163' }), stderr: '' };
+        }, ROUTING_KEY, () => NOW, {
+          ...fs,
+          appendFileSync: (...args: Parameters<typeof fs.appendFileSync>) => {
+            if (blocked && ((failure === 'header append' && String(args[1]).includes('"type":"session"'))
+              || (failure === 'prompt append' && String(args[1]).includes('"type":"prompt"')))) throw Object.assign(new Error('temporary append failure'), { code: 'EIO' });
+            return fs.appendFileSync(...args);
+          },
+        }, () => elapsed, agent);
+        if (failure === 'claim') {
+          fs.mkdirSync(path.dirname(r.claim), { recursive: true });
+          fs.writeFileSync(r.claim, `crashed-holder ${NOW}`);
+        }
+        const ctx = { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } };
+        const hooks = agent === 'cline' ? subject.MycoClinePlugin.hooks : await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
+        const start = () => agent === 'cline' ? subject.MycoClinePlugin.setup({}, ctx)
+          : hooks.event({ event: { type: 'session.created', properties: { info: { id: 'resumed' } } } });
+        const prompt = () => agent === 'cline' ? hooks.beforeModel({ messages: [{ role: 'user', content: 'same prompt' }] }, ctx)
+          : hooks['chat.message']({}, { message: { sessionID: 'resumed' }, parts: [{ type: 'text', text: 'same prompt' }] });
+        await start();
+        await prompt();
+        const before = fs.existsSync(r.transcript) ? fs.readFileSync(r.transcript, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
+        expect(before.filter((line) => line.type === 'prompt')).toHaveLength(0);
+        const attemptedStarts = verbs.filter((verb) => verb === 'session-start').length;
+        blocked = false;
+        if (failure === 'claim') fs.unlinkSync(r.claim);
+        elapsed += subject.CLAIM_RECHECK_MS + 1;
+        // Recovery uses the model lifecycle; session.created/setup is not replayed.
+        await prompt();
+        await start();
+        if (agent === 'cline') await prompt();
+        const records = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(records.filter((line) => line.type === 'session')).toHaveLength(1);
+        expect(records[0]).toMatchObject({ type: 'session', cwd: '/repo', agent, sessionId: 'resumed' });
+        expect(records.filter((line) => line.type === 'prompt')).toEqual([expect.objectContaining({ text: 'same prompt', promptId: '00000000-0000-4000-8000-000000000163' })]);
+        expect(verbs.filter((verb) => verb === 'session-start')).toHaveLength(failure === 'session hook' ? attemptedStarts + 1 : 1);
+        expect(verbs.filter((verb) => verb === 'user-prompt-submit')).toHaveLength(1);
+        const parsed = await parse(fs.readFileSync(r.transcript, 'utf8'), agent);
+        expect(parsed.prompts).toEqual([{ text: 'same prompt' }]);
+      });
+    }
+  }
 });

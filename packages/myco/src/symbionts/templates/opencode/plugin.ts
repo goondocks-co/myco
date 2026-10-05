@@ -384,8 +384,12 @@ function withClaimGate<T>(claimPath: string, denied: T, operation: () => T): T {
       finally {
         activeClaimGates.delete(claimPath);
         pendingClaimGateCleanup.set(claimPath, token);
-        removeClaimGate(gate, token);
-        pendingClaimGateCleanup.delete(claimPath);
+        try {
+          removeClaimGate(gate, token);
+          pendingClaimGateCleanup.delete(claimPath);
+        } catch (error) {
+          noteOnce(`gate-cleanup-${claimPath}`, `cannot release writer operation for ${claimPath} (${(error as Error)?.message ?? "unknown"}); cleanup retries on the next action`);
+        }
       }
     }
     noteOnce(`gate-wait-${claimPath}`, `writer operation for ${claimPath} is busy; this action could not acquire it`);
@@ -395,7 +399,7 @@ function withClaimGate<T>(claimPath: string, denied: T, operation: () => T): T {
   }
 }
 
-/** The instance a claim names and when it last said so, or null when the claim is absent or unreadable. */
+/** The instance a claim names and when it last said so, or null when the claim is absent or empty. */
 function claimHolder(claimPath: string): { instance: string; at: number } | null {
   try {
     const [instance, at] = readFileSync(claimPath, "utf-8").trim().split(/\s+/);
@@ -429,12 +433,12 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string, 
   const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
   if (claimPath === null) return false;
   if (claimedSessions.get(claimPath) === true) return true;
-  if (Date.now() < (claimRecheckAt.get(claimPath) ?? 0)) return false;
+  if (performance.now() < (claimRecheckAt.get(claimPath) ?? 0)) return false;
   let claimed = false;
   try {
     const existing = claimHolder(claimPath);
     if (existing !== null && existing.instance !== MYCO_INSTANCE_ID && Date.now() - existing.at <= CLAIM_STALE_MS) {
-      claimRecheckAt.set(claimPath, Date.now() + CLAIM_RECHECK_MS);
+      claimRecheckAt.set(claimPath, performance.now() + CLAIM_RECHECK_MS);
       noteOnce(`claim-wait-${claimPath}`, `${agent} session ${sessionId}: waiting for its writer claim; acquisition retries on later actions`);
       return false;
     }
@@ -453,11 +457,11 @@ function holdsSessionClaim(directory: string, agent: string, sessionId: string, 
   claimedSessions.set(claimPath, claimed);
   if (claimed) {
     claimRecheckAt.delete(claimPath);
-    claimTouchedAt.set(claimPath, Date.now());
+    claimTouchedAt.set(claimPath, performance.now());
     heldClaimPaths.set(claimPath, claimPath);
     releaseClaimsWhenProcessEnds();
   } else {
-    claimRecheckAt.set(claimPath, Date.now() + CLAIM_RECHECK_MS);
+    claimRecheckAt.set(claimPath, performance.now() + CLAIM_RECHECK_MS);
     noteOnce(`claim-wait-${claimPath}`, `${agent} session ${sessionId}: waiting for its writer claim; acquisition retries on later actions`);
   }
   return claimed;
@@ -505,21 +509,21 @@ function releaseClaimsWhenProcessEnds(): void {
  */
 function keepsSessionClaim(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory)): boolean {
   const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
-  if (claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return false;
+  if (routingKey === null || claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return false;
   const key = claimPath;
   const holder = claimHolder(claimPath);
   if (holder?.instance !== MYCO_INSTANCE_ID) {
     claimedSessions.set(key, false);
-    claimRecheckAt.set(key, Date.now() + CLAIM_RECHECK_MS);
+    claimRecheckAt.set(key, performance.now() + CLAIM_RECHECK_MS);
     claimTouchedAt.delete(key);
     heldClaimPaths.delete(key);
     noteOnce(key, `another instance took session ${sessionId}; this one stops writing`);
     return false;
   }
   const touched = claimTouchedAt.get(key) ?? 0;
-  if (Date.now() - touched >= CLAIM_TOUCH_MS) {
+  if (performance.now() - touched >= CLAIM_TOUCH_MS) {
     writeClaim(claimPath);
-    claimTouchedAt.set(key, Date.now());
+    claimTouchedAt.set(key, performance.now());
   }
   return true;
 }
@@ -545,6 +549,7 @@ function releaseSessionClaim(directory: string, agent: string, sessionId: string
       claimRecheckAt.delete(key);
       claimTouchedAt.delete(key);
       heldClaimPaths.delete(key);
+      transcriptSessions.delete(claimPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
       noteOnce(`release-${key}`, `${agent} session ${sessionId}: could not give up its claim (${(error as Error)?.message ?? "unknown"}) — a new instance resuming it waits for the claim to go stale`);
@@ -571,6 +576,10 @@ function noteOnce(key: string, message: string): void {
   }
 }
 
+type CaptureStatus = "committed" | "refused" | "failed";
+type HookAnswer = { additionalContext?: string; promptId?: string };
+type CaptureResult = { status: CaptureStatus; answer?: HookAnswer };
+
 /**
  * Append one record to the transcript.
  *
@@ -585,14 +594,15 @@ function appendTranscriptLine(
   agent: string,
   sessionId: string,
   record: Record<string, unknown>,
-): void {
+): CaptureStatus {
   const routingKey = routingKeyFor(directory, false);
   const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
   const filePath = transcriptPathFor(directory, agent, sessionId, routingKey);
-  if (routingKey === null || claimPath === null || filePath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return;
+  if (routingKey === null || claimPath === null || filePath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return "refused";
+  let committed = false;
   try {
-    withClaimGate(claimPath, undefined, () => {
-      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return;
+    return withClaimGate<CaptureStatus>(claimPath, "refused", () => {
+      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return "refused";
       mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
       const handle = openSync(filePath, "a+", 0o600);
       try {
@@ -601,11 +611,16 @@ function appendTranscriptLine(
         const unfinished = size > 0 && readSync(handle, tail, 0, 1, size - 1) === 1 && tail[0] !== 0x0a;
         const line = `${JSON.stringify({ v: MYCO_TRANSCRIPT_FORMAT, ...record })}\n`;
         appendFileSync(handle, `${unfinished ? "\n" : ""}${line}`, "utf-8");
+        committed = true;
         if (unfinished) noteOnce(`tail-${filePath}-${size}`, `${agent} session ${sessionId}: isolated an unfinished transcript tail at byte ${size}`);
       } finally { closeSync(handle); }
+      return "committed";
     });
   } catch (error) {
-    noteOnce(`write-${agent}-${sessionId}`, `cannot write ${filePath}: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+    noteOnce(`write-${agent}-${sessionId}`, committed
+      ? `${filePath}: record appended; descriptor cleanup failed (${(error as Error)?.message ?? "unknown"})`
+      : `cannot write ${filePath}: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
+    return committed ? "committed" : "failed";
   }
 }
 
@@ -636,7 +651,8 @@ function runMycoHook(
   sessionId: string,
   verb: string,
   payload: Record<string, unknown>,
-): { additionalContext?: string; promptId?: string } | null {
+  routingKey = routingKeyFor(directory),
+): HookAnswer | null {
   // The instance that does not speak for this session runs nothing: a second
   // participant would spawn a second hook per turn, mint an id nothing uses
   // and place a second context block in front of the model.
@@ -646,7 +662,6 @@ function runMycoHook(
   // taken before it lost the session — and an agent whose transcript it never
   // writes, like Pi, would reach that state on every session, since a claim
   // taken once and never touched goes stale on its own.
-  const routingKey = routingKeyFor(directory);
   const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
   if (routingKey === null || claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return null;
   try {
@@ -695,6 +710,85 @@ function runMycoHook(
     return null;
   }
 }
+
+/** Completed initialization obligations and a hook answer awaiting its prompt append. */
+const transcriptSessions = new Map<string, {
+  header: boolean;
+  started: boolean;
+  pendingPrompt?: { text: string; answer: HookAnswer };
+}>();
+
+function transcriptHookPayload(directory: string, agent: string, sessionId: string, routingKey: string): Record<string, unknown> {
+  return {
+    ...(agent === "cline" ? { conversationId: sessionId } : { session_id: sessionId }),
+    transcript_path: transcriptPathFor(directory, agent, sessionId, routingKey),
+    cwd: directory,
+  };
+}
+
+/** Initialize before any turn record; each obligation completes only after its operation succeeds. */
+function initializeTranscriptSession(directory: string, agent: string, sessionId: string, routingKey = routingKeyFor(directory, false)): CaptureResult {
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
+  if (routingKey === null || claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return { status: "refused" };
+  try {
+    return withClaimGate<CaptureResult>(claimPath, { status: "refused" }, () => {
+      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return { status: "refused" };
+      const state = transcriptSessions.get(claimPath) ?? { header: false, started: false };
+      transcriptSessions.set(claimPath, state);
+      if (!state.header) {
+        const status = appendTranscriptLine(directory, agent, sessionId, {
+          type: "session",
+          sessionId,
+          agent,
+          cwd: directory,
+          at: new Date().toISOString(),
+        });
+        if (status !== "committed") return { status };
+        state.header = true;
+      }
+      if (state.started) return { status: "committed" };
+      const answer = runMycoHook(directory, agent, sessionId, "session-start", transcriptHookPayload(directory, agent, sessionId, routingKey), routingKey);
+      if (answer === null) return { status: "failed" };
+      state.started = true;
+      return { status: "committed", answer };
+    });
+  } catch (error) {
+    noteOnce(`init-${agent}-${sessionId}`, `${agent} session ${sessionId}: cannot initialize capture (${(error as Error)?.message ?? "unknown"})`);
+    return { status: "failed" };
+  }
+}
+
+/** All plugin turn records require the same session initialization obligations. */
+function captureTranscriptLine(directory: string, agent: string, sessionId: string, record: Record<string, unknown>): CaptureStatus {
+  const initialized = initializeTranscriptSession(directory, agent, sessionId);
+  return initialized.status === "committed" ? appendTranscriptLine(directory, agent, sessionId, record) : initialized.status;
+}
+
+/** Keep a successful prompt hook answer until its transcript append commits. */
+function captureTranscriptPrompt(directory: string, agent: string, sessionId: string, text: string): CaptureResult {
+  const routingKey = routingKeyFor(directory);
+  const initialized = initializeTranscriptSession(directory, agent, sessionId, routingKey);
+  if (initialized.status !== "committed") return initialized;
+  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
+  if (routingKey === null || claimPath === null) return { status: "refused" };
+  try {
+    return withClaimGate<CaptureResult>(claimPath, { status: "refused" }, () => {
+      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return { status: "refused" };
+      const state = transcriptSessions.get(claimPath)!;
+      const answer = state.pendingPrompt?.text === text ? state.pendingPrompt.answer
+        : runMycoHook(directory, agent, sessionId, "user-prompt-submit", { ...transcriptHookPayload(directory, agent, sessionId, routingKey), prompt: text }, routingKey);
+      if (answer !== null) state.pendingPrompt = { text, answer };
+      const status = appendTranscriptLine(directory, agent, sessionId, {
+        type: "prompt", sessionId, promptId: answer?.promptId, text, origin: "human", at: new Date().toISOString(),
+      });
+      if (status === "committed") delete state.pendingPrompt;
+      return { status, answer: answer ?? undefined };
+    });
+  } catch (error) {
+    noteOnce(`prompt-${agent}-${sessionId}`, `${agent} session ${sessionId}: cannot capture prompt (${(error as Error)?.message ?? "unknown"})`);
+    return { status: "failed" };
+  }
+}
 // </myco:shared-helpers>
 
 const AGENT = "opencode";
@@ -711,8 +805,8 @@ const CONTEXT_HEADING = "## Myco - Project Context\n\n";
 
 /** The prompt id the binary minted for the turn in flight, per session. */
 const promptIds = new Map<string, string>();
-/** Sessions whose start line has been written, so a replayed event writes one session record. */
-const started = new Set<string>();
+/** Sessions opened by this instance, including pending initialization. */
+const openedSessions = new Set<string>();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -733,21 +827,8 @@ function textOfParts(parts: Array<{ type?: string; text?: string; synthetic?: bo
  * working directory from the head of the file — then register and inject.
  */
 function openSession(directory: string, sessionId: string): string | undefined {
-  if (started.has(sessionId)) return undefined;
-  started.add(sessionId);
-  appendTranscriptLine(directory, AGENT, sessionId, {
-    type: "session",
-    sessionId,
-    agent: AGENT,
-    cwd: directory,
-    at: nowIso(),
-  });
-  const answer = runMycoHook(directory, AGENT, sessionId, "session-start", {
-    session_id: sessionId,
-    transcript_path: transcriptPathFor(directory, AGENT, sessionId),
-    cwd: directory,
-  });
-  return answer?.additionalContext;
+  openedSessions.add(sessionId);
+  return initializeTranscriptSession(directory, AGENT, sessionId).answer?.additionalContext;
 }
 
 /**
@@ -755,7 +836,7 @@ function openSession(directory: string, sessionId: string): string | undefined {
  * resuming the session takes it at once.
  */
 function endSession(directory: string, sessionId: string): void {
-  started.delete(sessionId);
+  openedSessions.delete(sessionId);
   promptIds.delete(sessionId);
   runMycoHook(directory, AGENT, sessionId, "session-end", {
     session_id: sessionId,
@@ -825,7 +906,7 @@ export const MycoPlugin = async ({
 
       // The instance is going away and names no session: end every session it opened.
       if (type === "server.instance.disposed") {
-        for (const sessionId of [...started]) endSession(root, sessionId);
+        for (const sessionId of [...openedSessions]) endSession(root, sessionId);
       }
     },
 
@@ -840,7 +921,7 @@ export const MycoPlugin = async ({
       const sessionId = input?.sessionID;
       const text = typeof output?.text === "string" ? output.text.trim() : "";
       if (!sessionId || !text) return;
-      appendTranscriptLine(root, AGENT, sessionId, {
+      captureTranscriptLine(root, AGENT, sessionId, {
         type: "response",
         sessionId,
         promptId: promptIds.get(sessionId),
@@ -875,27 +956,12 @@ export const MycoPlugin = async ({
       const startContext = openSession(root, sessionId);
       if (startContext) await injectSynthetic(sessionId, `${CONTEXT_HEADING}${startContext}`);
 
-      const answer = runMycoHook(root, AGENT, sessionId, "user-prompt-submit", {
-        session_id: sessionId,
-        transcript_path: transcriptPathFor(root, AGENT, sessionId),
-        prompt: text,
-        cwd: root,
-      });
-      // A hook that did not answer leaves this turn with no id. Keeping the
-      // previous turn's would file this turn's tool and response lines under
-      // the prompt before it.
+      const result = captureTranscriptPrompt(root, AGENT, sessionId, text);
+      if (result.status !== "committed") return;
+      const answer = result.answer;
       const promptId = answer?.promptId;
       if (promptId) promptIds.set(sessionId, promptId);
       else promptIds.delete(sessionId);
-
-      appendTranscriptLine(root, AGENT, sessionId, {
-        type: "prompt",
-        sessionId,
-        promptId,
-        text,
-        origin: "human",
-        at: nowIso(),
-      });
 
       const context = answer?.additionalContext;
       if (!context) return;
@@ -917,12 +983,12 @@ export const MycoPlugin = async ({
       });
     },
 
-    /** A finished tool call becomes a transcript line; no subprocess runs here. */
+    /** A finished tool call becomes a transcript line; completed session initialization requires no subprocess. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     "tool.execute.after": async (input: any, output: any) => {
       const sessionId = input?.sessionID;
       if (!sessionId) return;
-      appendTranscriptLine(root, AGENT, sessionId, {
+      captureTranscriptLine(root, AGENT, sessionId, {
         type: "tool",
         sessionId,
         promptId: promptIds.get(sessionId),

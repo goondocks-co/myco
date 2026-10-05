@@ -160,15 +160,7 @@ describe('native plugin transcripts', () => {
         // Run the shipped plugin's session-open path and read what it wrote.
         const env = sandboxEnv();
         const mod = snippetModule(env);
-        const source = fs.readFileSync(path.join(TEMPLATES, agent, 'plugin.ts'), 'utf-8');
-        const record = source.slice(source.indexOf('type: "session"'));
-        const fields = record.slice(0, record.indexOf('});'));
-        // The record the template composes, evaluated rather than restated.
-        const built = new Function('sessionId', 'AGENT', 'directory', 'nowIso',
-          `return { ${fields.replace(/\bsessionId,/, 'sessionId,').replace(/\bagent: AGENT,/, 'agent: AGENT,')} };`,
-        )('s', agent, '/repo', () => 'now') as Record<string, unknown>;
-        expect({ agent, claimed: mod.holdsSessionClaim('/repo', agent, 's') }).toEqual({ agent, claimed: true });
-        mod.appendTranscriptLine('/repo', agent, 's', built);
+        expect(mod.initializeTranscriptSession('/repo', agent, 's').status).toBe('committed');
         file = mod.transcriptPathFor('/repo', agent, 's');
       } else {
         file = path.resolve(import.meta.dirname ?? __dirname, '../fixtures/pi-parse-basic.jsonl');
