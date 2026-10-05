@@ -15,6 +15,7 @@ import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
+import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { CLOCK_NAME, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
@@ -559,6 +560,7 @@ describe('gates', () => {
     const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const anonymous = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
+    sqlite.run("INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)", [issuedAt]);
     // A fresh Deployment: no admin has a GitHub account linked, so a member credential is answered a link key.
     sqlite.query(`UPDATE members SET github_id = NULL`).run();
     const KEY = 'a'.repeat(64);
@@ -1183,10 +1185,11 @@ describe('gates', () => {
     expect({ member: await read(MEMBER_SUB), admin: await read() }).toEqual({ member: 'https://embed.example/v1', admin: secretUrl });
   });
 
-  it('refuses a member who is not an admin on an admin route before reading a byte of its body (#1491)', async () => {
+  it('bounds an admin route body before authorization and refuses a non-admin before invoking or writing', async () => {
     const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
     const e = sqliteEnv({ workerLogin: true });
     seedMemberRoleAccount(e.sqlite);
+    e.executed.length = 0;
     let pulled = 0;
     // Nothing is pulled until something reads it; a reader would take four chunks and the end.
     const body = new ReadableStream<Uint8Array>({
@@ -1195,7 +1198,26 @@ describe('gates', () => {
     const res = await worker.fetch(new Request('https://s/api/backups/restore-upload', {
       method: 'POST', body, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
-    expect({ status: res.status, pulled }).toEqual({ status: 403, pulled: 0 });
+    expect({ status: res.status, pulled, body: await res.json() }).toEqual({ status: 403, pulled: 5, body: { error: 'not_admin' } });
+    expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
+    expect({ puts: e.bucket.puts, gets: e.bucket.gets, deletes: e.bucket.deletes, pending: e.deferred.pending }).toEqual({ puts: [], gets: [], deletes: [], pending: [] });
+
+    let oversizedPulls = 0;
+    const chunks = Math.floor(MAX_BODY_BYTES / (64 * 1024)) + 1;
+    const oversized = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        oversizedPulls += 1;
+        if (oversizedPulls > chunks) controller.close();
+        else controller.enqueue(new Uint8Array(64 * 1024));
+      },
+    }, { highWaterMark: 0 });
+    const bounded = await worker.fetch(new Request('https://s/api/settings/agent.power', {
+      method: 'PUT', body: oversized, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+    } as RequestInit), { ...e.env, ...OWNER_ENV });
+    expect({ status: bounded.status, pulled: oversizedPulls, body: await bounded.json() })
+      .toEqual({ status: 400, pulled: chunks + 1, body: { error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
+    expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
+    e.sqlite.close();
   });
 
   it('signs out an account whose member was removed, so it can still clear its cookie (#1491)', async () => {
@@ -1367,7 +1389,6 @@ describe('gates', () => {
       'session:admin POST /api/projects/{projectId}/grants/{grantId}/rotate',
       'session:admin POST /api/projects/{projectId}/release-provenance/check',
       'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/end',
-      'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
       'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/title',
       'session:admin POST /api/projects/{projectId}/sessions/{sessionId}/tombstone',
       'session:admin POST /api/projects/{projectId}/unarchive',
@@ -1438,6 +1459,8 @@ describe('gates', () => {
       'session:member POST /api/machines/{machineId}/stop',
       'session:member POST /api/credentials/{id}/revoke',
       'session:member POST /api/harness/dispatch',
+      'session:member POST /api/projects/{projectId}/runs/{runId}/cancel',
+      'session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
       'session:member POST /api/uncaptured/{machineId}/{rootKey}/connect',
       'session:member PUT /api/machines/{machineId}/settings/{leaf}',
     ].sort());
