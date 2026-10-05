@@ -5,7 +5,7 @@
  * This module OWNS `spore_injections`. Its consumer is the member route
  * `POST /context/prompt`: the route calls the selector and hands the
  * rendered context to the hook. The store's `INSERT OR IGNORE` decides whether
- * the record was written, and `meta.changes` answers that decision.
+ * to write a record, and `meta.changes` answers that decision.
  *
  * The record carries what 1.4 spreads across a status allowlist, a session-wide
  * exclusion set and a UNIQUE content hash, and the two rules hold to different

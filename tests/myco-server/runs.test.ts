@@ -346,12 +346,6 @@ describe('mutateState', () => {
 });
 
 describe('run lifecycle', () => {
-  const seedFailedResumable = (sqlite: Database, id: string, over: Partial<{ task: string; agentId: string; dryRun: number; projectId: string }> = {}) => {
-    sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, resumable, dry_run, started_at)
-      VALUES (?, ?, ?, ?, 'failed', 1, ?, ?)`)
-      .run(over.projectId ?? SCOPE.projectId, id, over.agentId ?? AGENT, over.task ?? 'digest', over.dryRun ?? 0, NOW);
-  };
-
   it('applies only the columns it names, and reports rows moved', async () => {
     const { db, sqlite } = store();
     await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);

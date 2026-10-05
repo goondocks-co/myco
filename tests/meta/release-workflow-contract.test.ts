@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { latestExactCiRun, releaseCiDecision } from '../../scripts/require-release-ci.mjs';
 
@@ -28,6 +29,23 @@ function assertPublication(workflow: typeof release): void {
 test('the canonical CI aggregate requires every verification job, including parity and shipped runtimes', () => {
   assertAggregate(ci);
   expect(ci.jobs.parity.steps.some((step: { run?: string }) => step.run === 'npm run test:parity')).toBe(true);
+});
+
+test.skipIf(process.platform === 'win32')('the actual aggregate command refuses every unsuccessful dependency', () => {
+  const execute = (results: Record<string, { result: string }>) => {
+    const child = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', ci.jobs.check.steps[0].run], {
+      env: { ...process.env, RESULTS: JSON.stringify(results) }, encoding: 'utf8',
+    });
+    if (child.error) throw child.error;
+    return child;
+  };
+  const green = Object.fromEntries(ci.jobs.check.needs.map((job: string) => [job, { result: 'success' }]));
+  expect(execute(green).status).toBe(0);
+  for (const job of ci.jobs.check.needs) {
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      expect(execute({ ...green, [job]: { result } }).status).toBe(1);
+    }
+  }
 });
 
 test('every publication path requires a successful exact-SHA CI gate', () => {

@@ -55,7 +55,7 @@ async function main() {
   const machineId = `machine_${suffix}`;
   const projectId = `proj_${suffix}`;
   const sessionId = `session_${suffix}`;
-  const sub = `1641${Date.now()}`;
+  const sub = String(Date.now());
   const body = `container persistence fixture ${suffix}\n`;
   const key = createHash('sha256').update(body).digest('hex');
   const owner = { cookie: cookie(secret, sub) };
@@ -80,9 +80,12 @@ async function main() {
       attachments: attachments.rows, blob };
   };
 
+  const containers = new Set();
+  let failure;
   if (!dataDir) docker('volume', 'create', volume);
   try {
     start(first, image);
+    containers.add(first);
     await ready(first);
 
     // Only the temporary principal is seeded directly; fixture data uses the shipped HTTP routes.
@@ -114,16 +117,31 @@ async function main() {
     }
 
     docker('rm', '-f', first);
+    containers.delete(first);
     start(second, replacementImage);
+    containers.add(second);
     await ready(second);
     const after = await snapshot();
     if (JSON.stringify(after) !== JSON.stringify(before)) {
       throw new Error(`mounted volume contents changed across replacement: ${JSON.stringify({ before, after })}`);
     }
     process.stdout.write(`container replacement preserved ${sessionId}, attachment, and ${key} bytes\n`);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    for (const container of [first, second]) spawnSync('docker', ['rm', '-f', container], { stdio: 'ignore' });
-    if (!dataDir) spawnSync('docker', ['volume', 'rm', volume], { stdio: 'ignore' });
+    const cleanupErrors = [];
+    for (const container of containers) {
+      try { docker('rm', '-f', container); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (!dataDir) {
+      try { docker('volume', 'rm', volume); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length) {
+      const errors = [...(failure ? [failure] : []), ...cleanupErrors];
+      throw new AggregateError(errors,
+        `container smoke and cleanup failed: ${errors.map((error) => error.message).join('; ')}`);
+    }
   }
 }
 

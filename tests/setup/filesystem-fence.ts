@@ -139,6 +139,11 @@ function writableFlags(flags: unknown): boolean {
     ? (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND)) !== 0
     : typeof flags === 'string' && /[wa+]/.test(flags);
 }
+function guardOpen(name: string, target: unknown, flags: unknown): void {
+  if (!writableFlags(flags)) return;
+  const hit = offending(target);
+  if (hit) deny(name, hit);
+}
 // single-path mutators → guard arg0
 for (const n of ['writeFileSync','appendFileSync','mkdirSync','rmSync','rmdirSync','unlinkSync','chmodSync','chownSync','truncateSync','lchmodSync','lchownSync','mkdtempSync','utimesSync','lutimesSync']) wrap(FS, n, [0]);
 for (const n of ['writeSync', 'writevSync', 'fchmodSync', 'fchownSync', 'ftruncateSync', 'futimesSync']) wrap(FS, n, [0]);
@@ -153,7 +158,7 @@ wrap(FS, 'renameSync', [0, 1]); // moving a protected path away is also a mutati
   const origOpen = FS.openSync;
   if (typeof origOpen === 'function') {
     FS.openSync = function (this: unknown, ...args: unknown[]) {
-      if (writableFlags(args[1])) { const hit = offending(args[0]); if (hit) deny('openSync', hit); }
+      guardOpen('openSync', args[0], args[1]);
       const targets = descriptorTargets(args[0]);
       const fd = origOpen.apply(this, args) as number;
       descriptorPaths.set(fd, targets);
@@ -196,7 +201,7 @@ wrap(FS, 'rename', [0, 1]);
   const origOpenCb = FS.open;
   if (typeof origOpenCb === 'function') {
     FS.open = function (this: unknown, ...args: unknown[]) {
-      if (writableFlags(args[1])) { const hit = offending(args[0]); if (hit) deny('open', hit); }
+      guardOpen('open', args[0], args[1]);
       const targets = descriptorTargets(args[0]);
       const callback = args[args.length - 1] as (error: NodeJS.ErrnoException | null, fd: number) => void;
       if (typeof callback !== 'function') return origOpenCb.apply(this, args);
@@ -236,11 +241,7 @@ wrap(FSP, 'rename', [0, 1]);
 {
   const original = FSP.open!;
   FSP.open = function (this: unknown, ...args: unknown[]) {
-    const flags = args[1];
-    if (writableFlags(flags)) {
-      const hit = offending(args[0]);
-      if (hit) deny('open', hit);
-    }
+    guardOpen('open', args[0], args[1]);
     const targets = descriptorTargets(args[0]);
     return (original.apply(this, args) as Promise<FileHandle>).then((handle) => {
       descriptorPaths.set(handle.fd, targets);
