@@ -99,9 +99,9 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   });
   // An authenticated claim is contact whatever it answers: a worker told
   // `no_work` is attached and idle, which nothing else in the schema records.
-  await recordWorkerContact(env.db, {
+  if (!outcome.claimed) await recordWorkerContact(env.db, {
     credentialId: ctx.tokenId, machineId: ctx.machineId,
-    reason: outcome.claimed ? 'claimed' : outcome.reason, now: ctx.now,
+    reason: outcome.reason, now: ctx.now,
   });
   // The Deployment decides the cadence and says it on every answer: a worker
   // carries none of its own, so a lease changed here changes what every
@@ -130,11 +130,7 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
     if (error instanceof WorkerUsageError) return ok({ persisted: false, code: 'parse', reason: error.message });
     throw error;
   }
-  const outcome = await renewLease(env, { tokenId: ctx.tokenId, now: ctx.now }, { ...run, ...(attemptId === undefined ? {} : { attemptId }) });
-  // A worker driving a run stops polling the claim, so the renewal is the only
-  // contact it makes. It names no offer and no outcome of its own: the stored
-  // report keeps its liveness refreshed.
-  if (outcome.held) await recordWorkerContact(env.db, { credentialId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now });
+  const outcome = await renewLease(env, { tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now }, { ...run, ...(attemptId === undefined ? {} : { attemptId }) });
   return ok(outcome.held
     ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: outcome.expiresAt - ctx.now }
     : { persisted: true, held: false, reason: 'the lease is no longer held' });

@@ -1,3 +1,5 @@
+import { issueRecoveryForget } from '../core/recovery-forget.js';
+import { forbiddenToMember } from '../auth/roles.js';
 /**
  * The hosted recovery producer's owner surface: start one export attempt, and read what it staged.
  *
@@ -136,7 +138,10 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
 export async function handleForgetUnsettledExport(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (env.recovery === undefined) return unavailable();
   if (env.recovery.forgetUnsettledExport === undefined) return badRequest('this server records no unfinished backup export');
-  const outcome = await env.recovery.forgetUnsettledExport();
+  const target = (await env.recovery.status()).unsettledExport ?? null;
+  const commandId = await issueRecoveryForget(env.db, ctx.member.id, ctx.now, target);
+  const outcome = await env.recovery.forgetUnsettledExport(commandId);
+  if ('refused' in outcome && outcome.refused === 'not_admin') return forbiddenToMember();
   if ('refused' in outcome && outcome.refused === 'attempt_advancing') {
     return Response.json({ error: 'recovery_attempt_running', message: `attempt ${outcome.attempt} is still running and may be following that export, so nothing was forgotten; try again once it ends` }, { status: 409 });
   }

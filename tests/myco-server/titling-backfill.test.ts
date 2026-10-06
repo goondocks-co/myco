@@ -296,20 +296,31 @@ describe('the imported-session backfill', () => {
    */
   function staged(db: RelationalStore, hold: (sql: string, kind: 'first' | 'all' | 'run', n: number) => Promise<void> | undefined): RelationalStore {
     const seen = new Map<string, number>();
+    const originals = new WeakMap<PreparedStatement, { statement: PreparedStatement; sql: string }>();
     const gate = (sql: string, kind: 'first' | 'all' | 'run'): Promise<void> | undefined => {
       const key = `${kind}:${sql}`;
       const n = (seen.get(key) ?? 0) + 1;
       seen.set(key, n);
       return hold(sql, kind, n);
     };
-    const wrap = (statement: PreparedStatement, sql: string): PreparedStatement => ({
-      ...statement,
-      bind: (...values) => wrap(statement.bind(...values), sql),
-      first: async <T,>(...args: unknown[]) => { await gate(sql, 'first'); return (statement.first as (...a: unknown[]) => Promise<T | null>)(...args); },
-      all: async <T,>(...args: unknown[]) => { await gate(sql, 'all'); return (statement.all as (...a: unknown[]) => Promise<{ results: T[] }>)(...args); },
-      run: async (...args: unknown[]) => { await gate(sql, 'run'); return (statement.run as (...a: unknown[]) => Promise<never>)(...args); },
-    } as PreparedStatement);
-    return { ...db, prepare: (sql: string) => wrap(db.prepare(sql), sql) };
+    const wrap = (statement: PreparedStatement, sql: string): PreparedStatement => {
+      const wrapped: PreparedStatement = {
+        bind: (...values) => wrap(statement.bind(...values), sql),
+        first: async <T,>() => { await gate(sql, 'first'); return statement.first<T>(); },
+        all: async <T,>() => { await gate(sql, 'all'); return statement.all<T>(); },
+        run: async () => { await gate(sql, 'run'); return statement.run(); },
+      };
+      originals.set(wrapped, { statement, sql });
+      return wrapped;
+    };
+    return {
+      ...db, prepare: sql => wrap(db.prepare(sql), sql),
+      batch: async statements => {
+        const captured = statements.map(statement => originals.get(statement));
+        for (const entry of captured) if (entry !== undefined) await gate(entry.sql, 'run');
+        return db.batch(statements.map((statement, index) => captured[index]?.statement ?? statement));
+      },
+    };
   }
 
   const isCeilingCount = (sql: string) => sql.includes('MIN(at) AS pivot') && sql.includes("status != 'skipped'");

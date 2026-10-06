@@ -206,12 +206,19 @@ export async function revokeMachineCredentialsAsMember(
  * the run ends; a run claimed under a person's own credential carries that
  * credential in the same column, and a release must never end it.
  */
+export function revokeCredentialOfMemberStatement(
+  db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
+  condition?: { sql: string; params: readonly unknown[] },
+): PreparedStatement {
+  return db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND member_id = ? AND revoked_at IS NULL${condition === undefined ? '' : ` AND (${condition.sql})`}`)
+    .bind(nowMs, memberId, tokenId, memberId, ...(condition?.params ?? []));
+}
+
+/** Revoke a member-owned credential and report whether it changed. */
 export async function revokeCredentialOfMember(
   db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
 ): Promise<boolean> {
-  const result = await db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND member_id = ? AND revoked_at IS NULL`)
-    .bind(nowMs, memberId, tokenId, memberId).run();
+  const result = await revokeCredentialOfMemberStatement(db, memberId, tokenId, nowMs).run();
   const revoked = result.meta.changes === 1;
   emit({ kind: 'credential_revoked', tokenId, revokedBy: memberId, revoked });
   return revoked;
