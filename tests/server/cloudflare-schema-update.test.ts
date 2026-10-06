@@ -183,7 +183,7 @@ it('retains recovery history when migrations fail and when an update is retried'
 });
 
 it('refuses unreadable or newer live schemas before requesting recovery or changing remote resources', async () => {
-  for (const schema of ['', 'NaN', '1.5', String(SERVER_SCHEMA_VERSION + 1)]) {
+  for (const schema of ['0', '', 'NaN', '1.5', String(SERVER_SCHEMA_VERSION + 1)]) {
     await fixture({ schema }, async ({ home, update, calls }) => {
       const before = readDeploymentRecord(home);
       await expect(update()).rejects.toThrow();
@@ -320,5 +320,15 @@ it('GATE: asynchronous durable-write failures refuse migrations', async () => {
       },
     })).rejects.toThrow('could not durably record');
     expect(calls().some(({ args }) => args.includes('migrations'))).toBe(false);
+  });
+});
+
+
+it('GATE: a populated database stamped zero is refused rather than treated as empty provisioning', async () => {
+  await fixture({ fresh: true, freshPopulated: true, schema: '0' }, async ({ home, create, calls }) => {
+    fs.rmSync(deploymentRecordPath(home));
+    await expect(create()).rejects.toThrow('no valid schema version');
+    expect(readDeploymentRecord(home)?.databaseId).toBe(OLD_WORKER);
+    expect(calls().some(({ args }) => args.includes('migrations') || args[0] === 'vectorize' || args[0] === 'r2')).toBe(false);
   });
 });

@@ -176,7 +176,7 @@ export async function currentTimeTravelBookmark(options: CloudflareOptions & { d
   return answer.data.bookmark;
 }
 
-/** Read the live schema stamp; an unreadable stamp cannot authorize migrations. */
+/** Zero names an empty database; populated databases require a positive live schema stamp. */
 export async function cloudflareSchemaVersion(options: CloudflareOptions & { databaseName: string }): Promise<number> {
   const tables = z.array(z.object({ name: z.string() })).parse(await queryCloudflareDatabase({ ...options,
     sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name != 'd1_migrations'",
@@ -184,7 +184,7 @@ export async function cloudflareSchemaVersion(options: CloudflareOptions & { dat
   if (tables.length === 0) return 0;
   const rows = await queryCloudflareDatabase({ ...options,
     sql: "SELECT value FROM schema_meta WHERE key = 'version'", timeoutMs: D1_STATEMENT_TIMEOUT_MS });
-  const answer = z.array(z.object({ value: z.string().regex(/^(0|[1-9][0-9]*)$/) })).length(1).safeParse(rows);
+  const answer = z.array(z.object({ value: z.string().regex(/^[1-9][0-9]*$/) })).length(1).safeParse(rows);
   if (!answer.success) throw new Error('D1 returned no valid schema version; schema update refused');
   const version = Number(answer.data[0]!.value);
   if (!Number.isSafeInteger(version)) throw new Error('D1 schema version is outside the supported range');
