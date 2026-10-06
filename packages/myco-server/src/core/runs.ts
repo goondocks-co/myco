@@ -1,3 +1,4 @@
+import { memberWriteBatch, type MemberWriteActor } from '../auth/member-write-store.js';
 import { RUN_CONTROL_REFUSAL_WORDS, type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 /**
  * The agent run control plane, server-side.
@@ -235,8 +236,17 @@ export interface WriteAdmission {
   now: number;
   singleFlight?: boolean;
   ceiling?: ActorCeiling;
+  actor?: MemberWriteActor;
+  setup?: PreparedStatement[];
   /** A capability the Project must have turned on for the write to land. */
   capability?: string;
+}
+
+/** Identity setup and the run record share the dispatch's atomic admission. */
+async function writeDispatchRecord(db: RelationalStore, statement: PreparedStatement, admission?: { actor?: MemberWriteActor; setup?: PreparedStatement[] }): Promise<boolean> {
+  const statements = [...(admission?.setup ?? []), statement];
+  const results = admission?.actor === undefined ? await db.batch(statements) : await memberWriteBatch(db, admission.actor, statements);
+  return results[results.length - 1]!.meta.changes === 1;
 }
 
 export const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
@@ -295,13 +305,13 @@ export interface DispatchRecord {
  * false when the id is already taken.
  */
 export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord, admission?: WriteAdmission): Promise<boolean> {
-  const result = await db.prepare(RECORD_DISPATCH_SQL).bind(
+  const statement = db.prepare(RECORD_DISPATCH_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
     record.dryRun === true ? 1 : 0, record.startedAt, record.runContext, record.dispatchedBy, record.dispatchSpec ?? null,
     scope.projectId, record.id,
     ...admissionParams(scope, record.task, record.id, admission),
-  ).run();
-  return result.meta.changes === 1;
+  );
+  return writeDispatchRecord(db, statement, admission);
 }
 
 /**
@@ -470,11 +480,15 @@ export async function upsertAgent(db: RelationalStore, agent: AgentIdentity, now
  * separate registration step, while an owner-registered row keeps every field
  * of its registration: a dispatch never edits configuration.
  */
-export async function ensureAgent(db: RelationalStore, agent: AgentIdentity, now: number): Promise<void> {
-  await db.prepare(`INSERT INTO agents (id, name, provider, model, source, enabled, created_at, updated_at)
+export function ensureAgentStatement(db: RelationalStore, agent: AgentIdentity, now: number): PreparedStatement {
+  return db.prepare(`INSERT INTO agents (id, name, provider, model, source, enabled, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'built-in', ?, ?, ?)
       ON CONFLICT (id) DO NOTHING`)
-    .bind(agent.id, agent.name, agent.provider, agent.model, agent.enabled ? 1 : 0, now, now).run();
+    .bind(agent.id, agent.name, agent.provider, agent.model, agent.enabled ? 1 : 0, now, now);
+}
+
+export async function ensureAgent(db: RelationalStore, agent: AgentIdentity, now: number): Promise<void> {
+  await ensureAgentStatement(db, agent, now).run();
 }
 
 export async function listAgents(db: RelationalStore): Promise<AgentIdentity[]> {
@@ -1146,15 +1160,15 @@ const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}`;
 
 /** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live, and a write past an actor's ceiling is refused in the same statement. */
-export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<boolean> {
-  const result = await db.prepare(RECORD_QUEUED_SQL).bind(
+export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor; setup?: PreparedStatement[] } = {}): Promise<boolean> {
+  const statement = db.prepare(RECORD_QUEUED_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
     record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec, record.runContext ?? null,
     scope.projectId, record.id,
     options.singleFlight === true ? record.task : null, scope.projectId, record.task,
     ...actorCeilingParams(record.id, options.ceiling),
-  ).run();
-  return result.meta.changes === 1;
+  );
+  return writeDispatchRecord(db, statement, options);
 }
 
 /**
@@ -1170,11 +1184,11 @@ const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
  WHERE project_id = ? AND id = ? AND status = 'queued'${ADMISSION_WHERE}`;
 
 export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; instruction?: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
-  const result = await db.prepare(LAUNCH_QUEUED_SQL).bind(
+  const statement = db.prepare(LAUNCH_QUEUED_SQL).bind(
     launch.dispatchedBy, launch.startedAt, launch.runContext, launch.instruction ?? null, launch.provider, launch.model, scope.projectId, runId,
     ...admissionParams(scope, launch.task, runId, admission),
-  ).run();
-  return result.meta.changes === 1;
+  );
+  return writeDispatchRecord(db, statement, admission);
 }
 
 /**
@@ -1360,7 +1374,7 @@ export async function claimQueuedRun(
   admission: WriteAdmission,
 ): Promise<ClaimedRunRow | null> {
   if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
-  const [claimed] = await db.batch([db.prepare(
+  const results = await db.batch([...(admission.setup ?? []), db.prepare(
     `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL,
             reasoning_level = ?, model = ?, execution_overrides = ?
@@ -1373,7 +1387,7 @@ export async function claimQueuedRun(
     candidate.projectId, candidate.id,
     ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission),
   ), recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, { tokenId: claim.leasedBy, machineId: claim.machineId }, claim.now)]);
-  return (claimed?.results[0] as ClaimedRunRow | undefined) ?? null;
+  return (results[admission.setup?.length ?? 0]?.results[0] as ClaimedRunRow | undefined) ?? null;
 }
 
 /**

@@ -1,3 +1,4 @@
+import type { MemberWriteActor } from '../auth/member-write-store.js';
 import { heldPartition } from './embedding/policy.js';
 import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
@@ -23,8 +24,8 @@ import { repositoryIdentity } from './repositories.js';
  */
 import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
-import { ensureMember } from '../auth/enrollment.js';
-import { issueMemberToken, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
+import { ensureMember, ensureMemberStatement } from '../auth/enrollment.js';
+import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
@@ -35,7 +36,7 @@ import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@g
 import { emit } from '../telemetry.js';
 import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, workerRunLeaseExpiry, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
-import { runRemainingMs, applyRunUpdate, ensureAgent, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { runtimeProbeModel } from './runtime-probe.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
@@ -309,7 +310,7 @@ export async function admitDispatch(env: ServerEnv, task: string, now: number, l
  * dispatch that reads the load as free and then loses the race to another is
  * queued rather than launched past the limit.
  */
-export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
+export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<({ queued: false } & Launched) | ({ queued: true } & Queued)> {
   const limits = await readDispatchLimits(env);
   const held = await admitDispatch(env, prepared.task, now, limits);
   // Neither front door runs a harness. A worker-served task waits in the claim
@@ -319,7 +320,7 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
   if (prepared.servedBy === 'worker') return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held ?? 'worker', now, options)) };
   if (held !== null) return { queued: true, ...(await enqueueDispatch(env, prepared, spec, held, now, options)) };
   try {
-    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight, ceiling: options.ceiling })) };
+    return { queued: false, ...(await launchDispatch(env, prepared, spec, now, { limits, singleFlight: options.singleFlight, ceiling: options.ceiling, actor: options.actor })) };
   } catch (err) {
     // The launch already returned the row to the queue; the dispatch waits there rather than being written twice.
     if (err instanceof RuntimeDraining && err.runId !== undefined) {
@@ -336,12 +337,12 @@ export async function dispatchPrepared(env: ServerEnv, prepared: PreparedDispatc
  * asked of it and the limit that holds it, with no credential until it
  * launches. Wakes the Deployment so the drain follows as capacity returns.
  */
-export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<Queued> {
-  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
+export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, held: HeldBy, now: number, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<Queued> {
+  const setup = [ensureAgentStatement(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now)];
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
   const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
-  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, options))) {
+  if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, { ...options, setup }))) {
     if ((await getRun(env.db, scope, runId)) === null) {
       if (await ceilingHolds(env.db, options.ceiling)) throw new CeilingReached();
       if (options.singleFlight === true) throw new AlreadyRunning();
@@ -557,12 +558,16 @@ async function ceilingHolds(db: ServerEnv['db'], ceiling: ActorCeiling | undefin
  * of it. Rejects when the runtime refuses to start, after marking the row
  * failed; the caller decides what its own state does then.
  */
-export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean; ceiling?: ActorCeiling } = {}): Promise<Launched> {
+export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch, spec: LaunchSpec, now: number, options: { limits?: DispatchLimits; singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<Launched> {
   if (!hasTaskRuntime(env, prepared.task) || env.harnessLaunch === undefined) throw new Error('harness runtime unbound after preparation');
   const timeoutSeconds = spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS;
-  await ensureMember(env.db, HARNESS_MEMBER_ID, now, 'member', 'harness runtime');
-  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now);
-  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+  const minted = mint.issued;
+  const setup = [
+    ensureMemberStatement(env.db, HARNESS_MEMBER_ID, now, 'member', undefined, 'harness runtime'),
+    ensureAgentStatement(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: prepared.providerType, model: prepared.model, enabled: true }, now),
+    mint.statement,
+  ];
 
   const runId = spec.runId ?? `run_${crypto.randomUUID()}`;
   // The run's bound rides its context with the task's parameters, so the sweep
@@ -578,9 +583,8 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // on whether that child is still running.
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
   // the launch, and the write itself carries the limit check when limits are given.
-  const admission = options.limits === undefined && options.singleFlight !== true && options.ceiling === undefined
-    ? undefined
-    : { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true, ...(options.ceiling === undefined ? {} : { ceiling: options.ceiling }) };
+  const admission = { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true,
+    actor: options.actor, setup, ...(options.ceiling === undefined ? {} : { ceiling: options.ceiling }) };
   // Nothing names this credential until the write lands, so a store that throws
   // anywhere between the mint and that write retires it on its way out.
   let carried: string | null;
@@ -692,7 +696,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
 }
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */
-export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number, options: { ceiling?: ActorCeiling } = {}): Promise<DispatchOutcome> {
+export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number, options: { ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<DispatchOutcome> {
   const prepared = await prepareDispatch(env, task, projectId);
   if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }), ...(prepared.capability === undefined ? {} : { capability: prepared.capability }) };
   return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now, options)) };
@@ -969,9 +973,13 @@ export async function claimNextRun(
     return claimNextRun(env, worker);
   }
 
-  await ensureMember(env.db, HARNESS_MEMBER_ID, worker.now, 'member', 'harness runtime');
-  await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: harness, model: null, enabled: true }, worker.now);
-  const minted = await issueMemberToken(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+  const minted = mint.issued;
+  const setup = [
+    ensureMemberStatement(env.db, HARNESS_MEMBER_ID, worker.now, 'member', undefined, 'harness runtime'),
+    ensureAgentStatement(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: harness, model: null, enabled: true }, worker.now),
+    mint.statement,
+  ];
 
   // The claim carries the same admission the launch does, in the write. A run
   // held by a limit stays queued with that limit recorded on it, and two
@@ -979,7 +987,7 @@ export async function claimNextRun(
   const limits = await readDispatchLimits(env);
   const row = await claimQueuedRun(env.db, candidate, {
     dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, machineId: worker.machineId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
-  }, { limits, now: worker.now, ...(capability === null ? {} : { capability }) });
+  }, { limits, setup, now: worker.now, ...(capability === null ? {} : { capability }) });
   if (row === null) {
     await retireDispatchCredential(env, minted.tokenId, worker.now);
     if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();

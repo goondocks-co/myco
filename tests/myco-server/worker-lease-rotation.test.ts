@@ -83,21 +83,32 @@ function pauseAuthenticatedOwner(r: Awaited<ReturnType<typeof rig>>) {
 
 function pauseStatement(r: Awaited<ReturnType<typeof rig>>, match: string) {
   const prepare = r.env.db.prepare.bind(r.env.db);
+  const batch = r.env.db.batch.bind(r.env.db);
+  const originals = new WeakMap<PreparedStatement, { statement: PreparedStatement; sql: string }>();
   let release = () => {};
   let reached = () => {};
   const admitted = new Promise<void>((resolve) => { reached = resolve; });
   const paused = new Promise<void>((resolve) => { release = resolve; });
   let held = false;
-  const wrap = (statement: PreparedStatement, sql: string): PreparedStatement => ({
-    bind: (...params) => wrap(statement.bind(...params), sql),
-    first: () => statement.first(), all: () => statement.all(),
-    run: async () => {
-      if (!held && sql.includes(match)) { held = true; reached(); await paused; }
-      return statement.run();
-    },
-  });
-  r.env.db.prepare = (sql) => sql.includes(match) ? wrap(prepare(sql), sql) : prepare(sql);
-  return { admitted, resume: release, restore: () => { release(); r.env.db.prepare = prepare; } };
+  const before = async (sql: string) => {
+    if (!held && sql.includes(match)) { held = true; reached(); await paused; }
+  };
+  const wrap = (statement: PreparedStatement, sql: string): PreparedStatement => {
+    const wrapped: PreparedStatement = {
+      bind: (...params) => wrap(statement.bind(...params), sql),
+      first: () => statement.first(), all: () => statement.all(),
+      run: async () => { await before(sql); return statement.run(); },
+    };
+    originals.set(wrapped, { statement, sql });
+    return wrapped;
+  };
+  r.env.db.prepare = sql => wrap(prepare(sql), sql);
+  r.env.db.batch = async statements => {
+    const captured = statements.map(statement => originals.get(statement));
+    for (const entry of captured) if (entry !== undefined) await before(entry.sql);
+    return batch(statements.map((statement, index) => captured[index]?.statement ?? statement));
+  };
+  return { admitted, resume: release, restore: () => { release(); r.env.db.prepare = prepare; r.env.db.batch = batch; } };
 }
 
 for (const target of ['cloudflare', 'bun'] as const) describe(`${target}: authenticated worker lease rotation`, () => {

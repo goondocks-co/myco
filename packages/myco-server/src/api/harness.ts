@@ -94,7 +94,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
     : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
   let outcome;
   try {
-    outcome = await dispatchTask(env, task, projectId, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, options: { dryRun, fresh } }, ctx.now, ceiling === undefined ? {} : { ceiling });
+    outcome = await dispatchTask(env, task, projectId, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } });
   } catch (error) {
     if (error instanceof CeilingReached && ceiling !== undefined) return dailyLimit(env, ceiling, ctx.now);
     throw error;

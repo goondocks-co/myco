@@ -10,7 +10,7 @@ import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/obje
 import { acquireOperatorHold, recoveryHoldRelease, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
-const OWNER = { member: { id: 'owner-1' }, now: 1_000 } as never;
+const OWNER = { member: { id: 'mem_machine_1' }, now: 1_000 } as never;
 
 const idle: RecoveryProducerStatus = {
   attempt: null, stage: 'idle', form: 'staging', startedAt: null, recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null,
@@ -176,7 +176,7 @@ it('records who started the attempt, and hands the producer nothing else about t
   const env = sqliteEnv();
   const held = producer();
   expect((await handleStartRecoveryExport({ ...env.serverEnv, recovery: held.port } as never, OWNER)).status).toBe(200);
-  expect(held.seen[0]!.startedBy).toBe('owner-1');
+  expect(held.seen[0]!.startedBy).toBe('mem_machine_1');
   expect(Object.keys(held.seen[0]!).sort()).toEqual(['captured', 'holdToken', 'schema', 'startedBy', 'tables']);
   env.sqlite.close();
 });

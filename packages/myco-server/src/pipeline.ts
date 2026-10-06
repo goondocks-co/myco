@@ -1,3 +1,4 @@
+import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
 import { RETIRED_RUN_ROUTES } from './api/runs.js';
 import { authorizeDeclaration, deploymentIdentity, memberSubject, type AuthorizationSubject } from './auth/authorization.js';
 import { authorizeHttp, httpAuthorizationDecision } from './auth/http-authorization.js';
@@ -343,6 +344,7 @@ export function createServer(deps: ServerDeps) {
       const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
       if (session === null) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
+      let freshDispatch = false;
       try {
         // Membership is decided per request: a session names a GitHub account, and
         // the account is a member only while a live member row is linked to it.
@@ -361,6 +363,7 @@ export function createServer(deps: ServerDeps) {
         const context = { request: bounded, session, config, params: matched.params, url, now };
         const subject: AuthorizationSubject = member === null ? { kind: 'account', deploymentId: await deploymentIdentity(env.db), transport: 'http', live: true } : await memberSubject(env.db, member.id, 'http');
         const body = await bounded.clone().text();
+        freshDispatch = matched.route.path === '/api/harness/dispatch' && parseJsonObject(body)?.fresh === true;
         const authorization = await httpAuthorizationDecision(env, matched.route.authorization, subject, { params: matched.params, body, rawKind: 'raw' in matched.route ? matched.route.raw?.resource : undefined });
         if (!authorization.allowed) {
           if (matched.route.authority === 'admin' && subject.role === 'member') return forbiddenToMember();
@@ -381,8 +384,21 @@ export function createServer(deps: ServerDeps) {
         }
         if (matched.route.authority === 'account') return await matched.route.handler(env, { ...context, member });
         await stampRequest(env.db, now);
-        return await matched.route.handler(env, { ...context, member: member! });
+        const writeAuthority = matched.route.authority === 'admin';
+        let writeRefused = false;
+        const guarded = writeAuthority
+          ? { ...env, db: memberWriteStore(env.db, member!.id, 'admin', () => { writeRefused = true; }) }
+          : env;
+        const response = await matched.route.handler(guarded, { ...context, member: member! });
+        if (writeRefused) throw new MemberWriteRefused();
+        return response;
       } catch (err) {
+        if (err instanceof MemberWriteRefused) {
+          if (freshDispatch) {
+            return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
+          }
+          return forbiddenToMember();
+        }
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
         return unavailable();
       }
@@ -668,8 +684,9 @@ export function createServer(deps: ServerDeps) {
         if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
-      return await route.deployment(env, { memberId: auth.memberId, machineId, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });
+      return await route.deployment({ ...env, db: memberWriteStore(env.db, auth.memberId, 'admin') }, { memberId: auth.memberId, machineId, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });
     } catch (err) {
+      if (err instanceof MemberWriteRefused) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       return failed(env, auth, route, err);
     }
   }
