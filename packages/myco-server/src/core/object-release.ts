@@ -41,7 +41,13 @@ export async function publishBackupObject<T>(db: RelationalStore, blobs: BlobSto
   const stored = await upload();
   try { return await commit(stored.size); }
   catch (error) {
-    if (error instanceof MemberWriteRefused && await db.prepare('SELECT 1 FROM backups WHERE key = ?').bind(key).first() === null) await deleteStoredObject(blobs, key);
+    if (error instanceof MemberWriteRefused) {
+      try {
+        if (await db.prepare('SELECT 1 FROM backups WHERE key = ?').bind(key).first() === null) await deleteStoredObject(blobs, key);
+      } catch (cleanupError) {
+        emit({ kind: 'backup_publication_cleanup_failed', key, error_class: classify(cleanupError) });
+      }
+    }
     throw error;
   }
 }

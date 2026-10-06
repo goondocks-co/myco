@@ -104,6 +104,34 @@ describe('live authority at administrative writes', () => {
     });
   }
 
+  for (const fault of ['read', 'delete'] as const) {
+    it(`backup cleanup ${fault} failure preserves the terminal admin refusal and surfaces cleanup failure`, async () => {
+      let armed = false;
+      let demoted = false;
+      const f = await setup((sql, sqlite) => {
+        if (armed && /INSERT INTO backups/.test(sql)) {
+          armed = false;
+          demoted = true;
+          sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]);
+        }
+        if (demoted && fault === 'read' && /SELECT 1 FROM backups WHERE key/.test(sql)) throw new Error('fixture cleanup read failure');
+      });
+      const log = console.log;
+      const events: string[] = [];
+      try {
+        if (fault === 'delete') f.bucket.delete = async () => { throw new Error('fixture cleanup delete failure'); };
+        console.log = line => { events.push(String(line)); };
+        armed = true;
+        const response = await send(f, operations.find(operation => operation.name === 'backup')!);
+        expect(demoted).toBe(true);
+        expect(response.status).toBe(403);
+        expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
+        expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
+        expect(events.map(line => JSON.parse(line) as { kind: string })).toContainEqual(expect.objectContaining({ kind: 'backup_publication_cleanup_failed' }));
+      } finally { console.log = log; f.sqlite.close(); }
+    });
+  }
+
   for (const change of ['demotion', 'revocation'] as const) {
     it(`ordinary dispatch refuses ${change} instead of using cached admin timeout and ceiling`, async () => {
       let armed = false;
