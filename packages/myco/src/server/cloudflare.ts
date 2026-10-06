@@ -16,7 +16,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { resolveMycoHome } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
-import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner } from './runner.js';
+import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner, type CommandResult } from './runner.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
@@ -157,12 +157,38 @@ export async function deployWorker(options: CloudflareOptions & { dryRun?: boole
   };
 }
 
-/** Apply pending D1 migrations against the deployed database. */
-export async function applyMigrations(options: CloudflareOptions & { databaseName: string }): Promise<void> {
+/** Run a remote command with the selected account and binary-owned configuration. */
+export async function runCloudflareCommand(options: CloudflareOptions, args: string[], timeoutMs?: number): Promise<CommandResult> {
   const { runner, env } = resolved(options);
-  await runOrThrow(runner, 'npx',
-    wrangler('d1', 'migrations', 'apply', options.databaseName, '--remote', ...configArgs(options)),
-    { cwd: options.configDir, env });
+  return runOrThrow(runner, 'npx', wrangler(...args, ...configArgs(options)), {
+    cwd: options.configDir, env, ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+}
+
+const TIME_TRAVEL_BOOKMARK = /^[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{32}$/i;
+
+/** Capture the current remote D1 recovery point through the operator's bound configuration. */
+export async function currentTimeTravelBookmark(options: CloudflareOptions & { databaseName: string }): Promise<string> {
+  const result = await runCloudflareCommand(options,
+    ['d1', 'time-travel', 'info', options.databaseName, '--json'], D1_STATEMENT_TIMEOUT_MS);
+  const answer = z.object({ bookmark: z.string().regex(TIME_TRAVEL_BOOKMARK) }).safeParse(wranglerJson(result.stdout));
+  if (!answer.success) throw new Error('D1 Time Travel returned no valid current bookmark');
+  return answer.data.bookmark;
+}
+
+/** Zero names an empty database; populated databases require a positive live schema stamp. */
+export async function cloudflareSchemaVersion(options: CloudflareOptions & { databaseName: string }): Promise<number> {
+  const tables = z.array(z.object({ name: z.string() })).parse(await queryCloudflareDatabase({ ...options,
+    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name != 'd1_migrations'",
+    timeoutMs: D1_STATEMENT_TIMEOUT_MS }));
+  if (tables.length === 0) return 0;
+  const rows = await queryCloudflareDatabase({ ...options,
+    sql: "SELECT value FROM schema_meta WHERE key = 'version'", timeoutMs: D1_STATEMENT_TIMEOUT_MS });
+  const answer = z.array(z.object({ value: z.string().regex(/^[1-9][0-9]*$/) })).length(1).safeParse(rows);
+  if (!answer.success) throw new Error('D1 returned no valid schema version; schema update refused');
+  const version = Number(answer.data[0]!.value);
+  if (!Number.isSafeInteger(version)) throw new Error('D1 schema version is outside the supported range');
+  return version;
 }
 
 /** Create the D1 database and answer its UUID; an existing database of the name is answered, not an error. */
@@ -722,7 +748,18 @@ export interface DeploymentRecord {
   recoveryBucketName?: string;
   /** How many runs the Deployment may have in flight at once, set by `myco server config --fleet`; the dispatcher counts against it. */
   fleet?: number;
+  /** Recovery points persisted before hosted schema advances, including attempts that did not finish. */
+  schemaUpdates?: CloudflareSchemaUpdate[];
 }
+
+export const cloudflareSchemaUpdateSchema = z.object({
+  bookmark: z.string().regex(TIME_TRAVEL_BOOKMARK),
+  schemaBefore: z.number().int().nonnegative(),
+  schemaAfter: z.number().int().positive(),
+  recordedAt: z.string().datetime(),
+  workerVersionBefore: z.string().nullable(),
+});
+export type CloudflareSchemaUpdate = z.infer<typeof cloudflareSchemaUpdateSchema>;
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */
 export interface WorkerSecrets {

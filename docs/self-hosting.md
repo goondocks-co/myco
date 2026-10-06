@@ -106,6 +106,32 @@ myco server rollback --target cloudflare    # go back to the version that served
 
 Updating waits for nothing and interrupts nothing: a request already in progress finishes on the version that took it.
 
+When an update or a create against an existing database advances the hosted schema, it first reads the live schema and obtains a current D1 Time Travel bookmark.
+It durably appends the bookmark, schema versions before and after, timestamp, and prior Worker version to
+`~/.myco/server/cloudflare/record.json` under `schemaUpdates`, before applying any migration. If the bookmark cannot be
+obtained or is invalid, the operation refuses before changing remote resources, the database, or the Worker. An update
+with no schema advance needs no bookmark. Fresh provisioning into a database created by this operation and verified
+empty is exempt. Retrying an interrupted create uses the existing-database gate, including when the schema is still empty.
+Replacement recovery gates migrations after importing data, and repeats admission on resume. Its bookmarks are saved
+in `~/.myco/server/cloudflare/recovery.json` under `schemaUpdates` until publication copies the history to the
+deployment record. Full `myco server backup --target cloudflare --to <dir>` remains available
+for disaster recovery, independently of updates.
+
+The update prints the exact database rollback command with the recorded account and staged configuration. Run that
+command on the operator machine while the bookmark is within D1's Time Travel retention window. For example:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID='<account-id>' npx --no-install wrangler d1 time-travel restore '<database-name>' --bookmark=<recorded-bookmark> -c '<absolute-path-to-wrangler.deploy.toml>'
+myco server rollback --target cloudflare --account-id '<account-id>' --version '<workerVersionBefore>'
+```
+
+Answer the D1 restore prompt with `y`; there is no `--yes` flag. Restore replaces the database in place, discards writes
+after the bookmark, cancels in-flight queries, and prints an undo bookmark: retain that output. Time Travel restores
+the database only; it does not restore R2 objects. Roll back the Worker too if its code depends on the new schema,
+using the pre-update version printed by the update and saved in the record. If that version is unavailable, inspect
+`wrangler deployments list --name <worker-name>` in the same account to identify the compatible version.
+See [Cloudflare's Time Travel procedure and retention limits](https://developers.cloudflare.com/d1/reference/time-travel/).
+
 `myco server destroy --target cloudflare --yes` takes the server offline. Your data is kept — the database, the file storage and the stored keys all stay, and creating again brings the same server back.
 
 ## Reaching it from cloud agents
@@ -129,6 +155,9 @@ myco server update --target local
 ```
 
 It stops the server, brings its storage up to date, and starts it again. Running an older server against newer storage is refused rather than half-applied, so an interrupted update leaves your data intact.
+
+Native storage has no D1 Time Travel. Before a native schema advance, make and verify a full backup with
+`myco server backup --target local --to <dir>`; a hosted bookmark cannot protect a native volume.
 
 ## Backing it up
 
