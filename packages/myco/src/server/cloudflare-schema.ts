@@ -7,7 +7,7 @@ interface SchemaOptions extends CloudflareOptions {
   mycoHome?: string;
   record: DeploymentRecord;
   /** The operation's durable record writer; a failure refuses all migration work. */
-  persist: (record: DeploymentRecord) => void;
+  persist: (record: DeploymentRecord) => void | Promise<void>;
   /** A database created by this operation, verified empty before its first migration. */
   freshDatabase?: boolean;
   report?: (line: string) => void;
@@ -37,7 +37,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
       }] };
     }
     try {
-      options.persist(record);
+      await options.persist(record);
     } catch (error) {
       throw new Error('schema advance refused: could not durably record the D1 recovery point', { cause: error });
     }

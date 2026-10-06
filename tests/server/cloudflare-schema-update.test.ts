@@ -8,6 +8,7 @@ import { deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } fro
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { applyCloudflareSchema } from '@myco/server/cloudflare-schema.js';
 import { restoreCloudflareDatabase } from '@myco/server/cloudflare-recovery-database.js';
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 
@@ -305,6 +306,19 @@ it('GATE: a fresh provisioning receipt cannot exempt a populated database', asyn
   await fixture({ fresh: true, freshPopulated: true }, async ({ home, create, calls }) => {
     fs.rmSync(deploymentRecordPath(home));
     await expect(create()).rejects.toThrow('the destination is not empty');
+    expect(calls().some(({ args }) => args.includes('migrations'))).toBe(false);
+  });
+});
+
+
+it('GATE: asynchronous durable-write failures refuse migrations', async () => {
+  await fixture({}, async ({ root, home, calls }) => {
+    await expect(applyCloudflareSchema({ accountId: ACCOUNT, mycoHome: home, configDir: root,
+      record: readDeploymentRecord(home)!, persist: async () => {
+        await Promise.resolve();
+        throw new Error('fixture asynchronous durable write failed');
+      },
+    })).rejects.toThrow('could not durably record');
     expect(calls().some(({ args }) => args.includes('migrations'))).toBe(false);
   });
 });
