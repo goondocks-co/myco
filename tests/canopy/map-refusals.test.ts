@@ -41,7 +41,7 @@ it('names every list and line bound, indexed field and received kind or length w
     parent[parts.at(-1)!] = value;
     return () => parseMapArtifact(result);
   };
-  const path = (field: string) => 'artifact.' + field.replace(/\.(\d+)/g, '[$1]');
+  const path = (field: string) => 'artifact.' + field;
   for (const [field, max] of listFields) {
     for (const [value, received] of [[[], 'array length 0'], [Array(max + 1).fill(SENTINEL), `array length ${max + 1}`], [SENTINEL, `string length ${SENTINEL.length}`], [null, 'null']] as const) {
       check(changed(field, value), path(field), `1..${max}`, received);
@@ -62,19 +62,19 @@ it('names every list and line bound, indexed field and received kind or length w
     check(changed(field, SENTINEL), path(field), 'one object', `string length ${SENTINEL.length}`);
   }
   check(() => parseMapArtifact(null), 'artifact', 'one object', 'null');
-  check(changed('domains.0.id', '-' + SENTINEL), 'artifact.domains[0].id', `1..${MAP_LIMITS.id} lowercase`, `string length ${SENTINEL.length + 1}`);
-  check(changed('directories.0.path', '../' + SENTINEL), 'artifact.directories[0].path', `1..${MAP_LIMITS.path}`, `string length ${SENTINEL.length + 3}`);
+  check(changed('domains.0.id', '-' + SENTINEL), 'artifact.domains.0.id', `1..${MAP_LIMITS.id} lowercase`, `string length ${SENTINEL.length + 1}`);
+  check(changed('directories.0.path', '../' + SENTINEL), 'artifact.directories.0.path', `1..${MAP_LIMITS.path}`, `string length ${SENTINEL.length + 3}`);
 });
 
 it('names uniqueness and serialized byte bounds without echoing entries', () => {
   const duplicate = artifact();
   duplicate.domains[0]!.id = SENTINEL;
   duplicate.domains.push(duplicate.domains[0]!);
-  check(() => parseMapArtifact(duplicate), 'artifact.domains[1].id', `1..${MAP_LIMITS.domains}`, '2 entries with 1 unique values');
+  check(() => parseMapArtifact(duplicate), 'artifact.domains.1.id', `1..${MAP_LIMITS.domains}`, '2 entries with 1 unique values');
   const skeleton = artifact();
   skeleton.directories[0]!.path = SENTINEL;
   skeleton.directories.push(skeleton.directories[0]!);
-  check(() => parseMapArtifact(skeleton), 'artifact.directories[1].path', `1..${MAP_LIMITS.directories}`, '2 entries with 1 unique values');
+  check(() => parseMapArtifact(skeleton), 'artifact.directories.1.path', `1..${MAP_LIMITS.directories}`, '2 entries with 1 unique values');
   const large = artifact();
   large.directories = Array.from({ length: MAP_LIMITS.directories }, (_, index) => ({ ...annotation(), path: `src/${index}`, groundedIn: Array.from({ length: MAP_LIMITS.groundedIn }, () => ({ ...file(), path: SENTINEL.padEnd(MAP_LIMITS.path, 'x') })) }));
   const bytes = new TextEncoder().encode(JSON.stringify(large)).byteLength;
@@ -100,31 +100,31 @@ it('keeps submitted paths and titles out of evidence and incremental refusals', 
   value.domains[0]!.title = SENTINEL;
   value.domains[0]!.files[0]!.path = SENTINEL;
   value.domains[0]!.files[0]!.groundedIn = [{ path: SENTINEL, sha256: file().sha256 }];
-  check(() => assertMapEvidence(value, [file()], new Set()), 'artifact.domains[0].files[0].path', 'one admitted source file', `string length ${SENTINEL.length}`);
+  check(() => assertMapEvidence(value, [file()], new Set()), 'artifact.domains.0.files.0.path', 'one admitted source file', `string length ${SENTINEL.length}`);
   const files = [{ path: SENTINEL, sha256: file().sha256 }];
   value.domains[0]!.files[0]!.groundedIn = [file()];
-  check(() => assertMapEvidence(value, files, new Set([SENTINEL])), 'artifact.domains[0].files[0].groundedIn', 'at least 1 reference', '0 matching references');
+  check(() => assertMapEvidence(value, files, new Set([SENTINEL])), 'artifact.domains.0.files.0.groundedIn', 'at least 1 reference', '0 matching references');
   value.domains[0]!.files[0]!.groundedIn = files;
   value.directories[0]!.path = 'missing/' + SENTINEL;
-  check(() => assertMapEvidence(value, files, new Set([SENTINEL])), 'artifact.directories[0].path', 'one directory or file', `string length ${value.directories[0]!.path.length}`);
+  check(() => assertMapEvidence(value, files, new Set([SENTINEL])), 'artifact.directories.0.path', 'one directory or file', `string length ${value.directories[0]!.path.length}`);
   value.directories[0]!.path = SENTINEL;
   value.directories[0]!.groundedIn = [{ path: SENTINEL, sha256: 'b'.repeat(MAP_LIMITS.sha256) }];
-  check(() => assertMapEvidence(value, files, new Set([SENTINEL])), 'artifact.directories[0].groundedIn[0]', '1 grounding matching verified source', '0 verified matches');
+  check(() => assertMapEvidence(value, files, new Set([SENTINEL])), 'artifact.directories.0.groundedIn.0', '1 grounding matching verified source', '0 verified matches');
   const after = structuredClone(value);
   after.domains[0]!.title = 'Changed';
-  check(() => assertIncrementalMap(value, after, new Set()), 'artifact.domains[0]', '0 changes', 'a changed or missing object');
+  check(() => assertIncrementalMap(value, after, new Set()), 'artifact.domains.0', '0 changes', 'a changed or missing object');
   after.domains = value.domains;
   after.directories = [];
-  check(() => assertIncrementalMap(value, after, new Set()), 'artifact.directories[0]', '0 changes', 'a changed or missing object');
+  check(() => assertIncrementalMap(value, after, new Set()), 'artifact.directories.0', '0 changes', 'a changed or missing object');
 });
 
 it('declares every artifact bound before a write', () => {
   for (const bound of [
     `at most ${MAX_MAP_BYTES} UTF-8 bytes`,
     `artifact.directories: 1..${MAP_LIMITS.directories}`, `artifact.domains: 1..${MAP_LIMITS.domains}`,
-    `artifact.domains[].files: 1..${MAP_LIMITS.files}`, `groundedIn: 1..${MAP_LIMITS.groundedIn}`,
+    `artifact.domains.<index>.files: 1..${MAP_LIMITS.files}`, `groundedIn: 1..${MAP_LIMITS.groundedIn}`,
     `path: 1..${MAP_LIMITS.path}`, `annotation: 1..${MAP_LIMITS.annotation}`,
     `title: 1..${MAP_LIMITS.title}`, `id: 1..${MAP_LIMITS.id}`,
-    `groundedIn[].sha256: exactly ${MAP_LIMITS.sha256} lowercase hexadecimal`,
+    `groundedIn.<index>.sha256: exactly ${MAP_LIMITS.sha256} lowercase hexadecimal`,
   ]) expect(MAP_WRITE_BOUNDS).toContain(bound);
 });

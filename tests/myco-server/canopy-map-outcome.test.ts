@@ -217,7 +217,7 @@ describe('a map run a worker claimed', () => {
     for (const artifact of [sentinel, { ...ARTIFACT, domains: [{ ...ARTIFACT.domains[0]!, title: sentinel.repeat(10) }] }]) {
       const result = await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact });
       expect(result.ok).toBe(false);
-      expect(result.error).toContain(typeof artifact === 'string' ? 'artifact: expected one valid JSON object' : `artifact.domains[0].title: expected a nonblank single line of 1..${MAP_LIMITS.title}`);
+      expect(result.error).toContain(typeof artifact === 'string' ? 'artifact: expected one valid JSON object' : `artifact.domains.0.title: expected a nonblank single line of 1..${MAP_LIMITS.title}`);
       expect(result.error).toContain(`received ${typeof artifact === 'string' ? 'invalid JSON ' : ''}string length ${typeof artifact === 'string' ? sentinel.length : sentinel.length * 10}`);
       expect(JSON.stringify(result)).not.toContain(sentinel);
     }
@@ -229,6 +229,46 @@ describe('a map run a worker claimed', () => {
     }), r.e.env);
     const body = await res.json() as { result: { tools: Array<{ name: string; inputSchema: { properties: { artifact?: { description?: string } } } }> } };
     expect(body.result.tools.find((tool) => tool.name === 'myco_run_map')!.inputSchema.properties.artifact!.description).toContain(MAP_WRITE_BOUNDS);
+  });
+
+  it('persists exact refusal indices in its report while masking actual array output', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    const run = await r.claimMap();
+    await r.pinCommit(run.id, COMMIT_A);
+    const artifact = {
+      ...ARTIFACT,
+      domains: Array.from({ length: MAP_LIMITS.domains }, (_, index) => ({
+        ...ARTIFACT.domains[0]!, id: `domain-${index}`,
+        files: Array.from({ length: MAP_LIMITS.files }, () => ({
+          ...ARTIFACT.domains[0]!.files[0]!,
+          groundedIn: Array.from({ length: MAP_LIMITS.groundedIn }, () => grounding('src/main.ts')),
+        })),
+      })),
+    };
+    const domain = MAP_LIMITS.domains - 1;
+    const file = MAP_LIMITS.files - 1;
+    const groundingIndex = MAP_LIMITS.groundedIn - 1;
+    artifact.domains[domain]!.files[file]!.groundedIn[groundingIndex]!.sha256 = 'invalid-digest-content';
+    const refusal = await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact });
+    const diagnostic = `artifact.domains.${domain}.files.${file}.groundedIn.${groundingIndex}.sha256: expected exactly ${MAP_LIMITS.sha256} lowercase hex characters (0-9, a-f) for a SHA-256 digest; received string length 22.`;
+    expect(refusal.ok).toBe(false);
+    expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: ARTIFACT })).toMatchObject({ written: true });
+    const reported = await r.call(run.runToken, 'myco_run', {
+      op: 'report', action: MAP_ACTION, summary: 'mapped',
+      audit: { ...RUN_AUDIT, failures: [
+        { what: refusal.error, recovery: 'Corrected the digest.' },
+        { what: 'Tool output: [7] and ["private-array-content"]', recovery: 'Ignored the output.' },
+      ] },
+    });
+    expect(reported).toMatchObject({ recorded: true });
+    const stored = r.e.sqlite.query('SELECT audit FROM agent_reports WHERE run_id = ?').get(run.id) as { audit: string };
+    expect(JSON.parse(stored.audit).failures).toEqual([
+      { what: diagnostic, recovery: 'Corrected the digest.' },
+      { what: 'Tool output: … and …', recovery: 'Ignored the output.' },
+    ]);
+    expect(stored.audit).not.toContain('invalid-digest-content');
+    expect(stored.audit).not.toContain('private-array-content');
   });
 
   it('writes its map, closes completed on it, and is read back over myco_cortex', async () => {
