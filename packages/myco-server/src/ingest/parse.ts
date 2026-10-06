@@ -39,6 +39,8 @@ import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } fro
 import { parserCheckpointStatements, readParserCheckpoint, terminalCheckpointBatch } from './parser-checkpoint.js';
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { TOOL_INPUT_PREVIEW_BYTES } from '../core/tool-input.js';
+import { CONTENT_PREPARATION_CALL_RESERVE } from '../core/content-budget.js';
 import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER, SESSION_END_SETTLE_MS } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
@@ -48,6 +50,13 @@ export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
  * events share a call only while their payloads are small, so a call never carries more than it ever has.
  */
 export const TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES = 20 * MAX_PAYLOAD_BYTES;
+
+/** A tool input needing external publication occupies its own projection batch. */
+function oversizedToolInput(event: DerivedEvent): boolean {
+  if (event.kind !== 'tool.use' && event.kind !== 'tool.failure') return false;
+  const input = event.payload.input;
+  return input !== undefined && utf8(JSON.stringify(input)).byteLength > TOOL_INPUT_PREVIEW_BYTES;
+}
 
 /**
  * A pass's derived events as the groups it writes, one database call each, in order: at most
@@ -60,13 +69,19 @@ export function eventGroups(events: readonly DerivedEvent[]): DerivedEvent[][] {
   let bytes = 0;
   for (const event of events) {
     const size = utf8(JSON.stringify(event.payload)).byteLength;
-    if (open.length > 0 && (open.length >= TRANSCRIPT_PARSE_EVENTS_PER_BATCH || bytes + size > TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)) {
+    const preparedInput = oversizedToolInput(event);
+    if (open.length > 0 && (preparedInput || open.length >= TRANSCRIPT_PARSE_EVENTS_PER_BATCH || bytes + size > TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)) {
       groups.push(open);
       open = [];
       bytes = 0;
     }
     open.push(event);
     bytes += size;
+    if (preparedInput) {
+      groups.push(open);
+      open = [];
+      bytes = 0;
+    }
   }
   if (open.length > 0) groups.push(open);
   return groups;
@@ -194,8 +209,28 @@ interface ParseTarget {
 /** A segment row as a pass reads it: where it sits in the transcript, its bytes' stored object, and the time its event carries. */
 interface SegmentRow { base_offset: number; length: number; blob_key: string; object_key: string | null; created_at: number }
 
-/** The columns of a segment a pass reads, over `transcript_segments s` joined to the event that sent it as `e`. */
-const SEGMENT_COLUMNS = `s.base_offset, s.length, s.blob_key, COALESCE(e.created_at, s.created_at) AS created_at, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key`;
+/** Both hot and archived segments provide the parser's exact registered object and original creation time. */
+const segmentSource = (project: string, transcript: string, after: string): string => {
+  const [hotAfter,coldAfter] = after === '?' ? ['?3','?6'] : [after,after];
+  const [hotProject,coldProject] = project === '?' ? ['?1','?4'] : [project,project];
+  const [hotTranscript,coldTranscript] = transcript === '?' ? ['?2','?5'] : [transcript,transcript];
+  return `
+  SELECT s.base_offset,s.length,s.blob_key,COALESCE(e.created_at,s.created_at) AS created_at,
+    ${registeredObjectKeySql('s.project_id','s.blob_key')} AS object_key
+    FROM transcript_segments s LEFT JOIN events e ON e.project_id=s.project_id AND e.event_id=s.event_id
+    WHERE s.project_id=${project} AND s.transcript_id=${transcript}
+      AND s.base_offset>=COALESCE((SELECT MAX(k.base_offset) FROM transcript_segments k
+        WHERE k.project_id=${hotProject} AND k.transcript_id=${hotTranscript} AND k.base_offset<=${hotAfter}),${hotAfter})
+      AND s.base_offset+s.length>${hotAfter}
+  UNION ALL
+  SELECT r.base_offset,r.length,r.archive_key AS blob_key,r.created_at,
+    ${registeredObjectKeySql('r.project_id','r.archive_key')} AS object_key
+    FROM raw_archive_refs r WHERE r.project_id=${project} AND r.transcript_id=${transcript}
+      AND r.source_kind='transcript' AND r.disposition='archived'
+      AND r.base_offset>=COALESCE((SELECT MAX(k.base_offset) FROM raw_archive_refs k
+        WHERE k.project_id=${coldProject} AND k.transcript_id=${coldTranscript} AND k.base_offset<=${coldAfter}),${coldAfter})
+      AND r.base_offset+r.length>${coldAfter}`;
+};
 
 function contextFromStored(raw: unknown): Record<string, unknown> | null {
   if (raw === null || raw === undefined) return null;
@@ -249,11 +284,8 @@ const TOMBSTONED = `EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_i
  */
 export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): string {
   const segments = `SELECT json_group_array(json_object('base_offset', base_offset, 'length', length, 'blob_key', blob_key, 'created_at', created_at, 'object_key', object_key))
-      FROM (SELECT ${SEGMENT_COLUMNS}
-              FROM transcript_segments s
-              LEFT JOIN events e ON e.project_id = s.project_id AND e.event_id = s.event_id
-             WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id AND s.base_offset + s.length > transcripts.parsed_offset
-             ORDER BY s.base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
+      FROM (${segmentSource('transcripts.project_id','transcripts.transcript_id','transcripts.parsed_offset')}
+             ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
   return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
                  ${TURN_ENDED} AS turn_ended,
@@ -561,12 +593,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   if (target.segments !== undefined && readOffset === target.parsedOffset) segments = target.segments;
   else {
     segments = (await env.db
-      .prepare(`SELECT ${SEGMENT_COLUMNS}
-                  FROM transcript_segments s
-                  LEFT JOIN events e ON e.project_id = s.project_id AND e.event_id = s.event_id
-                 WHERE s.project_id = ? AND s.transcript_id = ? AND s.base_offset + s.length > ?
-                 ORDER BY s.base_offset`)
-      .bind(target.projectId, target.transcriptId, readOffset)
+      .prepare(`SELECT * FROM (${segmentSource('?','?','?')}) ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ}`)
+      .bind(target.projectId, target.transcriptId, readOffset,
+        target.projectId, target.transcriptId, readOffset)
       .all<SegmentRow>()).results;
     calls += 1;
   }
@@ -730,32 +759,47 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     // is handed the turn open at its start, so an event derived after a break
     // is identical to the same event derived without one; only the cursor
     // needs to advance, or the transcript would be re-read forever.
-    if (g > 0 && spentAll(limits, calls) && group[0].offset > target.parsedOffset) {
+    const preparationReserve = group.some(oversizedToolInput) ? CONTENT_PREPARATION_CALL_RESERVE : 0;
+    if (g > 0 && spentAll(limits, calls + preparationReserve) && group[0].offset > target.parsedOffset) {
       cursor = group[0].offset;
       break;
     }
     const writes: EventWrite[] = [];
+    const releaseUnlinked = async (pending: readonly EventWrite[]) => {
+      for (const write of pending) calls += await write.releaseUnlinked?.() ?? 0;
+    };
     const eventIds = new Set<string>();
     for (const event of group) {
       const envelope = await envelopeFor(target, event);
       eventIds.add(envelope.eventId as string);
-      const planned = await planEventWrite(env.db, ctx, envelope);
+      let planned: Awaited<ReturnType<typeof planEventWrite>>;
+      try { planned = await planEventWrite(env.db, ctx, envelope, env); }
+      catch (error) { await releaseUnlinked(writes); throw error; }
       if (!planned.ok) {
+        await releaseUnlinked(writes);
         // The catalogue refused an event this parser derived: telemetry names its kind and the refusal's classifier.
         await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier });
         return { derived, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
       }
+      calls += planned.write.preparationCalls ?? 0;
       writes.push(planned.write);
     }
     // The last group carries the cursor's advance past the window, guarded on every event of the group being stored.
     const last = g === groups.length - 1 && (cursor > target.parsedOffset || terminalOnly);
     const envelopes = last ? [...eventIds] : [];
     const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
-    const advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : [];
+    let advancement: PreparedStatement[];
+    try { advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : []; }
+    catch (error) { await releaseUnlinked(writes); throw error; }
     const tail = last ? [...advancement, ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
     const statements = [...writes.flatMap((w) => w.statements), ...tail];
-    const results = terminalOnly ? await terminalCheckpointBatch(env.db, target, statements) : await env.db.batch(statements);
-    if (results === null) return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
+    let results: Awaited<ReturnType<typeof env.db.batch>> | null;
+    try { results = terminalOnly ? await terminalCheckpointBatch(env.db, target, statements) : await env.db.batch(statements); }
+    catch (error) { await releaseUnlinked(writes); throw error; }
+    if (results === null) {
+      await releaseUnlinked(writes);
+      return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
+    }
     calls += 1;
     if (last) advanced = (results[writes.reduce((n, w) => n + w.statements.length, 0) ] as { meta: { changes: number } }).meta.changes > 0;
 
@@ -763,12 +807,19 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     for (const [n, write] of writes.entries()) {
       const slice = results.slice(offset, offset + write.statements.length);
       offset += write.statements.length;
-      if (landed(write.interpret(slice), target, group[n])) {
+      let didLand: boolean;
+      try {
+        didLand = landed(write.interpret(slice), target, group[n]);
+        await releaseUnlinked([write]);
+      }
+      catch (error) { await releaseUnlinked(writes.slice(n)); throw error; }
+      if (didLand) {
         derived += 1;
         lastTurn = turnOf(group[n]) ?? lastTurn;
         continue;
       }
       // The cursor stops at the byte of the event that did not land, never past it.
+      await releaseUnlinked(writes.slice(n + 1));
       await stop(env.db, target, 'parse', now);
       return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
     }
@@ -800,7 +851,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 }
 
 /** The first byte of a transcript still held in a segment, for a statement over `transcripts`. */
-const FIRST_HELD_BYTE = `SELECT MIN(s.base_offset) FROM transcript_segments s WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id`;
+const HELD_PREFIX_SOURCE = `SELECT base_offset,length FROM transcript_segments
+  WHERE project_id=transcripts.project_id AND transcript_id=transcripts.transcript_id
+  UNION ALL SELECT base_offset,length FROM raw_archive_refs WHERE project_id=transcripts.project_id
+    AND transcript_id=transcripts.transcript_id AND source_kind='transcript' AND disposition='archived'`;
+const FIRST_HELD_BYTE = `SELECT MIN(base_offset) FROM (${HELD_PREFIX_SOURCE})`;
 
 /** Only this many older cursors enter repair on one wake. */
 export const TRANSCRIPT_REPAIRS_PER_WAKE = 4;
@@ -816,8 +871,8 @@ const REREAD_CONTEXT = `json_set(COALESCE(parser_context, '{}'), '$.mycoLegacyRe
 async function prepareParserRepairs(db: RelationalStore): Promise<number> {
   const { results } = await db.prepare(`SELECT project_id, transcript_id, parser_version, parsed_offset, parser_context,
     (${FIRST_HELD_BYTE}) AS first_held,
-    (SELECT COALESCE(SUM(MIN(s.length, transcripts.parsed_offset - s.base_offset)), 0) FROM transcript_segments s
-      WHERE s.project_id = transcripts.project_id AND s.transcript_id = transcripts.transcript_id AND s.base_offset < transcripts.parsed_offset) AS held_prefix_bytes FROM transcripts WHERE ${repairCandidateSql()} AND NOT ${TOMBSTONED}
+    (SELECT COALESCE(SUM(MIN(length, transcripts.parsed_offset - base_offset)), 0) FROM (${HELD_PREFIX_SOURCE})
+      WHERE base_offset < transcripts.parsed_offset) AS held_prefix_bytes FROM transcripts WHERE ${repairCandidateSql()} AND NOT ${TOMBSTONED}
     ORDER BY parser_version, project_id, transcript_id LIMIT ${TRANSCRIPT_REPAIRS_PER_WAKE}`)
     .bind(PARSER_VERSION).all<{ project_id: string; transcript_id: string; parser_version: number; parsed_offset: number; parser_context: string | null; first_held: number | null; held_prefix_bytes: number }>();
   if (results.length === 0) return 1;

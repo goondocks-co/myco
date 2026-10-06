@@ -26,6 +26,7 @@ import { migrateOnly, startDeployment } from '../../packages/myco-server/src/pla
 import { getBlob } from '../../packages/myco-server/src/read/blobs.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
+import { asSchema41 } from './legacy-recovery-fixture.js';
 
 /** Where the fixture source holds the object an artifact key names. */
 async function sourceKeyOf(source: ReturnType<typeof sqliteEnv>, logical: string): Promise<string> {
@@ -86,17 +87,6 @@ async function storedBlobs(source: ReturnType<typeof sqliteEnv>) {
   return held;
 }
 
-/** Rewrites a current snapshot as a schema-41 Deployment captured it: no object lifecycle, no generation column. */
-function asSchema41(file: string): void {
-  const db = new Database(file);
-  try {
-    for (const trigger of ['blobs_require_generation', 'blobs_release_through_journal']) db.run(`DROP TRIGGER ${trigger}`);
-    for (const table of ['object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard']) db.run(`DROP TABLE ${table}`);
-    db.run('DROP INDEX idx_blob_reservations_expiry');
-    db.run('ALTER TABLE blobs DROP COLUMN generation');
-    db.run("UPDATE schema_meta SET value = '41' WHERE key = 'version'");
-  } finally { db.close(); }
-}
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy = false, configuration = {} as Record<string, unknown> } = {}) {
   const source = legacySource();

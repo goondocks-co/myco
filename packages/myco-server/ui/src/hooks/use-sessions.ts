@@ -89,6 +89,7 @@ export interface ToolCallRow {
   mycoOp: string | null;
   inputPreview: string | null;
   inputBytes: number | null;
+  inputTruncated: boolean;
   inputBlobKey: string | null;
   outputPreview: string | null;
   outputBlobKey: string | null;

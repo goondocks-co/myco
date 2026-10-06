@@ -102,15 +102,17 @@ function expectedBackupObject({ key, bytes, sha256 }: CataloguedBackup): Recover
  */
 function* registeredObjects(db: Database): Generator<RecoveryBlob & { source: string }> {
   const generation = db.query("SELECT 1 FROM pragma_table_info('blobs') WHERE name = 'generation'").get() !== null ? 'generation' : 'NULL AS generation';
-  const rows = db.query<{ project_id: unknown; key: unknown; generation: unknown; bytes: unknown }, []>(
-    `SELECT project_id, key, ${generation}, size AS bytes FROM blobs ORDER BY project_id, key`).iterate();
-  for (const row of rows) {
-    let object;
-    try { object = snapshotBlobObject(row); } catch (error) {
-      throw new Error(`recovery database holds an unreadable blob row: ${error instanceof Error ? error.message : String(error)}`);
+  const statement = db.prepare<{ project_id: unknown; key: unknown; generation: unknown; bytes: unknown }, []>(
+    `SELECT project_id, key, ${generation}, size AS bytes FROM blobs ORDER BY project_id, key`);
+  try {
+    for (const row of statement.iterate()) {
+      let object;
+      try { object = snapshotBlobObject(row); } catch (error) {
+        throw new Error(`recovery database holds an unreadable blob row: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      yield { ...blobSchema.parse({ key: blobArtifactKey(object.projectId, object.key), sha256: object.key, bytes: row.bytes }), source: object.objectKey };
     }
-    yield { ...blobSchema.parse({ key: blobArtifactKey(object.projectId, object.key), sha256: object.key, bytes: row.bytes }), source: object.objectKey };
-  }
+  } finally { statement.finalize(); }
 }
 
 /** The objects a snapshot registers, by artifact key: its blob rows, and its catalogued backups with their digests. */
@@ -273,10 +275,81 @@ function openSnapshot(file: string): Database {
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('recovery database failed its integrity check');
     if (db.query('PRAGMA foreign_key_check').get() !== null) throw new Error('recovery database has broken foreign keys');
     refuseUnsafeNumbers(db);
+    const schemaVersion = Number(db.query<{ value: string }, []>("SELECT value FROM schema_meta WHERE key = 'version'").get()?.value);
     for (const ref of BLOB_REFERENCES) {
+      if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(ref.table) === null) {
+        if (schemaVersion >= 75) throw new Error(`recovery database is missing reference table ${ref.table}`);
+        continue;
+      }
       if (db.query(`SELECT 1 FROM ${ref.table} r WHERE r.${ref.column} IS NOT NULL${kindFilter(ref)}
         AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.${ref.column}) LIMIT 1`).get() !== null) {
         throw new Error(`recovery database is missing a blob referenced by ${referenceLabel(ref)}`);
+      }
+    }
+    if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_content_refs'").get() !== null) {
+      if (db.query(`SELECT 1 FROM events e WHERE e.payload_format = 'archived'
+        AND NOT EXISTS (SELECT 1 FROM event_content_refs r
+          WHERE r.project_id = e.project_id AND r.event_id = e.event_id) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has an archived event without its content reference');
+      }
+      if (db.query(`SELECT 1 FROM event_content_refs r LEFT JOIN events e
+          ON e.project_id = r.project_id AND e.event_id = r.event_id
+        WHERE e.event_id IS NULL OR e.payload_format <> 'archived' OR e.payload <> '{}'
+          OR e.session_id IS NOT r.session_id OR e.envelope_hash IS NOT r.source_envelope_hash
+          OR r.version <> 1 OR r.digest IS NOT r.archive_key LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has an event content reference inconsistent with its event');
+      }
+      if (db.query(`SELECT 1 FROM registered_content_proofs p LEFT JOIN blobs b
+          ON b.project_id = p.project_id AND b.key = p.key
+        WHERE b.key IS NULL OR b.generation IS NOT p.generation
+          OR b.key IS NOT p.digest OR b.size IS NOT p.size OR p.durable <> 1 LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has a content proof inconsistent with its registered object');
+      }
+      if (db.query(`SELECT 1 FROM event_content_refs r WHERE
+        NOT EXISTS (SELECT 1 FROM registered_content_proofs p
+          WHERE p.project_id = r.project_id AND p.key = r.archive_key
+            AND p.event_id = r.event_id AND p.envelope_hash = r.source_envelope_hash
+            AND p.session_id = r.session_id AND p.digest = r.digest AND p.size = r.size
+            AND p.source_kind = 'event' AND p.source_id = r.event_id)
+        OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p
+          WHERE p.project_id = r.project_id AND p.key = r.receipt_key
+            AND p.event_id = r.event_id AND p.envelope_hash = r.source_envelope_hash
+            AND p.session_id = r.session_id AND p.source_kind = 'receipt'
+            AND p.source_id = 'event:' || r.event_id) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has an event content reference without verified body and receipt');
+      }
+      if (db.query(`SELECT 1 FROM raw_archive_refs r WHERE r.disposition = 'archived'
+        AND (r.archive_key IS NULL OR r.receipt_key IS NULL OR r.digest IS NOT r.archive_key
+          OR NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.archive_key)
+          OR NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.receipt_key)
+          OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE p.project_id = r.project_id
+            AND p.key = r.archive_key AND p.source_kind = r.source_kind AND p.source_id = r.source_id
+            AND p.session_id = r.session_id AND p.digest = r.archive_key AND p.size = r.size AND p.durable = 1)
+          OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE p.project_id = r.project_id
+            AND p.key = r.receipt_key AND p.source_kind = 'receipt'
+            AND p.source_id = r.source_kind || ':' || r.source_id
+            AND p.session_id = r.session_id AND p.digest = r.receipt_key AND p.durable = 1)) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has a raw archive without verified body and receipt');
+      }
+      if (db.query(`SELECT 1 FROM tool_calls t LEFT JOIN events e
+          ON e.project_id = t.project_id AND e.event_id = t.event_id
+        LEFT JOIN processed_resources pr ON pr.project_id = t.project_id AND pr.kind = 'tool-input'
+          AND pr.resource_id = t.tool_call_id AND pr.blob_key = t.input_blob_key
+        LEFT JOIN events ie ON ie.project_id = pr.project_id AND ie.event_id = pr.event_id
+        WHERE t.input_blob_key IS NOT NULL AND t.input IS NOT NULL AND t.input_bytes > 2048
+          AND (e.event_id IS NULL OR e.session_id IS NOT t.session_id
+            OR t.input IS NULL OR length(CAST(t.input AS BLOB)) > 2048
+            OR pr.resource_id IS NULL OR pr.classification IS NOT 'processed'
+            OR ie.event_id IS NULL OR ie.session_id IS NOT t.session_id
+            OR pr.source_token_id IS NOT ie.token_id
+            OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p JOIN blobs b
+              ON b.project_id = p.project_id AND b.key = p.key AND b.generation IS p.generation
+              WHERE p.project_id = t.project_id AND p.key = t.input_blob_key
+                AND p.source_kind = 'tool-input' AND p.source_id = t.tool_call_id
+                AND p.event_id = ie.event_id AND p.envelope_hash = ie.envelope_hash
+                AND p.session_id = t.session_id AND p.digest = p.key
+                AND p.size = t.input_bytes AND b.size = p.size AND p.durable = 1)) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has a displayed tool input without its full body proof');
       }
     }
     return db;

@@ -9,6 +9,14 @@ import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
+import { toolInputPreview } from '../core/tool-input.js';
+
+export interface PreparedToolInput {
+  key: string;
+  generation: string | null;
+  size: number;
+  digest: string;
+}
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -126,6 +134,7 @@ interface Inputs {
   spec: KindSpec;
   /** sha256 of the inline text, or the blob key when spilled. */
   contentHash: string | null;
+  preparedToolInput?: PreparedToolInput;
 }
 
 /** A capture lands only in a live Project: an archived one refuses every event, whatever route carried it. The admission fragment sits on the raw insert; the read tells an archived Project from an absent row. */
@@ -286,13 +295,13 @@ const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelo
 
 /** The instant an ordering is decided by, read back from a stored event: the same rule `orderingTime` applies to an arriving one. */
 export const eventOrderingTimeSql = (alias: string, field: string): string =>
-  `COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at)`;
+  `CASE WHEN ${alias}.payload_format='archived' THEN (SELECT cr.ended_at FROM event_content_refs cr WHERE cr.project_id=${alias}.project_id AND cr.event_id=${alias}.event_id) ELSE COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at) END`;
 
 /** The first import end that names an instant, ordered by creation time and event id; a title-only end is none. */
 const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM events ie
    WHERE ie.project_id = sessions.project_id AND ie.session_id = sessions.session_id
      AND ie.kind = 'session.end' AND ie.channel = 'import'
-     AND NOT (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL)
+     AND NOT (CASE WHEN ie.payload_format='archived' THEN (SELECT cr.title_only_end FROM event_content_refs cr WHERE cr.project_id=ie.project_id AND cr.event_id=ie.event_id) ELSE (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL) END)
    ORDER BY ie.created_at, ie.event_id LIMIT 1)`;
 
 /**
@@ -314,7 +323,7 @@ const IMPORT_OWNS_LIFECYCLE_SQL = `(
   AND NOT EXISTS (SELECT 1 FROM events lt
            WHERE lt.project_id = sessions.project_id AND lt.session_id = sessions.session_id
              AND lt.kind = 'prompt' AND lt.producer_adapter <> '${TRANSCRIPT_PARSE_ADAPTER}'
-             AND json_extract(lt.payload, '$.origin') = 'user'
+             AND (CASE WHEN lt.payload_format='archived' THEN (SELECT cr.prompt_origin FROM event_content_refs cr WHERE cr.project_id=lt.project_id AND cr.event_id=lt.event_id) ELSE json_extract(lt.payload, '$.origin') END) = 'user'
              AND lt.created_at > COALESCE(${IMPORT_END_SQL}, 0))
   AND NOT EXISTS (SELECT 1 FROM transcripts lb
            WHERE lb.project_id = sessions.project_id AND lb.session_id = sessions.session_id
@@ -436,16 +445,32 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
 };
 
 /** A tool call row; one that carries no `filesAffected` records the paths its input names, so hook and parsed calls read alike. */
-const toolCall = ({ db, ctx, e, p }: Inputs): KindPlan => {
-  const inputBlob = p.blob as string | undefined;
+const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
+  const fullInput = p.input === undefined ? null : JSON.stringify(p.input);
+  const display = fullInput === null ? null : toolInputPreview(fullInput);
+  if (display?.truncated && preparedToolInput === undefined) throw new Error('Oversized tool input requires registered content preparation');
+  const inputBlob = preparedToolInput?.key ?? p.blob as string | undefined;
   const outputBlob = p.outputBlob as string | undefined;
+  const proof = preparedToolInput === undefined ? [] : [db.prepare(`INSERT INTO processed_resources
+      (project_id, kind, resource_id, blob_key, source_token_id, event_id)
+      SELECT tc.project_id, 'tool-input', tc.tool_call_id, tc.input_blob_key, tc.token_id, tc.event_id
+      FROM tool_calls tc
+      JOIN events ev ON ev.project_id = tc.project_id AND ev.event_id = tc.event_id AND ev.ingest_nonce = ?
+      JOIN registered_content_proofs cp ON cp.project_id = tc.project_id AND cp.source_kind = 'tool-input'
+        AND cp.source_id = tc.tool_call_id AND cp.event_id = ev.event_id AND cp.envelope_hash = ev.envelope_hash
+        AND cp.session_id = tc.session_id AND cp.key = tc.input_blob_key AND cp.digest = tc.input_blob_key
+        AND cp.size = tc.input_bytes AND cp.durable = 1
+      JOIN blobs b ON b.project_id = cp.project_id AND b.key = cp.key AND b.generation IS cp.generation AND b.size = cp.size
+      WHERE tc.project_id = ? AND tc.tool_call_id = ? AND tc.event_id = ? AND tc.input_blob_key = ?
+      ON CONFLICT DO NOTHING`)
+    .bind(ctx.nonce, ctx.projectId, p.toolCallId, e.eventId, preparedToolInput.key)];
   return {
     identities: [{ table: 'tool_calls', keyColumn: 'tool_call_id', key: p.toolCallId as string, owner: 'session' }],
     admission: [],
     projections: [
       db.prepare(`INSERT INTO tool_calls
-          (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, myco_tool, myco_op, input, input_blob_key, output_preview, output_blob_key, success, error_message, duration_ms, files_affected, canopy_injection_tokens, created_at, token_id, received_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, myco_tool, myco_op, input, input_bytes, input_blob_key, output_preview, output_blob_key, success, error_message, duration_ms, files_affected, canopy_injection_tokens, created_at, token_id, received_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, (SELECT b.size FROM blobs b WHERE b.project_id = ? AND b.key = ?)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE ${RAW_ROW_GATE}
         ON CONFLICT (project_id, tool_call_id) DO UPDATE SET
           event_id = excluded.event_id, output_preview = excluded.output_preview, output_blob_key = excluded.output_blob_key,
@@ -453,8 +478,9 @@ const toolCall = ({ db, ctx, e, p }: Inputs): KindPlan => {
           received_at = MAX(tool_calls.received_at, excluded.received_at)
         WHERE tool_calls.session_id = excluded.session_id AND tool_calls.success = 0 AND excluded.success = 1`)
         .bind(ctx.projectId, p.toolCallId, e.sessionId, opt(p.promptId), e.eventId, p.toolName, opt(p.mycoTool), opt(p.mycoOp),
-              json(p.input), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage),
+              display?.preview ?? null, display?.bytes ?? null, ctx.projectId, opt(inputBlob), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage),
               opt(p.durationMs), json(p.filesAffected ?? filesNamedByToolInput(p.input)), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
+      ...proof,
     ],
     reads: [],
     refusal: () => NOT_STORED,

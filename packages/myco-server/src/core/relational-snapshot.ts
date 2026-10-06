@@ -106,8 +106,97 @@ export async function relationalSnapshot(db: RelationalStore, tables: readonly s
   return snapshot;
 }
 
-const SESSION_CHILDREN = ['events', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts'];
+const SESSION_CHILDREN = ['events', 'event_content_refs', 'raw_archive_refs', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts'];
 const identity = (row: Row, key: string) => JSON.stringify([row.project_id, row[key]]);
+
+/** A snapshot must carry the registered bytes and evidence for every archived event. */
+export function assertArchivedContentClosure(snapshot: ReadonlyMap<string, readonly Row[]>): void {
+  const eventRows = snapshot.get('events') ?? [];
+  const refRows = snapshot.get('event_content_refs') ?? [];
+  const events = new Map(eventRows.map((row) => [identity(row, 'event_id'), row]));
+  const refs = new Map(refRows.map((row) => [identity(row, 'event_id'), row]));
+  const archivedIds = new Set(eventRows.filter(row => row.payload_format === 'archived').map(row => identity(row, 'event_id')));
+  if (refs.size !== refRows.length || eventRows.filter(row => archivedIds.has(identity(row, 'event_id'))).length !== archivedIds.size) {
+    throw new RelationalSnapshotError('the snapshot repeats an archived content identity; no artifact was published');
+  }
+  const blobs = new Map((snapshot.get('blobs') ?? []).map((row) => [identity(row, 'key'), row]));
+  const proofs = snapshot.get('registered_content_proofs') ?? [];
+  for (const event of events.values()) {
+    if (event.payload_format === 'archived' && !refs.has(identity(event, 'event_id'))) {
+      throw new RelationalSnapshotError('the snapshot of events lacks an archived content reference; no artifact was published');
+    }
+  }
+  for (const ref of refs.values()) {
+    const event = events.get(identity(ref, 'event_id'));
+    if (event === undefined || event.payload_format !== 'archived' || event.payload !== '{}'
+      || event.session_id !== ref.session_id || event.envelope_hash !== ref.source_envelope_hash
+      || ref.version !== 1 || ref.digest !== ref.archive_key) {
+      throw new RelationalSnapshotError('the snapshot of event_content_refs disagrees with its event; no artifact was published');
+    }
+    for (const key of [ref.archive_key, ref.receipt_key]) {
+      if (typeof key !== 'string' || !blobs.has(JSON.stringify([ref.project_id, key]))) {
+        throw new RelationalSnapshotError('the snapshot of event_content_refs lacks a registered object; no artifact was published');
+      }
+      if (!proofs.some((proof) => proof.project_id === ref.project_id && proof.key === key
+        && proof.event_id === ref.event_id && proof.session_id === ref.session_id
+        && proof.envelope_hash === ref.source_envelope_hash && proof.digest === key && proof.durable === 1
+        && (key === ref.archive_key
+          ? proof.source_kind === 'event' && proof.source_id === ref.event_id
+          : proof.source_kind === 'receipt' && proof.source_id === `event:${String(ref.event_id)}`)
+        && (key !== ref.archive_key || proof.size === ref.size))) {
+        throw new RelationalSnapshotError('the snapshot of event_content_refs lacks a verified body or receipt; no artifact was published');
+      }
+    }
+  }
+  for (const proof of proofs) {
+    const blob = blobs.get(JSON.stringify([proof.project_id, proof.key]));
+    if (blob === undefined || blob.generation !== proof.generation || blob.key !== proof.digest || blob.size !== proof.size) {
+      throw new RelationalSnapshotError('the snapshot of registered_content_proofs disagrees with its blob; no artifact was published');
+    }
+  }
+  for (const ref of snapshot.get('raw_archive_refs') ?? []) {
+    if (ref.disposition !== 'archived') continue;
+    if (ref.digest !== ref.archive_key) {
+      throw new RelationalSnapshotError('the snapshot of raw_archive_refs disagrees with its archive digest; no artifact was published');
+    }
+    for (const key of [ref.archive_key, ref.receipt_key]) {
+      if (typeof key !== 'string' || !blobs.has(JSON.stringify([ref.project_id, key]))) {
+        throw new RelationalSnapshotError('the snapshot of raw_archive_refs lacks a registered object; no artifact was published');
+      }
+    }
+    const body = proofs.some(proof => proof.project_id === ref.project_id && proof.key === ref.archive_key
+      && proof.source_kind === ref.source_kind && proof.source_id === ref.source_id
+      && proof.session_id === ref.session_id && proof.digest === ref.archive_key && proof.size === ref.size && proof.durable === 1);
+    const receipt = proofs.some(proof => proof.project_id === ref.project_id && proof.key === ref.receipt_key
+      && proof.source_kind === 'receipt' && proof.source_id === `${ref.source_kind}:${ref.source_id}`
+      && proof.session_id === ref.session_id && proof.digest === ref.receipt_key && proof.durable === 1);
+    if (!body || !receipt) {
+      throw new RelationalSnapshotError('the snapshot of raw_archive_refs lacks verified body or receipt; no artifact was published');
+    }
+  }
+  for (const tool of snapshot.get('tool_calls') ?? []) {
+    if (tool.input_blob_key === null || tool.input_blob_key === undefined || typeof tool.input !== 'string'
+      || typeof tool.input_bytes !== 'number' || tool.input_bytes <= 2048) continue;
+    const outcomeEvent = events.get(JSON.stringify([tool.project_id, tool.event_id]));
+    const blob = blobs.get(JSON.stringify([tool.project_id, tool.input_blob_key]));
+    const processed = (snapshot.get('processed_resources') ?? []).find(row => row.project_id === tool.project_id
+      && row.kind === 'tool-input' && row.resource_id === tool.tool_call_id && row.blob_key === tool.input_blob_key
+      && row.classification === 'processed');
+    const inputEvent = processed === undefined ? undefined : events.get(JSON.stringify([tool.project_id, processed.event_id]));
+    const proof = proofs.find(row => row.project_id === tool.project_id && row.key === tool.input_blob_key
+      && row.source_kind === 'tool-input' && row.source_id === tool.tool_call_id
+      && row.event_id === processed?.event_id && row.envelope_hash === inputEvent?.envelope_hash
+      && row.session_id === tool.session_id && row.digest === tool.input_blob_key
+      && row.size === tool.input_bytes && row.durable === 1);
+    if (!Number.isSafeInteger(tool.input_bytes) || typeof tool.input !== 'string' || new TextEncoder().encode(tool.input).byteLength > 2048
+      || outcomeEvent === undefined || outcomeEvent.session_id !== tool.session_id
+      || inputEvent === undefined || inputEvent.session_id !== tool.session_id
+      || processed?.source_token_id !== inputEvent.token_id || blob?.size !== tool.input_bytes
+      || processed === undefined || proof === undefined) {
+      throw new RelationalSnapshotError('the snapshot of tool_calls lacks its exact full input closure; no artifact was published');
+    }
+  }
+}
 
 /** Every capture row requires the session through which the Deployment reads it. */
 export function assertCaptureClosure(snapshot: ReadonlyMap<string, readonly Row[]>): void {
@@ -123,4 +212,5 @@ export function assertCaptureClosure(snapshot: ReadonlyMap<string, readonly Row[
       throw new RelationalSnapshotError(`the snapshot of ${table} names a missing transcript; no artifact was published`);
     }
   }
+  assertArchivedContentClosure(snapshot);
 }

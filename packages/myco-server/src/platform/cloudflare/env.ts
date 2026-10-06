@@ -82,6 +82,22 @@ type AssertAssignable<A, B extends A> = B;
 export type _RelationalSatisfies = AssertAssignable<RelationalStore, D1Database>;
 export type _RateLimitSatisfies = AssertAssignable<RateLimiter, RateLimit>;
 export type _BlobStoreSatisfies = AssertAssignable<BlobStore, R2Bucket>;
+
+/** R2 acknowledges a PUT only after it has accepted the stored object. */
+function durableR2Bucket(bucket: BlobStore): BlobStore {
+  return {
+    head: (key) => bucket.head(key),
+    ensureDurable: async (key) => (await bucket.head(key)) !== null,
+    get: (key, options) => bucket.get(key, options),
+    async put(key, value, options) {
+      const body=value!==null && options?.size!==undefined && typeof FixedLengthStream==='function'
+        ? value.pipeThrough(new FixedLengthStream(options.size)) : value;
+      const stored = await bucket.put(key, body, options);
+      return { size: stored.size, durable: true };
+    },
+    delete: (key) => bucket.delete(key),
+  };
+}
 export type _VectorStoreSatisfies = AssertAssignable<VectorIndex, VectorizeIndex>;
 export type _EmbeddingSatisfies = AssertAssignable<EmbeddingBinding, Ai>;
 export type _StagingBucketSatisfies = AssertAssignable<StagingBucket, R2Bucket>;
@@ -224,7 +240,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     platform: cloudflarePlatform(bindings, embeddingRuntime),
     harnessCredentialSource: 'deployment',
     db: bindings.MYCO_DB,
-    blobs: bindings.BUCKET,
+    blobs: durableR2Bucket(bindings.BUCKET),
     sourceLimit: bindings.SOURCE_LIMIT,
     tokenLimit: bindings.TOKEN_LIMIT,
     wrappingKey,

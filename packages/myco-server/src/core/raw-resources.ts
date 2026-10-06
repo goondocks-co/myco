@@ -4,6 +4,7 @@ import { getBlob, type BlobRow } from '../read/blobs.js';
 import type { ReadScope } from '../read/scope.js';
 import { listTranscripts, listSegments, type TranscriptRow, type SegmentRow } from '../read/transcript.js';
 import { authorize, deploymentIdentity, memberSubject } from '../auth/authorization.js';
+import { eventContent } from './event-content.js';
 
 export type RawResource = { kind: 'blob' | 'event' | 'transcript'; id: string };
 export type RawAction = 'enumerate' | 'read';
@@ -45,9 +46,7 @@ export class RawResourceReader {
 
   async event(eventId: string): Promise<string | null> {
     if (!await this.allows({ kind: 'event', id: eventId }, 'read')) return null;
-    const row = await this.env.db.prepare('SELECT payload FROM events WHERE project_id = ? AND event_id = ?')
-      .bind(this.scope.projectId, eventId).first<{ payload: string }>();
-    return row?.payload ?? null;
+    return eventContent(this.env,this.scope.projectId,eventId);
   }
 
   async transcripts(sessionId: string): Promise<(TranscriptRow & { segments: SegmentRow[] })[]> {

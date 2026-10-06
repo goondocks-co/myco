@@ -696,7 +696,7 @@ describe('Settings, in five sections', () => {
     const CONFIGURED: Record<string, unknown> = {
       'instructions.template': '# House rules',
       'worker.harness': 'claude-code',
-      'retention.transcripts': 30,
+      'retention.raw_days': 30,
       'import.window_days': 45,
       'import.max_sessions_per_harness': 25,
       'agent.limits.task_runs_per_hour': 6,
@@ -704,22 +704,22 @@ describe('Settings, in five sections', () => {
     const held = { ...CONFIGURED };
     const { sent } = server(base({
       '/api/settings': () => Response.json(leaves(Object.fromEntries(Object.entries(held).map(([leaf, value]) => [leaf, { value, updatedAt: NOW, updatedBy: ADA }])))),
-      '/api/settings/retention.transcripts': (init) => {
-        held['retention.transcripts'] = JSON.parse(String(init!.body)).value;
+      '/api/settings/retention.raw_days': (init) => {
+        held['retention.raw_days'] = JSON.parse(String(init!.body)).value;
         return Response.json({ applied: true });
       },
     }));
     mount('/settings?tab=records');
 
-    const window = await screen.findByLabelText('Keep raw transcripts for');
+    const window = await screen.findByLabelText('Keep raw content hot for');
     expect((window as HTMLInputElement).value).toBe('30');
-    fireEvent.change(window, { target: { value: '0' } });
+    fireEvent.change(window, { target: { value: '60' } });
     fireEvent.blur(window);
     await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/retention.transcripts', body: { value: 0 } });
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/retention.raw_days', body: { value: 60 } });
     expect(Object.keys(sent[0]!.body as object)).toEqual(['value']);
 
-    await waitFor(() => expect((screen.getByLabelText('Keep raw transcripts for') as HTMLInputElement).value).toBe('0'));
+    await waitFor(() => expect((screen.getByLabelText('Keep raw content hot for') as HTMLInputElement).value).toBe('60'));
     for (const [sectionLabel, label, leaf] of [
       ['Myco’s work', 'Session-start instructions', 'instructions.template'],
       ['Capture and retention', 'Reach back at most', 'import.window_days'],

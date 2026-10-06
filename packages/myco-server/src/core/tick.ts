@@ -1,3 +1,5 @@
+import { storageCleanupPending } from './storage-cleanup.js';
+import { CONTENT_BLOB_LIMIT, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
 import { rawBackfillPending } from './raw-backfill.js';
 /**
  * One wake of the Deployment's intelligence.
@@ -49,6 +51,10 @@ export interface JobReport {
  * back-to-back passes, each bounded by its own budget, rather than one pass per cadence.
  */
 export const CHAINED_WAKE_MS = 2_000;
+export const WAKE_JOB_STATEMENT_LIMIT = 800;
+export const WAKE_JOB_BLOB_LIMIT = 240;
+const ARCHIVE_JOBS = new Set(['storage-content-cleanup', 'transcript-retention']);
+const WAKE_JOB_RESERVE = 150;
 
 export interface TickReport {
   state: PowerState;
@@ -100,14 +106,25 @@ function drainOnlyAt(pacer: TickPacer | undefined, now: number): pacer is TickPa
 /** Runs `jobs` at `state`, reporting each as it ends. */
 async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: readonly string[]): Promise<JobReport[]> {
   const reports: JobReport[] = [];
-  for (const name of jobs) {
+  const started = Date.now();
+  const measured = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT,wallMs:CONTENT_WALL_MS });
+  const ordered = [...jobs.filter(name => name === 'transcript-parse'),
+    ...jobs.filter(name => name !== 'transcript-parse' && !ARCHIVE_JOBS.has(name)),
+    ...jobs.filter(name => ARCHIVE_JOBS.has(name))];
+  for (const name of ordered) {
     const run = JOB_IMPLEMENTATIONS[name];
     if (run === undefined) {
       reports.push({ name, changed: 0, failed: 'unimplemented', more: false });
       continue;
     }
+    if (measured.usage.statements + WAKE_JOB_RESERVE > WAKE_JOB_STATEMENT_LIMIT
+      || measured.usage.blobCalls + CONTENT_BLOB_LIMIT > WAKE_JOB_BLOB_LIMIT
+      || (ARCHIVE_JOBS.has(name) && Date.now() - started >= CONTENT_WALL_MS)) {
+      reports.push({ name, changed: 0, failed: null, more: true });
+      continue;
+    }
     try {
-      const answered = await run(env, now, state);
+      const answered = await run(measured.env, now, state);
       const { changed, more } = typeof answered === 'number' ? { changed: answered, more: false } : answered;
       emit({ kind: 'job_ran', job: name, state, changed, more });
       reports.push({ name, changed, failed: null, more });
@@ -117,6 +134,7 @@ async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: rea
       reports.push({ name, changed: 0, failed, more: false });
     }
   }
+  emit({ kind: 'wake_job_usage', ...measured.usage, elapsed_ms: Date.now() - started });
   return reports;
 }
 
@@ -134,6 +152,7 @@ async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): P
 export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
+  if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
   const backlog = await pendingTranscripts(env.db, now);

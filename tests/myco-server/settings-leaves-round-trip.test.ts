@@ -20,13 +20,13 @@ import { asOwner, OWNER_ENV } from './helpers/owner.js';
 /**
  * The leaves §7.8 names as the 2.0 Settings surface, with a value each that
  * satisfies its rule: the session-start instructions, the preferred harness, the
- * transcript retention window, the import bounds, and the per-task ceilings.
+ * raw retention window, the import bounds, and the per-task ceilings.
  */
 const LEAVES: ReadonlyArray<[leaf: string, value: unknown]> = [
   ['instructions.template', '# House rules\n\nRead the ledger first.'],
   ['worker.harness', 'claude-code'],
   ['worker.harness_fallback', ['codex', 'cursor']],
-  ['retention.transcripts', 30],
+  ['retention.raw_days', 30],
   ['import.enabled', true],
   ['import.window_days', 45],
   ['import.max_sessions_per_harness', 25],
@@ -73,22 +73,22 @@ describe('the Settings leaves the dashboard exposes', () => {
     for (const [leaf, value] of LEAVES) await put(leaf, value);
     const before = await stored();
 
-    expect((await put('retention.transcripts', 0)).body.applied).toBe(true);
+    expect((await put('retention.raw_days', 60)).body.applied).toBe(true);
     const after = await stored();
-    expect(after.get('retention.transcripts')).toBe(0);
+    expect(after.get('retention.raw_days')).toBe(60);
     for (const [leaf, value] of before) {
-      if (leaf === 'retention.transcripts') continue;
+      if (leaf === 'retention.raw_days') continue;
       expect({ leaf, value: after.get(leaf) }).toEqual({ leaf, value });
     }
   });
 
   it('refuses a value its leaf\'s rule rejects and changes nothing', async () => {
     const { put, stored } = await harness();
-    await put('retention.transcripts', 30);
+    await put('retention.raw_days', 30);
     await put('instructions.template', 'kept');
     const before = Object.fromEntries(await stored());
 
-    const refused = await put('retention.transcripts', 4000);
+    const refused = await put('retention.raw_days', 4000);
     expect({ status: refused.status, applied: refused.body.applied, reason: refused.body.reason })
       .toEqual({ status: 400, applied: false, reason: 'invalid_value' });
     expect(Object.fromEntries(await stored())).toEqual(before);

@@ -9,6 +9,8 @@ import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
+import { discardDerivedContent, prepareDerivedContent, type DerivedContentSource } from '../core/registered-content.js';
+import { toolInputPreview } from '../core/tool-input.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 export interface TranscriptExtra {
@@ -66,17 +68,27 @@ function spilledKey(spec: KindSpec, p: Payload): string | null {
 }
 
 /** Stores one event in a single transaction. The raw insert carries every admission precondition — the credential still live (`credentialLive`; never a volume: capture is not refused for the bytes a credential has stored), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no count; the byte count, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
-export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body: unknown): Promise<IngestResult> {
-  const planned = await planEventWrite(db, ctx, body);
+export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body: unknown, env?: Pick<ServerEnv, 'db' | 'blobs'>): Promise<IngestResult> {
+  const planned = await planEventWrite(db, ctx, body, env);
   if (!planned.ok) return refused(ctx, planned);
-  const results = await db.batch(planned.write.statements);
-  return planned.write.interpret(results);
+  let result: IngestResult;
+  try {
+    const results = await db.batch(planned.write.statements);
+    result = planned.write.interpret(results);
+  } catch (error) {
+    await planned.write.releaseUnlinked?.();
+    throw error;
+  }
+  await planned.write.releaseUnlinked?.();
+  return result;
 }
 
 /** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
 export interface EventWrite {
   statements: PreparedStatement[];
   interpret(results: BatchResult[]): IngestResult;
+  releaseUnlinked?(): Promise<number>;
+  preparationCalls?: number;
 }
 
 export type PlannedWrite = { ok: true; write: EventWrite } | Refused;
@@ -84,7 +96,7 @@ export type PlannedWrite = { ok: true; write: EventWrite } | Refused;
 /** What `db.batch` answers per statement; the shape the interpreter reads. */
 type BatchResult = { results: unknown[]; meta: { changes: number } };
 
-export async function planEventWrite(db: RelationalStore, ctx: IngestContext, body: unknown): Promise<PlannedWrite> {
+export async function planEventWrite(db: RelationalStore, ctx: IngestContext, body: unknown, env?: Pick<ServerEnv, 'db' | 'blobs'>): Promise<PlannedWrite> {
   const parsed = parseEnvelope(body, ctx.now);
   if (!parsed.ok) return parsed;
   const e = parsed.value;
@@ -101,7 +113,20 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID(), actor: ctx.actor ?? null, processing: ctx.writeOrigin === 'server' && e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER };
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
-  const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash });
+  const fullInput = spec.projection === 'tool_calls' && p.input !== undefined ? JSON.stringify(p.input) : null;
+  const inputDisplay = fullInput === null ? null : toolInputPreview(fullInput);
+  if (inputDisplay?.truncated && env === undefined) throw new Error('Oversized tool input requires server blob storage');
+  const inputSource: DerivedContentSource | undefined = inputDisplay?.truncated
+    ? {
+        projectId: ctx.projectId, sessionId: e.sessionId, eventId: e.eventId, tokenId: ctx.tokenId,
+        envelopeHash: digest, sourceKind: 'tool-input', resourceId: p.toolCallId as string,
+        memberTokenId: (ctx.writeOrigin ?? 'member') === 'member' ? ctx.tokenId : undefined,
+      }
+    : undefined;
+  const preparedToolInput = inputSource && env
+    ? await prepareDerivedContent(env, inputSource, fullInput!, ctx.now)
+    : undefined;
+  const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput });
   // A server-origin write is counted nothing and consults no credential's
   // liveness: the bytes it derives from were accepted and counted when the
   // member shipped them, and that member's credential rotates on its own
@@ -222,7 +247,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
   };
 
-  return { ok: true, write: { statements, interpret } };
+  const releaseUnlinked = inputSource && preparedToolInput && env
+    ? () => discardDerivedContent(env, inputSource, preparedToolInput.key, ctx.now)
+    : undefined;
+  return { ok: true, write: { statements, interpret, releaseUnlinked, preparationCalls: preparedToolInput?.preparationCalls } };
 }
 
 /** The kind whose projected arrival, on any channel but import, asks for its session's title. */
@@ -239,7 +267,7 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
   } catch {
     return Response.json(refused(ctx, refusal('body must be JSON', 'parse')));
   }
-  const result = await ingestEvent(env.db, ctx, parsed);
+  const result = await ingestEvent(env.db, ctx, parsed, env);
   const envelope = parsed as { kind?: unknown; sessionId?: unknown; channel?: unknown; payload?: { blob?: unknown } } | null;
   if (result.persisted && result.projected === true && typeof envelope?.payload?.blob === 'string') {
     env.afterResponse(async () => {

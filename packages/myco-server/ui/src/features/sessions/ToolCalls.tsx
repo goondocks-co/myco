@@ -42,7 +42,7 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
             <div className="flex flex-col gap-s1">
               <span className="t-meta font-medium text-muted">Input{row.inputBytes !== null ? ` · ${formatBytes(row.inputBytes)}` : ''}</span>
               {row.inputPreview !== null && (
-                <pre className={block}>{row.inputPreview}{row.inputBytes !== null && row.inputBytes > row.inputPreview.length ? '…' : ''}</pre>
+                <pre className={block}>{row.inputPreview}{row.inputTruncated ? '…' : ''}</pre>
               )}
               {row.inputBlobKey !== null && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-input', id: row.toolCallId })} className="w-fit t-small">Full input</ExternalLink>}
             </div>

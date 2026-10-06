@@ -34,6 +34,11 @@ const rawKinds = KINDS.filter((kind) => kind.projection === 'raw' && blobFields(
 export const BLOB_REFERENCES: readonly BlobReference[] = [
   ...projected,
   ...(rawKinds.length > 0 ? [{ table: 'events', column: 'blob_key', kinds: rawKinds }] : []),
+  { table: 'event_content_refs', column: 'archive_key' },
+  { table: 'event_content_refs', column: 'receipt_key' },
+  { table: 'raw_archive_refs', column: 'archive_key' },
+  { table: 'raw_archive_refs', column: 'receipt_key' },
+  { table: 'registered_content_proofs', column: 'key' },
 ];
 
 /** The reference as a message names it: `table.column`, with the kinds a raw-log reference is limited to. */

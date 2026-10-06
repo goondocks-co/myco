@@ -116,6 +116,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     runsThrough: 'idle',
     converges: 'every ended, untitled session with fully parsed material is claimed, newest first, until it carries a title or workers have taken the attempt bound on it, inside the Deployment\'s daily titling ceiling and pace; a session its own capture owes a title always, a wholly imported one only while the backfill is on',
   },
+  { name: 'storage-content-cleanup', runsThrough: 'idle', converges: 'selected duplicate event bodies and large tool inputs are durably archived before a bounded atomic clear, and behind-cursor writes remain queued' },
   // #1151 — worker mode
   {
     name: 'worker-lease-sweep',

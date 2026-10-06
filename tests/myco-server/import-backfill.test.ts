@@ -160,6 +160,7 @@ describe('an imported transcript in the store', () => {
       .toEqual({ more: true, next: CHAINED_WAKE_MS, waiting: 1 });
     let last = first;
     for (let tick = 1; tick < 200 && last.jobs.find((j) => j.name === 'transcript-parse')?.more === true; tick += 1) last = await runTick(env, NOW + tick);
+    for(let tick=200;tick<1600&&last.jobs.some(job=>job.more);tick++) last=await runTick(env,NOW+tick);
     expect({ more: last.jobs.find((j) => j.name === 'transcript-parse')?.more, next: last.nextWakeMs, waiting: last.backlog.transcripts })
       .toEqual({ more: false, next: nextWakeDelayMs(last.state, WAKE_INTERVALS), waiting: 0 });
     expect(last.nextWakeMs).toBeGreaterThan(CHAINED_WAKE_MS);

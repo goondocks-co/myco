@@ -360,7 +360,7 @@ describe('the session reading page', () => {
       children: [{ prompt: { promptId: P2, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 }, responses: [{ responseId: 'r2', promptId: P2, text: 'steered', blobKey: null, createdAt: NOW - 800, orderedAt: NOW - 800 }], toolCallCount: 0 }],
     }),
     [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
-      { toolCallId: 't1', promptId: P1, toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: '["/repo/a.ts"]', createdAt: NOW - 2000, orderedAt: NOW - 2000 },
+      { toolCallId: 't1', promptId: P1, toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputTruncated: true, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: '["/repo/a.ts"]', createdAt: NOW - 2000, orderedAt: NOW - 2000 },
     ]),
     '/api/projects/x/sessions/s1/plans': () => page([]),
     '/api/projects/x/sessions/s1/context-injections': () => page([{ kind: 'cortex', createdAt: NOW - HOUR, orderedAt: NOW - HOUR }]),
@@ -627,7 +627,7 @@ describe('the session reading page', () => {
       '/api/projects/x/processed/response/reply-spill': () => new Response('A complete processed reply'),
       [`/api/projects/x/processed/prompt/${P2}`]: () => new Response('A complete steering prompt'),
       [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
-        { toolCallId: 't-spill', promptId: P1, toolName: 'Read', mycoTool: null, mycoOp: null, inputPreview: null, inputBytes: null, inputBlobKey: KEY_TEXT, outputPreview: 'preview', outputBlobKey: KEY_TEXT, success: true, errorMessage: null, durationMs: 1, filesAffected: null, createdAt: NOW, orderedAt: NOW },
+        { toolCallId: 't-spill', promptId: P1, toolName: 'Read', mycoTool: null, mycoOp: null, inputPreview: 'é'.repeat(1023), inputBytes: 2054, inputTruncated: true, inputBlobKey: KEY_TEXT, outputPreview: 'preview', outputBlobKey: KEY_TEXT, success: true, errorMessage: null, durationMs: 1, filesAffected: null, createdAt: NOW, orderedAt: NOW },
       ]),
     }, MEMBER));
     mount('/p/x/sessions/s1');
@@ -637,6 +637,7 @@ describe('the session reading page', () => {
     fireEvent.click(within(first).getByTestId('tool-calls-toggle'));
     const row = await screen.findByTestId('tool-call-t-spill');
     fireEvent.click(within(row).getByRole('button'));
+    expect(within(row).getByText(`${'é'.repeat(1023)}…`)).toBeTruthy();
     expect(within(row).getByRole('link', { name: 'Full input' }).getAttribute('href')).toBe('/api/projects/x/processed/tool-input/t-spill');
     expect(within(row).getByRole('link', { name: 'Full output' }).getAttribute('href')).toBe('/api/projects/x/processed/tool-output/t-spill');
     expect(requested).not.toContain(BLOB(KEY_TEXT));

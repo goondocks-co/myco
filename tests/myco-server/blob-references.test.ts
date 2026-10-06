@@ -22,6 +22,11 @@ const REFERENCES = [
   'attachments.blob_key',
   'transcript_segments.blob_key',
   'events.blob_key (compaction.pre, compaction.post)',
+  'event_content_refs.archive_key',
+  'event_content_refs.receipt_key',
+  'raw_archive_refs.archive_key',
+  'raw_archive_refs.receipt_key',
+  'registered_content_proofs.key',
 ];
 
 const DDL = SCHEMA_STEPS.flatMap((s) => s.statements);

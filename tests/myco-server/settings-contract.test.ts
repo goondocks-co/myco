@@ -307,7 +307,10 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     },
   },
   'retention.transcripts': {
-    consumer: at('api/status.ts', handleMemberStatus), value: () => 5, invalid: () => -1, invalidHolds: true, observe: memberStatus,
+    consumer: at('api/status.ts', handleMemberStatus), value: () => 0, invalid: () => -1, invalidHolds: true, observe: memberStatus,
+  },
+  'retention.raw_days': {
+    consumer: at('api/status.ts', handleMemberStatus), value: () => 5, invalid: () => 0, invalidHolds: true, observe: memberStatus,
   },
   'backup.auto_interval_hours': {
     consumer: at('core/recovery-schedule.ts', recoveryScheduleOf), value: () => 6, invalid: () => 'soon', invalidMeans: { value: 720 },
@@ -451,6 +454,22 @@ describe('the settings contract', () => {
       it(`${leaf} on ${target}: unset, configured, refused, stored invalid and reset move the consumer`, async () => {
         const behavior = CASES[leaf]!;
         const r = rigFor(target);
+        if (leaf === 'retention.transcripts') {
+          const before = await behavior.observe(r);
+          expect(before).toMatchObject({ state: 'days', days: 90, compatibility: 'default' });
+          expect(await json(await put(r, leaf, 0))).toEqual({ applied: true });
+          expect(await behavior.observe(r)).toMatchObject({ state: 'forever', compatibility: 'legacy-hold' });
+          expect(await row(r, leaf)).toMatchObject({ configured: true, stored: 0, effective: null });
+          expect((await put(r, leaf, -1)).status).toBe(400);
+          expect(await behavior.observe(r)).toMatchObject({ state: 'forever' });
+          storedRaw(r, leaf, JSON.stringify(-1));
+          expect(await row(r, leaf)).toMatchObject({ state: 'invalid', storedApplies: false, effective: null });
+          expect(await behavior.observe(r)).toMatchObject({ state: 'unavailable', reason: expect.any(String) });
+          expect(await json(await reset(r, leaf))).toEqual({ applied: true });
+          expect(await behavior.observe(r)).toEqual(before);
+          expect(await row(r, leaf)).toMatchObject({ configured: false, effective: 90 });
+          return;
+        }
         for (const [setupLeaf, setupValue] of behavior.setup?.(target) ?? []) {
           expect({ setupLeaf, status: (await put(r, setupLeaf, setupValue)).status }).toEqual({ setupLeaf, status: 200 });
         }

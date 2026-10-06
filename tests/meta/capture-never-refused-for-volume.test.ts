@@ -43,6 +43,7 @@ const COUNTER_READERS: Record<string, string> = {
   'ingest/blobs.ts': 'the charge for a stored blob',
   'read/credentials.ts': 'the dashboard\'s credential list',
   'read/machines.ts': 'the dashboard\'s machine lineage totals',
+  'platform/bun/blobs.ts': 'FileHandle.write reports physical write progress; no credential counter is read',
 };
 
 /** A comparison with the counter on either side, in SQL or in TypeScript. */
@@ -63,6 +64,7 @@ const LIVE_CREDENTIAL_IMPORTS: Record<string, readonly string[]> = {
   'auth/tokens.ts': ['TOKEN_LIVE', 'carriedBytes'], // the successor insert's liveness, and the carry at rotation
   'ingest/blobs.ts': ['credentialLive'],       // the upload's admission
   'ingest/events.ts': ['ALWAYS', 'credentialLive'], // the event's admission
+  'core/registered-content.ts': ['credentialLive'], // member-authorized derived publication
 };
 
 /** A whole import or re-export statement naming the live-credential module, however it is spelled. */

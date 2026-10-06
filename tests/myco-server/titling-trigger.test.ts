@@ -120,6 +120,7 @@ describe('the events route', () => {
     await e.deferred.settle();
     e.sqlite.run(`UPDATE sessions SET last_received_at = last_received_at - ?`, [2 * POWER_THRESHOLDS.deepSleepMs]);
     e.sqlite.run(`DELETE FROM schema_meta WHERE key = 'last_request_at'`);
+    await runTick(env, Date.now());
     const asleep = await runTick(env, Date.now());
     expect({ state: asleep.state, next: asleep.nextWakeMs }).toEqual({ state: 'deep_sleep', next: null });
     const before = wakes;

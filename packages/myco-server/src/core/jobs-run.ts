@@ -1,3 +1,4 @@
+import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
 /**
  * What each scheduled job does when the tick runs it.
@@ -224,6 +225,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,
+  'storage-content-cleanup': (env,now)=>storageCleanup(env,now),
   [SCHEDULE_JOB]: scheduledRecoveryExport,
   [STAGING_RETENTION_JOB]: pruneRecoveryStagings,
   // Stored object release and recovery holds

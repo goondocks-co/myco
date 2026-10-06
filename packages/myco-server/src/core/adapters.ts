@@ -51,6 +51,8 @@ export interface RelationalStore {
 
 export interface StoredObject {
   size: number;
+  /** Publication is stable across a process or host crash. Required before clearing another copy. */
+  durable?: true;
 }
 
 /** A stored object plus its bytes. */
@@ -64,6 +66,8 @@ export interface BlobGetOptions {
 }
 
 export interface BlobPutOptions {
+  /** Declared stream length for stores that require a fixed-length body. */
+  size?: number;
   /** Hex digest the store verifies against the streamed bytes, rejecting a mismatch. */
   sha256?: string;
   httpMetadata?: { contentType?: string };
@@ -72,11 +76,16 @@ export interface BlobPutOptions {
 /** Content-addressed objects under project-prefixed keys. */
 export interface BlobStore {
   head(key: string): Promise<StoredObject | null>;
+  /** Proves an existing publication is crash-stable; absence answers false and storage errors throw. */
+  ensureDurable?(key: string): Promise<boolean>;
   /** The object's bytes, from `range.offset` when one is named; `size` is the whole object's either way. */
   get(key: string, options?: BlobGetOptions): Promise<StoredObjectBody | null>;
   put(key: string, value: ReadableStream | null, options?: BlobPutOptions): Promise<StoredObject>;
   delete(key: string): Promise<void>;
 }
+
+/** Relational metadata and immutable content storage without request or runtime authority. */
+export interface ContentStore { db:RelationalStore;blobs:BlobStore }
 
 // ---------------------------------------------------------------------------
 // Source identity and rate limiting

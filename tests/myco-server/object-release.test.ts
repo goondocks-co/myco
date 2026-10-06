@@ -9,6 +9,7 @@ import {
 import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
 import { backupRetentionPolicy } from '@myco-server-worker/core/backup-retention.js';
 import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { blobPost, count, journaled, memberHeaders, registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { legacyBlob, registerBlob } from './helpers/d1.js';
 
@@ -316,7 +317,7 @@ describe('upload authority is the only way bytes become registered', () => {
 });
 
 describe('a recovery hold keeps what a release would take, and a decision after it follows the rows and the policy as they stand', () => {
-  const orphan = (e: Env, seed: number) => registerBlob(e.sqlite, { projectId: P, key: String(seed).padStart(64, '0'), size: 1 });
+  const orphan = (e: Env, seed: number) => registerBlob(e.sqlite, { projectId: P, key: String(seed).padStart(64, '0'), size: 1, receivedAt: 2 - BLOB_RESERVATION_TTL_MS });
   const drainAll = async (e: Env, now: number) => {
     for (let pass = 0; pass < 64 && (count(e.sqlite, 'blob_release_candidates') + count(e.sqlite, 'backup_release_candidates') + count(e.sqlite, 'object_releases')) > 0; pass += 1) {
       await drainObjectReleases(e.serverEnv, now);
