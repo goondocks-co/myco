@@ -15,7 +15,7 @@ import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw
 import type { BlobStore, PreparedStatement, RelationalStore } from './adapters.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { readStoredObject } from './stored-object.js';
-import { referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong } from './object-release.js';
+import { publishBackupObject, referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong } from './object-release.js';
 import { currentRetentionVictims, type BackupRetentionPolicy } from './backup-retention.js';
 export { retentionVictims } from './backup-retention.js';
 import type { BlobRef } from './blob-references.js';
@@ -79,7 +79,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
-  'backup_restore_progress',
+  'backup_restore_progress', 'recovery_forget_commands',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'machine_harness_reports', 'machine_settings_snapshots',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
@@ -224,15 +224,18 @@ export async function createBackup(
   const key = `${BACKUP_KEY_PREFIX}${lineage}__${opts.now}__${id}.jsonl`;
   const artifact = utf8([headerLine, ...lines].join('\n') + '\n');
   const sha256 = await sha256HexOf(artifact);
-  const stored = await blobs.put(key, new Response(artifact).body, { sha256, httpMetadata: { contentType: 'application/jsonl' } });
-  const row: BackupIndexRow = {
-    id, key, created_at: opts.now, size_bytes: stored.size,
-    counts_json: JSON.stringify(counts), schema_version: stamped, producer: opts.producer, pinned: 0, sha256,
-  };
-  await db.prepare(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
-    .bind(row.id, row.key, row.created_at, row.size_bytes, row.counts_json, row.schema_version, row.producer, row.sha256).run();
-  return row;
+  return publishBackupObject(db, blobs, key,
+    () => blobs.put(key, new Response(artifact).body, { sha256, httpMetadata: { contentType: 'application/jsonl' } }),
+    async size => {
+      const row: BackupIndexRow = {
+        id, key, created_at: opts.now, size_bytes: size,
+        counts_json: JSON.stringify(counts), schema_version: stamped, producer: opts.producer, pinned: 0, sha256,
+      };
+      await db.prepare(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+        .bind(row.id, row.key, row.created_at, row.size_bytes, row.counts_json, row.schema_version, row.producer, row.sha256).run();
+      return row;
+    });
 }
 
 export interface ListedBackup extends BackupIndexRow {

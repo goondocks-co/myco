@@ -4,7 +4,9 @@
  * The Durable Object class runs here against an in-memory SQLite that answers its storage calls the way the object's
  * SQLite storage does. The runtime proof on workerd is `runtime/recovery-producer-runtime.ts`.
  */
-import { expect, it } from 'bun:test';
+import { issueRecoveryForget } from '@myco-server-worker/core/recovery-forget.js';
+import { MemberWriteRefused } from '@myco-server-worker/auth/member-write-store.js';
+import { afterAll, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { RecoveryProducer } from '@myco-server-worker/platform/cloudflare/recovery-producer-object.js';
 import { PRODUCER_LIMITS, PRODUCER_STALL_MS, type RecoveryAdmission } from '@myco-server-worker/core/recovery-producer.js';
@@ -43,12 +45,22 @@ const RECORDED_CONFIGURATION = {
   storeId: 'b'.repeat(32),
 };
 
+const authorityStores = new Map<RecoveryProducer, ReturnType<typeof sqliteEnv>>();
+afterAll(() => { for (const fixture of authorityStores.values()) fixture.sqlite.close(); });
+
+async function forget(producer: RecoveryProducer) {
+  const fixture = authorityStores.get(producer)!;
+  return producer.forgetUnsettledExport(await issueRecoveryForget(fixture.db, 'mem_machine_1', Date.now(), (await producer.status()).unsettledExport ?? null));
+}
+
 function producerOver(
   sql: Database, writes: string[], put?: (key: string, body: Uint8Array) => Promise<{ size: number }>, doubles: Doubles = {},
   bindings: Record<string, string | undefined> = {},
 ) {
   const ctx = { storage: storage(sql, { delete: doubles.deleteSigned }) };
+  const authority = sqliteEnv();
   const env = {
+    MYCO_DB: authority.db,
     MYCO_RECOVERY_ACCOUNT_ID: 'a'.repeat(32), MYCO_RECOVERY_DATABASE_ID: '11111111-1111-4111-8111-111111111111',
     MYCO_RECOVERY_CONFIGURATION: JSON.stringify(RECORDED_CONFIGURATION),
     ...bindings,
@@ -59,6 +71,7 @@ function producerOver(
     },
   };
   const producer = new RecoveryProducer(ctx as never, env as never);
+  authorityStores.set(producer, authority);
   Object.assign(producer, { ctx, env });
   return producer;
 }
@@ -437,7 +450,7 @@ it('forgets an unsettled export at the owner\'s word once no attempt advances, a
     expect(sent).toEqual([null]);
 
     // While that attempt advances, nothing is forgotten.
-    expect(await producer.forgetUnsettledExport()).toEqual({ refused: 'attempt_advancing', attempt: second.attempt! });
+    expect(await forget(producer)).toEqual({ refused: 'attempt_advancing', attempt: second.attempt! });
     expect(recorded()).toEqual({ n: 1 });
 
     // Once it fails on the wait, the export is still refused while its request or last answer falls inside the stale
@@ -446,10 +459,10 @@ it('forgets an unsettled export at the owner\'s word once no attempt advances, a
     const requestedAt = (sql.query('SELECT export_requested_at AS at FROM attempts WHERE id = ?').get(first.attempt!) as { at: number }).at;
     const from = requestedAt + PRODUCER_LIMITS.exportStaleMs;
     expect((await producer.status()).unsettledExport).toEqual({ attempt: first.attempt!, forgettableAt: from });
-    expect(await producer.forgetUnsettledExport()).toEqual({ refused: 'export_recent', attempt: first.attempt!, forgettableAt: from });
+    expect(await forget(producer)).toEqual({ refused: 'export_recent', attempt: first.attempt!, forgettableAt: from });
     // Requested long ago but answered for lately: the window runs from its last word.
     sql.run('UPDATE attempts SET export_requested_at = ?, export_answered_at = ? WHERE id = ?', [Date.now() - 2 * PRODUCER_LIMITS.exportStaleMs, Date.now() - PRODUCER_LIMITS.exportStaleMs + 60_000, first.attempt!]);
-    expect(await producer.forgetUnsettledExport()).toMatchObject({ refused: 'export_recent' });
+    expect(await forget(producer)).toMatchObject({ refused: 'export_recent' });
     expect(recorded()).toEqual({ n: 1 });
     // Past the window from its last word, the owner's word forgets it, once.
     sql.run('UPDATE attempts SET export_requested_at = ?, export_answered_at = ? WHERE id = ?', [Date.now() - 2 * PRODUCER_LIMITS.exportStaleMs, Date.now() - PRODUCER_LIMITS.exportStaleMs - 1, first.attempt!]);
@@ -457,11 +470,11 @@ it('forgets an unsettled export at the owner\'s word once no attempt advances, a
     const log = console.log;
     console.log = (line: unknown) => { logged.push(String(line)); };
     try {
-      expect(await producer.forgetUnsettledExport()).toMatchObject({ forgotten: { attempt: first.attempt! } });
+      expect(await forget(producer)).toMatchObject({ forgotten: { attempt: first.attempt! } });
     } finally { console.log = log; }
     expect(logged.map((line) => (JSON.parse(line) as { kind: string }).kind)).toContain('recovery_export_forgotten');
     expect(recorded()).toEqual({ n: 0 });
-    expect(await producer.forgetUnsettledExport()).toEqual({ forgotten: null });
+    expect(await forget(producer)).toEqual({ forgotten: null });
     expect((await producer.status()).unsettledExport).toBeUndefined();
 
     // The next attempt starts its own export straight away.
@@ -495,4 +508,45 @@ it('keeps the first answer that nothing is exporting on the attempt itself, apar
     await producerOver(sql, [], undefined, {}, bindings).continue({ ...PRODUCER_LIMITS, maxPollsPerStep: 1 });
     expect({ ...row(), absent: row().absent === absent.absent }).toEqual({ ...absent, absent: true });
   } finally { globalThis.fetch = original; sql.close(); }
+});
+
+for (const change of ['demotion', 'revocation'] as const) {
+  it(`recovery command issuance refuses ${change} at its own commit`, async () => {
+    let armed = false;
+    const fixture = sqliteEnv({ onSql(sql, sqlite) {
+      if (!armed || !/INSERT INTO recovery_forget_commands/.test(sql)) return;
+      armed = false;
+      sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id='mem_machine_1'" : "UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'");
+    } });
+    try {
+      armed = true;
+      await expect(issueRecoveryForget(fixture.db, 'mem_machine_1', Date.now(), null)).rejects.toBeInstanceOf(MemberWriteRefused);
+      expect(armed).toBe(false);
+      expect(fixture.sqlite.query('SELECT * FROM recovery_forget_commands').all()).toEqual([]);
+    } finally { fixture.sqlite.close(); }
+  });
+}
+
+it('accepts only issued recovery commands, replays them once, and binds delayed commands to their export', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, []);
+  const fixture = authorityStores.get(producer)!;
+  try {
+    const first = await producer.admit(admission('export-first'));
+    const old = Date.now() - 2 * PRODUCER_LIMITS.exportStaleMs;
+    sql.run("UPDATE attempts SET stage='failed', export_requested_at=? WHERE id=?", [old, first.attempt!]);
+    const target = (await producer.status()).unsettledExport!;
+    const command = await issueRecoveryForget(fixture.db, 'mem_machine_1', Date.now(), target);
+    const delayed = await issueRecoveryForget(fixture.db, 'mem_machine_1', Date.now(), target);
+    expect(await producer.forgetUnsettledExport('unissued')).toEqual({ refused: 'not_admin' });
+    expect((await producer.status()).unsettledExport).toEqual(target);
+    const outcome = await producer.forgetUnsettledExport(command);
+    expect(outcome).toMatchObject({ forgotten: { attempt: first.attempt! } });
+    const second = await producer.admit(admission('export-second'));
+    sql.run("UPDATE attempts SET stage='failed', export_requested_at=? WHERE id=?", [old, second.attempt!]);
+    const before = sql.query('SELECT * FROM attempts').all();
+    expect(await producer.forgetUnsettledExport(command)).toEqual(outcome);
+    expect(await producer.forgetUnsettledExport(delayed)).toEqual({ forgotten: null });
+    expect(sql.query('SELECT * FROM attempts').all()).toEqual(before);
+  } finally { sql.close(); }
 });

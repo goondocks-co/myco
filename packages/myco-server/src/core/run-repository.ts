@@ -1,4 +1,4 @@
-import { REPOSITORY_COMMIT_PATTERN, RepositoryInputError, type RepositoryIdentity } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_COMMIT_PATTERN, RepositoryInputError, type RepositoryIdentity, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from './adapters.js';
 import { projectRepositories } from './repositories.js';
 import { deploymentSecretStore } from './secrets.js';
@@ -7,6 +7,7 @@ import { pinRepositoryForRun, repositoryPinOfRun, type RunRow, type RunLease } f
 /** Prepare or pin the connected source for an admitted run. */
 export async function prepareRunRepository(
   env: ServerEnv, projectId: string, run: RunRow, input: Record<string, unknown>, expected?: RepositoryIdentity, lease?: RunLease,
+  pinCommit?: (pin: RepositoryPin) => Promise<RepositoryPin | null>,
 ) {
   const repositories = projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey));
   const current = await repositories.describe(projectId);
@@ -21,9 +22,10 @@ export async function prepareRunRepository(
       || input.url !== current.url || input.branch !== current.branch) {
       throw new RepositoryInputError('Commit and repository identity must match the run connection.');
     }
-    const pinned = await pinRepositoryForRun(env.db, { projectId }, run, {
-      url: current.url, branch: current.branch, commit: input.commit,
-    }, lease);
+    const candidate = { url: current.url, branch: current.branch, commit: input.commit };
+    const pinned = await (pinCommit === undefined
+      ? pinRepositoryForRun(env.db, { projectId }, run, candidate, lease)
+      : pinCommit(candidate));
     return { persisted: true, held: pinned !== null, pin: pinned };
   }
   const repository = await repositories.access(projectId);

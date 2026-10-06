@@ -18,6 +18,7 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
 import { asMemberRole, isAdmin } from '../auth/roles.js';
+import { renewingLeaseAuthority } from './worker-lease.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 /** A harness a worker reports, as it reports it. `authenticated` is the worker's own probe, not a provider check. */
@@ -165,12 +166,13 @@ export async function readWorkerContact(db: RelationalStore, credentialId: strin
  * names no outcome and no offer of its own: it refreshes the liveness of what
  * the worker last reported rather than erasing it. An unchanged observation
  * inside `CONTACT_THROTTLE_MS` is skipped while the machine's latest offers agree. Explicit offers advance a monotonic
- * revision in `updated_at`; renewals preserve unsupplied fields and advance only liveness. Answers whether a row is written.
+ * revision in `updated_at`; renewals preserve unsupplied fields and advance only liveness. A throttled contact answers null.
  */
-export async function recordWorkerContact(
+export async function workerContactStatement(
   db: RelationalStore,
   contact: { credentialId: string; machineId: string | null; offers?: readonly ReportedHarness[]; capabilities?: readonly string[]; reason?: ContactOutcome; now: number },
-): Promise<boolean> {
+  lease?: { projectId: string; runId: string; attemptId?: string },
+): Promise<PreparedStatement | null> {
   const stored = await readWorkerContact(db, contact.credentialId);
   // Only a claim supplies a report. A renewal refreshes the liveness of the one
   // already held and leaves an absent or unreadable one as it stands: null is
@@ -181,14 +183,15 @@ export async function recordWorkerContact(
   let skipRevision: number | null = null;
   if (offers !== null && capabilities !== null
     && unchanged(stored, offers, capabilities, reason) && contact.now - stored!.lastSeenAt < CONTACT_THROTTLE_MS) {
-    if (contact.offers === undefined) return false;
+    if (contact.offers === undefined) return null;
     const { results } = await machineContactsStatement(db).all<Record<string, unknown>>();
     const machineId = contact.machineId ?? results.find((row) => row.credential_id === contact.credentialId)?.machine_id;
-    if (machineId == null) return false;
+    if (machineId == null) return null;
     const observation = machineOfferObservationsOf(results).get(String(machineId));
     if (observation !== undefined && observation.offers !== null && sameOffers(observation.offers, offers)) skipRevision = observation.revision;
   }
-  const result = await db.prepare(
+  const authority = lease === undefined ? null : renewingLeaseAuthority(contact.credentialId, contact.now, lease.attemptId);
+  return db.prepare(
     `WITH observation AS (
        SELECT ? AS credential_id, ? AS machine_id, ? AS offers, ? AS capabilities, ? AS reason, ? AS seen_at,
               ? AS explicit_offers, ? AS explicit_capabilities, ? AS explicit_reason, ? AS skip_revision
@@ -201,7 +204,7 @@ export async function recordWorkerContact(
      SELECT credential_id, machine_id, offers, capabilities, reason, seen_at,
             CASE WHEN explicit_offers = 1 THEN MAX(seen_at, revision + 1) ELSE seen_at END
        FROM observation CROSS JOIN machine_revision
-      WHERE skip_revision IS NULL OR revision != skip_revision
+      WHERE (skip_revision IS NULL OR revision != skip_revision)${authority === null ? '' : ` AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND ${authority.sql})`}
      ON CONFLICT (credential_id) DO UPDATE SET
        machine_id = excluded.machine_id,
        offers = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.offers ELSE worker_contacts.offers END,
@@ -213,8 +216,14 @@ export async function recordWorkerContact(
     contact.credentialId, contact.machineId, offers === null ? null : JSON.stringify(offers), capabilities === null ? null : JSON.stringify(capabilities),
     reason, contact.now, contact.offers === undefined ? 0 : 1, contact.capabilities === undefined ? 0 : 1,
     contact.reason === undefined ? 0 : 1, skipRevision,
-  ).run();
-  return result.meta.changes > 0;
+    ...(authority === null ? [] : [lease!.projectId, lease!.runId, ...authority.params]),
+  );
+}
+
+/** Record one contact through the same statement used by atomic worker operations. */
+export async function recordWorkerContact(db: RelationalStore, contact: Parameters<typeof workerContactStatement>[1]): Promise<boolean> {
+  const statement = await workerContactStatement(db, contact);
+  return statement !== null && (await statement.run()).meta.changes > 0;
 }
 
 /**

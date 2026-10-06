@@ -427,7 +427,7 @@ describe('a runtime that is not taking runs', () => {
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'failed'`).get() as { c: number }).c).toBe(0);
   });
 
-  it('retires a credential no row ever named, when the write for it throws', async () => {
+  it('leaves no credential when the atomic launch write throws', async () => {
     const f = await fixture();
     const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
     await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'q_throws' }, 'fleet', NOW);
@@ -443,9 +443,9 @@ describe('a runtime that is not taking runs', () => {
     expect(f.run('q_throws')).toMatchObject({ status: 'queued', heldBy: 'fleet', dispatchedBy: null });
     expect(lines.filter((l) => l.kind === 'harness_drain_failed').map((l) => l.runId)).toEqual(['q_throws']);
     expect(lines.some((l) => l.kind === 'harness_drain_refused')).toBe(false);
-    // Nothing names the credential minted for that write, and it is revoked.
+    // The rejected transaction leaves no credential row.
     const credentials = f.sqlite.query(`SELECT revoked_at AS r FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ r: number | null }>;
-    expect(credentials.map((c) => c.r)).toEqual([NOW + 1]);
+    expect(credentials).toEqual([]);
   });
 
   it('says the row carries the refusal when the launch itself ended the run', async () => {

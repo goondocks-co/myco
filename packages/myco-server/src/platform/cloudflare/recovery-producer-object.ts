@@ -1,3 +1,4 @@
+import { readRecoveryForget } from '../../core/recovery-forget.js';
 /**
  * The hosted recovery producer's checkpoint authority: one Durable Object holding every durable fact of one attempt
  * in its own SQLite storage, while the Deployment's database is unavailable to queries for as long as it exports.
@@ -158,6 +159,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       attempt INTEGER NOT NULL, key TEXT NOT NULL, bytes INTEGER NOT NULL, sha256 TEXT,
       staged_sha256 TEXT, staged_bytes INTEGER, registered INTEGER NOT NULL,
       PRIMARY KEY (attempt, key))`);
+    ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS forgotten_commands (id TEXT PRIMARY KEY, outcome TEXT NOT NULL)');
     ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS idx_objects_pending ON objects (attempt, staged_sha256, registered)');
     // A hold token no attempt carries, retired once: admission refuses it for ever after.
     ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS retired_hold_tokens (token TEXT PRIMARY KEY, retired_at INTEGER NOT NULL)');
@@ -447,20 +449,31 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
    * nothing of the export for `exportStaleMs` (`forgettableAt`): one it answered for lately may still run, and a new
    * export beside it would be a second.
    */
-  async forgetUnsettledExport(): Promise<ForgetUnsettledOutcome> {
+  async forgetUnsettledExport(commandId: string): Promise<ForgetUnsettledOutcome> {
     return this.gate.exclusive(async () => {
-      const latest = this.row('1 = 1');
-      if (latest !== null && (ADVANCING_STAGES as readonly string[]).includes(latest.stage)) return { refused: 'attempt_advancing' as const, attempt: latest.id };
-      const unsettled = this.checkpoint().unsettledExport();
-      if (unsettled === null) return { forgotten: null };
-      const from = forgettableAt(unsettled, PRODUCER_LIMITS);
-      if (Date.now() < from) return { refused: 'export_recent' as const, attempt: unsettled.attempt, forgettableAt: from };
-      this.ctx.storage.sql.exec('UPDATE attempts SET export_requested_at = NULL WHERE export_requested_at IS NOT NULL');
-      emit({ kind: 'recovery_export_forgotten', attempt: unsettled.attempt, requestedAt: unsettled.requestedAt });
-      return { forgotten: { attempt: unsettled.attempt, requestedAt: unsettled.requestedAt } };
+      const command = typeof commandId === 'string' ? await readRecoveryForget(this.env.MYCO_DB, commandId) : null;
+      if (command === null) return { refused: 'not_admin' as const };
+      const replay = this.ctx.storage.sql.exec('SELECT outcome FROM forgotten_commands WHERE id = ?', commandId).toArray() as unknown as { outcome: string }[];
+      if (replay[0]) return JSON.parse(replay[0].outcome) as ForgetUnsettledOutcome;
+      return this.ctx.storage.transactionSync(() => {
+        const outcome = this.forgetUnsettled(command);
+        this.ctx.storage.sql.exec('INSERT INTO forgotten_commands (id, outcome) VALUES (?, ?)', commandId, JSON.stringify(outcome));
+        return outcome;
+      });
     });
   }
 
+  private forgetUnsettled(command: { attempt: number | null; forgettableAt: number | null }): ForgetUnsettledOutcome {
+    const latest = this.row('1 = 1');
+    if (latest !== null && (ADVANCING_STAGES as readonly string[]).includes(latest.stage)) return { refused: 'attempt_advancing' as const, attempt: latest.id };
+    const unsettled = this.checkpoint().unsettledExport();
+    if (unsettled === null || unsettled.attempt !== command.attempt) return { forgotten: null };
+    const from = forgettableAt(unsettled, PRODUCER_LIMITS);
+    if (Date.now() < from || command.forgettableAt !== from) return { refused: 'export_recent' as const, attempt: unsettled.attempt, forgettableAt: from };
+    this.ctx.storage.sql.exec('UPDATE attempts SET export_requested_at = NULL WHERE export_requested_at IS NOT NULL');
+    emit({ kind: 'recovery_export_forgotten', attempt: unsettled.attempt, requestedAt: unsettled.requestedAt });
+    return { forgotten: { attempt: unsettled.attempt, requestedAt: unsettled.requestedAt } };
+  }
   /** The attempt's progress, with no credential, no signed download and no claim of recoverability. */
   async status(): Promise<RecoveryProducerStatus> {
     return this.statusOf(this.row('1 = 1'));

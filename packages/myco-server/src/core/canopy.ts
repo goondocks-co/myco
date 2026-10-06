@@ -5,9 +5,11 @@ import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { readCanopyMap } from '../read/canopy.js';
 import { sha256Hex } from '../hash.js';
-import { mapSourcePinOfRun, pinMapSourceForRun, repositoryPinOfRun, type RunLease, type RunRow } from './runs.js';
+import { mapSourcePinOfRun, pinMapRepositoryForRun, pinMapSourceForRun, repositoryPinOfRun, type RunLease, type RunRow } from './runs.js';
 import { settingTexts } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
+
+const MAX_MAP_PIN_ATTEMPTS = 3;
 
 export async function readMapSettings(db: RelationalStore): Promise<MapSettings> {
   const customLeaf = 'cortex.canopy.exclude.patterns';
@@ -29,10 +31,21 @@ export async function mapInputHash(settings: MapSettings, repository: Repository
  * commit under the Deployment's exclusions, and the map revision the run
  * succeeds. Written once; a repeat answers the pin already held.
  */
-export async function pinMapSourceAtCommit(db: RelationalStore, scope: ReadScope, run: RunRow, repository: RepositoryPin, lease?: RunLease): Promise<MapSourcePin | null> {
-  const current = await readCanopyMap(db, scope);
-  const inputHash = await mapInputHash(await readMapSettings(db), repository);
-  return pinMapSourceForRun(db, scope, run, { inputHash, priorRevision: current?.revision ?? null }, lease);
+export async function pinMapRepositoryAtCommit(db: RelationalStore, scope: ReadScope, run: RunRow, repository: RepositoryPin, lease: RunLease): Promise<RepositoryPin | null> {
+  let candidate = repositoryPinOfRun(run) ?? repository;
+  for (let attempt = 0; attempt < MAX_MAP_PIN_ATTEMPTS; attempt++) {
+    const current = await readCanopyMap(db, scope);
+    const inputHash = await mapInputHash(await readMapSettings(db), candidate);
+    const result = await pinMapRepositoryForRun(db, scope, run, candidate, { inputHash, priorRevision: current?.revision ?? null }, lease);
+    if (result === null) return null;
+    if (result.committed) return candidate;
+    const pinnedRepository = repositoryPinOfRun(result.row);
+    if (pinnedRepository !== null && mapSourcePinOfRun(result.row) !== null) return pinnedRepository;
+    if (pinnedRepository === null) return null;
+    if (pinnedRepository.url === candidate.url && pinnedRepository.branch === candidate.branch && pinnedRepository.commit === candidate.commit) return null;
+    candidate = pinnedRepository;
+  }
+  throw new Error('Map repository pin changed during preparation.');
 }
 
 /**

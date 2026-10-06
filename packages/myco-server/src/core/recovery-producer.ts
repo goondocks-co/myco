@@ -1280,6 +1280,7 @@ export class HoldRetired extends Error {
 /** What forgetting an unsettled export did: which it forgot, or that none is recorded, or which attempt refused it. */
 export type ForgetUnsettledOutcome =
   | { forgotten: { attempt: number; requestedAt: number } | null }
+  | { refused: 'not_admin' }
   | { refused: 'attempt_advancing'; attempt: number }
   | { refused: 'export_recent'; attempt: number; forgettableAt: number };
 
@@ -1308,7 +1309,7 @@ export interface RecoveryProducerPort {
    * attempt waits on it, and fails `export_unsettled` once the wait bound passes, for as long as it stays recorded.
    * Refused while an attempt advances, which may be following that export. Absent on a producer that records none.
    */
-  forgetUnsettledExport?(): Promise<ForgetUnsettledOutcome>;
+  forgetUnsettledExport?(commandId: string): Promise<ForgetUnsettledOutcome>;
   /**
    * Make progress on the attempt already in flight, for a producer that has to be asked.
    *

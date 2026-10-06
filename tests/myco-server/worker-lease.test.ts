@@ -99,10 +99,8 @@ describe('the claim queue', () => {
     expect(f.row('run_2')).toMatchObject({ status: 'queued' });
     expect(f.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = 'run_2'`).get()).toEqual({ heldBy: 'concurrent_runs' });
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
-    // A refused claim mints and retires: the queue is peeked before anything is
-    // minted, and a mint the write then refuses is revoked at once, so exactly
-    // one credential is live and the other is a revoked row.
-    expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?`).get(HARNESS_MEMBER_ID)).toEqual({ n: 2 });
+    // Only an admitted claim mints a harness credential.
+    expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?`).get(HARNESS_MEMBER_ID)).toEqual({ n: 1 });
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE revoked_at IS NULL AND member_id = ?`).get(HARNESS_MEMBER_ID)).toEqual({ n: 1 });
 
     // The first ending frees the place, and the second run is taken.

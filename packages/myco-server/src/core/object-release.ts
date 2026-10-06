@@ -3,7 +3,7 @@
  *
  * A caller never deletes stored bytes. It *releases* them: one transaction decides, from the rows as they stand, which
  * objects nothing registers any more, records each by its physical key in `object_releases`, and removes the row that
- * registered it. The drain is the only code that asks the store to delete, and it removes a journal row only once the
+ * registered it. The release owner is the only code that asks the store to delete, and it removes a journal row only once the
  * store acknowledged that delete.
  *
  * No timing is involved: a physical key is written once. An upload stores under its own generation
@@ -16,11 +16,12 @@
  * candidates stay recorded, and a decision after the hold judges them against the rows as they stand then. Unregistered upload bytes are never in a snapshot, so their
  * journal is not held.
  */
-import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
+import type { BlobStore, PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, blobHeld, type BlobRef } from './blob-references.js';
 import { blobObjectKeySql } from './blob-objects.js';
 import { within } from './recovery-inventory.js';
 import { backupRetentionPolicy, currentRetentionVictims } from './backup-retention.js';
+import { MemberWriteRefused } from '../auth/member-write-store.js';
 import { classify, emit } from '../telemetry.js';
 
 /** SQL true while a recovery hold is open. */
@@ -32,6 +33,24 @@ export const RELEASE_PAGE = 64;
 export const DRAIN_PAGE = 16;
 /** How long one store delete may take before the drain leaves its journal row for the next pass. */
 export const DRAIN_DELETE_MS = 15_000;
+
+const deleteStoredObject = (blobs: BlobStore, key: string, clock: () => number = Date.now) => within(() => blobs.delete(key), DRAIN_DELETE_MS, clock);
+
+/** Publishes one private backup key and discards its bytes if its index admission is refused. */
+export async function publishBackupObject<T>(db: RelationalStore, blobs: BlobStore, key: string, upload: () => Promise<{ size: number }>, commit: (size: number) => Promise<T>): Promise<T> {
+  const stored = await upload();
+  try { return await commit(stored.size); }
+  catch (error) {
+    if (error instanceof MemberWriteRefused) {
+      try {
+        if (await db.prepare('SELECT 1 FROM backups WHERE key = ?').bind(key).first() === null) await deleteStoredObject(blobs, key);
+      } catch (cleanupError) {
+        emit({ kind: 'backup_publication_cleanup_failed', key, error_class: classify(cleanupError) });
+      }
+    }
+    throw error;
+  }
+}
 
 const blobPage = `(SELECT json_extract(j.value, '$.p') AS p, json_extract(j.value, '$.k') AS k FROM json_each(?) j)`;
 const idPage = `(SELECT j.value AS id FROM json_each(?) j)`;
@@ -415,7 +434,7 @@ export async function drainObjectReleases(
     .all<{ physical: string }>();
   for (const { physical } of journal) {
     try {
-      await within(() => env.blobs.delete(physical), DRAIN_DELETE_MS, clock);
+      await deleteStoredObject(env.blobs, physical, clock);
     } catch (error) {
       report.unacknowledged += 1;
       emit({ kind: 'object_release_unacknowledged', error_class: classify(error) });
