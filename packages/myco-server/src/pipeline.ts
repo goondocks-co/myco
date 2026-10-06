@@ -390,7 +390,7 @@ export function createServer(deps: ServerDeps) {
           ? { ...env, db: memberWriteStore(env.db, member!.id, 'admin', () => { writeRefused = true; }) }
           : env;
         const response = await matched.route.handler(guarded, { ...context, member: member! });
-        if (writeRefused) throw new MemberWriteRefused();
+        if (writeRefused && response.status < 400) throw new MemberWriteRefused();
         return response;
       } catch (err) {
         if (err instanceof MemberWriteRefused) {

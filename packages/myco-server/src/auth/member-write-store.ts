@@ -1,12 +1,10 @@
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
 import { memberWritePredicate } from './authorization.js';
+import { MemberWriteRefused } from './member-write-refusal.js';
+export { MemberWriteRefused } from './member-write-refusal.js';
 
 const REFUSED_PATH = '$[myco_member_write_refused]';
-
-export class MemberWriteRefused extends Error {
-  constructor() { super('member no longer holds the write authority'); }
-}
 
 export interface MemberWriteActor { memberId: string; authority: 'admin' | 'member' }
 

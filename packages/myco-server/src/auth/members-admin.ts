@@ -23,6 +23,7 @@ import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
 import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
 import { asMemberRole, isAdmin, type MemberRole } from './roles.js';
+import { memberWriteOutcome } from './member-write-refusal.js';
 
 export interface MemberRow {
   id: string;
@@ -117,7 +118,7 @@ export type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMembe
  * names which refusal it was.
  */
 export async function revokeMember(db: RelationalStore, memberId: string, actor: string, nowMs: number): Promise<RevokeMemberResult> {
-  const results = await db.batch([
+  const outcome = await memberWriteOutcome(() => db.batch([
     db.prepare(`UPDATE members SET revoked_at = ?, revoked_by = ?
                  WHERE id = ? AND revoked_at IS NULL
                    AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1
@@ -129,8 +130,8 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
     revokeInvitationsOfMember(db, memberId, actor, nowMs),
     revokeLinkKeysOfMember(db, memberId, actor, nowMs),
     clearMemberUncapturedStatement(db, memberId, actor, nowMs),
-  ]);
-  if (results[0]?.meta.changes === 1) {
+  ]));
+  if (outcome.admitted && outcome.value[0]?.meta.changes === 1) {
     emit({ kind: 'member_revoked', memberId, actor });
     return { ok: true };
   }

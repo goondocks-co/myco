@@ -6,6 +6,7 @@ import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
+import { BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -63,6 +64,74 @@ async function send(f: ReturnType<typeof sqliteEnv>, operation: Operation, sub =
 }
 
 describe('live authority at administrative writes', () => {
+  for (const operation of ['owner bootstrap', 'member revoke'] as const) {
+    it(`${operation}: late admin demotion preserves its writer's refusal`, async () => {
+      let armed = false;
+      let fired = false;
+      const f = await setup((sql, sqlite) => {
+        const write = operation === 'owner bootstrap' ? /UPDATE deployment_ownership SET member_id/ : /UPDATE members SET revoked_at =/;
+        if (!armed || !write.test(sql)) return;
+        armed = false;
+        fired = true;
+        sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]);
+      });
+      try {
+        if (operation === 'owner bootstrap') f.sqlite.run('UPDATE deployment_ownership SET member_id=NULL, revision=0 WHERE id=1');
+        const before = snapshot(f);
+        const ownership = f.sqlite.query('SELECT * FROM deployment_ownership').all();
+        const audit = f.sqlite.query('SELECT * FROM deployment_ownership_audit').all();
+        armed = true;
+        const response = await send(f, {
+          name: operation, method: 'POST', sql: /unused/,
+          path: operation === 'owner bootstrap' ? '/api/ownership' : `/api/members/${MEMBER}/revoke`,
+          body: operation === 'owner bootstrap' ? { revision: '0', ownerMemberId: OWNER } : {},
+        });
+        expect(fired).toBe(true);
+        expect(response.status).toBe(409);
+        expect(await response.json() as Record<string, unknown>).toEqual({ error: operation === 'owner bootstrap' ? 'revision_conflict' : 'last_admin' });
+        expect(snapshot(f)).toEqual(before);
+        expect(f.sqlite.query('SELECT * FROM deployment_ownership').all()).toEqual(ownership);
+        expect(f.sqlite.query('SELECT * FROM deployment_ownership_audit').all()).toEqual(audit);
+        expect(f.sqlite.query('SELECT revoked_at FROM members WHERE id=?').get(MEMBER)).toEqual({ revoked_at: null });
+      } finally { f.sqlite.close(); }
+    });
+  }
+  for (const operation of ['stored restore', 'restore upload'] as const) {
+    it(`${operation}: late owner revocation preserves the restore refusal`, async () => {
+      let armed = false;
+      let fired = false;
+      const f = await setup((sql, sqlite) => {
+        if (!armed || !/INSERT INTO restore_reference_guard/.test(sql)) return;
+        armed = false;
+        fired = true;
+        sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [OWNER]);
+      });
+      try {
+        const lineage = (f.sqlite.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string }).value;
+        const artifact = [
+          { format: BACKUP_FORMAT, deploymentId: lineage, schemaVersion: 74, createdAt: 1, producer: OWNER, counts: { members: 1 } },
+          { t: 'members', r: { id: 'mem_restore_refusal', role: 'admin', github_id: '9004', created_at: 1 } },
+        ].map(row => JSON.stringify(row)).join('\n');
+        if (operation === 'stored restore') {
+          const key = 'backups/refusal.jsonl';
+          const bytes = new TextEncoder().encode(artifact);
+          await f.bucket.put(key, new Response(bytes).body!);
+          f.sqlite.run(`INSERT INTO backups (id,key,created_at,size_bytes,counts_json,schema_version,producer) VALUES ('backup_refusal', ?, 1, ?, '{"members":1}', 74, ?)`, [key, bytes.length, OWNER]);
+        }
+        const before = snapshot(f);
+        armed = true;
+        const response = await send(f, {
+          name: operation, method: 'POST', sql: /unused/,
+          path: operation === 'stored restore' ? '/api/backups/backup_refusal/restore' : '/api/backups/restore-upload',
+          body: operation === 'stored restore' ? {} : { artifact },
+        }, '583231');
+        expect(fired).toBe(true);
+        expect(response.status).toBe(403);
+        expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_owner' });
+        expect(snapshot(f)).toEqual(before);
+      } finally { f.sqlite.close(); }
+    });
+  }
   for (const operation of ['ownership transfer', 'member role'] as const) {
     it(`${operation}: a late owner revocation preserves its writer's refusal`, async () => {
       let armed = false;
@@ -91,7 +160,7 @@ describe('live authority at administrative writes', () => {
         }, '583231');
         expect(fired).toBe(true);
         expect(response.status).toBe(409);
-        expect(await response.json()).toEqual({ error: 'revision_conflict' });
+        expect(await response.json() as Record<string, unknown>).toEqual({ error: 'revision_conflict' });
         expect(snapshot(f)).toEqual(before);
         expect(f.sqlite.query('SELECT * FROM deployment_ownership').all()).toEqual(ownership);
         expect(f.sqlite.query('SELECT * FROM deployment_ownership_audit').all()).toEqual(audit);

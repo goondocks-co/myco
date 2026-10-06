@@ -2,6 +2,7 @@ import type { DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-clai
 import type { RelationalStore, PreparedStatement } from './adapters.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import type { MemberRole } from '../auth/roles.js';
+import { memberWriteOutcome } from '../auth/member-write-refusal.js';
 
 export class OwnershipRefusal extends Error {
   constructor(readonly code: 'not_owner' | 'owner_pending' | 'invalid_owner' | 'invalid_member' | 'active_owner' | 'last_admin' | 'revision_conflict' | 'not_admin' | 'owner_already_recorded' | 'backfill_pending') { super(code); }
@@ -109,7 +110,7 @@ export async function bootstrapOwnership(db: RelationalStore, actor: string, can
   const live = await db.prepare(`SELECT 1 AS admitted FROM members m WHERE m.id = ? AND ${linkedHumanAdminSql('m')}`)
     .bind(candidate).first();
   if (live === null) throw new OwnershipRefusal('invalid_owner');
-  const results = await db.batch([
+  const outcome = await memberWriteOutcome(() => db.batch([
     db.prepare(`UPDATE deployment_ownership SET member_id = ?, revision = revision + 1 WHERE id = 1 AND member_id IS NULL AND revision = ?
       AND EXISTS (SELECT 1 FROM members WHERE id = ? AND role = 'admin' AND revoked_at IS NULL)
       AND EXISTS (SELECT 1 FROM members m WHERE m.id = ? AND ${linkedHumanAdminSql('m')})`)
@@ -117,8 +118,8 @@ export async function bootstrapOwnership(db: RelationalStore, actor: string, can
     db.prepare(`INSERT INTO deployment_ownership_audit (revision,member_id,actor_id,created_at)
       SELECT revision, member_id, ?, ? FROM deployment_ownership WHERE id = 1 AND member_id = ? AND revision = ?
         AND changes() = 1`).bind(actor, now, candidate, Number(revision) + 1),
-  ]);
-  if (results[0]!.meta.changes === 0) throw new OwnershipRefusal('revision_conflict');
+  ]));
+  if (!outcome.admitted || outcome.value[0]!.meta.changes === 0) throw new OwnershipRefusal('revision_conflict');
   return ownershipPreview(db);
 }
 
