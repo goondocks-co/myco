@@ -63,6 +63,43 @@ async function send(f: ReturnType<typeof sqliteEnv>, operation: Operation, sub =
 }
 
 describe('live authority at administrative writes', () => {
+  for (const operation of ['ownership transfer', 'member role'] as const) {
+    it(`${operation}: a late owner revocation preserves its writer's refusal`, async () => {
+      let armed = false;
+      let fired = false;
+      const f = await setup((sql, sqlite) => {
+        const write = operation === 'ownership transfer' ? /UPDATE deployment_ownership SET member_id/ : /UPDATE members SET role/;
+        if (!armed || !write.test(sql)) return;
+        armed = false;
+        fired = true;
+        sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [OWNER]);
+      });
+      try {
+        const before = snapshot(f);
+        const ownership = f.sqlite.query('SELECT * FROM deployment_ownership').all();
+        const audit = f.sqlite.query('SELECT * FROM deployment_ownership_audit').all();
+        const roles = f.sqlite.query('SELECT * FROM member_role_audit').all();
+        const member = f.sqlite.query('SELECT role, role_revision FROM members WHERE id=?').get(ADMIN);
+        const revision = operation === 'ownership transfer'
+          ? String((f.sqlite.query('SELECT revision FROM deployment_ownership').get() as { revision: number }).revision)
+          : '0';
+        armed = true;
+        const response = await send(f, {
+          method: 'POST', sql: /unused/, name: operation,
+          path: operation === 'ownership transfer' ? '/api/ownership/transfer' : `/api/members/${ADMIN}/role`,
+          body: { member_id: ADMIN, expected_revision: revision, ...(operation === 'member role' ? { role: 'member' } : {}) },
+        }, '583231');
+        expect(fired).toBe(true);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ error: 'revision_conflict' });
+        expect(snapshot(f)).toEqual(before);
+        expect(f.sqlite.query('SELECT * FROM deployment_ownership').all()).toEqual(ownership);
+        expect(f.sqlite.query('SELECT * FROM deployment_ownership_audit').all()).toEqual(audit);
+        expect(f.sqlite.query('SELECT * FROM member_role_audit').all()).toEqual(roles);
+        expect(f.sqlite.query('SELECT role, role_revision FROM members WHERE id=?').get(ADMIN)).toEqual(member);
+      } finally { f.sqlite.close(); }
+    });
+  }
   for (const operation of operations) {
     for (const change of ['demotion', 'revocation'] as const) {
       it(`${operation.name}: ${change} just before the write refuses without changing state`, async () => {

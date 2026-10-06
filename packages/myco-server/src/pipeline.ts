@@ -384,7 +384,7 @@ export function createServer(deps: ServerDeps) {
         }
         if (matched.route.authority === 'account') return await matched.route.handler(env, { ...context, member });
         await stampRequest(env.db, now);
-        const writeAuthority = matched.route.authority === 'admin';
+        const writeAuthority = matched.route.authority === 'admin' && authorization.action !== 'owner';
         let writeRefused = false;
         const guarded = writeAuthority
           ? { ...env, db: memberWriteStore(env.db, member!.id, 'admin', () => { writeRefused = true; }) }
