@@ -13,6 +13,7 @@
  * a full-read budget: different operations, so different tools, rather than one
  * tool that behaves two ways depending on who asked.
  */
+import { MAP_WRITE_BOUNDS } from '@goondocks/myco-shared/canopy';
 import { PROJECT_PIVOT, RUN_TOOLS, type RunTool } from '../core/tool-catalogue.js';
 import type { ToolDefinition } from './definitions.js';
 
@@ -105,7 +106,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
       type: 'object',
       properties: {
         op: { type: 'string', enum: ['get', 'write'], description: 'get: the current map, this run\'s commit, and unchanged true when the map was already read from it. write: store the new map, once per run.' },
-        artifact: { type: ['object', 'string'], description: 'For write: the map as one JSON object, {directories, domains}, as the run\'s instructions describe it.' },
+        artifact: { type: ['object', 'string'], description: `For write: the map as one JSON object or a JSON object string. ${MAP_WRITE_BOUNDS}` },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

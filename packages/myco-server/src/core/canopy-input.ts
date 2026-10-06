@@ -14,7 +14,7 @@
  * Every Myco tool the text names is one the run's MCP surface serves under that
  * name (`tests/myco-server/task-inputs.test.ts`).
  */
-import { MAP_ACTION, MAP_UNCHANGED_ACTION, MAX_MAP_BYTES } from '@goondocks/myco-shared/canopy';
+import { MAP_ACTION, MAP_UNCHANGED_ACTION, MAP_LIMITS, MAP_WRITE_BOUNDS } from '@goondocks/myco-shared/canopy';
 import { RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, SOURCE_GIT_RULES, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
 import { sha256Hex } from '../hash.js';
 import type { ServerEnv } from './adapters.js';
@@ -22,12 +22,6 @@ import { readMapSettings } from './canopy.js';
 import { repositoryIdentity } from './repositories.js';
 import type { TaskInput, TaskInputOptions } from './task-inputs.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
-
-/** The artifact's limits, as `parseMapArtifact` holds them. */
-const MAX_DIRECTORIES = 32;
-const MAX_DOMAINS = 8;
-const MAX_FILES_PER_DOMAIN = 8;
-const MAX_ANNOTATION_CHARS = 500;
 
 /** The standing rules every map run works under, as the run's instructions file. */
 export const MAP_RULES = [
@@ -37,7 +31,7 @@ export const MAP_RULES = [
   '',
   '## What the map is',
   '',
-  `Two parts. The directory skeleton: up to ${MAX_DIRECTORIES} directories or files that carry the architecture, each with a one-line annotation of what lives there. The key files: up to ${MAX_DOMAINS} domains named in the project's own vocabulary, each with up to ${MAX_FILES_PER_DOMAIN} golden-path files and one line on the role each plays. Weight domains by architectural importance, not by file count.`,
+  `Two parts. The directory skeleton: up to ${MAP_LIMITS.directories} directories or files that carry the architecture, each with a one-line annotation of what lives there. The key files: up to ${MAP_LIMITS.domains} domains named in the project's own vocabulary, each with up to ${MAP_LIMITS.files} golden-path files and one line on the role each plays. Weight domains by architectural importance, not by file count.`,
   '',
   '## Verify, do not infer',
   '',
@@ -54,7 +48,8 @@ export const MAP_RULES = [
   '## The artifact',
   '',
   'One JSON object: `{"directories": [{"path", "annotation", "groundedIn": [{"path", "sha256"}]}], "domains": [{"id", "title", "files": [{"path", "annotation", "groundedIn": [{"path", "sha256"}]}]}]}`.',
-  `Every list is non-empty. An annotation is one line of at most ${MAX_ANNOTATION_CHARS} characters. A domain id is lowercase letters, digits and hyphens, unique, and stable across passes: keep an existing domain's id when you keep the domain. The whole artifact stays under ${Math.floor(MAX_MAP_BYTES / 1024)} KiB.`,
+  MAP_WRITE_BOUNDS,
+  'Keep an existing domain id when you keep the domain.',
 ].join('\n');
 
 /** Excluded paths, as the prompt names them: the Deployment defaults and the owner's own. */
