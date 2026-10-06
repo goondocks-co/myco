@@ -20,6 +20,7 @@ import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-s
 import { deployedWorkerSecretNames, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
 const ACCOUNT = 'a'.repeat(32);
@@ -65,7 +66,8 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'vectorize list-metadata-index': { stdout: '[{"propertyName":"type","indexType":"String"},{"propertyName":"status","indexType":"String"},{"propertyName":"session_id","indexType":"String"},{"propertyName":"created_at","indexType":"Number"},{"propertyName":"observation_type","indexType":"String"},{"propertyName":"release_state","indexType":"String"},{"propertyName":"release_confidence","indexType":"String"}]' },
       'd1 list --json': { stdout: '[]' },
       'd1 create myco-server': { stdout: `database_id = "${DB_ID}"` },
-      'd1 execute': { stdout: '[\n  {\n    "results": [],\n    "success": true\n  }\n]' },
+      'd1 execute': { stdout: JSON.stringify([{ results: [{ value: String(SERVER_SCHEMA_VERSION - 1) }], success: true }]) },
+      'd1 time-travel info': { stdout: JSON.stringify({ bookmark: '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683' }) },
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
       'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },

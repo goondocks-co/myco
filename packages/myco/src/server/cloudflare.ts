@@ -165,6 +165,30 @@ export async function applyMigrations(options: CloudflareOptions & { databaseNam
     { cwd: options.configDir, env });
 }
 
+const TIME_TRAVEL_BOOKMARK = /^[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{32}$/i;
+
+/** Capture the current remote D1 recovery point through the operator's bound configuration. */
+export async function currentTimeTravelBookmark(options: CloudflareOptions & { databaseName: string }): Promise<string> {
+  const { runner, env } = resolved(options);
+  const result = await runOrThrow(runner, 'npx',
+    wrangler('d1', 'time-travel', 'info', options.databaseName, '--json', ...configArgs(options)),
+    { cwd: options.configDir, env, timeoutMs: D1_STATEMENT_TIMEOUT_MS });
+  const answer = z.object({ bookmark: z.string().regex(TIME_TRAVEL_BOOKMARK) }).safeParse(wranglerJson(result.stdout));
+  if (!answer.success) throw new Error('D1 Time Travel returned no valid current bookmark');
+  return answer.data.bookmark;
+}
+
+/** Read the live schema stamp; an unreadable stamp cannot authorize migrations. */
+export async function cloudflareSchemaVersion(options: CloudflareOptions & { databaseName: string }): Promise<number> {
+  const rows = await queryCloudflareDatabase({ ...options,
+    sql: "SELECT value FROM schema_meta WHERE key = 'version'", timeoutMs: D1_STATEMENT_TIMEOUT_MS });
+  const answer = z.array(z.object({ value: z.string().regex(/^(0|[1-9][0-9]*)$/) })).length(1).safeParse(rows);
+  if (!answer.success) throw new Error('D1 returned no valid schema version; schema update refused');
+  const version = Number(answer.data[0]!.value);
+  if (!Number.isSafeInteger(version)) throw new Error('D1 schema version is outside the supported range');
+  return version;
+}
+
 /** Create the D1 database and answer its UUID; an existing database of the name is answered, not an error. */
 export async function ensureDatabase(options: CloudflareOptions & { databaseName: string }): Promise<{ databaseId: string; created: boolean }> {
   const { runner, env } = resolved(options);
@@ -722,6 +746,16 @@ export interface DeploymentRecord {
   recoveryBucketName?: string;
   /** How many runs the Deployment may have in flight at once, set by `myco server config --fleet`; the dispatcher counts against it. */
   fleet?: number;
+  /** Recovery points persisted before hosted schema advances, including attempts that did not finish. */
+  schemaUpdates?: CloudflareSchemaUpdate[];
+}
+
+export interface CloudflareSchemaUpdate {
+  bookmark: string;
+  schemaBefore: number;
+  schemaAfter: number;
+  recordedAt: string;
+  workerVersionBefore: string | null;
 }
 
 /** The Worker's sign-in secrets, named as the Worker reads them. */

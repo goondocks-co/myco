@@ -20,6 +20,8 @@ import {
   assertWranglerReady,
   ensureCommandDir,
   cloudflareStatus,
+  cloudflareSchemaVersion,
+  currentTimeTravelBookmark,
   deleteWorker,
   deployWorker,
   rollbackWorker,
@@ -44,6 +46,7 @@ import { stageCloudflareDeploy } from './cloudflare-stage.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
@@ -227,6 +230,7 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
     ...(url === undefined ? {} : { url }),
     databaseId: database.databaseId,
     storeId: store.storeId,
+    ...(existing?.schemaUpdates === undefined ? {} : { schemaUpdates: existing.schemaUpdates }),
   };
   writeDeploymentRecord(record, options.mycoHome);
 
@@ -258,14 +262,38 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
  */
 export const updateCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ versionId: string | null }> => {
   await preflight(options);
-  const record = readDeploymentRecord(options.mycoHome);
+  let record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
+  if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
   const resources = cloudflareResources(record);
+  const withConfig = staged(record, options);
+  const database = { ...withConfig, databaseName: record.databaseName };
+  const before = await cloudflareSchemaVersion(database);
+  if (before > SERVER_SCHEMA_VERSION) throw new Error(`schema update refused: D1 schema ${before} is newer than this binary's ${SERVER_SCHEMA_VERSION}`);
+  if (before < SERVER_SCHEMA_VERSION) {
+    let bookmark: string;
+    try {
+      bookmark = await currentTimeTravelBookmark(database);
+    } catch (error) {
+      throw new Error(`schema advance ${before} -> ${SERVER_SCHEMA_VERSION} refused: a current D1 Time Travel bookmark is required: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    record = { ...record, schemaUpdates: [...(record.schemaUpdates ?? []), {
+      bookmark, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION,
+      recordedAt: new Date().toISOString(), workerVersionBefore: record.versionId,
+    }] };
+    writeDeploymentRecord(record, options.mycoHome);
+    const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+    options.report?.(`D1 Time Travel bookmark recorded for schema ${before} -> ${SERVER_SCHEMA_VERSION}: ${bookmark}`);
+    options.report?.(`Database rollback: CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark} -c ${quote(path.join(withConfig.configDir, withConfig.configFile!))}`);
+    options.report?.('Confirm the restore prompt with y; it cancels in-flight queries and prints an undo bookmark.');
+    options.report?.(record.versionId === null
+      ? 'Roll back the Worker too if its code depends on the new schema; find the prior version with `wrangler deployments list`.'
+      : `Roll back the Worker too if its code depends on the new schema: myco server rollback --target cloudflare --account-id=${quote(record.accountId)} --version=${quote(record.versionId)}`);
+  }
   await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
   await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
 
-  const withConfig = staged(record, options);
-  await applyMigrations({ ...withConfig, databaseName: record.databaseName });
+  if (before < SERVER_SCHEMA_VERSION) await applyMigrations(database);
   const deployed = await deployWorker(withConfig);
 
   writeDeploymentRecord({
