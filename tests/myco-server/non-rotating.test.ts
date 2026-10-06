@@ -223,7 +223,7 @@ describe('every route that mints an authority able to outlive the credential (#1
     ].sort());
     const harness = readFileSync(join(SRC, 'core', 'harness.ts'), 'utf8').split('\n').filter((line) => /mintInsert\(/.test(line) && !/^import/.test(line));
     expect(harness.length).toBe(2);
-    for (const line of harness) expect(line).toContain('{ rotates: false }');
+    for (const line of harness) expect(line).toMatch(/\{\s*rotates:\s*false(?:\s*,|\s*\})/);
   });
 
   it('refuses a GitHub link key to a credential that does not rotate, live, and mints no key, on a Deployment with no linked admin', async () => {

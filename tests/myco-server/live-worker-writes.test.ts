@@ -29,10 +29,15 @@ for (const path of paths) {
           VALUES ('proj_1','live-run','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
         const claimed = await claimNextRun(f.serverEnv, { tokenId: issued.tokenId, machineId: 'worker-machine', harnesses: [offeredHarness('claude-code')], now });
         if (!claimed.claimed) throw new Error('fixture run was not claimed');
+        if (path === '/worker/repository') {
+          f.sqlite.run(`INSERT INTO project_repositories (project_id,revision,url,branch,updated_at,updated_by) VALUES ('proj_1','r1','https://example.test/source','main',?,'fixture')`, [now]);
+          f.sqlite.run("UPDATE agent_runs SET task='vault-seed', run_context=? WHERE id='live-run'", [JSON.stringify({ timeoutSeconds: 300, checkout: { url: 'https://example.test/source', branch: 'main', historyDepth: 50 } })]);
+        }
         if (change === 'claim demotion') f.sqlite.run("UPDATE agent_runs SET status='queued', dispatched_by=NULL, leased_by=NULL, lease_expires_at=NULL WHERE id='live-run'");
         const body = path === '/worker/claim' ? { harnesses: change === 'claim demotion' ? [offeredHarness('claude-code')] : [] }
           : path === '/worker/models' ? { catalog: { harness: 'codex', source: { kind: 'exchange', command: 'fixture' }, signIn: 'worker-login', fetchedAt: now, models: [{ id: 'fixture-model', efforts: [] }] } }
           : path === '/worker/steps' ? { projectId: 'proj_1', runId: 'live-run', ...stepPages(claimed.run.attemptId, [{ seq: 0, callId: 'fixture-call', kind: 'read', tool: 'Read', target: 'file.ts', outcome: 'ok', exitCode: null, startedAt: now, endedAt: now + 1 }], 0, { total: 0, shapes: {} })[0]! }
+          : path === '/worker/repository' ? { projectId: 'proj_1', runId: 'live-run', url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) }
           : { projectId: 'proj_1', runId: 'live-run', status: 'failed', error: 'fixture' };
         const snapshot = () => ['agent_runs', 'agent_run_attempts', 'agent_run_steps', 'worker_contacts', 'worker_model_catalogs', 'member_credentials'].filter(table => change !== 'claim demotion' || table !== 'worker_contacts').map(table => f.sqlite.query(`SELECT * FROM ${table} ORDER BY rowid`).all());
         const before = snapshot();

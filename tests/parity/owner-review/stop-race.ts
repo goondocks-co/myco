@@ -10,12 +10,14 @@ export function stopRaceFixture() {
   let fired = false;
   let write = STOP_WRITE;
   let revoke = false;
+  let remainingMatches = 0;
   let serving: RelationalStore | undefined;
 
   const wrap = (db: RelationalStore): RelationalStore => {
     const originals = new WeakMap<PreparedStatement, { original: PreparedStatement; sql: string }>();
     const interleave = async (sql: string) => {
       if (pendingMemberId === null || !write.test(sql)) return;
+      if (remainingMatches-- > 0) return;
       const memberId = pendingMemberId;
       pendingMemberId = null;
       await db.prepare(revoke ? 'UPDATE members SET revoked_at = 1 WHERE id = ?'
@@ -47,6 +49,11 @@ export function stopRaceFixture() {
 
   const endpoint = async (request: Request): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
+    if (path === '/__parity/worker-state' && request.method === 'GET' && serving !== undefined) {
+      const tables = ['agent_runs', 'agent_run_attempts', 'agent_run_steps', 'member_credentials', 'worker_model_catalogs'];
+      const results = await serving.batch(tables.map(table => serving!.prepare(`SELECT * FROM ${table} ORDER BY rowid`)));
+      return Response.json(results.map(result => result.results));
+    }
     if (path === '/__parity/live-write' && request.method === 'POST' && serving !== undefined) {
       const body = await request.json() as { memberId: string; operation: string; projectId: string };
       try {
@@ -60,12 +67,13 @@ export function stopRaceFixture() {
       }
     }
     if (path === '/__parity/stop-race/arm'  && request.method === 'POST') {
-      const body = await request.json() as { memberId?: unknown; write?: string; revoke?: boolean };
+      const body = await request.json() as { memberId?: unknown; write?: string; revoke?: boolean; after?: number };
       if (typeof body.memberId !== 'string') return new Response(null, { status: 400 });
       pendingMemberId = body.memberId;
       fired = false;
       write = body.write === undefined ? STOP_WRITE : new RegExp(body.write, 'i');
       revoke = body.revoke === true;
+      remainingMatches = body.after ?? 0;
       return Response.json({ armed: true });
     }
     if (path === '/__parity/stop-race/status' && request.method === 'GET') {

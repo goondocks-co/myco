@@ -25,18 +25,18 @@ import { repositoryIdentity } from './repositories.js';
 import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberStatement } from '../auth/enrollment.js';
-import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
+import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
 import { projectExists } from '../read/sessions.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
-import { pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
+import { workerContactStatement, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { catalogResolution, pruneModelCatalogs } from './model-catalogs.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordClaimedInput, recordQueueHolder, recordTaskHolder, renewRunLease, requeueLapsedLease, workerRunLeaseExpiry, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { workerClaimPredicate, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
-import { runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
+import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
 import { runtimeProbeModel } from './runtime-probe.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
@@ -973,7 +973,9 @@ export async function claimNextRun(
     return claimNextRun(env, worker);
   }
 
-  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false });
+  const limits = await readDispatchLimits(env);
+  const admission = { limits, now: worker.now, ...(capability === null ? {} : { capability }) };
+  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false, gate: workerClaimPredicate(candidate, admission) });
   const minted = mint.issued;
   const setup = [
     ensureMemberStatement(env.db, HARNESS_MEMBER_ID, worker.now, 'member', undefined, 'harness runtime'),
@@ -984,19 +986,17 @@ export async function claimNextRun(
   // The claim carries the same admission the launch does, in the write. A run
   // held by a limit stays queued with that limit recorded on it, and two
   // workers deciding at once cannot both pass a limit of one.
-  const limits = await readDispatchLimits(env);
   const row = await claimQueuedRun(env.db, candidate, {
     dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, machineId: worker.machineId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
-  }, { limits, setup, now: worker.now, ...(capability === null ? {} : { capability }) });
+    ...(built !== null && !built.unchanged ? { input: built.input } : {}),
+  }, { ...admission, setup });
   if (row === null) {
-    await retireDispatchCredential(env, minted.tokenId, worker.now);
     if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
     if (held === null) return { claimed: false, reason: 'lost_race' };
     await recordQueueHolder(env.db, scope, candidate.id, held);
     return { claimed: false, reason: 'at_limit' };
   }
-  if (built !== null && !built.unchanged) await recordClaimedInput(env.db, scope, row.id, minted.tokenId, built.input);
 
   emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, tokenId: worker.tokenId });
   return {
@@ -1018,10 +1018,10 @@ export async function claimNextRun(
 }
 
 /** Extend a lease this worker still holds, on the attempt it names when it names one. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */
-export async function renewLease(env: ServerEnv, worker: { tokenId: string; now: number }, run: { projectId: string; runId: string; attemptId?: string }): Promise<{ held: boolean; expiresAt: number }> {
+export async function renewLease(env: ServerEnv, worker: { tokenId: string; machineId?: string | null; now: number }, run: { projectId: string; runId: string; attemptId?: string }): Promise<{ held: boolean; expiresAt: number }> {
   const expiresAt = worker.now + WORKER_LEASE_MS;
-  const held = await renewRunLease(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now, run.attemptId);
-  const stored = held ? await workerRunLeaseExpiry(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, worker.now, run.attemptId) : null;
+  const contact = await workerContactStatement(env.db, { credentialId: worker.tokenId, machineId: worker.machineId ?? null, now: worker.now }, run);
+  const stored = await renewRunLeaseExpiry(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now, run.attemptId, contact);
   return { held: stored !== null, expiresAt: stored ?? expiresAt };
 }
 
@@ -1054,11 +1054,16 @@ export async function endLeasedRun(
   if ('held' in prepared) return { ended: false, reason: prepared.reason };
   const { row, unmet, status, update, errorCode, context } = prepared;
   const now = clock();
-  const changed = await applyRunUpdate(env.db, { projectId: run.projectId }, run.runId, {
+  const statement = runUpdateStatement(env.db, { projectId: run.projectId }, run.runId, {
     ...update, completed_at: now,
   }, { tokenId: worker.tokenId, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
-  if (changed === 0) return { ended: false, reason: 'the lease is no longer held' };
-  await retireDispatchCredential(env, row.dispatchedBy, now);
+  if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
+  const [changed, retired] = await env.db.batch([statement, revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, {
+    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')}))`,
+    params: [run.projectId, run.runId, row.dispatchedBy, ...TERMINAL_RUN_STATUSES],
+  })]);
+  if (changed!.meta.changes === 0) return { ended: false, reason: 'the lease is no longer held' };
+  emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.meta.changes === 1 });
   if (unmet !== null) {
     emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, tokenId: worker.tokenId });
   }
