@@ -9,7 +9,7 @@ const value = () => ({
 
 it('refuses invented file evidence and annotations over unread source', () => {
   const artifact = parseMapArtifact(value());
-  expect(() => assertMapEvidence(artifact, [file], new Set())).toThrow('Read the annotated source');
+  expect(() => assertMapEvidence(artifact, [file], new Set())).toThrow('read before describing it');
   expect(() => assertMapEvidence(artifact, [{ ...file, sha256: 'b'.repeat(64) }], new Set([file.path]))).toThrow('grounding');
   expect(() => assertMapEvidence(artifact, [file], new Set([file.path]))).not.toThrow();
   expect(() => assertMapEvidence(artifact, [file], new Set(), artifact)).not.toThrow();

@@ -11,7 +11,7 @@
  * Neither op takes a revision or a commit: both are the run's own pins, read
  * off its row, so there is nothing for a caller to get wrong.
  */
-import { MapArtifactError } from '@goondocks/myco-shared/canopy';
+import { MapArtifactError, mapReceived } from '@goondocks/myco-shared/canopy';
 import { mapInputUnchanged, readMapSettings, writeCanopyMap } from '../../core/canopy.js';
 import { getRun, mapSourcePinOfRun, repositoryPinOfRun } from '../../core/runs.js';
 import { MAP_WRITE_TOOL } from '../../core/tool-catalogue.js';
@@ -50,7 +50,7 @@ export async function handleRunMap(input: ToolInput, ctx: ToolContext): Promise<
 
   let artifact: unknown = input.artifact;
   if (typeof artifact === 'string') {
-    try { artifact = JSON.parse(artifact); } catch { return failure('artifact is not valid JSON'); }
+    try { artifact = JSON.parse(artifact); } catch { return failure(`artifact: expected one valid JSON object; received invalid JSON ${mapReceived(artifact)}.`); }
   }
   try {
     const written = await writeCanopyMap(db, scope, run, artifact, ctx.now, { runId: run.id, toolName: MAP_WRITE_TOOL, op: 'write', recordedAt: ctx.now });

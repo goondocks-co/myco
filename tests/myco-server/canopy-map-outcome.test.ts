@@ -10,7 +10,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
  * it pinned, or a pass over an input the current map already reflects.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION, type MapArtifact } from '@goondocks/myco-shared/canopy';
+import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION, MAP_LIMITS, MAP_WRITE_BOUNDS, type MapArtifact } from '@goondocks/myco-shared/canopy';
 import { capabilitiesRequiredBy, REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGEST_TASKS, REPOSITORY_DIGESTS_CAPABILITY, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
@@ -208,6 +208,29 @@ describe('a map run a worker claimed', () => {
     expect(pinned).toEqual({ inputHash: await mapInputHash(await readMapSettings(r.e.db), { ...SOURCE, commit: COMMIT_A }), priorRevision: null });
   });
 
+  it('serves actionable private refusals and the same bounds in the schema and instructions', async () => {
+    const r = await rig();
+    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    const run = await r.claimMap();
+    await r.pinCommit(run.id, COMMIT_A);
+    const sentinel = 'private-submitted-content';
+    for (const artifact of [sentinel, { ...ARTIFACT, domains: [{ ...ARTIFACT.domains[0]!, title: sentinel.repeat(10) }] }]) {
+      const result = await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(typeof artifact === 'string' ? 'artifact: expected one valid JSON object' : `artifact.domains[0].title: expected a nonblank single line of 1..${MAP_LIMITS.title}`);
+      expect(result.error).toContain(`received ${typeof artifact === 'string' ? 'invalid JSON ' : ''}string length ${typeof artifact === 'string' ? sentinel.length : sentinel.length * 10}`);
+      expect(JSON.stringify(result)).not.toContain(sentinel);
+    }
+    expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: ARTIFACT })).toMatchObject({ written: true });
+    expect(MAP_RULES).toContain(MAP_WRITE_BOUNDS);
+    const res = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
+      method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    }), r.e.env);
+    const body = await res.json() as { result: { tools: Array<{ name: string; inputSchema: { properties: { artifact?: { description?: string } } } }> } };
+    expect(body.result.tools.find((tool) => tool.name === 'myco_run_map')!.inputSchema.properties.artifact!.description).toContain(MAP_WRITE_BOUNDS);
+  });
+
   it('writes its map, closes completed on it, and is read back over myco_cortex', async () => {
     const r = await rig();
     await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
@@ -218,7 +241,7 @@ describe('a map run a worker claimed', () => {
     await r.pinCommit(run.id, COMMIT_A);
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'get' })).toMatchObject({ commit: COMMIT_A, unchanged: false, map: null });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: { directories: [], domains: [] } }))
-      .toEqual({ ok: false, error: 'Map list is empty or exceeds its limit.' });
+      .toEqual({ ok: false, error: `artifact.directories: expected an array of 1..${MAP_LIMITS.directories} entries; received array length 0.` });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: JSON.stringify(ARTIFACT) })).toMatchObject({ written: true, commit: COMMIT_A });
     expect(await r.call(run.runToken, 'myco_run_map', { op: 'write', artifact: { ...ARTIFACT, domains: [{ ...ARTIFACT.domains[0]!, title: 'Other' }] } }))
       .toEqual({ ok: false, error: 'this run already stored its map; a run writes one map' });
