@@ -57,6 +57,9 @@ export async function transcriptRetentionFact(db: RelationalStore): Promise<Rete
 /** Maximum blob identities examined in one orphan sweep page. */
 export const TRANSCRIPT_RETENTION_BLOBS_PER_PASS = 8;
 
+/** A session deletion admits orphan pages throughout this settlement window. */
+export const TOMBSTONE_SWEEP_GRACE_MS = 6 * 60 * 60 * 1000;
+
 /**
  * Runs one bounded orphan page and one bounded raw archive page under the
  * effective age policy. Derived rows and unread transcript bytes remain held.
@@ -78,6 +81,9 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
  * held. Newly registered bytes remain available through the upload reservation window.
  */
 export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db'>, now: number): Promise<number> {
+  const admitted = await env.db.prepare('SELECT 1 AS present FROM session_tombstones WHERE created_at > ? LIMIT 1')
+    .bind(now - TOMBSTONE_SWEEP_GRACE_MS).first();
+  if (admitted === null) return 0;
   const state = await env.db.prepare(`SELECT cursor_project, cursor_key, revision FROM orphan_sweep_state WHERE id = 1`)
     .first<{ cursor_project: string; cursor_key: string; revision: number }>();
   if (state === null) throw new Error('orphan sweep cursor is missing');

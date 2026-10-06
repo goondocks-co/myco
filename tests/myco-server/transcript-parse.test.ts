@@ -13,10 +13,11 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
-import { D1_BOUND_PARAMETER_CEILING, registerBlob } from './helpers/d1.js';
+import { D1_BOUND_PARAMETER_CEILING, registerBlob, sqliteD1 } from './helpers/d1.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { MemoryBlobStore } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
@@ -143,11 +144,212 @@ describe('repair lane priority', () => {
     expect(selected(r.sqlite, 'repair')).toEqual([old]);
     expect(await pendingCount(r.serverEnv.db)).toBe(2);
     const passes: string[] = [];
-    await parseTranscripts(r.serverEnv, NOW + 1, { budget: { calls: 24, wallMs: 10_000 }, clock: () => 0,
+    const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+    await parseTranscripts(measured.env, NOW + 1, { budget: { calls: 24, wallMs: 10_000 }, clock: () => 0,
       passes: { started: (id) => { passes.push(id); }, ended: () => {} } });
+    expect(measured.usage.statements).toBeLessThanOrEqual(800);
     expect(passes[0]).toBe(TRANSCRIPT);
     expect(passes).toContain(old);
     expect(r.sqlite.query('SELECT text FROM prompt_batches WHERE session_id = ? AND text = ?').get(SESSION, 'fresh after chunked checkpoint')).toEqual({ text: 'fresh after chunked checkpoint' });
+  });
+
+  it('advances an imported continuation with a large checkpoint while live and repair remain pending', async () => {
+    const pending = line({ type: 'user', promptId: uuid(80_000), message: { content: 'large pending inputs' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use', id: `pending-${i}`,
+        name: 'Read', input: { path: 'r'.repeat(260_000) } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(pending, Buffer.byteLength(pending));
+    try {
+      const size = Buffer.byteLength(pending);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+      expect(count(r.sqlite, 'transcript_parser_state_chunks')).toBeGreaterThan(120);
+      const continued = Array.from({ length: 100 }, (_, i) => line({ type: 'user', promptId: uuid(81_000 + i),
+        message: { content: `imported continuation ${i}` }, timestamp: new Date(NOW + i).toISOString() })).join('');
+      await append(r, TRANSCRIPT, SESSION, continued, NOW, size);
+      r.sqlite.run('UPDATE transcripts SET imported_at=? WHERE transcript_id=?', [NOW, TRANSCRIPT]);
+      const liveId = 'tx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad';
+      const repairId = 'tx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae';
+      await append(r, liveId, 'budget-large-live', body(1_200), NOW);
+      await append(r, repairId, 'budget-large-repair', body(1_200), NOW);
+      r.sqlite.run('UPDATE transcripts SET parsed_offset=size,parsed_at=?,parser_version=? WHERE transcript_id=?', [NOW, PARSER_VERSION, repairId]);
+      await rereadTranscripts(r.serverEnv.db, { projectId: PROJECT, sessionId: 'budget-large-repair' });
+      let prior = size;
+      for (let wake = 0; wake < 3; wake += 1) {
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        const outcome = await parseTranscripts(measured.env, NOW + wake + 1, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+        const imported = r.sqlite.query('SELECT parsed_offset,size,parse_error FROM transcripts WHERE transcript_id=?').get(TRANSCRIPT) as
+          { parsed_offset: number; size: number; parse_error: string | null };
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+        expect(outcome.more).toBe(true);
+        expect(imported.parse_error).toBeNull();
+        expect(imported.parsed_offset).toBeGreaterThan(prior);
+        prior = imported.parsed_offset;
+        const backlog = r.sqlite.query('SELECT parsed_offset<size AS pending FROM transcripts WHERE transcript_id IN (?,?) ORDER BY transcript_id').all(liveId, repairId) as
+          { pending: number }[];
+        expect(backlog).toEqual([{ pending: 1 }, { pending: 1 }]);
+      }
+    } finally { r.sqlite.close(); }
+  });
+
+  it('closes 32 pending calls after idle under a measured wake budget', async () => {
+    const text = line({ type: 'user', promptId: uuid(82_000), message: { content: 'pending tools' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
+        id: `idle-${i}`, name: 'Read', input: { path: `/repo/${i}` } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(text);
+    try {
+      const size = Buffer.byteLength(text);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
+      for (let wake = 0; wake < 8; wake += 1) {
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, NOW + TRANSCRIPT_IDLE_MS + wake + 1, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+        if (wake === 0) {
+          const published = r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get() as { n: number };
+          expect(published.n).toBeGreaterThan(0);
+          expect(published.n).toBeLessThan(32);
+          expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
+        }
+      }
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 0 });
+      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get()).toEqual({ n: 32 });
+      expect(target(r.sqlite).parse_error).toBeNull();
+    } finally { r.sqlite.close(); }
+  });
+
+  it('keeps a partial terminal close behind a later tool result', async () => {
+    const text = line({ type: 'user', promptId: uuid(83_000), message: { content: 'pending tools' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
+        id: `late-${i}`, name: 'Read', input: { path: `/repo/${i}` } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(text);
+    try {
+      const size = Buffer.byteLength(text);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+      const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
+      const partial = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+      await parseTranscripts(partial.env, settled, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
+      const failures = r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get() as { n: number };
+      expect(failures.n).toBeGreaterThan(0);
+      expect(failures.n).toBeLessThan(32);
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
+      await append(r, TRANSCRIPT, SESSION, line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'late-31', content: 'ok' }] },
+        timestamp: new Date(settled + 1).toISOString() }), settled + 1, size);
+      for (let wake = 0; wake < 8; wake += 1) {
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, settled + 2 + wake, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+      }
+      expect(r.sqlite.query("SELECT success,input FROM tool_calls WHERE input=?").get('{"path":"/repo/31"}')).toEqual({ success: 1, input: '{"path":"/repo/31"}' });
+      expect(target(r.sqlite).parse_error).toBeNull();
+    } finally { r.sqlite.close(); }
+  });
+
+  it('holds terminal completion when a previously landed outcome no longer matches its envelope', async () => {
+    const text = line({ type: 'user', promptId: uuid(84_000), message: { content: 'pending tools' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
+        id: `conflict-${i}`, name: 'Read', input: { path: `/repo/${i}` } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(text);
+    try {
+      const size = Buffer.byteLength(text);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+      const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+      await parseTranscripts(measured.env, NOW + TRANSCRIPT_IDLE_MS + 1, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
+      const before = r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get() as { n: number };
+      expect(before.n).toBeGreaterThan(0);
+      expect(before.n).toBeLessThan(32);
+      r.sqlite.run("UPDATE events SET envelope_hash=? WHERE event_id=(SELECT event_id FROM events WHERE kind='tool.failure' LIMIT 1)", ['0'.repeat(64)]);
+      const retry = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+      await parseTranscripts(retry.env, NOW + TRANSCRIPT_IDLE_MS + 2, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
+      expect(target(r.sqlite).parse_error).toBe('event_refused');
+      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get()).toEqual(before);
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
+    } finally { r.sqlite.close(); }
+  });
+
+  it('keeps terminal context when an earlier outcome changes after retry lookup', async () => {
+    const text = line({ type: 'user', promptId: uuid(85_000), message: { content: 'pending tools' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
+        id: `race-${i}`, name: 'Read', input: { path: `/repo/${i}` } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(text);
+    try {
+      const size = Buffer.byteLength(text);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+      const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
+      const partial = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+      await parseTranscripts(partial.env, settled, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
+      const prior = r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get() as { n: number };
+      expect(prior.n).toBeGreaterThan(0);
+      expect(prior.n).toBeLessThan(32);
+      let raced = false;
+      const db: RelationalStore = {
+        ...r.serverEnv.db,
+        prepare(sql) {
+          if (!raced && sql.includes('UPDATE transcripts SET parse_segment_lines')
+            && sql.includes("held.envelope_hash=json_extract(expected.value,'$[1]')")) {
+            raced = true;
+            r.sqlite.run("UPDATE events SET envelope_hash=? WHERE event_id=(SELECT event_id FROM events WHERE kind='tool.failure' LIMIT 1)", ['0'.repeat(64)]);
+          }
+          return r.serverEnv.db.prepare(sql);
+        },
+      };
+      for (let wake = 0; wake < 5 && !raced; wake += 1) {
+        const measured = measuredContentEnv({ ...r.serverEnv, db }, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, settled + 1 + wake, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+      }
+      expect(raced).toBe(true);
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
+      await parseTranscripts(r.serverEnv, settled + 10);
+      expect(target(r.sqlite).parse_error).toBe('event_refused');
+    } finally { r.sqlite.close(); }
+  });
+
+  it('closes a retained 64-call continuation under the hosted parameter ceiling', async () => {
+    const text = line({ type: 'user', promptId: uuid(86_000), message: { content: 'pending tools' }, timestamp: new Date(NOW - 1).toISOString() })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
+        id: `retained-${i}`, name: 'Read', input: { path: `/repo/${i}` } })) }, timestamp: new Date(NOW).toISOString() });
+    const r = await rig(text);
+    try {
+      const size = Buffer.byteLength(text);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, lastReceivedAt: NOW, imported: false },
+      NOW, { ...LIMITS, completeFile: false });
+      const stored = r.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+      const context = JSON.parse(stored.parser_context) as { mycoParserState: { pending: Record<string, { toolCallId: string; input: unknown }> } };
+      const original = Object.values(context.mycoParserState.pending);
+      expect(original).toHaveLength(32);
+      for (const [index, call] of original.entries()) context.mycoParserState.pending[`retained-extra-${index}`] = {
+        ...call, toolCallId: uuid(87_000 + index), input: { path: `/repo/extra-${index}` },
+      };
+      r.sqlite.run('UPDATE transcripts SET parser_context=? WHERE transcript_id=?', [JSON.stringify(context), TRANSCRIPT]);
+      const proofQueries: string[] = [];
+      const clearQueries: string[] = [];
+      for (let wake = 0; wake < 10; wake += 1) {
+        const measured = measuredContentEnv({ ...r.serverEnv, db: sqliteD1(r.sqlite, { onSql: (sql) => {
+          if (sql.includes("FROM events held WHERE held.project_id=? AND held.event_id IN")) proofQueries.push(sql);
+          if (sql.includes('SELECT 1 FROM json_each(?) expected WHERE NOT EXISTS')) clearQueries.push(sql);
+        } }) }, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, NOW + TRANSCRIPT_IDLE_MS + wake + 1, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+      }
+      expect(proofQueries.length).toBeGreaterThan(0);
+      const plan = r.sqlite.query(`EXPLAIN QUERY PLAN ${proofQueries[0]}`).all(PROJECT, '[]') as { detail: string }[];
+      expect(plan.some(({ detail }) => /SEARCH held USING INDEX .*events.*\(project_id=\? AND event_id=\?\)/.test(detail))).toBe(true);
+      expect(clearQueries.length).toBeGreaterThan(0);
+      const clearPlan = r.sqlite.query(`EXPLAIN QUERY PLAN ${clearQueries[0]}`).all(...Array(clearQueries[0].match(/\?/g)?.length ?? 0).fill(null)) as { detail: string }[];
+      expect(clearPlan.some(({ detail }) => /SEARCH held USING INDEX .*events.*\(project_id=\? AND event_id=\?\)/.test(detail))).toBe(true);
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 0 });
+      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get()).toEqual({ n: 64 });
+    } finally { r.sqlite.close(); }
   });
 
   it('serves shorter continuous live uploads within two wakes while a faster-growing transcript stays pending', async () => {
@@ -238,6 +440,35 @@ describe('repair lane priority', () => {
       expect(await pendingCount(serverEnv.db)).toBe(ids.length);
     }
     expect(visited).toEqual([TRANSCRIPT, 'tx_repair_second']);
+  });
+
+  it('serves live, import and repair under one measured invocation ceiling', async () => {
+    const r = await rig(body(120));
+    try {
+      r.sqlite.run('UPDATE transcripts SET parsed_offset=size,parsed_at=?,parser_version=? WHERE transcript_id=?',
+        [NOW, PARSER_VERSION - 1, TRANSCRIPT]);
+      const liveId = 'tx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab';
+      const importId = 'tx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac';
+      await append(r, liveId, 'budget-live', line({ type: 'user', promptId: uuid(91_001), message: { content: 'live under budget' } }), NOW);
+      await append(r, importId, 'budget-import', line({ type: 'user', promptId: uuid(91_002), message: { content: 'import under budget' } }), NOW);
+      r.sqlite.run('UPDATE transcripts SET imported_at=? WHERE transcript_id=?', [NOW, importId]);
+      const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+      const passes: string[] = [];
+      const report = await parseTranscripts(measured.env, NOW + 1, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0,
+        passes: { started: (id) => { passes.push(id); }, ended: () => {} } });
+      expect(measured.usage.statements).toBeLessThanOrEqual(800);
+      expect(passes[0]).toBe(liveId);
+      expect(passes).toContain(TRANSCRIPT);
+      expect(passes).toContain(importId);
+      expect(r.sqlite.query('SELECT text FROM prompt_batches WHERE session_id=?').all('budget-live')).toEqual([{ text: 'live under budget' }]);
+      expect(r.sqlite.query('SELECT text FROM prompt_batches WHERE session_id=?').all('budget-import')).toEqual([{ text: 'import under budget' }]);
+      const repair = r.sqlite.query('SELECT parsed_offset,size,parse_error FROM transcripts WHERE transcript_id=?').get(TRANSCRIPT) as
+        { parsed_offset: number; size: number; parse_error: string | null };
+      expect(repair.parsed_offset).toBeGreaterThan(0);
+      expect(repair.parsed_offset).toBeLessThan(repair.size);
+      expect(repair.parse_error).toBeNull();
+      expect(report.more).toBe(true);
+    } finally { r.sqlite.close(); }
   });
 
   it.each([
@@ -1206,6 +1437,7 @@ describe('transcript retention', () => {
     const { sqlite, serverEnv } = await rig(body(1));
     // A blob no row names: what a deletion leaves once its page fills.
     registerBlob(sqlite, { projectId: PROJECT, key: 'f'.repeat(64), size: 1, receivedAt: NOW - BLOB_RESERVATION_TTL_MS });
+    deleted(sqlite);
     expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(1);
     expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('f'.repeat(64)) as { c: number }).c).toBe(0);
   });
@@ -1218,24 +1450,24 @@ describe('transcript retention', () => {
     const { sqlite, serverEnv } = await rig(body(1));
     registerBlob(sqlite, { projectId: PROJECT, key: 'e'.repeat(64), size: 1, receivedAt: NOW - BLOB_RESERVATION_TTL_MS });
     deleted(sqlite);
-    // No window: raw segments are kept forever, and bytes nothing references
-    // are still not kept.
+    // A recent deletion admits collection independently of the raw archive window.
     expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
     expect(count(sqlite, 'transcript_segments')).toBeGreaterThan(0);
   });
 
-  it('collects an unreferenced upload even if no session was deleted', async () => {
+  it('holds an unreferenced upload when no session deletion admits the sweep', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
     registerBlob(sqlite, { projectId: PROJECT, key: 'd'.repeat(64), size: 1, receivedAt: NOW - BLOB_RESERVATION_TTL_MS });
-    expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
-    expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('d'.repeat(64)) as { c: number }).c).toBe(0);
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('d'.repeat(64)) as { c: number }).c).toBe(1);
   });
 
-  it('collects unreferenced bytes regardless of tombstone age', async () => {
+  it('holds unreferenced bytes after the tombstone admission window', async () => {
     const { sqlite, serverEnv } = await rig(body(1));
     registerBlob(sqlite, { projectId: PROJECT, key: 'c'.repeat(64), size: 1, receivedAt: NOW - BLOB_RESERVATION_TTL_MS });
     deleted(sqlite, NOW - 7 * 86_400_000);
-    expect(await transcriptRetention(serverEnv, NOW)).toBe(1);
+    expect(await transcriptRetention(serverEnv, NOW)).toBe(0);
+    expect((sqlite.query(`SELECT COUNT(*) c FROM blobs WHERE key = ?`).get('c'.repeat(64)) as { c: number }).c).toBe(1);
   });
 
   it('leaves a blob a surviving row still names', async () => {
@@ -1367,6 +1599,48 @@ function cursorTurns(turns: number): string {
 }
 
 describe('a pass under the platform\'s budget (transcript parse throughput)', () => {
+  it('publishes prepared tool inputs within a measured invocation budget', async () => {
+    const input = { path: 'é'.repeat(1100) };
+    const text = line({ type: 'user', promptId: uuid(92_001), message: { content: 'read both' } })
+      + [0, 1].map((i) => line({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: `budget-large-${i}`, name: 'Read', input },
+      ] } }) + line({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: `budget-large-${i}`, content: 'ok' },
+      ] } })).join('');
+    const r = await rig(text);
+    try {
+      for (let wake = 0; wake < 5 && (await pendingTranscripts(r.serverEnv.db, NOW)).transcripts > 0; wake += 1) {
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, NOW, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+      }
+      expect(target(r.sqlite).parsed_offset).toBe(target(r.sqlite).size);
+      const tools = r.sqlite.query('SELECT tool_call_id,input_blob_key FROM tool_calls ORDER BY tool_call_id').all() as
+        { tool_call_id: string; input_blob_key: string | null }[];
+      expect(tools).toHaveLength(2);
+      for (const tool of tools) {
+        expect(tool.input_blob_key).not.toBeNull();
+        expect(await processedBody(r.serverEnv, { projectId: PROJECT }, 'tool-input', tool.tool_call_id)).toBe(JSON.stringify(input));
+      }
+    } finally { r.sqlite.close(); }
+  });
+
+  it('commits a cursor before an invocation statement limit and resumes its remaining events', async () => {
+    const r = await rig(body(120));
+    try {
+      let wakes = 0;
+      while ((await pendingTranscripts(r.serverEnv.db, NOW)).transcripts > 0 && wakes < 20) {
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        const report = await parseTranscripts(measured.env, NOW, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+        expect(report.more).toBe((await pendingTranscripts(r.serverEnv.db, NOW)).transcripts > 0);
+        wakes += 1;
+      }
+      expect(wakes).toBeGreaterThan(1);
+      expect(target(r.sqlite).parsed_offset).toBe(target(r.sqlite).size);
+      expect(count(r.sqlite, 'prompt_batches')).toBe(120);
+    } finally { r.sqlite.close(); }
+  });
   const dated = (sqlite: Database) => sqlite.query('SELECT event_id, kind, created_at FROM events ORDER BY event_id').all();
 
   it('reads on from the cursor with a ranged read, and dates every undated line exactly as one whole read does', async () => {

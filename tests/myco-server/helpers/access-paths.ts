@@ -14,6 +14,7 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_external_grants_expiry', 'grant expiry sweeps the Deployment'],
   ['idx_events_token_only', 'a credential\'s events are counted by token across its Projects'],
   ['idx_raw_archive_refs_due', 'raw archival seeks due hot sources by immutable receipt age across the Deployment'],
+  ['idx_session_tombstones_created', 'the orphan sweep seeks recent session deletion admission across the Deployment by creation time'],
   ['idx_search_blob_pending', 'pending search work is ordered across the Deployment by its last attempt'],
   ['idx_transcripts_backlog', 'the transcript parse backlog is ordered across the Deployment, live before imported'],
   ['idx_transcripts_parser_version', 'the bounded parser upgrade sweep walks older versions across the Deployment'],

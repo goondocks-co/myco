@@ -20,8 +20,10 @@ async function shipSegment(target: ParityTarget, to: { sessionId: string; transc
 async function wakeTarget(target: ParityTarget) {
   const response = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
   expect(response.status).toBe(200);
-  return await response.json() as { jobs: { name: string; more: boolean }[] };
+  return await response.json() as { jobs: { name: string; more: boolean; failed: string | null }[] };
 }
+
+const MAX_REPAIR_WAKES = 128;
 
 /** Live segment ingestion and bounded repair scheduling through each target's wake path. */
 export const transcriptRepairPriority: ParityScenario = {
@@ -49,7 +51,19 @@ export const transcriptRepairPriority: ParityScenario = {
       const plan = await target.sql(`EXPLAIN QUERY PLAN ${laneSelectionSql(lane).replace('?', String(PARSER_VERSION))}`);
       expect(plan.some((row) => /^SEARCH transcripts USING INDEX idx_transcripts_backlog \(imported_at/.test(String(row.detail)))).toBe(true);
     }
-    for (let tick = 0; tick < 12 && Number((await state()).parsed_offset) < size; tick += 1) await wake();
+    let previousOffset = Number((await state()).parsed_offset);
+    let wakes = 1;
+    while (wakes < MAX_REPAIR_WAKES && previousOffset < size) {
+      const report = await wake();
+      const next = await state();
+      expect(report.jobs.find((job) => job.name === 'transcript-parse')?.failed).toBeNull();
+      expect(next.parse_error).toBeNull();
+      expect(Number(next.parsed_offset)).toBeGreaterThan(previousOffset);
+      if (Number(next.parsed_offset) < size) expect(report.jobs.find((job) => job.name === 'transcript-parse')?.more).toBe(true);
+      previousOffset = Number(next.parsed_offset);
+      wakes += 1;
+    }
+    console.info(`transcript repair priority: ${target.name}, ${wakes} wakes for 1200 prompts`);
     expect(await state()).toMatchObject({ parsed_offset: size, size, parse_error: null });
     const counts = await target.sql(`SELECT COUNT(*) AS n FROM prompt_batches WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(repair.sessionId)}`);
     expect(Number(counts[0].n)).toBe(1_200);

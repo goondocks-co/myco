@@ -29,8 +29,8 @@ import type { JobBudget, PreparedStatement, RelationalStore, ServerEnv } from '.
 import type { JobOutcome } from '../core/jobs-run.js';
 import { emit, type Classifier } from '../telemetry.js';
 import { utf8, uuidv5 } from '../hash.js';
-import { MAX_PAYLOAD_BYTES } from './envelope.js';
-import { planEventWrite, type EventWrite, type IngestResult } from './events.js';
+import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
+import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { isBlock, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
@@ -40,7 +40,7 @@ import { parserCheckpointStatements, readParserCheckpoint, terminalCheckpointBat
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { TOOL_INPUT_PREVIEW_BYTES } from '../core/tool-input.js';
-import { CONTENT_PREPARATION_CALL_RESERVE } from '../core/content-budget.js';
+import { CONTENT_PREPARATION_CALL_RESERVE, CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
 import { MAX_BLOB_BYTES, SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER, SESSION_END_SETTLE_MS } from '../constants.js';
 
 /** Derived events collapsed into one database call. */
@@ -50,6 +50,10 @@ export const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
  * events share a call only while their payloads are small, so a call never carries more than it ever has.
  */
 export const TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES = 20 * MAX_PAYLOAD_BYTES;
+const BUDGETED_EVENTS_PER_BATCH = 8;
+const EVENT_STATEMENT_ADMISSION = 24;
+const PARSER_CHECKPOINT_HEADROOM = 64;
+const PARSER_CLOSE_HEADROOM = 12;
 
 /** A tool input needing external publication occupies its own projection batch. */
 function oversizedToolInput(event: DerivedEvent): boolean {
@@ -63,14 +67,14 @@ function oversizedToolInput(event: DerivedEvent): boolean {
  * `TRANSCRIPT_PARSE_EVENTS_PER_BATCH` events and `TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES` of payload per group, and
  * never an empty group.
  */
-export function eventGroups(events: readonly DerivedEvent[]): DerivedEvent[][] {
+export function eventGroups(events: readonly DerivedEvent[], maxEvents = TRANSCRIPT_PARSE_EVENTS_PER_BATCH): DerivedEvent[][] {
   const groups: DerivedEvent[][] = [];
   let open: DerivedEvent[] = [];
   let bytes = 0;
   for (const event of events) {
     const size = utf8(JSON.stringify(event.payload)).byteLength;
     const preparedInput = oversizedToolInput(event);
-    if (open.length > 0 && (preparedInput || open.length >= TRANSCRIPT_PARSE_EVENTS_PER_BATCH || bytes + size > TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)) {
+    if (open.length > 0 && (preparedInput || open.length >= maxEvents || bytes + size > TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES)) {
       groups.push(open);
       open = [];
       bytes = 0;
@@ -540,6 +544,7 @@ export interface PassLimits {
   deadline: number;
   clock: () => number;
   completeFile?: boolean;
+  statementBudget?: number;
 }
 
 function terminalRule(target: ParseTarget, now: number, limits: PassLimits): ParserInput['terminal'] {
@@ -573,6 +578,12 @@ export interface PassReport {
  * landed.
  */
 export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: ParseTarget, now: number, limits: PassLimits): Promise<PassReport> {
+  const startingStatements = remainingInvocationBudget(env.db)?.statements;
+  const statementRoom = () => {
+    const remaining = remainingInvocationBudget(env.db)?.statements;
+    if (remaining === undefined || startingStatements === undefined) return Number.POSITIVE_INFINITY;
+    return Math.min(remaining, (limits.statementBudget ?? Number.POSITIVE_INFINITY) - (startingStatements - remaining));
+  };
   const parser = parserFor(target.agent);
   if (parser === null) {
     // Nothing here reads this agent's format. The bytes are kept and the cursor
@@ -704,6 +715,38 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const parsedEvents = await parser.parse(input);
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
   const events = preserveLegacyReplies(parsedEvents, state, heldReplies);
+  const terminalProofs: { eventId: string; hash: string }[] = [];
+  if (terminalOnly && startingStatements !== undefined) {
+    for (const event of events) {
+      const parsed = parseEnvelope(await envelopeFor(target, event), now);
+      if (!parsed.ok) {
+        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: parsed.classifier });
+        return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+      }
+      terminalProofs.push({ eventId: parsed.value.eventId, hash: await envelopeHash(parsed.value) });
+    }
+  }
+  const terminalIds = terminalProofs.map(({ eventId }) => eventId);
+  const terminalProofJson = JSON.stringify(terminalProofs.map(({ eventId, hash }) => [eventId, hash]));
+  let remainingEvents = events;
+  if (terminalIds.length > 0) {
+    const { results } = await env.db.prepare(`SELECT held.event_id,held.envelope_hash,held.session_id,held.producer_adapter
+      FROM events held WHERE held.project_id=? AND held.event_id IN
+        (SELECT json_extract(expected.value,'$[0]') FROM json_each(?) expected)`)
+      .bind(target.projectId, terminalProofJson).all<{ event_id: string; envelope_hash: string; session_id: string; producer_adapter: string }>();
+    calls += 1;
+    const expected = new Map(terminalProofs.map((proof, index) => [proof.eventId, { ...proof, kind: events[index].kind }]));
+    for (const row of results) {
+      const proof = expected.get(row.event_id);
+      if (proof === undefined || row.envelope_hash !== proof.hash || row.session_id !== target.sessionId
+        || row.producer_adapter !== TRANSCRIPT_PARSE_ADAPTER) {
+        await stop(env.db, target, 'event_refused', now, { eventKind: proof?.kind ?? 'unknown', refusal: 'event_id_conflict' });
+        return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+      }
+    }
+    const landedIds = new Set(results.map((row) => row.event_id));
+    remainingEvents = events.filter((_, index) => !landedIds.has(terminalIds[index]));
+  }
   const stateAt = async (to: number): Promise<ParserState> => {
     const checkpoint = to === windowEnd ? state : structuredClone(initialState);
     if (to !== windowEnd) {
@@ -730,7 +773,15 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
    * leaves the cursor where it stood.
    */
   const advanceTo = async (to: number, openPrompt: string | null, landedIds?: readonly string[]): Promise<PreparedStatement[]> => {
-    const guard = landedIds === undefined ? '' : ` AND (SELECT COUNT(*) FROM events WHERE project_id = ? AND event_id IN (${landedIds.map(() => '?').join(', ')})) = ?`;
+    const proofGuard = terminalOnly && landedIds !== undefined && terminalProofs.length > 0;
+    const guard = landedIds === undefined ? '' : proofGuard
+      ? ` AND NOT EXISTS (SELECT 1 FROM json_each(?) expected WHERE NOT EXISTS
+          (SELECT 1 FROM events held WHERE held.project_id=? AND held.event_id=json_extract(expected.value,'$[0]')
+            AND held.envelope_hash=json_extract(expected.value,'$[1]')))`
+      : ` AND (SELECT COUNT(*) FROM events WHERE project_id = ? AND event_id IN (${landedIds.map(() => '?').join(', ')})) = ?`;
+    const guardParams = landedIds === undefined ? [] : proofGuard
+      ? [terminalProofJson, target.projectId]
+      : [target.projectId, ...landedIds, landedIds.length];
     const checkpoint = await stateAt(to);
     return parserCheckpointStatements(env.db, target, to, checkpoint, transcriptMeta, chunkedState, (context) => env.db
       .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
@@ -738,29 +789,50 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
                    parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                  WHERE project_id = ? AND transcript_id = ?${guard}`)
       .bind(to, linesBehind(to), to, now, PARSER_VERSION, parser.fidelity, to, openPrompt, to, context,
-        target.projectId, target.transcriptId, ...(landedIds === undefined ? [] : [target.projectId, ...landedIds, landedIds.length])));
+        target.projectId, target.transcriptId, ...guardParams));
   };
   // Whether the cursor's advance rode the last group's batch and applied there.
   let advanced = false;
-  const groups = terminalOnly ? (events.length === 0 ? [] : [events]) : eventGroups(events);
+  const budgeted = startingStatements !== undefined;
+  const groupSize = budgeted ? Math.max(1, Math.min(BUDGETED_EVENTS_PER_BATCH,
+    Math.floor((statementRoom() - PARSER_CHECKPOINT_HEADROOM) / EVENT_STATEMENT_ADMISSION))) : TRANSCRIPT_PARSE_EVENTS_PER_BATCH;
+  const groups = terminalOnly && !budgeted ? (events.length === 0 ? [] : [events]) : eventGroups(remainingEvents,groupSize);
   // The line counts every cursor this pass can end at needs, read before the writes so the segment bytes they are
   // counted in are let go first. Parsed records remain available for a cursor's continuation checkpoint.
-  const linesAt = new Map<number, number>([windowEnd, ...groups.map((group) => group[0].offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
+  const linesAt = new Map<number, number>([windowEnd, ...events.map((event) => event.offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
   held = [];
+  let fallbackCheckpoint: PreparedStatement[] | null = null;
+  let completedGroups = 0;
   const linesBehind = (offset: number): number => {
     if (terminalOnly && offset === target.parsedOffset) return target.segmentLines ?? 0;
     const counted = linesAt.get(offset);
     if (counted === undefined) throw new Error(`no line count read for cursor ${offset}`);
     return counted;
   };
-  for (const [g, group] of groups.entries()) {
-    // The first group always runs, whatever the reads already cost, and the
-    // budget ends a pass anywhere the cursor can actually move. A resumed pass
-    // is handed the turn open at its start, so an event derived after a break
-    // is identical to the same event derived without one; only the cursor
-    // needs to advance, or the transcript would be re-read forever.
+  for (let g = 0; g < groups.length; g += 1) {
+    const group = groups[g];
+    const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
+    const next = groups[g + 1];
+    const checkpoint = budgeted && !terminalOnly && next !== undefined ? await advanceTo(next[0]!.offset, turnAfter) : null;
     const preparationReserve = group.some(oversizedToolInput) ? CONTENT_PREPARATION_CALL_RESERVE : 0;
-    if (g > 0 && spentAll(limits, calls + preparationReserve) && group[0].offset > target.parsedOffset) {
+    const checkpointCost = terminalOnly && next !== undefined ? 0 : checkpoint?.length ?? (budgeted ? (await advanceTo(cursor, turnAfter)).length : 0);
+    if (budgeted && group.length * EVENT_STATEMENT_ADMISSION + checkpointCost + preparationReserve + PARSER_CLOSE_HEADROOM > statementRoom()) {
+      if (budgeted && group.length > 1) {
+        groups.splice(g, 1, ...eventGroups(group, Math.max(1, Math.floor(group.length / 2))));
+        g -= 1;
+        continue;
+      }
+      if (g === 0) return { derived: 0, calls, nextOffset: null, failure: null };
+      cursor = group[0].offset;
+      break;
+    }
+    // A pass can end mid-turn; the cursor and its open prompt travel together to the next pass.
+    if (budgeted && statementRoom() < preparationReserve + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM) {
+      if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
+      cursor=group[0].offset;
+      break;
+    }
+    if (g > 0 && spentAll(limits, calls + preparationReserve) && (terminalOnly || group[0].offset > target.parsedOffset)) {
       cursor = group[0].offset;
       break;
     }
@@ -786,13 +858,23 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     }
     // The last group carries the cursor's advance past the window, guarded on every event of the group being stored.
     const last = g === groups.length - 1 && (cursor > target.parsedOffset || terminalOnly);
-    const envelopes = last ? [...eventIds] : [];
-    const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
+    const envelopes = last ? terminalOnly && terminalIds.length > 0 ? terminalIds : [...eventIds] : [];
     let advancement: PreparedStatement[];
     try { advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : []; }
     catch (error) { await releaseUnlinked(writes); throw error; }
     const tail = last ? [...advancement, ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
     const statements = [...writes.flatMap((w) => w.statements), ...tail];
+    if (budgeted && statements.length + (checkpoint?.length ?? 0) + PARSER_CLOSE_HEADROOM > statementRoom()) {
+      await releaseUnlinked(writes);
+      if (budgeted && group.length > 1) {
+        groups.splice(g, 1, ...eventGroups(group, Math.max(1, Math.floor(group.length / 2))));
+        g -= 1;
+        continue;
+      }
+      if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
+      cursor=group[0].offset;
+      break;
+    }
     let results: Awaited<ReturnType<typeof env.db.batch>> | null;
     try { results = terminalOnly ? await terminalCheckpointBatch(env.db, target, statements) : await env.db.batch(statements); }
     catch (error) { await releaseUnlinked(writes); throw error; }
@@ -823,7 +905,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       await stop(env.db, target, 'parse', now);
       return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
     }
+    fallbackCheckpoint=checkpoint;
+    completedGroups += 1;
   }
+
+  if (terminalOnly && completedGroups < groups.length) return { derived, calls, nextOffset: null, failure: null };
 
   // Every path above either advances the cursor or returns. A cursor that did
   // not move would leave the transcript pending and every wake re-deriving the
@@ -838,7 +924,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // moved further keeps its own turn and no count: the pass after reads that segment from its first byte. An advance
   // the last batch carried is already in place; one it could not prove (a row held elsewhere as a duplicate) is made here.
   if (!advanced) {
-    const statements = await advanceTo(cursor, lastTurn);
+    const statements = fallbackCheckpoint ?? await advanceTo(cursor, lastTurn, terminalOnly && terminalIds.length > 0 ? terminalIds : undefined);
+    if (budgeted && statements.length + PARSER_CLOSE_HEADROOM > statementRoom())
+      return { derived,calls,nextOffset:null,failure:null };
     if (terminalOnly) {
       if (await terminalCheckpointBatch(env.db, target, statements) === null)
         return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
@@ -1046,21 +1134,26 @@ export async function withinBytes<T, R>(items: readonly T[], bytesOf: (item: T) 
  */
 export async function parseTranscripts(env: ServerEnv, now: number, options: ParseJobOptions = {}): Promise<JobOutcome> {
   const budget = options.budget ?? env.platform.jobBudget;
+  const invocation = remainingInvocationBudget(env.db);
+  const parserStatements = invocation === null ? null : Math.max(0,invocation.statements - 2 * CONTENT_WAKE_JOB_RESERVE);
+  const statementsSpent = () => invocation === null ? 0 : invocation.statements - remainingInvocationBudget(env.db)!.statements;
   const clock = options.clock ?? Date.now;
   const deadline = clock() + budget.wallMs;
   const liveShare = Math.max(1, Math.floor(budget.calls / 2));
   const liveDeadline = deadline - Math.ceil(budget.wallMs / 2);
   const repairShare = Math.max(1, Math.floor(budget.calls / 4));
   const done: Record<Lane, boolean> = { live: false, imported: false, repair: false };
-  let spent = budget.calls >= 2 && clock() < deadline ? await prepareParserRepairs(env.db) : 0;
+  let spent = budget.calls >= 2 && clock() < deadline && (parserStatements === null || parserStatements > PARSER_CHECKPOINT_HEADROOM)
+    ? await prepareParserRepairs(env.db) : 0;
   let liveSpent = 0;
   let derived = 0;
   while (spent < budget.calls && clock() < deadline) {
+    if (parserStatements !== null && statementsSpent() + PARSER_CHECKPOINT_HEADROOM >= parserStatements) break;
     const lane: Lane | null = !done.live && ((done.imported && done.repair) || (liveSpent === 0 || (liveSpent < liveShare && clock() < liveDeadline))) ? 'live'
       : !done.repair ? 'repair' : !done.imported ? 'imported' : null;
     if (lane === null) break;
     // Imported transcripts are read several at a time: each call waits on a round trip, not on the store.
-    const targets = await nextTargets(env.db, lane, lane === 'imported' ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1, now);
+    const targets = await nextTargets(env.db, lane, lane === 'imported' && invocation === null ? TRANSCRIPT_PARSE_IMPORTED_AT_ONCE : 1, now);
     spent += 1;
     if (lane === 'live') liveSpent += 1;
     if (targets.length === 0) {
@@ -1074,10 +1167,19 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
     const passDeadline = lane === 'repair' ? Math.min(deadline, clock() + Math.floor(budget.wallMs / 4))
       : lane === 'live' && backgroundWaiting ? liveDeadline : deadline;
     const each = Math.max(1, Math.floor(Math.min(allowance, budget.calls - spent) / targets.length));
+    const left = parserStatements === null ? Number.POSITIVE_INFINITY : parserStatements - statementsSpent();
+    const importReserve = parserStatements === null ? 0 : Math.min(CONTENT_WAKE_JOB_RESERVE,Math.floor(parserStatements / 4));
+    const statementBudget = parserStatements === null ? undefined : Math.max(0,Math.floor(lane === 'live' && backgroundWaiting
+      ? Math.min(left - importReserve,parserStatements / 2)
+      : lane === 'repair' && !done.imported ? left - importReserve : left));
+    if(statementBudget !== undefined && statementBudget < PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM) {
+      done[lane]=true;
+      continue;
+    }
     // Side by side only while their segment bytes fit the budget, so full segments are read one at a time.
     const reports = await withinBytes(targets, passBytes, TRANSCRIPT_PARSE_CONCURRENT_BYTES, async (target) => {
       options.passes?.started(target.transcriptId, passBytes(target));
-      try { return await parseOnce(env, target, now, { calls: each, deadline: passDeadline, clock }); } finally { options.passes?.ended(target.transcriptId); }
+      try { return await parseOnce(env, target, now, { calls: each, deadline: passDeadline, clock,statementBudget }); } finally { options.passes?.ended(target.transcriptId); }
     });
     for (const report of reports) {
       spent += report.calls;

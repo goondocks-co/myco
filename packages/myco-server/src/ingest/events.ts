@@ -45,7 +45,7 @@ export function refused(ctx: Pick<IngestContext, 'projectId' | 'tokenId'>, { rea
 }
 
 /** Digest of the whole envelope: session, kind, caller time, channel, producer, and the serialized payload. */
-async function envelopeHash(e: CaptureEnvelope): Promise<string> {
+export async function envelopeHash(e: CaptureEnvelope): Promise<string> {
   const header = utf8(`${JSON.stringify([e.sessionId, e.kind, e.createdAt, e.channel, e.producer.adapter, e.producer.version])}\n`);
   const bytes = new Uint8Array(header.byteLength + e.payloadBytes.byteLength);
   bytes.set(header, 0);

@@ -5,16 +5,28 @@ export const CONTENT_STATEMENT_LIMIT = 120;
 export const CONTENT_BLOB_LIMIT = 60;
 export const CONTENT_WALL_MS = 2000;
 export const CONTENT_PREPARATION_CALL_RESERVE = 40;
+export const CONTENT_WAKE_JOB_RESERVE = 150;
 interface BudgetScope { usage:ContentUsage;statements:number;blobCalls:number;deadline:number }
 const scopes = new WeakMap<RelationalStore, BudgetScope[]>();
 
+/** The remaining admission of a caller that owns a finite invocation budget. */
+export function remainingInvocationBudget(db:RelationalStore):{statements:number;blobCalls:number;wallMs:number}|null {
+  const held=scopes.get(db);
+  if(held===undefined||held.length===0) return null;
+  return {
+    statements:Math.min(...held.map(scope=>Math.max(0,scope.statements-scope.usage.statements))),
+    blobCalls:Math.min(...held.map(scope=>Math.max(0,scope.blobCalls-scope.usage.blobCalls))),
+    wallMs:Math.min(...held.map(scope=>Math.max(0,scope.deadline-Date.now()))),
+  };
+}
+
 /** Remaining admission from every enclosing invocation owner. */
 export function remainingContentBudget(db:RelationalStore):{statements:number;blobCalls:number;wallMs:number} {
-  const held=scopes.get(db)??[];
+  const held=remainingInvocationBudget(db);
   return {
-    statements:Math.min(CONTENT_STATEMENT_LIMIT,...held.map(scope=>Math.max(0,scope.statements-scope.usage.statements))),
-    blobCalls:Math.min(CONTENT_BLOB_LIMIT,...held.map(scope=>Math.max(0,scope.blobCalls-scope.usage.blobCalls))),
-    wallMs:Math.min(CONTENT_WALL_MS,...held.map(scope=>Math.max(0,scope.deadline-Date.now()))),
+    statements:Math.min(CONTENT_STATEMENT_LIMIT,held?.statements??CONTENT_STATEMENT_LIMIT),
+    blobCalls:Math.min(CONTENT_BLOB_LIMIT,held?.blobCalls??CONTENT_BLOB_LIMIT),
+    wallMs:Math.min(CONTENT_WALL_MS,held?.wallMs??CONTENT_WALL_MS),
   };
 }
 

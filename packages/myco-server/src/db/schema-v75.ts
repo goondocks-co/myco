@@ -1,6 +1,7 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 /** Exact archived content, durable publication evidence and bounded cleanup cursors. */
 export const V75_STATEMENTS: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_session_tombstones_created ON session_tombstones(created_at)`,
   `ALTER TABLE events ADD COLUMN payload_format TEXT NOT NULL DEFAULT 'inline'`,
   `ALTER TABLE events ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE tool_calls ADD COLUMN input_bytes INTEGER`,

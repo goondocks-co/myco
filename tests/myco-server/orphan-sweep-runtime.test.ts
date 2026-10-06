@@ -34,6 +34,9 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
     const db = await mf.getD1Database('DB');
     const bucket = await mf.getR2Bucket('BUCKET');
     for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    const admissionPlan = await db.prepare(`EXPLAIN QUERY PLAN SELECT 1 AS present FROM session_tombstones WHERE created_at > ? LIMIT 1`)
+      .bind(now - 1).all<{ detail: string }>();
+    expect(admissionPlan.results.some((step) => /SEARCH session_tombstones USING COVERING INDEX idx_session_tombstones_created/.test(step.detail))).toBe(true);
     await db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','a',0)`).run();
     const held = 24;
     const seed = async (n: number, heldByCall: boolean) => {

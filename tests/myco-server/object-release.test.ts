@@ -25,6 +25,8 @@ type Env = ReturnType<typeof sqliteEnv>;
 const P = 'proj_1';
 const bytes = utf8('lifecycle bytes');
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
+const recentTombstone = (e: Env, now: number) => e.sqlite.query(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
+  VALUES(?,'deleted',?,'fixture')`).run(P, now);
 
 /** Deletes the drain issues whose answers are lost: each throws to its caller, and lands only when `land` runs. */
 function losingDeletes(e: Env) {
@@ -326,6 +328,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
 
   it('advances the orphan sweep past every page a hold keeps, and releases all of them after the hold', async () => {
     const e = sqliteEnv();
+    recentTombstone(e, 2);
     const total = TRANSCRIPT_RETENTION_BLOBS_PER_PASS * 3;
     for (let seed = 0; seed < total; seed += 1) orphan(e, seed);
     expect(await acquireRecoveryHold(e.db, 'hold-1', 1)).toBe(true);
@@ -450,7 +453,9 @@ describe('the schema fence and rows from before it', () => {
     const e = sqliteEnv({ beforeStep42: (db) => legacyBlob(db, { projectId: P, key: legacyKey, size: 6 }) });
     e.bucket.seed(`${P}/${legacyKey}`, { size: 6, bytes: utf8('legacy') });
     expect(registeredObject(e.sqlite, P, legacyKey)).toBe(`${P}/${legacyKey}`);
-    expect(await freeOrphanedBlobs(e.serverEnv, Date.now())).toBe(1);
+    const now = Date.now();
+    recentTombstone(e, now);
+    expect(await freeOrphanedBlobs(e.serverEnv, now)).toBe(1);
     expect(journaled(e.sqlite)).toEqual([`${P}/${legacyKey}`]);
     await drain(e);
     expect([count(e.sqlite, 'blobs'), e.bucket.objects.has(`${P}/${legacyKey}`)]).toEqual([0, false]);

@@ -20,10 +20,11 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
       const free = rig.sqlite.query('PRAGMA freelist_count').get() as { freelist_count: number };
       return { pages: page.page_count, free: free.freelist_count };
     };
-    const metadata = () => (rig.sqlite.query(`SELECT SUM(payload) AS bytes FROM dbstat
+    const hasDbstat = rig.sqlite.query(`SELECT 1 FROM pragma_module_list WHERE name='dbstat'`).get() !== null;
+    const metadata = () => hasDbstat ? (rig.sqlite.query(`SELECT SUM(payload) AS bytes FROM dbstat
       WHERE name IN (SELECT name FROM sqlite_master WHERE tbl_name IN
         ('blobs','event_content_refs','raw_archive_refs','registered_content_proofs'))`)
-      .get() as {bytes:number}).bytes;
+      .get() as {bytes:number}).bytes : null;
     const baseline = metric();
     const metadataBaseline = metadata();
     const bodies: Array<{ id: string; payload: string; bytes: number }> = [];
@@ -48,6 +49,7 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     expect(after.pages).toBe(before.pages);
     expect(after.free).toBeGreaterThan(before.free);
     const metadataAfter = metadata();
+    const metadataBytes = metadataAfter === null || metadataBaseline === null ? null : metadataAfter-metadataBaseline;
     const state = rig.sqlite.query('SELECT converted_rows,cleared_bytes FROM storage_cleanup_state WHERE id=1')
       .get() as { converted_rows: number; cleared_bytes: number };
     expect(state.converted_rows).toBe(ROWS);
@@ -72,8 +74,9 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     }
     const reused = metric();
     console.info(`storage cleanup SQLite pages: ${JSON.stringify({ rows: ROWS, clearedBytes: state.cleared_bytes,
-      baseline, before, after, reused, archiveRows, usage:measured.usage,wallMs,cpuMicros:cpu,metadataBytes: metadataAfter-metadataBaseline,
-      metadataBytesPerEvent: (metadataAfter-metadataBaseline)/ROWS,
+      baseline, before, after, reused, archiveRows, usage:measured.usage,wallMs,cpuMicros:cpu,metadataBytes,
+      metadataBytesPerEvent: metadataBytes === null ? null : metadataBytes/ROWS,
+      metadataMeasurement: hasDbstat ? 'dbstat payload including indexes' : 'unavailable: SQLite dbstat module is absent',
       livePageChange: (after.pages-after.free)-(before.pages-before.free) })}`);
     expect(reused.free).toBeLessThan(after.free);
     expect(reused.pages - after.pages).toBeLessThan(before.pages - baseline.pages);

@@ -1,5 +1,5 @@
 import { storageCleanupPending } from './storage-cleanup.js';
-import { CONTENT_BLOB_LIMIT, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
+import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
 import { rawBackfillPending } from './raw-backfill.js';
 /**
  * One wake of the Deployment's intelligence.
@@ -54,7 +54,6 @@ export const CHAINED_WAKE_MS = 2_000;
 export const WAKE_JOB_STATEMENT_LIMIT = 800;
 export const WAKE_JOB_BLOB_LIMIT = 240;
 const ARCHIVE_JOBS = new Set(['storage-content-cleanup', 'transcript-retention']);
-const WAKE_JOB_RESERVE = 150;
 
 export interface TickReport {
   state: PowerState;
@@ -117,7 +116,7 @@ async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: rea
       reports.push({ name, changed: 0, failed: 'unimplemented', more: false });
       continue;
     }
-    if (measured.usage.statements + WAKE_JOB_RESERVE > WAKE_JOB_STATEMENT_LIMIT
+    if (measured.usage.statements + CONTENT_WAKE_JOB_RESERVE > WAKE_JOB_STATEMENT_LIMIT
       || measured.usage.blobCalls + CONTENT_BLOB_LIMIT > WAKE_JOB_BLOB_LIMIT
       || (ARCHIVE_JOBS.has(name) && Date.now() - started >= CONTENT_WALL_MS)) {
       reports.push({ name, changed: 0, failed: null, more: true });

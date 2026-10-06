@@ -10,28 +10,28 @@ The committed `storage-cleanup-volume.test.ts` fixture converts 24 synthetic res
 
 | Stage | File pages | Free pages |
 | --- | ---: | ---: |
-| Empty schema | 421 | 0 |
-| Populated | 1,158 | 29 |
-| Converted | 1,158 | 705 |
-| 24 similar new captures | 1,190 | 29 |
+| Empty schema | 422 | 0 |
+| Populated | 1,159 | 29 |
+| Converted | 1,159 | 705 |
+| 24 similar new captures | 1,191 | 29 |
 
 Conversion makes **676 pages / 2,768,896 bytes reusable**. The database file does not shrink. Subsequent captures add 32 pages instead of the initial population's 737-page increase. No VACUUM or fresh-database cutover runs.
 
 Archive registration/reference/proof payload, including indexes, measures **65,698 bytes / 2,737 bytes per event**, exceeding the design's 384–768-byte planning range. This fixture does not establish the design's aggregate storage forecast. The sample retains 24 event refs, 24 raw refs and 48 durable body/receipt proofs.
 
-One local sample counts 1,072 SQL statements, 388 round trips and 96 blob calls across all bounded wakes. Its wall time is 112.4 ms; separately measured process CPU is 133,444 user and 3,372 system microseconds. Timing is descriptive, not a throughput guarantee or hosted CPU measurement. Wall admission cannot cancel an already running query.
+One local sample counts 1,072 SQL statements, 388 round trips and 96 blob calls across all bounded wakes. Its wall time is 123.1 ms; separately measured process CPU is 142,366 user and 5,281 system microseconds. Timing is descriptive, not a throughput guarantee or hosted CPU measurement. Wall admission cannot cancel an already running query.
 
 ## Controls and runtime checks
 
-The strengthened focused control passed 204 tests across cleanup, input storage, raw-window authority, real workerd orphan sweeping, wake ordering and parser fairness. The native durability/raw archive/orphan control passed 19 tests. The final query-plan control passed 15 tests and the final measured-volume/workerd fixtures passed 2 tests.
+The strengthened focused control passed 204 tests across cleanup, input storage, raw-window authority, real workerd orphan sweeping, wake ordering and parser fairness. The native durability/raw archive/orphan control passed 19 tests. Final parser/wake/native-workerd continuation controls passed 173 tests, and native/workerd admission, migration and volume controls passed 29 tests. The affected native/workerd parity scenarios passed 14 tests with 1,034 assertions. The screenshot fixture passed 367 dashboard checks and all seven specimen checks after the specimen build prerequisite. The final query-plan control passed 15 tests and the final measured-volume/workerd fixtures passed 2 tests.
 
-Full `npm test` passed all three built-in shards, covering 920 source test files, including all 77 meta files. An initial shard hit an unchanged process-observation helper race: the PID vanished between `kill(pid, 0)` and `ps`. The matched focused rerun and the affected full shard rerun passed. The compiled-binary smoke passed all 66 assertions. It includes the built dashboard's truncated input and Full input link, real HTTP search/privacy/archival, operator CLI backup/restore and source-object unavailability during recovery. Native and workerd use the same parity scenario and schema; the final matched scenario passed 106 assertions, including new input spills and conversion of a legacy full inline input (172 assertions including the compiled smoke).
+Full `npm test` passed all three built-in shards, covering 920 source test files, including all 77 meta files. An initial shard hit an unchanged process-observation helper race: the PID vanished between `kill(pid, 0)` and `ps`. The matched focused rerun and the affected full shard rerun passed. An additional concurrent run exceeded the streaming-import RSS ceiling and several runner/process groups timed out; those are retained as failed evidence. The isolated lifecycle/import control passed 14 tests, with the 2.16 GB import peaking at 442,496 KiB. Sequential full-shard reruns passed, including the same import at 376,704 KiB. The final 173-test parser control passed after the packed terminal-proof change. The compiled-binary smoke passed all 66 assertions. It includes the built dashboard's truncated input and Full input link, real HTTP search/privacy/archival, operator CLI backup/restore and source-object unavailability during recovery. Native and workerd use the same parity scenario and schema; the final matched scenario passed 106 assertions, including new input spills and conversion of a legacy full inline input (172 assertions including the compiled smoke).
 
-`npm run lint`, `npm run -s check` in `packages/myco-server`, and `make build` passed. The build includes the repository checks, full tests, generators, dashboard and compiled native binary verification. The final fetch/rebase left the branch based on the same schema-74 commit, and the carried binary/runtime parity smoke was repeated after that rebase.
+`npm run lint`, `npm run -s check` in `packages/myco-server`, and `make build` passed. The build includes the repository checks, fast-profile tests, generators, dashboard and compiled native binary verification. The final fetch/rebase left the branch based on the same schema-74 commit, and the carried binary/runtime parity smoke was repeated after that rebase.
 
 ## Mutation results
 
-**47 final mutants killed; no final survivors or equivalent mutants.** Every source mutation was restored byte-for-byte before the next run. Each mutant ran with `npm test -- <focused committed gate>`. Initial survivors exposed missing fixture conditions (a full tuple page, imported lifecycle ownership, and a tombstone arriving after publication); the strengthened controls passed before valid reruns. An initial receipt mutation that also removed bindings was discarded. The final character-cap mutation preserves the UTF-8 overflow condition while using character slicing.
+**55 final gate mutants killed; two isolated admission-guard mutants survived.** Every source mutation was restored byte-for-byte before the next run. Each mutant ran with `npm test -- <focused committed gate>`. Initial survivors exposed missing fixture conditions (a full tuple page, imported lifecycle ownership, and a tombstone arriving after publication); the strengthened controls passed before valid reruns. An initial receipt mutation that also removed bindings was discarded. The final character-cap mutation preserves the UTF-8 overflow condition while using character slicing.
 
 | Mutant | Source | Failing committed gate | Result |
 | --- | --- | --- | --- |
@@ -82,6 +82,19 @@ Full `npm test` passed all three built-in shards, covering 920 source test files
 | `raw-recovery-hold` | [raw-archive.ts](../../packages/myco-server/src/core/raw-archive.ts) | [holds a parsed transcript source throughout an active recovery hold](../../tests/myco-server/raw-archive.test.ts) | killed |
 | `raw-age-hold` | [raw-archive.ts](../../packages/myco-server/src/core/raw-archive.ts) | [refuses stale event source revision and a due hint newer than the raw age window](../../tests/myco-server/raw-archive.test.ts) | killed |
 | `raw-tuple-cursor` | [raw-archive.ts](../../packages/myco-server/src/core/raw-archive.ts) | [advances a bounded due cursor past held rows to a sparse eligible event](../../tests/myco-server/raw-archive.test.ts) | killed |
+| `orphan-tombstone-admission` | [retention.ts](../../packages/myco-server/src/ingest/retention.ts) | [keeps historical unreferenced uploads when no recent tombstone admits an orphan sweep](../../tests/myco-server/orphan-sweep.test.ts) | killed |
+| `orphan-tombstone-time-index` | [schema-v75.ts](../../packages/myco-server/src/db/schema-v75.ts) | [seeks recent tombstone admission through its time index](../../tests/myco-server/orphan-sweep.test.ts), [workerd query plan](../../tests/myco-server/orphan-sweep-runtime.test.ts) | killed |
+| `parser-ancestor-budget-bypass` | [content-budget.ts](../../packages/myco-server/src/core/content-budget.ts) | [commits a cursor before an invocation statement limit and resumes its remaining events](../../tests/myco-server/transcript-parse.test.ts) | killed |
+| `parser-checkpoint-group-split` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [advances an imported continuation with a large checkpoint while live and repair remain pending](../../tests/myco-server/transcript-parse.test.ts) | killed |
+| `parser-checkpoint-hint-only` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [advances an imported continuation with a large checkpoint while live and repair remain pending](../../tests/myco-server/transcript-parse.test.ts) | survived: exact admission still splits |
+| `parser-planned-array-only` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [advances an imported continuation with a large checkpoint while live and repair remain pending](../../tests/myco-server/transcript-parse.test.ts) | survived: checkpoint hint still splits |
+
+| `terminal-unbounded-group` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [closes 32 pending calls after idle under a measured wake budget](../../tests/myco-server/transcript-parse.test.ts) | killed |
+| `terminal-retry-hash-bypass` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [holds terminal completion when a previously landed outcome no longer matches its envelope](../../tests/myco-server/transcript-parse.test.ts) | killed |
+| `terminal-final-hash-bypass` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [keeps terminal context when an earlier outcome changes after retry lookup](../../tests/myco-server/transcript-parse.test.ts) | killed |
+| `terminal-expanded-proof-binds` | [parse.ts](../../packages/myco-server/src/ingest/parse.ts) | [closes a retained 64-call continuation under the hosted parameter ceiling](../../tests/myco-server/transcript-parse.test.ts) | killed |
+
+The two isolated survivors establish only that the other guard protects these fixtures; neither is classified as equivalent. Disabling both group-split paths leaves the imported cursor stationary and kills the committed gate. The control uses 32 pending inputs of 260,000 bytes each, a 128-chunk checkpoint and 100 imported continuation prompts alongside 1,200-prompt live and repair backlogs. All three lanes remain admitted under the 800-statement invocation ceiling. The native/workerd 1,200-prompt repair fixture completes in 50 advancing wakes on each target. Terminal closure publishes bounded groups and keeps its continuation until every expected event ID and canonical envelope hash matches within the snapshot batch. The partial-retry, late-result and post-lookup hash race controls preserve unfinished context when required. A retained 64-call continuation passes the strict 100-bind adapter and local workerd; native query-plan gates show primary-key searches for packed-proof lookup and final clearance. [D1 documents a 100-bound-parameter query ceiling](https://developers.cloudflare.com/d1/platform/limits/).
 
 ## Evidence limits
 

@@ -9,6 +9,30 @@ const NOW = BLOB_RESERVATION_TTL_MS + 2;
 const cursor = (sqlite: ReturnType<typeof sqliteEnv>['sqlite']) =>
   sqlite.query(`SELECT cursor_project, cursor_key, revision FROM orphan_sweep_state WHERE id = 1`).get() as { cursor_project: string; cursor_key: string; revision: number };
 
+it('seeks recent tombstone admission through its time index', () => {
+  const { sqlite } = sqliteEnv();
+  try {
+    const plan = sqlite.query(`EXPLAIN QUERY PLAN SELECT 1 AS present FROM session_tombstones WHERE created_at > ? LIMIT 1`)
+      .all(NOW - 1) as Array<{ detail: string }>;
+    expect(plan.some((step) => /SEARCH session_tombstones USING COVERING INDEX idx_session_tombstones_created/.test(step.detail))).toBe(true);
+  } finally { sqlite.close(); }
+});
+
+it('keeps historical unreferenced uploads when no recent tombstone admits an orphan sweep', async () => {
+  const { sqlite, serverEnv } = sqliteEnv();
+  try {
+    const orphan = key(1);
+    registerBlob(sqlite, { projectId: 'proj_1', key: orphan, size: 1, receivedAt: 1 });
+    expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(0);
+    expect(sqlite.query('SELECT key FROM blobs WHERE key=?').get(orphan)).toEqual({ key: orphan });
+    expect(cursor(sqlite)).toEqual({ cursor_project: '', cursor_key: '', revision: 0 });
+    sqlite.query(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
+      VALUES('proj_1','recent',?,'fixture')`).run(NOW);
+    expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(1);
+    expect(sqlite.query('SELECT key FROM blobs WHERE key=?').get(orphan)).toBeNull();
+  } finally { sqlite.close(); }
+});
+
 it('bounds examined identities with all-held pages and reaches a sparse orphan at the tail', async () => {
   const { sqlite, serverEnv } = sqliteEnv();
   const plan = sqlite.query(`EXPLAIN QUERY PLAN SELECT project_id,key,received_at FROM blobs
@@ -36,6 +60,8 @@ it('bounds examined identities with all-held pages and reaches a sparse orphan a
 
 it('wraps and reaches an orphan inserted behind the committed cursor', async () => {
   const { sqlite, serverEnv } = sqliteEnv();
+  sqlite.query(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
+    VALUES('proj_1','recent',?,'fixture')`).run(NOW);
   const first = key(5);
   registerBlob(sqlite, { projectId: 'proj_1', key: first, size: 1, receivedAt: 1 });
   sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, event_id, tool_name, input_blob_key, success, created_at, token_id, received_at)
@@ -50,6 +76,8 @@ it('wraps and reaches an orphan inserted behind the committed cursor', async () 
 
 it('keeps a recent upload available for its event until the reservation window passes', async () => {
   const { sqlite, serverEnv } = sqliteEnv();
+  sqlite.query(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
+    VALUES('proj_1','recent',?,'fixture')`).run(NOW);
   const uploaded = key(9);
   registerBlob(sqlite, { projectId: 'proj_1', key: uploaded, size: 1, receivedAt: NOW });
   expect(await freeOrphanedBlobs(serverEnv, NOW)).toBe(0);
