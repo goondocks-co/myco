@@ -21,7 +21,7 @@ import {
   assertWranglerReady, ensureCommandDir, readDeploymentRecord, writeDeploymentRecord,
   ensureDatabase, ensureBucket, ensureVectorIndexResource, ensureVectorIndexFilters, ensureSecretsStore,
   cloudflareObjectStore, assertCloudflareWorkerAbsent, putStoreSecret, putWorkerSecretValue, putWorkerSecrets, deployWorker,
-  type CloudflareFetch, type DeploymentRecord,
+  cloudflareSchemaUpdateSchema, type CloudflareFetch, type DeploymentRecord,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 
@@ -38,6 +38,7 @@ const journalSchema = z.object({
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   newSignIn: z.boolean().default(false),
   vectorProvisioned: z.boolean().default(false),
+  schemaUpdates: z.array(cloudflareSchemaUpdateSchema).optional(),
 });
 type Journal = z.infer<typeof journalSchema>;
 
@@ -101,6 +102,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     ...(held().storeId === undefined ? {} : { storeId: held().storeId! }),
     ...(held().url === undefined ? {} : { url: held().url! }),
     ...(fleet === undefined ? {} : { fleet }),
+    ...(held().schemaUpdates === undefined ? {} : { schemaUpdates: held().schemaUpdates! }),
     versionId: held().versionId ?? null, deployedAt: held().deployedAt ?? new Date().toISOString(),
   });
   if (held().versionId !== undefined) {
@@ -172,7 +174,9 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   let record = makeRecord();
   const staged = stageCloudflareDeploy(record, options.mycoHome);
   const restored = await restoreCloudflareDatabase({ ...bare, configDir: staged.dir, configFile: staged.configFile,
-    databaseName: name, databasePath, sourceFingerprint: fingerprint });
+    databaseName: name, databasePath, sourceFingerprint: fingerprint, record,
+    persist: (next) => confirmed({ schemaUpdates: next.schemaUpdates! }),
+  });
   await copyRecoveryObjects(artifact, cloudflareObjectStore({ ...bare, bucketName: name }), preparedObjectKeys(databasePath), options.report);
   if (held().url === undefined) {
     await assertCloudflareWorkerAbsent({ ...bare, workerName: name });
@@ -182,7 +186,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       return { url: result.url };
     });
   }
-  record = { ...record, url: held().url! };
+  record = { ...makeRecord(), url: held().url! };
   await putWorkerSecretValue({ ...bare, workerName: name, name: 'SESSION_SECRET', value: secrets.SESSION_SECRET });
   if ('GITHUB_CLIENT_ID' in secrets) {
     await putWorkerSecrets({ accountId: options.accountId, workerName: name,

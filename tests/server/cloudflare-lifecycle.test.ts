@@ -20,6 +20,7 @@ import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-s
 import { deployedWorkerSecretNames, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 
 const ACCOUNT = 'a'.repeat(32);
@@ -48,6 +49,10 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
     // is not a directory this command could run in.
     calls.push({ args: [...args], input: opts?.input, cwd: opts?.cwd, cwdOnDisk: opts?.cwd === undefined ? null : existsSync(opts.cwd) });
     const flat = args.join(' ');
+    if (flat.includes('d1 execute') && flat.includes('sqlite_master')) {
+      const fresh = calls.some((call) => call.args.includes('d1') && call.args.includes('create'));
+      return { code: 0, stdout: JSON.stringify([{ success: true, results: fresh ? [] : [{ name: 'schema_meta' }] }]), stderr: '' };
+    }
     if (flat.includes('r2 bucket create')) {
       const name = args[args.indexOf('create') + 1]!;
       if (buckets.has(name)) return { code: 1, stdout: '', stderr: `A bucket with the name ${name} already exists` };
@@ -65,7 +70,8 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'vectorize list-metadata-index': { stdout: '[{"propertyName":"type","indexType":"String"},{"propertyName":"status","indexType":"String"},{"propertyName":"session_id","indexType":"String"},{"propertyName":"created_at","indexType":"Number"},{"propertyName":"observation_type","indexType":"String"},{"propertyName":"release_state","indexType":"String"},{"propertyName":"release_confidence","indexType":"String"}]' },
       'd1 list --json': { stdout: '[]' },
       'd1 create myco-server': { stdout: `database_id = "${DB_ID}"` },
-      'd1 execute': { stdout: '[\n  {\n    "results": [],\n    "success": true\n  }\n]' },
+      'd1 execute': { stdout: JSON.stringify([{ results: [{ value: String(SERVER_SCHEMA_VERSION - 1) }], success: true }]) },
+      'd1 time-travel info': { stdout: JSON.stringify({ bookmark: '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683' }) },
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
       'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
@@ -124,6 +130,15 @@ const recordFor = (home: string): void => {
 };
 
 describe('create', () => {
+  it('records the fresh database receipt before staging can fail, so create can resume', async () => {
+    const { home, options } = setup();
+    await expect(createCloudflareDeployment({ ...options, url: 'invalid-url', runner: runner() })).rejects.toThrow('not a URL');
+    expect(readDeploymentRecord(home)?.databaseId).toBe(DB_ID);
+    expect(calls.some((call) => call.args.includes('migrations'))).toBe(false);
+    await createCloudflareDeployment({ ...options, url: 'https://myco.example.com', runner: runner() });
+    expect(calls.filter((call) => call.args.includes('d1') && call.args.includes('create'))).toHaveLength(1);
+    expect(readDeploymentRecord(home)?.schemaUpdates).toHaveLength(1);
+  });
   it('preserves recorded recovery resources through create and update', async () => {
     const { home, dir, options } = setup();
     const resources = { workerName: 'recovery-worker', databaseName: 'recovery-database', bucketName: 'recovery-blobs',
@@ -557,6 +572,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
     `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
     `  *"vectorize get"*) echo '{"config":{"dimensions":${VECTOR_INDEX_DIMENSIONS},"metric":"cosine"}}';;`,
+    `  *"d1 execute"*) echo '[{"success":true,"results":[]}]';;`,
     '  *"d1 list --json"*) echo "[]";;',
     `  *"secret list --name"*) echo '[]';;`,
     `  *"secrets-store secret list"*) echo 'List request returned no secrets.' >&2; exit 1;;`,

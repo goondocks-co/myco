@@ -16,7 +16,6 @@ import {
   AccountNotSelected,
   cloudflareStatus,
   deployWorker,
-  applyMigrations,
   deploymentRecordPath,
   listAccounts,
   readDeploymentRecord,
@@ -129,11 +128,7 @@ describe('deploy', () => {
     expect(calls[0]!.args.filter((arg) => arg.includes('containers'))).toEqual([]);
   });
 
-  it('applies migrations against the remote database, never a local one', async () => {
-    await applyMigrations({ ...base(), runner: runner(), databaseName: 'myco-server' });
-    // A migration applied locally reports success and changes nothing deployed.
-    expect(calls[0]!.args).toEqual(['--no-install', 'wrangler', 'd1', 'migrations', 'apply', 'myco-server', '--remote']);
-  });
+
 });
 
 describe('status', () => {

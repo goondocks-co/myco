@@ -5,7 +5,8 @@ import { Database } from 'bun:sqlite';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
-import { applyMigrations, D1_STATEMENT_TIMEOUT_MS, importCloudflareDatabase, queryCloudflareDatabase, type CloudflareOptions } from './cloudflare.js';
+import { D1_STATEMENT_TIMEOUT_MS, importCloudflareDatabase, queryCloudflareDatabase, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
+import { applyCloudflareSchema } from './cloudflare-schema.js';
 import { RECOVERY_FINGERPRINT_KEY, writeRecoverySql } from './recovery-sql.js';
 
 const rows = z.array(z.object({ key: z.string(), value: z.string() }));
@@ -13,8 +14,10 @@ const tables = z.array(z.object({ name: z.string() }));
 
 /** Import into an owned empty database, or resume an import bearing the same completion fingerprint. */
 export async function restoreCloudflareDatabase(options: CloudflareOptions & {
+  mycoHome?: string; record: DeploymentRecord; persist: (record: DeploymentRecord) => void;
   databaseName: string; databasePath: string; sourceFingerprint: string; report?: (line: string) => void;
 }): Promise<{ schemaVersion: number; imported: boolean }> {
+  if (options.databaseName !== options.record.databaseName) throw new Error('recovery database does not match the operation record');
   if (!/^[a-f0-9]{64}$/.test(options.sourceFingerprint)) throw new Error('invalid recovery source fingerprint');
   const source = new Database(options.databasePath, { readonly: true, create: false });
   let sourceVersion: number;
@@ -50,20 +53,22 @@ export async function restoreCloudflareDatabase(options: CloudflareOptions & {
       await importCloudflareDatabase({ ...options, file });
       await readIdentity();
     }
-    const ledgerFile = path.join(temporary, 'ledger.sql');
-    const knownNames = SCHEMA_STEPS.map(migrationFileName);
-    if (names.some((row) => row.name === 'd1_migrations')) {
-      const existing = tables.parse(await query('SELECT name FROM d1_migrations'));
-      if (existing.some((row) => !knownNames.includes(row.name))) throw new Error('destination has an unknown migration ledger entry');
-    }
-    const ledger = [
-      'CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE,applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)',
-      ...SCHEMA_STEPS.filter((step) => step.version <= sourceVersion)
-        .map((step) => `INSERT OR IGNORE INTO d1_migrations(name) VALUES('${migrationFileName(step)}')`),
-    ];
-    fs.writeFileSync(ledgerFile, ledger.join(';\n') + ';\n', { mode: 0o600 });
-    await importCloudflareDatabase({ ...options, file: ledgerFile });
-    await applyMigrations(options);
+    await applyCloudflareSchema({ ...options, prepare: async (admitted) => {
+      const ledgerFile = path.join(temporary, 'ledger.sql');
+      const knownNames = SCHEMA_STEPS.map(migrationFileName);
+      if (names.some((row) => row.name === 'd1_migrations')) {
+        const existing = tables.parse(await query('SELECT name FROM d1_migrations'));
+        if (existing.some((row) => !knownNames.includes(row.name))) throw new Error('destination has an unknown migration ledger entry');
+      }
+      const ledger = [
+        'CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE,applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)',
+        ...SCHEMA_STEPS.filter((step) => step.version <= sourceVersion)
+          .map((step) => `INSERT OR IGNORE INTO d1_migrations(name) VALUES('${migrationFileName(step)}')`),
+      ];
+      fs.writeFileSync(ledgerFile, ledger.join(';\n') + ';\n', { mode: 0o600 });
+      await importCloudflareDatabase({ ...options, file: ledgerFile });
+      return admitted;
+    } });
     const schemaVersion = await readIdentity();
     if (schemaVersion !== SERVER_SCHEMA_VERSION) throw new Error('replacement database did not reach the bundled schema version');
     return { schemaVersion, imported: names.length === 0 };
