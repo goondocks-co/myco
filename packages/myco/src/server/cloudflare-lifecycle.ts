@@ -16,12 +16,9 @@ const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  applyMigrations,
   assertWranglerReady,
   ensureCommandDir,
   cloudflareStatus,
-  cloudflareSchemaVersion,
-  currentTimeTravelBookmark,
   deleteWorker,
   deployWorker,
   rollbackWorker,
@@ -46,7 +43,7 @@ import { stageCloudflareDeploy } from './cloudflare-stage.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
-import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { applyCloudflareSchema } from './cloudflare-schema.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
@@ -183,59 +180,56 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
 export const createCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & { url?: string }): Promise<CreateResult> => {
   await preflight(options);
   const existing = readDeploymentRecord(options.mycoHome);
+  if (existing !== null && existing.accountId !== options.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
   const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
   const bare = bareCommand(options);
-  if ((await ensureVectorIndex({ ...bare, vectorIndexName: resources.vectorIndexName })).created) createdResources.push(`vectorize ${resources.vectorIndexName}`);
-
   const database = existing?.databaseId !== undefined
     ? { databaseId: existing.databaseId, created: false }
     : await ensureDatabase({ ...bare, databaseName: resources.databaseName });
   if (database.created) createdResources.push(`d1 ${resources.databaseName}`);
-
-  const bucket = await ensureBucket({ ...bare, bucketName: resources.bucketName });
-  if (bucket.created) createdResources.push(`r2 ${resources.bucketName}`);
-
-  // The staging store the Deployment's config binds for a recovery export. It is ensured here with every other
-  // resource the config names, and it is never the store the Deployment serves blobs from.
-  const staging = await ensureBucket({ ...bare, bucketName: resources.recoveryBucketName });
-  if (staging.created) createdResources.push(`r2 ${resources.recoveryBucketName}`);
-
-  const store = existing?.storeId !== undefined
-    ? { storeId: existing.storeId, created: false }
-    : await ensureSecretsStore(bare);
-  if (store.created) createdResources.push('secrets store');
-  // The wrapping key is put wherever the store lacks it, a store the account already held included. One the store holds
-  // stays: every sealed credential is wrapped with it.
-  if (store.created || !(await storeSecretNames({ ...bare, storeId: store.storeId })).includes(resources.wrapKeySecretName)) {
-    await putStoreSecret({ ...bare, storeId: store.storeId, name: resources.wrapKeySecretName, value: randomBytes(32).toString('base64') });
-    createdResources.push(`store secret ${resources.wrapKeySecretName}`);
-  }
-
-  // The URL the operator named is the Deployment's from the first deploy, so
-  // the custom domain and the origin the clock calls back to are provisioned
-  // together rather than needing a second pass.
   const url = options.url ?? existing?.url;
   let record: DeploymentRecord = {
-    accountId: options.accountId,
-    workerName: resources.workerName,
-    databaseName: resources.databaseName,
-    bucketName: resources.bucketName,
-    vectorIndexName: resources.vectorIndexName,
-    wrapKeySecretName: resources.wrapKeySecretName,
-    recoveryBucketName: resources.recoveryBucketName,
-    versionId: existing?.versionId ?? null,
-    deployedAt: existing?.deployedAt ?? new Date().toISOString(),
+    accountId: options.accountId, workerName: resources.workerName, databaseName: resources.databaseName,
+    bucketName: resources.bucketName, vectorIndexName: resources.vectorIndexName,
+    wrapKeySecretName: resources.wrapKeySecretName, recoveryBucketName: resources.recoveryBucketName,
+    versionId: existing?.versionId ?? null, deployedAt: existing?.deployedAt ?? new Date().toISOString(),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
-    ...(url === undefined ? {} : { url }),
-    databaseId: database.databaseId,
-    storeId: store.storeId,
+    ...(url === undefined ? {} : { url }), databaseId: database.databaseId,
+    ...(existing?.storeId === undefined ? {} : { storeId: existing.storeId }),
     ...(existing?.schemaUpdates === undefined ? {} : { schemaUpdates: existing.schemaUpdates }),
   };
-  writeDeploymentRecord(record, options.mycoHome);
-
+  if (database.created) writeDeploymentRecord(record, options.mycoHome);
   const withConfig = staged(record, options);
-  await applyMigrations({ ...withConfig, databaseName: resources.databaseName });
+  record = await applyCloudflareSchema({ ...withConfig, record, freshDatabase: database.created,
+    persist: (next) => writeDeploymentRecord(next, options.mycoHome),
+    prepare: async (admitted) => {
+      if ((await ensureVectorIndex({ ...bare, vectorIndexName: resources.vectorIndexName })).created) createdResources.push(`vectorize ${resources.vectorIndexName}`);
+      const bucket = await ensureBucket({ ...bare, bucketName: resources.bucketName });
+      if (bucket.created) createdResources.push(`r2 ${resources.bucketName}`);
+
+      // The staging store the Deployment's config binds for a recovery export. It is ensured here with every other
+      // resource the config names, and it is never the store the Deployment serves blobs from.
+      const staging = await ensureBucket({ ...bare, bucketName: resources.recoveryBucketName });
+      if (staging.created) createdResources.push(`r2 ${resources.recoveryBucketName}`);
+
+      const store = existing?.storeId !== undefined
+        ? { storeId: existing.storeId, created: false }
+        : await ensureSecretsStore(bare);
+      if (store.created) createdResources.push('secrets store');
+      // The wrapping key is put wherever the store lacks it, a store the account already held included. One the store holds
+      // stays: every sealed credential is wrapped with it.
+      if (store.created || !(await storeSecretNames({ ...bare, storeId: store.storeId })).includes(resources.wrapKeySecretName)) {
+        await putStoreSecret({ ...bare, storeId: store.storeId, name: resources.wrapKeySecretName, value: randomBytes(32).toString('base64') });
+        createdResources.push(`store secret ${resources.wrapKeySecretName}`);
+      }
+
+      const prepared = { ...admitted, storeId: store.storeId };
+      writeDeploymentRecord(prepared, options.mycoHome);
+      staged(prepared, options);
+      return prepared;
+    },
+  });
   const deployed = await deployWorker(withConfig);
 
   // After the deploy: a secret lands on the live Worker; putting one ahead of a Worker that is not there yet is
@@ -267,33 +261,14 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
   if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
   const resources = cloudflareResources(record);
   const withConfig = staged(record, options);
-  const database = { ...withConfig, databaseName: record.databaseName };
-  const before = await cloudflareSchemaVersion(database);
-  if (before > SERVER_SCHEMA_VERSION) throw new Error(`schema update refused: D1 schema ${before} is newer than this binary's ${SERVER_SCHEMA_VERSION}`);
-  if (before < SERVER_SCHEMA_VERSION) {
-    let bookmark: string;
-    try {
-      bookmark = await currentTimeTravelBookmark(database);
-    } catch (error) {
-      throw new Error(`schema advance ${before} -> ${SERVER_SCHEMA_VERSION} refused: a current D1 Time Travel bookmark is required: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
-    }
-    record = { ...record, schemaUpdates: [...(record.schemaUpdates ?? []), {
-      bookmark, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION,
-      recordedAt: new Date().toISOString(), workerVersionBefore: record.versionId,
-    }] };
-    writeDeploymentRecord(record, options.mycoHome);
-    const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-    options.report?.(`D1 Time Travel bookmark recorded for schema ${before} -> ${SERVER_SCHEMA_VERSION}: ${bookmark}`);
-    options.report?.(`Database rollback: CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark} -c ${quote(path.join(withConfig.configDir, withConfig.configFile!))}`);
-    options.report?.('Confirm the restore prompt with y; it cancels in-flight queries and prints an undo bookmark.');
-    options.report?.(record.versionId === null
-      ? 'Roll back the Worker too if its code depends on the new schema; find the prior version with `wrangler deployments list`.'
-      : `Roll back the Worker too if its code depends on the new schema: myco server rollback --target cloudflare --account-id=${quote(record.accountId)} --version=${quote(record.versionId)}`);
-  }
-  await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
-  await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
-
-  if (before < SERVER_SCHEMA_VERSION) await applyMigrations(database);
+  record = await applyCloudflareSchema({ ...withConfig, record,
+    persist: (next) => writeDeploymentRecord(next, options.mycoHome),
+    prepare: async (admitted) => {
+      await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
+      await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
+      return admitted;
+    },
+  });
   const deployed = await deployWorker(withConfig);
 
   writeDeploymentRecord({

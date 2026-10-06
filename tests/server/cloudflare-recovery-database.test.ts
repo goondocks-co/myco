@@ -7,6 +7,8 @@ import { SCHEMA_STEPS } from '../../packages/myco-server/src/db/schema.js';
 import { migrationFileName } from '../../packages/myco-server/src/db/migrate.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
 import { restoreCloudflareDatabase } from '@myco/server/cloudflare-recovery-database.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
 function fixture() {
@@ -25,6 +27,7 @@ function fixture() {
       const sql = args[args.indexOf('--command') + 1]!;
       return { code: 0, stdout: JSON.stringify([{ success: true, results: destination.query(sql).all() }]), stderr: '' };
     }
+    if (args.includes('time-travel')) return { code: 0, stdout: JSON.stringify({ bookmark: '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683' }), stderr: '' };
     mutations++;
     if (args.includes('--file')) {
       const sql = fs.readFileSync(args[args.indexOf('--file') + 1]!, 'utf8');
@@ -42,9 +45,11 @@ function fixture() {
     } else throw new Error(`unexpected command ${args.join(' ')}`);
     return { code: 0, stdout: '', stderr: '' };
   } };
+  const record: DeploymentRecord = { accountId: 'fixture-account', databaseName: 'fixture-only',
+    workerName: 'fixture', bucketName: 'fixture', versionId: null, deployedAt: 'fixture' };
   return {
     root, destination,
-    options: { accountId: 'fixture-account', databaseName: 'fixture-only', configDir: root, databasePath, sourceFingerprint: 'a'.repeat(64), runner },
+    options: { mycoHome: root, record, persist: (next: DeploymentRecord) => atomicWriteFileSync(path.join(root, 'journal.json'), JSON.stringify(next), { durable: true }), accountId: 'fixture-account', databaseName: 'fixture-only', configDir: root, databasePath, sourceFingerprint: 'a'.repeat(64), runner },
     interrupt: () => { loseImportReply = true; },
     mutations: () => mutations,
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },

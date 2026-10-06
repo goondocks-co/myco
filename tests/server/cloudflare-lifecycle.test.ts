@@ -49,6 +49,10 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
     // is not a directory this command could run in.
     calls.push({ args: [...args], input: opts?.input, cwd: opts?.cwd, cwdOnDisk: opts?.cwd === undefined ? null : existsSync(opts.cwd) });
     const flat = args.join(' ');
+    if (flat.includes('d1 execute') && flat.includes('sqlite_master')) {
+      const fresh = calls.some((call) => call.args.includes('d1') && call.args.includes('create'));
+      return { code: 0, stdout: JSON.stringify([{ success: true, results: fresh ? [] : [{ name: 'schema_meta' }] }]), stderr: '' };
+    }
     if (flat.includes('r2 bucket create')) {
       const name = args[args.indexOf('create') + 1]!;
       if (buckets.has(name)) return { code: 1, stdout: '', stderr: `A bucket with the name ${name} already exists` };
@@ -126,6 +130,15 @@ const recordFor = (home: string): void => {
 };
 
 describe('create', () => {
+  it('records the fresh database receipt before staging can fail, so create can resume', async () => {
+    const { home, options } = setup();
+    await expect(createCloudflareDeployment({ ...options, url: 'invalid-url', runner: runner() })).rejects.toThrow('not a URL');
+    expect(readDeploymentRecord(home)?.databaseId).toBe(DB_ID);
+    expect(calls.some((call) => call.args.includes('migrations'))).toBe(false);
+    await createCloudflareDeployment({ ...options, url: 'https://myco.example.com', runner: runner() });
+    expect(calls.filter((call) => call.args.includes('d1') && call.args.includes('create'))).toHaveLength(1);
+    expect(readDeploymentRecord(home)?.schemaUpdates).toHaveLength(1);
+  });
   it('preserves recorded recovery resources through create and update', async () => {
     const { home, dir, options } = setup();
     const resources = { workerName: 'recovery-worker', databaseName: 'recovery-database', bucketName: 'recovery-blobs',
@@ -559,6 +572,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
     `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
     `  *"vectorize get"*) echo '{"config":{"dimensions":${VECTOR_INDEX_DIMENSIONS},"metric":"cosine"}}';;`,
+    `  *"d1 execute"*) echo '[{"success":true,"results":[]}]';;`,
     '  *"d1 list --json"*) echo "[]";;',
     `  *"secret list --name"*) echo '[]';;`,
     `  *"secrets-store secret list"*) echo 'List request returned no secrets.' >&2; exit 1;;`,

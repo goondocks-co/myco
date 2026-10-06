@@ -106,11 +106,15 @@ myco server rollback --target cloudflare    # go back to the version that served
 
 Updating waits for nothing and interrupts nothing: a request already in progress finishes on the version that took it.
 
-When an update advances the hosted schema, it first reads the live schema and obtains a current D1 Time Travel bookmark.
+When an update or a create against an existing database advances the hosted schema, it first reads the live schema and obtains a current D1 Time Travel bookmark.
 It durably appends the bookmark, schema versions before and after, timestamp, and prior Worker version to
 `~/.myco/server/cloudflare/record.json` under `schemaUpdates`, before applying any migration. If the bookmark cannot be
-obtained or is invalid, the update refuses before changing remote resources, the database, or the Worker. An update
-with no schema advance needs no bookmark. Full `myco server backup --target cloudflare --to <dir>` remains available
+obtained or is invalid, the operation refuses before changing remote resources, the database, or the Worker. An update
+with no schema advance needs no bookmark. Fresh provisioning into a database created by this operation and verified
+empty is exempt. Retrying an interrupted create uses the existing-database gate, including when the schema is still empty.
+Replacement recovery gates migrations after importing data, and repeats admission on resume. Its bookmarks are saved
+in `~/.myco/server/cloudflare/recovery.json` under `schemaUpdates` until publication copies the history to the
+deployment record. Full `myco server backup --target cloudflare --to <dir>` remains available
 for disaster recovery, independently of updates.
 
 The update prints the exact database rollback command with the recorded account and staged configuration. Run that
