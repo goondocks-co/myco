@@ -106,7 +106,7 @@ it('starts old-key cleanup at bounded identities on a large Project',async()=>{
         envelope_hash,content_revision,bytes,scanned_bytes,hash_state,preview_bytes,updated_at)
       SELECT '${PROJECT}','tool-input','noise-'||x,'sess','event','token','hash',0,1,0,'','',0 FROM n`);
     rig.sqlite.exec('ANALYZE');
-    expect(()=>cleanupSql(rig.sqlite,Array.from({length:21},(_,i)=>item(i,true))))
+    expect(()=>cleanupSql(rig.sqlite,Array.from({length:65},(_,i)=>item(i,true))))
       .toThrow('content_bundle_page_invalid');
     const empty=cleanupSql(rig.sqlite,[item(1)]);
     const old=cleanupSql(rig.sqlite,Array.from({length:20},(_,i)=>item(i,true)));

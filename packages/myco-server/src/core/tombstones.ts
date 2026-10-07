@@ -118,6 +118,13 @@ export async function tombstoneSession(
     ...metadata,
     // Segments first: `transcripts` is the only route to them.
     env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION})`).bind(projectId, projectId, sessionId),
+    ...(['event','tool-input'] as const).map(kind=>{
+      const table=kind==='event'?'events':'tool_calls';const id=kind==='event'?'event_id':'tool_call_id';
+      return env.db.prepare(`DELETE FROM storage_cleanup_omissions WHERE rowid IN
+        (SELECT o.rowid FROM ${table} r CROSS JOIN storage_cleanup_omissions o
+          WHERE r.project_id=? AND r.session_id=? AND o.project_id=r.project_id
+            AND o.resource_kind=? AND o.resource_id=r.${id})`).bind(projectId,sessionId,kind);
+    }),
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     // The runs that read the session keep their own rows; only their record of reading this one goes.
     env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
