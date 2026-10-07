@@ -810,6 +810,9 @@
     "owner review: stored and uploaded authority restore admit the live owner before any write": 80000,
     "owner review: live actor scope gates credential and machine Stop after demotion": 67000,
     "live actor writes: settings and dispatch refuse demotion at the native and D1 commit": 170000,
-    "storage cleanup: exact archives, bounded tool preview, raw uploader authority and unchanged reads": 80000
+    "storage cleanup: exact archives, bounded tool preview, raw uploader authority and unchanged reads": 80000,
+    "worker writes: required state and responses commit together under late authority loss": 200000,
+    "transcript repair priority: fresh live bytes precede a large rewind and repair completes through indexed selections": 150000,
+    "transcript live service: equal-time deployed checkpoints, fair indexed selection, and matching pending counts": 100000
   }
 }
