@@ -118,6 +118,37 @@ export const storageCleanupParity: ParityScenario = {
       WHERE project_id=${project} AND tool_call_id=${tool}`);
     expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
 
+    const control=async(paused:boolean)=>{
+      const response=await fetch(`${target.url}/api/storage-cleanup`,{method:'PATCH',
+        headers:{...target.ownerHeaders(),origin:target.url,'content-type':'application/json'},body:JSON.stringify({paused})});
+      expect(response.status).toBe(200);return response.json() as Promise<{state:Record<string,unknown>}>;
+    };
+    for(const method of ['GET','PATCH']){
+      const response=await fetch(`${target.url}/api/storage-cleanup`,{method,
+        headers:{...uploaderHeaders,origin:target.url},...(method==='PATCH'?{body:'{"paused":true}'}:{})});
+      expect(response.status).toBe(403);
+    }
+    const pausedState=(await control(true)).state;
+    await post('response',{responseId:crypto.randomUUID(),text:'capture remains admitted during pause'});
+    await wake();
+    const pausedResponse=await ownerGet('/api/storage-cleanup');expect(pausedResponse.status).toBe(200);
+    const afterPause=await pausedResponse.json() as {state:Record<string,unknown>};
+    for(const field of ['phase','cursor_project','cursor_id','cursor_session','cursor_created','cursor_rowid','converted_rows'])
+      expect(afterPause.state[field]).toEqual(pausedState[field]);
+    // Sparse inline inputs share the original uploader and session evidence.
+    const [toolIdentity]=await target.sql(`SELECT event_id FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
+    const fixtureRows:string[]=[];
+    for(let n=0;n<160;n++){
+      const id=crypto.randomUUID();
+      fixtureRows.push(`(${project},${lit(id)},${lit(sessionId)},${lit(String(toolIdentity.event_id))},
+          'Read',${lit(n%10===0?fullInput:'small')},1,${stamp+n+1},${lit(uploaderTokenId)},${stamp})`);
+    }
+    for(let start=0;start<fixtureRows.length;start+=40)await target.sql(`INSERT INTO tool_calls
+      (project_id,tool_call_id,session_id,event_id,tool_name,input,success,created_at,token_id,received_at)
+      VALUES ${fixtureRows.slice(start,start+40).join(',')}`);
+    before.counts=await counts();
+    await control(false);
+
     // The fixture represents a processed transcript and an old raw source while keeping real HTTP upload provenance.
     const aged = stamp - 2 * DAY_MS;
     await target.sql(`UPDATE transcripts SET parsed_offset=${rawBytes.byteLength},parser_context='{}',parse_error=NULL

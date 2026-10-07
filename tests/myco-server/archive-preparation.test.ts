@@ -18,7 +18,7 @@ const eventId=uuid(710);
 
 async function source(rig:ReturnType<typeof sqliteEnv>) {
   const token=await issueMemberToken(rig.db,{memberId:'mem_machine_1',machineId:'machine_1'},now);
-  const body=envelope({eventId,kind:'response',channel:'import',payload:{responseId:eventId,text:'original'.repeat(700)}});
+  const body=envelope({eventId,kind:'response',channel:'import',payload:{responseId:eventId,text:'original'.repeat(1400)}});
   expect((await ingestEvent(rig.db,{projectId,machineId:'machine_1',tokenId:token.tokenId,
     bodyBytes:0,now,writeOrigin:'server'},body)).persisted).toBe(true);
   const row=await cleanupCandidate(rig.db,{project_id:projectId,resource_kind:'event',resource_id:eventId});
@@ -57,7 +57,7 @@ describe('archive preparation lifecycle',()=>{
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").get()).toEqual({n:0});
       const abandoned=[...rig.bucket.objects.keys()];
       expect(abandoned).toHaveLength(2);
-      const changed=JSON.stringify({responseId:eventId,text:'changed'.repeat(900)});
+      const changed=JSON.stringify({responseId:eventId,text:'changed'.repeat(2000)});
       rig.sqlite.query('UPDATE events SET payload=?,payload_bytes=? WHERE event_id=?')
         .run(changed,utf8(changed).byteLength,eventId);
       await finishCleanup(rig);
@@ -132,7 +132,7 @@ describe('archive preparation lifecycle',()=>{
       await rig.db.batch(eventArchiveStatements(rig.db,row,adopted));
       expect(await reconcileArchivePreparations(rig.db,now+BLOB_RESERVATION_TTL_MS+1,16)).toBe(0);
       await settle(rig,now+BLOB_RESERVATION_TTL_MS+1);
-      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(700)}));
+      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
       expect(rig.bucket.objects.has(blobObjectKey(projectId,adopted.receipt.key,adopted.receipt.generation))).toBe(true);
     } finally {rig.sqlite.close();}
   });
@@ -149,7 +149,7 @@ describe('archive preparation lifecycle',()=>{
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").get()).toEqual({n:2});
       await rig.db.batch(eventArchiveStatements(rig.db,row,newer));
       await settle(rig,now+BLOB_RESERVATION_TTL_MS+1);
-      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(700)}));
+      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
     } finally {rig.sqlite.close();}
   });
 
@@ -164,7 +164,7 @@ describe('archive preparation lifecycle',()=>{
       const aged=agedAt(rig,sibling.bundle.preparationId);
       expect(await reconcileArchivePreparations(rig.db,aged,16)).toBe(1);
       await settle(rig,aged);
-      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(700)}));
+      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").get()).toEqual({n:2});
     } finally {rig.sqlite.close();}
   });
@@ -220,7 +220,7 @@ describe('archive preparation lifecycle',()=>{
       expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM prepared_archive_bundles').get()).toEqual({n:1});
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").get()).toEqual({n:2});
       await rig.db.batch(eventArchiveStatements(rig.db,row,archive));
-      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(700)}));
+      expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
     } finally {rig.sqlite.close();}
   });
 

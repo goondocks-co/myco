@@ -119,7 +119,7 @@ it('operator recovery refuses a bundle outside the bounded entry format',async()
     expect(await ingestEvent(f.db,{projectId:'proj_1',machineId:'m',tokenId:token,bodyBytes:0,now},
       envelope({eventId:uuid(90),kind:'tool.use',payload:{toolCallId:uuid(91),toolName:'Read',
         input:'format bound'.repeat(300),success:true}}),f.serverEnv)).toMatchObject({persisted:true,projected:true});
-    f.sqlite.exec('UPDATE archive_bundles SET entry_count=21');
+    f.sqlite.exec('UPDATE archive_bundles SET entry_count=65');
     const sourceKey=(key:string)=>{
       const [project,digest]=key.split('/');
       return (f.sqlite.query(`SELECT ${registeredObjectKeySql('?', '?')} AS key`).get(project!,digest!) as {key:string}).key;

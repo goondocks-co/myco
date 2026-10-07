@@ -45,7 +45,8 @@ describe('archive-before-clear storage cleanup',()=>{
       await drain(rig);
       expect(await eventContent(rig.serverEnv,'proj_1',uuid(999))).toBe(first);
       expect(await eventContent(rig.serverEnv,'proj_2',uuid(1))).toBe(JSON.stringify(next.payload));
-      expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE payload_format='archived'").get()).toEqual({n:21});
+      expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE payload_format='archived'").get()).toEqual({n:0});
+      expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM storage_cleanup_omissions WHERE reason='retained-inline:net-gain'").get()).toEqual({n:21});
     }finally{rig.sqlite.close();}
   });
   it('keeps exact UTF-8 spelling, projections, privacy and a behind-cursor import without transcript reconstruction',async()=>{
@@ -148,7 +149,7 @@ describe('archive-before-clear storage cleanup',()=>{
       const id=uuid(150);
       const output='out'.repeat(1300);
       await ingestEvent(rig.db,{projectId:'proj_1',machineId:'machine_1',tokenId:await tokenId(rig),bodyBytes:0,now},envelope({eventId:id,kind:'tool.use',payload:{toolCallId:id,toolName:'Edit',input:{file_path:'whole.ts'},output,success:true}}),rig.serverEnv);
-      const input=JSON.stringify({text:'🦋'.repeat(2000),file_path:'late-path.ts'});
+      const input=JSON.stringify({text:'🦋'.repeat(4000),file_path:'late-path.ts'});
       rig.sqlite.query('UPDATE tool_calls SET input=?,files_affected=? WHERE tool_call_id=?').run(input,JSON.stringify(['late-path.ts']),id);
       const facts=rig.sqlite.query('SELECT tool_name,files_affected,output_preview,output_blob_key,success,token_id FROM tool_calls').get();
       await drain(rig);

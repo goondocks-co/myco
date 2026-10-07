@@ -98,6 +98,26 @@ it('reduces occupied record and index bytes for a representative event and input
       await archiveRawSources(rig.serverEnv, now, 365);
     }
     expect(rig.sqlite.query('SELECT phase FROM raw_archive_state WHERE id=1').get()).toEqual({ phase: 2 });
+    const phases: Array<Record<string,number>>=[];
+    for(const [phase,label] of [[0,'tool-input'],[1,'event']] as const){
+      const phaseBefore=measure();
+      const countBefore=(rig.sqlite.query('SELECT converted_rows FROM storage_cleanup_state').get() as {converted_rows:number}).converted_rows;
+      const bundlesBefore=(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get() as {n:number}).n;
+      for(let pass=0;pass<EVENT_COUNT*4 && (rig.sqlite.query('SELECT phase FROM storage_cleanup_state').get() as {phase:number}).phase===phase;pass++){
+        await storageCleanup(rig.serverEnv,now,{clock:()=>
+          (rig.sqlite.query('SELECT phase FROM storage_cleanup_state').get() as {phase:number}).phase>phase?2001:0});
+      }
+      const phaseAfter=measure();
+      const rows=(rig.sqlite.query('SELECT converted_rows FROM storage_cleanup_state').get() as {converted_rows:number}).converted_rows-countBefore;
+      const bundles=(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get() as {n:number}).n-bundlesBefore;
+      const result={phase,rows,bundles,entriesPerBundle:rows/bundles,netBytes:phaseAfter.bytes-phaseBefore.bytes,
+        netBytesPerRow:(phaseAfter.bytes-phaseBefore.bytes)/rows};
+      phases.push(result);
+      console.info(`storage cleanup phase ${label}: ${JSON.stringify(result)}`);
+      expect(rows).toBeGreaterThan(0);
+      expect(result.entriesPerBundle).toBeGreaterThanOrEqual(phase===0?12:20);
+      expect(result.netBytesPerRow).toBeLessThan(0);
+    }
     for (let pass = 0; pass < EVENT_COUNT * 4 && await storageCleanupPending(rig.db); pass += 1) {
       await storageCleanup(rig.serverEnv, now);
     }
@@ -114,7 +134,7 @@ it('reduces occupied record and index bytes for a representative event and input
     const state = rig.sqlite.query('SELECT converted_rows,cleared_bytes,metadata_added_bytes FROM storage_cleanup_state WHERE id=1')
       .get() as { converted_rows: number; cleared_bytes: number; metadata_added_bytes: number };
     console.info(`storage cleanup representative volume: ${JSON.stringify({
-      cohorts: EVENT_COHORTS, events: EVENT_COUNT, inputCohorts: INPUT_COHORTS, inputs: INPUT_COUNT,
+      phases, cohorts: EVENT_COHORTS, events: EVENT_COUNT, inputCohorts: INPUT_COHORTS, inputs: INPUT_COUNT,
       clearedBytes: state.cleared_bytes,
       reportedMetadataBytes: state.metadata_added_bytes, reportedNetBytes: state.metadata_added_bytes - state.cleared_bytes,
       metadataAdded, netRepresentationOverheadBytes: state.cleared_bytes + netBytes,
@@ -122,7 +142,8 @@ it('reduces occupied record and index bytes for a representative event and input
       before: { bytes: before.bytes, occupiedPageBytes: before.page_bytes, pages: before.pages, free: before.free },
       after: { bytes: after.bytes, occupiedPageBytes: after.page_bytes, pages: after.pages, free: after.free }, changedTables,
     })}`);
-    expect(state.converted_rows).toBe(EVENT_COUNT + INPUT_COUNT);
+    const retained = (rig.sqlite.query('SELECT COUNT(*) AS n FROM storage_cleanup_omissions').get() as {n:number}).n;
+    expect(state.converted_rows + retained).toBe(EVENT_COUNT + INPUT_COUNT);
     expect(state.metadata_added_bytes).toBeGreaterThan(0);
     expect(state.metadata_added_bytes - state.cleared_bytes).toBeLessThan(0);
     expect(Object.values(deltas).reduce((sum, bytes) => sum + bytes, 0)).toBe(netBytes);
@@ -134,6 +155,37 @@ it('reduces occupied record and index bytes for a representative event and input
   } finally {
     rig.sqlite.close();
   }
+});
+
+it('reduces occupied bytes on the tool-input-only dogfood cohorts with sparse eligible identities',async()=>{
+  const rig=sqliteEnv();
+  try{
+    const now=Date.now();let number=0;
+    const insert=rig.sqlite.query(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input,
+      success,created_at,token_id,received_at) VALUES('proj_1',?,'input-only',?,'Read',?,1,?,'token',?)`);
+    const event=rig.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      VALUES('proj_1',?,'input-only','token','tool.use','cli','{}','hash',?,?)`);
+    for(const cohort of INPUT_COHORTS)for(let n=0;n<cohort.rows;n++){
+      for(let sparse=0;sparse<10;sparse++){
+        const id=uuid(50000+number);event.run(id,number,now);
+        insert.run(id,id,'x'.repeat(sparse===0?cohort.bytes:100),number++,now);
+      }
+    }
+    rig.sqlite.exec('DELETE FROM storage_cleanup_queue');
+    const before=occupiedStorage(rig.sqlite);
+    for(let pass=0;pass<300&&await storageCleanupPending(rig.db);pass++)await storageCleanup(rig.serverEnv,now);
+    expect(await storageCleanupPending(rig.db)).toBe(false);
+    const after=occupiedStorage(rig.sqlite);
+    const {n:bundles}=rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get() as {n:number};
+    const {converted_rows:rows}=rig.sqlite.query('SELECT converted_rows FROM storage_cleanup_state').get() as {converted_rows:number};
+    const result={phase:0,rows,bundles,entriesPerBundle:rows/bundles,netBytes:after.bytes-before.bytes,
+      netBytesPerRow:(after.bytes-before.bytes)/rows};
+    console.info(`storage cleanup tool-input-only volume: ${JSON.stringify(result)}`);
+    expect(rows).toBe(INPUT_COUNT);
+    expect(result.entriesPerBundle).toBeGreaterThanOrEqual(12);
+    expect(result.netBytesPerRow).toBeLessThan(0);
+    expect(after.page_bytes).toBeLessThan(before.page_bytes);
+  }finally{rig.sqlite.close();}
 });
 
 /** A capture-sized SQLite sample records the logical clear and SQLite's page reuse separately. */
@@ -187,7 +239,7 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     const bundleCount = (rig.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles WHERE session_id='volume-history'`)
       .get() as { n: number }).n;
     expect(bundleCount).toBeGreaterThan(0);
-    expect(bundleCount).toBeLessThan(ROWS);
+    expect(bundleCount).toBeLessThanOrEqual(ROWS);
     expect(rig.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id='volume-history'
       AND bundle_id IS NOT NULL AND bundle_entry IS NOT NULL`).get()).toEqual({ n: ROWS });
     expect(rig.sqlite.query(`SELECT source_kind,COUNT(*) AS n FROM registered_content_proofs

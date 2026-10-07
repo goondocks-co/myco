@@ -77,7 +77,8 @@ const binary = process.env.MYCO_STORAGE_CLEANUP_BINARY;
     expect(shell.status).toBe(200);
     expect(await shell.text()).toContain('<html');
 
-    const [tool] = await target.sql(`SELECT session_id,tool_call_id,input_blob_key FROM tool_calls WHERE project_id='${PROJECT_ID}' LIMIT 1`);
+    const [tool] = await target.sql(`SELECT session_id,tool_call_id,input_blob_key FROM tool_calls
+      WHERE project_id='${PROJECT_ID}' AND prompt_id IS NOT NULL AND input_bundle_id IS NOT NULL LIMIT 1`);
     const fullPath = `/api/projects/${PROJECT_ID}/processed/tool-input/${tool.tool_call_id}`;
     const full = await (await fetch(`${url}${fullPath}`, { headers: { cookie } })).text();
     const browser = await chromium.launch({ headless: true });

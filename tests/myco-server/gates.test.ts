@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 157;
+const EMIT_CALLS = 158;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -1319,6 +1319,8 @@ describe('gates', () => {
 
   it('pins the full route table, so no route of any kind is added without a decision', () => {
     expect(ROUTES.map((r) => `${r.auth === 'session' ? `session:${r.authority}` : r.auth} ${r.method} ${r.path}`).sort()).toEqual([
+      'session:admin GET /api/storage-cleanup',
+      'session:admin PATCH /api/storage-cleanup',
       'auth GET /auth/callback',
       'auth GET /auth/login',
       'enroll POST /members/join',

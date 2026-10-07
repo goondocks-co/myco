@@ -26,6 +26,7 @@ import { handleProvisionedHarnessReport } from './api/harness-health.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch, handleSearchAcross } from './api/search.js';
 import { handleWake } from './api/wake.js';
+import { handleStorageCleanup,handleSetStorageCleanup } from './api/storage-cleanup.js';
 import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance.js';
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
 import { handleRereadTranscripts } from './api/transcript-reread.js';
@@ -138,6 +139,8 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['public']), method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },
   { authorization: httpPolicy('run', runDispatchAction, 'project', ['member']), method: 'POST', path: '/api/harness/dispatch', auth: 'session', authority: 'member', handler: handleHarnessDispatch },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/wake', auth: 'session', authority: 'admin', handler: handleWake },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/storage-cleanup', auth: 'session', authority: 'admin', handler: handleStorageCleanup },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PATCH', path: '/api/storage-cleanup', auth: 'session', authority: 'admin', handler: handleSetStorageCleanup },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/maintenance', auth: 'session', authority: 'admin', handler: handleMaintenanceStatus },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/maintenance/{check}/run', pattern: /^\/api\/maintenance\/(?<check>[a-z]{1,32})\/run$/, auth: 'session', authority: 'admin', handler: handleRunMaintenance },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/titling-backfill', auth: 'session', authority: 'admin', handler: handleTitlingBackfill },
