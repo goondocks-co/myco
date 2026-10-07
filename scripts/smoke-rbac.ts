@@ -43,7 +43,7 @@ assert.ok(!listed.some((tool) => tool.name === 'myco_run'));
 await callTool(ctx, 'myco_plans', { op: 'list', project: 'proj_1' });
 fixture.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('smoke-agent','Smoke','built-in',1,?)`, [now]);
 for (const [id, actor] of [['own', 'mem_machine_2'], ['other', 'mem_machine_3']]) fixture.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,dispatch_spec,started_at) VALUES ('proj_1',?,'smoke-agent','title-summary','queued',?,?)`, [id, JSON.stringify({ actor }), now]);
-const post = async (id: string) => server.handleRequest(new Request(`https://smoke/api/projects/proj_1/runs/${id}/cancel`, { method: 'POST', headers: { cookie: await ownerCookie(now, MEMBER_SUB), origin: 'https://smoke' } }), env);
+const post = async (id: string) => server.handleRequest(new Request(`https://smoke/api/projects/proj_1/runs/${id}/cancel`, { method: 'POST', headers: { cookie: await ownerCookie(fixture.db, now, MEMBER_SUB), origin: 'https://smoke' } }), env);
 assert.equal((await post('other')).status, 404);
 assert.equal((await post('own')).status, 200);
 assert.equal((fixture.sqlite.query("SELECT status FROM agent_runs WHERE id='other'").get() as { status: string }).status, 'queued');
@@ -57,10 +57,10 @@ for (const role of ['owner', 'admin', 'member'] as const) {
 }
 fixture.sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES ('foreign-machine','mem_machine_3',?)", [now]);
 for (const [id, expected] of [['missing-machine', 404], ['foreign-machine', 403]] as const) {
-  const response = await server.handleRequest(new Request(`https://smoke/api/machines/${id}/settings`, { headers: { cookie: await ownerCookie(now, MEMBER_SUB) } }), env);
+  const response = await server.handleRequest(new Request(`https://smoke/api/machines/${id}/settings`, { headers: { cookie: await ownerCookie(fixture.db, now, MEMBER_SUB) } }), env);
   assert.equal(response.status, expected);
 }
-const sessionPost = async (path: string, body: unknown, sub = MEMBER_SUB) => server.handleRequest(new Request(`https://smoke${path}`, { method: 'POST', headers: { cookie: await ownerCookie(now, sub), origin: 'https://smoke' }, body: JSON.stringify(body) }), env);
+const sessionPost = async (path: string, body: unknown, sub = MEMBER_SUB) => server.handleRequest(new Request(`https://smoke${path}`, { method: 'POST', headers: { cookie: await ownerCookie(fixture.db, now, sub), origin: 'https://smoke' }, body: JSON.stringify(body) }), env);
 assert.equal((await sessionPost('/api/enrollment', { role: 'owner' })).status, 403);
 assert.equal((await sessionPost('/api/enrollment', { role: 'owner' }, '583231')).status, 400);
 assert.equal((await sessionPost('/api/enrollment', { role: 'admin' }, '583231')).status, 403);
@@ -101,7 +101,7 @@ fixture.sqlite.run("UPDATE members SET role='member' WHERE id='mem_machine_2'");
 const ownerCredential = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
 fixture.sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES ('machine_1','mem_machine_1',?)", [now]);
 for (const [sub, visible] of [['583231', true], ['770003', false]] as const) {
-  const headers = { cookie: await ownerCookie(now, sub) };
+  const headers = { cookie: await ownerCookie(fixture.db, now, sub) };
   const page = await (await server.handleRequest(new Request('https://smoke/api/credentials', { headers }), env)).json() as { rows: Array<{ id: string }> };
   assert.ok(page.rows, JSON.stringify({ sub, page }));
   assert.equal(page.rows.some(row => row.id === ownerCredential.tokenId), visible);
