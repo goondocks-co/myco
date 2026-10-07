@@ -7,7 +7,7 @@ import { managedBinaryPath, versionBinaryPath } from '@myco/install/managed-bina
 // .mjs is guarded by an is-main check, so importing it MUST NOT execute the
 // postinstall body (detectTarget / require.resolve / process.exit). If that
 // guard regresses, this import would terminate the test process.
-import { convergeNpmInstall } from '../../packages/myco/scripts/select-binary.mjs';
+import { convergeNpmInstall, deriveChannel } from '../../packages/myco/scripts/select-binary.mjs';
 
 const PLATFORM = process.platform === 'win32' ? 'win32' : process.platform;
 const TEST_VERSION = '1.2.3';
@@ -260,5 +260,20 @@ describe('select-binary convergeNpmInstall', () => {
     expect(readPin(mycoHome)).toBe(externalPin);
     expect(result.pinAction).toBe('preserved-external');
     expect(fs.existsSync(dest)).toBe(true);
+  });
+});
+
+
+describe('npm install channel', () => {
+  it('records alpha separately from beta and stable', () => {
+    const { mycoHome } = makeFixture();
+    for (const [version, channel] of [['2.0.0-alpha.1', 'alpha'], ['2.0.0-beta.1', 'beta'], ['2.0.0', 'stable'], ['1.4.8', 'stable'], ['0.0.0-dev', 'beta']]) {
+      fs.writeFileSync(path.join(mycoHome, 'package.json'), JSON.stringify({ version }));
+      expect(deriveChannel(mycoHome)).toBe(channel);
+    }
+    for (const version of [undefined, 'garbage', '2.0.0-alpha.01']) {
+      fs.writeFileSync(path.join(mycoHome, 'package.json'), JSON.stringify({ version }));
+      expect(() => deriveChannel(mycoHome)).toThrow('valid release version');
+    }
   });
 });

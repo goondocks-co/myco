@@ -10,6 +10,8 @@
  * healthy and restores 1.4; the adopt-failed mark on its version slot keeps
  * that updater from adopting it again.
  */
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
+import { allocateOwnedFixture } from '../support/owned-fixtures.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -51,6 +53,16 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
   });
   afterEach(() => {
     for (const [k, v] of Object.entries(held)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses an unreadable legacy-vault directory instead of treating it as empty', () => {
+    const legacy = allocateOwnedFixture('myco-unreadable-vault-');
+    const groves = path.join(legacy, 'groves');
+    fs.mkdirSync(path.join(groves, 'g'), { recursive: true });
+    fs.writeFileSync(path.join(groves, 'g/myco.db'), 'vault');
+    fs.chmodSync(groves, 0o000);
+    try { expect(() => unmovedLegacyVaults(legacy)).toThrow(); }
+    finally { setFixturePermissions(groves, 0o700); fs.rmSync(legacy, { recursive: true, force: true }); }
   });
 
   it('knows a member home by its membership or its cutover record', () => {

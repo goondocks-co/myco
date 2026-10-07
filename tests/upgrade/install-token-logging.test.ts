@@ -47,8 +47,8 @@ describe('installer credential logging protections', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('loopback listener must have a port');
       const source = readFileSync(resolve('docs/install.sh'), 'utf8');
-      const helpers = source.slice(source.indexOf('auth_token()'), source.indexOf('# ---------------------------------------------------------------------------\n# Platform detection'));
-      const script = `set -eu\nREPO=goondocks-co/myco\nerror() { printf '%s\\n' "$1" >&2; }\n${helpers}\ngh_curl http://127.0.0.1:${address.port}/\n`;
+      const helpers = source.slice(source.indexOf('auth_token()'), source.indexOf('# Run'));
+      const script = `set -eu\nREPO=goondocks-co/myco\nerror() { printf '%s\\n' "$1" >&2; }\n${helpers}\ngh_request -fsSL http://127.0.0.1:${address.port}/\n`;
       for (const shell of SHELLS) {
         for (const mode of ['verbose', 'trace']) {
           const trace = join(root, `${shell.split('/').at(-1)}-${mode}.trace`);

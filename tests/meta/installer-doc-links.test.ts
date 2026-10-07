@@ -20,9 +20,7 @@ const REPO = path.resolve(import.meta.dir, '..', '..');
 const SURFACES = ['docs/install.sh', 'docs/install.ps1', 'README.md', 'docs/quickstart.md', 'docs/team-host.md', '.github/workflows/publish.yml'];
 
 /** Guides another PR adds, each with that PR. This PR (#1495) merges after it. */
-const PENDING: Readonly<Record<string, string>> = {
-  'docs/upgrade-from-v1.md': '#1501 adds the 2.0 upgrade guide; #1495 merges after it',
-};
+const PENDING: Readonly<Record<string, string>> = {};
 
 /** Every repository Markdown path a surface links to, as a path from the repository root. */
 function linkedDocs(surface: string): string[] {
@@ -41,7 +39,7 @@ function linkedDocs(surface: string): string[] {
 
 describe('the documents the installers link to', () => {
   it('finds the links it checks (guards against a scan that matches nothing)', () => {
-    expect(linkedDocs('docs/install.sh')).toEqual(['docs/self-hosting.md', 'docs/upgrade-from-v1.md']);
+    expect(linkedDocs('docs/install.sh')).toEqual(['docs/self-hosting.md', 'docs/upgrade.md']);
     expect(linkedDocs('README.md').length).toBeGreaterThan(5);
   });
 

@@ -49,12 +49,13 @@ function toolbox(dir: string, opts: { jq: boolean; curl?: string }): string {
  * A `curl` that answers the releases list with `releases` (HTTP 200). A download is served from `serve` when given,
  * by the file name the URL ends in; otherwise it gets the releases list too. `log` records each call's arguments.
  */
-const releasesCurl = (releases: unknown, file: string, opts: { pretty?: boolean; log?: string; serve?: string } = {}): string => {
+const releasesCurl = (releases: unknown, file: string, opts: { pretty?: boolean; log?: string; serve?: string; pages?: unknown[][]; current?: string } = {}): string => {
   fs.writeFileSync(file, opts.pretty ? JSON.stringify(releases, null, 2) : JSON.stringify(releases));
+  for (const [i, page] of (opts.pages ?? []).entries()) fs.writeFileSync(`${file}.${i + 1}`, JSON.stringify(page));
   return `#!/bin/sh\n${opts.log ? `echo "$*" >> '${opts.log}'\n` : ''}out=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -w|-H) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done\n`
     + `[ -n "$out" ] || exit 22\n`
     + (opts.serve ? `case "$url" in */releases/download/*) cp "${opts.serve}/\${url##*/}" "$out" || exit 22; exit 0 ;; esac\n` : '')
-    + `cp '${file}' "$out"\nprintf 200\n`;
+    + (opts.pages ? `page=1; case "$url" in *'&page='*) page="\${url##*page=}" ;; esac\ncp '${file}.'"$page" "$out"\nprintf 200\n` : `cp '${file}' "$out"\nprintf 200\n`);
 };
 
 /** Every temporary directory a test makes, removed when the file's tests end. */
@@ -66,6 +67,7 @@ interface Run { status: number | null; out: string; home: string }
 
 function install(home: string, env: Record<string, string>, args: string[] = [], toolPath?: string): Run {
   const result = spawnSync('sh', [SCRIPT, ...args], {
+    cwd: home,
     env: { PATH: toolPath ?? '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, ...env }, encoding: 'utf8', timeout: 90_000,
   });
   return { status: result.status, out: `${result.stdout}${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, ''), home };
@@ -197,6 +199,14 @@ describe('the Myco 2.0 installer', () => {
     expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toBe(zshenv);
   });
 
+  it.skipIf(!HAS_CC)('records an absolute destination for a relative MYCO_BIN_DIR', () => {
+    const home = freshHome();
+    expect(install(home, { ...FROM(), MYCO_BIN_DIR: './tools' }).status).toBe(0);
+    const marker = JSON.parse(fs.readFileSync(path.join(home, '.myco/install.json'), 'utf8'));
+    expect(path.isAbsolute(marker.bin)).toBe(true);
+    expect(fs.realpathSync(marker.bin)).toBe(path.join(home, 'tools/myco'));
+  });
+
   describe('on a machine already joined to a Deployment', () => {
     /** A home holding a Deployment membership, as `myco login` leaves one. */
     const memberHome = (): string => {
@@ -290,6 +300,13 @@ describe('the Myco 2.0 installer', () => {
   });
 
   describe('on a machine with Myco 1.4', () => {
+    it('keeps the preview channel in its explicit replacement command', () => {
+      const legacy = legacyHome({ binary: true });
+      const run = install(legacy.home, { ...FROM(), MYCO_CHANNEL: 'alpha' });
+      expect(run.status).toBe(1);
+      expect(run.out).toContain('| MYCO_CHANNEL=alpha sh -s -- --replace-1.4');
+    });
+
     it('installs nothing by default, over a 1.x binary or beside 1.4 vaults, and says how to move over', () => {
       for (const binary of [true, false]) {
         const legacy = legacyHome({ binary });
@@ -301,7 +318,7 @@ describe('the Myco 2.0 installer', () => {
           : `Myco 1.4 is on this machine (its vaults in ${path.join(legacy.home, '.myco', 'groves')}). Nothing was installed.`);
         expect(run.out).toContain("curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4");
         expect(run.out).toContain('myco cutover --dry-run');
-        expect(run.out).toContain('docs/upgrade-from-v1.md');
+        expect(run.out).toContain('docs/upgrade.md#upgrading-from-myco-14');
         expect(files(legacy.home)).toEqual(before);
         if (binary) expect(fs.readFileSync(legacy.binary, 'utf8')).toBe('#!/bin/sh\necho 1.4.8\n');
       }
@@ -398,16 +415,32 @@ describe('the Myco 2.0 installer', () => {
     const afterGa = [...beforeGa, release('myco/v2.0.0'), release('myco/v2.1.0-beta.1', true)];
     for (const jq of [true, false]) {
       describe(jq ? 'with jq' : 'without jq', () => {
-        const pick = (releases: unknown[], channel: string, opts: { pretty?: boolean; log?: string; args?: string[]; serve?: string } = {}): Run => {
+        const pick = (releases: unknown[], channel: string, opts: { pretty?: boolean; log?: string; args?: string[]; serve?: string; pages?: unknown[][]; current?: string } = {}): Run => {
           const dir = tmp('myco-install-tools-');
           const tools = toolbox(path.join(dir, 'bin'), { jq, curl: releasesCurl(releases, path.join(dir, 'releases.json'), opts) });
-          return install(freshHome(), { MYCO_CHANNEL: channel }, opts.args ?? ['--dry-run'], tools);
+          const home = freshHome();
+          if (opts.current) {
+            const bin = path.join(home, '.myco', 'bin'); fs.mkdirSync(bin, { recursive: true });
+            fs.writeFileSync(path.join(bin, 'myco'), `#!/bin/sh\necho ${opts.current}\n`, { mode: 0o755 });
+          }
+          return install(home, { MYCO_CHANNEL: channel }, opts.args ?? ['--dry-run'], tools);
         };
-        it('a release over a prerelease, and a prerelease only while no release exists or on beta', () => {
+        it('finds stable 1.4 beyond the first page of 2.0 prereleases', () => {
+          const pages = [Array.from({ length: 100 }, (_, i) => release(`myco/v2.0.0-alpha.${i + 1}`, true)), [release('myco/v1.4.8')]];
+          expect(pick([], 'stable', { pages }).out).toContain('Found: myco/v1.4.8');
+        });
+        it('removing alpha tags leaves an installed alpha binary and its channel intact', () => {
+          const run = pick([release('myco/v2.0.0'), release('myco/v2.1.0-alpha.2', true)], 'alpha', { current: '2.1.0-alpha.10', args: [] });
+          expect(run.status).toBe(0);
+          expect(run.out).toContain('staying put');
+          expect(files(run.home)).toEqual(['.myco/bin/myco']);
+          expect(fs.readFileSync(path.join(run.home, '.myco/bin/myco'), 'utf8')).toBe('#!/bin/sh\necho 2.1.0-alpha.10\n');
+        });
+        it('stable stays on 1.4 until GA and beta opts into prereleases', () => {
           const stableBeforeGa = pick(beforeGa, 'stable');
           expect(stableBeforeGa.status).toBe(0);
-          expect(stableBeforeGa.out).toContain('No Myco 2 release yet; installing the newest prerelease, myco/v2.0.0-beta.1.');
-          expect(stableBeforeGa.out).toContain(`Would install myco-${TARGET} (2.0.0-beta.1) from https://github.com/goondocks-co/myco/releases/download/myco%2Fv2.0.0-beta.1`);
+          expect(stableBeforeGa.out).not.toContain('installing the newest prerelease');
+          expect(stableBeforeGa.out).toContain(`Would install myco-${TARGET} (1.4.8) from https://github.com/goondocks-co/myco/releases/download/myco%2Fv1.4.8`);
           expect(pick(beforeGa, 'beta').out).toContain('Found: myco/v2.0.0-beta.1');
           expect(pick(afterGa, 'stable').out).toContain('Found: myco/v2.0.0');
           expect(pick(afterGa, 'stable').out).not.toContain('prerelease');
@@ -419,7 +452,7 @@ describe('the Myco 2.0 installer', () => {
           expect(found([['myco/v2.0.0', false], ['myco/v2.0.0-beta.1', true]])).toBe('myco/v2.0.0');
           expect(found([['myco/v2.0.0-beta.1', true], ['myco/v2.0.0', false]])).toBe('myco/v2.0.0');
           expect(found([['myco/v2.0.0-beta.10', true], ['myco/v2.0.0-beta.2', true]])).toBe('myco/v2.0.0-beta.10');
-          expect(found([['myco/v2.0.0-rc.1', true], ['myco/v2.0.0-beta.9', true]])).toBe('myco/v2.0.0-rc.1');
+          expect(found([['myco/v2.0.0-rc.1', true], ['myco/v2.0.0-beta.9', true]])).toBe('myco/v2.0.0-beta.9');
           expect(found([['myco/v2.10.0', false], ['myco/v2.9.0', false]])).toBe('myco/v2.10.0');
         });
         it('never a release still being published: its binary or SHA256SUMS not yet attached', () => {
@@ -432,14 +465,14 @@ describe('the Myco 2.0 installer', () => {
         });
         it('treats a release GitHub marks as a prerelease as one, even with no hyphen in its tag', () => {
           expect(pick([...afterGa, release('myco/v2.2.0', true)], 'stable').out).toContain('Found: myco/v2.0.0');
-          expect(pick([...afterGa, release('myco/v2.2.0', true)], 'beta').out).toContain('Found: myco/v2.2.0');
+          expect(pick([...afterGa, release('myco/v2.2.0', true)], 'beta').out).toContain('Found: myco/v2.1.0-beta.1');
         });
         it.skipIf(!HAS_CC)('records a prerelease as one in install.json, whether its tag or GitHub says so', () => {
           const marker = (run: Run) => JSON.parse(fs.readFileSync(path.join(run.home, '.myco', 'install.json'), 'utf8')) as { channel: string; prerelease: boolean };
-          const fallback = pick(beforeGa, 'stable', { args: [], serve: artifacts });
+          const fallback = pick(beforeGa, 'beta', { args: [], serve: artifacts });
           expect(fallback.status).toBe(0);
-          expect(fallback.out).toContain('This machine stays on the stable channel and moves to the first 2.x release.');
-          expect(marker(fallback)).toMatchObject({ channel: 'stable', prerelease: true });
+          expect(fallback.out).not.toContain('This machine stays on the stable channel');
+          expect(marker(fallback)).toMatchObject({ channel: 'beta', prerelease: true });
           expect(marker(pick(afterGa, 'stable', { args: [], serve: artifacts }))).toMatchObject({ channel: 'stable', prerelease: false });
           expect(marker(pick([...afterGa, release('myco/v2.2.0', true)], 'beta', { args: [], serve: artifacts }))).toMatchObject({ channel: 'beta', prerelease: true });
         });

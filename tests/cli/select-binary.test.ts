@@ -42,16 +42,14 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
   const pkgRoot = path.join(tmpDir, 'package');
   const scriptsDir = path.join(pkgRoot, 'scripts');
   fs.mkdirSync(scriptsDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgRoot, 'package.json'), JSON.stringify({ name: '@goondocks/myco', version: '0.0.0' }));
 
   const scriptPath = path.join(scriptsDir, 'select-binary.mjs');
   fs.copyFileSync(SCRIPT_SOURCE, scriptPath);
-  // select-binary.mjs imports the shared `./managed-paths.mjs` path module — it
-  // ships alongside the script in `scripts/` and must travel with it into the
-  // scaffolded package, or the postinstall subprocess crashes at module load.
-  fs.copyFileSync(
-    path.resolve('packages/myco/scripts/managed-paths.mjs'),
-    path.join(scriptsDir, 'managed-paths.mjs'),
-  );
+  // The npm tarball carries the shared path and release-policy modules.
+  for (const file of ['managed-paths.mjs', 'release-policy.mjs']) {
+    fs.copyFileSync(path.resolve('packages/myco/scripts', file), path.join(scriptsDir, file));
+  }
 
   if (options?.sourceCheckout) {
     fs.mkdirSync(path.join(pkgRoot, 'src'), { recursive: true });

@@ -40,7 +40,7 @@ const config = argv.includes('--config') ? fs.readFileSync(0, 'utf8') : '';
 fs.appendFileSync(process.env.CURL_LOG, JSON.stringify({ argv, config }) + '\\n');
 const out = argv[argv.indexOf('-o') + 1];
 if (argv.includes('-w')) {
-  fs.writeFileSync(out, '[]');
+  fs.writeFileSync(out, JSON.stringify([{ tag_name: 'myco/v2.0.0', prerelease: false, draft: false, assets: [{ name: 'myco-${os.toLowerCase()}-x64' }, { name: 'SHA256SUMS' }] }]));
   process.stdout.write('200');
 } else if (process.env.FAIL_DOWNLOAD === '1') {
   process.exit(22);

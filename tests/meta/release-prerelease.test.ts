@@ -15,7 +15,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 const WORKFLOW = path.join(import.meta.dir, '..', '..', '.github', 'workflows', 'publish.yml');
-type Step = { name?: string; run?: string };
+type Step = { name?: string; run?: string; uses?: string };
 const workflow = YAML.parse(fs.readFileSync(WORKFLOW, 'utf8')) as { on: { push: { tags: string[] } }; jobs: Record<string, { steps: Step[] }> };
 const step = (job: string, name: string): string => {
   const found = workflow.jobs[job].steps.find((s) => s.name === name)?.run;
@@ -44,6 +44,14 @@ function classify(tag: string): Record<string, string> {
 }
 
 describe('a Myco 2.0 prerelease', () => {
+  it('checks out the shared policy before validating a tag', () => {
+    const steps = workflow.jobs['validate-tag'].steps;
+    const checkout = steps.findIndex(s => s.uses?.startsWith('actions/checkout@'));
+    const validation = steps.findIndex(s => s.name === 'Extract package and version from tag');
+    expect(checkout).toBeGreaterThanOrEqual(0);
+    expect(checkout).toBeLessThan(validation);
+  });
+
   it('is triggered by its tag, and classed as a beta prerelease', () => {
     expect(workflow.on.push.tags).toContain('myco/v*.*.*-*');
     expect(classify('myco/v2.0.0-beta.1')).toMatchObject({ version: '2.0.0-beta.1', is_prerelease: 'true', npm_tag: 'beta', package_name: '@goondocks/myco' });
@@ -54,7 +62,7 @@ describe('a Myco 2.0 prerelease', () => {
     expect(classify('myco/v2.0.0-alpha.3')).toMatchObject({ is_prerelease: 'true', npm_tag: 'alpha' });
     expect(classify('myco/v2.0.0-rc.1')).toMatchObject({ is_prerelease: 'true', npm_tag: 'next' });
     expect(classify('myco-shared/v2.0.0-beta.2')).toMatchObject({ is_prerelease: 'true', npm_tag: 'beta' });
-    for (const tag of ['myco/v2.0.0-dev.1', 'myco/v2.0.0-preview', 'myco/v2.0.0-beta.1+build', 'myco/v2.0', 'myco/v2.0.0.1', 'myco/v2.0.0garbage']) {
+    for (const tag of ['myco/v2.0.0-alpha.foo', 'myco/v2.0.0-beta.foo', 'myco/v2.0.0-alpha.01', 'myco/v2.0.0-dev.1', 'myco/v2.0.0-preview', 'myco/v2.0.0-beta.1+build', 'myco/v2.0', 'myco/v2.0.0.1', 'myco/v2.0.0garbage']) {
       const result = runClassify(tag);
       expect({ tag, status: result.status, npm_tag: result.outputs.npm_tag ?? 'none' }).toEqual({ tag, status: 1, npm_tag: 'none' });
     }
@@ -62,9 +70,12 @@ describe('a Myco 2.0 prerelease', () => {
 
   it('carries release notes that install Myco 2.0, not 1.4', () => {
     const notes = step('create-release', 'Generate release notes');
-    expect(notes).toContain("curl --proto '\"'\"'=https'\"'\"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=beta sh");
+    expect(notes).toContain("curl --proto '\"'\"'=https'\"'\"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.npm_tag }} sh");
     expect(notes).toContain('myco login <invite link>');
-    expect(notes).toContain('docs/upgrade-from-v1.md');
+    expect(notes).toContain('Stable selects releases only');
+    expect(notes).toContain('Cut the stable/next tag first');
+    expect(notes).not.toContain('stable channel only while');
+    expect(notes).toContain('docs/upgrade.md#upgrading-from-myco-14');
     for (const oneFour of ['Operations page', 'myco open', 'npm update -g @goondocks/myco', '@goondocks/myco@beta']) expect(notes).not.toContain(oneFour);
   });
 
@@ -76,37 +87,43 @@ describe('a Myco 2.0 prerelease', () => {
   it('stays a draft until its binaries and SHA256SUMS are attached, and is made public last', () => {
     // The three release steps, run in order with a `gh` that records each call: the release is created as a draft, every
     // asset is uploaded to it, and only the last call makes it public.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-order-'));
-    try {
-      const bin = path.join(dir, 'bin');
-      fs.mkdirSync(bin);
-      const log = path.join(dir, 'gh.log');
-      fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit 1; fi\necho "$*" >> '${log}'\n`);
-      fs.chmodSync(path.join(bin, 'gh'), 0o755);
-      if (spawnSync('sh', ['-c', 'command -v sha256sum']).status !== 0) {
-        fs.writeFileSync(path.join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n');
-        fs.chmodSync(path.join(bin, 'sha256sum'), 0o755);
+    for (const existing of [false, true]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-order-'));
+      try {
+        const bin = path.join(dir, 'bin');
+        fs.mkdirSync(bin);
+        const log = path.join(dir, 'gh.log');
+        fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit ${existing ? 0 : 1}; fi\necho "$*" >> '${log}'\n`);
+        fs.chmodSync(path.join(bin, 'gh'), 0o755);
+        if (spawnSync('sh', ['-c', 'command -v sha256sum']).status !== 0) {
+          fs.writeFileSync(path.join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n');
+          fs.chmodSync(path.join(bin, 'sha256sum'), 0o755);
+        }
+        fs.mkdirSync(path.join(dir, 'raw-binaries-staging'));
+        for (const name of ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe']) {
+          fs.writeFileSync(path.join(dir, 'raw-binaries-staging', name), name);
+        }
+        fs.writeFileSync(path.join(dir, 'release-assets.txt'), 'myco.tgz\n');
+        fs.writeFileSync(path.join(dir, 'release-notes.md'), 'notes\n');
+        const env = { PATH: `${bin}:${process.env.PATH}`, TAG_NAME: 'myco/v2.0.0-beta.1', IS_PRERELEASE: 'true', RELEASE_TITLE: 'Myco 2.0.0-beta.1', GH_TOKEN: 'x' };
+        for (const name of ['Create or update GitHub Release', 'Stage and upload raw binaries + SHA256SUMS (myco)', 'Publish the GitHub Release']) {
+          const ran = spawnSync('bash', ['-c', step('create-release', name)], { cwd: dir, env, encoding: 'utf8' });
+          expect({ name, status: ran.status, stderr: ran.stderr }).toEqual({ name, status: 0, stderr: '' });
+        }
+        const calls = fs.readFileSync(log, 'utf8').trim().split('\n');
+        if (existing) {
+          expect(calls[0]).toContain('release edit myco/v2.0.0-beta.1 --draft=true');
+          expect(calls[1]).toBe('release upload myco/v2.0.0-beta.1 myco.tgz --clobber');
+        } else expect(calls[0]).toMatch(/^release create myco\/v2\.0\.0-beta\.1 myco\.tgz --verify-tag --draft /);
+        const uploadIndex = existing ? 2 : 1;
+        expect(calls[uploadIndex]).toMatch(/^release upload myco\/v2\.0\.0-beta\.1 .*SHA256SUMS.* --clobber$/);
+        expect(calls[uploadIndex]).toContain('raw-binaries-staging/myco-darwin-arm64');
+        expect(calls.at(-1)).toBe('release edit myco/v2.0.0-beta.1 --draft=false --prerelease --latest=false');
+        expect(calls).toHaveLength(existing ? 4 : 3);
+        expect(calls.slice(0, 2).some((call) => call.includes('--draft=false'))).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
       }
-      fs.mkdirSync(path.join(dir, 'raw-binaries-staging'));
-      for (const name of ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe']) {
-        fs.writeFileSync(path.join(dir, 'raw-binaries-staging', name), name);
-      }
-      fs.writeFileSync(path.join(dir, 'release-assets.txt'), 'myco.tgz\n');
-      fs.writeFileSync(path.join(dir, 'release-notes.md'), 'notes\n');
-      const env = { PATH: `${bin}:${process.env.PATH}`, TAG_NAME: 'myco/v2.0.0-beta.1', IS_PRERELEASE: 'true', RELEASE_TITLE: 'Myco 2.0.0-beta.1', GH_TOKEN: 'x' };
-      for (const name of ['Create or update GitHub Release', 'Stage and upload raw binaries + SHA256SUMS (myco)', 'Publish the GitHub Release']) {
-        const ran = spawnSync('bash', ['-c', step('create-release', name)], { cwd: dir, env, encoding: 'utf8' });
-        expect({ name, status: ran.status, stderr: ran.stderr }).toEqual({ name, status: 0, stderr: '' });
-      }
-      const calls = fs.readFileSync(log, 'utf8').trim().split('\n');
-      expect(calls[0]).toMatch(/^release create myco\/v2\.0\.0-beta\.1 myco\.tgz --verify-tag --draft /);
-      expect(calls[1]).toMatch(/^release upload myco\/v2\.0\.0-beta\.1 .*SHA256SUMS.* --clobber$/);
-      expect(calls[1]).toContain('raw-binaries-staging/myco-darwin-arm64');
-      expect(calls[2]).toBe('release edit myco/v2.0.0-beta.1 --draft=false --prerelease --latest=false');
-      expect(calls).toHaveLength(3);
-      expect(calls.slice(0, 2).some((call) => call.includes('--draft=false'))).toBe(false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

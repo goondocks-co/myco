@@ -39,6 +39,7 @@ jobs:
       package_dir: ${{ steps.extract.outputs.package_dir }}
       tarball_prefix: ${{ steps.extract.outputs.tarball_prefix }}
     steps:
+      - uses: actions/checkout@v4
       - name: Extract package and version from tag
         id: extract
         env:
@@ -75,7 +76,7 @@ jobs:
           # -beta.N or -rc.N prerelease. Every hyphenated version is a
           # prerelease under its own npm dist-tag, never latest; any other
           # shape fails here, before anything is built or published.
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          if ! VERSION="$VERSION" node --input-type=module -e 'import { releaseKey } from "./packages/myco/scripts/release-policy.mjs"; if (!releaseKey(process.env.VERSION)) process.exit(1)'; then
             echo "Malformed version in release tag: $TAG_NAME" >&2
             exit 1
           fi
@@ -557,18 +558,21 @@ jobs:
           if [ "$TAG_PREFIX" = "myco" ]; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               INSTALL_BLOCK='```bash
-          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=beta sh
+          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.npm_tag }} sh
           myco login <invite link>
           ```
 
-          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md).'
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
+              if [ '${{ needs.validate-tag.outputs.npm_tag }}' = 'next' ]; then
+                INSTALL_BLOCK='RC builds are outside the automatic release channels. Download the binary and SHA256SUMS from this release for manual evaluation.'
+              fi
             else
               INSTALL_BLOCK='```bash
           curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
           myco login <invite link>
           ```
 
-          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade-from-v1.md).'
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
             fi
           else
             if [ "$IS_PRERELEASE" = "true" ]; then
@@ -588,7 +592,7 @@ jobs:
             cat > release-notes.md <<NOTES_EOF
           \`${PACKAGE_NAME}\` · ${RANGE_BLURB} · **Pre-release**
 
-          > Pre-release. May contain bugs or incomplete features. The installer picks it on the beta channel (\`MYCO_CHANNEL=beta\`), and on the stable channel only while no 2.x release exists.
+          > Pre-release. May contain bugs or incomplete features. Install alpha with \`MYCO_CHANNEL=alpha\`, or beta with \`MYCO_CHANNEL=beta\`. Stable selects releases only and stays on 1.4 until 2.x GA. Alpha admits alpha, beta and stable; beta admits beta and stable. Updates stay within the recorded channel and never downgrade. Cut the stable/next tag first; delete old prerelease tags only after its release is published.
 
           ## Install
 
@@ -602,6 +606,8 @@ jobs:
             RELEASE_TITLE="${DISPLAY_NAME} ${VERSION}"
             cat > release-notes.md <<NOTES_EOF
           \`${PACKAGE_NAME}\` · ${RANGE_BLURB}
+
+          Cut the stable/next tag first; delete old prerelease tags only after its release is published. Installed machines never downgrade when a channel target is older.
 
           ## Install / Upgrade
 
@@ -648,7 +654,7 @@ jobs:
           mapfile -t assets < release-assets.txt
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release edit "$TAG_NAME" --title "$RELEASE_TITLE" --notes-file release-notes.md
+            gh release edit "$TAG_NAME" --draft=true --title "$RELEASE_TITLE" --notes-file release-notes.md
             gh release upload "$TAG_NAME" "${assets[@]}" --clobber
           else
             create_args=(

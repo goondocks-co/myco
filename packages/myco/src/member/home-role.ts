@@ -29,8 +29,9 @@ export function isMemberHome(mycoHome: string): boolean {
   if (fs.existsSync(path.join(member, CUTOVER_STATE_FILE))) return true;
   try {
     return fs.readdirSync(path.join(member, DEPLOYMENTS_DIR)).some((name) => name.endsWith('.json'));
-  } catch {
-    return false;
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+    throw error;
   }
 }
 
@@ -43,13 +44,23 @@ export function memberHomeDaemonRefusal(mycoHome: string): string {
 
 /** The vault files a source names: a `myco.db`, a directory holding one, or a 1.4 home whose `groves/*` hold them. Empty files are no vault. */
 export function legacyVaultFiles(source: string): string[] {
-  const nonEmpty = (file: string): boolean => { try { return fs.statSync(file).isFile() && fs.statSync(file).size > 0; } catch { return false; } };
+  const nonEmpty = (file: string): boolean => {
+    try { const stat = fs.statSync(file); return stat.isFile() && stat.size > 0; }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+      throw error;
+    }
+  };
   if (nonEmpty(source)) return [path.resolve(source)];
   const direct = path.join(source, LEGACY_VAULT_FILE);
   if (nonEmpty(direct)) return [path.resolve(direct)];
   const groves = path.join(source, LEGACY_GROVES_DIR);
   let entries: fs.Dirent[];
-  try { entries = fs.readdirSync(groves, { withFileTypes: true }); } catch { return []; }
+  try { entries = fs.readdirSync(groves, { withFileTypes: true }); }
+  catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return [];
+    throw error;
+  }
   return entries
     .filter((e) => e.isDirectory())
     .map((e) => path.resolve(groves, e.name, LEGACY_VAULT_FILE))

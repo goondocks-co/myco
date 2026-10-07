@@ -26,6 +26,7 @@
 // importing it for a test is side-effect free.
 
 import fs from 'node:fs';
+import { releaseKey } from './release-policy.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
@@ -197,18 +198,15 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
   return { dest, copied, pinAction };
 }
 
-/**
- * Derive the release channel from this package's own version: a semver
- * prerelease component (`-beta`, `-alpha`, `-rc`, …) => 'beta', else 'stable'.
- * Any error defaults to 'stable'.
- */
-function deriveChannel(pkgRoot) {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
-    return /-(?:beta|alpha|rc|next|canary|dev)\b/.test(String(pkg.version)) ? 'beta' : 'stable';
-  } catch {
-    return 'stable';
-  }
+const DEVELOPMENT_VERSION = '0.0.0-dev';
+
+/** Package alpha builds record alpha; beta/RC and local development builds record beta. */
+export function deriveChannel(pkgRoot) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+  if (pkg.version === DEVELOPMENT_VERSION) return 'beta';
+  const parsed = typeof pkg.version === 'string' ? releaseKey(pkg.version) : null;
+  if (!parsed) throw new Error('Package version is not a valid release version');
+  return parsed.phase === 'rc' ? 'beta' : parsed.phase;
 }
 
 async function main() {
