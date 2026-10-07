@@ -76,6 +76,36 @@ function unnamed(e: Env): string[] {
 const release = async (e: Env, key: string) => releaseBlobs(e.db, [{ projectId: P, key }], Date.now());
 
 describe('the object lifecycle under late store operations', () => {
+  it('remaps restored content proofs and hot transcript source evidence with their blob', async () => {
+    const e = sqliteEnv();
+    try {
+      const key = await sha256HexOf(bytes);
+      registerBlob(e.sqlite, { projectId: P, key, size: bytes.byteLength, tokenId: 't' });
+      const initial = e.sqlite.query('SELECT generation FROM blobs WHERE project_id=? AND key=?')
+        .get(P,key) as { generation: string };
+      e.sqlite.query(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,
+        event_id,envelope_hash,session_id,digest,size,verified_at,durable)
+        VALUES(?,?,?,'transcript','segment','event','envelope','session',?,?,1,1)`)
+        .run(P,key,initial.generation,key,bytes.byteLength);
+      e.sqlite.query(`INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,
+        received_at,source_blob_key,token_id,source_generation,eligible_at)
+        VALUES(?,'transcript','segment','session',?,1,?,'t',?,1)`)
+        .run(P,bytes.byteLength,key,initial.generation);
+      const restored = crypto.randomUUID();
+      await assignRestoreGeneration(e.db,restored);
+      expect(e.sqlite.query('SELECT generation FROM blobs WHERE project_id=? AND key=?').get(P,key))
+        .toEqual({ generation: restored });
+      expect(e.sqlite.query('SELECT generation FROM registered_content_proofs WHERE project_id=? AND key=?').get(P,key))
+        .toEqual({ generation: restored });
+      expect(e.sqlite.query('SELECT source_generation FROM raw_archive_refs WHERE project_id=? AND source_id=?').get(P,'segment'))
+        .toEqual({ source_generation: restored });
+      e.sqlite.query(`UPDATE raw_archive_refs SET source_generation='stale' WHERE project_id=? AND source_id=?`).run(P,'segment');
+      await expect(assignRestoreGeneration(e.db,crypto.randomUUID())).rejects.toThrow();
+      expect(e.sqlite.query('SELECT generation FROM blobs WHERE project_id=? AND key=?').get(P,key))
+        .toEqual({ generation: restored });
+    } finally { e.sqlite.close(); }
+  });
+
   it('S1: a delete answered too late for its drainer, landing after the same content is registered again, removes nothing registered', async () => {
     const e = sqliteEnv();
     const t = await member(e);
