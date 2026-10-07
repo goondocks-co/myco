@@ -113,13 +113,15 @@ async function expectWaitingRepositories(within: Locator, role: 'admin' | 'membe
   await expect(notes).toContainText('It has no git remote');
   await expect(notes).toContainText(role === 'admin' ? 'Lin’s machine has kept all it can' : 'Lin’s build box has kept all it can');
   await expect(rows.filter({ hasText: 'sketches isn’t being captured yet' })).toContainText('Work there older than 7 days wasn’t kept.');
-  await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toBeVisible();
   if (role === 'admin') {
+    await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toHaveCount(0);
+    await expect(notes).toContainText('Only the member who claimed this machine can change its capture roots or connect repositories.');
     const gadget = rows.filter({ hasText: 'gadget isn’t being captured yet' });
     await expect(gadget).toHaveAttribute('data-needs-you-item', 'warn');
     await expect(gadget).toContainText('It’s outside the folders Ada’s studio Mac captures.');
     await expect(gadget).toContainText('4 sessions on Ada’s studio Mac so far, most recently 25 min ago.');
   } else {
+    await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toBeVisible();
     await expect(within).not.toContainText('gadget');
   }
   await expect(within).not.toContainText(/uncaptured/i);
@@ -271,10 +273,10 @@ test.describe('Today', () => {
   for (const { viewport, mode } of SHOT_MATRIX) {
     test(`today connect a repository its member may not start a project for ${viewport} ${mode}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the repository is the fixture\'s');
-      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('ownerCookie') });
+      const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('memberCookie') });
       try {
         const needsYou = page.locator('[data-needs-you]');
-        if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
+        if (viewport === 'phone') await needsYou.getByRole('button', { name: /1 thing needs you/ }).click();
         await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
         const prototype = needsYou.locator('[data-repository]').filter({ hasText: 'prototype isn’t being captured yet' });
         await prototype.getByRole('button', { name: 'Connect prototype' }).click();

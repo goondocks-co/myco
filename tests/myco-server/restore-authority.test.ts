@@ -22,9 +22,9 @@ async function fixture(owner = true, onSql?: (sql: string) => void) {
   return f;
 }
 
-function artifact(f: ReturnType<typeof sqliteEnv>, rows: Array<{ t: string; r: Record<string, unknown> }>): string {
+function artifact(f: ReturnType<typeof sqliteEnv>, rows: Array<{ t: string; r: Record<string, unknown> }>, counts: Record<string, number> = {}): string {
   const lineage = f.sqlite.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
-  return [{ format: BACKUP_FORMAT, deploymentId: lineage.value, schemaVersion: SERVER_SCHEMA_VERSION, createdAt: 1, producer: 'review', counts: {} }, ...rows]
+  return [{ format: BACKUP_FORMAT, deploymentId: lineage.value, schemaVersion: SERVER_SCHEMA_VERSION, createdAt: 1, producer: 'review', counts }, ...rows]
     .map(row => JSON.stringify(row)).join('\n');
 }
 
@@ -87,6 +87,31 @@ it('an owner restores authority and a non-owner admin restores ordinary data', a
     const ordinary = await post(f, '/api/backups/restore-upload', { artifact: artifact(f, [{ t: 'projects', r: { project_id: 'proj_restore_allowed', name: 'Allowed', created_at: 1 } }]) });
     expect(ordinary.status).toBe(200);
     expect(f.sqlite.query("SELECT name FROM projects WHERE project_id='proj_restore_allowed'").get()).toEqual({ name: 'Allowed' });
+  } finally { f.sqlite.close(); }
+});
+
+it('previews stored restore permission from artifact rows even when header counts disagree', async () => {
+  const f = await fixture();
+  try {
+    const stored = (id: string, text: string) => {
+      const key = `backups/${id}.jsonl`;
+      const bytes = new TextEncoder().encode(text);
+      f.bucket.seed(key, { size: bytes.byteLength, bytes });
+      f.sqlite.run('INSERT INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned) VALUES (?,?,1,?,\'{}\',?,\'review\',0)',
+        [id, key, bytes.byteLength, SERVER_SCHEMA_VERSION]);
+    };
+    stored('bk_authority', artifact(f, [{ t: 'members', r: { id: 'mem_restored_admin', role: 'admin', created_at: 1 } }]));
+    stored('bk_data', artifact(f, [{ t: 'projects', r: { project_id: 'proj_restore_allowed', name: 'Allowed', created_at: 1 } }], { members: 100 }));
+    const preview = async (id: string, sub: string) => {
+      const response = await post(f, `/api/backups/${id}/restore-preview`, {}, sub);
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{ restore: { allowed: boolean; reason: string | null } }>;
+    };
+    expect((await preview('bk_authority', '9002')).restore).toEqual({
+      allowed: false, reason: 'Only the owner can restore a backup that includes members or access authority.',
+    });
+    expect((await preview('bk_authority', '583231')).restore).toEqual({ allowed: true, reason: null });
+    expect((await preview('bk_data', '9002')).restore).toEqual({ allowed: true, reason: null });
   } finally { f.sqlite.close(); }
 });
 

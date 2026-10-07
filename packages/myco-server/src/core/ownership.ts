@@ -8,8 +8,8 @@ export class OwnershipRefusal extends Error {
   constructor(readonly code: 'not_owner' | 'owner_pending' | 'invalid_owner' | 'invalid_member' | 'active_owner' | 'last_admin' | 'revision_conflict' | 'not_admin' | 'owner_already_recorded' | 'backfill_pending') { super(code); }
 }
 
-export const deploymentOwnerSql = (member: string): string => `EXISTS (SELECT 1 FROM deployment_ownership o JOIN members m ON m.id = o.member_id
-  WHERE o.id = 1 AND o.member_id = ${member} AND m.revoked_at IS NULL AND m.role = 'admin')`;
+export const deploymentOwnerSql = (member: string): string => `EXISTS (SELECT 1 FROM deployment_ownership owner_record JOIN members owner_member ON owner_member.id = owner_record.member_id
+  WHERE owner_record.id = 1 AND owner_record.member_id = ${member} AND owner_member.revoked_at IS NULL AND owner_member.role = 'admin')`;
 
 export const linkedHumanAdminSql = (alias: string): string => `${alias}.revoked_at IS NULL AND ${alias}.role = 'admin'
   AND ${alias}.github_id IS NOT NULL AND ${alias}.id <> '${HARNESS_MEMBER_ID}'`;

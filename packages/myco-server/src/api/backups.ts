@@ -13,9 +13,13 @@ import {
   restoreArtifact, restoreBackup, setBackupPinned,
 } from '../core/backup.js';
 import { backupRetentionPolicy } from '../core/backup-retention.js';
-import { RestoreAuthorizationError } from '../core/restore-authorization.js';
+import { restoreAdmission, RestoreAuthorizationError } from '../core/restore-authorization.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 
+/** The dashboard's restore preview, with this caller's permission to apply it. */
+export type RestorePreviewAnswer = Omit<NonNullable<Awaited<ReturnType<typeof previewRestore>>>, 'tableKeys'> & {
+  restore: { allowed: boolean; reason: string | null };
+};
 
 /** The answer for a stored artifact the read path refused: bytes that differ from the evidence its row recorded, or a recorded size past the artifact bound. Neither carries artifact content. */
 const storedArtifactRefusal = (err: unknown): Response | null => {
@@ -42,15 +46,23 @@ export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Prom
   return ok({ backups: await listBackups(env.db, env.blobs) });
 }
 
-/** What a restore would touch, from the artifact's header alone. */
+/** What a restore would touch and whether this member may apply its rows. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   try {
     const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId);
     if (preview === null) return notFound();
-    return ok(preview);
+    const admission = await restoreAdmission(env.db, { kind: 'member', memberId: ctx.member.id }, preview.tableKeys);
+    const reasons = {
+      not_owner: 'Only the owner can restore a backup that includes members or access authority.',
+      owner_pending: 'An owner must be recorded before restoring a backup that includes members or access authority.',
+      not_admin: 'An administrator can restore this backup.',
+    } as const;
+    const { tableKeys: _tableKeys, ...answer } = preview;
+    return ok({ ...answer, restore: { allowed: admission.allowed, reason: admission.allowed ? null : reasons[admission.code] } } satisfies RestorePreviewAnswer);
   } catch (err) {
     const refusal = storedArtifactRefusal(err);
     if (refusal !== null) return refusal;
+    if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;
   }
 }

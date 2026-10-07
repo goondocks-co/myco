@@ -255,7 +255,12 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     (await request(target, method, path, actor.headers, JSON.stringify(body ?? {}))).status;
   for (const actor of actors) {
     expect(await status(actor, 'GET', '/api/settings')).toBe(200);
-    expect(await status(actor, 'GET', '/api/members')).toBe(200);
+    const memberList = await request(target, 'GET', '/api/members', actor.headers);
+    expect(memberList.status).toBe(200);
+    const memberRows = (await memberList.json() as { members: Array<{ id: string; effectiveRole: string }> }).members;
+    expect(memberRows.find(member => member.id === MEMBER_ID)?.effectiveRole).toBe('owner');
+    expect(memberRows.find(member => member.id === 'mem_matrix_admin')?.effectiveRole).toBe('admin');
+    expect(memberRows.find(member => member.id === 'mem_matrix_member')?.effectiveRole).toBe('member');
     expect(await status(actor, 'GET', '/api/credentials')).toBe(200);
     expect(await status(actor, 'GET', '/api/projects')).toBe(200);
     expect(await status(actor, 'GET', `/api/projects/${target.projectId}/runs`)).toBe(200);
@@ -341,6 +346,17 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     const backup = await request(target, 'POST', '/api/backups', actor.headers);
     expect(backup.status).toBe(200);
     const backupId = (await backup.json() as { backup: { id: string } }).backup.id;
+    const previewPath = `/api/backups/${backupId}/restore-preview`;
+    expect(await status(actors[2], 'POST', previewPath)).toBe(403);
+    for (const viewer of actors.slice(0, 2)) {
+      const preview = await request(target, 'POST', previewPath, viewer.headers);
+      expect(preview.status).toBe(200);
+      const body = await preview.json() as { restore: { allowed: boolean; reason: string | null }; header: { counts: Record<string, number> } };
+      expect(body.header.counts.members ?? 0).toBeGreaterThan(0);
+      expect(body.restore).toEqual(viewer.role === 'owner'
+        ? { allowed: true, reason: null }
+        : { allowed: false, reason: 'Only the owner can restore a backup that includes members or access authority.' });
+    }
     expect(await status(actors[2], 'POST', `/api/backups/${backupId}/restore`)).toBe(403);
     expect(await status(actor, 'POST', `/api/backups/${backupId}/restore`)).toBe(actor.role === 'owner' ? 200 : 403);
   }

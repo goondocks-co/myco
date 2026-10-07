@@ -49,6 +49,7 @@ async function expectPeople(page: Page): Promise<void> {
   await expect(machines.getByText('A machine', { exact: true })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('ada_7c1e9f02');
   await expect(page.locator('section#people').getByText('Ada', { exact: true })).toBeVisible();
+  await expect(page.locator('section#people').getByText('Owner', { exact: true })).toBeVisible();
   await expect(page.locator('section#invitations').locator('li')).toHaveCount(2);
   await page.getByRole('button', { name: 'More for Lin', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Make admin' })).toBeVisible();
@@ -61,7 +62,7 @@ async function expectMemberPeople(page: Page): Promise<void> {
   const directory = page.locator('section#people');
   await expect(directory.getByRole('heading', { level: 2, name: 'People' })).toBeVisible();
   await expect(directory.getByRole('list', { name: 'Members' })).toBeVisible();
-  await expect(directory.getByText('Admin', { exact: true })).toBeVisible();
+  await expect(directory.getByText('Owner', { exact: true })).toBeVisible();
   await expect(directory.getByText('Member', { exact: true })).toBeVisible();
   await expect(page.getByTestId('admin-only')).toHaveCount(0);
   await expect(page.getByRole('button', { name: INVITE_CONTROLS.invite })).toHaveCount(0);

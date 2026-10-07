@@ -50,11 +50,12 @@ export interface BackupsAnswer {
   backups: BackupRow[];
 }
 
-/** `POST /api/backups/{id}/restore-preview`: what a restore would add, from the artifact's header alone. */
+/** `POST /api/backups/{id}/restore-preview`: what a restore would add and whether this member may apply it. */
 export interface RestorePreview {
   header: { deploymentId: string; schemaVersion: number; createdAt: number; counts: Record<string, number> };
   /** The backup names another Deployment: restoring it makes that Deployment's members live here. */
   foreignLineage: boolean;
+  restore: { allowed: boolean; reason: string | null };
 }
 
 /** `POST /api/backups/{id}/restore`: what each table took. */

@@ -80,6 +80,8 @@ describe('dashboard policy projection', () => {
         expect(response.status).toBe(200);
         const body = await response.json() as { members: Array<{ id: string; effectiveRole: string }> };
         expect(body.members.find((member) => member.id === 'mem_machine_1')?.effectiveRole).toBe('owner');
+        expect(body.members.find((member) => member.id === 'mem_machine_2')?.effectiveRole).toBe('member');
+        expect(body.members.find((member) => member.id === 'mem_machine_3')?.effectiveRole).toBe('admin');
       }
       const adminResponse = await get('770003', '/api/machines');
       expect(adminResponse.status).toBe(200);

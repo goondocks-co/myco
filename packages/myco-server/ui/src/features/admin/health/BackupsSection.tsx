@@ -98,10 +98,12 @@ export function BackupsSection() {
         confirmLabel="Restore"
         tone="primary"
         pending={backups.restore.isPending}
+        confirmDisabled={confirming?.preview.restore?.allowed !== true}
         error={backups.restore.error !== null ? failure(backups.restore.error)
           : adoptAsked && !adopt ? 'Turn on the switch above to restore a backup from another server.' : null}
         onConfirm={() => {
           if (confirming === null) return;
+          if (confirming.preview.restore?.allowed !== true) return;
           if (confirming.preview.foreignLineage && !adopt) { setAdoptAsked(true); return; }
           backups.restore.mutate({ id: confirming.row.id, allowForeignLineage: adopt }, { onSuccess: (result) => { setOutcome(result); setConfirming(null); } });
         }}
@@ -109,6 +111,9 @@ export function BackupsSection() {
         {confirming !== null && (
           <>
             <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(confirming.preview.header.counts)}</p>
+            {confirming.preview.restore?.allowed !== true && (
+              <p className="t-small text-muted" data-restore-reason="">{confirming.preview.restore?.reason ?? 'Restore permission is unavailable. Refresh the preview.'}</p>
+            )}
             {confirming.preview.foreignLineage && (
               <div className="flex items-start gap-s3 rounded-control bg-warn-bg p-s3">
                 <Switch id="restore-adopt" checked={adopt} onCheckedChange={setAdopt} />

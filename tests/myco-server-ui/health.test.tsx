@@ -253,7 +253,8 @@ describe('Health', () => {
 
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
     const { posts } = server(routes({
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 0 } }, foreignLineage: true }),
+      '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null } }),
       '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: true, tables: { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } } }),
     }));
     mount();
@@ -274,16 +275,46 @@ describe('Health', () => {
 
   it('cancels a restore with nothing sent past the preview', async () => {
     const { posts } = server(routes({
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false }),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false, restore: { allowed: true, reason: null } }),
     }));
     mount();
     const list = await screen.findByRole('group', { name: 'Backups' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('switch')).toBeNull();
+    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
+  });
+
+  it('keeps authority-bearing backup preview readable but denies a non-owner restore', async () => {
+    const { posts } = server(routes({
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({
+        header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { members: 2, sessions: 4 } },
+        foreignLineage: false, restore: { allowed: false, reason: 'Only the owner can restore a backup that includes members or access authority.' },
+      }),
+    }));
+    mount();
+    const list = await screen.findByRole('group', { name: 'Backups' });
+    fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
+    expect(dialog.textContent).toContain('It holds members 2 · sessions 4');
+    expect(within(dialog).getByText('Only the owner can restore a backup that includes members or access authority.')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
+  });
+
+  it('fails closed when a restore preview has no decision', async () => {
+    server(routes({
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, counts: { sessions: 4 } }, foreignLineage: false }),
+    }));
+    mount();
+    const list = await screen.findByRole('group', { name: 'Backups' });
+    fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
+    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByText('Restore permission is unavailable. Refresh the preview.')).toBeTruthy();
   });
 
   it('shows no raw id anywhere a reader sees', async () => {
