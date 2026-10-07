@@ -453,6 +453,12 @@ const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
   if (display?.truncated && preparedToolInput === undefined) throw new Error('Oversized tool input requires registered content preparation');
   const inputBlob = preparedToolInput?.bundle === undefined ? preparedToolInput?.key ?? p.blob as string | undefined : undefined;
   const outputBlob = p.outputBlob as string | undefined;
+  const adoption={sql:`EXISTS (SELECT 1 FROM tool_calls tc JOIN events ev
+    ON ev.project_id=tc.project_id AND ev.event_id=tc.event_id
+    WHERE tc.project_id=? AND tc.tool_call_id=? AND tc.event_id=? AND tc.token_id=?
+      AND tc.input_bundle_id IS NULL AND tc.input_blob_key IS NULL AND tc.input=? AND tc.input_bytes=?
+      AND ev.ingest_nonce=?)`,
+    params:[ctx.projectId,p.toolCallId,e.eventId,ctx.tokenId,display?.preview,display?.bytes,ctx.nonce]};
   const proof = preparedToolInput === undefined || preparedToolInput.bundle !== undefined ? [] : [db.prepare(`INSERT INTO processed_resources
       (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT tc.project_id, 'tool-input', tc.tool_call_id, tc.input_blob_key, tc.token_id, tc.event_id
@@ -484,14 +490,10 @@ const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
               opt(p.durationMs), json(p.filesAffected ?? filesNamedByToolInput(p.input)), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
       ...proof,
       ...(preparedToolInput?.bundle === undefined ? [] : [
-        ...bundlePublicationStatements(db,preparedToolInput.bundle),
+        ...bundlePublicationStatements(db,preparedToolInput.bundle,adoption),
         db.prepare(`UPDATE tool_calls SET input_bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),
-          input_bundle_entry=0 WHERE project_id=? AND tool_call_id=? AND event_id=? AND token_id=?
-          AND input_bundle_id IS NULL AND input_blob_key IS NULL AND input=? AND input_bytes=?
-          AND EXISTS (SELECT 1 FROM events ev WHERE ev.project_id=tool_calls.project_id
-            AND ev.event_id=tool_calls.event_id AND ev.ingest_nonce=?)`)
-          .bind(ctx.projectId,preparedToolInput.bundle.body.key,ctx.projectId,p.toolCallId,e.eventId,ctx.tokenId,
-            display!.preview,display!.bytes,ctx.nonce),
+          input_bundle_entry=0 WHERE project_id=? AND tool_call_id=? AND ${adoption.sql}`)
+          .bind(ctx.projectId,preparedToolInput.bundle.body.key,ctx.projectId,p.toolCallId,...adoption.params),
       ].flat()),
     ],
     reads: [],

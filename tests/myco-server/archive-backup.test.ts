@@ -8,7 +8,8 @@ import { backupArtifact, BackupApplyError, createBackup, restoreArtifact } from 
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
-import { verifyBundleArtifact } from '@myco-server-worker/core/archive-bundle.js';
+import { reconcileArchivePreparations, verifyBundleArtifact } from '@myco-server-worker/core/archive-bundle.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { toolInputPreview } from '@myco-server-worker/core/tool-input.js';
 import { createRecoveryBundle, verifyRecoveryBundle } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -107,6 +108,42 @@ it('restores shared bundle entries with destination generations and exact bytes'
     expect(await eventContent({db:target.db,blobs:target.bucket},project,eventId)).toBe(original);
     expect(await processedBody({db:target.db,blobs:target.bucket},{projectId:project},'tool-input',toolId)).toBe(fullInput);
     expect((await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}})).tables.events?.inserted).toBe(0);
+  } finally {source.sqlite.close();target.sqlite.close();}
+});
+
+it('restores an unadopted preparation for aged release and preserves a destination reservation conflict',async()=>{
+  const source=sqliteEnv();const target=sqliteEnv();
+  try {
+    const adopted=seed(source).event;
+    const orphanText='{"unadopted":true}';const orphanKey=hash(orphanText);
+    register(source,orphanKey,orphanText);
+    source.sqlite.query(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,
+      event_id,envelope_hash,session_id,digest,size,verified_at,durable)
+      VALUES(?,?,?,'bundle',?,?,?,?,?,?,1,1)`)
+      .run(project,orphanKey,sourceGeneration,orphanKey,eventId,envelope,session,orphanKey,Buffer.byteLength(orphanText));
+    for(const id of ['prep-import','prep-conflict'])source.sqlite.query(`INSERT INTO prepared_archive_bundles
+      (preparation_id,project_id,archive_key,expires_at) VALUES(?,?,?,1)`).run(id,project,orphanKey);
+    const artifact=await artifactOf(source);
+    registerTarget(target,adopted,randomUUID());
+    const orphanGeneration=randomUUID();
+    register(target,orphanKey,orphanText,orphanGeneration);
+    const destinationExpiry=Date.now()+60_000;
+    target.sqlite.query(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,expires_at)
+      VALUES('prep-conflict',?,?,?)`).run(project,adopted.bodyKey,destinationExpiry);
+    await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,
+      authorization:{kind:'recovery'}});
+    expect(target.sqlite.query(`SELECT archive_key,expires_at FROM prepared_archive_bundles WHERE preparation_id='prep-conflict'`).get())
+      .toEqual({archive_key:adopted.bodyKey,expires_at:destinationExpiry});
+    expect(target.sqlite.query(`SELECT archive_key FROM prepared_archive_bundles WHERE preparation_id='prep-import'`).get())
+      .toEqual({archive_key:orphanKey});
+    expect(await reconcileArchivePreparations(target.db,Date.now(),16)).toBe(1);
+    for(let pass=0;pass<4;pass++)await drainObjectReleases(target.serverEnv,Date.now());
+    expect(target.sqlite.query('SELECT 1 FROM registered_content_proofs WHERE project_id=? AND key=?').get(project,orphanKey)).toBeNull();
+    expect(target.sqlite.query('SELECT 1 FROM blobs WHERE project_id=? AND key=?').get(project,orphanKey)).toBeNull();
+    expect(target.bucket.objects.has(blobObjectKey(project,orphanKey,orphanGeneration))).toBe(false);
+    expect(target.sqlite.query(`SELECT archive_key FROM prepared_archive_bundles WHERE preparation_id='prep-conflict'`).get())
+      .toEqual({archive_key:adopted.bodyKey});
+    expect(await eventContent({db:target.db,blobs:target.bucket},project,eventId)).toBe(original);
   } finally {source.sqlite.close();target.sqlite.close();}
 });
 

@@ -25,6 +25,7 @@ import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { parseTranscripts } from '../ingest/parse.js';
 import { transcriptRetention } from '../ingest/retention.js';
 import { drainObjectReleases } from './object-release.js';
+import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
 import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB } from './recovery-schedule.js';
@@ -231,8 +232,10 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   // Stored object release and recovery holds
   'recovery-hold-release': recoveryHoldRelease,
   'object-release-drain': async (env, now) => {
+    const prepared = await reconcileArchivePreparations(env.db, now);
     const drained = await drainObjectReleases(env, now);
-    return drained.expired + drained.deleted + drained.decided;
+    return { changed: prepared + drained.expired + drained.deleted + drained.decided,
+      more: await archivePreparationsPending(env.db, now) };
   },
   [MAINTENANCE_JOB.optimize]: scheduledMaintenance('optimize'),
   [MAINTENANCE_JOB.integrity]: scheduledMaintenance('integrity'),

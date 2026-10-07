@@ -66,7 +66,12 @@ const binary = process.env.MYCO_STORAGE_CLEANUP_BINARY;
     const url = await start(sourceEnv, selectedPort);
     const target: ParityTarget = { name: 'selfhosted', url, projectId: PROJECT_ID, memberToken: issued.token,
       ownerHeaders: () => ({ cookie }), memberHeaders: extra => memberHeadersFor(issued.token, PROJECT_ID, extra),
-      grantHeaders: grantHeadersFor, sql: volumeSql(sourcePaths.databasePath), clockWake: async () => {}, stop };
+      grantHeaders: grantHeadersFor, sql: volumeSql(sourcePaths.databasePath), clockWake: async () => {
+        const response=await fetch(`${url}/api/wake`,{method:'POST',headers:{cookie,origin:url}});
+        expect(response.status).toBe(200);
+        await response.arrayBuffer();
+        await Bun.sleep(1500);
+      }, stop };
     await storageCleanupParity.run(target);
     const shell = await fetch(`${url}/`);
     expect(shell.status).toBe(200);

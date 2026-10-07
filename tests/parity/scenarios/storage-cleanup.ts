@@ -55,7 +55,7 @@ export const storageCleanupParity: ParityScenario = {
         headers: { ...target.ownerHeaders(), origin: target.url } });
       expect(response.status, response.status === 200 ? 'cleanup wake' : await response.text()).toBe(200);
       const body = await response.json() as { jobs: Array<{ name: string; failed: string | null }> };
-      for (const job of body.jobs.filter((item) => ['storage-content-cleanup', 'transcript-retention'].includes(item.name))) {
+      for (const job of body.jobs.filter((item) => ['storage-content-cleanup', 'transcript-retention', 'object-release-drain'].includes(item.name))) {
         expect(job.failed, job.name).toBeNull();
       }
     };
@@ -63,6 +63,18 @@ export const storageCleanupParity: ParityScenario = {
     await post('prompt', { promptId, text: 'exercise complete tool input', origin: 'user' });
     const archivedEvent = await post('response', { responseId, text: responseText }, 'import');
     await post('tool.use', { toolCallId, promptId, toolName: 'Edit', input, output, success: true });
+    const conflict=await fetch(`${target.url}/events`,{
+      method:'POST',headers:captureHeaders({'content-type':'application/json'}),
+      body:JSON.stringify({eventId:crypto.randomUUID(),sessionId,kind:'tool.use',createdAt:stamp,channel:'cli',
+        producer:{adapter:'claude-code',version:'parity'},payload:{toolCallId,toolName:'Edit',
+          input:{patch:'different input'.repeat(400)},success:true}}),
+    });
+    expect(conflict.status).toBe(200);
+    expect(await conflict.json()).toMatchObject({persisted:true,projected:false,code:'projection_conflict'});
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM archive_bundles
+      WHERE project_id=${lit(target.projectId)} AND session_id=${lit(sessionId)}`)).toEqual([{n:1}]);
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM prepared_archive_bundles
+      WHERE project_id=${lit(target.projectId)}`)).toEqual([{n:0}]);
     const rawText = `${JSON.stringify({ type: 'system', message: { content: 'raw uploader only' }, timestamp: new Date(stamp).toISOString() })}\n`;
     const rawBytes = new TextEncoder().encode(rawText);
     const rawKey = await sha256HexOf(rawBytes);
@@ -161,5 +173,33 @@ export const storageCleanupParity: ParityScenario = {
     const admitted = rawMemberResourceSql(project, 'event', event, lit(uploaderId));
     const denied = rawMemberResourceSql(project, 'event', event, lit(MEMBER_ID));
     expect(await target.sql(`SELECT ${admitted} AS admitted,${denied} AS denied`)).toEqual([{ admitted: 1, denied: 0 }]);
+
+    const abandonedBytes=new TextEncoder().encode(JSON.stringify({ abandoned: crypto.randomUUID() }));
+    const abandonedKey=await sha256HexOf(abandonedBytes);
+    await expectPersisted(await fetch(`${target.url}/blobs/${abandonedKey}`, {
+      method:'POST',headers:captureHeaders({ 'content-type':'application/json',
+        'content-length':String(abandonedBytes.byteLength) }),body:abandonedBytes,
+    }), 'abandoned archive body');
+    const [registered]=await target.sql(`SELECT generation,size FROM blobs WHERE project_id=${project} AND key=${lit(abandonedKey)}`);
+    const [identity]=await target.sql(`SELECT envelope_hash FROM events WHERE project_id=${project} AND event_id=${event}`);
+    const preparationId=crypto.randomUUID();
+    await target.sql(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,expires_at)
+      VALUES(${lit(preparationId)},${project},${lit(abandonedKey)},${stamp-1})`);
+    await target.sql(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,
+      event_id,envelope_hash,session_id,digest,size,verified_at,durable) VALUES
+      (${project},${lit(abandonedKey)},${lit(String(registered.generation))},'bundle',${lit(abandonedKey)},
+      ${event},${lit(String(identity.envelope_hash))},${lit(sessionId)},${lit(abandonedKey)},${Number(registered.size)},${stamp},1)`);
+    let released=false;
+    for(let pass=0;pass<8;pass++) {
+      await target.clockWake();
+      released=(await target.sql(`SELECT 1 AS held FROM prepared_archive_bundles WHERE preparation_id=${lit(preparationId)}`)).length===0
+        &&(await target.sql(`SELECT 1 AS held FROM blobs WHERE project_id=${project} AND key=${lit(abandonedKey)}`)).length===0
+        &&(await target.sql(`SELECT 1 AS held FROM object_releases WHERE physical LIKE '%${abandonedKey}%'`)).length===0;
+      if(released)break;
+    }
+    expect(released).toBe(true);
+    expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
+    expect(await target.sql(`SELECT archive_key FROM archive_bundles WHERE project_id=${project} AND archive_key=${lit(String(eventRef.archive_key))}`))
+      .toEqual([{archive_key:eventRef.archive_key}]);
   },
 };

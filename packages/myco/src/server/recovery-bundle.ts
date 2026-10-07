@@ -7,7 +7,7 @@ import { diskBlobStore, sweepPartialObjects } from '@myco-server-worker/platform
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
 import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
-import { verifyBundleArtifact, type BundleEntryIdentity } from '@myco-server-worker/core/archive-bundle.js';
+import { verifyBundleArtifact } from '@myco-server-worker/core/archive-bundle.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { BlobStore } from '@myco-server-worker/core/adapters.js';
 import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
@@ -18,6 +18,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { refusedAccountCode, transientReadFailure } from './object-read.js';
 import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
 import { quoteIdentifier } from './recovery-schema.js';
+import { recoveryBundleInventory } from './recovery-bundle-inventory.js';
 
 const MANIFEST_FILE = 'recovery.json';
 const DATABASE_FILE = 'myco.sqlite';
@@ -119,7 +120,7 @@ function* registeredObjects(db: Database): Generator<RecoveryBlob & { source: st
 }
 
 /** Every copied bundle must resolve each logical locator before a recovery artifact is complete. */
-async function verifyCopiedBundleEntries(db: Database, store: BlobStore): Promise<void> {
+export async function verifyCopiedBundleEntries(db: Database, store: BlobStore): Promise<void> {
   if (db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_bundles'").get() === null) return;
   const physicalToArtifact = new Map([...registeredObjects(db)].map(row => [row.source,row.key]));
   const blobs: BlobStore = {
@@ -129,26 +130,21 @@ async function verifyCopiedBundleEntries(db: Database, store: BlobStore): Promis
     delete: () => { throw new Error('recovery verification cannot delete objects'); },
   };
   const relational = sqliteRelationalStore(db);
-  const statement = db.prepare<Record<string,unknown>, []>('SELECT * FROM archive_bundles ORDER BY id');
+  const inventory = recoveryBundleInventory(db);
   try {
-    for (const row of statement.iterate()) {
-      const project = row.project_id as string;
-      const id = row.id as number;
-      const proofs = db.query<Record<string,unknown>, [string,string,string]>(`SELECT * FROM registered_content_proofs
-        WHERE project_id=? AND (key=? OR key=?)`).all(project,row.archive_key as string,row.receipt_key as string);
-      const eventLocators = db.query<{project_id:string;bundle_entry:number;event_id:string;envelope_hash:string;token_id:string}, [string,number]>(`SELECT project_id,bundle_entry,event_id,envelope_hash,token_id
-        FROM events WHERE project_id=? AND bundle_id=?`).all(project,id);
-      const toolLocators = db.query<{project_id:string;input_bundle_entry:number;tool_call_id:string;token_id:string}, [string,number]>(`SELECT project_id,input_bundle_entry,tool_call_id,token_id
-        FROM tool_calls WHERE project_id=? AND input_bundle_id=?`).all(project,id);
-      const locators: BundleEntryIdentity[] = [
-        ...eventLocators.map(event => ({projectId:event.project_id,entry:event.bundle_entry,kind:'event' as const,
-          resourceId:event.event_id,eventId:event.event_id,envelopeHash:event.envelope_hash,tokenId:event.token_id})),
-        ...toolLocators.map(tool => ({projectId:tool.project_id,entry:tool.input_bundle_entry,kind:'tool-input' as const,
-          resourceId:tool.tool_call_id,tokenId:tool.token_id})),
-      ];
-      await verifyBundleArtifact({db:relational,blobs},row as Parameters<typeof verifyBundleArtifact>[1],proofs,locators);
-    }
-  } finally { statement.finalize(); }
+    const statement = db.prepare<Record<string,unknown>, []>('SELECT * FROM archive_bundles ORDER BY id');
+    try {
+      for (const row of statement.iterate()) {
+        const project = row.project_id as string;
+        const id = row.id as number;
+        const proofs = db.query<Record<string,unknown>, [string,string,string]>(`SELECT * FROM registered_content_proofs
+          WHERE project_id=? AND (key=? OR key=?)`).all(project,row.archive_key as string,row.receipt_key as string);
+        const locators = inventory.forBundle(project,id);
+        if (locators.length > Number(row.entry_count)) throw new Error('content_bundle_entry_invalid');
+        await verifyBundleArtifact({db:relational,blobs},row as Parameters<typeof verifyBundleArtifact>[1],proofs,locators);
+      }
+    } finally { statement.finalize(); }
+  } finally { inventory.close(); }
 }
 
 /** The objects a snapshot registers, by artifact key: its blob rows, and its catalogued backups with their digests. */

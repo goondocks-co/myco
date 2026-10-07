@@ -26,6 +26,7 @@ export interface VerifiedContent {
   digest: string;
   preparationCalls?: number;
 }
+export interface ContentPublicationGuard { sql: string; params: readonly unknown[] | (() => readonly unknown[]) }
 
 /** An internal source still belongs to the live Project and untombstoned session. */
 const sourceLive = (source: DerivedContentSource) => {
@@ -38,8 +39,10 @@ const sourceLive = (source: DerivedContentSource) => {
 }; };
 
 /** A failed assertion aborts the entire publication or clear transaction. */
-export function contentAssertion(db: RelationalStore, sql: string, params: readonly unknown[]): PreparedStatement[] {
-  return [db.prepare(`INSERT INTO storage_content_guard(ok) SELECT CASE WHEN (${sql}) THEN 1 ELSE 0 END`).bind(...params),
+export function contentAssertion(db: RelationalStore, sql: string, params: readonly unknown[],
+  when?: { sql: string; params: readonly unknown[] }): PreparedStatement[] {
+  return [db.prepare(`INSERT INTO storage_content_guard(ok) SELECT CASE WHEN (${sql}) THEN 1 ELSE 0 END
+    ${when === undefined ? '' : `WHERE (${when.sql})`}`).bind(...params,...(when?.params??[])),
     db.prepare('DELETE FROM storage_content_guard')];
 }
 
@@ -82,10 +85,16 @@ export async function verifyContentObject(env: Pick<ContentStore, 'blobs'>, phys
 export async function prepareDerivedStream(
   env: Pick<ContentStore, 'db' | 'blobs'>, source: DerivedContentSource,
   body: { size: number; digest: string; stream(): ReadableStream<Uint8Array> }, now: number,
+  publicationGuard?: ContentPublicationGuard,
 ): Promise<VerifiedContent> {
   const db = env.db;
   const publicationStarted=Date.now();
-  const live = sourceLive(source);
+  const sourceAuthority = sourceLive(source);
+  const live = () => publicationGuard === undefined ? sourceAuthority : {
+    sql: `(${sourceAuthority.sql}) AND (${publicationGuard.sql})`,
+    params: [...sourceAuthority.params, ...(typeof publicationGuard.params === 'function'
+      ? publicationGuard.params() : publicationGuard.params)],
+  };
   const sourceId = source.resourceId ?? source.eventId;
   const existing = await db.prepare(`SELECT generation,size FROM blobs WHERE project_id=? AND key=?`)
     .bind(source.projectId, body.digest).first<{ generation: string | null; size: number }>();
@@ -97,9 +106,10 @@ export async function prepareDerivedStream(
       .bind(source.projectId, body.digest, existing.generation, body.digest, body.size).first();
     if (durable === null && await env.blobs.ensureDurable?.(physical) !== true) throw new Error('content_durability_unavailable');
     await verifyContentObject(env, physical, body.size, body.digest);
+    const authority=live();
     await db.batch([
-      ...contentAssertion(db, `${live.sql} AND EXISTS (SELECT 1 FROM blobs WHERE project_id=? AND key=? AND generation IS ? AND size=?)`,
-        [...live.params, source.projectId, body.digest, existing.generation, body.size]),
+      ...contentAssertion(db, `${authority.sql} AND EXISTS (SELECT 1 FROM blobs WHERE project_id=? AND key=? AND generation IS ? AND size=?)`,
+        [...authority.params, source.projectId, body.digest, existing.generation, body.size]),
       db.prepare(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT DO NOTHING`)
         .bind(source.projectId, body.digest, existing.generation, source.sourceKind, sourceId, source.eventId, source.envelopeHash, source.sessionId, body.digest, body.size, now),
@@ -108,8 +118,9 @@ export async function prepareDerivedStream(
   }
   const generation = crypto.randomUUID();
   const physical = blobObjectKey(source.projectId, body.digest, generation);
+  const admission=live();
   const admitted = await db.batch([
-    ...contentAssertion(db, live.sql, live.params),
+    ...contentAssertion(db, admission.sql, admission.params),
     db.prepare(`INSERT INTO blob_reservations(reservation_id,project_id,key,token_id,size,expires_at,authority_kind,
       source_kind,source_id,source_event_id,source_envelope_hash,source_session_id) VALUES(?,?,?,?,?,?,'server',?,?,?,?,?)`)
       .bind(generation, source.projectId, body.digest, source.tokenId, body.size, now+BLOB_RESERVATION_TTL_MS,
@@ -122,14 +133,15 @@ export async function prepareDerivedStream(
     if (object.durable !== true) throw new Error('content_durability_unavailable');
     if (object.size !== body.size) throw new Error('content_archive_size_mismatch');
     await verifyContentObject(env, physical, body.size, body.digest);
+    const authority=live();
     await db.batch([
-      ...contentAssertion(db, `${live.sql} AND EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id=?
+      ...contentAssertion(db, `${authority.sql} AND EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id=?
         AND project_id=? AND key=? AND size=? AND token_id=? AND source_session_id=? AND expires_at>?
         AND authority_kind='server' AND source_kind=? AND source_id=? AND source_event_id=? AND source_envelope_hash=?)`,
-        [...live.params,generation,source.projectId,body.digest,body.size,source.tokenId,source.sessionId,now+Math.max(0,Date.now()-publicationStarted),
+        [...authority.params,generation,source.projectId,body.digest,body.size,source.tokenId,source.sessionId,now+Math.max(0,Date.now()-publicationStarted),
           source.sourceKind, sourceId, source.eventId, source.envelopeHash]),
       registerContentStatement(db,{projectId:source.projectId,key:body.digest,size:body.size,mediaType:'application/json',
-        tokenId:source.tokenId,receivedAt:now,generation,authority:live}),
+        tokenId:source.tokenId,receivedAt:now,generation,authority}),
       ...contentAssertion(db, `EXISTS (SELECT 1 FROM blobs WHERE project_id=? AND key=? AND generation IS ? AND size=?)`,
         [source.projectId, body.digest, generation, body.size]),
       db.prepare(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
@@ -145,12 +157,13 @@ export async function prepareDerivedStream(
 }
 
 /** Prepares complete admitted logical bytes before their projection publishes a display prefix. */
-export async function prepareDerivedContent(env: Pick<ContentStore, 'db' | 'blobs'>, source: DerivedContentSource, text: string, now: number): Promise<VerifiedContent> {
+export async function prepareDerivedContent(env: Pick<ContentStore, 'db' | 'blobs'>, source: DerivedContentSource, text: string, now: number,
+  publicationGuard?: ContentPublicationGuard): Promise<VerifiedContent> {
   const bytes = utf8(text);
   const digest = await sha256HexOf(bytes);
   const measured=measuredContentEnv(env);
   const content=await prepareDerivedStream(measured.env, source, { size: bytes.byteLength, digest,
-    stream: () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) }, now);
+    stream: () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) }, now, publicationGuard);
   return { ...content,preparationCalls:measured.usage.statements+measured.usage.blobCalls };
 }
 

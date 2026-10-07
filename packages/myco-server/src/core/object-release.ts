@@ -101,12 +101,15 @@ const blobPageOf = (pairs: readonly BlobRef[]): string => JSON.stringify(pairs.m
  * them. Recorded in that same transaction, a candidate outlives any interruption before it is decided: the drain
  * decides what a caller did not.
  */
-export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number): PreparedStatement[] {
+export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number,
+  guard?: { sql: string; params: readonly unknown[] }): PreparedStatement[] {
   const statements: PreparedStatement[] = [];
   for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
     statements.push(db.prepare(`INSERT INTO blob_release_candidates (project_id, key, created_at)
                                   SELECT c.p, c.k, ? FROM ${blobPage} c WHERE c.k IS NOT NULL
-                                  ON CONFLICT (project_id, key) DO NOTHING`).bind(now, blobPageOf(pairs.slice(at, at + RELEASE_PAGE))));
+                                    ${guard===undefined?'':`AND (${guard.sql})`}
+                                  ON CONFLICT (project_id, key) DO NOTHING`)
+      .bind(now, blobPageOf(pairs.slice(at, at + RELEASE_PAGE)), ...(guard?.params??[])));
   }
   return statements;
 }

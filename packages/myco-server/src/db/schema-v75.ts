@@ -37,6 +37,15 @@ export const V75_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_archive_bundles_session ON archive_bundles(project_id,session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_archive_bundles_archive ON archive_bundles(project_id,archive_key)`,
   `CREATE INDEX IF NOT EXISTS idx_archive_bundles_receipt ON archive_bundles(project_id,receipt_key)`,
+  `CREATE TABLE IF NOT EXISTS prepared_archive_bundles (
+    preparation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+    archive_key TEXT NOT NULL, receipt_key TEXT, expires_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_prepared_archive_bundles_expiry
+    ON prepared_archive_bundles(expires_at,preparation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_prepared_archive_bundles_archive
+    ON prepared_archive_bundles(project_id,archive_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_prepared_archive_bundles_receipt
+    ON prepared_archive_bundles(project_id,receipt_key) WHERE receipt_key IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS raw_event_archive_state (
     id INTEGER PRIMARY KEY CHECK(id=1), cursor_project TEXT NOT NULL DEFAULT '',
     cursor_session TEXT NOT NULL DEFAULT '',cursor_created INTEGER NOT NULL DEFAULT -1,

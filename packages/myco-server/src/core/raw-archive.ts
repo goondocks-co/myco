@@ -3,7 +3,7 @@ import { measuredContentEnv, remainingContentBudget } from './content-budget.js'
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql, type DerivedContentSource } from './registered-content.js';
 import { cleanupCandidate } from './storage-cleanup.js';
 import { prepareArchiveStep, type ContentRow } from './event-content.js';
-import { bundleArchiveStatements, prepareArchiveBundle } from './archive-bundle.js';
+import { bundleArchiveStatements, discardArchiveBundle, prepareArchiveBundle } from './archive-bundle.js';
 import { transcriptRetentionFact } from '../ingest/retention.js';
 import { observedSettingsGuard } from './settings.js';
 import { effectiveRawOwnerSql } from './raw-claims.js';
@@ -12,7 +12,7 @@ import { emit } from '../telemetry.js';
 const DAY_MS = 86_400_000;
 const PAGE = 20;
 const RAW_EVENT_PAGE_BYTES = 1024 * 1024;
-const RAW_EVENT_STATEMENT_RESERVE = 64;
+const RAW_EVENT_STATEMENT_RESERVE = 88;
 const RAW_EVENT_BLOB_RESERVE = 8;
 interface State { phase:number;cursor_project:string;cursor_id:string;cursor_offset:number;due_received:number;due_kind:string;revision:number }
 interface Due {project_id:string;source_kind:'transcript';source_id:string;session_id:string;size:number;
@@ -257,8 +257,9 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
   const bundle=step===null
     ?await prepareArchiveBundle(env,selected.map(({kind,row})=>({kind,row})),now)
     :step.archive.bundle;
-  if(Date.now()>=deadline) throw new Error('raw_archive_wall_budget_exhausted');
-  const sourceAge=`NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN events e
+  try {
+    if(Date.now()>=deadline) throw new Error('raw_archive_wall_budget_exhausted');
+    const sourceAge=`NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN events e
     ON e.project_id=json_extract(j.value,'$.project_id') AND e.event_id=json_extract(j.value,'$.event_id')
     LEFT JOIN raw_credentials c ON c.token_id=e.token_id
     WHERE e.event_id IS NULL OR e.session_id<>json_extract(j.value,'$.session_id')
@@ -268,10 +269,11 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
       OR e.payload_format<>'inline' OR c.provenance IS NOT json_extract(j.value,'$.raw_provenance')
       OR ${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')}
         IS NOT json_extract(j.value,'$.raw_owner'))`;
-  const writes=[...contentAssertion(db,sourceAge,[JSON.stringify(selected.map(({identity})=>identity)),cutoff]),
-    ...bundleArchiveStatements(db,bundle)];
-  await advance(selected.at(-1)!.identity,writes,true);
-  return selected.length;
+    const writes=[...contentAssertion(db,sourceAge,[JSON.stringify(selected.map(({identity})=>identity)),cutoff]),
+      ...bundleArchiveStatements(db,bundle)];
+    await advance(selected.at(-1)!.identity,writes,true);
+    return selected.length;
+  } finally { await discardArchiveBundle(env,bundle,now); }
 }
 
 /** One bounded seed or due page; every clear holds an exact registered body and receipt. */

@@ -1,6 +1,6 @@
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { prepareArchive,prepareArchiveStep,type PreparedArchive,type ContentRow } from './event-content.js';
-import { bundleArchiveStatements,prepareArchiveBundle,ARCHIVE_BUNDLE_BYTES,readBundleEntry,type BundleItem } from './archive-bundle.js';
+import { bundleArchiveStatements,discardArchiveBundle,prepareArchiveBundle,ARCHIVE_BUNDLE_BYTES,readBundleEntry,type BundleItem } from './archive-bundle.js';
 import { contentAssertion } from './registered-content.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
 import { effectiveRawOwnerSql } from './raw-claims.js';
@@ -10,7 +10,7 @@ import { utf8 } from '../hash.js';
 
 export const STORAGE_CLEANUP_ROWS = 20;
 export const STORAGE_CLEANUP_PAGE_BYTES = ARCHIVE_BUNDLE_BYTES;
-const ROW_RESERVE = 42;
+const ROW_RESERVE = 64;
 const BLOB_RESERVE = 8;
 interface CleanupState {
   phase:number;cursor_project:string;cursor_id:string;cursor_session:string;cursor_created:number;cursor_rowid:number;
@@ -90,9 +90,11 @@ async function commitPage(db:RelationalStore,state:CleanupState,ids:Candidate[],
   const next=advancePhase?state.phase+1:state.phase;
   await db.batch([
     ...contentAssertion(db,guard.sql,guard.params),...writes,
-    db.prepare(`DELETE FROM storage_cleanup_queue WHERE EXISTS (SELECT 1 FROM json_each(?) j
-      WHERE project_id=json_extract(j.value,'$.project_id') AND resource_kind=json_extract(j.value,'$.resource_kind')
-        AND resource_id=json_extract(j.value,'$.resource_id'))`).bind(JSON.stringify(ids)),
+    db.prepare(`DELETE FROM storage_cleanup_queue WHERE rowid IN
+      (SELECT q.rowid FROM json_each(?) j CROSS JOIN storage_cleanup_queue q
+        WHERE q.project_id=json_extract(j.value,'$.project_id')
+          AND q.resource_kind=json_extract(j.value,'$.resource_kind')
+          AND q.resource_id=json_extract(j.value,'$.resource_id'))`).bind(JSON.stringify(ids)),
     db.prepare(`UPDATE storage_cleanup_state SET phase=?,cursor_project=?,cursor_id=?,cursor_session=?,cursor_created=?,cursor_rowid=?,
       revision=revision+1,complete=?,converted_rows=converted_rows+?,cleared_bytes=cleared_bytes+?,
       metadata_added_bytes=metadata_added_bytes+?,updated_at=?,failure=NULL WHERE id=1 AND ${guard.sql}`)
@@ -136,11 +138,13 @@ export async function storageCleanup(env:Pick<ServerEnv,'db'|'blobs'>,now:number
         if(scans?.scanned_bytes===row.bytes&&measured.usage.statements+ROW_RESERVE+Math.ceil(row.bytes/STORAGE_CLEANUP_PAGE_BYTES)>limits.statements)break;
         const step=await prepareArchiveStep(measured.env,id.resource_kind,row,now);
         if(step.status==='pending'){if(consumed.length)await commitPage(measured.env.db,state,consumed,[],now);return {changed,more:true};}
-        if(clock()>=deadline)return {changed,more:true};
-        const cleared=row.bytes-(id.resource_kind==='event'?2:utf8(step.archive.preview).length);
-        await commitPage(measured.env.db,state,[...consumed,id],bundleArchiveStatements(measured.env.db,step.archive.bundle),now,
-          1,cleared,step.archive.bundle.metadataBytes);
-        changed++;clearedBytes+=cleared;metadataAdded+=step.archive.bundle.metadataBytes;consumed.length=0;break;
+        try {
+          if(clock()>=deadline)return {changed,more:true};
+          const cleared=row.bytes-(id.resource_kind==='event'?2:utf8(step.archive.preview).length);
+          await commitPage(measured.env.db,state,[...consumed,id],bundleArchiveStatements(measured.env.db,step.archive.bundle),now,
+            1,cleared,step.archive.bundle.metadataBytes);
+          changed++;clearedBytes+=cleared;metadataAdded+=step.archive.bundle.metadataBytes;consumed.length=0;break;
+        } finally { await discardArchiveBundle(measured.env,step.archive.bundle,now); }
       }
       consumed.push(id);items.push({kind:id.resource_kind,row,text:row.input_bundle_id!==null&&row.input_bundle_id!==undefined
         ?await readBundleEntry(measured.env,{projectId:row.project_id,bundleId:row.input_bundle_id,entry:row.input_bundle_entry!,
@@ -152,11 +156,13 @@ export async function storageCleanup(env:Pick<ServerEnv,'db'|'blobs'>,now:number
     if(items.length){
       if(clock()>=deadline)return {changed,more:true};
       const bundle=await prepareArchiveBundle(measured.env,items,now);
-      if(clock()>=deadline)return {changed,more:true};
-      const cleared=bundle.items.reduce((sum,item)=>sum+(item.row.input_bundle_id!==null&&item.row.input_bundle_id!==undefined?0:item.row.bytes-(item.kind==='event'?2:utf8(item.preview).length)),0);
-      await commitPage(measured.env.db,state,consumed,bundleArchiveStatements(measured.env.db,bundle),now,
-        items.length,cleared,bundle.metadataBytes);
-      changed+=items.length;clearedBytes+=cleared;metadataAdded+=bundle.metadataBytes;
+      try {
+        if(clock()>=deadline)return {changed,more:true};
+        const cleared=bundle.items.reduce((sum,item)=>sum+(item.row.input_bundle_id!==null&&item.row.input_bundle_id!==undefined?0:item.row.bytes-(item.kind==='event'?2:utf8(item.preview).length)),0);
+        await commitPage(measured.env.db,state,consumed,bundleArchiveStatements(measured.env.db,bundle),now,
+          items.length,cleared,bundle.metadataBytes);
+        changed+=items.length;clearedBytes+=cleared;metadataAdded+=bundle.metadataBytes;
+      } finally { await discardArchiveBundle(measured.env,bundle,now); }
     }else if(consumed.length)await commitPage(measured.env.db,state,consumed,[],now);
     else if(clock()===start)break;
     longest=Math.max(longest,clock()-start);

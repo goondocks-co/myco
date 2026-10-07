@@ -82,7 +82,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0072_v72.sql': '600f5b7fb92fcb242917187cbc8a3f1ab0854457955c60a480800817d6ab44af',
   '0073_v73.sql': '1166cbe8d2c61ebb7036377fad5cf430a3fe81a5bc47103a68242920c83a6ae1',
   '0074_v74.sql': '577eabed8b5fada9ef0b34476966956a3be9800e36deb3eb6b4b4db7277333c1',
-  '0075_v75.sql': '93040c97466b4c48638dc753ed423e159e6c8a28fb42201a461434fc233b4570',
+  '0075_v75.sql': '02da28917e27738af41acef31c5aa0b29af26e99cda1a8833d9b24f58fcb93b5',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -635,7 +635,7 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'enrollment_authorities', 'external_grants',
-      'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'projects',
+      'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'projects',
       'prompt_batches', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
     ]);
