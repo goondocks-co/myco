@@ -14,7 +14,7 @@ import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHea
 import { stopRaceFixture } from '../owner-review/stop-race.ts';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
-export async function bootSelfhosted(options: { stopRace?: boolean } = {}): Promise<ParityTarget> {
+export async function bootSelfhosted(options: { stopRace?: boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-'));
   const databasePath = path.join(root, 'myco.sqlite');
 
@@ -44,6 +44,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean } = {}): Prom
     transport: 'loopback',
     sourceFrom: 'socket',
     wakeLoop: false,
+    uiAssets: options.uiAssets,
     originOf: (port) => `http://127.0.0.1:${port}`,
     SESSION_SECRET,
     SECRET_WRAP_KEY: wrapKey,

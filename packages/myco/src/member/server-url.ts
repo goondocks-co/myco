@@ -71,3 +71,13 @@ export function admitMemberServerUrl(value: string, env: NodeJS.ProcessEnv = pro
   bypassProxyFor([url.hostname], env);
   return true;
 }
+
+/** A terminal Deployment address defaults to HTTPS; explicit schemes still pass the shared transport rule. */
+export function normalizeMemberServerAddress(value: string): URL | null {
+  const address = value.trim();
+  if (!address || /\s/.test(address)) return null;
+  let url: URL;
+  try { url = new URL(address.includes('://') ? address : `https://${address}`); } catch { return null; }
+  if (!url.hostname || url.username || url.password || !admitMemberServerUrl(url.href)) return null;
+  return url;
+}

@@ -325,7 +325,7 @@ export function createServer(deps: ServerDeps) {
       const bounded = await boundedRequest(request, bodyBound);
       if (bounded === null) return refuseOversized(bodyBound);
       try {
-        return await matched.route.handler(env, bounded, now);
+        return await matched.route.handler(env, bounded, now, source);
       } catch (err) {
         emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
         return unavailable();
@@ -356,6 +356,7 @@ export function createServer(deps: ServerDeps) {
         // Membership is decided per request: a session names a GitHub account, and
         // the account is a member only while a live member row is linked to it.
         const member = await memberByGithubId(env.db, session.sub);
+        if (member !== null && matched.route.path.startsWith('/api/device/') && !(await env.tokenLimit.limit({ key: `device-member:${member.id}` })).success) return limited();
         if (matched.route.authority === 'account') {
           // The routes that serve an account ahead of membership meter a non-member
           // like credential-free traffic: a valid session is free to mint.

@@ -1,3 +1,4 @@
+import { pendingDeviceCode } from '../lib/pending-device';
 import { ReadState } from '../design';
 import { failureWords } from '../features/work/words';
 import { type ReactNode } from 'react';
@@ -39,6 +40,8 @@ const NESTED_SHOWN = 3;
 export function ResumePendingLink() {
   const { pathname } = useLocation();
   if (pathname === '/' && readPendingLink() !== null) return <Navigate to="/link" replace />;
+  const deviceCode = pendingDeviceCode();
+  if (pathname === '/' && deviceCode) return <Navigate to={`/device?code=${encodeURIComponent(deviceCode)}`} replace />;
   return <Outlet />;
 }
 

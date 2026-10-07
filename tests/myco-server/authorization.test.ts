@@ -95,8 +95,9 @@ describe('Deployment authorization policy', () => {
 
   it('enumerates resulting enrollment authority across every actor, action and transport', () => {
     const expected: Record<string, Partial<Record<'owner' | 'admin' | 'member', readonly Action[]>>> = {
-      owner: { member: ['admin', 'owner'], admin: ['admin', 'owner'], owner: ['admin', 'owner'] },
-      admin: { member: ['admin'] },
+      owner: { member: ['admin', 'owner', 'enroll.self'], admin: ['admin', 'owner', 'enroll.self'], owner: ['admin', 'owner', 'enroll.self'] },
+      admin: { member: ['admin', 'enroll.self'] },
+      member: { member: ['enroll.self'] },
     };
     for (const [actor, subject] of Object.entries(SUBJECTS)) {
       for (const transport of ['http', 'mcp'] as const) {
@@ -112,7 +113,7 @@ describe('Deployment authorization policy', () => {
 
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {
     expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup'].sort());
-    expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'].sort());
+    expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'].sort());
     expect(new Set(Object.values(SUBJECTS).map((s) => s.kind))).toEqual(new Set(SUBJECT_KINDS));
     for (const [actor, initial] of Object.entries(SUBJECTS)) {
       for (const transport of ['http', 'mcp'] as const) {

@@ -1,3 +1,4 @@
+import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny } from './auth/device.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
@@ -97,7 +98,7 @@ export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Respon
 /** Session handlers run after a valid session whether or not its account is a member; exactly the routes that serve a signed-in non-member carry them. */
 export type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
 /** Enroll handlers present an enrollment authority rather than a credential, so they reach storage without an authenticated member. They receive the unread request and consume its body themselves, within the bound the pipeline enforces. */
-export type EnrollHandler = (env: ServerEnv, request: Request, now: number) => Promise<Response>;
+export type EnrollHandler = (env: ServerEnv, request: Request, now: number, source: string) => Promise<Response>;
 
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
@@ -133,6 +134,11 @@ async function health(): Promise<Response> {
 }
 
 export const ROUTES: readonly Route[] = [
+  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/auth/device/start', auth: 'enroll', handler: handleDeviceStart },
+  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/auth/device/poll', auth: 'enroll', handler: handleDevicePoll },
+  { authorization: httpPolicy('directory', 'read', 'deployment'), method: 'POST', path: '/api/device/preview', auth: 'session', authority: 'member', handler: handleDevicePreview },
+  { authorization: httpPolicy('enrollment', 'enroll.self', 'self-enrollment'), method: 'POST', path: '/api/device/approve', auth: 'session', authority: 'member', handler: handleDeviceApprove },
+  { authorization: httpPolicy('directory', 'read', 'deployment'), method: 'POST', path: '/api/device/deny', auth: 'session', authority: 'member', handler: handleDeviceDeny },
   { authorization: RUN_CANCEL_POLICY, method: 'POST', path: '/api/projects/{projectId}/runs/{runId}/cancel', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/cancel$/, auth: 'session', authority: 'member', handler: handleCancelRun },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'session', authority: 'member', handler: handleProjectMap },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'session', authority: 'member', handler: handleProjectSearch },
