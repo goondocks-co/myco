@@ -1,4 +1,6 @@
 import { expect, it } from 'bun:test';
+import type { Database } from 'bun:sqlite';
+import { execFileSync } from 'node:child_process';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { storageCleanup, storageCleanupPending } from '@myco-server-worker/core/storage-cleanup.js';
@@ -27,6 +29,25 @@ const POPULATION_EVENTS = 249_362;
 const PROJECT = `proj_${'p'.repeat(32)}`;
 const SESSION = 's'.repeat(36);
 const TOKEN = 't'.repeat(19);
+
+/** Measures every table and index in the exact database image through a dbstat-enabled SQLite reader. */
+function occupiedStorage(sqlite: Database) {
+  const result = JSON.parse(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-B', '-c', `
+import json, sqlite3, sys
+db = sqlite3.connect(':memory:')
+db.deserialize(sys.stdin.buffer.read())
+total = db.execute('SELECT COALESCE(SUM(payload),0), COALESCE(SUM(pgsize),0) FROM dbstat').fetchone()
+tables = db.execute('SELECT m.tbl_name, SUM(d.payload) FROM dbstat d JOIN sqlite_master m ON m.name=d.name GROUP BY m.tbl_name').fetchall()
+print(json.dumps({'bytes': total[0], 'page_bytes': total[1], 'tables': tables,
+  'pages': db.execute('PRAGMA page_count').fetchone()[0],
+  'free': db.execute('PRAGMA freelist_count').fetchone()[0]}))
+`], { input: sqlite.serialize(), encoding: 'utf8' })) as {
+    bytes: number; page_bytes: number; tables: Array<[string, number]>; pages: number; free: number;
+  };
+  expect(result.pages).toBe((sqlite.query('PRAGMA page_count').get() as { page_count: number }).page_count);
+  expect(result.free).toBe((sqlite.query('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count);
+  return { ...result, byTable: new Map(result.tables) };
+}
 
 it('reduces occupied record and index bytes for a representative event and input distribution', async () => {
   const rig = sqliteEnv();
@@ -70,16 +91,7 @@ it('reduces occupied record and index bytes for a representative event and input
     }
     rig.sqlite.exec('DELETE FROM storage_cleanup_queue');
 
-    const measure = () => {
-      const total = rig.sqlite.query('SELECT COALESCE(SUM(payload),0) AS bytes, COALESCE(SUM(pgsize),0) AS page_bytes FROM dbstat')
-        .get() as { bytes: number; page_bytes: number };
-      const byTable = new Map((rig.sqlite.query(`SELECT m.tbl_name AS name, SUM(d.payload) AS bytes
-        FROM dbstat d JOIN sqlite_master m ON m.name=d.name GROUP BY m.tbl_name`).all() as Array<{ name: string; bytes: number }>)
-        .map(({ name, bytes }) => [name, bytes]));
-      const pages = rig.sqlite.query('PRAGMA page_count').get() as { page_count: number };
-      const free = rig.sqlite.query('PRAGMA freelist_count').get() as { freelist_count: number };
-      return { ...total, byTable, pages: pages.page_count, free: free.freelist_count };
-    };
+    const measure = () => occupiedStorage(rig.sqlite);
     const before = measure();
     for (let pass = 0; pass < EVENT_COUNT + 3 &&
       (rig.sqlite.query('SELECT phase FROM raw_archive_state WHERE id=1').get() as { phase: number }).phase < 2; pass += 1) {
@@ -136,11 +148,11 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
       const free = rig.sqlite.query('PRAGMA freelist_count').get() as { freelist_count: number };
       return { pages: page.page_count, free: free.freelist_count };
     };
-    const hasDbstat = rig.sqlite.query(`SELECT 1 FROM pragma_module_list WHERE name='dbstat'`).get() !== null;
-    const metadata = () => hasDbstat ? (rig.sqlite.query(`SELECT SUM(payload) AS bytes FROM dbstat
-      WHERE name IN (SELECT name FROM sqlite_master WHERE tbl_name IN
-        ('blobs','archive_bundles','raw_resources','registered_content_proofs'))`)
-      .get() as {bytes:number}).bytes : null;
+    const metadata = () => {
+      const measured = occupiedStorage(rig.sqlite);
+      return ['blobs', 'archive_bundles', 'raw_resources', 'registered_content_proofs']
+        .reduce((bytes, table) => bytes + (measured.byTable.get(table) ?? 0), 0);
+    };
     const baseline = metric();
     const metadataBaseline = metadata();
     const bodies: Array<{ id: string; payload: string; bytes: number }> = [];
@@ -165,7 +177,7 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     expect(after.pages).toBe(before.pages);
     expect(after.free).toBeGreaterThan(before.free);
     const metadataAfter = metadata();
-    const metadataBytes = metadataAfter === null || metadataBaseline === null ? null : metadataAfter-metadataBaseline;
+    const metadataBytes = metadataAfter-metadataBaseline;
     const state = rig.sqlite.query('SELECT converted_rows,cleared_bytes FROM storage_cleanup_state WHERE id=1')
       .get() as { converted_rows: number; cleared_bytes: number };
     expect(state.converted_rows).toBe(ROWS);
@@ -192,8 +204,8 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     const reused = metric();
     console.info(`storage cleanup SQLite pages: ${JSON.stringify({ rows: ROWS, clearedBytes: state.cleared_bytes,
       baseline, before, after, reused, bundleCount, usage:measured.usage,wallMs,cpuMicros:cpu,metadataBytes,
-      metadataBytesPerEvent: metadataBytes === null ? null : metadataBytes/ROWS,
-      metadataMeasurement: hasDbstat ? 'dbstat payload including indexes' : 'unavailable: SQLite dbstat module is absent',
+      metadataBytesPerEvent: metadataBytes/ROWS,
+      metadataMeasurement: 'dbstat payload including indexes from the exact SQLite image',
       livePageChange: (after.pages-after.free)-(before.pages-before.free) })}`);
     expect(reused.free).toBeLessThan(after.free);
     expect(reused.pages - after.pages).toBeLessThan(before.pages - baseline.pages);
