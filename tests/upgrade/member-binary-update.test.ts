@@ -26,7 +26,8 @@ int main(int argc, char **argv) {
   for (int i=1;i<argc;i++) fprintf(out, "%s%s", i>1 ? " " : "", argv[i]);
   fputs("\\n", out); fclose(out); return 0;
 }`);
-    expect(spawnSync('cc', ['-o', source, c]).status).toBe(0);
+    const compiled = spawnSync('cc', ['-o', source, c], { encoding: 'utf8' });
+    expect({ status: compiled.status, stderr: compiled.stderr }).toEqual({ status: 0, stderr: '' });
     const asset = `myco-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}`;
     const sum = crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
     writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: binary });

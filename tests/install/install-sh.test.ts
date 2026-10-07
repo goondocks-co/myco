@@ -91,7 +91,8 @@ beforeAll(() => {
     const source = path.join(dir, 'stand-in.c');
     fs.writeFileSync(source, `#include <stdio.h>\nint main(void) { ${body} }\n`);
     const binary = path.join(dir, `myco-${TARGET}`);
-    expect(spawnSync('cc', ['-o', binary, source]).status).toBe(0);
+    const compiled = spawnSync('cc', ['-o', binary, source], { encoding: 'utf8' });
+    expect({ status: compiled.status, stderr: compiled.stderr }).toEqual({ status: 0, stderr: '' });
     fs.rmSync(source);
     return binary;
   };
