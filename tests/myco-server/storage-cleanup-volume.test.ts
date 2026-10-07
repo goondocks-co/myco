@@ -105,7 +105,8 @@ it('reduces occupied record and index bytes for a representative event and input
       cohorts: EVENT_COHORTS, events: EVENT_COUNT, inputCohorts: INPUT_COHORTS, inputs: INPUT_COUNT,
       clearedBytes: state.cleared_bytes,
       reportedMetadataBytes: state.metadata_added_bytes, reportedNetBytes: state.metadata_added_bytes - state.cleared_bytes,
-      metadataAdded, netBytes, projectedPopulationNetBytes,
+      metadataAdded, netRepresentationOverheadBytes: state.cleared_bytes + netBytes,
+      netBytes, projectedPopulationNetBytes,
       before: { bytes: before.bytes, occupiedPageBytes: before.page_bytes, pages: before.pages, free: before.free },
       after: { bytes: after.bytes, occupiedPageBytes: after.page_bytes, pages: after.pages, free: after.free }, changedTables,
     })}`);

@@ -42,6 +42,8 @@ describe('tool input storage', () => {
       expect(await storageCleanupPending(f.db)).toBe(false);
       const before=f.sqlite.query('SELECT input_bundle_id FROM tool_calls WHERE tool_call_id=?').get(largeId);
       expect(before).not.toEqual({input_bundle_id:null});
+      f.sqlite.query('UPDATE tool_calls SET input_bundle_id=input_bundle_id WHERE tool_call_id=?').run(largeId);
+      expect(await storageCleanupPending(f.db)).toBe(true);
       for(let n=591;n<595;n++)expect((await f.send(n,uuid(n),{text:'x'.repeat(2300)})).persisted).toBe(true);
       for(let pass=0;pass<10&&await storageCleanupPending(f.db);pass++)await storageCleanup(f.serverEnv,NOW);
       expect(await storageCleanupPending(f.db)).toBe(false);
