@@ -20,8 +20,10 @@ import { deploymentSecretStore } from '../../packages/myco-server/src/core/secre
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
 import { asSchema41 } from './legacy-recovery-fixture.js';
+import { seedRecoveryAuthority, recoveryAuthoritySnapshot, assertRecoveredAuthority } from './recovery-authority-fixture.js';
+import { cloudflareResources, recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
 
-async function fixture(failVectorRead = false, { legacy = false } = {}) {
+async function fixture(failVectorRead = false, { legacy = false, authority = false } = {}) {
   const reports: string[] = [];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-recovery-'));
   const source = path.join(root, 'artifact');
@@ -30,6 +32,8 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
   const legacyText = 'legacy hosted body';
   // The source held one blob from before generations existed, seeded before step 42 as its database held it.
   const data = seededSqlite({ beforeStep42: (db) => legacyBlob(db, { projectId: 'proj_1', key: createHash('sha256').update(legacyText).digest('hex'), size: Buffer.byteLength(legacyText) }) });
+  if (authority) seedRecoveryAuthority(data);
+  const sourceRecord = { ...cloudflareResources(), accountId: 'fixture-account', databaseId: 'source-database', storeId: 'f'.repeat(32), fleet: 2 };
   const wrapKey = Buffer.alloc(32, 7).toString('base64');
   const key = wrappingKeyFromText(async () => wrapKey, 'fixture');
   await deploymentSecretStore(sqliteRelationalStore(data), key).put('fixture', 'sealed-fixture-value', 'fixture', 1);
@@ -53,7 +57,7 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
     snapshot: async (file) => {
       data.query('VACUUM INTO ?').run(file);
       if (legacy) asSchema41(file);
-      return { configuration: { fleet: 2 }, credentialsRequired: [] };
+      return { configuration: recoveryConfigurationOf(sourceRecord), credentialsRequired: [] };
     },
     blob: async (object) => {
       const held = legacy ? [...sourceObjects].find(([name]) => name.startsWith(object.key))?.[1] : sourceObjects.get(object.source);
@@ -66,6 +70,7 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
   const destination = new Database(':memory:');
   let loseImport = true;
   let creates = 0;
+  const provisioned: Record<string, string[]> = { databaseName: [], bucketName: [], vectorIndexName: [], wrapKeySecretName: [] };
   const deployments: string[] = [];
   const secretCommands: string[] = [];
   const runner: CommandRunner = { async run(_command, args, options) {
@@ -75,15 +80,15 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
     if (flat === 'whoami') return answer('fixture');
     expect(options?.env?.CLOUDFLARE_ACCOUNT_ID).toBe('fixture-account');
     if (flat === 'd1 list --json' || flat === 'vectorize list --json') return answer('[]');
-    if (flat.startsWith('d1 create')) { creates++; return answer('11111111-2222-4333-8444-555555555555'); }
-    if (flat.startsWith('r2 bucket create') || flat.startsWith('vectorize create ')) { creates++; return answer(); }
+    if (flat.startsWith('d1 create')) { provisioned.databaseName.push(args[4]!); creates++; return answer('11111111-2222-4333-8444-555555555555'); }
+    if (flat.startsWith('r2 bucket create') || flat.startsWith('vectorize create ')) { provisioned[flat.startsWith('r2') ? 'bucketName' : 'vectorIndexName'].push(args[flat.startsWith('r2') ? 5 : 4]!); creates++; return answer(); }
     if (flat.startsWith('vectorize get ')) {
       if (failVectorRead) { failVectorRead = false; return answer('filter preparation unavailable', 1); }
       return answer(JSON.stringify({ config: { dimensions: VECTOR_INDEX_DIMENSIONS, metric: 'cosine' } }));
     }
     if (flat.startsWith('vectorize list-metadata-index ')) return answer(JSON.stringify(VECTOR_METADATA_FIELDS.map(propertyName => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }))));
     if (flat.startsWith('secrets-store store list')) return answer('f'.repeat(32));
-    if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) { secretCommands.push(flat); return answer(); }
+    if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) { if (flat.startsWith('secrets-store secret create')) provisioned.wrapKeySecretName.push(args[args.indexOf('--name') + 1]!); secretCommands.push(flat); return answer(); }
     if (flat.startsWith('deployments list')) return answer('Worker not found [code: 10007]', 1);
     if (flat.startsWith('auth token')) return answer(JSON.stringify({ type: 'oauth', token: 'fixture-operator-token' }));
     if (args.includes('--command')) return answer(JSON.stringify([{ success: true, results: destination.query(args[args.indexOf('--command') + 1]!).all() }]));
@@ -112,7 +117,7 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
     }
     return stored.has(key) ? new Response(stored.get(key)!) : new Response('absent', { status: 404 });
   };
-  return { source, secretsFile, mycoHome, destination, deployments, secretCommands, key, wrapKey, creates: () => creates, bodies, stored,
+  return { sourceRecord, provisioned, source, secretsFile, mycoHome, destination, deployments, secretCommands, key, wrapKey, creates: () => creates, bodies, stored,
     reports,
     restore: (newSignIn = false, tenantMode: 'replacement' | 'fork' = 'replacement') => restoreCloudflareDeployment({ sourceRetired: true, tenantMode, source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, fetch: fetchObject, report: (line: string) => { reports.push(line); } }),
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },
@@ -231,11 +236,12 @@ it('refuses unconfirmed provisioning instead of creating another resource on ret
 
 for (const tenantMode of ['replacement', 'fork'] as const) {
   it(`hosted ${tenantMode} prepares tenant identity once and refuses a different mode on resume`, async () => {
-    const f = await fixture();
+    const f = await fixture(false, { authority: true });
     try {
       const sourceBytes = fs.readFileSync(path.join(f.source, 'myco.sqlite'));
       const source = new Database(path.join(f.source, 'myco.sqlite'), { readonly: true });
       const sourceId = source.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
+      const authorities = recoveryAuthoritySnapshot(source);
       source.close();
       await expect(f.restore(false, tenantMode)).rejects.toThrow('Cloudflare recovery import did not finish');
       const journalFile = path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.json');
@@ -244,15 +250,29 @@ for (const tenantMode of ['replacement', 'fork'] as const) {
       expect(fs.readFileSync(journalFile)).toEqual(before);
       const prepared = new Database(path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.sqlite'), { readonly: true });
       const preparedId = prepared.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
+      assertRecoveredAuthority(prepared, authorities, tenantMode);
       prepared.close();
-      await f.restore(false, tenantMode);
+      const result = await f.restore(false, tenantMode);
+      assertRecoveredAuthority(f.destination, authorities, tenantMode);
+      expect(Bun.TOML.parse(f.deployments.at(-1)!)).toMatchObject({
+        d1_databases: [{ database_name: result.record.databaseName, database_id: result.record.databaseId }],
+        r2_buckets: [{ bucket_name: result.record.bucketName }, { bucket_name: result.record.recoveryBucketName }],
+        vectorize: [{ index_name: result.record.vectorIndexName }],
+        secrets_store_secrets: [{ store_id: result.record.storeId, secret_name: result.record.wrapKeySecretName }],
+      });
+      for (const field of ['databaseName', 'vectorIndexName', 'wrapKeySecretName'] as const) {
+        expect(f.provisioned[field]).toEqual([result.record[field]!]);
+        expect(result.record[field]).not.toBe(f.sourceRecord[field]);
+      }
+      expect(f.provisioned.bucketName).toEqual([result.record.bucketName, result.record.recoveryBucketName!]);
+      for (const name of f.provisioned.bucketName) {
+        expect(name).not.toBe(f.sourceRecord.bucketName);
+        expect(name).not.toBe(f.sourceRecord.recoveryBucketName);
+      }
       const publishedId = f.destination.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get();
       expect(publishedId).toEqual(preparedId);
       if (tenantMode === 'fork') {
         expect(preparedId.value).not.toBe(sourceId.value);
-        for (const table of ['member_credentials', 'enrollment_authorities', 'identity_link_authorities', 'external_grants']) {
-          expect(f.destination.query(`SELECT count(*) AS n FROM ${table} WHERE revoked_at IS NULL`).get()).toEqual({ n: 0 });
-        }
       } else expect(preparedId).toEqual(sourceId);
       expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(sourceBytes);
     } finally { f.cleanup(); }

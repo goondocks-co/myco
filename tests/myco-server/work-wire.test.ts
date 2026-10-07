@@ -11,7 +11,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/work/wire.ts';
-import type { RunAttemptRow, RunDetail, RunPageRow, RunStepPage, RunStepRow, listRuns } from '../../packages/myco-server/src/read/runs.ts';
+import type { RunAttemptRow, RunPageRow, RunStepPage, RunStepRow, listRuns } from '../../packages/myco-server/src/read/runs.ts';
+import type { DashboardRunDetail } from '../../packages/myco-server/src/api/agent-runs.ts';
 import type { RunAudit } from '../../packages/myco-server/src/core/run-audit.ts';
 import type { RunOutcomeCounts, RunReadSession, RunReads } from '../../packages/myco-server/src/read/run-reads.ts';
 import type { ReportRow } from '../../packages/myco-server/src/core/runs.ts';
@@ -23,7 +24,7 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 
 /** `GET /api/projects/{p}/runs/{r}`: the answer `handleProjectRun` sends. */
-type RunDetailAnswer = RunDetail & { reports: ReportRow[] } & RunReads & { projectId: string };
+type RunDetailAnswer = DashboardRunDetail & { reports: ReportRow[] } & RunReads & { projectId: string };
 
 const SAME: [
   Same<Ui.RunOutcomeCounts, RunOutcomeCounts>,

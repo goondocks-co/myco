@@ -335,6 +335,16 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
       VALUES (${lit(target.projectId)},${lit(runId)},'agent_isolation','extract-curate','pending',${now},NULL,${lit(JSON.stringify({ actor: actorId }))})`);
   }
   const cancelPath = (runId: string) => `/api/projects/${target.projectId}/runs/${runId}/cancel`;
+  for (const actor of actors) {
+    for (const runId of ['run_matrix_own', 'run_matrix_other']) {
+      const response = await request(target, 'GET', `/api/projects/${target.projectId}/runs/${runId}`, actor.headers);
+      expect(response.status).toBe(200);
+      const { run } = await response.json() as { run: { canCancel: boolean; cancelReason: string | null } };
+      const allowed = actor.role !== 'member' || runId === 'run_matrix_own';
+      expect(run.canCancel).toBe(allowed);
+      expect(run.cancelReason).toBe(allowed ? null : 'Only the member who requested this run or an administrator can cancel it.');
+    }
+  }
   expect(await status(actors[2], 'POST', cancelPath('run_matrix_other'))).toBe(404);
   expect(await status(actors[2], 'POST', cancelPath('run_matrix_own'))).toBe(200);
   expect(await status(actors[1], 'POST', cancelPath('run_matrix_other'))).toBe(200);

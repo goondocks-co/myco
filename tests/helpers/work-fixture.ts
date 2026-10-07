@@ -166,6 +166,7 @@ export const runDetail = (
   reports: (over.reports ?? []).map((report) => ({ ...report, audit: report.audit ?? null })),
   run: {
     ...run, instruction: null, instructions: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: run.costUsd, reasoningLevel: null, resumeMode: null,
+    canCancel: false, cancelReason: 'Only the member who requested this run or an administrator can cancel it.',
     resumeAttempts: 0, error: null, dispatchedBy: null, usageData: null, actionsTaken: null, ...over.run,
   } as RunDetailAnswer['run'],
 });

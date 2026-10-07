@@ -28,7 +28,7 @@ const tmp = path.join(scratch, 'tmp');
 const managedBinary = path.join(mycoHome, 'bin', process.platform === 'win32' ? 'myco.exe' : 'myco');
 const stops: Array<() => Promise<void> | void> = [];
 
-interface Deployment { url: string; database: string; token: string }
+interface Deployment { url: string; database: string; blobDir: string; token: string }
 const deployments: Deployment[] = [];
 const roots = [path.join(scratch, 'repo-a'), path.join(scratch, 'repo-b')];
 
@@ -51,10 +51,11 @@ async function createDeployment(index: number): Promise<Deployment> {
     { memberId: `mem_route_${index}`, machineId: 'machine_routing_same' }, Date.now(), null, NO_RUNTIME_CLAIMS, { rotates: false });
   sqlite.close();
 
-  const native = await serve({ databasePath: database, blobDir: path.join(dir, 'blobs'), port: 0,
+  const blobDir = path.join(dir, 'blobs');
+  const native = await serve({ databasePath: database, blobDir, port: 0,
     bind: 'loopback', transport: 'loopback', sourceFrom: 'socket' });
   stops.push(native.stop);
-  return { url: `http://127.0.0.1:${native.port}`, database, token };
+  return { url: `http://127.0.0.1:${native.port}`, database, blobDir, token };
 }
 
 function childEnv(): NodeJS.ProcessEnv {
@@ -80,7 +81,10 @@ function cli(root: string, args: string[], input?: string, executable = BINARY):
 }
 
 beforeAll(async () => {
-  if (!fs.existsSync(BINARY)) return;
+  if (!fs.existsSync(BINARY)) {
+    if (process.env.CI) throw new Error('RBAC routing smoke requires the built binary in CI');
+    return;
+  }
   for (const dir of [userHome, mycoHome, codeHome, claudeHome, tmp, ...roots]) fs.mkdirSync(dir, { recursive: true });
   fs.mkdirSync(path.dirname(managedBinary), { recursive: true });
   fs.copyFileSync(BINARY, managedBinary);
@@ -96,7 +100,7 @@ afterAll(async () => {
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-it.skipIf(!fs.existsSync(BINARY))('routes one machine and identical Project/session IDs to the repositories\' explicit Deployments', async () => {
+it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and identical Project/session IDs to the repositories\' explicit Deployments', async () => {
   for (const [index, root] of roots.entries()) {
     const deployment = deployments[index];
     const joined = await cli(root, ['member', 'join', deployment.url, '--project', PROJECT, '--token-stdin', '--no-worker'], `${deployment.token}\n`);
@@ -130,19 +134,28 @@ it.skipIf(!fs.existsSync(BINARY))('routes one machine and identical Project/sess
     expect(search.out).not.toContain(`routing marker ${1 - index}`);
   }
 
-  for (const root of roots) {
+  for (const [index, root] of roots.entries()) {
     const transcript = path.join(root, `${SESSION}.jsonl`);
     fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00Z',
-      message: { role: 'user', content: [{ type: 'text', text: 'routing smoke prompt' }] } })}\n`);
+      message: { role: 'user', content: [{ type: 'text', text: `routing capture marker ${index}` }] } })}\n`);
     const started = await cli(root, ['hook', 'session-start', '--symbiont', 'claude-code', '--credential', 'registry'],
       JSON.stringify({ session_id: SESSION, transcript_path: transcript, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }));
     expect(started.err).not.toContain('no capture');
     const ended = await cli(root, ['hook', 'stop', '--symbiont', 'claude-code', '--credential', 'registry', '--ship', 'inline'],
-      JSON.stringify({ session_id: SESSION, cwd: root, hook_event_name: 'Stop', last_assistant_message: 'done' }));
+      JSON.stringify({ session_id: SESSION, transcript_path: transcript, cwd: root, hook_event_name: 'Stop', last_assistant_message: 'done' }));
     expect(ended.code).toBe(0);
   }
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline && deployments.some((deployment) => querySession(deployment.database) !== 1))
     await Bun.sleep(100);
   expect(deployments.map((deployment) => querySession(deployment.database))).toEqual([1, 1]);
+  const storedText = (dir: string): string => fs.readdirSync(dir, { withFileTypes: true }).map((entry) => {
+    const file = path.join(dir, entry.name);
+    return entry.isDirectory() ? storedText(file) : fs.readFileSync(file, 'utf8');
+  }).join('\n');
+  for (const [index, deployment] of deployments.entries()) {
+    const text = storedText(deployment.blobDir);
+    expect(text).toContain(`routing capture marker ${index}`);
+    expect(text).not.toContain(`routing capture marker ${1 - index}`);
+  }
 }, 120_000);

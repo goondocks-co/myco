@@ -42,7 +42,7 @@ export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise
   const resources = await machineResources(env.db, 'credential', result.machines.map((machine) => machine.machineId));
   const machines: DashboardMachineRow[] = result.machines.map((machine, index) => {
     const canStop = authorize(subject, 'edit', resources[index]!);
-    return { ...machine, canStop, stopReason: canStop ? null : 'Only the owner can stop another owner’s machine. You can stop your own machines.' };
+    return { ...machine, canStop, stopReason: canStop ? null : "Only the owner can stop the owner's machines. You can stop your own." };
   });
   return ok({ ...result, machines } satisfies DashboardMachinesAnswer);
 }

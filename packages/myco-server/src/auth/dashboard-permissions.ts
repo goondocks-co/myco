@@ -15,7 +15,7 @@ export function dashboardPermissions(subject: AuthorizationSubject) {
     projects: permission(can('project', 'admin'), 'An administrator can manage Projects.'),
     backups: permission(can('backup', 'admin'), 'An administrator can manage backups. Backups include raw uploads.'),
     machines: scoped(can('machine', 'edit'), can('machine', 'edit', { ownerMemberId: subject.memberId }), 'You can manage only your own machines.'),
-    machineSettings: scoped(can('machine-settings', 'claimant.edit'), can('machine-settings', 'claimant.edit', { claimantMemberId: subject.memberId }), 'Only the member who claimed this machine can change its capture roots or connect repositories.'),
+    machineSettings: scoped(can('machine-settings', 'claimant.edit'), can('machine-settings', 'claimant.edit', { claimantMemberId: subject.memberId }), 'Only the member who claimed this machine can change which folders are recorded or connect repositories.'),
     runsCancel: scoped(can('run', 'cancel'), can('run', 'cancel', { requestedBy: subject.memberId }), 'You can cancel only runs you requested.'),
     raw: { scope: can('raw', 'read', { uploader: true }) ? 'own' as const : 'none' as const, reason: 'Raw uploads are private to the member who uploaded them, including for owners and administrators.' },
   };

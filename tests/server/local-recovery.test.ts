@@ -34,6 +34,7 @@ import { ingestEvent } from '../../packages/myco-server/src/ingest/events.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
 import { asSchema41 } from './legacy-recovery-fixture.js';
+import { seedRecoveryAuthority, recoveryAuthoritySnapshot, assertRecoveredAuthority } from './recovery-authority-fixture.js';
 
 /** Where the fixture source holds the object an artifact key names. */
 async function sourceKeyOf(source: ReturnType<typeof sqliteEnv>, logical: string): Promise<string> {
@@ -130,12 +131,7 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
       .toMatchObject({ persisted: true, projected: true });
   }
   const carriedToken = authority ? await issueMemberToken(source.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()) : null;
-  if (authority) {
-    seedCredential(source.sqlite, { id: 'carried-live', expiresAt: Date.now() + 60_000 });
-    source.sqlite.run("INSERT INTO enrollment_authorities(id,key_hash,created_at,expires_at) VALUES('carried-enrollment','enrollment-hash',1,9999999999999)");
-    source.sqlite.run("INSERT INTO identity_link_authorities(id,key_hash,member_id,created_at,expires_at) VALUES('carried-link','link-hash','mem_machine_1',1,9999999999999)");
-    source.sqlite.run("INSERT INTO external_grants(id,key_hash,project_id,label,created_by,created_at,expires_at) VALUES('carried-grant','grant-hash','proj_1','fixture','mem_machine_1',1,9999999999999)");
-  }
+  if (authority) seedRecoveryAuthority(source.sqlite);
   const backup = await createBackup(source.db, source.bucket, { producer: 'fixture', now: 1000 });
   await setBackupPinned(source.db, backup.id, true);
   await createRecoveryBundle(artifact, {
@@ -329,6 +325,7 @@ for (const tenantMode of ['replacement', 'fork'] as const) {
       const original = fs.readFileSync(path.join(f.artifact, 'myco.sqlite'));
       const sourceId = f.source.sqlite.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
       const history = f.source.sqlite.query('SELECT * FROM spores').all();
+      const authorities = recoveryAuthoritySnapshot(f.source.sqlite);
       await f.restore(undefined, tenantMode);
       const db = new Database(f.paths.databasePath, { readonly: true });
       try {
@@ -336,11 +333,7 @@ for (const tenantMode of ['replacement', 'fork'] as const) {
         if (tenantMode === 'replacement') expect(destinationId).toEqual(sourceId);
         else expect(destinationId.value).not.toBe(sourceId.value);
         expect(db.query('SELECT * FROM spores').all()).toEqual(history);
-        for (const table of ['member_credentials', 'enrollment_authorities', 'identity_link_authorities', 'external_grants']) {
-          const live = db.query(`SELECT count(*) AS n FROM ${table} WHERE revoked_at IS NULL`).get() as { n: number };
-          if (tenantMode === 'fork') expect(live.n).toBe(0);
-          else expect(live.n).toBeGreaterThan(0);
-        }
+        assertRecoveredAuthority(db, authorities, tenantMode);
         const published = readLocalSecrets(f.paths);
         if (tenantMode === 'fork') expect(published.SESSION_SECRET).not.toBe(f.secrets.SESSION_SECRET);
         else expect(published.SESSION_SECRET).toBe(f.secrets.SESSION_SECRET);

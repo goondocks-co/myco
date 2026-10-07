@@ -753,7 +753,7 @@ describe('Today', () => {
     mount('/');
     const row = await present('[data-repository]');
     expect(within(row).queryByRole('button', { name: 'Connect widget' })).toBeNull();
-    expect(row.textContent).toContain('Only the member who claimed this machine can change its capture roots or connect repositories.');
+    expect(row.textContent).toContain('Only the member who claimed this machine can change which folders are recorded or connect repositories.');
   });
 
   it('asks for a project, with nothing chosen, where its member may not start one', async () => {
@@ -821,7 +821,7 @@ describe('Today', () => {
     expect(document.body.textContent).not.toContain('secret desk');
     expect(Object.values(repositoryWords(named, NOW, ADMIN.member.id)).join(' ')).not.toContain('secret desk');
     expect(within(row).queryByRole('button', { name: 'Connect widget' })).toBeNull();
-    expect(row.textContent).toContain('Only the member who claimed this machine can change its capture roots or connect repositories.');
+    expect(row.textContent).toContain('Only the member who claimed this machine can change which folders are recorded or connect repositories.');
   });
 
   it('shows a member "Needs you" with their own repositories alone, on a wide screen and on a phone', async () => {

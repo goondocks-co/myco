@@ -864,9 +864,9 @@ it('links the registry task name in a run panel to its task card', async () => {
   expect(asked.some((url) => url.pathname === '/api/tasks')).toBe(false);
 });
 
-it('cancels a live run only when the server grants this actor its cancellation scope', async () => {
-  const live = runDetail(learning[2]!, { run: { status: 'queued', completedAt: null, startedBy: MEMBER.member.id } });
-  const me = { ...ADMIN, permissions: { runsCancel: { scope: 'none', reason: 'Run cancellation is unavailable for this account.' } } };
+it('uses the per-run server cancellation decision even when account scope and displayed requester disagree', async () => {
+  const live = runDetail(learning[2]!, { run: { status: 'queued', completedAt: null, startedBy: MEMBER.member.id, canCancel: false, cancelReason: 'Run cancellation is unavailable for this account.' } });
+  const me = { ...ADMIN, permissions: { runsCancel: { scope: 'all', reason: null } } };
   const { sent } = server(routes({ who: me, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json(live) } }));
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
@@ -876,7 +876,7 @@ it('cancels a live run only when the server grants this actor its cancellation s
   expect(sent).toEqual([]);
 
   cleanup(); client.clear();
-  const accepted = server({ ...routes({ who: { ...MEMBER, permissions: { runsCancel: { scope: 'own', reason: null } } }, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json(live) } }), [`/api/projects/${P}/runs/run_a2c4e6f801/cancel`]: () => Response.json({ cancelled: true, runId: live.run.id }) });
+  const accepted = server({ ...routes({ who: { ...MEMBER, permissions: { runsCancel: { scope: 'none', reason: 'Unavailable' } } }, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json({ ...live, run: { ...live.run, startedBy: 'a-different-member', canCancel: true, cancelReason: null } }) } }), [`/api/projects/${P}/runs/run_a2c4e6f801/cancel`]: () => Response.json({ cancelled: true, runId: live.run.id }) });
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
   const allowed = await panel();

@@ -445,12 +445,12 @@ describe('machines', () => {
   it('uses the machine Stop decision, including the owner credential protection', async () => {
     const { posts } = accessServer({ member: [credential({ memberId: LIN })] }, {
       '/api/machines': () => Response.json({ machines: machineRows([credential({ memberId: LIN }) as CredentialRow]).map((machine) => ({
-        ...machine, canStop: false, stopReason: 'Only the owner can stop another owner’s machine. You can stop your own machines.',
+        ...machine, canStop: false, stopReason: "Only the owner can stop the owner's machines. You can stop your own.",
       })), cursor: null }),
     });
     mount('/people');
     const machines = await screen.findByRole('list', { name: 'Machines' });
-    expect(await within(machines).findByText(/Only the owner can stop another owner’s machine/)).toBeTruthy();
+    expect(await within(machines).findByText(/Only the owner can stop the owner's machines/)).toBeTruthy();
     expect(await menuItems(within(machines).getByRole('button', { name: 'More for Ada’s MacBook' }))).not.toContain('Stop');
     expect(posts).toEqual([]);
   });
