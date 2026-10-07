@@ -38,6 +38,12 @@ identity pages, and pause after preparation before adoption. Capture remains
 admitted while cleanup is paused. Admin status bounds the database read to 101
 identities and traverses 250 stale omissions without counting absent sources.
 
+The compiled macOS ARM64 binary serves the cleanup scenario through real HTTP.
+The browser verifies the displayed preview and Full input link for an archived
+tool attached to a prompt. The operator backup/restore commands recover exact
+full bytes with the source server stopped and its blob directory removed; raw
+archive access remains uploader-scoped after recovery.
+
 ## Mutation results
 
 Each mutation ran in an isolated source copy against the packing and inherited
