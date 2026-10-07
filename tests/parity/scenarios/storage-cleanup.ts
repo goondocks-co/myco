@@ -102,7 +102,7 @@ export const storageCleanupParity: ParityScenario = {
     const [freshInput]=await target.sql(`SELECT input FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
     expect(new TextEncoder().encode(String(freshInput.input)).byteLength).toBeLessThanOrEqual(2048);
     await target.sql(`DELETE FROM processed_resources WHERE project_id=${project} AND kind='tool-input' AND resource_id=${tool}`);
-    await target.sql(`UPDATE tool_calls SET input=${lit(fullInput)},input_blob_key=NULL,input_bytes=NULL
+    await target.sql(`UPDATE tool_calls SET input=${lit(fullInput)},input_blob_key=NULL,input_bytes=NULL,input_bundle_id=NULL,input_bundle_entry=NULL
       WHERE project_id=${project} AND tool_call_id=${tool}`);
     expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
 
@@ -113,8 +113,7 @@ export const storageCleanupParity: ParityScenario = {
     await target.sql(`UPDATE transcript_segments SET received_at=${aged} WHERE project_id=${project} AND transcript_id=${transcript}`);
     await target.sql(`UPDATE raw_archive_refs SET received_at=${aged},eligible_at=${aged} WHERE project_id=${project}
       AND source_kind='transcript' AND transcript_id=${transcript}`);
-    await target.sql(`UPDATE raw_archive_refs SET received_at=${aged},eligible_at=${aged} WHERE project_id=${project}
-      AND source_kind='event' AND source_id=${event}`);
+
     await target.sql(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('retention.raw_days','1',${stamp},'parity')
       ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by`);
 
@@ -122,22 +121,23 @@ export const storageCleanupParity: ParityScenario = {
     for (let pass = 0; pass < 16; pass += 1) {
       await wake();
       const [eventState] = await target.sql(`SELECT payload_format,payload,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
-      const [toolState] = await target.sql(`SELECT input,input_bytes,input_blob_key FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
+      const [toolState] = await target.sql(`SELECT input,input_bytes,input_bundle_id FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
       const [rawState] = await target.sql(`SELECT disposition FROM raw_archive_refs WHERE project_id=${project}
         AND source_kind='transcript' AND transcript_id=${transcript}`);
-      done = eventState?.payload_format === 'archived' && toolState?.input_blob_key !== null && rawState?.disposition === 'archived';
+      done = eventState?.payload_format === 'archived' && toolState?.input_bundle_id !== null && rawState?.disposition === 'archived';
       if (done) break;
     }
     expect(done).toBe(true);
     const [eventState] = await target.sql(`SELECT payload,payload_format,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
     expect(eventState).toEqual({ payload: '{}', payload_format: 'archived', payload_bytes: 0 });
-    const [eventRef] = await target.sql(`SELECT archive_key,receipt_key,digest,size FROM event_content_refs WHERE project_id=${project} AND event_id=${event}`);
-    expect(eventRef).toMatchObject({ archive_key: eventRef.digest, size: new TextEncoder().encode(JSON.stringify({ responseId, text: responseText })).byteLength });
+    const [eventRef] = await target.sql(`SELECT a.archive_key,a.receipt_key,a.digest,a.size FROM archive_bundles a JOIN events e ON e.bundle_id=a.id WHERE e.project_id=${project} AND e.event_id=${event}`);
+    expect(eventRef.archive_key).toBe(eventRef.digest);
+    expect(Number(eventRef.size)).toBeGreaterThan(new TextEncoder().encode(JSON.stringify({responseId,text:responseText})).byteLength);
     expect(typeof eventRef.receipt_key).toBe('string');
-    const [toolState] = await target.sql(`SELECT input,input_bytes,input_blob_key FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
+    const [toolState] = await target.sql(`SELECT input,input_bytes,input_bundle_id FROM tool_calls WHERE project_id=${project} AND tool_call_id=${tool}`);
     expect(Number(toolState.input_bytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
     expect(new TextEncoder().encode(String(toolState.input)).byteLength).toBeLessThanOrEqual(2048);
-    expect(typeof toolState.input_blob_key).toBe('string');
+    expect(Number.isSafeInteger(toolState.input_bundle_id)).toBe(true);
     expect(await (await ownerGet(inputPath)).text()).toBe(fullInput);
     expect(await (await ownerGet(outputPath)).text()).toBe(output);
     expect(await responseRows()).toEqual(before.responses);

@@ -44,7 +44,7 @@ function ToolCallItem({ projectId, row }: { projectId: string; row: ToolCallRow 
               {row.inputPreview !== null && (
                 <pre className={block}>{row.inputPreview}{row.inputTruncated ? '…' : ''}</pre>
               )}
-              {row.inputBlobKey !== null && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-input', id: row.toolCallId })} className="w-fit t-small">Full input</ExternalLink>}
+              {(row.inputTruncated || row.inputBlobKey !== null) && <ExternalLink href={processedBodyUrl(projectId, { kind: 'tool-input', id: row.toolCallId })} className="w-fit t-small">Full input</ExternalLink>}
             </div>
           )}
           {(row.outputPreview !== null || row.outputBlobKey !== null) && (

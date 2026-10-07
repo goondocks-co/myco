@@ -10,12 +10,14 @@ import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import { toolInputPreview } from '../core/tool-input.js';
+import { bundlePublicationStatements, type PreparedBundle } from '../core/archive-bundle.js';
 
 export interface PreparedToolInput {
   key: string;
   generation: string | null;
   size: number;
   digest: string;
+  bundle?: PreparedBundle;
 }
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
@@ -295,13 +297,13 @@ const reopensSession = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelo
 
 /** The instant an ordering is decided by, read back from a stored event: the same rule `orderingTime` applies to an arriving one. */
 export const eventOrderingTimeSql = (alias: string, field: string): string =>
-  `CASE WHEN ${alias}.payload_format='archived' THEN (SELECT cr.ended_at FROM event_content_refs cr WHERE cr.project_id=${alias}.project_id AND cr.event_id=${alias}.event_id) ELSE COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at) END`;
+  `CASE WHEN ${alias}.payload_format='archived' THEN ${alias}.archived_ended_at ELSE COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at) END`;
 
 /** The first import end that names an instant, ordered by creation time and event id; a title-only end is none. */
 const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM events ie
    WHERE ie.project_id = sessions.project_id AND ie.session_id = sessions.session_id
      AND ie.kind = 'session.end' AND ie.channel = 'import'
-     AND NOT (CASE WHEN ie.payload_format='archived' THEN (SELECT cr.title_only_end FROM event_content_refs cr WHERE cr.project_id=ie.project_id AND cr.event_id=ie.event_id) ELSE (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL) END)
+     AND NOT (CASE WHEN ie.payload_format='archived' THEN ie.archived_title_only_end ELSE (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL) END)
    ORDER BY ie.created_at, ie.event_id LIMIT 1)`;
 
 /**
@@ -323,7 +325,7 @@ const IMPORT_OWNS_LIFECYCLE_SQL = `(
   AND NOT EXISTS (SELECT 1 FROM events lt
            WHERE lt.project_id = sessions.project_id AND lt.session_id = sessions.session_id
              AND lt.kind = 'prompt' AND lt.producer_adapter <> '${TRANSCRIPT_PARSE_ADAPTER}'
-             AND (CASE WHEN lt.payload_format='archived' THEN (SELECT cr.prompt_origin FROM event_content_refs cr WHERE cr.project_id=lt.project_id AND cr.event_id=lt.event_id) ELSE json_extract(lt.payload, '$.origin') END) = 'user'
+             AND (CASE WHEN lt.payload_format='archived' THEN lt.archived_prompt_origin ELSE json_extract(lt.payload, '$.origin') END) = 'user'
              AND lt.created_at > COALESCE(${IMPORT_END_SQL}, 0))
   AND NOT EXISTS (SELECT 1 FROM transcripts lb
            WHERE lb.project_id = sessions.project_id AND lb.session_id = sessions.session_id
@@ -449,9 +451,9 @@ const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
   const fullInput = p.input === undefined ? null : JSON.stringify(p.input);
   const display = fullInput === null ? null : toolInputPreview(fullInput);
   if (display?.truncated && preparedToolInput === undefined) throw new Error('Oversized tool input requires registered content preparation');
-  const inputBlob = preparedToolInput?.key ?? p.blob as string | undefined;
+  const inputBlob = preparedToolInput?.bundle === undefined ? preparedToolInput?.key ?? p.blob as string | undefined : undefined;
   const outputBlob = p.outputBlob as string | undefined;
-  const proof = preparedToolInput === undefined ? [] : [db.prepare(`INSERT INTO processed_resources
+  const proof = preparedToolInput === undefined || preparedToolInput.bundle !== undefined ? [] : [db.prepare(`INSERT INTO processed_resources
       (project_id, kind, resource_id, blob_key, source_token_id, event_id)
       SELECT tc.project_id, 'tool-input', tc.tool_call_id, tc.input_blob_key, tc.token_id, tc.event_id
       FROM tool_calls tc
@@ -481,6 +483,16 @@ const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
               display?.preview ?? null, display?.bytes ?? null, ctx.projectId, opt(inputBlob), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage),
               opt(p.durationMs), json(p.filesAffected ?? filesNamedByToolInput(p.input)), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
       ...proof,
+      ...(preparedToolInput?.bundle === undefined ? [] : [
+        ...bundlePublicationStatements(db,preparedToolInput.bundle),
+        db.prepare(`UPDATE tool_calls SET input_bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),
+          input_bundle_entry=0 WHERE project_id=? AND tool_call_id=? AND event_id=? AND token_id=?
+          AND input_bundle_id IS NULL AND input_blob_key IS NULL AND input=? AND input_bytes=?
+          AND EXISTS (SELECT 1 FROM events ev WHERE ev.project_id=tool_calls.project_id
+            AND ev.event_id=tool_calls.event_id AND ev.ingest_nonce=?)`)
+          .bind(ctx.projectId,preparedToolInput.bundle.body.key,ctx.projectId,p.toolCallId,e.eventId,ctx.tokenId,
+            display!.preview,display!.bytes,ctx.nonce),
+      ].flat()),
     ],
     reads: [],
     refusal: () => NOT_STORED,

@@ -22,8 +22,8 @@ const REFERENCES = [
   'attachments.blob_key',
   'transcript_segments.blob_key',
   'events.blob_key (compaction.pre, compaction.post)',
-  'event_content_refs.archive_key',
-  'event_content_refs.receipt_key',
+  'archive_bundles.archive_key',
+  'archive_bundles.receipt_key',
   'raw_archive_refs.archive_key',
   'raw_archive_refs.receipt_key',
   'registered_content_proofs.key',
@@ -38,7 +38,7 @@ describe('the blob reference catalogue', () => {
 
   it('is indexed by Project and key at every reference, so the held check is a seek per holder rather than a scan', () => {
     for (const ref of BLOB_REFERENCES) {
-      const indexed = DDL.some((s) => new RegExp(`CREATE INDEX IF NOT EXISTS \\w+ ON ${ref.table} \\(project_id, ${ref.column}\\)`).test(s));
+      const indexed = DDL.some((s) => new RegExp(`CREATE INDEX IF NOT EXISTS \\w+ ON ${ref.table}\\s*\\(project_id,\\s*${ref.column}\\)`).test(s));
       expect({ ref: referenceLabel(ref), indexed }).toEqual({ ref: referenceLabel(ref), indexed: true });
     }
   });

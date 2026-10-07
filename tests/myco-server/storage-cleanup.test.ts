@@ -78,7 +78,7 @@ describe('archive-before-clear storage cleanup',()=>{
       await expect(storageCleanup(env,now)).rejects.toThrow('content_durability_unavailable');
       rig.bucket.objects.clear();
       expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:original,payload_format:'inline'});
-      expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM event_content_refs').get()).toEqual({n:0});
+      expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
     }finally{rig.sqlite.close();}
   });
 
@@ -110,7 +110,7 @@ describe('archive-before-clear storage cleanup',()=>{
         }};
         await expect(storageCleanup(env,now)).rejects.toThrow();
         expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:original,payload_format:'inline'});
-        expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM event_content_refs').get()).toEqual({n:0});
+        expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
         await drain(rig);
         expect(await eventContent(rig.serverEnv,'proj_1',uuid(101))).toBe(original);
         const converted=rig.sqlite.query('SELECT converted_rows FROM storage_cleanup_state').get();
@@ -136,7 +136,7 @@ describe('archive-before-clear storage cleanup',()=>{
           return stored;
         }}};
         await expect(storageCleanup(env,now)).rejects.toThrow();
-        expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM event_content_refs').get()).toEqual({n:0});
+        expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
         expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:fault==='source'?'{"changed":true}':original,payload_format:'inline'});
       }finally{rig.sqlite.close();}
     }
@@ -157,18 +157,23 @@ describe('archive-before-clear storage cleanup',()=>{
       expect(row.input_bytes).toBe(new TextEncoder().encode(input).length);
       expect(await processedBody(rig.serverEnv,{projectId:'proj_1'},'tool-input',id)).toBe(input);
       expect(rig.sqlite.query('SELECT tool_name,files_affected,output_preview,output_blob_key,success,token_id FROM tool_calls').get()).toEqual(facts);
-      rig.sqlite.query("DELETE FROM processed_resources WHERE kind='tool-input'").run();
-      expect(await processedBody(rig.serverEnv,{projectId:'proj_1'},'tool-input',id)).toBeNull();
+      rig.sqlite.query("DELETE FROM registered_content_proofs WHERE source_kind='bundle'").run();
+      await expect(processedBody(rig.serverEnv,{projectId:'proj_1'},'tool-input',id)).rejects.toThrow('event_content_reference_invalid');
     }finally{rig.sqlite.close();}
   });
 
   it('streams an oversized row under revision guards and completes only after an empty confirmation page',async()=>{
+    const seen=new Set<string>();
     const rig=sqliteEnv({onSql(sql,sqlite){
-      if(!/SELECT project_id,(event_id|tool_call_id) AS resource_id/.test(sql))return;
-      for(const cursor of [['',''],['proj_1',uuid(50)],['proj_1',uuid(999)]]){
+      if(!/SELECT rowid AS source_rowid,project_id,(event_id|tool_call_id) AS resource_id/.test(sql))return;
+      seen.add(sql.includes('FROM tool_calls')?'tool_calls':'events');
+      expect(sql).toContain('(project_id,session_id,created_at,rowid)>(?,?,?,?)');
+      expect(sql).toMatch(/ORDER BY project_id,session_id,created_at,rowid LIMIT \?/);
+      for(const cursor of [['','',-1,-1],['proj_1','s1',now-1000,1],['proj_1','s1',now,999]]){
         const plan=sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all(...cursor,20);
         expect(JSON.stringify(plan)).toContain('SEARCH');
-        expect(JSON.stringify(plan)).not.toMatch(/SCAN (events|tool_calls|event_content_refs)/);
+        expect(JSON.stringify(plan)).toMatch(/idx_(events|tool_calls)_session/);
+        expect(JSON.stringify(plan)).not.toMatch(/SCAN (events|tool_calls)|TEMP B-TREE/);
       }
     }});
     try {
@@ -179,11 +184,7 @@ describe('archive-before-clear storage cleanup',()=>{
       await drain(rig);
       expect(await eventContent(rig.serverEnv,'proj_1',uuid(101))).toBe(original);
       expect(rig.sqlite.query('SELECT complete FROM storage_cleanup_state').get()).toEqual({complete:1});
-      for(const cursor of [['',''],['proj_1',uuid(50)],['proj_1',uuid(999)]]){
-        const plan=rig.sqlite.query('EXPLAIN QUERY PLAN SELECT project_id,event_id FROM events WHERE (project_id,event_id)>(?,?) ORDER BY project_id,event_id LIMIT 20').all(...cursor);
-        expect(JSON.stringify(plan)).toContain('SEARCH');
-        expect(JSON.stringify(plan)).not.toContain('SCAN events');
-      }
+      expect([...seen].sort()).toEqual(['events','tool_calls']);
     }finally{rig.sqlite.close();}
   });
 
@@ -211,7 +212,7 @@ describe('archive-before-clear storage cleanup',()=>{
         .run('proj_1','sess_1',now,'mem_machine_1');
       await expect(rig.db.batch(eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
       expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:original,payload_format:'inline'});
-      expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM event_content_refs').get()).toEqual({n:0});
+      expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
     }finally{rig.sqlite.close();}
   });
   it('refuses a changed input event identity in the same clear transaction',async()=>{
@@ -244,7 +245,7 @@ describe('archive-before-clear storage cleanup',()=>{
         }}};
         await expect(storageCleanup(env,now)).rejects.toThrow('content_archive_digest_mismatch');
         expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:original,payload_format:'inline'});
-        expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM event_content_refs').get()).toEqual({n:0});
+        expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
       }finally{rig.sqlite.close();}
     }
   });
@@ -283,8 +284,8 @@ describe('archive-before-clear storage cleanup',()=>{
         await resolvePresentedDates(rig.db,'proj_1','sess_1').run();
         expect(rig.sqlite.query('SELECT occurred_started_at,occurred_ended_at,ended_at,title FROM sessions').get()).toEqual(before);
         expect(ordering()).toEqual({at:900});
-        expect(rig.sqlite.query('SELECT title_only_end,ended_at FROM event_content_refs WHERE event_id=?').get(uuid(170))).toEqual({title_only_end:1,ended_at:500});
-        expect(rig.sqlite.query('SELECT prompt_origin FROM event_content_refs WHERE event_id=?').get(uuid(174))).toEqual({prompt_origin:origin??null});
+        expect(rig.sqlite.query('SELECT archived_title_only_end AS title_only_end,archived_ended_at AS ended_at FROM events WHERE event_id=?').get(uuid(170))).toEqual({title_only_end:1,ended_at:500});
+        expect(rig.sqlite.query('SELECT archived_prompt_origin AS prompt_origin FROM events WHERE event_id=?').get(uuid(174))).toEqual({prompt_origin:origin??null});
       }finally{rig.sqlite.close();}
     }
   });

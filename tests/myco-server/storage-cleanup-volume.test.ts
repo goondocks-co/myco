@@ -3,10 +3,125 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { storageCleanup, storageCleanupPending } from '@myco-server-worker/core/storage-cleanup.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
+import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const ROWS = 24;
 const BODY_CHARS = 120_000;
+
+const EVENT_COHORTS = [
+  { rows: 350, bytes: 549 },
+  { rows: 190, bytes: 1_470 },
+  { rows: 78, bytes: 2_376 },
+  { rows: 98, bytes: 3_361 },
+  { rows: 261, bytes: 4_895 },
+  { rows: 16, bytes: 10_805 },
+  { rows: 6, bytes: 26_896 },
+  { rows: 1, bytes: 127_417 },
+] as const;
+const INPUT_COHORTS = [{ rows: 72, bytes: 4_000 }, { rows: 16, bytes: 7_000 }, { rows: 2, bytes: 18_000 }] as const;
+const EVENT_COUNT = EVENT_COHORTS.reduce((sum, cohort) => sum + cohort.rows, 0);
+const INPUT_COUNT = INPUT_COHORTS.reduce((sum, cohort) => sum + cohort.rows, 0);
+const POPULATION_EVENTS = 249_362;
+const PROJECT = `proj_${'p'.repeat(32)}`;
+const SESSION = 's'.repeat(36);
+const TOKEN = 't'.repeat(19);
+
+it('reduces occupied record and index bytes for a representative event and input distribution', async () => {
+  const rig = sqliteEnv();
+  try {
+    const now = Date.now();
+    seedCredential(rig.sqlite, { id: TOKEN, memberId: 'm'.repeat(21), machineId: 'c'.repeat(17), hash: '0'.repeat(64) });
+    rig.sqlite.query('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,0)').run(PROJECT, 'volume sample');
+    rig.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES(?,?,?,?,?,?)`).run(PROJECT, SESSION, 'synthetic', TOKEN, now, now);
+
+    const trigger = rig.sqlite.query(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='events_raw_archive_queue'`)
+      .get() as { sql: string } | null;
+    if (trigger) rig.sqlite.exec('DROP TRIGGER events_raw_archive_queue');
+    const insertEvent = rig.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,
+      envelope_hash,created_at,received_at,payload_bytes,producer_adapter)
+      VALUES(?,?,?,?,'response','import',?,?,?,?,?,'transcript-parse')`);
+    const eventIds: string[] = [];
+    for (const cohort of EVENT_COHORTS) {
+      for (let n = 0; n < cohort.rows; n += 1) {
+        const id = uuid(30_000 + eventIds.length);
+        const prefix = JSON.stringify({ text: '' });
+        const payload = JSON.stringify({ text: id + 'x'.repeat(cohort.bytes - prefix.length - id.length) });
+        expect(new TextEncoder().encode(payload).byteLength).toBe(cohort.bytes);
+        insertEvent.run(PROJECT, id, SESSION, TOKEN, payload, await sha256Hex(`envelope-${id}`), now, now, cohort.bytes);
+        eventIds.push(id);
+      }
+    }
+    expect(rig.sqlite.query(`SELECT COUNT(DISTINCT raw_revision) AS revisions FROM events WHERE project_id=? AND session_id=?`)
+      .get(PROJECT, SESSION)).toEqual({ revisions: EVENT_COUNT });
+    if (trigger) rig.sqlite.exec(trigger.sql);
+
+    const insertInput = rig.sqlite.query(`INSERT INTO tool_calls(project_id,tool_call_id,session_id,event_id,tool_name,input,
+      success,created_at,token_id,received_at) VALUES(?,?,?,?,'Edit',?,1,?,?,?)`);
+    let inputNumber = 0;
+    for (const cohort of INPUT_COHORTS) {
+      for (let n = 0; n < cohort.rows; n += 1) {
+        const input = 'x'.repeat(cohort.bytes);
+        insertInput.run(PROJECT, uuid(40_000 + inputNumber), SESSION, eventIds[inputNumber], input, now, TOKEN, now);
+        inputNumber += 1;
+      }
+    }
+    rig.sqlite.exec('DELETE FROM storage_cleanup_queue');
+
+    const measure = () => {
+      const total = rig.sqlite.query('SELECT COALESCE(SUM(payload),0) AS bytes, COALESCE(SUM(pgsize),0) AS page_bytes FROM dbstat')
+        .get() as { bytes: number; page_bytes: number };
+      const byTable = new Map((rig.sqlite.query(`SELECT m.tbl_name AS name, SUM(d.payload) AS bytes
+        FROM dbstat d JOIN sqlite_master m ON m.name=d.name GROUP BY m.tbl_name`).all() as Array<{ name: string; bytes: number }>)
+        .map(({ name, bytes }) => [name, bytes]));
+      const pages = rig.sqlite.query('PRAGMA page_count').get() as { page_count: number };
+      const free = rig.sqlite.query('PRAGMA freelist_count').get() as { freelist_count: number };
+      return { ...total, byTable, pages: pages.page_count, free: free.freelist_count };
+    };
+    const before = measure();
+    for (let pass = 0; pass < EVENT_COUNT + 3 &&
+      (rig.sqlite.query('SELECT phase FROM raw_archive_state WHERE id=1').get() as { phase: number }).phase < 2; pass += 1) {
+      await archiveRawSources(rig.serverEnv, now, 365);
+    }
+    expect(rig.sqlite.query('SELECT phase FROM raw_archive_state WHERE id=1').get()).toEqual({ phase: 2 });
+    for (let pass = 0; pass < EVENT_COUNT * 4 && await storageCleanupPending(rig.db); pass += 1) {
+      await storageCleanup(rig.serverEnv, now);
+    }
+    expect(await storageCleanupPending(rig.db)).toBe(false);
+    const after = measure();
+    const tables = new Set([...before.byTable.keys(), ...after.byTable.keys()]);
+    const deltas = Object.fromEntries([...tables].map(name => [name,
+      (after.byTable.get(name) ?? 0) - (before.byTable.get(name) ?? 0)]));
+    const changedTables = Object.fromEntries(Object.entries(deltas).filter(([, bytes]) => bytes !== 0));
+    const metadataAdded = Object.entries(deltas).filter(([name, bytes]) =>
+      name !== 'events' && name !== 'tool_calls' && bytes > 0).reduce((sum, [, bytes]) => sum + bytes, 0);
+    const netBytes = after.bytes - before.bytes;
+    const projectedPopulationNetBytes = Math.round(netBytes * POPULATION_EVENTS / EVENT_COUNT);
+    const state = rig.sqlite.query('SELECT converted_rows,cleared_bytes,metadata_added_bytes FROM storage_cleanup_state WHERE id=1')
+      .get() as { converted_rows: number; cleared_bytes: number; metadata_added_bytes: number };
+    console.info(`storage cleanup representative volume: ${JSON.stringify({
+      cohorts: EVENT_COHORTS, events: EVENT_COUNT, inputCohorts: INPUT_COHORTS, inputs: INPUT_COUNT,
+      clearedBytes: state.cleared_bytes,
+      reportedMetadataBytes: state.metadata_added_bytes, reportedNetBytes: state.metadata_added_bytes - state.cleared_bytes,
+      metadataAdded, netBytes, projectedPopulationNetBytes,
+      before: { bytes: before.bytes, occupiedPageBytes: before.page_bytes, pages: before.pages, free: before.free },
+      after: { bytes: after.bytes, occupiedPageBytes: after.page_bytes, pages: after.pages, free: after.free }, changedTables,
+    })}`);
+    expect(state.converted_rows).toBe(EVENT_COUNT + INPUT_COUNT);
+    expect(state.metadata_added_bytes).toBeGreaterThan(0);
+    expect(state.metadata_added_bytes - state.cleared_bytes).toBeLessThan(0);
+    expect(Object.values(deltas).reduce((sum, bytes) => sum + bytes, 0)).toBe(netBytes);
+    expect(deltas.raw_resources).toBeGreaterThan(0);
+    expect(metadataAdded).toBeGreaterThan(0);
+    expect(netBytes).toBeLessThan(0);
+    expect(after.page_bytes).toBeLessThan(before.page_bytes);
+    expect(after.free).toBeGreaterThan(before.free);
+  } finally {
+    rig.sqlite.close();
+  }
+});
 
 /** A capture-sized SQLite sample records the logical clear and SQLite's page reuse separately. */
 it('measures exact cleared bytes and page reuse for a dogfood-shaped response history', async () => {
@@ -23,7 +138,7 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     const hasDbstat = rig.sqlite.query(`SELECT 1 FROM pragma_module_list WHERE name='dbstat'`).get() !== null;
     const metadata = () => hasDbstat ? (rig.sqlite.query(`SELECT SUM(payload) AS bytes FROM dbstat
       WHERE name IN (SELECT name FROM sqlite_master WHERE tbl_name IN
-        ('blobs','event_content_refs','raw_archive_refs','registered_content_proofs'))`)
+        ('blobs','archive_bundles','raw_resources','registered_content_proofs'))`)
       .get() as {bytes:number}).bytes : null;
     const baseline = metric();
     const metadataBaseline = metadata();
@@ -56,14 +171,15 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     expect(state.cleared_bytes).toBe(bodies.reduce((sum, row) => sum + row.bytes - 2, 0));
     expect(rig.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id='volume-history' AND payload='{}' AND payload_format='archived'`).get())
       .toEqual({ n: ROWS });
-    const archiveRows = {
-      refs: rig.sqlite.query(`SELECT COUNT(*) AS n FROM event_content_refs WHERE session_id='volume-history'`).get(),
-      rawRefs: rig.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE session_id='volume-history' AND source_kind='event'`).get(),
-      proofs: rig.sqlite.query(`SELECT source_kind,COUNT(*) AS n FROM registered_content_proofs
-        WHERE session_id='volume-history' GROUP BY source_kind ORDER BY source_kind`).all(),
-    };
-    expect(archiveRows).toEqual({ refs: { n: ROWS }, rawRefs: { n: ROWS },
-      proofs: [{ source_kind: 'event', n: ROWS }, { source_kind: 'receipt', n: ROWS }] });
+    const bundleCount = (rig.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles WHERE session_id='volume-history'`)
+      .get() as { n: number }).n;
+    expect(bundleCount).toBeGreaterThan(0);
+    expect(bundleCount).toBeLessThan(ROWS);
+    expect(rig.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id='volume-history'
+      AND bundle_id IS NOT NULL AND bundle_entry IS NOT NULL`).get()).toEqual({ n: ROWS });
+    expect(rig.sqlite.query(`SELECT source_kind,COUNT(*) AS n FROM registered_content_proofs
+      WHERE session_id='volume-history' GROUP BY source_kind ORDER BY source_kind`).all())
+      .toEqual([{ source_kind: 'bundle', n: bundleCount }, { source_kind: 'receipt', n: bundleCount }]);
     expect(await eventContent(rig.serverEnv, 'proj_1', bodies[0]!.id)).toBe(bodies[0]!.payload);
     expect(await eventContent(rig.serverEnv, 'proj_1', bodies.at(-1)!.id)).toBe(bodies.at(-1)!.payload);
 
@@ -74,7 +190,7 @@ it('measures exact cleared bytes and page reuse for a dogfood-shaped response hi
     }
     const reused = metric();
     console.info(`storage cleanup SQLite pages: ${JSON.stringify({ rows: ROWS, clearedBytes: state.cleared_bytes,
-      baseline, before, after, reused, archiveRows, usage:measured.usage,wallMs,cpuMicros:cpu,metadataBytes,
+      baseline, before, after, reused, bundleCount, usage:measured.usage,wallMs,cpuMicros:cpu,metadataBytes,
       metadataBytesPerEvent: metadataBytes === null ? null : metadataBytes/ROWS,
       metadataMeasurement: hasDbstat ? 'dbstat payload including indexes' : 'unavailable: SQLite dbstat module is absent',
       livePageChange: (after.pages-after.free)-(before.pages-before.free) })}`);

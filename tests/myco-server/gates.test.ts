@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 158;
+const EMIT_CALLS = 157;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -451,7 +451,7 @@ describe('gates', () => {
   it('keeps request stream ownership with the runtime; only object-store readers own their readers', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
-      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts') || f.endsWith('/core/stored-object.ts') || f.endsWith('/core/event-content.ts') || f.endsWith('/core/registered-content.ts')) {
+      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts') || f.endsWith('/core/stored-object.ts') || f.endsWith('/core/event-content.ts') || f.endsWith('/core/registered-content.ts') || f.endsWith('/core/archive-bundle.ts')) {
         expect(t).not.toMatch(/\bRequest\b|\bRouteContext\b|\bServerEnv\b/);
         continue;
       }

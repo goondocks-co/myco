@@ -123,6 +123,38 @@ describe('repair lane priority', () => {
     expect(receipt.persisted).toBe(true);
   };
 
+  it('does not prepare an oversized tool when its checkpoint cannot fit the statement budget', async () => {
+    const pending = line({ type: 'user', promptId: uuid(85_000), message: { content: 'pending tools' } })
+      + line({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({
+        type: 'tool_use', id: `guard-pending-${i}`, name: 'Read', input: { path: 'r'.repeat(260_000) },
+      })) } });
+    const r = await rig(pending, Buffer.byteLength(pending));
+    try {
+      const size = Buffer.byteLength(pending);
+      await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
+        tokenId: r.tokenId, agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null,
+        lastReceivedAt: NOW, imported: false }, NOW, { ...LIMITS, completeFile: false });
+      expect(count(r.sqlite, 'transcript_parser_state_chunks')).toBeGreaterThan(120);
+      const continuation = line({ type: 'assistant', message: { content: [{ type: 'tool_use',
+        id: 'guard-next', name: 'Read', input: { path: 'é'.repeat(1100) } }] } });
+      await append(r, TRANSCRIPT, SESSION, continuation, NOW, size);
+      const puts = (r.serverEnv.blobs as MemoryBlobStore).puts.length;
+      const current = target(r.sqlite);
+      const stored = r.sqlite.query('SELECT parser_context,parse_segment_lines,open_prompt_id FROM transcripts WHERE transcript_id=?')
+        .get(TRANSCRIPT) as { parser_context: string | null; parse_segment_lines: number | null; open_prompt_id: string | null };
+      const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+      const outcome = await parseOnce(measured.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION,
+        machineId: MACHINE, tokenId: r.tokenId, agent: 'claude-code', size: current.size, parsedOffset: current.parsed_offset,
+        fidelity: current.fidelity, openPromptId: stored.open_prompt_id, parserContext: stored.parser_context ? JSON.parse(stored.parser_context) : null,
+        segmentLines: stored.parse_segment_lines, lastReceivedAt: NOW, imported: false }, NOW + 1,
+      { ...LIMITS, completeFile: false, statementBudget: 150 });
+      expect(outcome.derived).toBe(0);
+      expect((r.serverEnv.blobs as MemoryBlobStore).puts).toHaveLength(puts);
+      expect(measured.usage.statements).toBeLessThanOrEqual(150);
+      expect(target(r.sqlite).parsed_offset).toBe(current.parsed_offset);
+    } finally { r.sqlite.close(); }
+  });
+
   it('admits same-millisecond growth on a real deployed-format chunked checkpoint before an older repair', async () => {
     const text = line({ type: 'user', promptId: uuid(70_000), message: { content: 'large pending calls' }, timestamp: new Date(NOW - 1).toISOString() })
       + line({ type: 'assistant', message: { content: Array.from({ length: 8 }, (_, i) => ({ type: 'tool_use', id: `large-${i}`, name: 'Read', input: { path: 'r'.repeat(50_000) } })) }, timestamp: new Date(NOW).toISOString() });
@@ -914,9 +946,9 @@ describe('parsing a held transcript', () => {
     await drain(env, sqlite);
     expect(target(sqlite)).toMatchObject({ parse_error: null, parsed_offset: target(sqlite).size });
     expect(count(sqlite, 'tool_calls')).toBe(2);
-    const tools = sqlite.query(`SELECT tool_call_id, input_bytes, input_blob_key FROM tool_calls ORDER BY tool_call_id`).all() as
-      { tool_call_id: string; input_bytes: number; input_blob_key: string | null }[];
-    expect(tools.every((row) => row.input_bytes > 2048 && row.input_blob_key !== null)).toBe(true);
+    const tools = sqlite.query(`SELECT tool_call_id, input_bytes, input_bundle_id, input_bundle_entry FROM tool_calls ORDER BY tool_call_id`).all() as
+      { tool_call_id: string; input_bytes: number; input_bundle_id: number | null; input_bundle_entry: number | null }[];
+    expect(tools.every((row) => row.input_bytes > 2048 && row.input_bundle_id !== null && row.input_bundle_entry !== null)).toBe(true);
     for (const row of tools) {
       expect(await processedBody(env as never, { projectId: PROJECT }, 'tool-input', row.tool_call_id))
         .toBe(JSON.stringify({ path: 'é'.repeat(1100) }));
@@ -1615,11 +1647,12 @@ describe('a pass under the platform\'s budget (transcript parse throughput)', ()
         expect(measured.usage.statements).toBeLessThanOrEqual(800);
       }
       expect(target(r.sqlite).parsed_offset).toBe(target(r.sqlite).size);
-      const tools = r.sqlite.query('SELECT tool_call_id,input_blob_key FROM tool_calls ORDER BY tool_call_id').all() as
-        { tool_call_id: string; input_blob_key: string | null }[];
+      const tools = r.sqlite.query('SELECT tool_call_id,input_bundle_id,input_bundle_entry FROM tool_calls ORDER BY tool_call_id').all() as
+        { tool_call_id: string; input_bundle_id: number | null; input_bundle_entry: number | null }[];
       expect(tools).toHaveLength(2);
       for (const tool of tools) {
-        expect(tool.input_blob_key).not.toBeNull();
+        expect(tool.input_bundle_id).not.toBeNull();
+        expect(tool.input_bundle_entry).not.toBeNull();
         expect(await processedBody(r.serverEnv, { projectId: PROJECT }, 'tool-input', tool.tool_call_id)).toBe(JSON.stringify(input));
       }
     } finally { r.sqlite.close(); }

@@ -107,15 +107,16 @@ const binary = process.env.MYCO_STORAGE_CLEANUP_BINARY;
     const recoveredDb = new Database(restoredPaths.databasePath);
     try {
       expect((recoveredDb.query(`SELECT COUNT(*) AS n FROM events WHERE payload_format='archived'`).get() as {n:number}).n).toBeGreaterThan(0);
-      const ref=recoveredDb.query(`SELECT r.archive_key,r.digest,m.github_id FROM event_content_refs r
-        JOIN events e ON e.project_id=r.project_id AND e.event_id=r.event_id
+      const ref=recoveredDb.query(`SELECT a.archive_key,a.digest,m.github_id FROM archive_bundles a
+        JOIN events e ON e.project_id=a.project_id AND e.bundle_id=a.id
         JOIN raw_credentials c ON c.token_id=e.token_id JOIN members m ON m.id=c.owner_member_id
         WHERE e.kind='response' LIMIT 1`).get() as {archive_key:string;digest:string;github_id:string};
       const rawPath=`${restoredUrl}/api/projects/${PROJECT_ID}/blobs/${ref.archive_key}`;
       const uploaderCookie=`${SESSION_COOKIE}=${await signSession(SESSION_SECRET,{sub:ref.github_id,login:'fixture',iat:Date.now(),exp:Date.now()+60_000})}`;
       const raw=await fetch(rawPath,{headers:{cookie:uploaderCookie}});
-      expect(raw.status).toBe(200);
-      expect(await sha256Hex(await raw.text())).toBe(ref.digest);
+      expect(raw.status).toBe(404);
+      expect(fs.existsSync(path.join(artifact,'blobs',PROJECT_ID,ref.archive_key))).toBe(true);
+      expect(await sha256Hex(fs.readFileSync(path.join(artifact,'blobs',PROJECT_ID,ref.archive_key),'utf8'))).toBe(ref.digest);
       expect((await fetch(rawPath,{headers:{cookie}})).status).toBe(404);
     } finally { recoveredDb.close(); }
   } finally { await stop();fs.rmSync(root, { recursive: true, force: true }); }

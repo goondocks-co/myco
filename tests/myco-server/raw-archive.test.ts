@@ -40,6 +40,12 @@ it('seeks the hot and cold segment indexes at the parser cursor', () => {
       .all(PARSER_VERSION) as Array<{detail:string}>;
     expect(plan.some(row=>/SEARCH s USING INDEX sqlite_autoindex_transcript_segments_1 .*base_offset>/.test(row.detail))).toBe(true);
     expect(plan.some(row=>/SEARCH r USING INDEX idx_raw_archive_refs_transcript .*base_offset>/.test(row.detail))).toBe(true);
+    const rawPlan=f.sqlite.query(`EXPLAIN QUERY PLAN SELECT e.rowid,e.project_id,e.event_id
+      FROM events e INDEXED BY idx_events_session LEFT JOIN raw_credentials c ON c.token_id=e.token_id
+      WHERE (e.project_id,e.session_id,e.created_at,e.rowid)>(?,?,?,?)
+      ORDER BY e.project_id,e.session_id,e.created_at,e.rowid LIMIT ?`)
+      .all('','',-1,-1,20) as Array<{detail:string}>;
+    expect(rawPlan.some(row=>/SEARCH e USING INDEX idx_events_session/.test(row.detail))).toBe(true);
   } finally {f.sqlite.close();}
 });
 
@@ -52,15 +58,159 @@ it('archives an aged inline event exactly before clearing its stored body', asyn
     f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
       created_at,received_at,payload_bytes,raw_revision) VALUES('proj_1','evt_archive','sess_archive','token',
       'prompt','import',?,?,1,1,?,1)`).run(payload,digest('envelope'),Buffer.byteLength(payload));
-    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
-    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
-    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
-    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
+    let archived=0;
+    for(let pass=0;pass<6&&archived===0;pass+=1) archived=await archiveRawSources(f.serverEnv,NOW,90);
+    expect(archived).toBe(1);
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='evt_archive'`).get())
       .toEqual({payload:'{}',payload_format:'archived'});
     expect(await eventContent(f.serverEnv,'proj_1','evt_archive')).toBe(payload);
-    expect(f.sqlite.query(`SELECT disposition,archive_key,receipt_key FROM raw_archive_refs WHERE source_id='evt_archive'`).get())
-      .toMatchObject({disposition:'archived',archive_key:digest(payload)});
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE source_kind='event'`).get()).toEqual({n:0});
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles`).get()).toEqual({n:1});
+  } finally {f.sqlite.close();}
+});
+
+it('splits one session at a claim-owner boundary while retaining exact event bytes', async () => {
+  const f=sqliteEnv();
+  try {
+    f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
+    f.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('proj_1','s-claims','m','token',1,1)`).run();
+    f.sqlite.query(`INSERT INTO raw_credentials(token_id,owner_member_id,provenance)
+      VALUES('token',NULL,'missing')`).run();
+    f.sqlite.query(`INSERT INTO raw_claims(id,owner_member_id,cutoff_revision,min_revision,created_at,preview)
+      VALUES('claim-a','mem_machine_1',1,1,1,'{}'),('claim-b','mem_machine_2',2,2,1,'{}')`).run();
+    const bodies=['{"claim":"one"}','{"claim":"two"}'];
+    for(const [index,payload] of bodies.entries()) {
+      f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
+        created_at,received_at,payload_bytes,raw_revision)
+        VALUES('proj_1',?,'s-claims','token','prompt','import',?,?,?,1,?,?)`)
+        .run(`e-claim-${index}`,payload,digest(`claim-${index}`),index+1,Buffer.byteLength(payload),index+1);
+    }
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles`).get()).toEqual({n:2});
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE source_kind='event'`).get()).toEqual({n:0});
+    for(const [index,payload] of bodies.entries())
+      expect(await eventContent(f.serverEnv,'proj_1',`e-claim-${index}`)).toBe(payload);
+  } finally {f.sqlite.close();}
+});
+
+it('holds a bundle when a claim changes one entry owner before adoption', async () => {
+  const f=sqliteEnv();
+  try {
+    f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
+    f.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('proj_1','s-claim-race','m','token',1,1)`).run();
+    f.sqlite.query(`INSERT INTO raw_credentials(token_id,owner_member_id,provenance)
+      VALUES('token',NULL,'missing')`).run();
+    for(let index=1;index<=2;index+=1) {
+      const payload=JSON.stringify({text:`claim race ${index}`});
+      f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
+        created_at,received_at,payload_bytes,raw_revision)
+        VALUES('proj_1',?,'s-claim-race','token','prompt','import',?,?,?,1,?,?)`)
+        .run(`e-race-${index}`,payload,digest(`race-${index}`),index,Buffer.byteLength(payload),index);
+    }
+    const db=f.serverEnv.db;
+    const disturbed={...f.serverEnv,db:{...db,batch:async (statements:Parameters<typeof db.batch>[0])=>{
+      if(statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE events SET'))) {
+        f.sqlite.query(`INSERT INTO raw_claims(id,owner_member_id,cutoff_revision,min_revision,created_at,preview)
+          VALUES('claim-race','mem_machine_1',2,2,1,'{}')`).run();
+      }
+      return db.batch(statements);
+    }}};
+    await expect(archiveRawSources(disturbed,NOW,90)).rejects.toThrow();
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id='s-claim-race' AND payload_format='inline'`).get())
+      .toEqual({n:2});
+    expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
+      .toEqual({cursor_project:'',cursor_session:''});
+  } finally {f.sqlite.close();}
+});
+
+it('packs one session across distinct event revisions with the same uploader', async () => {
+  const f=sqliteEnv();
+  try {
+    f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
+    f.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('proj_1','s-packed','m','token',1,1)`).run();
+    f.sqlite.query(`INSERT INTO raw_credentials(token_id,owner_member_id,provenance)
+      VALUES('token','mem_machine_1','recorded')`).run();
+    const bodies=Array.from({length:5},(_,i)=>JSON.stringify({text:`event ${i}`}));
+    for(const [index,payload] of bodies.entries()) {
+      f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
+        created_at,received_at,payload_bytes,raw_revision)
+        VALUES('proj_1',?,'s-packed','token','prompt','import',?,?,?,1,?,?)`)
+        .run(`e-packed-${index}`,payload,digest(`packed-${index}`),index+1,Buffer.byteLength(payload),index+1);
+    }
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(5);
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n,MAX(entry_count) AS entries FROM archive_bundles`).get())
+      .toEqual({n:1,entries:5});
+    for(const [index,payload] of bodies.entries())
+      expect(await eventContent(f.serverEnv,'proj_1',`e-packed-${index}`)).toBe(payload);
+  } finally {f.sqlite.close();}
+});
+
+it('keeps session archive and tombstone ownership separate for one uploader', async () => {
+  const f=sqliteEnv();
+  try {
+    f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
+    f.sqlite.query(`INSERT INTO raw_credentials(token_id,owner_member_id,provenance)
+      VALUES('token','mem_machine_1','recorded')`).run();
+    for(const [index,session] of ['s-first','s-second'].entries()) {
+      f.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+        VALUES('proj_1',?,'m','token',1,1)`).run(session);
+      const payload=JSON.stringify({session});
+      f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
+        created_at,received_at,payload_bytes,raw_revision)
+        VALUES('proj_1',?,?,'token','prompt','import',?,?,1,1,?,?)`)
+        .run(`e-session-${index}`,session,payload,digest(session),Buffer.byteLength(payload),index+1);
+    }
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
+    expect(f.sqlite.query(`SELECT session_id,entry_count FROM archive_bundles ORDER BY session_id`).all())
+      .toEqual([{session_id:'s-first',entry_count:1},{session_id:'s-second',entry_count:1}]);
+  } finally {f.sqlite.close();}
+});
+
+it('archives a full session page within the raw job admission budget', async () => {
+  const f=sqliteEnv();
+  try {
+    f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
+    f.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('proj_1','s-full','m','token',1,1)`).run();
+    for(let index=0;index<20;index+=1) {
+      const payload=JSON.stringify({text:`page event ${index}`});
+      f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
+        created_at,received_at,payload_bytes)
+        VALUES('proj_1',?,'s-full','token','prompt','import',?,?,?,1,?)`)
+        .run(`e-full-${index}`,payload,digest(`full-${index}`),index,Buffer.byteLength(payload));
+    }
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(20);
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n,MAX(entry_count) AS entries FROM archive_bundles`).get())
+      .toEqual({n:1,entries:20});
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE source_kind='event'`).get()).toEqual({n:0});
+  } finally {f.sqlite.close();}
+});
+
+it('revisits a young event after the bounded session cursor wraps', async () => {
+  const f=sqliteEnv();
+  try {
+    f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
+    f.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+      VALUES('proj_1','s-wrap','m','token',1,1)`).run();
+    const young='{"age":"young"}',old='{"age":"old"}';
+    for(const [id,payload,created,received] of [['e-young',young,1,NOW],['e-old',old,2,1]] as const) {
+      f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
+        created_at,received_at,payload_bytes)
+        VALUES('proj_1',?,'s-wrap','token','prompt','import',?,?,?,?,?)`)
+        .run(id,payload,digest(id),created,received,Buffer.byteLength(payload));
+    }
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
+    expect(f.sqlite.query(`SELECT payload_format FROM events WHERE event_id='e-young'`).get())
+      .toEqual({payload_format:'inline'});
+    expect(await archiveRawSources(f.serverEnv,NOW+100*86_400_000,90)).toBe(0);
+    expect(await archiveRawSources(f.serverEnv,NOW+100*86_400_000,90)).toBe(1);
+    expect(await eventContent(f.serverEnv,'proj_1','e-young')).toBe(young);
+    expect(await eventContent(f.serverEnv,'proj_1','e-old')).toBe(old);
   } finally {f.sqlite.close();}
 });
 
@@ -124,7 +274,7 @@ it('retains exact parsed transcript bytes and their offset after removing the ho
   } finally {f.sqlite.close();}
 });
 
-it('advances a bounded due cursor past held rows to a sparse eligible event', async () => {
+it('archives a due event while a bounded transcript cursor crosses held rows', async () => {
   const f=sqliteEnv();
   try {
     f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
@@ -144,18 +294,37 @@ it('advances a bounded due cursor past held rows to a sparse eligible event', as
       created_at,received_at,payload_bytes,raw_revision)
       VALUES('proj_1','evt_tail','s-tail','token','prompt','import',?,?,1,1,?,1)`)
       .run(payload,digest('tail-envelope'),Buffer.byteLength(payload));
-    f.sqlite.query(`UPDATE raw_archive_refs SET eligible_at=2 WHERE source_kind='event' AND source_id='evt_tail'`).run();
     const plan=f.sqlite.query(`EXPLAIN QUERY PLAN SELECT project_id,source_kind,source_id FROM raw_archive_refs
       INDEXED BY idx_raw_archive_refs_due WHERE disposition='hot' AND eligible_at<=?
       AND (eligible_at,project_id,source_kind,source_id)>(?,?,?,?)
       ORDER BY eligible_at,project_id,source_kind,source_id LIMIT ?`)
       .all(NOW, -1, '', '', '', 20) as Array<{detail:string}>;
     expect(plan.map(step=>step.detail).join(' ')).toMatch(/SEARCH .*idx_raw_archive_refs_due/);
-    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
-    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
-    expect(f.sqlite.query(`SELECT payload FROM events WHERE event_id='evt_tail'`).get()).toEqual({payload});
     expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
     expect(await eventContent(f.serverEnv,'proj_1','evt_tail')).toBe(payload);
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE source_kind='event'`).get()).toEqual({n:0});
+    expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE disposition='hot'`).get()).toEqual({n:40});
+  } finally {f.sqlite.close();}
+});
+
+it('reaches a parsed transcript after same-age held transcript pages', async () => {
+  const f=await heldSegment(Buffer.byteLength('retained source bytes'));
+  try {
+    for(let index=0;index<40;index+=1) {
+      const id=`tx-${String(index).padStart(3,'0')}`;
+      f.sqlite.query(`INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,received_at,
+        transcript_id,base_offset,length,token_id,eligible_at)
+        VALUES('proj_1','transcript',?,'s-held',1,1,?,0,1,'token',1)`).run(id,id);
+    }
+    let archived=false;
+    for(let pass=0;pass<8&&!archived;pass+=1) {
+      await archiveRawSources(f.serverEnv,NOW,90);
+      archived=f.sqlite.query(`SELECT 1 FROM transcript_segments WHERE transcript_id='tx-held'`).get()===null;
+    }
+    expect(archived).toBe(true);
+    expect(f.sqlite.query(`SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'`).get())
+      .toEqual({disposition:'archived'});
   } finally {f.sqlite.close();}
 });
 
@@ -178,9 +347,9 @@ it('keeps inline bytes and its cursor when publication lacks a durability acknow
     await expect(archiveRawSources(f.serverEnv,NOW,90)).rejects.toThrow('content_durability_unavailable');
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='evt_fault'`).get())
       .toEqual({payload,payload_format:'inline'});
-    expect(f.sqlite.query(`SELECT cursor_project,cursor_id FROM raw_archive_state WHERE id=1`).get())
-      .toEqual({cursor_project:'',cursor_id:''});
-    expect(f.sqlite.query(`SELECT 1 FROM event_content_refs WHERE event_id='evt_fault'`).get()).toBeNull();
+    expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
+      .toEqual({cursor_project:'',cursor_session:''});
+    expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles`).get()).toEqual({n:0});
   } finally {f.sqlite.close();}
 });
 
@@ -224,8 +393,8 @@ it('keeps a parsed segment hot when its prepared receipt loses proof before clea
   } finally {f.sqlite.close();}
 });
 
-it('refuses stale event source revision and a due hint newer than the raw age window', async () => {
-  for(const mismatch of ['revision','age'] as const) {
+it('refuses a changed source or a source that crosses the raw age boundary before clear', async () => {
+  for(const mismatch of ['content','age'] as const) {
     const f=sqliteEnv();
     try {
       const payload='{"source":"held"}';
@@ -236,12 +405,19 @@ it('refuses stale event source revision and a due hint newer than the raw age wi
         VALUES('proj_1','e-guard','s-guard','token','prompt','import',?,?,1,1,?,1)`)
         .run(payload,digest('guard envelope'),Buffer.byteLength(payload));
       f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
-      if(mismatch==='revision') f.sqlite.query(`UPDATE raw_archive_refs SET raw_revision=raw_revision+1 WHERE source_id='e-guard'`).run();
-      else f.sqlite.query(`UPDATE raw_archive_refs SET received_at=? WHERE source_id='e-guard'`).run(NOW);
-      await expect(archiveRawSources(f.serverEnv,NOW,90)).rejects.toThrow();
-      expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='e-guard'`).get())
-        .toEqual({payload,payload_format:'inline'});
-      expect(f.sqlite.query(`SELECT cursor_id FROM raw_archive_state WHERE id=1`).get()).toEqual({cursor_id:''});
+      const db=f.serverEnv.db;
+      const disturbed={...f.serverEnv,db:{...db,batch:async (statements:Parameters<typeof db.batch>[0])=>{
+        if(statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE events SET'))) {
+          if(mismatch==='content') f.sqlite.query(`UPDATE events SET payload='{"source":"changed"}' WHERE event_id='e-guard'`).run();
+          else f.sqlite.query(`UPDATE events SET received_at=? WHERE event_id='e-guard'`).run(NOW);
+        }
+        return db.batch(statements);
+      }}};
+      await expect(archiveRawSources(disturbed,NOW,90)).rejects.toThrow();
+      expect(f.sqlite.query(`SELECT payload_format FROM events WHERE event_id='e-guard'`).get())
+        .toEqual({payload_format:'inline'});
+      expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
+        .toEqual({cursor_project:'',cursor_session:''});
     } finally {f.sqlite.close();}
   }
 });
@@ -259,7 +435,7 @@ it('keeps inline event bytes when a prepared receipt loses its registered proof 
     f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
     const db=f.serverEnv.db;
     const disturbed={...f.serverEnv,db:{...db,batch:async (statements:Parameters<typeof db.batch>[0])=>{
-      if(statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE raw_archive_refs SET archive_key='))) {
+      if(statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE events SET'))) {
         f.sqlite.query(`DELETE FROM registered_content_proofs WHERE source_kind='receipt'`).run();
       }
       return db.batch(statements);
@@ -267,6 +443,7 @@ it('keeps inline event bytes when a prepared receipt loses its registered proof 
     await expect(archiveRawSources(disturbed,NOW,90)).rejects.toThrow();
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='e-receipt'`).get())
       .toEqual({payload,payload_format:'inline'});
-    expect(f.sqlite.query(`SELECT cursor_id FROM raw_archive_state WHERE id=1`).get()).toEqual({cursor_id:''});
+    expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
+      .toEqual({cursor_project:'',cursor_session:''});
   } finally {f.sqlite.close();}
 });

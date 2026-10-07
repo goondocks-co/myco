@@ -1,3 +1,4 @@
+import { measuredContentEnv } from '../core/content-budget.js';
 import type { RelationalStore, PreparedStatement, ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
@@ -9,7 +10,7 @@ import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
-import { discardDerivedContent, prepareDerivedContent, type DerivedContentSource } from '../core/registered-content.js';
+import { prepareArchiveBundle,discardArchiveBundle } from '../core/archive-bundle.js';
 import { toolInputPreview } from '../core/tool-input.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
@@ -116,16 +117,14 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const fullInput = spec.projection === 'tool_calls' && p.input !== undefined ? JSON.stringify(p.input) : null;
   const inputDisplay = fullInput === null ? null : toolInputPreview(fullInput);
   if (inputDisplay?.truncated && env === undefined) throw new Error('Oversized tool input requires server blob storage');
-  const inputSource: DerivedContentSource | undefined = inputDisplay?.truncated
-    ? {
-        projectId: ctx.projectId, sessionId: e.sessionId, eventId: e.eventId, tokenId: ctx.tokenId,
-        envelopeHash: digest, sourceKind: 'tool-input', resourceId: p.toolCallId as string,
-        memberTokenId: (ctx.writeOrigin ?? 'member') === 'member' ? ctx.tokenId : undefined,
-      }
+  const inputPreparation=env?measuredContentEnv(env):undefined;
+  const inputBundle=inputDisplay?.truncated&&inputPreparation
+    ? await prepareArchiveBundle(inputPreparation.env,[{kind:'tool-input',row:{project_id:ctx.projectId,session_id:e.sessionId,
+        event_id:e.eventId,resource_id:p.toolCallId as string,token_id:ctx.tokenId,envelope_hash:digest,
+        content_revision:0,bytes:inputDisplay.bytes,received_at:ctx.now},text:fullInput!}],ctx.now,undefined,
+        (ctx.writeOrigin??'member')==='member'?ctx.tokenId:undefined)
     : undefined;
-  const preparedToolInput = inputSource && env
-    ? await prepareDerivedContent(env, inputSource, fullInput!, ctx.now)
-    : undefined;
+  const preparedToolInput=inputBundle?{...inputBundle.body,bundle:inputBundle,preparationCalls:inputPreparation!.usage.statements+inputPreparation!.usage.blobCalls}:undefined;
   const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput });
   // A server-origin write is counted nothing and consults no credential's
   // liveness: the bytes it derives from were accepted and counted when the
@@ -247,8 +246,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
   };
 
-  const releaseUnlinked = inputSource && preparedToolInput && env
-    ? () => discardDerivedContent(env, inputSource, preparedToolInput.key, ctx.now)
+  const releaseUnlinked = inputBundle && env
+    ? () => discardArchiveBundle(env,inputBundle,ctx.now)
     : undefined;
   return { ok: true, write: { statements, interpret, releaseUnlinked, preparationCalls: preparedToolInput?.preparationCalls } };
 }

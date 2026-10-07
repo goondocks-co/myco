@@ -13,7 +13,7 @@ import { emit } from '../telemetry.js';
 
 /** The tables a session's derived rows live in, each carrying `session_id` itself. */
 export const DERIVED_TABLES = [
-  'event_content_refs', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
+  'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
   'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'prompt_batches', 'events',
 ] as const;
 

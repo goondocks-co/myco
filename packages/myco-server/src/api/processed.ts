@@ -1,6 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isProcessedBodyKind, processedAttachment, processedBody } from '../read/processed.js';
+import { bundleContentEnv } from '../core/archive-bundle.js';
 import { notFound, resolveProjectScope } from './scope.js';
 
 const ATTACHMENT_IMAGES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -30,7 +31,7 @@ export async function handleProcessedBody(env: ServerEnv, ctx: OwnerContext): Pr
       ...(image ? {} : { 'content-disposition': `attachment; filename="${encodeURIComponent(id)}"` }),
     } });
   }
-  const body = await processedBody(env, scope, kind, id);
+  const body = await processedBody(bundleContentEnv(env), scope, kind, id);
   if (body === null) return notFound();
   return new Response(body, { headers: {
     'content-type': 'text/plain; charset=utf-8',

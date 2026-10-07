@@ -672,12 +672,13 @@ Disposition here is about the **data class**, and separately about **migration**
 | `raw_restore_revisions` | NEW | Core | Blk | Destination-owned revision intervals preserve imported claim boundaries and keep new capture outside them | #1645 |
 | `raw_resources` | NEW | Core | Blk | Schema step 71 snapshots uploader ownership and raw classification per transcript and verified blob-upload reference. Missing provenance remains unavailable until explicitly claimed by the recorded owner; partial machine evidence restricts the claimant to that member, and conflicting provenance remains unavailable. Historical credential expiry does not erase ownership; current membership is required. Internal parsing and operator recovery retain full bytes | #1645 |
 | `registered_content_proofs` | NEW | Core | Blk | Immutable generation, digest, source authority and durable read-back evidence; portable with domain archives | #1679 |
-| `event_content_refs` | NEW | Core | Blk | Archived event body and receipt locators with typed lifecycle facts; portable with domain rows | #1679 |
+| `archive_bundles` | NEW | Core | Blk | Bounded session archive pages with shared body and receipt evidence; domain rows retain compact entry locators and lifecycle facts | #1679 |
 | `raw_archive_refs` | NEW | Core | Blk | Uploader-owned raw event and transcript locators, hot or archived; portable with raw provenance | #1679 |
 | `storage_cleanup_state` | NEW | Core | Blk | Destination-local revisioned phase, tuple cursor, pause and progress; excluded from portable backups | #1679 |
 | `storage_cleanup_queue` | NEW | Core | Blk | Destination-local conversion work registered atomically with capture; excluded from portable backups | #1679 |
 | `storage_cleanup_omissions` | NEW | Core | Blk | Destination-local named conversion refusals; excluded from portable backups | #1679 |
 | `raw_archive_state` | NEW | Core | Blk | Destination-local bounded raw seeding and archive cursor; excluded from portable backups | #1679 |
+| `raw_event_archive_state` | NEW | Core | Blk | Destination-local tuple cursor for bounded raw event archive pages; excluded from portable backups | #1679 |
 | `orphan_sweep_state` | NEW | Core | Blk | Destination-local bounded blob-identity sweep cursor; excluded from portable backups | #1679 |
 | `storage_content_guard` | NEW | Core | Blk | Transaction assertion table; never retains rows or enters portable backups | #1679 |
 | `content_scan_checkpoints` | NEW | Core | Blk | Destination-local incremental hash and byte preview checkpoint for large historical bodies; excluded from portable backups | #1679 |
