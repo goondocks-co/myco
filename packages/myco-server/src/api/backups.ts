@@ -112,7 +112,7 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   }
   try {
     assertBackupSize(body.artifact);
-    const outcome = await restoreArtifact(env.db, { text: body.artifact, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id } });
+    const outcome = await restoreArtifact(env.db, { text: body.artifact, blobs: env.blobs, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id } });
     return ok({ applied: true, ...outcome });
   } catch (err) {
     if (err instanceof RestoreAuthorizationError) return Response.json({ error: err.code }, { status: err.code === 'owner_pending' ? 409 : 403 });

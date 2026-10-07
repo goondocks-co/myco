@@ -6,8 +6,8 @@ import { Database } from 'bun:sqlite';
 import { createRecoveryBundle } from '@myco/server/recovery-bundle.js';
 import { restoreLocalDeployment } from '@myco/server/local-recovery.js';
 import { LOCAL_SECRET_NAMES, readLocalRecord, readLocalSecrets, resolveLocalPaths } from '@myco/server/local.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { legacyBlob } from '../myco-server/helpers/d1.js';
+import { envelope, sqliteEnv, uuid } from '../myco-server/helpers/fixtures.js';
+import { legacyBlob, seedCredential } from '../myco-server/helpers/d1.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
@@ -24,8 +24,11 @@ import { createHash } from 'node:crypto';
 import { blobObjectKey, registeredObjectKeySql } from '../../packages/myco-server/src/core/blob-objects.js';
 import { migrateOnly, startDeployment } from '../../packages/myco-server/src/platform/bun/server-main.js';
 import { getBlob } from '../../packages/myco-server/src/read/blobs.js';
+import { processedBody } from '../../packages/myco-server/src/read/processed.js';
+import { ingestEvent } from '../../packages/myco-server/src/ingest/events.js';
 import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
+import { asSchema41 } from './legacy-recovery-fixture.js';
 
 /** Where the fixture source holds the object an artifact key names. */
 async function sourceKeyOf(source: ReturnType<typeof sqliteEnv>, logical: string): Promise<string> {
@@ -86,19 +89,12 @@ async function storedBlobs(source: ReturnType<typeof sqliteEnv>) {
   return held;
 }
 
-/** Rewrites a current snapshot as a schema-41 Deployment captured it: no object lifecycle, no generation column. */
-function asSchema41(file: string): void {
-  const db = new Database(file);
-  try {
-    for (const trigger of ['blobs_require_generation', 'blobs_release_through_journal']) db.run(`DROP TRIGGER ${trigger}`);
-    for (const table of ['object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard']) db.run(`DROP TABLE ${table}`);
-    db.run('DROP INDEX idx_blob_reservations_expiry');
-    db.run('ALTER TABLE blobs DROP COLUMN generation');
-    db.run("UPDATE schema_meta SET value = '41' WHERE key = 'version'");
-  } finally { db.close(); }
-}
 
-async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy = false, configuration = {} as Record<string, unknown> } = {}) {
+const RECOVERED_TOOL_ID = uuid(9002);
+const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/repo/recovered.ts' };
+
+async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
+  { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -119,6 +115,15 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare', { legacy =
   const provider = { modelKey: 'fixture-model', embed: async () => [1, 0] };
   await reconcileEmbedding({ db: source.db, blobs: source.bucket, provider,
     vectors: target === 'local' ? sqliteVectorStore(source.sqlite) : cloudflareVectorStore(indexFixture()) }, 'proj_1', 1000);
+  if (bundledInput) {
+    const now = Date.now();
+    const tokenId = seedCredential(source.sqlite, { expiresAt: now + 60_000 });
+    expect(await ingestEvent(source.db, { projectId: 'proj_1', machineId: 'machine_1', tokenId,
+      bodyBytes: 0, now }, envelope({ eventId: uuid(9001), sessionId: 'sess_recovery_input',
+      kind: 'tool.use', payload: { toolCallId: RECOVERED_TOOL_ID, toolName: 'Write',
+        input: RECOVERED_TOOL_INPUT, success: true } }), source.serverEnv))
+      .toMatchObject({ persisted: true, projected: true });
+  }
   const backup = await createBackup(source.db, source.bucket, { producer: 'fixture', now: 1000 });
   await setBackupPinned(source.db, backup.id, true);
   await createRecoveryBundle(artifact, {
@@ -192,6 +197,26 @@ it('preserves a native snapshot and its vectors without resetting their ready re
     // No embedding rebuild is needed, and the object lifecycle is still reset and the objects named for this volume.
     await assertServedAfterStartup(f);
     expect(fs.readFileSync(path.join(f.artifact, 'myco.sqlite'))).toEqual(original);
+  } finally { f.cleanup(); }
+});
+
+it('serves a bundled tool input after native restore assigns a fresh object generation', async () => {
+  const f = await fixture('local', { bundledInput: true });
+  try {
+    const sourceProof = f.source.sqlite.query(`SELECT generation FROM registered_content_proofs
+      WHERE source_kind='bundle' LIMIT 1`).get() as { generation: string };
+    f.source.bucket.objects.clear();
+    await f.restore();
+    const db = new Database(f.paths.databasePath);
+    try {
+      const proof = db.query(`SELECT p.generation AS proof_generation,b.generation AS blob_generation
+        FROM registered_content_proofs p JOIN blobs b ON b.project_id=p.project_id AND b.key=p.key
+        WHERE p.source_kind='bundle' LIMIT 1`).get() as { proof_generation: string; blob_generation: string };
+      expect(proof.proof_generation).toBe(proof.blob_generation);
+      expect(proof.blob_generation).not.toBe(sourceProof.generation);
+      expect(await processedBody({ db: sqliteRelationalStore(db), blobs: diskBlobStore(f.paths.blobDir) },
+        { projectId: 'proj_1' }, 'tool-input', RECOVERED_TOOL_ID)).toBe(JSON.stringify(RECOVERED_TOOL_INPUT));
+    } finally { db.close(); }
   } finally { f.cleanup(); }
 });
 

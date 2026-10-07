@@ -8,6 +8,7 @@ import { legacyReplies } from '@myco-server-worker/ingest/legacy-replies.js';
 import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { continuityRecords } from './continuity-records.js';
+import { processedBody } from '@myco-server-worker/read/processed.js';
 
 const NOW = Date.parse('2027-01-01T00:00:00Z');
 const TIME = '2026-09-01T10:00:00Z';
@@ -72,8 +73,12 @@ export async function ingestContinuityRuntime(db: RelationalStore, blobs: BlobSt
       if (chunks.length < 2 || chunks.some((chunk) => chunk.bytes > MAX_PAYLOAD_BYTES)) throw new Error('checkpoint chunk exceeds storage bound');
       const results = calls.map((call) => ({ type: 'tool_result', tool_use_id: call.id, content: 'ok' }));
       await ship(largeProject, JSON.stringify({ type: 'user', timestamp: TIME, message: { content: results } }) + '\n', prefixBytes);
-      const tools = (await db.prepare('SELECT input, success FROM tool_calls WHERE project_id = ? AND session_id = ?').bind(largeProject, sessionId).all<{ input: string; success: number }>()).results;
-      if (tools.length !== calls.length || tools.some((tool) => tool.success !== 1 || JSON.parse(tool.input).content !== calls[0].input.content)) throw new Error('large pending state lost tool inputs or results');
+      const tools = (await db.prepare('SELECT tool_call_id, input, success FROM tool_calls WHERE project_id = ? AND session_id = ?').bind(largeProject, sessionId).all<{ tool_call_id: string; input: string; success: number }>()).results;
+      if (tools.length !== calls.length) throw new Error('large pending state lost tool calls');
+      for (const tool of tools) {
+        const input = await processedBody(env, { projectId: largeProject }, 'tool-input', tool.tool_call_id);
+        if (tool.success !== 1 || new TextEncoder().encode(tool.input).byteLength > 2048 || input === null || JSON.parse(input).content !== calls[0].input.content) throw new Error('large pending state lost tool inputs or results');
+      }
       if ((await db.prepare('SELECT COUNT(*) AS n FROM transcript_parser_state_chunks WHERE project_id = ? AND transcript_id = ?').bind(largeProject, transcriptId).first<{ n: number }>())!.n !== 0) throw new Error('closed pending state retained its chunks');
     }
     if (agent === 'claude-code') {

@@ -164,13 +164,14 @@ const releases: SettingPolicy = {
 const records: SettingPolicy = {
   id: 'records',
   owners: ['core/jobs-run.ts', 'ingest/retention.ts'],
-  leaves: ['agent.run_retention_days', 'retention.transcripts'],
+  leaves: ['agent.run_retention_days', 'retention.transcripts','retention.raw_days'],
   async resolve(env) {
     const fact = await transcriptRetentionFact(env.db);
     const days = await runRetentionDays(env);
     return {
       'agent.run_retention_days': { effective: days, meanwhile: `Task records are kept for ${days} days` },
-      'retention.transcripts': fact.state === 'days' ? { effective: fact.days } : { effective: null, reason: 'Transcripts are kept forever.', meanwhile: 'Nothing is removed' },
+      'retention.transcripts': fact.state === 'days' ? { effective: fact.days, meanwhile:'Raw content is preserved in archive storage.' } : { effective: null, reason: fact.state==='forever'?'A legacy forever choice holds archival.':fact.reason, meanwhile:'Raw content remains held.' },
+      'retention.raw_days': fact.state==='days' ? { effective:fact.days,reason:fact.compatibility==='default'?'The default raw window is 90 days.':fact.compatibility==='legacy-finite'?'The finite legacy window supplies this value.':undefined } : { effective:null,reason:fact.state==='forever'?'Set a finite raw window to release the legacy hold.':fact.reason,meanwhile:'Raw content remains held.' },
     };
   },
 };

@@ -94,8 +94,10 @@ describe('the power state a tick resolves', () => {
     f.seedSession('s1', NOW);
     const ran = (await runTick(f.env, NOW)).jobs.map((j) => j.name);
     // A tick an owner requests runs every job but the clock-owned ones; the target's own clock runs those too.
-    expect(ran).toEqual(SERVER_JOBS.filter((j) => j.wake === undefined).map((j) => j.name));
-    expect((await runTick(f.env, NOW, { wake: 'clock' })).jobs.map((j) => j.name)).toEqual(SERVER_JOBS.map((j) => j.name));
+    expect([...ran].sort()).toEqual(SERVER_JOBS.filter((j) => j.wake === undefined).map((j) => j.name).sort());
+    expect(ran[0]).toBe('transcript-parse');
+    expect(ran.indexOf('storage-content-cleanup')).toBeGreaterThan(ran.indexOf('raw-provenance-backfill'));
+    expect((await runTick(f.env, NOW, { wake: 'clock' })).jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.map((j) => j.name).sort());
     expect(ran).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep', 'search-index', 'embedding-reconcile']));
   });
 
@@ -207,7 +209,7 @@ describe('run-stale-sweep', () => {
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
     const broken: ServerEnv = { ...f.env, db: { prepare: (sql: string) => (sql.includes('resumable = 0 AND') ? { bind: () => ({ run: async () => { throw new Error('D1_ERROR: nope'); }, all: async () => { throw new Error('D1_ERROR: nope'); }, first: async () => { throw new Error('D1_ERROR: nope'); } }) } : f.env.db.prepare(sql)) as never, batch: f.env.db.batch } };
     const report = await runTick(broken, NOW);
-    expect(report.jobs.map((j) => j.name)).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name));
+    expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name).sort());
     expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
     expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
   });

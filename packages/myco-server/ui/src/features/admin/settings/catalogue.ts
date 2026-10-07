@@ -200,7 +200,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'What Myco keeps',
     note: 'How long this server keeps raw transcripts and its own records.',
     leaves: [
-      { leaf: 'retention.transcripts', label: 'Keep raw transcripts for', kind: 'number', min: 0, max: 3650, unit: 'days', note: 'Removes raw transcript bytes already read into sessions once they are older than this. Bytes not yet read are kept whatever their age, and sessions, prompts, replies, tool calls and plans are never removed. Unset or 0 keeps raw transcripts forever. Capture is never refused for the space it takes.' },
+      { leaf: 'retention.raw_days', label: 'Keep raw content hot for', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Defaults to 90 days. Older raw content moves to verified archive storage. Unparsed bytes and recovery holds delay the move. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely. A legacy forever choice holds archival until a finite window is set.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
     ],
   },

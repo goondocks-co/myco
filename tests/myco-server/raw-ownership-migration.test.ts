@@ -83,6 +83,7 @@ describe('raw ownership schema step 71', () => {
       expect(() => sqlite.run("UPDATE processed_resources SET source_token_id = 'cb'")).toThrow('immutable');
       sqlite.run("UPDATE machine_claims SET member_id = 'b' WHERE machine_id = 'ma'");
       expect(await rawBackfill(sqliteRelationalStore(sqlite), 20)).toEqual({ changed: 0, more: false });
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>71))for(const sql of step.statements)sqlite.exec(sql);
       const db = sqliteRelationalStore(sqlite);
       const blobs = memoryBlobStore();
       blobs.get = async () => { throw new Error('policy check must not read bytes'); };

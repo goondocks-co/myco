@@ -101,12 +101,15 @@ const blobPageOf = (pairs: readonly BlobRef[]): string => JSON.stringify(pairs.m
  * them. Recorded in that same transaction, a candidate outlives any interruption before it is decided: the drain
  * decides what a caller did not.
  */
-export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number): PreparedStatement[] {
+export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number,
+  guard?: { sql: string; params: readonly unknown[] }): PreparedStatement[] {
   const statements: PreparedStatement[] = [];
   for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
     statements.push(db.prepare(`INSERT INTO blob_release_candidates (project_id, key, created_at)
                                   SELECT c.p, c.k, ? FROM ${blobPage} c WHERE c.k IS NOT NULL
-                                  ON CONFLICT (project_id, key) DO NOTHING`).bind(now, blobPageOf(pairs.slice(at, at + RELEASE_PAGE))));
+                                    ${guard===undefined?'':`AND (${guard.sql})`}
+                                  ON CONFLICT (project_id, key) DO NOTHING`)
+      .bind(now, blobPageOf(pairs.slice(at, at + RELEASE_PAGE)), ...(guard?.params??[])));
   }
   return statements;
 }
@@ -480,9 +483,26 @@ export async function resetRecoveryLedger(db: RelationalStore): Promise<void> {
 }
 
 /**
- * Names every registered blob of a prepared restore copy under one fresh generation, so the restored objects are
- * written under names no earlier write in the destination store used.
+ * Names every registered blob and its content evidence under one fresh restore generation.
  */
 export async function assignRestoreGeneration(db: RelationalStore, generation: string): Promise<void> {
-  await db.prepare(`UPDATE blobs SET generation = ?`).bind(generation).run();
+  const evidenceClosed = `NOT EXISTS (
+      SELECT 1 FROM registered_content_proofs p LEFT JOIN blobs b ON b.project_id=p.project_id AND b.key=p.key
+      WHERE b.key IS NULL OR p.generation IS NOT b.generation OR p.size IS NOT b.size
+    ) AND NOT EXISTS (
+      SELECT 1 FROM raw_archive_refs r LEFT JOIN blobs b
+        ON b.project_id=r.project_id AND b.key=r.source_blob_key
+      WHERE r.disposition='hot' AND r.source_blob_key IS NOT NULL
+        AND (b.key IS NULL OR r.source_generation IS NOT b.generation)
+    )`;
+  const guard = () => [db.prepare(`INSERT INTO storage_content_guard(ok)
+    SELECT CASE WHEN ${evidenceClosed} THEN 1 ELSE 0 END`),db.prepare(`DELETE FROM storage_content_guard`)];
+  await db.batch([
+    ...guard(),
+    db.prepare(`UPDATE blobs SET generation = ?`).bind(generation),
+    db.prepare(`UPDATE registered_content_proofs SET generation = ?`).bind(generation),
+    db.prepare(`UPDATE raw_archive_refs SET source_generation = ?
+      WHERE disposition = 'hot' AND source_blob_key IS NOT NULL`).bind(generation),
+    ...guard(),
+  ]);
 }

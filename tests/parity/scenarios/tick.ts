@@ -14,20 +14,22 @@ import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
  * once, which says nothing about parity and everything about the list.
  */
 
-/** The report an owner's wake owes at a depth where every job runs: the registry in order, less the jobs only the target's own clock runs, changed where a job did work and zero everywhere else. */
+/** The registry jobs an owner's wake owes, with each changed count at the seeded expectation. */
 const jobReport = (changed: Record<string, number> = {}) =>
-  SERVER_JOBS.filter((job) => job.wake === undefined).map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }));
+  SERVER_JOBS.filter((job) => job.wake === undefined).map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }))
+    .sort((a,b) => a.name.localeCompare(b.name));
 
 /** The two jobs this scenario seeds work for. */
 const SEEDED = new Set(['agent-run-retention', 'run-stale-sweep']);
 
 /**
- * A wake's report as this scenario judges it: every job, in order, with its failure, and the changed count of
+ * A wake's report as this scenario judges it: every job with its failure, and the changed count of
  * the jobs it seeds. Any other job's count is the work the scenarios run ahead of this one on the same target
  * left behind, which depends on the shard's order and the target's pace, not on the wake.
  */
 const seededView = (jobs: Array<{ name: string; changed: number; failed: string | null }>) =>
-  jobs.map((job) => ({ name: job.name, changed: SEEDED.has(job.name) ? job.changed : 0, failed: job.failed }));
+  jobs.map((job) => ({ name: job.name, changed: SEEDED.has(job.name) ? job.changed : 0, failed: job.failed }))
+    .sort((a,b) => a.name.localeCompare(b.name));
 
 export const tick: ParityScenario = {
   name: 'the wake: retention and the stale-run sweep, identical on both targets, idempotent',
@@ -72,6 +74,8 @@ export const tick: ParityScenario = {
     const first = await wake();
     // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.
     expect(['active', 'idle']).toContain(first.state);
+    expect(first.jobs[0]?.name).toBe('transcript-parse');
+    expect(first.jobs.slice(-2).map((job) => job.name)).toEqual(['storage-content-cleanup','transcript-retention']);
     // Retention removes the three runs past the window; the sweep fails the stale one.
     expect(seededView(first.jobs)).toEqual(jobReport({ 'agent-run-retention': 3, 'run-stale-sweep': 1 }));
     expect(first.jobs.find((job) => job.name === 'raw-provenance-backfill')?.more).toBe(true);

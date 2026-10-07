@@ -44,6 +44,7 @@ export function entryConfig(config: string, main: string | undefined): string {
 export const LOCKED_RETRIES = 5;
 /** The first backoff; each retry waits twice the last. */
 export const LOCKED_BACKOFF_MS = 100;
+const SQL_PROGRESS_INTERVAL_MS = 30_000;
 
 /**
  * How long to wait before asking again, or null to raise what the command said.
@@ -72,11 +73,20 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
   fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), options.main) + '\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "parity-store"\nsecret_name = "parity-wrap-key"\n');
 
+  let completedSqlCommands = 0;
+  let lastSqlProgress = performance.now();
   const d1 = async (command: string): Promise<string> => {
     const args = ['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command];
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await wrangler(args);
+        const result = await wrangler(args);
+        completedSqlCommands += 1;
+        const now = performance.now();
+        if (now - lastSqlProgress >= SQL_PROGRESS_INTERVAL_MS) {
+          console.info(`cloudflare parity: ${completedSqlCommands} D1 commands completed`);
+          lastSqlProgress = now;
+        }
+        return result;
       } catch (error) {
         const wait = lockedRetryWaitMs((error as Error).message, attempt);
         if (wait === null) throw error;

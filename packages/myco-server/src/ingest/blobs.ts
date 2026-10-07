@@ -7,6 +7,7 @@ import { RawResourceReader } from '../core/raw-resources.js';
 import { consumeExpiredAuthorities, consumeUploadAuthority } from '../core/object-release.js';
 import { classifyBlobStore, emit, TokenRevokedError, UNAVAILABLE, type Classifier } from '../telemetry.js';
 import { credentialLive } from './live-credential.js';
+import { registerContentStatement } from '../core/content-registration.js';
 
 export const MAX_MEDIA_TYPE_CHARS = 128;
 const TOKEN = String.raw`[A-Za-z0-9!#$%&'*+.^_\`|~-]+`;
@@ -141,10 +142,8 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
                       AND (NOT ${live} OR EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ?))
                     ON CONFLICT (physical) DO NOTHING`)
         .bind(physical, at, reservationId, reservationId, at, ctx.projectId, key),
-      db.prepare(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
-                    SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${live}
-                    ON CONFLICT (project_id, key) DO NOTHING`)
-        .bind(ctx.projectId, key, storedSize, mediaType, ctx.tokenId, ctx.now, reservationId, reservationId, at),
+      registerContentStatement(db,{projectId:ctx.projectId,key,size:storedSize,mediaType,tokenId:ctx.tokenId,
+        receivedAt:ctx.now,generation:reservationId,authority:{sql:live,params:[reservationId,at]}}),
       db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
       verifiedBlobReference(db, { projectId: ctx.projectId, key, tokenId: ctx.tokenId, reservationId, at }),
       db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),

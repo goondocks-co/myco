@@ -16,6 +16,7 @@ const DECLARING_MODULES = new Set(['routes.ts', 'mcp/registry.ts', 'mcp/run-surf
 const RAW_READ_CAPABILITIES = new Set([
   'core/raw-resources.ts', 'ingest/parse.ts', 'core/stored-object.ts',
   'read/processed.ts', 'core/embedding/reconcile.ts', 'core/search-index.ts',
+  'core/registered-content.ts', 'core/content-budget.ts', 'core/relational-snapshot.ts',
 ]);
 
 function sources(directory: string): string[] {

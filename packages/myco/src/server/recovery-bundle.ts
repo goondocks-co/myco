@@ -7,6 +7,9 @@ import { diskBlobStore, sweepPartialObjects } from '@myco-server-worker/platform
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { BACKUP_KEY_PREFIX } from '@myco-server-worker/core/backup.js';
 import { BLOB_REFERENCES, kindFilter, referenceLabel } from '@myco-server-worker/core/blob-references.js';
+import { verifyBundleArtifact } from '@myco-server-worker/core/archive-bundle.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import type { BlobStore } from '@myco-server-worker/core/adapters.js';
 import { BLOB_KEY_GRAMMAR } from '@myco-server-worker/ingest/kinds.js';
 import { blobArtifactKey, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
 import { RECOVERY_CREDENTIAL_NAMES, recordedFleet } from '@myco-server-worker/core/recovery-staging.js';
@@ -15,6 +18,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { refusedAccountCode, transientReadFailure } from './object-read.js';
 import { fingerprintSchema, STAGING_FORMAT } from './recovery-contract.js';
 import { quoteIdentifier } from './recovery-schema.js';
+import { recoveryBundleInventory } from './recovery-bundle-inventory.js';
 
 const MANIFEST_FILE = 'recovery.json';
 const DATABASE_FILE = 'myco.sqlite';
@@ -102,15 +106,45 @@ function expectedBackupObject({ key, bytes, sha256 }: CataloguedBackup): Recover
  */
 function* registeredObjects(db: Database): Generator<RecoveryBlob & { source: string }> {
   const generation = db.query("SELECT 1 FROM pragma_table_info('blobs') WHERE name = 'generation'").get() !== null ? 'generation' : 'NULL AS generation';
-  const rows = db.query<{ project_id: unknown; key: unknown; generation: unknown; bytes: unknown }, []>(
-    `SELECT project_id, key, ${generation}, size AS bytes FROM blobs ORDER BY project_id, key`).iterate();
-  for (const row of rows) {
-    let object;
-    try { object = snapshotBlobObject(row); } catch (error) {
-      throw new Error(`recovery database holds an unreadable blob row: ${error instanceof Error ? error.message : String(error)}`);
+  const statement = db.prepare<{ project_id: unknown; key: unknown; generation: unknown; bytes: unknown }, []>(
+    `SELECT project_id, key, ${generation}, size AS bytes FROM blobs ORDER BY project_id, key`);
+  try {
+    for (const row of statement.iterate()) {
+      let object;
+      try { object = snapshotBlobObject(row); } catch (error) {
+        throw new Error(`recovery database holds an unreadable blob row: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      yield { ...blobSchema.parse({ key: blobArtifactKey(object.projectId, object.key), sha256: object.key, bytes: row.bytes }), source: object.objectKey };
     }
-    yield { ...blobSchema.parse({ key: blobArtifactKey(object.projectId, object.key), sha256: object.key, bytes: row.bytes }), source: object.objectKey };
-  }
+  } finally { statement.finalize(); }
+}
+
+/** Every copied bundle must resolve each logical locator before a recovery artifact is complete. */
+export async function verifyCopiedBundleEntries(db: Database, store: BlobStore): Promise<void> {
+  if (db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_bundles'").get() === null) return;
+  const physicalToArtifact = new Map([...registeredObjects(db)].map(row => [row.source,row.key]));
+  const blobs: BlobStore = {
+    head: key => physicalToArtifact.has(key) ? store.head(physicalToArtifact.get(key)!) : Promise.resolve(null),
+    get: (key,options) => physicalToArtifact.has(key) ? store.get(physicalToArtifact.get(key)!,options) : Promise.resolve(null),
+    put: () => { throw new Error('recovery verification cannot publish objects'); },
+    delete: () => { throw new Error('recovery verification cannot delete objects'); },
+  };
+  const relational = sqliteRelationalStore(db);
+  const inventory = recoveryBundleInventory(db);
+  try {
+    const statement = db.prepare<Record<string,unknown>, []>('SELECT * FROM archive_bundles ORDER BY id');
+    try {
+      for (const row of statement.iterate()) {
+        const project = row.project_id as string;
+        const id = row.id as number;
+        const proofs = db.query<Record<string,unknown>, [string,string,string]>(`SELECT * FROM registered_content_proofs
+          WHERE project_id=? AND (key=? OR key=?)`).all(project,row.archive_key as string,row.receipt_key as string);
+        const locators = inventory.forBundle(project,id);
+        if (locators.length > Number(row.entry_count)) throw new Error('content_bundle_entry_invalid');
+        await verifyBundleArtifact({db:relational,blobs},row as Parameters<typeof verifyBundleArtifact>[1],proofs,locators);
+      }
+    } finally { statement.finalize(); }
+  } finally { inventory.close(); }
 }
 
 /** The objects a snapshot registers, by artifact key: its blob rows, and its catalogued backups with their digests. */
@@ -273,10 +307,66 @@ function openSnapshot(file: string): Database {
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('recovery database failed its integrity check');
     if (db.query('PRAGMA foreign_key_check').get() !== null) throw new Error('recovery database has broken foreign keys');
     refuseUnsafeNumbers(db);
+    const schemaVersion = Number(db.query<{ value: string }, []>("SELECT value FROM schema_meta WHERE key = 'version'").get()?.value);
     for (const ref of BLOB_REFERENCES) {
+      if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(ref.table) === null) {
+        if (schemaVersion >= 75) throw new Error(`recovery database is missing reference table ${ref.table}`);
+        continue;
+      }
       if (db.query(`SELECT 1 FROM ${ref.table} r WHERE r.${ref.column} IS NOT NULL${kindFilter(ref)}
         AND NOT EXISTS (SELECT 1 FROM blobs b WHERE b.project_id = r.project_id AND b.key = r.${ref.column}) LIMIT 1`).get() !== null) {
         throw new Error(`recovery database is missing a blob referenced by ${referenceLabel(ref)}`);
+      }
+    }
+    if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_bundles'").get() !== null) {
+      if (db.query(`SELECT 1 FROM registered_content_proofs p LEFT JOIN blobs b
+          ON b.project_id = p.project_id AND b.key = p.key
+        WHERE b.key IS NULL OR b.generation IS NOT p.generation
+          OR b.key IS NOT p.digest OR b.size IS NOT p.size OR p.durable <> 1 LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has a content proof inconsistent with its registered object');
+      }
+      if (db.query(`SELECT 1 FROM archive_bundles a WHERE a.version <> 1 OR a.digest IS NOT a.archive_key
+        OR a.entry_count < 1 OR a.size < 1
+        OR NOT EXISTS (SELECT 1 FROM events e WHERE e.project_id=a.project_id AND e.event_id=a.event_id
+          AND e.session_id=a.session_id AND e.token_id=a.token_id AND e.envelope_hash=a.envelope_hash)
+        OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p
+          WHERE p.project_id=a.project_id AND p.key=a.archive_key AND p.source_kind='bundle'
+            AND p.source_id=a.archive_key AND p.event_id=a.event_id AND p.envelope_hash=a.envelope_hash
+            AND p.session_id=a.session_id AND p.digest=a.archive_key AND p.size=a.size AND p.durable=1)
+        OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p
+          WHERE p.project_id=a.project_id AND p.key=a.receipt_key AND p.source_kind='receipt'
+            AND p.source_id='bundle:' || a.archive_key AND p.event_id=a.event_id
+            AND p.envelope_hash=a.envelope_hash AND p.session_id=a.session_id
+            AND p.digest=a.receipt_key AND p.durable=1) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has an archive bundle without verified body and receipt');
+      }
+      if (db.query(`SELECT 1 FROM events e LEFT JOIN archive_bundles a
+          ON a.project_id=e.project_id AND a.id=e.bundle_id
+        WHERE e.payload_format='archived' AND (e.payload <> '{}' OR a.id IS NULL
+          OR a.session_id IS NOT e.session_id OR a.token_id IS NOT e.token_id
+          OR e.bundle_entry < 0 OR e.bundle_entry >= a.entry_count) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has an archived event without its source bundle');
+      }
+      if (db.query(`SELECT 1 FROM raw_archive_refs r WHERE r.disposition = 'archived'
+        AND (r.archive_key IS NULL OR r.receipt_key IS NULL OR r.digest IS NOT r.archive_key
+          OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE p.project_id=r.project_id
+            AND p.key=r.archive_key AND p.source_kind=r.source_kind AND p.source_id=r.source_id
+            AND p.session_id=r.session_id AND p.digest=r.archive_key AND p.size=r.size AND p.durable=1)
+          OR NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE p.project_id=r.project_id
+            AND p.key=r.receipt_key AND p.source_kind='receipt'
+            AND p.source_id=r.source_kind || ':' || r.source_id AND p.session_id=r.session_id
+            AND p.digest=r.receipt_key AND p.durable=1)) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has a raw archive without verified body and receipt');
+      }
+      if (db.query(`SELECT 1 FROM tool_calls t LEFT JOIN archive_bundles a
+          ON a.project_id=t.project_id AND a.id=t.input_bundle_id
+        LEFT JOIN events e ON e.project_id=t.project_id AND e.event_id=t.event_id
+        WHERE t.input_bundle_id IS NOT NULL AND (a.id IS NULL OR a.session_id IS NOT t.session_id
+          OR a.token_id IS NOT t.token_id OR t.input_bundle_entry < 0
+          OR t.input_bundle_entry >= a.entry_count OR t.input_blob_key IS NOT NULL
+          OR t.input_bytes <= 2048 OR length(CAST(t.input AS BLOB)) > 2048
+          OR e.event_id IS NULL OR e.session_id IS NOT t.session_id) LIMIT 1`).get() !== null) {
+        throw new Error('recovery database has a displayed tool input without its full bundle');
       }
     }
     return db;
@@ -912,6 +1002,7 @@ async function writeRecoveryBundle(
       for (const row of registeredObjects(db)) {
         await copyObject(row, `Copying blob ${++index} of ${snapshot.blobCount}`);
       }
+      await verifyCopiedBundleEntries(db,store);
       if (manifest.format === 'myco-recovery/2') {
         for (const [index, backup] of backups.entries()) {
           const receipt = manifest.backupObjects.find((held) => held.key === backup.key);

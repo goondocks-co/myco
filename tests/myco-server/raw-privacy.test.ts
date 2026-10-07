@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import worker from '@myco-server-worker/index.js';
 import { createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
@@ -10,6 +11,31 @@ import { envelope, memberHeaders, memberPost, registeredObject, sqliteEnv } from
 import { OWNER_ENV, ownerCookie, SESSION_SECRET } from './helpers/owner.js';
 
 describe('raw capture privacy regression gate', () => {
+  it('keeps bundle body and receipt private while the uploader can read its logical event', async () => {
+    const e = sqliteEnv();
+    try {
+      const token = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now());
+      const captured = envelope({ kind: 'compaction.pre', payload: { summary: 'private source' } });
+      expect(await (await worker.fetch(memberPost(token.token, captured), e.env)).json()).toMatchObject({ persisted: true });
+      const reader = new RawResourceReader(e.serverEnv, { projectId: 'proj_1' }, { kind: 'member', memberId: 'mem_machine_2' });
+      const body = 'a'.repeat(64);
+      const receipt = 'b'.repeat(64);
+      for (const key of [body, receipt]) {
+        e.sqlite.query(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+          VALUES(?,?,1,'application/json',?,1,?)`).run('proj_1', key, token.tokenId, randomUUID());
+        expect(await reader.allows({ kind: 'blob', id: key }, 'read')).toBe(true);
+      }
+      const hash = e.sqlite.query(`SELECT envelope_hash FROM events WHERE project_id=? AND event_id=?`)
+        .get('proj_1', captured.eventId) as { envelope_hash: string };
+      e.sqlite.query(`INSERT INTO archive_bundles(project_id,session_id,token_id,event_id,envelope_hash,
+        archive_key,receipt_key,digest,size,version,entry_count)
+        VALUES(?,?,?,?,?,?,?,?,1,1,2)`).run('proj_1',captured.sessionId,token.tokenId,captured.eventId,
+          hash.envelope_hash,body,receipt,body);
+      for (const key of [body, receipt]) expect(await reader.allows({ kind: 'blob', id: key }, 'read')).toBe(false);
+      expect(await reader.event(captured.eventId as string)).toBe(JSON.stringify({ summary: 'private source' }));
+    } finally { e.sqlite.close(); }
+  });
+
   it('admits only the historical member for raw event payloads, independently of token expiry and run or grant identity', async () => {
     const e = sqliteEnv();
     try {
