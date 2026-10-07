@@ -13,6 +13,8 @@ export const STORAGE_CLEANUP_TARGET_BYTES = 64 * 1024;
 export const STORAGE_CLEANUP_GAIN_MARGIN = 0.2;
 export const STORAGE_CLEANUP_PAGE_BYTES = ARCHIVE_BUNDLE_BYTES;
 const ROW_RESERVE = 48;
+const PENDING_STATUS_RESERVE = 2;
+const STATEMENT_RESERVE = ROW_RESERVE + PENDING_STATUS_RESERVE;
 const BLOB_RESERVE = 8;
 export interface CleanupState {
   phase:number;cursor_project:string;cursor_id:string;cursor_session:string;cursor_created:number;cursor_rowid:number;
@@ -123,7 +125,7 @@ export async function storageCleanup(env:Pick<ServerEnv,'db'|'blobs'>,now:number
   const limits={statements:Math.min(options.statements??remaining.statements,remaining.statements),
     blobCalls:Math.min(options.blobCalls??remaining.blobCalls,remaining.blobCalls)};
   const measured=measuredContentEnv(env,limits);let changed=0,longest=0,clearedBytes=0,metadataAdded=0;
-  const room=(entries=0)=>clock()<deadline&&measured.usage.statements+ROW_RESERVE+entries<=limits.statements
+  const room=(entries=0)=>clock()<deadline&&measured.usage.statements+STATEMENT_RESERVE+entries<=limits.statements
     &&measured.usage.blobCalls+BLOB_RESERVE<=limits.blobCalls;
   for(;;){
     if(clock()+longest>=deadline||!room())break;
@@ -154,7 +156,7 @@ export async function storageCleanup(env:Pick<ServerEnv,'db'|'blobs'>,now:number
           const scans=await measured.env.db.prepare(`SELECT scanned_bytes FROM content_scan_checkpoints
             WHERE project_id=? AND source_kind=? AND resource_id=? AND content_revision=? AND envelope_hash=?`)
             .bind(row.project_id,id.resource_kind,row.resource_id,row.content_revision,row.envelope_hash).first<{scanned_bytes:number}>();
-          if(scans?.scanned_bytes===row.bytes&&measured.usage.statements+ROW_RESERVE+Math.ceil(row.bytes/STORAGE_CLEANUP_PAGE_BYTES)>limits.statements){stop=true;break;}
+          if(scans?.scanned_bytes===row.bytes&&measured.usage.statements+STATEMENT_RESERVE+Math.ceil(row.bytes/STORAGE_CLEANUP_PAGE_BYTES)>limits.statements){stop=true;break;}
           const step=await prepareArchiveStep(measured.env,id.resource_kind,row,now);
           if(step.status==='pending'){if(consumed.length)await commitPage(measured.env.db,state,consumed,[],now);return {changed,more:true};}
           try {

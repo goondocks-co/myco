@@ -44,6 +44,17 @@ tool attached to a prompt. The operator backup/restore commands recover exact
 full bytes with the source server stopped and its blob directory removed; raw
 archive access remains uploader-scoped after recovery.
 
+## Bounded progress reporting
+
+Bundle admission reserves the two final pending-status statements alongside
+publication, adoption and disposal, including checkpointed oversized bodies.
+The regression fixture has three eligible inputs in one session followed by
+298 small and three eligible inputs in another session. Under the default
+120-statement and 60-blob limits, cleanup reports three committed conversions
+and pending work, leaves no prepared bundle, and finishes the remaining three
+on the next invocation. Through the real tick, the job remains in the draining
+set with a 2,000 ms next wake and reports its committed progress without failure.
+
 ## Mutation results
 
 Each mutation ran in an isolated source copy against the packing and inherited
@@ -68,6 +79,7 @@ size strengthened the gate, and the rerun caught it.
 | Reset persisted seek cursor | Mid-run resume | Killed |
 | Bypass checkpoint revision | Atomic stale-checkpoint rejection | Killed |
 | Remove status query row bound | Actual examined database page size | Killed |
+| Omit final pending-status reservation | Bounded progress return and continued tick draining | Killed |
 
 These fixtures and fault injections do not measure hosted D1 savings or prove
 vendor crash behavior. Hosted Deployment state is untouched. Native power-loss
