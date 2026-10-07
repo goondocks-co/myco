@@ -53,7 +53,7 @@ export const storageCleanupParity: ParityScenario = {
     const wake = async () => {
       const response = await fetch(`${target.url}/api/wake`, { method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(response.status).toBe(200);
+      expect(response.status, response.status === 200 ? 'cleanup wake' : await response.text()).toBe(200);
       const body = await response.json() as { jobs: Array<{ name: string; failed: string | null }> };
       for (const job of body.jobs.filter((item) => ['storage-content-cleanup', 'transcript-retention'].includes(item.name))) {
         expect(job.failed, job.name).toBeNull();

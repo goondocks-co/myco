@@ -808,6 +808,8 @@
     "owner lifecycle: interrupted restore preserves selected owner and imported administrator": 51000,
     "owner lifecycle: restored future audit rows cannot misattribute the next owner or role change": 67000,
     "owner review: stored and uploaded authority restore admit the live owner before any write": 80000,
-    "owner review: live actor scope gates credential and machine Stop after demotion": 67000
+    "owner review: live actor scope gates credential and machine Stop after demotion": 67000,
+    "live actor writes: settings and dispatch refuse demotion at the native and D1 commit": 170000,
+    "storage cleanup: exact archives, bounded tool preview, raw uploader authority and unchanged reads": 80000
   }
 }
