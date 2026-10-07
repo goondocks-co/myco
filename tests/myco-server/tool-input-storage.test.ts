@@ -31,7 +31,7 @@ function fixture() {
 }
 
 describe('tool input storage', () => {
-  it('leaves an oversized archived singleton readable while draining later compactable inputs', async () => {
+  it('leaves an oversized archived singleton readable while draining later captured inputs', async () => {
     const f=fixture();
     try{
       const input={text:'λ'.repeat(600_000)};
@@ -52,10 +52,10 @@ describe('tool input storage', () => {
       expect(await processedBody(f.serverEnv,{projectId:'proj_1'},'tool-input',largeId)).toBe(JSON.stringify(input));
       const [row]=(await listToolCalls(f.db,{projectId:'proj_1'},'s1')).rows;
       expect(new TextEncoder().encode(row.inputPreview!).byteLength).toBeLessThanOrEqual(2048);
-      expect(f.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:2});
+      expect(f.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:5});
     }finally{f.sqlite.close();}
   });
-  it('packs a bounded recent-input queue page forward through one session', async () => {
+  it('drains recent-input queue identities while preserving published singletons', async () => {
     const f = fixture();
     try {
       f.sqlite.query('UPDATE storage_cleanup_state SET phase=4,complete=1 WHERE id=1').run();
@@ -78,15 +78,15 @@ describe('tool input storage', () => {
       const bundles = f.sqlite.query('SELECT COUNT(*) AS n,MAX(entry_count) AS largest FROM archive_bundles').get() as {
         n: number; largest: number;
       };
-      expect(bundles.n).toBeLessThan(10);
-      expect(bundles.largest).toBeGreaterThan(2);
+      expect(bundles.n).toBe(20);
+      expect(bundles.largest).toBe(1);
       for (const [id, input] of originals) {
         expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).toBe(input);
       }
     } finally { f.sqlite.close(); }
   });
 
-  it('keeps an independent transcript proof and shared blob generation when singleton bundles are compacted', async () => {
+  it('keeps independent transcript and archive proofs when existing singletons are queued', async () => {
     const f = fixture();
     try {
       const first = uuid(580);
@@ -128,10 +128,11 @@ describe('tool input storage', () => {
         await storageCleanup(f.serverEnv, NOW);
       }
       expect(await storageCleanupPending(f.db)).toBe(false);
-      expect(f.sqlite.query('SELECT id FROM archive_bundles WHERE id=?').get(old.id)).toBeNull();
+      expect(f.sqlite.query('SELECT id FROM archive_bundles WHERE id=?').get(old.id)).toEqual({id:old.id});
       expect(f.sqlite.query(`SELECT source_kind,source_id,generation FROM registered_content_proofs
-        WHERE project_id='proj_1' AND key=?`).all(old.archive_key))
-        .toEqual([{ source_kind: 'transcript', source_id: `${transcriptId}:0`, generation: old.generation }]);
+        WHERE project_id='proj_1' AND key=? ORDER BY source_kind`).all(old.archive_key))
+        .toEqual([{source_kind:'bundle',source_id:old.archive_key,generation:old.generation},
+          { source_kind: 'transcript', source_id: `${transcriptId}:0`, generation: old.generation }]);
       for (let pass = 0; pass < 10; pass++) await drainObjectReleases(f.serverEnv, NOW);
       expect(f.sqlite.query(`SELECT generation FROM blobs WHERE project_id='proj_1' AND key=?`).get(old.archive_key))
         .toEqual({ generation: old.generation });
@@ -147,7 +148,7 @@ describe('tool input storage', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('combines captured inputs into bounded session bundles and journals replaced objects',async()=>{
+  it('keeps captured input bundles and publication evidence intact through cleanup',async()=>{
     const f=fixture();
     try{
       const originals=new Map<string,string>();
@@ -166,7 +167,7 @@ describe('tool input storage', () => {
       }
       expect(await storageCleanupPending(f.db)).toBe(false);
       const bundles=f.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get() as {n:number};
-      expect(bundles.n).toBeLessThan(10);
+      expect(bundles.n).toBe(20);
       expect(f.sqlite.query('SELECT COUNT(*) AS n FROM registered_content_proofs').get()).toEqual({n:bundles.n*2});
       for(let pass=0;pass<10;pass++)await drainObjectReleases(f.serverEnv,NOW);
       expect(f.sqlite.query('SELECT COUNT(*) AS n FROM blobs').get()).toEqual({n:bundles.n*2});
@@ -256,7 +257,7 @@ describe('tool input storage', () => {
       const id = uuid(210);
       const failureEvent = uuid(211);
       const successEvent = uuid(212);
-      const original = { text: 'é'.repeat(1500), file_path: '/repo/legacy.ts' };
+      const original = { text: 'é'.repeat(7000), file_path: '/repo/legacy.ts' };
       expect(await f.send(211, id, { text: 'small', file_path: original.file_path }, 'tool.failure'))
         .toEqual({ persisted: true, projected: true });
 
