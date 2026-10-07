@@ -166,7 +166,8 @@ describe('read/sessions', () => {
   });
 });
 
-import { INPUT_PREVIEW_CHARS, listPrompts, listToolCalls } from '@myco-server-worker/read/children.js';
+import { listPrompts, listToolCalls } from '@myco-server-worker/read/children.js';
+import { TOOL_INPUT_PREVIEW_BYTES } from '@myco-server-worker/core/tool-input.js';
 
 describe('read/children', () => {
   it('lists a session\'s prompts oldest first inside the scope', async () => {
@@ -184,8 +185,26 @@ describe('read/children', () => {
     sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, myco_tool, input, output_preview, success, error_message, duration_ms, created_at, token_id, received_at)
                 VALUES ('proj_1','s1','tc1','ev1','Write',NULL,?,'wrote it',0,'disk full',42,1,'t1',1)`, [input]);
     const { rows } = await listToolCalls(db, { projectId: 'proj_1' }, 's1');
-    expect(rows.map((r) => [r.toolName, r.success, r.errorMessage, r.durationMs, r.outputPreview, r.inputPreview?.length, r.inputBytes]))
-      .toEqual([['Write', false, 'disk full', 42, 'wrote it', INPUT_PREVIEW_CHARS, 190_000]]);
+    expect(rows.map((r) => [r.toolName, r.success, r.errorMessage, r.durationMs, r.outputPreview, r.inputPreview?.length, r.inputBytes, r.inputTruncated]))
+      .toEqual([['Write', false, 'disk full', 42, 'wrote it', TOOL_INPUT_PREVIEW_BYTES, 190_000, true]]);
+  });
+
+  it('reports original bytes and a complete-code-point preview across the UTF-8 boundary', async () => {
+    const { db, sqlite } = sqliteEnv();
+    for (const [id, input] of [
+      ['below', 'é'.repeat(1023)],
+      ['equal', 'é'.repeat(1024)],
+      ['above', `${'é'.repeat(1023)}🙂tail`],
+    ]) {
+      sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, tool_name, input, success, created_at, token_id, received_at)
+        VALUES ('proj_1', 's1', ?, ?, 'Read', ?, 1, 1, 't1', 1)`, [id, id, input]);
+    }
+    const rows = (await listToolCalls(db, { projectId: 'proj_1' }, 's1')).rows;
+    expect(rows.map((r) => [r.toolCallId, r.inputBytes, r.inputTruncated, r.inputPreview])).toEqual([
+      ['above', 2054, true, 'é'.repeat(1023)],
+      ['below', 2046, false, 'é'.repeat(1023)],
+      ['equal', 2048, false, 'é'.repeat(1024)],
+    ]);
   });
 
   it('pages tool calls and stops cleanly at the end', async () => {

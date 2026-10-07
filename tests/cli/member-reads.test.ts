@@ -193,7 +193,7 @@ describe('the retained read verbs in a joined project with no 1.4 vault', () => 
     expect(charged).toBeGreaterThan(0);
     expect(ran.stdout).toContain(`Schema:      expected ${SERVER_SCHEMA_VERSION}, found ${SERVER_SCHEMA_VERSION}\n`);
     expect(ran.stdout).toContain(`Stored:      ${bytes(charged)} by this machine\n`);
-    expect(ran.stdout).toContain('Transcripts: raw bytes kept forever (no retention set)\n');
+    expect(ran.stdout).toContain('Transcripts: raw bytes hot for 90 days; verified archives retained\n');
     expect(ran.stdout).not.toMatch(/quota|limit/i);
     expect(ran.stdout).toContain(`Blobs:       unavailable: ${NOT_MEASURED}`);
     expect(ran.stdout).toContain(`Database:    unavailable: ${NOT_MEASURED}`);

@@ -1,0 +1,136 @@
+import { PROJECT_ID_GRAMMAR } from './project-id.js';
+/** Exact archived content, durable publication evidence and bounded cleanup cursors. */
+export const V75_STATEMENTS: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_session_tombstones_created ON session_tombstones(created_at)`,
+  `ALTER TABLE events ADD COLUMN payload_format TEXT NOT NULL DEFAULT 'inline'`,
+  `ALTER TABLE events ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE tool_calls ADD COLUMN input_bytes INTEGER`,
+  `ALTER TABLE tool_calls ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE blob_reservations ADD COLUMN authority_kind TEXT NOT NULL DEFAULT 'member'`,
+  `ALTER TABLE blob_reservations ADD COLUMN source_kind TEXT`,
+  `ALTER TABLE blob_reservations ADD COLUMN source_id TEXT`,
+  `ALTER TABLE blob_reservations ADD COLUMN source_event_id TEXT`,
+  `ALTER TABLE blob_reservations ADD COLUMN source_envelope_hash TEXT`,
+  `ALTER TABLE blob_reservations ADD COLUMN source_session_id TEXT`,
+  `CREATE TABLE IF NOT EXISTS registered_content_proofs (
+    project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}), key TEXT NOT NULL, generation TEXT,
+    source_kind TEXT NOT NULL, source_id TEXT NOT NULL, event_id TEXT NOT NULL,
+    envelope_hash TEXT NOT NULL, session_id TEXT NOT NULL, digest TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size >= 0), verified_at INTEGER NOT NULL,
+    durable INTEGER NOT NULL CHECK(durable = 1),
+    PRIMARY KEY(project_id, source_kind, source_id, key))`,
+  `CREATE INDEX IF NOT EXISTS idx_registered_content_proofs_key ON registered_content_proofs (project_id, key)`,
+  `CREATE INDEX IF NOT EXISTS idx_registered_content_proofs_session ON registered_content_proofs (project_id, session_id)`,
+  `ALTER TABLE events ADD COLUMN bundle_id INTEGER`,
+  `ALTER TABLE events ADD COLUMN bundle_entry INTEGER`,
+  `ALTER TABLE events ADD COLUMN archived_ended_at`,
+  `ALTER TABLE events ADD COLUMN archived_title_only_end INTEGER`,
+  `ALTER TABLE events ADD COLUMN archived_prompt_origin`,
+  `ALTER TABLE tool_calls ADD COLUMN input_bundle_id INTEGER`,
+  `ALTER TABLE tool_calls ADD COLUMN input_bundle_entry INTEGER`,
+  `CREATE TABLE IF NOT EXISTS archive_bundles (
+    id INTEGER PRIMARY KEY, project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+    session_id TEXT NOT NULL, token_id TEXT NOT NULL, event_id TEXT NOT NULL, envelope_hash TEXT NOT NULL,
+    archive_key TEXT NOT NULL, receipt_key TEXT NOT NULL, digest TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size>=0), version INTEGER NOT NULL CHECK(version=1),
+    entry_count INTEGER NOT NULL CHECK(entry_count>0), UNIQUE(project_id,archive_key))`,
+  `CREATE INDEX IF NOT EXISTS idx_archive_bundles_session ON archive_bundles(project_id,session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_archive_bundles_archive ON archive_bundles(project_id,archive_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_archive_bundles_receipt ON archive_bundles(project_id,receipt_key)`,
+  `CREATE TABLE IF NOT EXISTS prepared_archive_bundles (
+    preparation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+    archive_key TEXT NOT NULL, receipt_key TEXT, expires_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_prepared_archive_bundles_expiry
+    ON prepared_archive_bundles(expires_at,preparation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_prepared_archive_bundles_archive
+    ON prepared_archive_bundles(project_id,archive_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_prepared_archive_bundles_receipt
+    ON prepared_archive_bundles(project_id,receipt_key) WHERE receipt_key IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS raw_event_archive_state (
+    id INTEGER PRIMARY KEY CHECK(id=1), cursor_project TEXT NOT NULL DEFAULT '',
+    cursor_session TEXT NOT NULL DEFAULT '',cursor_created INTEGER NOT NULL DEFAULT -1,
+    cursor_rowid INTEGER NOT NULL DEFAULT -1,revision INTEGER NOT NULL DEFAULT 0)`,
+  `INSERT OR IGNORE INTO raw_event_archive_state(id) VALUES(1)`,
+  `CREATE TABLE IF NOT EXISTS content_scan_checkpoints (
+    project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}), source_kind TEXT NOT NULL CHECK(source_kind IN ('event','tool-input')),
+    resource_id TEXT NOT NULL, session_id TEXT NOT NULL, event_id TEXT NOT NULL, token_id TEXT NOT NULL,
+    envelope_hash TEXT NOT NULL, content_revision INTEGER NOT NULL, bytes INTEGER NOT NULL CHECK(bytes >= 0),
+    scanned_bytes INTEGER NOT NULL CHECK(scanned_bytes >= 0 AND scanned_bytes <= bytes),
+    hash_state TEXT NOT NULL, preview_bytes TEXT NOT NULL, updated_at INTEGER NOT NULL,
+    PRIMARY KEY(project_id,source_kind,resource_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_content_scan_checkpoints_session ON content_scan_checkpoints (project_id, session_id)`,
+  `CREATE TABLE IF NOT EXISTS raw_archive_refs (
+    project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}), source_kind TEXT NOT NULL CHECK(source_kind='transcript'), source_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, archive_key TEXT, receipt_key TEXT, digest TEXT,
+    size INTEGER NOT NULL CHECK(size >= 0), version INTEGER NOT NULL DEFAULT 1,
+    received_at INTEGER NOT NULL, transcript_id TEXT, base_offset INTEGER, length INTEGER,
+    line_count INTEGER, created_at INTEGER, source_blob_key TEXT, token_id TEXT NOT NULL, raw_revision INTEGER NOT NULL DEFAULT 0,
+    source_generation TEXT, disposition TEXT NOT NULL DEFAULT 'hot' CHECK(disposition IN ('hot','archived')),
+    eligible_at INTEGER NOT NULL, PRIMARY KEY(project_id,source_kind,source_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_archive_refs_due ON raw_archive_refs (eligible_at, project_id, source_kind, source_id) WHERE disposition = 'hot'`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_archive_refs_archive ON raw_archive_refs (project_id, archive_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_archive_refs_receipt ON raw_archive_refs (project_id, receipt_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_archive_refs_session ON raw_archive_refs (project_id, session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_raw_archive_refs_transcript ON raw_archive_refs (project_id, transcript_id, base_offset)`,
+  `CREATE TABLE IF NOT EXISTS storage_cleanup_state (
+    id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL DEFAULT 1,
+    phase INTEGER NOT NULL DEFAULT 0, cursor_project TEXT NOT NULL DEFAULT '', cursor_id TEXT NOT NULL DEFAULT '',
+    cursor_session TEXT NOT NULL DEFAULT '',cursor_created INTEGER NOT NULL DEFAULT -1,
+    cursor_rowid INTEGER NOT NULL DEFAULT -1,
+    revision INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
+    converted_rows INTEGER NOT NULL DEFAULT 0, cleared_bytes INTEGER NOT NULL DEFAULT 0,metadata_added_bytes INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0, failure TEXT)`,
+  `INSERT OR IGNORE INTO storage_cleanup_state(id) VALUES(1)`,
+  `CREATE TABLE IF NOT EXISTS storage_cleanup_queue (
+    project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}), resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, PRIMARY KEY(project_id,resource_kind,resource_id))`,
+  `CREATE INDEX IF NOT EXISTS idx_storage_cleanup_queue_session ON storage_cleanup_queue (project_id, session_id)`,
+  `CREATE TABLE IF NOT EXISTS storage_cleanup_omissions (
+    project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}), resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL,
+    reason TEXT NOT NULL, observed_at INTEGER NOT NULL, PRIMARY KEY(project_id,resource_kind,resource_id))`,
+  `CREATE TABLE IF NOT EXISTS raw_archive_state (
+    id INTEGER PRIMARY KEY CHECK(id=1), phase INTEGER NOT NULL DEFAULT 0,
+    cursor_project TEXT NOT NULL DEFAULT '', cursor_id TEXT NOT NULL DEFAULT '',
+    cursor_offset INTEGER NOT NULL DEFAULT -1, due_received INTEGER NOT NULL DEFAULT -1, due_kind TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 0)`,
+  `INSERT OR IGNORE INTO raw_archive_state(id) VALUES(1)`,
+  `CREATE TABLE IF NOT EXISTS orphan_sweep_state (
+    id INTEGER PRIMARY KEY CHECK(id=1), cursor_project TEXT NOT NULL DEFAULT '',
+    cursor_key TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0)`,
+  `INSERT OR IGNORE INTO orphan_sweep_state(id) VALUES(1)`,
+  `CREATE TABLE IF NOT EXISTS storage_content_guard (ok INTEGER NOT NULL CHECK(ok=1))`,
+  `CREATE TRIGGER IF NOT EXISTS events_content_revision AFTER UPDATE OF payload,payload_format ON events
+    WHEN NEW.payload IS NOT OLD.payload OR NEW.payload_format IS NOT OLD.payload_format BEGIN
+      UPDATE events SET content_revision = OLD.content_revision + 1
+        WHERE project_id=NEW.project_id AND event_id=NEW.event_id; END`,
+  `CREATE TRIGGER IF NOT EXISTS tool_calls_content_revision AFTER UPDATE OF input,input_blob_key ON tool_calls
+    WHEN NEW.input IS NOT OLD.input OR NEW.input_blob_key IS NOT OLD.input_blob_key BEGIN
+      UPDATE tool_calls SET content_revision = OLD.content_revision + 1
+        WHERE project_id = NEW.project_id AND tool_call_id = NEW.tool_call_id; END`,
+  `CREATE TRIGGER IF NOT EXISTS events_cleanup_queue AFTER INSERT ON events
+    WHEN NEW.payload_format = 'inline' AND (NEW.producer_adapter = 'transcript-parse' OR NEW.channel = 'import')
+      AND NEW.kind IN ('prompt','response','tool.use','tool.failure','plan.snapshot') BEGIN
+    INSERT INTO storage_cleanup_queue(project_id,resource_kind,resource_id,session_id)
+      VALUES(NEW.project_id,'event',NEW.event_id,NEW.session_id) ON CONFLICT DO NOTHING; END`,
+  `CREATE TRIGGER IF NOT EXISTS tool_calls_cleanup_queue AFTER INSERT ON tool_calls
+    WHEN NEW.input IS NOT NULL AND length(CAST(NEW.input AS BLOB)) > 2048 AND NEW.input_blob_key IS NULL BEGIN
+    INSERT INTO storage_cleanup_queue(project_id,resource_kind,resource_id,session_id)
+      VALUES(NEW.project_id,'tool-input',NEW.tool_call_id,NEW.session_id) ON CONFLICT DO NOTHING; END`,
+  `CREATE TRIGGER IF NOT EXISTS tool_calls_bundle_cleanup_queue AFTER UPDATE OF input_bundle_id ON tool_calls
+    WHEN NEW.input_bundle_id IS NOT NULL AND EXISTS(SELECT 1 FROM archive_bundles a WHERE a.id=NEW.input_bundle_id AND a.entry_count=1) BEGIN
+      INSERT INTO storage_cleanup_queue(project_id,resource_kind,resource_id,session_id)
+        VALUES(NEW.project_id,'tool-input',NEW.tool_call_id,NEW.session_id) ON CONFLICT DO NOTHING; END`,
+  `CREATE TRIGGER IF NOT EXISTS transcript_segments_raw_archive_queue AFTER INSERT ON transcript_segments BEGIN
+    INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,received_at,transcript_id,base_offset,length,line_count,created_at,source_blob_key,token_id,source_generation,eligible_at)
+      SELECT NEW.project_id,'transcript',NEW.transcript_id || ':' || NEW.base_offset,t.session_id,NEW.length,
+        NEW.received_at,NEW.transcript_id,NEW.base_offset,NEW.length,NULL,NEW.created_at,NEW.blob_key,t.token_id,b.generation,NEW.received_at
+        FROM transcripts t JOIN blobs b ON b.project_id=NEW.project_id AND b.key=NEW.blob_key
+        WHERE t.project_id=NEW.project_id AND t.transcript_id=NEW.transcript_id ON CONFLICT DO NOTHING; END`,
+  `CREATE TRIGGER IF NOT EXISTS transcripts_raw_archive_first AFTER INSERT ON transcripts BEGIN
+    INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,received_at,transcript_id,base_offset,length,created_at,source_blob_key,token_id,source_generation,eligible_at)
+      SELECT s.project_id,'transcript',s.transcript_id || ':' || s.base_offset,NEW.session_id,s.length,s.received_at,
+        s.transcript_id,s.base_offset,s.length,s.created_at,s.blob_key,s.token_id,b.generation,s.received_at
+        FROM transcript_segments s JOIN blobs b ON b.project_id=s.project_id AND b.key=s.blob_key
+        WHERE s.project_id=NEW.project_id AND s.transcript_id=NEW.transcript_id
+        ORDER BY s.base_offset DESC LIMIT 1; END`,
+];

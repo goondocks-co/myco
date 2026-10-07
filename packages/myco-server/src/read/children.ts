@@ -4,6 +4,7 @@ import { notTombstonedSql } from '../core/tombstones.js';
 import { titleRunInFlightSql } from '../core/runs.js';
 import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 import { progressOf } from './plans.js';
+import { TOOL_INPUT_PREVIEW_BYTES, toolInputPreview } from '../core/tool-input.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
@@ -68,13 +69,12 @@ export async function listChildrenByPrompt<T>(db: RelationalStore, query: ChildQ
 }
 
 export interface PromptRow { promptId: string; text: string | null; blobKey: string | null; origin: string; promptKind: string | null; parentPromptId: string | null; threadLabel: string | null; createdAt: number; orderedAt: number }
-/** A tool call and how it went. `inputPreview` is the first `INPUT_PREVIEW_CHARS` of the input and `inputBytes` its full length: an input can be a whole file, and a page of them is not. */
+/** A tool call and how it went. `inputPreview` is a bounded UTF-8 display prefix and `inputBytes` is the complete input size. */
 export interface ToolCallRow {
   toolCallId: string; promptId: string | null; toolName: string; mycoTool: string | null; mycoOp: string | null;
-  inputPreview: string | null; inputBytes: number | null; inputBlobKey: string | null; outputPreview: string | null; outputBlobKey: string | null;
+  inputPreview: string | null; inputBytes: number | null; inputTruncated: boolean; inputBlobKey: string | null; outputPreview: string | null; outputBlobKey: string | null;
   success: boolean; errorMessage: string | null; durationMs: number | null; filesAffected: string | null; createdAt: number; orderedAt: number;
 }
-export const INPUT_PREVIEW_CHARS = 2048;
 export interface ResponseRow { responseId: string; promptId: string | null; text: string | null; blobKey: string | null; createdAt: number; orderedAt: number }
 /** `planKey` is the plan's identity in this table (its primary key), not a session-scoped id. `createdAt` is the plan's first capture; `orderedAt` carries the `updated_at` this listing pages over. */
 export interface PlanRow { planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null; originPath: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number }
@@ -98,17 +98,24 @@ export const PROMPT_QUERY: ChildQuery<Omit<PromptRow, 'orderedAt'>> = {
 
 export const TOOL_CALL_QUERY: ChildQuery<Omit<ToolCallRow, 'orderedAt'>> = {
   table: 'tool_calls',
-  columns: `tool_call_id, prompt_id, tool_name, myco_tool, myco_op, substr(input, 1, ${INPUT_PREVIEW_CHARS}) AS input_preview, length(input) AS input_bytes,
+  columns: `tool_call_id, prompt_id, tool_name, myco_tool, myco_op, substr(input, 1, ${TOOL_INPUT_PREVIEW_BYTES}) AS input_preview,
+    COALESCE(input_bytes, length(CAST(input AS BLOB)), (SELECT b.size FROM blobs b WHERE b.project_id = tool_calls.project_id AND b.key = tool_calls.input_blob_key)) AS input_bytes,
     input_blob_key, output_preview, output_blob_key, success, error_message, duration_ms, files_affected, created_at`,
   idColumn: 'tool_call_id', orderColumn: 'created_at',
-  map: (r) => ({
-    createdAt: r.created_at as number, toolCallId: r.tool_call_id as string, promptId: (r.prompt_id as string | null) ?? null, toolName: r.tool_name as string,
-    mycoTool: (r.myco_tool as string | null) ?? null, mycoOp: (r.myco_op as string | null) ?? null,
-    inputPreview: (r.input_preview as string | null) ?? null, inputBytes: (r.input_bytes as number | null) ?? null, inputBlobKey: (r.input_blob_key as string | null) ?? null,
-    outputPreview: (r.output_preview as string | null) ?? null, outputBlobKey: (r.output_blob_key as string | null) ?? null,
-    success: Number(r.success) === 1, errorMessage: (r.error_message as string | null) ?? null, durationMs: (r.duration_ms as number | null) ?? null,
-    filesAffected: (r.files_affected as string | null) ?? null,
-  }),
+  map: (r) => {
+    const preview = r.input_preview === null ? null : toolInputPreview(r.input_preview as string);
+    const inputBytes = (r.input_bytes as number | null) ?? null;
+    return {
+      createdAt: r.created_at as number, toolCallId: r.tool_call_id as string, promptId: (r.prompt_id as string | null) ?? null, toolName: r.tool_name as string,
+      mycoTool: (r.myco_tool as string | null) ?? null, mycoOp: (r.myco_op as string | null) ?? null,
+      inputPreview: preview?.preview ?? null, inputBytes,
+      inputTruncated: inputBytes !== null && inputBytes > (preview?.previewBytes ?? 0),
+      inputBlobKey: (r.input_blob_key as string | null) ?? null,
+      outputPreview: (r.output_preview as string | null) ?? null, outputBlobKey: (r.output_blob_key as string | null) ?? null,
+      success: Number(r.success) === 1, errorMessage: (r.error_message as string | null) ?? null, durationMs: (r.duration_ms as number | null) ?? null,
+      filesAffected: (r.files_affected as string | null) ?? null,
+    };
+  },
 };
 
 export const RESPONSE_QUERY: ChildQuery<Omit<ResponseRow, 'orderedAt'>> = {

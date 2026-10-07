@@ -52,7 +52,7 @@ export const memberStatus: ParityScenario = {
     expect(health.target).toBe(target.name === 'cloudflare' ? 'cloudflare' : 'bun');
     expect(health.schema).toEqual({ expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true });
     expect(health.stored).toEqual({ state: 'measured', value: await stored(), unit: 'bytes' });
-    expect(health.retention).toEqual({ transcripts: { state: 'forever', configured: false } });
+    expect(health.retention).toEqual({ transcripts: { state: 'days', days: 90, configured: false, compatibility: 'default' } });
     const named = (name: string) => health.storage.find((m) => m.name === name);
     expect(health.storage.slice(0, 2).map((m) => m.name)).toEqual(['blob_bytes', 'size']);
     expect(named('blob_bytes')).toEqual({ name: 'blob_bytes', state: 'measured', value: await blobs(), unit: 'bytes', measuredAt: recorded.finishedAt });

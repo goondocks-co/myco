@@ -9,6 +9,7 @@ import {
 import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
 import { backupRetentionPolicy } from '@myco-server-worker/core/backup-retention.js';
 import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { blobPost, count, journaled, memberHeaders, registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { legacyBlob, registerBlob } from './helpers/d1.js';
 
@@ -24,6 +25,8 @@ type Env = ReturnType<typeof sqliteEnv>;
 const P = 'proj_1';
 const bytes = utf8('lifecycle bytes');
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
+const recentTombstone = (e: Env, now: number) => e.sqlite.query(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
+  VALUES(?,'deleted',?,'fixture')`).run(P, now);
 
 /** Deletes the drain issues whose answers are lost: each throws to its caller, and lands only when `land` runs. */
 function losingDeletes(e: Env) {
@@ -73,6 +76,36 @@ function unnamed(e: Env): string[] {
 const release = async (e: Env, key: string) => releaseBlobs(e.db, [{ projectId: P, key }], Date.now());
 
 describe('the object lifecycle under late store operations', () => {
+  it('remaps restored content proofs and hot transcript source evidence with their blob', async () => {
+    const e = sqliteEnv();
+    try {
+      const key = await sha256HexOf(bytes);
+      registerBlob(e.sqlite, { projectId: P, key, size: bytes.byteLength, tokenId: 't' });
+      const initial = e.sqlite.query('SELECT generation FROM blobs WHERE project_id=? AND key=?')
+        .get(P,key) as { generation: string };
+      e.sqlite.query(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,
+        event_id,envelope_hash,session_id,digest,size,verified_at,durable)
+        VALUES(?,?,?,'transcript','segment','event','envelope','session',?,?,1,1)`)
+        .run(P,key,initial.generation,key,bytes.byteLength);
+      e.sqlite.query(`INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,
+        received_at,source_blob_key,token_id,source_generation,eligible_at)
+        VALUES(?,'transcript','segment','session',?,1,?,'t',?,1)`)
+        .run(P,bytes.byteLength,key,initial.generation);
+      const restored = crypto.randomUUID();
+      await assignRestoreGeneration(e.db,restored);
+      expect(e.sqlite.query('SELECT generation FROM blobs WHERE project_id=? AND key=?').get(P,key))
+        .toEqual({ generation: restored });
+      expect(e.sqlite.query('SELECT generation FROM registered_content_proofs WHERE project_id=? AND key=?').get(P,key))
+        .toEqual({ generation: restored });
+      expect(e.sqlite.query('SELECT source_generation FROM raw_archive_refs WHERE project_id=? AND source_id=?').get(P,'segment'))
+        .toEqual({ source_generation: restored });
+      e.sqlite.query(`UPDATE raw_archive_refs SET source_generation='stale' WHERE project_id=? AND source_id=?`).run(P,'segment');
+      await expect(assignRestoreGeneration(e.db,crypto.randomUUID())).rejects.toThrow();
+      expect(e.sqlite.query('SELECT generation FROM blobs WHERE project_id=? AND key=?').get(P,key))
+        .toEqual({ generation: restored });
+    } finally { e.sqlite.close(); }
+  });
+
   it('S1: a delete answered too late for its drainer, landing after the same content is registered again, removes nothing registered', async () => {
     const e = sqliteEnv();
     const t = await member(e);
@@ -316,7 +349,7 @@ describe('upload authority is the only way bytes become registered', () => {
 });
 
 describe('a recovery hold keeps what a release would take, and a decision after it follows the rows and the policy as they stand', () => {
-  const orphan = (e: Env, seed: number) => registerBlob(e.sqlite, { projectId: P, key: String(seed).padStart(64, '0'), size: 1 });
+  const orphan = (e: Env, seed: number) => registerBlob(e.sqlite, { projectId: P, key: String(seed).padStart(64, '0'), size: 1, receivedAt: 2 - BLOB_RESERVATION_TTL_MS });
   const drainAll = async (e: Env, now: number) => {
     for (let pass = 0; pass < 64 && (count(e.sqlite, 'blob_release_candidates') + count(e.sqlite, 'backup_release_candidates') + count(e.sqlite, 'object_releases')) > 0; pass += 1) {
       await drainObjectReleases(e.serverEnv, now);
@@ -325,6 +358,7 @@ describe('a recovery hold keeps what a release would take, and a decision after 
 
   it('advances the orphan sweep past every page a hold keeps, and releases all of them after the hold', async () => {
     const e = sqliteEnv();
+    recentTombstone(e, 2);
     const total = TRANSCRIPT_RETENTION_BLOBS_PER_PASS * 3;
     for (let seed = 0; seed < total; seed += 1) orphan(e, seed);
     expect(await acquireRecoveryHold(e.db, 'hold-1', 1)).toBe(true);
@@ -449,7 +483,9 @@ describe('the schema fence and rows from before it', () => {
     const e = sqliteEnv({ beforeStep42: (db) => legacyBlob(db, { projectId: P, key: legacyKey, size: 6 }) });
     e.bucket.seed(`${P}/${legacyKey}`, { size: 6, bytes: utf8('legacy') });
     expect(registeredObject(e.sqlite, P, legacyKey)).toBe(`${P}/${legacyKey}`);
-    expect(await freeOrphanedBlobs(e.serverEnv, Date.now())).toBe(1);
+    const now = Date.now();
+    recentTombstone(e, now);
+    expect(await freeOrphanedBlobs(e.serverEnv, now)).toBe(1);
     expect(journaled(e.sqlite)).toEqual([`${P}/${legacyKey}`]);
     await drain(e);
     expect([count(e.sqlite, 'blobs'), e.bucket.objects.has(`${P}/${legacyKey}`)]).toEqual([0, false]);

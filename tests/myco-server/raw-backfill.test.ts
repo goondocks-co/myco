@@ -24,7 +24,7 @@ const count = (sqlite: Database, table: string): number => (sqlite.query(`SELECT
 const fingerprint = async (sqlite: Database, table: string): Promise<string> => {
   const rows = sqlite.query(`SELECT * FROM ${table} ORDER BY rowid`).all().map((row) => {
     if (table !== 'events') return row;
-    const { raw_revision: _revision, ...original } = row as Record<string, unknown>;
+    const { raw_revision: _revision,payload_format: _format,content_revision: _contentRevision, ...original } = row as Record<string, unknown>;
     return original;
   });
   return sha256Hex(JSON.stringify(rows));
@@ -151,12 +151,13 @@ describe('bounded raw provenance backfill correction gates', () => {
       expect(count(sqlite, 'events')).toBe(HISTORICAL_EVENTS + HISTORICAL_PLANS);
       const current = sqlite.query(`SELECT complete FROM raw_provenance_backfill WHERE id = 1`).get();
       expect(current).toEqual({ complete: 0 });
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
       const reader = new RawResourceReader({ db: sqliteD1(sqlite), blobs: memoryBlobStore() }, { projectId: BACKFILL_PROJECTS[0] }, { kind: 'member', memberId: 'member_backfill' });
       expect(await reader.allows({ kind: 'blob', id: '0'.repeat(64) }, 'read')).toBe(false);
       expect(await reader.allows({ kind: 'transcript', id: 'retained' }, 'read')).toBe(false);
       expect(await reader.event('raw-event-00000')).toBeNull();
       const after = sqlite.query(`SELECT * FROM events ORDER BY rowid`).all().map((row) => {
-        const { raw_revision: _revision, ...original } = row as Record<string, unknown>;
+        const { raw_revision: _revision,payload_format: _format,content_revision: _contentRevision, ...original } = row as Record<string, unknown>;
         return original;
       });
       expect(await sha256Hex(JSON.stringify(after))).toBe(before);
@@ -208,6 +209,7 @@ describe('bounded raw provenance backfill correction gates', () => {
       expect(sqlite.query(`SELECT COUNT(*) AS n FROM raw_resources WHERE kind = 'event'`).get()).toEqual({ n: 0 });
       for (const original of originals) expect(await fingerprint(sqlite, original.table)).toBe(original.hash);
       expect(await rawBackfill(sqliteD1(sqlite), NOW + MAX_PASSES)).toEqual({ changed: 0, more: false });
+      for(const step of SCHEMA_STEPS.filter(step=>step.version>71)) for(const statement of step.statements) sqlite.exec(statement);
       const reader = new RawResourceReader({ db: sqliteD1(sqlite), blobs: memoryBlobStore() }, { projectId: BACKFILL_PROJECTS[0] }, { kind: 'member', memberId: 'member_backfill' });
       expect(await reader.allows({ kind: 'transcript', id: 'retained' }, 'read')).toBe(true);
       for (const id of ['mixed', 'unknown', 'conflicting']) expect(await reader.allows({ kind: 'transcript', id }, 'read')).toBe(false);

@@ -475,7 +475,7 @@ function settleReceiptTimes(databasePath: string, liveSessionId: string, now: nu
     const tables = sqlite.query(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>;
     for (const { name } of tables) {
       const columns = new Set((sqlite.query(`SELECT name FROM pragma_table_info(?)`).all(name) as Array<{ name: string }>).map((c) => c.name));
-      if (columns.has('received_at') && columns.has('created_at')) sqlite.exec(`UPDATE "${name}" SET received_at = created_at`);
+      if (columns.has('received_at') && columns.has('created_at')) sqlite.exec(`UPDATE "${name}" SET received_at = created_at WHERE created_at IS NOT NULL`);
     }
     sqlite.exec(`UPDATE sessions SET
       first_received_at = COALESCE((SELECT MIN(e.created_at) FROM events e WHERE e.project_id = sessions.project_id AND e.session_id = sessions.session_id), first_received_at),

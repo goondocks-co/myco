@@ -310,6 +310,8 @@ const SOLO_NODE_FILES = [
   'tests/agent/phase-loop.test.ts',
   'tests/agent/tools-dry-run.test.ts',
   'tests/agent/tools-skills.test.ts',
+  // The RSS fixture runs from a fresh launcher process.
+  'tests/server/cloudflare-backup-streaming.test.ts',
   // This file spies on fs.fsyncSync to force publication races. The spy is
   // process-global and cannot overlap unrelated durable-write tests.
   'tests/config/secrets-relocate-legacy-project.test.ts',

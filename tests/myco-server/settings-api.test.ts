@@ -41,6 +41,45 @@ const patch = asOwnerPatch;
 const json = async (r: Response) => (await r.json()) as Record<string, unknown>;
 
 describe('settings API', () => {
+  it('converges finite legacy raw retention writes on the canonical leaf and records the alias reset', async () => {
+    const e = env();
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('retention.transcripts','30',1,'historic')`);
+    const written = await worker.fetch(await put('/api/settings/retention.transcripts', { value: 45 }), e.all);
+    expect({ status: written.status, body: await json(written) }).toEqual({ status: 200, body: { applied: true } });
+    expect(e.sqlite.query(`SELECT leaf,value,updated_by FROM deployment_settings WHERE leaf LIKE 'retention.%' ORDER BY leaf`).all())
+      .toEqual([{ leaf: 'retention.raw_days', value: '45', updated_by: 'mem_machine_1' }]);
+    expect(e.sqlite.query(`SELECT leaf,reset_by FROM deployment_setting_resets WHERE leaf='retention.transcripts'`).get())
+      .toEqual({ leaf: 'retention.transcripts', reset_by: 'mem_machine_1' });
+    const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(leaves.find((row) => row.leaf === 'retention.raw_days')).toMatchObject({ configured: true, effective: 45, updatedBy: 'mem_machine_1' });
+    expect(leaves.find((row) => row.leaf === 'retention.transcripts')).toMatchObject({ configured: false, effective: 45 });
+  });
+
+  it('keeps an explicit legacy zero as an archival hold until a finite canonical choice, and resets both leaves', async () => {
+    const e = env();
+    expect(await json(await worker.fetch(await put('/api/settings/retention.transcripts', { value: 0 }), e.all))).toEqual({ applied: true });
+    expect(e.sqlite.query(`SELECT leaf,value FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all())
+      .toEqual([{ leaf: 'retention.transcripts', value: '0' }]);
+    const held = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(held.find((row) => row.leaf === 'retention.raw_days')).toMatchObject({ effective: null, reason: expect.stringContaining('finite') });
+    const invalid = await worker.fetch(await put('/api/settings/retention.raw_days', { value: 0 }), e.all);
+    expect({ status: invalid.status, body: await json(invalid) }).toMatchObject({ status: 400, body: { applied: false, reason: 'invalid_value' } });
+    expect(e.sqlite.query(`SELECT leaf,value FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all())
+      .toEqual([{ leaf: 'retention.transcripts', value: '0' }]);
+    expect(await json(await worker.fetch(await put('/api/settings/retention.raw_days', { value: 60 }), e.all))).toEqual({ applied: true });
+    expect(e.sqlite.query(`SELECT leaf,value FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all())
+      .toEqual([{ leaf: 'retention.raw_days', value: '60' }]);
+    expect(await json(await worker.fetch(await remove('/api/settings/retention.raw_days'), e.all))).toEqual({ applied: true });
+    expect(e.sqlite.query(`SELECT leaf FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all()).toEqual([]);
+    const resetLeaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(resetLeaves.find((row) => row.leaf === 'retention.raw_days')).toMatchObject({ configured: false, effective: 90 });
+    expect(e.sqlite.query(`SELECT leaf,reset_by FROM deployment_setting_resets WHERE leaf LIKE 'retention.%' ORDER BY leaf`).all())
+      .toEqual([
+        { leaf: 'retention.raw_days', reset_by: 'mem_machine_1' },
+        { leaf: 'retention.transcripts', reset_by: 'mem_machine_1' },
+      ]);
+  });
+
   it('shows a bad stored task tier and its repair on owner and member Settings reads', async () => {
     const e = env();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'mem_machine_1')`, [
@@ -417,6 +456,7 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
       const row = leaves.find((l) => l.leaf === leaf)!;
       if (RETIRED_LEAVES.has(leaf)) { expect(row).toMatchObject({ configured: false, retired: true }); continue; }
       if (NOT_HOSTED.has(leaf)) { expect(row).toMatchObject({ configured: false }); continue; }
+      if (leaf === 'retention.transcripts') { expect(row).toMatchObject({ configured: false, effective: sampleFor('retention.raw_days') }); continue; }
       expect({ leaf, value: row.value, updatedBy: row.updatedBy, updatedAt: typeof row.updatedAt }).toEqual({ leaf, value: sampleFor(leaf), updatedBy: 'mem_machine_1', updatedAt: 'number' });
     }
   });
@@ -479,4 +519,22 @@ it('repairs stale task fields through the authenticated Settings operation and p
   const saved = e.sqlite.query(`SELECT value, updated_by FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string; updated_by: string };
   expect(JSON.parse(saved.value)).toEqual({ 'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' } });
   expect(saved.updated_by).toBe('mem_machine_1');
+});
+
+it.each(['revoked','demoted'] as const)('refuses a raw-window edit when its actor is %s at commit and preserves legacy policy',async fault=>{
+  let armed=false;
+  const f=sqliteEnv({onSql(sql,sqlite){
+    if(!armed || !sql.includes('INSERT INTO deployment_settings'))return;
+    armed=false;
+    sqlite.run(fault==='revoked'?"UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'":"UPDATE members SET role='member' WHERE id='mem_machine_1'");
+  }});
+  try{
+    f.sqlite.run("INSERT INTO deployment_settings VALUES('retention.transcripts','30',1,'historic')");
+    armed=true;
+    const response=await worker.fetch(await put('/api/settings/retention.raw_days',{value:90}),{...f.env,...OWNER_ENV});
+    expect(response.status).toBe(403);
+    expect(armed).toBe(false);
+    expect(f.sqlite.query('SELECT leaf,value FROM deployment_settings').all()).toEqual([{leaf:'retention.transcripts',value:'30'}]);
+    expect(f.sqlite.query('SELECT * FROM deployment_setting_resets').all()).toEqual([]);
+  }finally{f.sqlite.close();}
 });

@@ -10,7 +10,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, asOwner, asOwnerPost, ownerCookie } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
@@ -30,14 +30,21 @@ const HOUR = 3_600_000;
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
+function seedVolume(file: string): void {
+  const seed = seededSqlite();
+  try { fs.writeFileSync(file, seed.serialize()); }
+  finally { seed.close(); }
+}
+
 /** A migrated Deployment database in a file of its own, in WAL mode as the self-hosted target opens it. */
 function volume(): { sqlite: Database; file: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-'));
   dirs.push(dir);
   const file = path.join(dir, 'myco.db');
+  seedVolume(file);
   const sqlite = new Database(file, { create: true });
   sqlite.exec('PRAGMA journal_mode = WAL');
-  migrateAndSeed(sqlite);
+  sqlite.exec('PRAGMA foreign_keys = ON');
   return { sqlite, file };
 }
 
@@ -391,9 +398,7 @@ it('on the self-hosted target, close() waits for a handed-off check and records 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-close-'));
   dirs.push(dir);
   const databasePath = path.join(dir, 'myco.db');
-  const seed = new Database(databasePath, { create: true });
-  migrateAndSeed(seed);
-  seed.close();
+  seedVolume(databasePath);
   const handler = await createBunHandler({ databasePath, blobDir: path.join(dir, 'blobs'), header: 'x-forwarded-for', wakeLoop: false });
   const pending = pendingIntegrity();
   handler.env.storeMaintenance = pending.port;
@@ -415,9 +420,7 @@ it('on the self-hosted target, an owner\'s run is answered at once with its runn
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-maintenance-owner-'));
   dirs.push(dir);
   const databasePath = path.join(dir, 'myco.db');
-  const seed = new Database(databasePath, { create: true });
-  migrateAndSeed(seed);
-  seed.close();
+  seedVolume(databasePath);
   const handler = await createBunHandler({ databasePath, blobDir: path.join(dir, 'blobs'), header: 'x-forwarded-for', wakeLoop: false, ...OWNER_ENV });
   const pending = pendingIntegrity();
   handler.env.storeMaintenance = pending.port;

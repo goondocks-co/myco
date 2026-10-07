@@ -18,18 +18,7 @@ import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/b
 import { deploymentSecretStore } from '../../packages/myco-server/src/core/secrets.js';
 import { wrappingKeyFromText } from '../../packages/myco-server/src/platform/wrapping-key.js';
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
-
-/** Rewrites a current snapshot as a schema-41 Deployment captured it: no object lifecycle, no generation column. */
-function asSchema41(file: string): void {
-  const db = new Database(file);
-  try {
-    for (const trigger of ['blobs_require_generation', 'blobs_release_through_journal']) db.run(`DROP TRIGGER ${trigger}`);
-    for (const table of ['object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard']) db.run(`DROP TABLE ${table}`);
-    db.run('DROP INDEX idx_blob_reservations_expiry');
-    db.run('ALTER TABLE blobs DROP COLUMN generation');
-    db.run("UPDATE schema_meta SET value = '41' WHERE key = 'version'");
-  } finally { db.close(); }
-}
+import { asSchema41 } from './legacy-recovery-fixture.js';
 
 async function fixture(failVectorRead = false, { legacy = false } = {}) {
   const reports: string[] = [];

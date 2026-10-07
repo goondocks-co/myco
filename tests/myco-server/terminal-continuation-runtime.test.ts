@@ -7,7 +7,7 @@ import { terminalContinuationRuntime } from './helpers/terminal-continuation-run
 describe('terminal continuation runtime parity', () => {
   it('native SQLite: terminal wakes record calls and late results upgrade the same row', async () => {
     const source = sqliteEnv();
-    try { expect(await terminalContinuationRuntime(source.db, source.bucket)).toHaveLength(18); }
+    try { expect(await terminalContinuationRuntime(source.db, source.bucket)).toHaveLength(19); }
     finally { source.sqlite.close(); }
   });
   it('D1 workerd: terminal wakes record calls and late results upgrade the same row', async () => {
@@ -25,7 +25,7 @@ describe('terminal continuation runtime parity', () => {
       const response = await mf.dispatchFetch('http://terminal/');
       const answer = await response.json();
       expect({ status: response.status, answer: response.status === 200 ? undefined : answer }).toEqual({ status: 200, answer: undefined });
-      expect(answer).toHaveLength(18);
+      expect(answer).toHaveLength(19);
     } finally { await mf.dispose(); }
   }, 60_000);
 });

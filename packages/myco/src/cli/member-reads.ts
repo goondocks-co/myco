@@ -210,7 +210,7 @@ const healthLine = (label: string, value: string): string => `${`${label}:`.padE
 /** The transcript retention window as a line reads it; a state this CLI does not know is named rather than guessed at. */
 const retentionWords = (r: { state: string; days?: number; configured?: boolean; reason?: string }): string => {
   if (r.state === 'forever') return `raw bytes kept forever (${r.configured === true ? 'retention set to 0' : 'no retention set'})`;
-  if (r.state === 'days' && typeof r.days === 'number') return `raw bytes kept ${r.days} day${r.days === 1 ? '' : 's'} after processing`;
+  if (r.state === 'days' && typeof r.days === 'number') return `raw bytes hot for ${r.days} day${r.days === 1 ? '' : 's'}; verified archives retained`;
   if (r.state === 'unavailable') return `unavailable: ${r.reason ?? 'no reason given'}`;
   return `not understood by this CLI (state ${JSON.stringify(r.state)}); update it`;
 };

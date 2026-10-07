@@ -1,5 +1,7 @@
 import { expect } from 'bun:test';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
+import { TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
@@ -56,7 +58,7 @@ export const toolBlobRetention: ParityScenario = {
     // A row no object and no row names: what a deletion that hit its bound leaves for the sweep.
     const orphan = '5'.repeat(64);
     await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
-      SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp}, ${lit(crypto.randomUUID())} FROM member_credentials ORDER BY issued_at LIMIT 1`);
+      SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp - BLOB_RESERVATION_TTL_MS - 1}, ${lit(crypto.randomUUID())} FROM member_credentials ORDER BY issued_at LIMIT 1`);
 
     const tombstone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${deleted}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
@@ -64,13 +66,20 @@ export const toolBlobRetention: ParityScenario = {
     expect(tombstone.status).toBe(200);
     expect(await tombstone.json()).toMatchObject({ applied: true, blobsFreed: 1, blobsLeft: 0 });
 
-    const wake = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-    expect(wake.status).toBe(200);
-    const { jobs } = (await wake.json()) as { jobs: Array<{ name: string; changed: number; failed: string | null }> };
     expect(SERVER_JOBS.some((job) => job.name === 'transcript-retention')).toBe(true);
-    // Earlier scenarios on the same target may have left orphans of their own, so the sweep's count is a floor: the seeded row is at least one of them.
-    const retention = jobs.find((job) => job.name === 'transcript-retention');
-    expect({ failed: retention?.failed, swept: (retention?.changed ?? 0) >= 1 }).toEqual({ failed: null, swept: true });
+    const identities = Number((await target.sql('SELECT COUNT(*) AS n FROM blobs'))[0].n);
+    const passes = Math.ceil(identities / TRANSCRIPT_RETENTION_BLOBS_PER_PASS) + 2;
+    let swept = 0;
+    for (let pass = 0; pass < passes; pass++) {
+      const wake = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+      expect(wake.status).toBe(200);
+      const { jobs } = (await wake.json()) as { jobs: Array<{ name: string; changed: number; failed: string | null }> };
+      const retention = jobs.find((job) => job.name === 'transcript-retention');
+      expect(retention?.failed).toBeNull();
+      swept += retention?.changed ?? 0;
+      if ((await target.sql(`SELECT key FROM blobs WHERE key=${lit(orphan)}`)).length === 0) break;
+    }
+    expect(swept).toBeGreaterThanOrEqual(1);
 
     expect(await read(input)).toEqual({ status: 200, text: `tool input ${stamp}` });
     expect(await read(output)).toEqual({ status: 200, text: `tool output ${stamp}` });

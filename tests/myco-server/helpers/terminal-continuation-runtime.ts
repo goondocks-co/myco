@@ -4,6 +4,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { parseTranscripts, pendingTranscripts, rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
 import { continuityRecords } from './continuity-records.js';
 
@@ -19,7 +20,7 @@ export async function terminalContinuationRuntime(db: RelationalStore, blobs: Bl
   const token = await issueMemberToken(db, { memberId: 'mem_terminal', machineId: 'terminal-machine' }, NOW);
   const answers = [];
   for (const agent of ['claude-code', 'codex', 'pi']) {
-    for (const ending of ['idle', 'session_end', 'upgrade', 'race', 'rewind_race', 'turn_end']) {
+    for (const ending of ['idle', 'session_end', 'upgrade', 'race', 'rewind_race', 'turn_end', ...(agent === 'claude-code' ? ['retained64'] : [])]) {
       const projectId = `proj_terminal_${agent.replace('-', '_')}_${ending}`;
       const sessionId = `terminal-${agent}-${ending}`;
       const transcriptId = `tx_${(await sha256HexOf(new TextEncoder().encode(sessionId))).slice(0, 32)}`;
@@ -40,6 +41,32 @@ export async function terminalContinuationRuntime(db: RelationalStore, blobs: Bl
         return bytes.length;
       };
       const records = continuityRecords[agent].map((record) => ({ ...record, timestamp: new Date(NOW).toISOString() }));
+      if (ending === 'retained64') {
+        const initial = JSON.stringify({ type: 'user', message: { content: 'pending tools' }, timestamp: new Date(NOW).toISOString() }) + '\n'
+          + JSON.stringify({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
+            id: `retained-${i}`, name: 'Read', input: { path: `/repo/${i}` } })) }, timestamp: new Date(NOW).toISOString() }) + '\n';
+        await write(initial, 0, NOW);
+        const stored = await db.prepare('SELECT parser_context FROM transcripts WHERE project_id=?').bind(projectId).first<{ parser_context: string }>();
+        const context = JSON.parse(stored!.parser_context) as { mycoParserState: { pending: Record<string, { toolCallId: string; input: unknown }> } };
+        const original = Object.values(context.mycoParserState.pending);
+        if (original.length !== 32) throw new Error('large terminal fixture did not retain 32 calls');
+        for (const [index, call] of original.entries()) context.mycoParserState.pending[`retained-extra-${index}`] = {
+          ...call, toolCallId: await uuidv5('tool-call', sessionId, `retained-extra-${index}`), input: { path: `/repo/extra-${index}` },
+        };
+        await db.prepare('UPDATE transcripts SET parser_context=? WHERE project_id=?').bind(JSON.stringify(context), projectId).run();
+        const before = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE project_id=? AND kind='tool.failure'").bind(projectId).first<{ n: number }>();
+        for (let wake = 0; wake < 10; wake += 1) {
+          const measured = measuredContentEnv(env, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+          await parseTranscripts(measured.env, NOW + IDLE_MS + wake + 1, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+          if (measured.usage.statements > 800) throw new Error('large terminal fixture exceeded invocation statements');
+        }
+        const after = await db.prepare("SELECT COUNT(*) AS n FROM events WHERE project_id=? AND kind='tool.failure'").bind(projectId).first<{ n: number }>();
+        const closed = await db.prepare("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts WHERE project_id=?")
+          .bind(projectId).first<{ unfinished: number }>();
+        if (after?.n !== (before?.n ?? 0) + 64 || closed?.unfinished !== 0) throw new Error('large terminal fixture did not close 64 calls');
+        answers.push({ agent, ending, upgraded: true });
+        continue;
+      }
       if (ending === 'upgrade') {
         await write(records.map((record) => JSON.stringify(record) + '\n').join(''), 0, NOW, false);
         const toolCallId = await uuidv5('tool-call', sessionId, 't1');

@@ -94,6 +94,7 @@ export function memoryBlobStore(): MemoryBlobStore {
       const o = store.objects.get(key);
       return o ? ({ size: o.size } satisfies StoredObject) : null;
     },
+    async ensureDurable(key) { return store.objects.has(key); },
     async get(key, options) {
       store.gets.push({ key, offset: options?.range?.offset ?? 0 });
       const o = store.objects.get(key);
@@ -117,7 +118,7 @@ export function memoryBlobStore(): MemoryBlobStore {
         throw new Error('put: The SHA-256 checksum you specified did not match what we received. (10037)');
       }
       store.objects.set(key, { size: bytes.byteLength, contentType: options?.httpMetadata?.contentType, bytes });
-      return { size: bytes.byteLength };
+      return { size: bytes.byteLength, durable: true };
     },
     async delete(key) {
       store.deletes.push(key);
@@ -171,7 +172,7 @@ export function sqliteEnv(opts: { onSql?: (sql: string, sqlite: Database) => voi
   // binding to inject a storage failure is reflected, as it would be in production.
   return {
     env: e,
-    get serverEnv() { return serverEnvFromBindings(e, deferred); },
+    get serverEnv() { return { ...serverEnvFromBindings(e, deferred), blobs: e.BUCKET as MemoryBlobStore }; },
     db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed, deferred,
   };
 }

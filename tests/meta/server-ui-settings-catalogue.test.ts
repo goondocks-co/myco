@@ -15,6 +15,8 @@ import { isRetired } from '../../packages/myco-server/ui/src/features/admin/sett
 const served = (leaf: string) => ({ leaf, configured: false, value: null, updatedAt: null, updatedBy: null, retired: RETIRED_LEAVES.has(leaf) });
 /** The settings the page offers, by the flags the server sends: the page holds no retired list of its own. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, served(f.leaf)));
+const LEGACY_RAW_RETENTION_LEAF = 'retention.transcripts';
+const EDITABLE_LEAVES = DEPLOYMENT_LEAVES.filter((leaf) => !RETIRED_LEAVES.has(leaf) && leaf !== LEGACY_RAW_RETENTION_LEAF);
 
 function walkSources(root: string): string[] {
   if (statSync(root).isFile()) return [root];
@@ -29,10 +31,16 @@ function walkSources(root: string): string[] {
 }
 
 describe('settings catalogue', () => {
-  it('names every Deployment leaf exactly once, and nothing else', () => {
+  it('names every editable Deployment leaf exactly once, and nothing else', () => {
     const catalogued = LEAF_FIELDS.map((f) => f.leaf);
     expect(new Set(catalogued).size).toBe(catalogued.length);
-    expect(LEAF_FIELDS.filter((field) => !field.readOnly).map((field) => field.leaf).sort()).toEqual(DEPLOYMENT_LEAVES.filter((leaf) => !RETIRED_LEAVES.has(leaf)).sort());
+    expect(LEAF_FIELDS.filter((field) => !field.readOnly).map((field) => field.leaf).sort()).toEqual([...EDITABLE_LEAVES].sort());
+  });
+
+  it('offers the finite canonical raw window while retaining the legacy leaf only for compatibility', () => {
+    expect(DEPLOYMENT_LEAVES).toContain(LEGACY_RAW_RETENTION_LEAF);
+    expect(LEAF_FIELDS.find((field) => field.leaf === LEGACY_RAW_RETENTION_LEAF)).toBeUndefined();
+    expect(LEAF_FIELDS.find((field) => field.leaf === 'retention.raw_days')).toMatchObject({ kind: 'number', min: 1, max: 3650 });
   });
 
   it('names no retired mechanism anywhere a person or a handler reads', () => {
@@ -70,7 +78,7 @@ describe('settings catalogue', () => {
   });
 
   it('offers only live leaves returned by the effective contract', () => {
-    expect(LIVE_FIELDS.map((field) => field.leaf).sort()).toEqual([...DEPLOYMENT_LEAVES].sort());
+    expect(LIVE_FIELDS.map((field) => field.leaf).sort()).toEqual([...EDITABLE_LEAVES].sort());
     expect(RETIRED_LEAVES.size).toBe(0);
   });
 
@@ -79,6 +87,6 @@ describe('settings catalogue', () => {
 describe('obsolete editable contracts', () => {
   it('offers only admitted leaves, with built-in Canopy patterns as derived metadata', () => {
     expect(LEAF_FIELDS.filter((field) => field.readOnly !== true).map((field) => field.leaf).sort())
-      .toEqual(DEPLOYMENT_LEAVES.filter((leaf) => !RETIRED_LEAVES.has(leaf)).sort());
+      .toEqual([...EDITABLE_LEAVES].sort());
   });
 });

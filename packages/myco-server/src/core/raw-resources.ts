@@ -4,6 +4,8 @@ import { getBlob, type BlobRow } from '../read/blobs.js';
 import type { ReadScope } from '../read/scope.js';
 import { listTranscripts, listSegments, type TranscriptRow, type SegmentRow } from '../read/transcript.js';
 import { authorize, deploymentIdentity, memberSubject } from '../auth/authorization.js';
+import { eventContent } from './event-content.js';
+import { bundleContentEnv } from './archive-bundle.js';
 
 export type RawResource = { kind: 'blob' | 'event' | 'transcript'; id: string };
 export type RawAction = 'enumerate' | 'read';
@@ -20,12 +22,19 @@ export const rawMemberResourceSql = (project: string, kind: RawResource['kind'],
         AND (e.raw_revision > 0 OR EXISTS (SELECT 1 FROM raw_provenance_backfill WHERE id = 1 AND complete = 1)))`
   : `EXISTS (SELECT 1 FROM raw_resources r JOIN members m ON m.id = ${effectiveRawOwnerSql('r.owner_member_id', 'r.provenance', 'r.revision', 'r.claim_member_id')}
       WHERE r.project_id = ${project} AND r.kind = '${kind}' AND r.resource_id = ${id} AND r.classification = 'raw'
+        AND NOT EXISTS (SELECT 1 FROM archive_bundles a WHERE '${kind}'='blob' AND a.project_id=r.project_id
+          AND (a.archive_key=r.resource_id OR a.receipt_key=r.resource_id))
+        AND NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE '${kind}'='blob' AND p.project_id=r.project_id
+          AND p.key=r.resource_id AND (p.source_kind='bundle' OR (p.source_kind='receipt' AND p.source_id LIKE 'bundle:%')))
         AND m.id = ${member} AND m.revoked_at IS NULL
         AND (r.provenance <> 'missing' OR ${claimableRawIdentitySql('r.project_id', 'r.kind', 'r.resource_id', 'm.id', rawClaimCutoffSql('m.id', 'r.revision'))}))`;
 
 /** User raw reads are admitted by historical upload evidence and the requester's current membership. */
 export class RawResourceReader {
-  constructor(private readonly env: Pick<ServerEnv, 'db' | 'blobs'>, private readonly scope: ReadScope, private readonly subject: RawSubject) {}
+  private readonly contentEnv: Pick<ServerEnv, 'db' | 'blobs'>;
+  constructor(private readonly env: Pick<ServerEnv, 'db' | 'blobs'>, private readonly scope: ReadScope, private readonly subject: RawSubject) {
+    this.contentEnv = bundleContentEnv(env);
+  }
 
   async allows(resource: RawResource, action: RawAction): Promise<boolean> {
     if (this.subject.kind !== 'member' || (action !== 'read' && action !== 'enumerate')) return false;
@@ -45,9 +54,7 @@ export class RawResourceReader {
 
   async event(eventId: string): Promise<string | null> {
     if (!await this.allows({ kind: 'event', id: eventId }, 'read')) return null;
-    const row = await this.env.db.prepare('SELECT payload FROM events WHERE project_id = ? AND event_id = ?')
-      .bind(this.scope.projectId, eventId).first<{ payload: string }>();
-    return row?.payload ?? null;
+    return eventContent(this.contentEnv,this.scope.projectId,eventId);
   }
 
   async transcripts(sessionId: string): Promise<(TranscriptRow & { segments: SegmentRow[] })[]> {

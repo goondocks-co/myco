@@ -133,10 +133,9 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'maintenance.auto_optimize': BOOLEAN_SPEC,
   'maintenance.auto_optimize_interval_hours': { type: 'integer', min: 1, max: 720 },
   'release_provenance.reconcile_interval_minutes': { type: 'integer', min: 1, max: 1440 },
-  // #1147 — transcript-first ingest. Unset or 0 keeps raw transcripts forever.
-  // A window prunes only processed raw bytes (`ingest/retention.ts`), and is how
-  // a Deployment manages storage: capture is never refused (#1416).
+  // An explicit legacy zero holds raw archival; finite writes use the canonical leaf.
   'retention.transcripts': { type: 'integer', min: 0, max: 3650 },
+  'retention.raw_days': { type: 'integer', min: 1, max: 3650 },
   // #1151 — worker mode: the harness a worker prefers and the order it falls back through.
   'worker.harness': { type: 'agent' },
   'worker.harness_fallback': { type: 'agent-list' },
@@ -513,6 +512,24 @@ export async function settingsSnapshot(db: RelationalStore): Promise<RelationalS
   return view;
 }
 
+/** A fresh policy view and its value/version predicate for an atomic consumer mutation. */
+export async function observedSettingsGuard(db:RelationalStore,leaves:readonly string[]):Promise<{
+  view:RelationalStore;sql:string;params:unknown[];
+}> {
+  const {results}=await db.prepare(`SELECT leaf,value,updated_at,updated_by FROM deployment_settings
+    WHERE leaf IN (${leaves.map(()=>'?').join(',')})`).bind(...leaves)
+    .all<{leaf:string;value:string;updated_at:number;updated_by:string}>();
+  const rows=new Map(results.map(row=>[row.leaf,row]));
+  const view=new Proxy(db,{get:(target,key)=>{
+    const member=Reflect.get(target,key,target) as unknown;
+    return typeof member==='function'?member.bind(target):member;
+  }});
+  SNAPSHOTS.set(view,rows);
+  return {view,sql:leaves.map(()=>`(SELECT value FROM deployment_settings WHERE leaf=?) IS ?
+    AND (SELECT updated_at FROM deployment_settings WHERE leaf=?) IS ?`).join(' AND '),
+    params:leaves.flatMap(leaf=>[leaf,rows.get(leaf)?.value??null,leaf,rows.get(leaf)?.updated_at??null])};
+}
+
 /** One stored leaf as a policy that judges its own stored values reads it: the value, and what its rule says of it. */
 export interface StoredSetting { value: unknown; violation: string | null }
 
@@ -783,6 +800,17 @@ export function settingsWriter(
           if (written.applied) await rearm({ leaf });
           return written;
         }
+        if (leaf === 'retention.raw_days' || leaf === 'retention.transcripts') {
+          const target = leaf === 'retention.transcripts' && value === 0 ? leaf : 'retention.raw_days';
+          const other = target === 'retention.raw_days' ? 'retention.transcripts' : 'retention.raw_days';
+          await db.batch([
+            db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,?,?,?)
+              ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by`)
+              .bind(target,JSON.stringify(value),nowMs,actor),
+            db.prepare('DELETE FROM deployment_settings WHERE leaf=?').bind(other),resetRecord(other,actor,nowMs),
+          ]);
+          await rearm({leaf:target});return {applied:true};
+        }
         await db
           .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
                     ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
@@ -814,6 +842,11 @@ export function settingsWriter(
           const written = await writeEmbedding(db, opts.target, { [spec.leaf]: undefined }, actor, nowMs, leaf);
           if (written.applied) await rearm({ leaf });
           return written;
+        }
+        if(leaf==='retention.raw_days' || leaf==='retention.transcripts') {
+          await db.batch(['retention.raw_days','retention.transcripts'].flatMap(part=>[
+            db.prepare('DELETE FROM deployment_settings WHERE leaf=?').bind(part),resetRecord(part,actor,nowMs),
+          ]));await rearm({leaf:'retention.raw_days'});return {applied:true};
         }
         await db.batch([db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf), resetRecord(leaf, actor, nowMs)]);
         await rearm({ leaf });

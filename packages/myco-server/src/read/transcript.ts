@@ -70,6 +70,7 @@ export interface SegmentRow {
   length: number;
   blobKey: string;
   createdAt: number;
+  availability: 'hot' | 'archived';
 }
 
 const TRANSCRIPT_COLUMNS = `transcript_id, session_id, machine_id, agent, origin_path, size, segment_count,
@@ -116,15 +117,19 @@ export async function listTranscripts(db: RelationalStore, scope: ReadScope, ses
 export async function listSegments(db: RelationalStore, scope: ReadScope, transcriptId: string): Promise<SegmentRow[]> {
   const { results } = await db
     .prepare(
-      `SELECT base_offset, length, blob_key, created_at FROM transcript_segments
-        WHERE project_id = ? AND transcript_id = ? ORDER BY base_offset ASC`
+      `SELECT base_offset, length, blob_key, created_at, 'hot' AS availability FROM transcript_segments
+        WHERE project_id = ? AND transcript_id = ?
+       UNION ALL SELECT base_offset,length,archive_key AS blob_key,created_at,'archived' AS availability FROM raw_archive_refs
+        WHERE project_id=? AND transcript_id=? AND source_kind='transcript' AND disposition='archived'
+       ORDER BY base_offset ASC`
     )
-    .bind(scope.projectId, transcriptId)
+    .bind(scope.projectId, transcriptId, scope.projectId, transcriptId)
     .all<Record<string, unknown>>();
   return results.map((r) => ({
     baseOffset: r.base_offset as number,
     length: r.length as number,
     blobKey: r.blob_key as string,
     createdAt: r.created_at as number,
+    availability: r.availability as 'hot' | 'archived',
   }));
 }

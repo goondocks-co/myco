@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
-import fs from 'node:fs/promises';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import type { BlobGetOptions, BlobPutOptions, BlobStore, StoredObject, StoredObjectBody } from '../../core/adapters.js';
 
@@ -47,6 +47,24 @@ async function statObject(file: string): Promise<Stats | null> {
 /** The suffix a partially written object carries until its digest holds and it is renamed. */
 const PARTIAL_SUFFIX = '.partial';
 
+type SyncHandle = (handle: FileHandle, kind: 'file' | 'directory') => Promise<void>;
+const syncHandle: SyncHandle = (handle) => handle.sync();
+
+/** Persist directory entries from the store root through an object's parent. */
+async function syncDirectoryChain(root: string, parent: string, sync: SyncHandle): Promise<void> {
+  const base = path.resolve(root);
+  const dirs = [path.dirname(base), base];
+  let current = base;
+  for (const segment of path.relative(base, parent).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    dirs.push(current);
+  }
+  for (const dir of dirs) {
+    const handle = await fs.open(dir, 'r');
+    try { await sync(handle, 'directory'); } finally { await handle.close(); }
+  }
+}
+
 /**
  * Removes temporary objects a previous process left behind. A kill between the
  * first write and the rename strands one, and nothing else ever reclaims it. They
@@ -72,13 +90,29 @@ export async function sweepPartialObjects(root: string): Promise<number> {
   return swept;
 }
 
-export function diskBlobStore(root: string): BlobStore {
+export function diskBlobStore(root: string, sync: SyncHandle = syncHandle): BlobStore {
   const pathFor = (key: string) => resolveWithin(root, key);
 
   return {
     async head(key) {
       const stat = await statObject(pathFor(key));
       return stat === null ? null : { size: stat.size };
+    },
+
+    async ensureDurable(key) {
+      const file = pathFor(key);
+      if (await statObject(file) === null) return false;
+      let handle: FileHandle;
+      try { handle = await fs.open(file, 'r'); } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw err;
+      }
+      try {
+        if (!(await handle.stat()).isFile()) return false;
+        await sync(handle, 'file');
+      } finally { await handle.close(); }
+      await syncDirectoryChain(root, path.dirname(file), sync);
+      return true;
     },
 
     async get(key, options?: BlobGetOptions): Promise<StoredObjectBody | null> {
@@ -97,6 +131,7 @@ export function diskBlobStore(root: string): BlobStore {
     async put(key, value, options?: BlobPutOptions): Promise<StoredObject> {
       const file = pathFor(key);
       await fs.mkdir(path.dirname(file), { recursive: true });
+      await syncDirectoryChain(root, path.dirname(file), sync);
       const temporary = `${file}.${crypto.randomUUID()}${PARTIAL_SUFFIX}`;
       const digest = createHash('sha256');
       let size = 0;
@@ -109,15 +144,23 @@ export function diskBlobStore(root: string): BlobStore {
             if (done) break;
             digest.update(chunk);
             size += chunk.byteLength;
-            await handle.write(chunk);
+            let written = 0;
+            while (written < chunk.byteLength) {
+              const { bytesWritten: progress } = await handle.write(chunk, written, chunk.byteLength - written);
+              if (progress <= 0) throw new Error('blob write made no progress');
+              written += progress;
+            }
           }
         }
-        await handle.close();
         if (options?.sha256 !== undefined && digest.digest('hex') !== options.sha256) {
           throw new Error(DIGEST_MISMATCH_MESSAGE);
         }
+        await sync(handle, 'file');
+        await handle.close();
         await fs.rename(temporary, file);
-        return { size };
+        const dir = await fs.open(path.dirname(file), 'r');
+        try { await sync(dir, 'directory'); } finally { await dir.close(); }
+        return { size, durable: true };
       } catch (err) {
         await handle.close().catch(() => {});
         await fs.rm(temporary, { force: true });

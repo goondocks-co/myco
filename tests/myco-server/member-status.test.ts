@@ -48,7 +48,7 @@ describe('POST /members/status', () => {
       target: e.serverEnv.platform.name,
       schema: { expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true },
       stored: measured(charged),
-      retention: { transcripts: { state: 'forever', configured: false } },
+      retention: { transcripts: { state: 'days', days: 90, configured: false, compatibility: 'default' } },
       storage: [
         { name: 'blob_bytes', state: 'unavailable', reason: NOT_MEASURED, measuredAt: null },
         { name: 'size', state: 'unavailable', reason: NOT_MEASURED, measuredAt: null },
@@ -79,11 +79,11 @@ describe('POST /members/status', () => {
     expect((await read()).stored).toEqual(measured(RETIRED_BYTE_CEILING + 5));
     const writer = settingsWriter(e.serverEnv.db);
     await writer.setLeaf('retention.transcripts', 90, 'mem_machine_1', Date.now());
-    expect((await read()).retention).toEqual({ transcripts: { state: 'days', days: 90, configured: true } });
+    expect((await read()).retention).toEqual({ transcripts: { state: 'days', days: 90, configured: true, compatibility: 'canonical' } });
     await writer.setLeaf('retention.transcripts', 0, 'mem_machine_1', Date.now());
-    expect((await read()).retention).toEqual({ transcripts: { state: 'forever', configured: true } });
+    expect((await read()).retention).toEqual({ transcripts: { state: 'forever', configured: true, compatibility: 'legacy-hold' } });
     e.sqlite.query(`UPDATE deployment_settings SET value = 'not json' WHERE leaf = 'retention.transcripts'`).run();
-    expect((await read()).retention).toEqual({ transcripts: { state: 'unavailable', reason: 'the stored window does not read; nothing is pruned until it is set again' } });
+    expect((await read()).retention).toEqual({ transcripts: { state: 'unavailable', reason: 'The legacy raw window does not read; archival is held.' } });
   });
 
   it('names blob bytes and the database size unavailable on a target with no store maintenance', async () => {
