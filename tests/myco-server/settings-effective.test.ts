@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import worker from '@myco-server-worker/index.js';
-import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
+import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
@@ -22,13 +22,13 @@ const WRAP = btoa('e'.repeat(32));
 const temporary: string[] = [];
 afterAll(() => { for (const dir of temporary) rmSync(dir, { recursive: true, force: true }); });
 
-interface Target { sqlite: Database; fetch(request: Request): Promise<Response>; env?: ServerEnv }
+interface Target { sqlite: Database; db: RelationalStore; fetch(request: Request): Promise<Response>; env?: ServerEnv }
 
 /** The hosted Worker entry, with a Workers AI binding that answers one vector for any model. */
 function hosted(): Target {
   const e = sqliteEnv();
   const bindings = { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP }, AI: { run: async () => ({ data: [[1, 0]] }) } };
-  return { sqlite: e.sqlite, fetch: (request) => worker.fetch(request, bindings, e.deferred) };
+  return { sqlite: e.sqlite, db: e.db, fetch: (request) => worker.fetch(request, bindings, e.deferred) };
 }
 
 /** The self-hosted server over its own store. */
@@ -38,15 +38,15 @@ function selfHosted(): Target {
   temporary.push(dir);
   const env = serverEnvFromBunConfig({ sqlite, blobDir: path.join(dir, 'blobs'), ...OWNER_ENV, SECRET_WRAP_KEY: WRAP });
   const server = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
-  return { sqlite, env, fetch: (request) => server.handleRequest(request, env) };
+  return { sqlite, db: env.db, env, fetch: (request) => server.handleRequest(request, env) };
 }
 
 const json = async (response: Response): Promise<Record<string, unknown>> => response.json() as Promise<Record<string, unknown>>;
-const put = async (t: Target, leaf: string, value: unknown) => t.fetch(await asOwnerPut(`/api/settings/${leaf}`, { value }));
+const put = async (t: Target, leaf: string, value: unknown) => t.fetch(await asOwnerPut(t.db, `/api/settings/${leaf}`, { value }));
 const reset = async (t: Target, leaf: string) =>
-  t.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(`/api/settings/${leaf}`)).headers) }));
+  t.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(t.db, `/api/settings/${leaf}`)).headers) }));
 async function rows(t: Target): Promise<Map<string, Record<string, unknown>>> {
-  const answer = await json(await t.fetch(await asOwner('/api/settings')));
+  const answer = await json(await t.fetch(await asOwner(t.db, '/api/settings')));
   return new Map((answer.leaves as Array<Record<string, unknown>>).map((row) => [String(row.leaf), row]));
 }
 const stored = (t: Target, leaf: string): unknown => {
@@ -87,7 +87,7 @@ describe('embedding in effect', () => {
       expect(unset.get('embedding.provider')).toMatchObject({ configured: false, effective: null, state: 'inactive' });
       expect(await json(await put(t, 'embedding.provider', provider))).toEqual({ applied: true });
       for (const slot of ['openai', 'openrouter']) {
-        await t.fetch(await asOwnerPut(`/api/secrets/${slot}`, { value: `${slot}-key-for-the-test` }));
+        await t.fetch(await asOwnerPut(t.db, `/api/secrets/${slot}`, { value: `${slot}-key-for-the-test` }));
       }
       const leaves = await rows(t);
       expect({ provider, model: leaves.get('embedding.model')?.effective, source: leaves.get('embedding.model')?.source })
@@ -107,7 +107,7 @@ describe('embedding in effect', () => {
     receipt(['cloudflare', '@cf/baai/bge-m3'], 'v2');
     const receipts = () => t.sqlite.query(`SELECT model_key, id, ready FROM embedding_receipts ORDER BY id`).all();
     const held = receipts();
-    const choices = (await json(await t.fetch(await asOwner('/api/settings')))).embedding as { switchable: boolean; providers: Array<{ id: string; models: Array<{ id: string; refusal: string | null }> }> };
+    const choices = (await json(await t.fetch(await asOwner(t.db, '/api/settings')))).embedding as { switchable: boolean; providers: Array<{ id: string; models: Array<{ id: string; refusal: string | null }> }> };
     const workersAi = Object.fromEntries(choices.providers.find((p) => p.id === 'workers-ai')!.models.map((m) => [m.id, m.refusal]));
     expect(choices.switchable).toBe(false);
     expect(workersAi['@cf/baai/bge-m3']).toBeNull();
@@ -116,8 +116,8 @@ describe('embedding in effect', () => {
     for (const request of [
       () => put(t, 'embedding.model', '@cf/baai/bge-large-en-v1.5'),
       () => put(t, 'embedding.provider', 'openrouter'),
-      async () => t.fetch(await asOwnerPut('/api/embedding', { provider: 'openrouter', model: 'baai/bge-m3' })),
-      async () => t.fetch(await asOwnerPut('/api/embedding', { provider: 'workers-ai', model: '@cf/qwen/qwen3-embedding-0.6b' })),
+      async () => t.fetch(await asOwnerPut(t.db, '/api/embedding', { provider: 'openrouter', model: 'baai/bge-m3' })),
+      async () => t.fetch(await asOwnerPut(t.db, '/api/embedding', { provider: 'workers-ai', model: '@cf/qwen/qwen3-embedding-0.6b' })),
     ]) {
       const answer = await request();
       expect(answer.status).toBe(400);
@@ -125,23 +125,23 @@ describe('embedding in effect', () => {
     }
     expect([stored(t, 'embedding.provider'), stored(t, 'embedding.model')]).toEqual([undefined, undefined]);
     expect(receipts()).toEqual(held);
-    const same = await t.fetch(await asOwnerPut('/api/embedding', { provider: 'workers-ai', model: '@cf/baai/bge-m3' }));
+    const same = await t.fetch(await asOwnerPut(t.db, '/api/embedding', { provider: 'workers-ai', model: '@cf/baai/bge-m3' }));
     expect(await json(same)).toEqual({ applied: true });
   });
 
   it('lets the model change freely while search holds nothing', async () => {
     const t = hosted();
-    expect(await json(await t.fetch(await asOwnerPut('/api/embedding', { provider: 'openrouter', model: 'openai/text-embedding-3-small' })))).toEqual({ applied: true });
+    expect(await json(await t.fetch(await asOwnerPut(t.db, '/api/embedding', { provider: 'openrouter', model: 'openai/text-embedding-3-small' })))).toEqual({ applied: true });
     expect(await json(await put(t, 'embedding.model', 'baai/bge-m3'))).toEqual({ applied: true });
     expect([stored(t, 'embedding.provider'), stored(t, 'embedding.model')]).toEqual(['openrouter', 'baai/bge-m3']);
-    const plamo = await t.fetch(await asOwnerPut('/api/embedding', { provider: 'workers-ai', model: '@cf/pfnet/plamo-embedding-1b' }));
+    const plamo = await t.fetch(await asOwnerPut(t.db, '/api/embedding', { provider: 'workers-ai', model: '@cf/pfnet/plamo-embedding-1b' }));
     expect(plamo.status).toBe(400);
   });
 
   it('keeps a self-hosted OpenAI endpoint of its own in use without the key, reported invalid, until it is reset', async () => {
     const t = selfHosted();
     t.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.provider', '"openai"', 1, 'historic'), ('embedding.base_url', '"https://proxy.internal/v1"', 1, 'historic')`);
-    await t.fetch(await asOwnerPut('/api/secrets/openai', { value: 'openai-key-for-the-test' }));
+    await t.fetch(await asOwnerPut(t.db, '/api/secrets/openai', { value: 'openai-key-for-the-test' }));
     const leaves = await rows(t);
     expect(leaves.get('embedding.base_url')).toMatchObject({ state: 'invalid', effective: 'https://proxy.internal/v1', reason: expect.stringContaining('without your OpenAI key') });
     let request: Request | undefined;

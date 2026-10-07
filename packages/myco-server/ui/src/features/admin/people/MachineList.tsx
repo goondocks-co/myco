@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
 import { Card, ConfirmDialog, EmptyState, ErrorState, HealthDot, LoadingState, MoreMenu, ReadState, ShowMore, type HealthTone, type MoreMenuItem } from '../../../design';
 import { refusalText, useAccessActions } from '../../../hooks/use-access';
-import { useIsAdmin, useMe } from '../../../hooks/use-me';
+import { scopeOf, useMe } from '../../../hooks/use-me';
 import { useProjects } from '../../../hooks/use-projects';
 import { useWorkerFleet } from '../../../hooks/use-status';
 import type { WorkerRow, WorkerStatus } from '../../../lib/api';
@@ -49,7 +49,9 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
   const fleet = answered?.available === true ? answered : undefined;
   const projects = useProjects();
   const me = useMe();
-  const admin = useIsAdmin();
+  const machinePermission = scopeOf(me.data, 'machines');
+  const settingsPermission = scopeOf(me.data, 'machineSettings');
+  const admin = machinePermission.scope === 'all';
   // The viewer's own machine names them by the login they signed in with where their label is only their id.
   const viewerName = me.data?.login !== undefined && me.data.login !== '' ? me.data.login : 'You';
   const stop = useAccessActions().stopMachine;
@@ -78,14 +80,14 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
               fleet={fleet}
               projectName={projectName}
               actions={[
-                ...(canRename(machine, viewerId, admin)
+                ...(machinePermission.scope !== 'none' && canRename(machine, viewerId, admin)
                   ? [{ label: 'Rename', onSelect: () => setRenaming({ id: machine.machineId!, name: machine.name, named: machine.named }) }]
                   : []),
-                ...(machine.memberId === viewerId && machine.machineId !== null
+                ...(settingsPermission.scope !== 'none' && machine.memberId === viewerId && machine.machineId !== null
                   ? [{ label: 'Its settings', onSelect: () => setSettingsFor({ id: machine.machineId!, name: machine.name }) }]
                   : []),
                 ...(machine.machineId === null ? [] : [{ label: 'What it wrote', onSelect: () => setActivityFor({ name: machine.name, machineId: machine.machineId!, bytesWritten: machine.bytesWritten }) }]),
-                ...(machine.liveCredentialCount > 0 && machine.machineId !== null ? [{ label: 'Stop', tone: 'danger' as const, onSelect: () => { setStopError(null); stop.reset(); setStopping(machine); } }] : []),
+                ...(machine.liveCredentialCount > 0 && machine.machineId !== null && machine.canStop ? [{ label: 'Stop', tone: 'danger' as const, onSelect: () => { setStopError(null); stop.reset(); setStopping(machine); } }] : []),
               ]}
             />
           ))}
@@ -108,7 +110,7 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
         onConfirm={() => {
           if (stopping === null) return;
           stop.mutate(stopping.machineId!, {
-            onSuccess: () => setStopping(null),
+            onSuccess: (outcome) => { if (outcome.revoked > 0) setStopping(null); else setStopError('No sign-in was stopped. It may have ended, or you may no longer be allowed to stop it.'); },
             onError: (err) => setStopError(refusalText(err)),
           });
         }}
@@ -148,6 +150,7 @@ function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }:
         {lines.length === 0 && machine.standing === 'allowed' && (
           <span className="t-small text-muted" data-worker-line="">{fleet === undefined ? FLEET_WORDS.unavailable : FLEET_WORDS.absent}</span>
         )}
+        {machine.liveCredentialCount > 0 && !machine.canStop && <span className="t-small text-muted">{machine.stopReason ?? 'Stopping this machine is unavailable.'}</span>}
       </div>
       <MoreMenu label={`More for ${machine.name}`} items={actions} />
     </li>

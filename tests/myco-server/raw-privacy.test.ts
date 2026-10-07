@@ -9,6 +9,7 @@ import { assertRawPrivacy } from '../parity/scenarios/raw-privacy.js';
 import type { ParityTarget } from '../parity/harness.js';
 import { envelope, memberHeaders, memberPost, registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie, SESSION_SECRET } from './helpers/owner.js';
+import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 
 describe('raw capture privacy regression gate', () => {
   it('keeps bundle body and receipt private while the uploader can read its logical event', async () => {
@@ -59,9 +60,10 @@ describe('raw capture privacy regression gate', () => {
 
   it('holds the raw and processed HTTP contract for uploader, other member, admin and owner', async () => {
     const e = sqliteEnv();
-    const cookie = await ownerCookie();
+    const cookie = await ownerCookie(e.db);
     const target: ParityTarget = {
-      name: 'cloudflare', url: 'https://s', projectId: 'proj_1', memberToken: 'unused',
+      name: 'cloudflare', url: 'https://s', projectId: 'proj_1', deploymentId: await deploymentIdentity(e.db),
+      bindings: { database: 'sqliteEnv fixture', blob: 'fixture bucket', secret: 'OWNER_ENV', vector: null }, memberToken: 'unused',
       ownerHeaders: () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' }),
       memberHeaders: (extra) => memberHeaders('unused', extra), grantHeaders: () => ({}),
       sql: async (sql) => e.sqlite.query(sql).all() as Record<string, unknown>[],

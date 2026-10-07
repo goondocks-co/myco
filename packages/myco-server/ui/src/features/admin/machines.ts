@@ -26,6 +26,8 @@ export interface Machine {
   /** When it first signed in. */
   firstSeenAt: number;
   liveCredentialCount: number;
+  canStop: boolean;
+  stopReason: string | null;
   credentialCount: number;
   bytesWritten: number;
 }
@@ -56,6 +58,7 @@ export function useMachines(options: { enabled?: boolean } = {}) {
       named: row.name !== null, memberId: row.member.id,
       standing: row.standing, stoppedBy: row.stoppedBy, firstSeenAt: row.firstSeenAt,
       liveCredentialCount: row.liveCredentialCount, credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
+      canStop: row.canStop === true, stopReason: row.stopReason ?? null,
     }));
   }, [rows]);
   return {

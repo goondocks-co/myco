@@ -47,7 +47,7 @@ export const rawClaimsParity: ParityScenario = {
         `INSERT INTO member_credentials (id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
           VALUES (${lit(tokenId)},${lit(id)},${lit(machine)},${lit(await sha256Hex(token))},${now},${now + TOKEN_TTL_MS},0,${lit(tokenId)},${now})`,
       ]);
-      const session = await signSession(SESSION_SECRET, { sub, login: label, iat: now, exp: now + TOKEN_TTL_MS });
+      const session = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: label, iat: now, exp: now + TOKEN_TTL_MS });
       return { id, machine, tokenId, token, headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } };
     };
     const owner = await viewer('owner', 'admin', '719001');

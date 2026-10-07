@@ -17,7 +17,7 @@ async function harness() {
   const env = { ...fixture.env, ...OWNER_ENV };
   fixture.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(NOW);
   const get = async (path: string): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const res = await worker.fetch(await asOwner(path), env);
+    const res = await worker.fetch(await asOwner(fixture.db, path), env);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
   const plan = (key: string, over: { status?: string; title?: string; content?: string; session?: string; at?: number } = {}) => {

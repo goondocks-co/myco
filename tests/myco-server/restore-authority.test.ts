@@ -30,7 +30,7 @@ function artifact(f: ReturnType<typeof sqliteEnv>, rows: Array<{ t: string; r: R
 
 async function post(f: ReturnType<typeof sqliteEnv>, path: string, body: unknown, sub = '9002') {
   return worker.fetch(new Request(`https://s${path}`, {
-    method: 'POST', headers: { cookie: await ownerCookie(Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4' },
+    method: 'POST', headers: { cookie: await ownerCookie(f.db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4' },
     body: JSON.stringify(body),
   }), { ...f.env, ...OWNER_ENV });
 }
@@ -68,7 +68,7 @@ it('holds authority restore pending explicit owner selection while preserving ad
   try {
     const backup = await createBackup(f.db, f.bucket, { now: Date.now(), producer: ADMIN });
     for (const path of ['/api/backups', `/api/backups/${backup.id}/artifact`]) {
-      const response = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), '9002'), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
+      const response = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(f.db, Date.now(), '9002'), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
       expect(response.status).toBe(200);
     }
     expect((await post(f, `/api/backups/${backup.id}/restore-preview`, {})).status).toBe(200);

@@ -5,6 +5,7 @@ import os from 'node:os';
 import { Database } from 'bun:sqlite';
 import { legacyBlob, seededSqlite } from '../myco-server/helpers/d1.js';
 import { createRecoveryBundle } from '@myco/server/recovery-bundle.js';
+import { assertRecoveryTenantChoice } from '@myco-server-worker/core/recovered-tenant.js';
 import { restoreCloudflareDeployment } from '@myco/server/cloudflare-recovery.js';
 import { readDeploymentRecord } from '@myco/server/cloudflare.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
@@ -113,7 +114,7 @@ async function fixture(failVectorRead = false, { legacy = false } = {}) {
   };
   return { source, secretsFile, mycoHome, destination, deployments, secretCommands, key, wrapKey, creates: () => creates, bodies, stored,
     reports,
-    restore: (newSignIn = false) => restoreCloudflareDeployment({ source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, fetch: fetchObject, report: (line: string) => { reports.push(line); } }),
+    restore: (newSignIn = false, tenantMode: 'replacement' | 'fork' = 'replacement') => restoreCloudflareDeployment({ sourceRetired: true, tenantMode, source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, fetch: fetchObject, report: (line: string) => { reports.push(line); } }),
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -226,4 +227,40 @@ it('refuses unconfirmed provisioning instead of creating another resource on ret
     expect(f.creates()).toBe(4);
     expect(readDeploymentRecord(f.mycoHome)).toBeNull();
   } finally { f.cleanup(); }
+});
+
+for (const tenantMode of ['replacement', 'fork'] as const) {
+  it(`hosted ${tenantMode} prepares tenant identity once and refuses a different mode on resume`, async () => {
+    const f = await fixture();
+    try {
+      const sourceBytes = fs.readFileSync(path.join(f.source, 'myco.sqlite'));
+      const source = new Database(path.join(f.source, 'myco.sqlite'), { readonly: true });
+      const sourceId = source.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
+      source.close();
+      await expect(f.restore(false, tenantMode)).rejects.toThrow('Cloudflare recovery import did not finish');
+      const journalFile = path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.json');
+      const before = fs.readFileSync(journalFile);
+      await expect(f.restore(false, tenantMode === 'fork' ? 'replacement' : 'fork')).rejects.toThrow('same tenant mode');
+      expect(fs.readFileSync(journalFile)).toEqual(before);
+      const prepared = new Database(path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.sqlite'), { readonly: true });
+      const preparedId = prepared.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
+      prepared.close();
+      await f.restore(false, tenantMode);
+      const publishedId = f.destination.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get();
+      expect(publishedId).toEqual(preparedId);
+      if (tenantMode === 'fork') {
+        expect(preparedId.value).not.toBe(sourceId.value);
+        for (const table of ['member_credentials', 'enrollment_authorities', 'identity_link_authorities', 'external_grants']) {
+          expect(f.destination.query(`SELECT count(*) AS n FROM ${table} WHERE revoked_at IS NULL`).get()).toEqual({ n: 0 });
+        }
+      } else expect(preparedId).toEqual(sourceId);
+      expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(sourceBytes);
+    } finally { f.cleanup(); }
+  });
+}
+
+it('replacement requires source retirement; fork permits an independent live source', () => {
+  expect(() => assertRecoveryTenantChoice()).toThrow('--source-retired');
+  expect(() => assertRecoveryTenantChoice('replacement', true)).not.toThrow();
+  expect(() => assertRecoveryTenantChoice('fork')).not.toThrow();
 });

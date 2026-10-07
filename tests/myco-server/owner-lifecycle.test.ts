@@ -25,9 +25,9 @@ async function rig() {
   return f;
 }
 
-async function request(env: unknown, sub: string, path: string, body: unknown) {
+async function request(db: ReturnType<typeof sqliteEnv>['db'], env: unknown, sub: string, path: string, body: unknown) {
   return worker.fetch(new Request(`https://s${path}`, { method: 'POST', headers: {
-    cookie: await ownerCookie(Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json',
+    cookie: await ownerCookie(db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json',
   }, body: JSON.stringify(body) }), env as never);
 }
 
@@ -136,7 +136,7 @@ describe('owner lifecycle mutation gates', () => {
           [`/api/members/${MEMBER}/role`, '/members/roles', { member_id: MEMBER, role: 'admin', expected_revision: '0' }],
         ] as const) {
           const start = f.executed.length;
-          expect((await request(env, sub!, dashboard, body)).status).toBe(403);
+          expect((await request(f.db, env, sub!, dashboard, body)).status).toBe(403);
           expect(await (await worker.fetch(memberPost(issued.token, body, member), env)).json()).toMatchObject({ persisted: false });
           expect(f.executed.slice(start).filter(sql => /UPDATE members SET role|UPDATE deployment_ownership|INSERT INTO member_role_audit/.test(sql))).toEqual([]);
         }

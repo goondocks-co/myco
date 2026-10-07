@@ -5,6 +5,7 @@
  * The clock is held at a fixed afternoon so every instant below sits on the
  * day it names, whatever the machine's own time.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -153,7 +154,7 @@ function server(routes: Routes): URL[] {
 }
 
 const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' | 'status' | 'uncaptured', unknown>> = {}, who: unknown = ADMIN): Routes => ({
-  '/auth/me': () => Response.json(who),
+  '/auth/me': () => Response.json(dashboardMe(who)),
   '/api/projects': () => Response.json({ projects: PROJECTS }),
   '/api/sessions': () => Response.json(over.sessions ?? { rows: SESSIONS, cursor: null }),
   '/api/spores': () => Response.json(over.spores ?? { spores: SPORES, total: SPORES.length, maxPage: 200 }),
@@ -494,6 +495,15 @@ describe('Today', () => {
     expect(document.querySelector('[data-upkeep]')!.textContent).toBe('Search kept up to date · 1 h ago · 1 retry along the way');
   });
 
+  it('does not read administrator attention when the server projection denies it', async () => {
+    screenWidth(1280);
+    const asked = server(day({}, { ...ADMIN, permissions: { settings: { allowed: false, reason: 'Administration is unavailable.' } } }));
+    mount('/');
+    await timeline();
+    await waitFor(() => expect(asked.some((url) => url.pathname === '/api/uncaptured')).toBe(true));
+    expect(asked.some((url) => url.pathname === '/api/attention')).toBe(false);
+  });
+
   it('keeps search upkeep to one quiet line, with Health for an admin', async () => {
     screenWidth(1280);
     server(day());
@@ -714,7 +724,7 @@ describe('Today', () => {
     let answer: () => Response = () => Response.json({ error: 'auto_create_off', reason: 'words the dashboard never matches' }, { status: 400 });
     const bodies: unknown[] = [];
     server({
-      ...day({ uncaptured: { items: [lins] } }),
+      ...day({ uncaptured: { items: [lins] } }, MEMBER),
       '/api/uncaptured/mt_buildbox_mach/a1b2c3d4e5f60718/connect': (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return answer(); },
     });
     mount('/');
@@ -725,8 +735,7 @@ describe('Today', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
       return (await within(dialog).findByRole('alert')).textContent;
     };
-    // The project is started by the machine's member, so an admin is told whose it is, not that only an admin may.
-    expect(await refusal()).toBe('Lin can’t start a new project here. Choose an existing project for it.');
+    expect(await refusal()).toBe('You can’t start a new project here. Choose an existing project for it.');
     for (const [next, words] of [
       [() => Response.json({ error: 'remote_bound', reason: 'x' }, { status: 409 }), 'Another project already holds its remote. Choose “Let Myco choose” to connect it there.'],
       [() => Response.json({ error: 'archived', reason: 'x' }, { status: 409 }), 'The project it belongs to is archived. An admin can restore it from Projects.'],
@@ -736,6 +745,15 @@ describe('Today', () => {
       await waitFor(async () => expect(await refusal()).toBe(words));
     }
     expect(bodies[0]).toEqual({});
+  });
+
+  it('shows an admin why they cannot connect another member’s machine', async () => {
+    screenWidth(1280);
+    server(day({ uncaptured: { items: [repository({ member: { id: MEMBER.member.id, label: 'Lin' }, machineId: 'mt_buildbox_mach' })] } }));
+    mount('/');
+    const row = await present('[data-repository]');
+    expect(within(row).queryByRole('button', { name: 'Connect widget' })).toBeNull();
+    expect(row.textContent).toContain('Only the member who claimed this machine can change its capture roots or connect repositories.');
   });
 
   it('asks for a project, with nothing chosen, where its member may not start one', async () => {
@@ -802,9 +820,8 @@ describe('Today', () => {
     expect(row.textContent).toContain('Lin’s machine');
     expect(document.body.textContent).not.toContain('secret desk');
     expect(Object.values(repositoryWords(named, NOW, ADMIN.member.id)).join(' ')).not.toContain('secret desk');
-    fireEvent.click(within(row).getByRole('button', { name: 'Connect widget' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
-    expect(dialog.textContent).not.toContain('secret desk');
+    expect(within(row).queryByRole('button', { name: 'Connect widget' })).toBeNull();
+    expect(row.textContent).toContain('Only the member who claimed this machine can change its capture roots or connect repositories.');
   });
 
   it('shows a member "Needs you" with their own repositories alone, on a wide screen and on a phone', async () => {

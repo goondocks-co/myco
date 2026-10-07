@@ -129,7 +129,7 @@ describe('the models a machine lists', () => {
   const listed = (harness: string, models: unknown[], fetchedAt = Date.now() - 1_000) => ({ catalog: { harness, source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt, models } });
   const stored = (r: Awaited<ReturnType<typeof rig>>) => r.e.sqlite.query(`SELECT machine_id, harness, catalog, resolutions FROM worker_model_catalogs ORDER BY machine_id, harness`).all() as Array<{ machine_id: string; harness: string; catalog: string; resolutions: string }>;
   const settings = async (r: Awaited<ReturnType<typeof rig>>, sub?: string) => {
-    const res = await worker.fetch(new Request('https://s/api/settings', { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), { ...r.e.env, ...OWNER_ENV });
+    const res = await worker.fetch(new Request('https://s/api/settings', { headers: { cookie: await ownerCookie(r.e.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), { ...r.e.env, ...OWNER_ENV });
     return await res.json() as { models?: Array<Record<string, unknown> & { harness: string; models: Array<Record<string, unknown> & { id: string }> }> };
   };
   const offered = async (r: Awaited<ReturnType<typeof rig>>) => (await settings(r)).models?.flatMap((catalog) => catalog.models.map((model) => `${catalog.harness}:${model.id}`)).sort();

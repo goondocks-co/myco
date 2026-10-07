@@ -37,7 +37,7 @@ function rig() {
               VALUES ('proj_1', 'run_ada', 'agent_1', 'extract-curate', 'completed', ?, ?, ?, 'mt_ada')`, [now - 4000, now - 3000, now - 4000]);
   sqlite.run(`INSERT INTO worker_contacts (credential_id, machine_id, offers, last_seen_at, updated_at) VALUES ('mt_ada', 'ada_box', '[]', ?, ?)`, [now - 1000, now - 1000]);
   const get = async (sub: string, path: string): Promise<{ status: number; body: any; text: string }> => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     const text = await res.text();
     return { status: res.status, body: JSON.parse(text), text };
   };

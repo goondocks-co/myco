@@ -25,15 +25,15 @@ const env = () => {
 };
 
 /** An authenticated owner PUT. `Headers` is not a plain object, so it is converted rather than spread. */
-const put = async (path: string, body: unknown, extra: Record<string, string> = {}) =>
+const put = async (db: ReturnType<typeof env>['db'], path: string, body: unknown, extra: Record<string, string> = {}) =>
   new Request(`https://s${path}`, {
     method: 'PUT',
-    headers: { ...Object.fromEntries((await asOwnerPost(path)).headers), ...extra },
+    headers: { ...Object.fromEntries((await asOwnerPost(db, path)).headers), ...extra },
     body: JSON.stringify(body),
   });
 
-const remove = async (path: string) => new Request(`https://s${path}`, {
-  method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(path)).headers),
+const remove = async (db: ReturnType<typeof env>['db'], path: string) => new Request(`https://s${path}`, {
+  method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(db, path)).headers),
 });
 
 const patch = asOwnerPatch;
@@ -44,34 +44,34 @@ describe('settings API', () => {
   it('converges finite legacy raw retention writes on the canonical leaf and records the alias reset', async () => {
     const e = env();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('retention.transcripts','30',1,'historic')`);
-    const written = await worker.fetch(await put('/api/settings/retention.transcripts', { value: 45 }), e.all);
+    const written = await worker.fetch(await put(e.db, '/api/settings/retention.transcripts', { value: 45 }), e.all);
     expect({ status: written.status, body: await json(written) }).toEqual({ status: 200, body: { applied: true } });
     expect(e.sqlite.query(`SELECT leaf,value,updated_by FROM deployment_settings WHERE leaf LIKE 'retention.%' ORDER BY leaf`).all())
       .toEqual([{ leaf: 'retention.raw_days', value: '45', updated_by: 'mem_machine_1' }]);
     expect(e.sqlite.query(`SELECT leaf,reset_by FROM deployment_setting_resets WHERE leaf='retention.transcripts'`).get())
       .toEqual({ leaf: 'retention.transcripts', reset_by: 'mem_machine_1' });
-    const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const leaves = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(leaves.find((row) => row.leaf === 'retention.raw_days')).toMatchObject({ configured: true, effective: 45, updatedBy: 'mem_machine_1' });
     expect(leaves.find((row) => row.leaf === 'retention.transcripts')).toMatchObject({ configured: false, effective: 45 });
   });
 
   it('keeps an explicit legacy zero as an archival hold until a finite canonical choice, and resets both leaves', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await put('/api/settings/retention.transcripts', { value: 0 }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/settings/retention.transcripts', { value: 0 }), e.all))).toEqual({ applied: true });
     expect(e.sqlite.query(`SELECT leaf,value FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all())
       .toEqual([{ leaf: 'retention.transcripts', value: '0' }]);
-    const held = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const held = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(held.find((row) => row.leaf === 'retention.raw_days')).toMatchObject({ effective: null, reason: expect.stringContaining('finite') });
-    const invalid = await worker.fetch(await put('/api/settings/retention.raw_days', { value: 0 }), e.all);
+    const invalid = await worker.fetch(await put(e.db, '/api/settings/retention.raw_days', { value: 0 }), e.all);
     expect({ status: invalid.status, body: await json(invalid) }).toMatchObject({ status: 400, body: { applied: false, reason: 'invalid_value' } });
     expect(e.sqlite.query(`SELECT leaf,value FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all())
       .toEqual([{ leaf: 'retention.transcripts', value: '0' }]);
-    expect(await json(await worker.fetch(await put('/api/settings/retention.raw_days', { value: 60 }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/settings/retention.raw_days', { value: 60 }), e.all))).toEqual({ applied: true });
     expect(e.sqlite.query(`SELECT leaf,value FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all())
       .toEqual([{ leaf: 'retention.raw_days', value: '60' }]);
-    expect(await json(await worker.fetch(await remove('/api/settings/retention.raw_days'), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await remove(e.db, '/api/settings/retention.raw_days'), e.all))).toEqual({ applied: true });
     expect(e.sqlite.query(`SELECT leaf FROM deployment_settings WHERE leaf LIKE 'retention.%'`).all()).toEqual([]);
-    const resetLeaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const resetLeaves = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(resetLeaves.find((row) => row.leaf === 'retention.raw_days')).toMatchObject({ configured: false, effective: 90 });
     expect(e.sqlite.query(`SELECT leaf,reset_by FROM deployment_setting_resets WHERE leaf LIKE 'retention.%' ORDER BY leaf`).all())
       .toEqual([
@@ -85,7 +85,7 @@ describe('settings API', () => {
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'mem_machine_1')`, [
       JSON.stringify({ 'title-summary': { reasoningLevel: 'maximum' } }),
     ]);
-    const owner = await worker.fetch(await asOwner('/api/settings'), e.all);
+    const owner = await worker.fetch(await asOwner(e.db, '/api/settings'), e.all);
     expect(owner.status).toBe(200);
     const ownerTiers = (await json(owner)).taskTiers as Array<Record<string, unknown>>;
     expect(ownerTiers.find((tier) => tier.task === 'title-summary')).toEqual({
@@ -104,15 +104,15 @@ describe('settings API', () => {
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
       JSON.stringify({ 'title-summary': 'broken', 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
     ]);
-    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers as Array<Record<string, unknown>>;
+    const rows = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers as Array<Record<string, unknown>>;
     expect(rows.find((row) => row.task === 'title-summary')).toMatchObject({ source: 'invalid', repair: 'reset-task' });
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: null }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: null }), e.all))).toEqual({ applied: true });
     const stored = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value);
     expect(stored).toEqual({ 'canopy-map': { schedule: { intervalSeconds: 600 } } });
     e.sqlite.run(`UPDATE deployment_settings SET value = ? WHERE leaf='agent.tasks'`, [JSON.stringify({
       'title-summary': 'broken-again', 'canopy-map': { schedule: { intervalSeconds: 600 } },
     })]);
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }), e.all))).toEqual({ applied: true });
     expect(JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value))
       .toEqual({ 'title-summary': { reasoningLevel: 'high' }, 'canopy-map': { schedule: { intervalSeconds: 600 } } });
   });
@@ -120,17 +120,17 @@ describe('settings API', () => {
   it('offers a whole-leaf reset when the stored task document is malformed', async () => {
     const e = env();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks','[]',1,'historic')`);
-    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers as Array<Record<string, unknown>>;
+    const rows = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers as Array<Record<string, unknown>>;
     expect(rows.every((row) => row.source === 'invalid' && row.repair === 'reset-leaf' && String(row.remedy).includes('Reset task overrides'))).toBe(true);
-    expect(await json(await worker.fetch(await remove('/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
-    expect((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers)
+    expect(await json(await worker.fetch(await remove(e.db, '/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
+    expect((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers)
       .toEqual(OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })));
   });
 
   it('reports a raw stored JSON error without hiding other Settings leaves', async () => {
     const e = env();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks','{bad',1,'historic')`);
-    const owner = await worker.fetch(await asOwner('/api/settings'), e.all);
+    const owner = await worker.fetch(await asOwner(e.db, '/api/settings'), e.all);
     expect(owner.status).toBe(200);
     const answer = await json(owner);
     expect((answer.leaves as Array<Record<string, unknown>>).find((row) => row.leaf === 'agent.tasks'))
@@ -140,11 +140,11 @@ describe('settings API', () => {
     const member = await worker.fetch(memberPost(token, {}, '/members/settings'), e.all);
     expect(member.status).toBe(200);
     expect((await json(member)).taskTiers).toEqual(answer.taskTiers);
-    const repaired = await worker.fetch(await put('/api/settings/agent.tasks', { value: { 'title-summary': { reasoningLevel: 'high' } } }), e.all);
+    const repaired = await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: { 'title-summary': { reasoningLevel: 'high' } } }), e.all);
     expect(repaired.status).toBe(200);
-    expect((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers)
+    expect((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers)
       .toContainEqual({ task: 'title-summary', tier: 'high', source: 'task-override' });
-    expect(await json(await worker.fetch(await remove('/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await remove(e.db, '/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
   });
 
   it('edits a changed task tier and titling switch beside a legacy model pin without a harness', async () => {
@@ -152,10 +152,10 @@ describe('settings API', () => {
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
       JSON.stringify({ 'title-summary': { model: 'sonnet' }, 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
     ]);
-    const before = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const before = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(before.find((row) => row.leaf === 'agent.tasks')).toMatchObject({ source: 'invalid', error: 'invalid_value', remedy: expect.stringContaining('title-summary.model') });
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'canopy-map', tier: 'high' }), e.all))).toEqual({ applied: true });
-    const switched = await worker.fetch(await put('/api/titling-backfill', { enabled: true }), e.all);
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'canopy-map', tier: 'high' }), e.all))).toEqual({ applied: true });
+    const switched = await worker.fetch(await put(e.db, '/api/titling-backfill', { enabled: true }), e.all);
     expect(switched.status).toBe(200);
     const stored = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value);
     expect(stored).toMatchObject({ 'title-summary': { model: 'sonnet', schedule: { enabled: true } }, 'canopy-map': { reasoningLevel: 'high', schedule: { intervalSeconds: 600 } } });
@@ -171,7 +171,7 @@ describe('settings API', () => {
     for (const [leaf, value] of Object.entries(values)) {
       e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?,?,1,'historic')`, [leaf, JSON.stringify(value)]);
     }
-    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const rows = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     for (const leaf of Object.keys(values)) {
       expect(rows.find((row) => row.leaf === leaf)).toMatchObject({ configured: true, source: 'invalid', error: 'invalid_value', remedy: expect.stringContaining('reset') });
     }
@@ -182,49 +182,49 @@ describe('settings API', () => {
     const leaves = ['agent.model', 'agent.reasoningLevel', 'agent.provider.reasoning_map.low', 'agent.provider.effort_map.default.effort', 'agent.provider.thinking_budget_map.high'];
     for (const leaf of leaves) {
       e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?, '"kept"', 1, 'historic')`, [leaf]);
-      const response = await worker.fetch(await put(`/api/settings/${leaf}`, { value: 'replacement' }), e.all);
+      const response = await worker.fetch(await put(e.db, `/api/settings/${leaf}`, { value: 'replacement' }), e.all);
       expect({ status: response.status, body: await response.json() }).toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf } });
-      const reset = await worker.fetch(new Request(await asOwnerPost(`/api/settings/${leaf}`), { method: 'DELETE' }), e.all);
+      const reset = await worker.fetch(new Request(await asOwnerPost(e.db, `/api/settings/${leaf}`), { method: 'DELETE' }), e.all);
       expect({ status: reset.status, body: await reset.json() }).toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf } });
     }
-    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const rows = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     for (const leaf of leaves) expect(rows.find((row) => row.leaf === leaf)).toBeUndefined();
   });
 
   it('patches one task tier against the live document and retains concurrent sibling changes', async () => {
     const e = env();
     const initial = { 'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 4 }, harness: 'claude-code', model: 'haiku' } };
-    await worker.fetch(await put('/api/settings/agent.tasks', { value: initial }), e.all);
-    const stale = await json(await worker.fetch(await asOwner('/api/settings'), e.all));
+    await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: initial }), e.all);
+    const stale = await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all));
     expect(stale.taskTiers).toBeDefined();
     const latest = {
       'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
       'canopy-map': { schedule: { intervalSeconds: 600 }, harness: 'codex' },
     };
-    await worker.fetch(await put('/api/settings/agent.tasks', { value: latest }), e.all);
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }), e.all))).toEqual({ applied: true });
+    await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: latest }), e.all);
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }), e.all))).toEqual({ applied: true });
     expect((e.sqlite.query(`SELECT updated_by FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { updated_by: string }).updated_by).toBe('mem_machine_1');
     const stored = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value);
     expect(stored).toEqual({ ...latest, 'title-summary': { ...latest['title-summary'], reasoningLevel: 'high' } });
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: null }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: null }), e.all))).toEqual({ applied: true });
     const reset = JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value);
     expect(reset).toEqual({ ...latest, 'title-summary': { schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' } });
     const absentTask = OUTCOME_TASKS.find((task) => task !== 'title-summary' && task !== 'canopy-map')!;
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: absentTask, tier: 'high' }), e.all))).toEqual({ applied: true });
-    expect(await json(await worker.fetch(await patch('/api/settings/agent.tasks', { task: absentTask, tier: null }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: absentTask, tier: 'high' }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: absentTask, tier: null }), e.all))).toEqual({ applied: true });
     expect(JSON.parse((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string }).value)).toEqual(reset);
-    expect((await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'unknown-task', tier: 'low' }), e.all)).status).toBe(400);
-    expect((await worker.fetch(await patch('/api/settings/agent.tasks', { task: 'title-summary', tier: 'maximum' }), e.all)).status).toBe(400);
-    expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: { 'title-summary': null } }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'unknown-task', tier: 'low' }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await patch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: 'maximum' }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: { 'title-summary': null } }), e.all)).status).toBe(400);
   });
   it('reports exactly the declared outcome tiers and where each effective tier came from', async () => {
     const e = env();
-    const tiers = async () => (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).taskTiers;
+    const tiers = async () => (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers;
     expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })));
     const overrides = {
       'title-summary': { reasoningLevel: 'high', schedule: { maxRunsPerDay: 4 }, harness: 'claude-code', model: 'opus' },
     };
-    expect(await json(await worker.fetch(await put('/api/settings/agent.tasks', { value: overrides }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: overrides }), e.all))).toEqual({ applied: true });
     expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({
       task, tier: task === 'title-summary' ? 'high' : TASK_TIERS[task], source: task === 'title-summary' ? 'task-override' : 'task',
     })));
@@ -232,7 +232,7 @@ describe('settings API', () => {
 
   it('reports effective profile defaults, configured sources, and reset through the single writer', async () => {
     const e = env();
-    const initial = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const initial = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     const models = { low: 'haiku', default: 'sonnet', high: 'opus' };
     const efforts = { low: 'low', default: 'medium', high: 'high' };
     for (const harness of ['claude-code', 'codex', 'opencode']) {
@@ -245,14 +245,14 @@ describe('settings API', () => {
       expect(initial.find((entry) => entry.leaf === `agent.harnesses.${harness}.credential`)).toMatchObject({ configured: false, effectiveValue: 'deployment', source: 'default' });
     }
     const leaf = 'agent.reasoning_map.claude-code.low';
-    const row = async () => ((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
+    const row = async () => ((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
       .find((entry) => entry.leaf === leaf);
     expect(await row()).toMatchObject({ configured: false, value: null, effectiveValue: 'haiku', source: 'default' });
-    expect(await json(await worker.fetch(await put(`/api/settings/${leaf}`, { value: 'sonnet' }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, `/api/settings/${leaf}`, { value: 'sonnet' }), e.all))).toEqual({ applied: true });
     expect(await row()).toMatchObject({ configured: true, value: 'sonnet', effectiveValue: 'sonnet', source: 'configured' });
-    expect(await json(await worker.fetch(await remove(`/api/settings/${leaf}`), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await remove(e.db, `/api/settings/${leaf}`), e.all))).toEqual({ applied: true });
     expect(await row()).toMatchObject({ configured: false, value: null, effectiveValue: 'haiku', source: 'default' });
-    const missing = ((await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
+    const missing = ((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
       .find((entry) => entry.leaf === 'agent.reasoning_map.opencode.low');
     expect(missing).toMatchObject({ configured: false, effectiveValue: null, source: 'unset' });
   });
@@ -260,16 +260,16 @@ describe('settings API', () => {
   it('refuses reset of a foreign leaf and preserves the configured profile sibling', async () => {
     const e = env();
     const sibling = 'agent.effort_map.claude-code.low';
-    await worker.fetch(await put(`/api/settings/${sibling}`, { value: 'xhigh' }), e.all);
-    const response = await worker.fetch(await remove('/api/settings/not.a.leaf'), e.all);
+    await worker.fetch(await put(e.db, `/api/settings/${sibling}`, { value: 'xhigh' }), e.all);
+    const response = await worker.fetch(await remove(e.db, '/api/settings/not.a.leaf'), e.all);
     expect({ status: response.status, body: await response.json() })
       .toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf: 'not.a.leaf' } });
-    const rows = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const rows = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(rows.find((entry) => entry.leaf === sibling)).toMatchObject({ configured: true, effectiveValue: 'xhigh' });
   });
   it('lists every Deployment leaf, none demanding proof beyond the session', async () => {
     const e = env();
-    const body = await json(await worker.fetch(await asOwner('/api/settings'), e.all));
+    const body = await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all));
     const leaves = body.leaves as Array<Record<string, unknown>>;
     expect(leaves.length).toBeGreaterThan(40);
     expect(leaves.every((l) => l.configured === false)).toBe(true);
@@ -278,14 +278,14 @@ describe('settings API', () => {
 
   it('sets an ordinary leaf and reads it back', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await put('/api/settings/cortex.spores.max_per_prompt', { value: 5 }), e.all))).toEqual({ applied: true });
-    const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(await json(await worker.fetch(await put(e.db, '/api/settings/cortex.spores.max_per_prompt', { value: 5 }), e.all))).toEqual({ applied: true });
+    const leaves = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(leaves.find((l) => l.leaf === 'cortex.spores.max_per_prompt')).toMatchObject({ configured: true, value: 5, effective: 5, source: 'configured', state: 'active' });
   });
 
   it('refuses a member-tier leaf through the surface, not only in the core', async () => {
     const e = env();
-    const res = await worker.fetch(await put('/api/settings/capture.buffer_max_events', { value: 1 }), e.all);
+    const res = await worker.fetch(await put(e.db, '/api/settings/capture.buffer_max_events', { value: 1 }), e.all);
     expect({ status: res.status, body: await res.json() })
       .toEqual({ status: 400, body: { applied: false, reason: 'not_deployment_tier', leaf: 'capture.buffer_max_events' } });
   });
@@ -301,7 +301,7 @@ describe('settings API', () => {
       ['/api/secrets/anthropic', null],
       ['/api/settings/cortex.spores.max_per_prompt', []],
     ] as const) {
-      const res = await worker.fetch(await put(path, body), e.all);
+      const res = await worker.fetch(await put(e.db, path, body), e.all);
       expect({ path, status: res.status, applied: (await res.json() as Record<string, unknown>).applied })
         .toEqual({ path, status: 400, applied: false });
     }
@@ -309,24 +309,24 @@ describe('settings API', () => {
 
   it('refuses a credential longer than any provider issues, terminally', async () => {
     const e = env();
-    const res = await worker.fetch(await put('/api/secrets/anthropic', { value: 'x'.repeat(5000) }), e.all);
+    const res = await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: 'x'.repeat(5000) }), e.all);
     expect(res.status).toBe(400);
   });
 
   it('strips the whitespace a soft-wrapped paste carries before sealing, and refuses a line break rather than repairing it', async () => {
     const e = env();
-    const wrapped = await worker.fetch(await put('/api/secrets/anthropic', { value: `  sk-ant-oat01-${'A'.repeat(24)} ${'B'.repeat(24)}\t${'C'.repeat(24)}-DDDD  ` }), e.all);
+    const wrapped = await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: `  sk-ant-oat01-${'A'.repeat(24)} ${'B'.repeat(24)}\t${'C'.repeat(24)}-DDDD  ` }), e.all);
     const stored = await wrapped.json() as Record<string, unknown>;
     expect({ status: wrapped.status, configured: stored.configured, mask: stored.maskedValue }).toEqual({ status: 200, configured: true, mask: 'sk-ant-o…DDDD' });
-    const broken = await worker.fetch(await put('/api/secrets/anthropic', { value: 'sk-ant-oat01-AAAA\n' }), e.all);
+    const broken = await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: 'sk-ant-oat01-AAAA\n' }), e.all);
     expect({ status: broken.status, body: await broken.json() }).toEqual({ status: 400, body: { applied: false, reason: 'malformed', detail: 'value carries a line break or control character', leaf: 'secret.anthropic' } });
   });
 
   it('applies a change on the member session alone, and records the actor', async () => {
     const e = env();
-    const allowed = await worker.fetch(await put('/api/settings/embedding.model', { value: '@cf/baai/bge-large-en-v1.5' }), e.all);
+    const allowed = await worker.fetch(await put(e.db, '/api/settings/embedding.model', { value: '@cf/baai/bge-large-en-v1.5' }), e.all);
     expect({ status: allowed.status, body: await allowed.json() }).toEqual({ status: 200, body: { applied: true } });
-    const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const leaves = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     expect(leaves.find((l) => l.leaf === 'embedding.model')).toMatchObject({ configured: true, value: '@cf/baai/bge-large-en-v1.5', updatedBy: 'mem_machine_1' });
   });
 });
@@ -334,16 +334,16 @@ describe('settings API', () => {
 describe('provider credentials through the surface', () => {
   it('stores and deletes a credential on the member session alone', async () => {
     const e = env();
-    expect((await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }), e.all)).status).toBe(200);
+    expect((await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: ANTHROPIC }), e.all)).status).toBe(200);
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM deployment_secrets`).get() as any).c).toBe(1);
     expect(await json(await worker.fetch(new Request('https://s/api/secrets/anthropic', {
-      method: 'DELETE', headers: Object.fromEntries((await asOwnerPost('/api/secrets/anthropic')).headers),
+      method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(e.db, '/api/secrets/anthropic')).headers),
     }), e.all))).toEqual({ deleted: true });
   });
 
   it('stores a credential and answers with its description, never the value', async () => {
     const e = env();
-    const res = await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }), e.all);
+    const res = await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: ANTHROPIC }), e.all);
     const body = await res.json() as Record<string, unknown>;
     expect(body).toMatchObject({ name: 'anthropic', configured: true, maskedValue: `${ANTHROPIC.slice(0, 8)}…${ANTHROPIC.slice(-4)}` });
     // A caller that just wrote a value learns only what any other reader may learn.
@@ -352,8 +352,8 @@ describe('provider credentials through the surface', () => {
 
   it('never returns a stored credential from the list, and reports absent slots', async () => {
     const e = env();
-    await worker.fetch(await put('/api/secrets/anthropic', { value: ANTHROPIC }), e.all);
-    const listed = await worker.fetch(await asOwner('/api/secrets'), e.all);
+    await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: ANTHROPIC }), e.all);
+    const listed = await worker.fetch(await asOwner(e.db, '/api/secrets'), e.all);
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
     const secrets = (JSON.parse(text) as { secrets: Array<Record<string, unknown>> }).secrets;
@@ -363,45 +363,45 @@ describe('provider credentials through the surface', () => {
 
   it('deletes a credential, and reports a slot it does not define as absent', async () => {
     const e = env();
-    await worker.fetch(await put('/api/secrets/github', { value: 'ghp_aaaaaaaaaaaaaaaaaaaa' }), e.all);
+    await worker.fetch(await put(e.db, '/api/secrets/github', { value: 'ghp_aaaaaaaaaaaaaaaaaaaa' }), e.all);
     expect(await json(await worker.fetch(new Request('https://s/api/secrets/github', {
-      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost('/api/secrets/github')).headers) },
+      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost(e.db, '/api/secrets/github')).headers) },
     }), e.all))).toEqual({ deleted: true });
 
-    const unknown = await worker.fetch(await put('/api/secrets/not_a_provider', { value: 'x' }), e.all);
+    const unknown = await worker.fetch(await put(e.db, '/api/secrets/not_a_provider', { value: 'x' }), e.all);
     expect(unknown.status).toBe(404);
   });
 
   it('refuses an empty value rather than storing one nothing can authenticate with', async () => {
     const e = env();
-    expect((await worker.fetch(await put('/api/secrets/anthropic', { value: '' }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: '' }), e.all)).status).toBe(400);
   });
 });
 
 describe('project capability admission through the surface', () => {
   it('reports every capability off for a Project nothing has admitted', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await asOwner('/api/projects/proj_1/capabilities'), e.all)))
+    expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
       .toEqual({ capabilities: { cortex: false, canopy: false, vault_evolution: false }, retiredCapabilities: {} });
   });
 
   it('admits one capability, and leaves other Projects untouched', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
-    expect(await json(await worker.fetch(await asOwner('/api/projects/proj_1/capabilities'), e.all)))
+    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
       .toEqual({ capabilities: { cortex: true, canopy: false, vault_evolution: false }, retiredCapabilities: {} });
-    expect(await json(await worker.fetch(await asOwner('/api/projects/proj_2/capabilities'), e.all)))
+    expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_2/capabilities'), e.all)))
       .toMatchObject({ capabilities: { cortex: false } });
   });
 
   it('answers a Project it does not hold as absent rather than confirming it exists', async () => {
     const e = env();
-    expect((await worker.fetch(await asOwner('/api/projects/proj_nope/capabilities'), e.all)).status).toBe(404);
+    expect((await worker.fetch(await asOwner(e.db, '/api/projects/proj_nope/capabilities'), e.all)).status).toBe(404);
   });
 
   it('refuses a capability it does not define', async () => {
     const e = env();
-    const res = await worker.fetch(await put('/api/projects/proj_1/capabilities/made_up', { enabled: true }), e.all);
+    const res = await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/made_up', { enabled: true }), e.all);
     expect({ status: res.status, body: await res.json() })
       .toEqual({ status: 400, body: { applied: false, reason: 'unknown_capability', capability: 'made_up' } });
   });
@@ -447,11 +447,11 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
     const e = env();
     for (const leaf of DEPLOYMENT_LEAVES) {
       const value = sampleFor(leaf);
-      const answer = await json(await worker.fetch(await put(`/api/settings/${leaf}`, { value }), e.all));
+      const answer = await json(await worker.fetch(await put(e.db, `/api/settings/${leaf}`, { value }), e.all));
       expect({ leaf, answer }).toEqual({ leaf, answer: RETIRED_LEAVES.has(leaf) ? { applied: false, reason: 'retired', leaf }
         : NOT_HOSTED.has(leaf) ? { applied: false, reason: 'invalid_value', leaf, detail: expect.stringContaining('not used') } : { applied: true } });
     }
-    const leaves = (await json(await worker.fetch(await asOwner('/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    const leaves = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
     for (const leaf of DEPLOYMENT_LEAVES) {
       const row = leaves.find((l) => l.leaf === leaf)!;
       if (RETIRED_LEAVES.has(leaf)) { expect(row).toMatchObject({ configured: false, retired: true }); continue; }
@@ -472,9 +472,9 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
       return json(await worker.fetch(memberPost(holder.token, { id, agentId: 'agent_s', task: `digest_${id}`, capability: 'cortex' }, '/runs/claim'), e.all));
     };
     expect(await claim('run_off')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
-    expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
     expect(await claim('run_on')).toMatchObject({ persisted: true, claimed: true });
-    expect(await json(await worker.fetch(await put('/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
     expect(await claim('run_off_again')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
   });
 });
@@ -486,20 +486,20 @@ it('surfaces ignored task fields, preserves them during sibling edits, and clear
   const stored = { ...archived, 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' } };
   e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
   const row = async () => {
-    const reply = await worker.fetch(await asOwner('/api/settings'), e.all);
+    const reply = await worker.fetch(await asOwner(e.db, '/api/settings'), e.all);
     expect(reply.status).toBe(200);
     return ((await json(reply)).leaves as Array<Record<string, unknown>>).find((entry) => entry.leaf === 'agent.tasks');
   };
   expect(await row()).toMatchObject({ value: stored, editableValue: stored, retiredValue: {}, storedApplies: false, reason: expect.stringContaining('title-summary.provider') });
-  expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: stored }), e.all)).status).toBe(200);
+  expect((await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: stored }), e.all)).status).toBe(200);
   for (const value of [{ 'container-smoke': { model: 'sonnet' } }]) {
-    expect((await worker.fetch(await put('/api/settings/agent.tasks', { value }), e.all)).status).toBe(400);
+    expect((await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value }), e.all)).status).toBe(400);
     expect((await row())?.value).toEqual(stored);
   }
   const live = { 'title-summary': { reasoningLevel: 'high' } };
-  expect((await worker.fetch(await put('/api/settings/agent.tasks', { value: live }), e.all)).status).toBe(200);
+  expect((await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: live }), e.all)).status).toBe(200);
   expect(await row()).toMatchObject({ editableValue: { ...archived, 'title-summary': { ...archived['title-summary'], ...live['title-summary'] } }, retiredValue: {} });
-  expect((await worker.fetch(await remove('/api/settings/agent.tasks'), e.all)).status).toBe(200);
+  expect((await worker.fetch(await remove(e.db, '/api/settings/agent.tasks'), e.all)).status).toBe(200);
   expect(await row()).toMatchObject({ configured: false, stored: null, effective: {} });
 });
 
@@ -511,10 +511,10 @@ it('repairs stale task fields through the authenticated Settings operation and p
   };
   e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stale)]);
   const path = '/api/settings/agent.tasks/repair';
-  const malformed = await worker.fetch(await asOwnerPost(path, { value: stale }), e.all);
+  const malformed = await worker.fetch(await asOwnerPost(e.db, path, { value: stale }), e.all);
   expect(malformed.status).toBe(400);
   expect((e.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value).toBe(JSON.stringify(stale));
-  const repaired = await worker.fetch(await asOwnerPost(path, {}), e.all);
+  const repaired = await worker.fetch(await asOwnerPost(e.db, path, {}), e.all);
   expect({ status: repaired.status, body: await json(repaired) }).toEqual({ status: 200, body: { applied: true } });
   const saved = e.sqlite.query(`SELECT value, updated_by FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string; updated_by: string };
   expect(JSON.parse(saved.value)).toEqual({ 'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' } });
@@ -531,7 +531,7 @@ it.each(['revoked','demoted'] as const)('refuses a raw-window edit when its acto
   try{
     f.sqlite.run("INSERT INTO deployment_settings VALUES('retention.transcripts','30',1,'historic')");
     armed=true;
-    const response=await worker.fetch(await put('/api/settings/retention.raw_days',{value:90}),{...f.env,...OWNER_ENV});
+    const response=await worker.fetch(await put(f.db, '/api/settings/retention.raw_days',{value:90}),{...f.env,...OWNER_ENV});
     expect(response.status).toBe(403);
     expect(armed).toBe(false);
     expect(f.sqlite.query('SELECT leaf,value FROM deployment_settings').all()).toEqual([{leaf:'retention.transcripts',value:'30'}]);

@@ -53,7 +53,7 @@ export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; name
     setReview({ kind: preview.ownerMemberId === null ? 'record' : 'transfer', revision: preview.revision, memberId: candidate.memberId, name: nameOfCandidate(candidate) });
   };
   return (
-    <AdminSection id="ownership" title="Server owner" description="The owner controls roles and ownership of this server, and may claim raw data with no recorded uploader.">
+    <AdminSection id="ownership" title="Server owner" description="The owner controls administrator access and ownership of this server. Raw uploads remain private to the person who uploaded them.">
       {ownership.isPending ? <LoadingState label="Reading server ownership" />
         : ownership.isError ? <ErrorState error={ownership.error} onRetry={() => void ownership.refetch()} />
         : preview === undefined ? null

@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -29,7 +30,7 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { pos
 }
 
 const base = (projects: unknown[], extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
-  '/auth/me': () => Response.json(ME),
+  '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/members': () => Response.json({ members: [{ id: 'mem_1', label: 'chris', role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 }] }),
   '/api/projects': () => Response.json({ projects }),
   '/api/projects/live/activity': () => Response.json(EMPTY_ACTIVITY),
@@ -152,7 +153,7 @@ describe('a project\'s menu', () => {
     fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Project settings' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Project settings' })).toBeTruthy();
     cleanup();
-    server({ ...base([LIVE]), '/auth/me': () => Response.json({ ...ME, member: { ...ME.member, role: 'member' } }) });
+    server({ ...base([LIVE]), '/auth/me': () => Response.json(dashboardMe({ ...ME, member: { ...ME.member, role: 'member' } })) });
     mount('/projects');
     await screen.findByRole('list', { name: 'Projects' });
     expect(screen.queryByRole('button', { name: 'Actions for Live' })).toBeNull();

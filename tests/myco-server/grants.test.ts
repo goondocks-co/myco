@@ -28,17 +28,17 @@ describe('external grants', () => {
   it('mints a key once for the path\'s project, stores only its digest, lists without it, and authenticates it to that project alone', async () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
-    const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_1/grants', { label: 'review bot' }), env);
+    const minted = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/grants', { label: 'review bot' }), env);
     expect(minted.status).toBe(201);
     const { key, id } = await minted.json() as { key: string; id: string };
     expect(GRANT_KEY_PATTERN.test(key)).toBe(true);
     expect(JSON.stringify(e.sqlite.query(`SELECT * FROM external_grants`).all())).not.toContain(key);
 
-    const listed = await worker.fetch(await asOwner('/api/projects/proj_1/grants'), env);
+    const listed = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/grants'), env);
     const raw = await listed.text();
     expect(raw).not.toContain(key);
     expect((JSON.parse(raw) as { grants: { id: string; label: string; createdBy: string }[] }).grants).toEqual([expect.objectContaining({ id, label: 'review bot', createdBy: PRINCIPAL.id })]);
-    expect((await (await worker.fetch(await asOwner('/api/projects/proj_2/grants'), env)).json() as { grants: unknown[] }).grants).toEqual([]);
+    expect((await (await worker.fetch(await asOwner(e.db, '/api/projects/proj_2/grants'), env)).json() as { grants: unknown[] }).grants).toEqual([]);
 
     expect(await authenticateGrant(e.db, await sha256Hex(key), Date.now())).toEqual({ grantId: id, projectId: 'proj_1' });
     expect(await authenticateGrant(e.db, await sha256Hex('mycoext_' + 'x'.repeat(43)), Date.now())).toBeNull();
@@ -55,19 +55,19 @@ describe('external grants', () => {
   it('answers the expiry it minted, takes the default window when the caller names none, and holds a named window to its bounds', async () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
-    const defaulted = await worker.fetch(await asOwnerPost('/api/projects/proj_1/grants', {}), env);
+    const defaulted = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/grants', {}), env);
     const { id, expiresAt } = await defaulted.json() as { id: string; expiresAt: number };
     const created = (e.sqlite.query(`SELECT created_at FROM external_grants WHERE id = ?`).get(id) as { created_at: number }).created_at;
     expect(expiresAt - created).toBe(GRANT_TTL_DAYS_DEFAULT * DAY_MS);
 
-    const named = await worker.fetch(await asOwnerPost('/api/projects/proj_1/grants', { expires_in_days: 7 }), env);
+    const named = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/grants', { expires_in_days: 7 }), env);
     const week = await named.json() as { id: string; expiresAt: number };
     const weekCreated = (e.sqlite.query(`SELECT created_at FROM external_grants WHERE id = ?`).get(week.id) as { created_at: number }).created_at;
     expect(week.expiresAt - weekCreated).toBe(7 * DAY_MS);
 
     const before = e.sqlite.query(`SELECT COUNT(*) AS c FROM external_grants`).get();
     for (const bad of [0, -1, GRANT_TTL_DAYS_MAX + 1, 1.5, '30', null]) {
-      const refused = await worker.fetch(await asOwnerPost('/api/projects/proj_1/grants', { expires_in_days: bad }), env);
+      const refused = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/grants', { expires_in_days: bad }), env);
       expect({ bad, status: refused.status }).toEqual({ bad, status: 400 });
     }
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM external_grants`).get()).toEqual(before);
@@ -76,8 +76,8 @@ describe('external grants', () => {
   it('refuses a mint for a project the minter cannot see, and a label out of bounds, leaving no grant and no agent', async () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
-    expect((await worker.fetch(await asOwnerPost('/api/projects/proj_missing/grants', {}), env)).status).toBe(404);
-    expect((await worker.fetch(await asOwnerPost('/api/projects/proj_1/grants', { label: 'x'.repeat(81) }), env)).status).toBe(400);
+    expect((await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_missing/grants', {}), env)).status).toBe(404);
+    expect((await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/grants', { label: 'x'.repeat(81) }), env)).status).toBe(400);
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM external_grants`).get()).toEqual({ c: 0 });
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM agents WHERE source = ?`).get(GRANT_AGENT_SOURCE)).toEqual({ c: 0 });
   });
@@ -86,7 +86,7 @@ describe('external grants', () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
     const first = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', NOW);
-    const rotated = await worker.fetch(await asOwnerPost(`/api/projects/proj_1/grants/${first.id}/rotate`), env);
+    const rotated = await worker.fetch(await asOwnerPost(e.db, `/api/projects/proj_1/grants/${first.id}/rotate`), env);
     expect(rotated.status).toBe(201);
     const { key, id } = await rotated.json() as { key: string; id: string };
     expect(await authenticateGrant(e.db, await sha256Hex(first.key), Date.now())).toBeNull();
@@ -119,12 +119,12 @@ describe('external grants', () => {
     const e = sqliteEnv();
     const env = { ...e.env, ...OWNER_ENV };
     const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, null, 'mem_machine_1', NOW);
-    expect((await worker.fetch(await asOwnerPost(`/api/projects/proj_2/grants/${grant.id}/rotate`), env)).status).toBe(404);
+    expect((await worker.fetch(await asOwnerPost(e.db, `/api/projects/proj_2/grants/${grant.id}/rotate`), env)).status).toBe(404);
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM external_grants`).get()).toEqual({ c: 1 });
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM agents WHERE source = ?`).get(GRANT_AGENT_SOURCE)).toEqual({ c: 1 });
     expect(await authenticateGrant(e.db, await sha256Hex(grant.key), NOW)).not.toBeNull();
-    expect(await jsonBody((await worker.fetch(await asOwnerPost(`/api/projects/proj_2/grants/${grant.id}/revoke`), env)))).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
-    expect(await jsonBody((await worker.fetch(await asOwnerPost(`/api/projects/proj_1/grants/${grant.id}/revoke`), env)))).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody((await worker.fetch(await asOwnerPost(e.db, `/api/projects/proj_2/grants/${grant.id}/revoke`), env)))).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
+    expect(await jsonBody((await worker.fetch(await asOwnerPost(e.db, `/api/projects/proj_1/grants/${grant.id}/revoke`), env)))).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(await authenticateGrant(e.db, await sha256Hex(grant.key), NOW)).toBeNull();
     expect(await rotateExternalGrant(e.db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', NOW)).toBeNull();
   });

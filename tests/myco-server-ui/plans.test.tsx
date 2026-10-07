@@ -4,6 +4,7 @@
  * column, a plan's own page read by its key with its tags, the session that
  * wrote it and an admin's status control, and the old addresses of a plan.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -67,7 +68,7 @@ const columns = (project = '', over: Record<string, () => Response> = {}, q = ''
 );
 
 const base = (extra: Routes = {}, me: unknown = ADMIN): Routes => ({
-  '/auth/me': () => Response.json(me),
+  '/auth/me': () => Response.json(dashboardMe(me)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   ...extra,

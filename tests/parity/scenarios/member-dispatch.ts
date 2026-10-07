@@ -24,7 +24,7 @@ export const memberDispatch: ParityScenario = {
     })).json() as { joined: boolean; memberId: string };
     expect(joined.joined).toBe(true);
     await target.sql(`UPDATE members SET github_id = ${lit(MEMBER_ROLE_SUB)} WHERE id = ${lit(joined.memberId)}`);
-    const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: MEMBER_ROLE_SUB, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+    const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: MEMBER_ROLE_SUB, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
     const member = { cookie, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
     const started: string[] = [];
     const dispatch = async (headers: Record<string, string>, body: Record<string, unknown>) => {

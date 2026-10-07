@@ -29,7 +29,7 @@ async function fixture() {
   const call = (projectId: string, failed: boolean) => f.sqlite.run(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, payload, recorded_at)
     VALUES (?, 'calls_run', 'run_tool', 'myco_run_map', ?, ?, ?)`, [projectId, failed ? 'failed' : 'success', JSON.stringify({ op: failed ? 'write' : 'get', ...(failed ? { failure: { code: 'tool_call_failed', message: 'Map text must be a bounded nonempty line' } } : {}) }), CALL_TIME]);
   const get = async (path: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(f.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
   return { ...f, sql, get, call };

@@ -56,8 +56,8 @@ function composeUiDir(root: string): { uiDir: string; specimen: boolean } {
   return { uiDir, specimen };
 }
 
-async function cookieFor(member: Pick<FixtureMember, 'githubSub' | 'login'>, now: number): Promise<string> {
-  const value = await signSession(SCREENS_SESSION_SECRET, { sub: member.githubSub, login: member.login, iat: now, exp: now + 12 * 3_600_000 });
+async function cookieFor(member: Pick<FixtureMember, 'githubSub' | 'login'>, now: number, deploymentId: string): Promise<string> {
+  const value = await signSession(SCREENS_SESSION_SECRET, { aud: deploymentId, sub: member.githubSub, login: member.login, iat: now, exp: now + 12 * 3_600_000 });
   return `${SESSION_COOKIE}=${value}`;
 }
 
@@ -70,6 +70,7 @@ async function main(): Promise<void> {
     const sqlite = new Database(databasePath);
     sqlite.exec('PRAGMA foreign_keys = ON');
     for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+    const deploymentId = (sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value: string }).value;
     sqlite.close();
 
     const now = Date.now();
@@ -91,9 +92,9 @@ async function main(): Promise<void> {
       GITHUB_CLIENT_SECRET: 'screens-secret',
     });
     const url = `http://127.0.0.1:${started.port}`;
-    const ownerCookie = await cookieFor(OWNER, now);
-    const memberCookie = await cookieFor(READER, now);
-    const strangerCookie = await cookieFor(STRANGER, now);
+    const ownerCookie = await cookieFor(OWNER, now, deploymentId);
+    const memberCookie = await cookieFor(READER, now, deploymentId);
+    const strangerCookie = await cookieFor(STRANGER, now, deploymentId);
 
     let stopping = false;
     const stop = async () => {

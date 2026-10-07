@@ -3,6 +3,7 @@
  * Myco's run credentials, as an admin administers them. Every destructive act
  * sits in a ⋯ menu behind a confirm that keeps the server's refusal in view.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES, REJOIN_FOR_ADMIN, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -71,7 +72,7 @@ function accessServer(credentials: { member?: unknown[]; run?: unknown[] }, rout
   const members = credentials.member ?? [];
   const machines = machineRows(members as CredentialRow[]);
   return server({
-    '/auth/me': () => Response.json(ME),
+    '/auth/me': () => Response.json(dashboardMe(ME)),
     '/api/projects': () => Response.json({ projects: [] }),
     '/api/members': () => Response.json(MEMBERS),
     '/api/enrollment': () => Response.json({ invitations: [] }),
@@ -441,6 +442,29 @@ describe('machines', () => {
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
   });
 
+  it('uses the machine Stop decision, including the owner credential protection', async () => {
+    const { posts } = accessServer({ member: [credential({ memberId: LIN })] }, {
+      '/api/machines': () => Response.json({ machines: machineRows([credential({ memberId: LIN }) as CredentialRow]).map((machine) => ({
+        ...machine, canStop: false, stopReason: 'Only the owner can stop another owner’s machine. You can stop your own machines.',
+      })), cursor: null }),
+    });
+    mount('/people');
+    const machines = await screen.findByRole('list', { name: 'Machines' });
+    expect(await within(machines).findByText(/Only the owner can stop another owner’s machine/)).toBeTruthy();
+    expect(await menuItems(within(machines).getByRole('button', { name: 'More for Ada’s MacBook' }))).not.toContain('Stop');
+    expect(posts).toEqual([]);
+  });
+
+  it('keeps a zero-revocation Stop outcome visible as an unsuccessful action', async () => {
+    accessServer({ member: [credential()] }, { '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 0, revokedBy: ADA }) });
+    mount('/people');
+    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('No sign-in was stopped');
+    expect(screen.getByRole('dialog', { name: 'Stop Ada’s MacBook?' })).toBeTruthy();
+  });
+
   it('retries one machine-scoped stop after a refusal', async () => {
     const ids = ['mt_StopOne1aaaaaaaa', 'mt_StopTwo2bbbbbbbb', 'mt_StopThree3cccccc'];
     const asked: string[] = [];
@@ -469,7 +493,7 @@ describe('machines', () => {
     const asked: string[] = [];
     accessServer({}, {
       '/api/machines': () => Response.json({ machines: [{
-        machineId: 'ada_5a2d54af', name: 'Ada’s MacBook', live: true, member: { id: ADA, label: 'Ada', revoked: false },
+        machineId: 'ada_5a2d54af', name: 'Ada’s MacBook', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false },
         claimedAt: NOW_MS - 90 * 86_400_000, credentialCount: 2, liveCredentialCount: 1, bytesWritten: 0,
         firstSeenAt: NOW_MS - 90 * 86_400_000, standing: 'allowed', stoppedBy: null,
         offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null,
@@ -591,7 +615,7 @@ describe('Connecting a GitHub account', () => {
   it('says a link from before the server had an admin can no longer connect', async () => {
     window.history.replaceState(null, '', `/link#${'k'.repeat(43)}`);
     server({
-      '/auth/me': () => Response.json({ sub: '9002', login: 'newcomer', member: null }),
+      '/auth/me': () => Response.json(dashboardMe({ sub: '9002', login: 'newcomer', member: null })),
       '/auth/link': () => Response.json({ error: 'link_requires_admin' }, { status: 403 }),
     });
     mount('/link');

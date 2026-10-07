@@ -2,6 +2,7 @@
  * The dashboard as a member who is not an admin sees it (#1491): no page asks a route the route table declares
  * `admin`, and the controls that reach one are not offered, while the read views and their own runtimes stay.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -34,12 +35,12 @@ function server(routes: Record<string, () => Response>): string[] {
 }
 
 const ROUTES_ANSWERED: Record<string, () => Response> = {
-  '/auth/me': () => Response.json(MEMBER),
+  '/auth/me': () => Response.json(dashboardMe(MEMBER)),
   '/api/projects': () => Response.json({ projects: [PROJECT] }),
   '/api/projects/live/activity': () => Response.json(EMPTY_ACTIVITY),
   '/api/members': () => Response.json({ members: [{ id: 'mem_2', label: 'teammate', role: 'member', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 }] }),
   '/api/credentials': () => Response.json({ rows: [CREDENTIAL], cursor: null }),
-  '/api/machines': () => Response.json({ machines: [{ machineId: 'laptop', name: null, live: true, member: { id: 'mem_2', label: 'teammate', revoked: false }, claimedAt: 0, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null }], cursor: null }),
+  '/api/machines': () => Response.json({ machines: [{ machineId: 'laptop', name: null, live: true, canStop: true, stopReason: null, member: { id: 'mem_2', label: 'teammate', revoked: false }, claimedAt: 0, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null }], cursor: null }),
   '/api/settings': () => Response.json({ leaves: [] }),
   '/api/tasks': () => Response.json({ tasks: [] }),
 };

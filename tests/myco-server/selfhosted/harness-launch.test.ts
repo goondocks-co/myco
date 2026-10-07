@@ -90,6 +90,7 @@ async function boot(): Promise<Seam> {
   await deploymentSecretStore(db, wrappingKeyFromText(async () => wrappingText, 'seam')).put('anthropic', 'sk-ant-oat-seam-test-token', MEMBER_ID, now);
   sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, ?)`)
     .run(PROJECT_ID, now, MEMBER_ID);
+  const deploymentId = (sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value: string }).value;
   sqlite.close();
 
   const tokenPath = join(root, 'harness_token');
@@ -139,7 +140,7 @@ async function boot(): Promise<Seam> {
   });
   boundPort = started.port;
   const url = `http://127.0.0.1:${started.port}`;
-  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'seam', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'seam', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
   const ownerHeaders = () => ({ cookie, origin: url });
 
   const sql = (command: string): Record<string, unknown>[] => {

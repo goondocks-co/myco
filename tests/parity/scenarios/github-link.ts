@@ -78,6 +78,6 @@ export const githubLink: ParityScenario = {
 
 /** A same-origin dashboard request signed in as the GitHub account `sub`; the source header is load-bearing only on Cloudflare. */
 async function sessionHeaders(target: ParityTarget, sub: string): Promise<Record<string, string>> {
-  const session = await signSession(SESSION_SECRET, { sub, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 });
+  const session = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 });
   return { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
 }

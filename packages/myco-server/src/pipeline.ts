@@ -335,13 +335,20 @@ export function createServer(deps: ServerDeps) {
     if (matched?.route.auth === 'auth' || matched?.route.auth === 'session') {
       const config = ownerConfig(env);
       if (config === null) return anonymous();
-      if (matched.route.auth === 'auth') {
-        if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
-        if (!protocolAdmitted(matched.route, 'public')) return unauthorized();
-        return matched.route.handler(request, { config, fetchImpl: deps.fetchImpl, now, origin: url.origin });
-      }
+      if (matched.route.auth === 'auth' && !(await env.sourceLimit.limit({ key: source })).success) return limited();
       const presented = readCookie(request.headers.get('cookie'));
-      const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now);
+      if (matched.route.auth === 'session' && presented === null) return anonymous();
+      let deploymentId: string;
+      try { deploymentId = await deploymentIdentity(env.db); }
+      catch (err) {
+        emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
+        return unavailable();
+      }
+      if (matched.route.auth === 'auth') {
+        if (!protocolAdmitted(matched.route, 'public')) return unauthorized();
+        return matched.route.handler(request, { config, fetchImpl: deps.fetchImpl, now, origin: url.origin, deploymentId });
+      }
+      const session = presented === null ? null : await verifySession(config.sessionSecret, presented, now, deploymentId);
       if (session === null) return anonymous();
       if (!sameOrigin(request, url)) return forbidden();
       let freshDispatch = false;

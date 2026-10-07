@@ -23,7 +23,7 @@ async function rig() {
 }
 async function post(f: ReturnType<typeof sqliteEnv>, sub: string, path: string, body: unknown) {
   return worker.fetch(new Request(`https://s${path}`, {
-    method: 'POST', headers: { cookie: await ownerCookie(Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4' },
+    method: 'POST', headers: { cookie: await ownerCookie(f.db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4' },
     body: JSON.stringify(body),
   }), { ...f.env, ...OWNER_ENV });
 }

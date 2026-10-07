@@ -1,9 +1,14 @@
+import { serve } from '@myco-server-worker/entry/bun.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
+import { memberHeaders } from '../myco-server/helpers/fixtures.js';
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createRecoveryBundle } from '@myco/server/recovery-bundle.js';
+import { assertRecoveryTenantChoice } from '@myco-server-worker/core/recovered-tenant.js';
 import { restoreLocalDeployment } from '@myco/server/local-recovery.js';
 import { LOCAL_SECRET_NAMES, readLocalRecord, readLocalSecrets, resolveLocalPaths } from '@myco/server/local.js';
 import { envelope, sqliteEnv, uuid } from '../myco-server/helpers/fixtures.js';
@@ -94,14 +99,14 @@ const RECOVERED_TOOL_ID = uuid(9002);
 const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/repo/recovered.ts' };
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
-  { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false } = {}) {
+  { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
   const artifact = path.join(root, 'artifact');
   const secretsFile = path.join(root, 'independent.env');
   const paths = resolveLocalPaths(path.join(root, 'destination'));
-  const secrets = { SECRET_WRAP_KEY: Buffer.alloc(32, 9).toString('base64'), SESSION_SECRET: 'fixture-session-secret',
+  const secrets = { SECRET_WRAP_KEY: Buffer.alloc(32, 9).toString('base64'), SESSION_SECRET: 'fixture-session-secret-with-thirty-two-bytes',
     GITHUB_CLIENT_ID: 'fixture-client', GITHUB_CLIENT_SECRET: 'fixture-client-secret' };
   fs.writeFileSync(secretsFile, Object.entries(secrets).map(([name, value]) => `${name}=${value}`).join('\n'), { mode: 0o600 });
   const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
@@ -124,6 +129,13 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
         input: RECOVERED_TOOL_INPUT, success: true } }), source.serverEnv))
       .toMatchObject({ persisted: true, projected: true });
   }
+  const carriedToken = authority ? await issueMemberToken(source.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()) : null;
+  if (authority) {
+    seedCredential(source.sqlite, { id: 'carried-live', expiresAt: Date.now() + 60_000 });
+    source.sqlite.run("INSERT INTO enrollment_authorities(id,key_hash,created_at,expires_at) VALUES('carried-enrollment','enrollment-hash',1,9999999999999)");
+    source.sqlite.run("INSERT INTO identity_link_authorities(id,key_hash,member_id,created_at,expires_at) VALUES('carried-link','link-hash','mem_machine_1',1,9999999999999)");
+    source.sqlite.run("INSERT INTO external_grants(id,key_hash,project_id,label,created_by,created_at,expires_at) VALUES('carried-grant','grant-hash','proj_1','fixture','mem_machine_1',1,9999999999999)");
+  }
   const backup = await createBackup(source.db, source.bucket, { producer: 'fixture', now: 1000 });
   await setBackupPinned(source.db, backup.id, true);
   await createRecoveryBundle(artifact, {
@@ -142,8 +154,8 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
       return held.body;
     },
   });
-  return { source, root, artifact, secretsFile, paths, secrets, key, provider, backup, blobs,
-    restore: (report?: (line: string) => void) => restoreLocalDeployment({ source: artifact, secretsFile, paths, port: 18901, ...(report === undefined ? {} : { report }) }),
+  return { source, root, artifact, secretsFile, paths, secrets, key, provider, backup, blobs, carriedToken,
+    restore: (report?: (line: string) => void, tenantMode: 'replacement' | 'fork' = 'replacement') => restoreLocalDeployment({ sourceRetired: true, tenantMode, source: artifact, secretsFile, paths, port: 18901, ...(report === undefined ? {} : { report }) }),
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -295,10 +307,10 @@ it('recovers with a fresh sign-in from the wrapping key alone, for a Deployment 
   try {
     // Only the wrapping key, as an owner who configured no GitHub sign-in holds.
     fs.writeFileSync(f.secretsFile, `SECRET_WRAP_KEY=${f.secrets.SECRET_WRAP_KEY}\n`, { mode: 0o600 });
-    await expect(restoreLocalDeployment({ source: f.artifact, secretsFile: f.secretsFile, paths: f.paths, port: 18902 }))
+    await expect(restoreLocalDeployment({ sourceRetired: true, source: f.artifact, secretsFile: f.secretsFile, paths: f.paths, port: 18902 }))
       .rejects.toThrow('recovery requires independently supplied SESSION_SECRET');
 
-    const restored = await restoreLocalDeployment({
+    const restored = await restoreLocalDeployment({ sourceRetired: true,
       source: f.artifact, secretsFile: f.secretsFile, paths: f.paths, port: 18902, newSignIn: true,
     });
     expect(restored.schemaVersion).toBeGreaterThan(0);
@@ -308,4 +320,51 @@ it('recovers with a fresh sign-in from the wrapping key alone, for a Deployment 
     expect(published).toContain('SESSION_SECRET=');
     expect(published).not.toContain('GITHUB_CLIENT_ID=');
   } finally { f.cleanup(); }
+});
+
+for (const tenantMode of ['replacement', 'fork'] as const) {
+  it(`native ${tenantMode} publishes the approved tenant and copied-authority contract`, async () => {
+    const f = await fixture('local', { authority: true });
+    try {
+      const original = fs.readFileSync(path.join(f.artifact, 'myco.sqlite'));
+      const sourceId = f.source.sqlite.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
+      const history = f.source.sqlite.query('SELECT * FROM spores').all();
+      await f.restore(undefined, tenantMode);
+      const db = new Database(f.paths.databasePath, { readonly: true });
+      try {
+        const destinationId = db.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string };
+        if (tenantMode === 'replacement') expect(destinationId).toEqual(sourceId);
+        else expect(destinationId.value).not.toBe(sourceId.value);
+        expect(db.query('SELECT * FROM spores').all()).toEqual(history);
+        for (const table of ['member_credentials', 'enrollment_authorities', 'identity_link_authorities', 'external_grants']) {
+          const live = db.query(`SELECT count(*) AS n FROM ${table} WHERE revoked_at IS NULL`).get() as { n: number };
+          if (tenantMode === 'fork') expect(live.n).toBe(0);
+          else expect(live.n).toBeGreaterThan(0);
+        }
+        const published = readLocalSecrets(f.paths);
+        if (tenantMode === 'fork') expect(published.SESSION_SECRET).not.toBe(f.secrets.SESSION_SECRET);
+        else expect(published.SESSION_SECRET).toBe(f.secrets.SESSION_SECRET);
+      } finally { db.close(); }
+      const started = await serve({ databasePath: f.paths.databasePath, blobDir: f.paths.blobDir,
+        port: 0, bind: 'loopback', transport: 'loopback', sourceFrom: 'socket', wakeLoop: false, ...readLocalSecrets(f.paths) });
+      try {
+        const origin = `http://127.0.0.1:${started.port}`;
+        const oldSession = await signSession(f.secrets.SESSION_SECRET, { aud: sourceId.value, sub: '583231', login: 'fixture', iat: Date.now(), exp: Date.now() + 60_000 });
+        expect((await fetch(`${origin}/api/projects`, { headers: { cookie: `${SESSION_COOKIE}=${oldSession}` } })).status)
+          .toBe(tenantMode === 'fork' ? 401 : 200);
+        expect((await fetch(`${origin}/members/status`, { method: 'POST', headers: memberHeaders(f.carriedToken!.token), body: '{}' })).status)
+          .toBe(tenantMode === 'fork' ? 401 : 200);
+        const current = await issueMemberToken(started.env.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+        expect((await fetch(`${origin}/members/status`, { method: 'POST', headers: memberHeaders(current.token), body: '{}' })).status).toBe(200);
+      } finally { await started.stop(); }
+      expect(fs.readFileSync(path.join(f.artifact, 'myco.sqlite'))).toEqual(original);
+      await assertServedAfterStartup(f);
+    } finally { f.cleanup(); }
+  });
+}
+
+it('replacement requires source retirement; fork permits an independent live source', () => {
+  expect(() => assertRecoveryTenantChoice()).toThrow('--source-retired');
+  expect(() => assertRecoveryTenantChoice('replacement', true)).not.toThrow();
+  expect(() => assertRecoveryTenantChoice('fork')).not.toThrow();
 });

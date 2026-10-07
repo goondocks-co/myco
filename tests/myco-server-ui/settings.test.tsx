@@ -4,6 +4,7 @@
  * stored, titling imported sessions as a switch, and Sign-in and access as the
  * way to the pages that hold people, machines and access keys.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { beforeAll, afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -127,7 +128,7 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { sen
 }
 
 const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
-  '/auth/me': () => Response.json(ME),
+  '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/settings': () => Response.json(leaves({ 'cortex.digest.inject_on_session_start': { value: true, updatedBy: ADA, updatedAt: NOW - 2 * 3_600_000 } })),

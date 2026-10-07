@@ -9,6 +9,7 @@
  * without Today ever showing. Each check watches the document from the first
  * render, so a flash of the wrong page fails it, not only the settled one.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -47,7 +48,7 @@ function server(projects: unknown[]): { asked: string[]; release: () => void } {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, 'https://s');
     asked.push(`${url.pathname}${url.search}`);
-    if (url.pathname === '/auth/me') return Response.json(ADMIN);
+    if (url.pathname === '/auth/me') return Response.json(dashboardMe(ADMIN));
     if (url.pathname === '/api/projects') { await listed; return Response.json({ projects }); }
     return new Response(null, { status: 404 });
   }) as typeof fetch;

@@ -300,7 +300,7 @@ describe('the document is an owner surface', () => {
   it('returns unavailable without an attachment when live membership cannot be checked', async () => {
     const r = await rig();
     r.sqlite.run('DROP TABLE members');
-    const res = await worker.fetch(await asOwner('/api/diagnostics'), r.env);
+    const res = await worker.fetch(await asOwner(r.db, '/api/diagnostics'), r.env);
     expect(res.status).toBe(503);
     expect(res.headers.get('content-disposition')).toBeNull();
     expect(await res.json() as { error: string }).toEqual({ error: 'unavailable' });
@@ -309,7 +309,7 @@ describe('the document is an owner surface', () => {
   it('downloads an unavailable-store document when a diagnostic query fails after admission', async () => {
     const r = await rig();
     r.sqlite.run('DROP TABLE worker_contacts');
-    const res = await worker.fetch(await asOwner('/api/diagnostics'), r.env);
+    const res = await worker.fetch(await asOwner(r.db, '/api/diagnostics'), r.env);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-disposition')).toContain('attachment; filename="myco-diagnostics-');
     const document = await res.json() as { store: string; schema: { found: number }; workers: unknown };
@@ -320,7 +320,7 @@ describe('the document is an owner surface', () => {
 
   it('is served to an owner as a downloadable attachment', async () => {
     const r = await rig();
-    const res = await worker.fetch(await asOwner('/api/diagnostics'), r.env);
+    const res = await worker.fetch(await asOwner(r.db, '/api/diagnostics'), r.env);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(res.headers.get('content-disposition')).toContain('attachment; filename="myco-diagnostics-');

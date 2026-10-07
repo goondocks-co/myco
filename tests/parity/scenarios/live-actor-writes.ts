@@ -13,9 +13,9 @@ async function request(target: ParityTarget, path: string, method: string, heade
   });
 }
 
-async function session(sub: string): Promise<Record<string, string>> {
+async function session(target: ParityTarget, sub: string): Promise<Record<string, string>> {
   const now = Date.now();
-  return { cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub, login: 'live-write', iat: now, exp: now + 3_600_000 })}`, 'cf-connecting-ip': '1.2.3.4' };
+  return { cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: 'live-write', iat: now, exp: now + 3_600_000 })}`, 'cf-connecting-ip': '1.2.3.4' };
 }
 
 /** Demotion commits on the serving store before the guarded mutation batch begins. */
@@ -27,8 +27,8 @@ export const liveActorWrites: ParityScenario = {
     await target.sql(`INSERT INTO members (id, role, github_id, created_at) VALUES (${lit(ADMIN)}, 'admin', '720901', ${now}), (${lit(MEMBER)}, 'member', '720902', ${now})`);
     // Keep the admin distinct from the Deployment owner.
     await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(MEMBER_ID)}, bootstrap_mode = 'selection' WHERE id = 1`);
-    const admin = await session('720901');
-    const member = await session('720902');
+    const admin = await session(target, '720901');
+    const member = await session(target, '720902');
     await target.sql(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
     await target.sql(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ${lit(JSON.stringify({ [TASK]: { schedule: { memberRunsPerDay: 1 } } }))}, ${now}, ${lit(MEMBER_ID)})`);
     for (const harness of ['claude-code', 'codex', 'opencode']) {

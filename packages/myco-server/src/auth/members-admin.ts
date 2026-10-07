@@ -30,6 +30,7 @@ export interface MemberRow {
   label: string | null;
   /** What this member may administer. Every member reads this list; only an admin acts on it. */
   role: MemberRole;
+  effectiveRole: 'owner' | MemberRole;
   roleRevision: string;
   /** Whether a GitHub account is connected. The account itself is never listed. */
   linked: boolean;
@@ -44,7 +45,7 @@ export interface MemberRow {
 
 export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
   const { results } = await db
-    .prepare(`SELECT m.id, m.label, m.role, m.role_revision, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
+    .prepare(`SELECT m.id, m.label, m.role, m.role_revision, ${deploymentOwnerSql('m.id')} AS owner, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
                      (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')} AND NOT (${runCredential('c')})) AS live_credentials
                 FROM members m ORDER BY m.created_at ASC, m.id ASC`)
     .bind(nowMs, HARNESS_MEMBER_ID)
@@ -53,6 +54,7 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
     id: r.id as string,
     label: (r.label as string | null) ?? null,
     role: asMemberRole(r.role) ?? 'member',
+    effectiveRole: Number(r.owner) === 1 ? 'owner' : asMemberRole(r.role) ?? 'member',
     roleRevision: String(r.role_revision),
     linked: Number(r.linked) === 1,
     createdAt: r.created_at as number,

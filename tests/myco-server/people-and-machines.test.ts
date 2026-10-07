@@ -14,6 +14,7 @@ import { LINK_REQUIRES_ADMIN_HINT } from '@myco/cli/member.js';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { machineName } from '@myco-server-worker/api/machines.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -24,7 +25,7 @@ const HOUR = 60 * 60 * 1000;
  */
 function rig() {
   const fixture = sqliteEnv();
-  const env = { ...fixture.env, ...OWNER_ENV };
+  const env = { ...fixture.env, ...OWNER_ENV, db: fixture.db };
   const { sqlite, db } = fixture;
   seedMemberRoleAccount(sqlite);
   const now = Date.now();
@@ -60,7 +61,7 @@ async function seeded() {
 
 const request = async (env: unknown, sub: string | null, method: string, path: string, body?: unknown): Promise<Response> => {
   const headers: Record<string, string> = { 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' };
-  if (sub !== null) headers.cookie = await ownerCookie(Date.now(), sub);
+  if (sub !== null) headers.cookie = await ownerCookie((env as { db: RelationalStore }).db, Date.now(), sub);
   return worker.fetch(new Request(`https://s${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), env as never);
 };
 const ADMIN = '583231';

@@ -57,7 +57,7 @@ export const machineSettings: ParityScenario = {
 
       // That member, on the dashboard, reaches its own machine and not this one.
       await target.sql(`UPDATE members SET github_id = '5150515' WHERE id = ${lit(joined.memberId)}`);
-      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: '5150515', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: '5150515', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
       const asOther = { cookie, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
       expect((await fetch(`${target.url}/api/machines/${MACHINE_ID}/settings`, { headers: asOther })).status).toBe(403);
       expect((await put(asOther, MACHINE_ID, ['~/elsewhere'])).status).toBe(403);

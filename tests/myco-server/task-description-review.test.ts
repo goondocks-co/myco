@@ -14,7 +14,7 @@ import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { MECHANISM_WORDS } from '../helpers/reader-vocabulary.js';
 
 async function tasks(f: ReturnType<typeof sqliteEnv>, path = '/api/tasks') {
-  const response = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
+  const response = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(f.db), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
   expect(response.status).toBe(200);
   return await response.json() as { tasks: Array<Record<string, unknown>> };
 }

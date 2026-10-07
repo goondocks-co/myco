@@ -45,7 +45,7 @@ async function harness() {
         JSON.stringify({ provider: { apiKey: CANARY } }), `context ${CANARY}`, JSON.stringify({ apiKey: CANARY }));
   };
   const get = async (path: string): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const res = await worker.fetch(await asOwner(path), env);
+    const res = await worker.fetch(await asOwner(fixture.db, path), env);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
   return { ...fixture, env, get, seed };

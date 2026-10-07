@@ -52,7 +52,7 @@ async function setup(onSql?: (sql: string, sqlite: ReturnType<typeof sqliteEnv>[
 async function send(f: ReturnType<typeof sqliteEnv>, operation: Operation, sub = '9002') {
   return worker.fetch(new Request(`https://s${operation.path}`, {
     method: operation.method,
-    headers: { cookie: await ownerCookie(Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(f.db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' },
     ...(operation.body === undefined ? {} : { body: JSON.stringify(operation.body) }),
   }), { ...f.env, ...OWNER_ENV, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAP_KEY },
     RECOVERY_BUCKET: f.env.BUCKET,

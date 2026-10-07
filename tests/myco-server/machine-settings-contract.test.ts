@@ -31,7 +31,7 @@ async function rig(target: DeploymentTarget) {
   const { token } = await issueMemberToken(env.db, { machineId: 'machine_1', memberId: 'mem_machine_1' }, Date.now());
   const home = scratch();
   const rows = async () => {
-    const response = await request(await asOwner('/api/machines/machine_1/settings'));
+    const response = await request(await asOwner(fixture.db, '/api/machines/machine_1/settings'));
     expect(response.status).toBe(200);
     return ((await response.json()) as { leaves: MachineLeaf[] }).leaves;
   };
@@ -43,7 +43,7 @@ async function rig(target: DeploymentTarget) {
     expect(cacheMachineSettings('https://s', body.machine, home)).toBe(true);
     return body.machine;
   };
-  const set = async (leaf: string, value: unknown, reset = false) => request(await asOwnerPut(`/api/machines/machine_1/settings/${leaf}`, { value, reset }));
+  const set = async (leaf: string, value: unknown, reset = false) => request(await asOwnerPut(fixture.db, `/api/machines/machine_1/settings/${leaf}`, { value, reset }));
   return { ...fixture, env, request, token, home, rows, sync, set };
 }
 

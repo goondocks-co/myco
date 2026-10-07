@@ -73,7 +73,7 @@ describe('POST /api/projects/{projectId}/runs/{runId}/cancel', () => {
     const cancel = async (runId: string, sub: string) => {
       const response = await worker.fetch(new Request(`https://s/api/projects/proj_1/runs/${runId}/cancel`, {
         method: 'POST',
-        headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+        headers: { cookie: await ownerCookie(r.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
       }), env);
       return { status: response.status, body: await response.json() as Record<string, unknown> };
     };

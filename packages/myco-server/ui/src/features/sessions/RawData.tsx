@@ -5,6 +5,8 @@ import {
   type AttachmentRow, type ContextInjectionRow, type TranscriptRecord, type TurnRow,
 } from '../../hooks/use-sessions';
 import { formatBytes } from '../../lib/format';
+import { ApiError } from '../../lib/api';
+import { useMe } from '../../hooks/use-me';
 import { promptPreview } from './Turn';
 import { count, dateTime } from './words';
 
@@ -70,8 +72,11 @@ export function readState(t: Pick<TranscriptRecord, 'parseError' | 'parsedOffset
  * payload carrying no list is read as nothing captured rather than rendered.
  */
 function Transcripts({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
-  const transcript = useTranscript(projectId, sessionId);
+  const permission = useMe().data?.permissions?.raw;
+  const transcript = useTranscript(projectId, sessionId, permission?.scope === 'own');
+  if (permission?.scope !== 'own') return <p role="alert" className="t-small text-muted">{permission?.reason ?? 'Raw transcripts are private to their uploader.'}</p>;
   if (transcript.isPending) return <LoadingState label="Loading the transcript" count={2} />;
+  if (transcript.error instanceof ApiError && transcript.error.status === 403) return <p role="alert" className="t-small text-muted">Raw transcripts are private to the member whose machine uploaded them.</p>;
   if (transcript.error) return <ErrorState error={transcript.error} onRetry={() => void transcript.refetch()} />;
   const held = Array.isArray(transcript.data?.transcripts) ? transcript.data.transcripts : [];
   if (held.length === 0) return <p className="t-small text-muted">No transcript captured.</p>;

@@ -449,8 +449,9 @@ export function useSessionChildren<T>(projectId: string, sessionId: string, chil
 }
 
 /** The transcript record, or null when the session has none — the one 404 here that is an answer rather than an error. */
-export function useTranscript(projectId: string, sessionId: string) {
+export function useTranscript(projectId: string, sessionId: string, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ['transcript', projectId, sessionId],
     queryFn: async ({ signal }) => {
       try {

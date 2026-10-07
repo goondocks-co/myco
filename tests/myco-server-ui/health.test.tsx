@@ -5,6 +5,7 @@
  * that asks before it adds a foreign Deployment's members, and no raw id
  * anywhere a reader sees.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -53,14 +54,14 @@ const BACKUP = { id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: NOW -
 type Route = (init?: RequestInit) => Response;
 
 const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
-  '/auth/me': () => Response.json(ADMIN),
+  '/auth/me': () => Response.json(dashboardMe(ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/status': () => Response.json(STATUS),
   '/api/attention': () => Response.json({ items: [{ kind: 'backup_overdue', tone: 'warn', lastBackupAt: BACKUP.created_at, intervalHours: 24 }], unavailable: [] }),
   '/api/credentials': () => Response.json({ rows: [credential(STUDIO_CREDENTIAL, 'ada_5a2d54af', 'Ada’s studio Mac'), credential(BUSY_CREDENTIAL, 'lin_9e8f7a6b', 'Lin’s build box', 'mem_Hn5-pC0dJfA9sE_u')], cursor: null }),
   '/api/machines': () => Response.json({ machines: [
-    { machineId: 'ada_5a2d54af', name: 'Ada’s studio Mac', live: true, member: { id: ADMIN.member.id, label: 'Ada', revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
-    { machineId: 'lin_9e8f7a6b', name: 'Lin’s build box', live: true, member: { id: MEMBER.member.id, label: null, revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
+    { machineId: 'ada_5a2d54af', name: 'Ada’s studio Mac', live: true, canStop: true, stopReason: null, member: { id: ADMIN.member.id, label: 'Ada', revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
+    { machineId: 'lin_9e8f7a6b', name: 'Lin’s build box', live: true, canStop: true, stopReason: null, member: { id: MEMBER.member.id, label: null, revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
   ], cursor: null }),
   '/api/backups': () => Response.json({ backups: [BACKUP] }),
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
@@ -298,7 +299,7 @@ describe('Health', () => {
   });
 
   it('shows a member who is not an admin that the page is an admin’s, and asks none of its reads', async () => {
-    const { asked } = server(routes({ '/auth/me': () => Response.json(MEMBER) }));
+    const { asked } = server(routes({ '/auth/me': () => Response.json(dashboardMe(MEMBER)) }));
     mount();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));

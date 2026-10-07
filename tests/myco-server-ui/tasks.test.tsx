@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -40,7 +41,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
     if (url.pathname === '/api/harness/dispatch') return Response.json({ runId: 'run_hand0000001', projectId: JSON.parse(String(init!.body)).projectId, queued: true });
     if (url.pathname === '/api/work') { await options.week; } if (url.pathname === '/api/work') return Response.json({ outcomes: [], runs: [], upkeep: { lastSuccessAt: null, unrecovered: null }, totals: null });
     if (url.pathname.endsWith('/capabilities')) return Response.json({ capabilities: { vault_evolution: true, canopy: true, cortex: true } });
-    if (url.pathname === '/auth/me') return Response.json(options.member ? MEMBER : ADMIN);
+    if (url.pathname === '/auth/me') return Response.json(dashboardMe(options.member ? MEMBER : ADMIN));
     if (url.pathname === '/api/projects') return options.failProjects ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json(options.projects ?? PROJECTS);
     if (url.pathname === '/api/settings/agent.tasks') { tasks[0] = { ...tasks[0]!, tier: 'low', profiles: [{ harness: 'codex', model: 'changed-model', effort: 'low', note: null }] }; return Response.json({ applied: true }); }
     if (url.pathname === '/api/tasks') return Response.json({ tasks });
