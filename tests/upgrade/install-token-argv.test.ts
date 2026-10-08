@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from '../support/fenced-fs.mjs';
 
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+
 import { assertPrivate, assertTokenFree } from '../support/installer-token-gate.js';
 
 const SHELLS = ['/bin/sh', '/bin/bash', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])];
@@ -25,7 +27,6 @@ function install(shell: string, os: string, tokens: Record<string, string>, fail
   const tool = (name: string, body: string) => writeFileSync(join(bin, name), body, { mode: 0o755 });
   tool('uname', `#!/bin/sh\ncase "$1" in -s) echo ${os};; -m) echo x86_64;; esac\n`);
   tool('mktemp', '#!/bin/sh\nif [ $# -eq 0 ]; then exec /usr/bin/mktemp "$TMPDIR/myco-installer-XXXXXX"; fi\nexec /usr/bin/mktemp "$@"\n');
-  tool('jq', '#!/bin/sh\necho myco/v2.0.0\n');
   tool('codesign', '#!/bin/sh\nexit 0\n');
   tool('xattr', '#!/bin/sh\nexit 0\n');
   tool('sha256sum', `#!/usr/bin/env node
@@ -40,7 +41,7 @@ const config = argv.includes('--config') ? fs.readFileSync(0, 'utf8') : '';
 fs.appendFileSync(process.env.CURL_LOG, JSON.stringify({ argv, config }) + '\\n');
 const out = argv[argv.indexOf('-o') + 1];
 if (argv.includes('-w')) {
-  fs.writeFileSync(out, '[]');
+  fs.writeFileSync(out, JSON.stringify([{ tag_name: 'myco/v2.0.0', prerelease: false, draft: false, assets: [{ name: 'myco-${os.toLowerCase()}-x64' }, { name: 'SHA256SUMS' }] }]));
   process.stdout.write('200');
 } else if (process.env.FAIL_DOWNLOAD === '1') {
   process.exit(22);
@@ -53,13 +54,12 @@ if (argv.includes('-w')) {
   try {
     const result = spawnSync(shell, [...(trace ? ['-x'] : []), INSTALLER], {
       encoding: 'utf8',
-      env: {
-        ...process.env,
+      env: sandboxChildEnv(root, {
         HOME: home, CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'),
         MYCO_CHANNEL: 'stable', MYCO_HOME: join(home, '.myco'), MYCO_BIN_DIR: join(home, '.myco/bin'), TMPDIR: temp,
         PATH: `${bin}:${process.env.PATH}`, GITHUB_TOKEN: '', GH_TOKEN: '', ...tokens,
         CURL_LOG: log, FAIL_DOWNLOAD: fail ? '1' : '0',
-      },
+      }),
       timeout: 15_000,
     });
     expect(result.error, 'installer must finish before its subprocess timeout').toBeUndefined();

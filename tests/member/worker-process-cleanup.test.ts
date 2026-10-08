@@ -1,5 +1,5 @@
+import { readTestProcessGroupId } from '../../scripts/test-process-tree.mjs';
 import { describe, expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -117,7 +117,7 @@ describe('a harness process owner', () => {
               expect(first.value?.kind).toBe('started');
               await ready(f.pids);
               if (detached) {
-                const groups = f.pids().map((pid) => execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim());
+                const groups = f.pids().map((pid) => String(readTestProcessGroupId(pid)));
                 expect(groups[0]).not.toBe(groups[1]);
               }
               if (ending === 'abort') {

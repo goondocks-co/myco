@@ -252,6 +252,13 @@ export function loadMachineConfig(mycoHome = resolveMycoHome()): MachineConfig {
   );
 }
 
+/** Explicit machine update channel, before schema defaults are applied. */
+export function readExplicitMachineUpdateChannel(mycoHome = resolveMycoHome()): MachineConfig['daemon']['update_channel'] | undefined {
+  const raw = readRawYamlDocStrict(resolveGlobalConfigPath(mycoHome));
+  if (getAtPath(raw, ['daemon', 'update_channel']) === undefined) return undefined;
+  return parseTierDocTolerant((doc) => MachineConfigSchema.parse(doc), raw).daemon.update_channel;
+}
+
 /** Fresh strict machine-tier read for recoverable state transitions. */
 export function loadMachineConfigStrict(mycoHome = resolveMycoHome()): MachineConfig {
   const filePath = resolveGlobalConfigPath(mycoHome);

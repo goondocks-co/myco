@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import {
   resolveWindowsLockRootFromProfile,
 } from '@myco/utils/user-lock-root.js';
@@ -54,30 +55,30 @@ describe('Windows per-user lock root', () => {
   it.skipIf(process.platform !== 'win32')(
     'is identical across processes with divergent home-related environments',
     async () => {
-      const firstHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-win-home-a-'));
-      const secondHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-win-home-b-'));
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-win-lock-homes-'));
+      const firstHome = fs.mkdtempSync(path.join(root, 'home-a-'));
+      const secondHome = fs.mkdtempSync(path.join(root, 'home-b-'));
       try {
-        const base = { ...process.env, MYCO_HOME: 'C:\\Explicit\\SharedMycoHome' };
+        const base = sandboxChildEnv(root, { MYCO_HOME: path.join(root, 'shared-myco-home') });
         const [first, second] = await Promise.all([
-          runHelper({
-            ...base,
+          runHelper(sandboxChildEnv(root, {
+            MYCO_HOME: base.MYCO_HOME,
             HOME: firstHome,
             USERPROFILE: firstHome,
             LOCALAPPDATA: path.join(firstHome, 'AppData', 'Local'),
-          }),
-          runHelper({
-            ...base,
+          })),
+          runHelper(sandboxChildEnv(root, {
+            MYCO_HOME: base.MYCO_HOME,
             HOME: secondHome,
             USERPROFILE: secondHome,
             LOCALAPPDATA: path.join(secondHome, 'AppData', 'Local'),
-          }),
+          })),
         ]);
 
         expect(first).toBe(second);
         expect(first.toLowerCase().endsWith('\\.myco\\locks')).toBe(true);
       } finally {
-        fs.rmSync(firstHome, { recursive: true, force: true });
-        fs.rmSync(secondHome, { recursive: true, force: true });
+        fs.rmSync(root, { recursive: true, force: true });
       }
     },
     30_000,

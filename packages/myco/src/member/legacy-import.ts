@@ -45,6 +45,7 @@ import { enumerateTranscripts, manifestTranscriptDiscovery, findTranscriptFor, s
 import { canonicalPath, transcriptPlacer, transcriptTimeSpan } from '../symbionts/transcript-attribution.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveMycoHome } from '../paths/home.js';
+import { legacyVaultFiles } from './home-role.js';
 import { unboundedBudget } from './budget.js';
 import {
   deriveId, planEvent, planKeyForPath, promptEvent, responseEvent, sessionEndEvent, sessionStartEvent, sessionTitleEvent,
@@ -74,8 +75,6 @@ const PROBE_CHUNK = 1000;
 const MS_FLOOR = 100_000_000_000;
 const SPORES_SAVE_PATH = '/spores/save';
 const SPORES_RESOLVE_PATH = '/spores/resolve';
-const VAULT_FILE = 'myco.db';
-const GROVES_DIR = 'groves';
 
 export interface LegacySession {
   id: string;
@@ -173,22 +172,6 @@ export const LEGACY_USER_DELETE_SOURCE = 'api_delete';
 /** A 1.4 instant in milliseconds, whichever unit the row stored it in. */
 export const legacyMs = (value: number | null | undefined): number | null =>
   typeof value !== 'number' || !Number.isFinite(value) || value <= 0 ? null : value < MS_FLOOR ? Math.trunc(value * 1000) : Math.trunc(value);
-
-/** The vault files a source names: a `myco.db`, a directory holding one, or a 1.4 home whose `groves/*` hold them. Empty files are no vault. */
-export function legacyVaultFiles(source: string): string[] {
-  const nonEmpty = (file: string): boolean => { try { return fs.statSync(file).isFile() && fs.statSync(file).size > 0; } catch { return false; } };
-  if (nonEmpty(source)) return [path.resolve(source)];
-  const direct = path.join(source, VAULT_FILE);
-  if (nonEmpty(direct)) return [path.resolve(direct)];
-  const groves = path.join(source, GROVES_DIR);
-  let entries: fs.Dirent[];
-  try { entries = fs.readdirSync(groves, { withFileTypes: true }); } catch { return []; }
-  return entries
-    .filter((e) => e.isDirectory())
-    .map((e) => path.resolve(groves, e.name, VAULT_FILE))
-    .filter(nonEmpty)
-    .sort();
-}
 
 const text = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);

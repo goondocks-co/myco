@@ -12,6 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import semver from 'semver';
+import { readExplicitMachineUpdateChannel } from '../config/loader.js';
+import { readInstallMarker, writeInstallMarker } from '../install/managed-binary.js';
 import { loadMachineConfig, updateTierConfigRaw } from '../config/loader.js';
 import { setAtPath } from '../utils/dot-path.js';
 
@@ -40,7 +42,7 @@ export { resolveRuntimeCommand, resolveRuntimeHome, resolveRuntimePinForCwd } fr
 // Public types
 // ---------------------------------------------------------------------------
 
-/** Daemon update config (channel + check cadence), read from the canonical machine config `daemon.*`. */
+/** Daemon update config: effective release channel and machine check cadence. */
 export interface UpdateConfig {
   channel: ReleaseChannel;
   check_interval_hours: number;
@@ -106,25 +108,21 @@ export function projectRuntimeIsForeign(
 
 
 
-/**
- * The effective release channel is MACHINE-scoped (decision-46130740): it
- * comes from machine config `daemon.update_channel`. There is NO project or
- * personal override — a legacy `update.channel` in a project local.yaml is
- * ignored. The `vaultDir` parameter is retained for call-site compatibility
- * (the API layer passes it) but is not consulted.
- */
+/** The install marker owns installed channels; unmarked machines use machine config. */
 export function readProjectReleaseChannel(_vaultDir?: string): ReleaseChannel {
-  const channel = loadMachineConfig().daemon.update_channel;
+  const explicit = readExplicitMachineUpdateChannel();
+  const channel = readInstallMarker(resolveMycoHome(), true)?.channel ?? explicit;
   return RELEASE_CHANNELS.includes(channel as ReleaseChannel) ? (channel as ReleaseChannel) : DEFAULT_RELEASE_CHANNEL;
 }
 
-/**
- * Persist the release channel at MACHINE scope (decision-46130740). Writes
- * `daemon.update_channel` into `~/.myco/config.yaml` via the canonical
- * machine-config writer; it must never touch a project local.yaml. The
- * `vaultDir` parameter is retained for call-site compatibility only.
- */
+/** Persist a machine's channel through the authority used by its reader. */
 export function writeProjectReleaseChannel(_vaultDir: string | undefined, channel: ReleaseChannel): void {
+  const home = resolveMycoHome();
+  const marker = readInstallMarker(home, true);
+  if (marker) {
+    writeInstallMarker(home, { ...marker, channel });
+    return;
+  }
   updateTierConfigRaw({ kind: 'machine' }, (rawDoc) => {
     setAtPath(rawDoc, ['daemon', 'update_channel'], channel);
     return rawDoc;
@@ -141,21 +139,8 @@ export function releaseChannelIsManual(): boolean {
   return loadMachineConfig().daemon.update_channel === 'manual';
 }
 
-/**
- * Classify the release channel the daemon is running on, for the sidebar
- * runtime badge.
- *
- * - `'beta'`   — `daemon.update_channel` is `'beta'` in machine config.
- * - `'manual'` — `daemon.update_channel` is `'manual'` in machine config
- *                (operator-pinned; automatic upgrade paths no-op).
- * - `'stable'` — all other cases (default managed `~/.myco/bin/myco`).
- *
- * Source is derived from the RAW machine-config field, not from
- * `readProjectReleaseChannel()`, which clamps `manual`→`stable` via
- * `RELEASE_CHANNELS` (that clamp is load-bearing for release-pull paths and
- * must NOT be widened here).
- */
-export type RuntimeOrigin = 'stable' | 'beta' | 'manual';
+/** Runtime badge source: explicit manual opt-out, otherwise the effective installed channel. */
+export type RuntimeOrigin = ReleaseChannel | 'manual';
 
 export interface RuntimeOriginInfo {
   source: RuntimeOrigin;
@@ -165,7 +150,7 @@ export interface RuntimeOriginInfo {
 
 export function getRuntimeOrigin(vaultDir?: string): RuntimeOriginInfo {
   const ch = loadMachineConfig().daemon.update_channel;
-  const source = ch === 'beta' || ch === 'manual' ? ch : 'stable';
+  const source = ch === 'manual' ? ch : readProjectReleaseChannel();
   return { source, command: resolveRuntimeCommand(vaultDir) };
 }
 
@@ -181,14 +166,7 @@ export function getRuntimeVersionLabel(currentVersion: string): string {
 // Config helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Reads the daemon's update config from the CANONICAL machine config
- * (`~/.myco/config.yaml` `daemon.*`) — the SAME source the UI/CLI write via
- * `writeProjectReleaseChannel`. This is deliberately NOT a separate file: the
- * old `~/.myco/update.yaml` diverged from `daemon.update_channel` (nothing ever
- * wrote it), so the background auto-adopt silently ignored channel switches.
- * Reading the daemon config makes the channel + cadence a single source of truth.
- */
+/** Read the effective channel and machine-configured check cadence. */
 export function readUpdateConfig(): UpdateConfig {
   return {
     channel: readProjectReleaseChannel(),

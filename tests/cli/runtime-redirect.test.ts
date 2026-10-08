@@ -298,6 +298,7 @@ describe('maybeRedirect (integration)', () => {
       [
         '#!/usr/bin/env node',
         `const { maybeRedirect } = require(${JSON.stringify(runtimeRedirect)});`,
+        'if (process.env.MYCO_TEST_UNSET_HOME === "1") delete process.env.MYCO_HOME;',
         'maybeRedirect(__filename);',
         'process.stdout.write("shim:" + process.argv.slice(2).join(" "));',
       ].join('\n'),
@@ -527,7 +528,7 @@ describe('maybeRedirect (integration)', () => {
     const res = spawnSync(process.execPath, [shimPath], {
       cwd: projectRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_HOME: undefined, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: undefined, MYCO_TEST_UNSET_HOME: '1', MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toBe(`home=${devHome}`);
@@ -559,7 +560,7 @@ describe('maybeRedirect (integration)', () => {
     const res = spawnSync(process.execPath, [shimPath], {
       cwd: projectRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_HOME: undefined, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: undefined, MYCO_TEST_UNSET_HOME: '1', MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     // Nothing exported: the child resolves its home for itself.
@@ -603,7 +604,7 @@ describe('maybeRedirect (integration)', () => {
     const res = spawnSync(process.execPath, [shimPath], {
       cwd: projectRoot,
       encoding: 'utf-8',
-      env: { ...process.env, MYCO_HOME: undefined, MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
+      env: { ...process.env, MYCO_HOME: undefined, MYCO_TEST_UNSET_HOME: '1', MYCO_REDIRECTED: undefined } as NodeJS.ProcessEnv,
     });
     expect(res.status).toBe(0);
     // The untrusted dev-home pin is refused, so nothing is exported and the

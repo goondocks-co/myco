@@ -1,5 +1,6 @@
 import { CANOPY_DEFAULT_EXCLUDE_PATTERNS } from '@goondocks/myco-shared/canopy';
 import { z } from 'zod';
+import { RELEASE_CHANNELS } from '../constants/update.js';
 import { EXTERNAL_MCP_DEFAULT_PORT, SCHEDULABLE_POWER_STATES } from '@myco/constants.js';
 import { AcceleratorConfigSchema, EffortValueSchema, HarnessIdSchema, ReasoningLevelSchema, ThinkingBudgetValueSchema } from '@goondocks/myco-shared/agent-config';
 
@@ -583,7 +584,7 @@ const MachineDaemonSchema = z.object({
    * or `manual` to disable all automatic upgrades (operator-only upgrade paths
    * remain available).
    */
-  update_channel: z.enum(['stable', 'beta', 'manual']).default('stable'),
+  update_channel: z.enum([...RELEASE_CHANNELS, 'manual']).default('stable'),
   /**
    * How often the daemon checks the release channel for a newer version, in
    * hours. Positive (fractional allowed for dogfood/testing). Default 6. This

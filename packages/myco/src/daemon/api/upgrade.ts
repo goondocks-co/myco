@@ -338,7 +338,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
     localAppData,
   } = deps;
   const serviceManager = deps.serviceManager ?? getServiceManager();
-  const resolveRevertRefs = deps.resolveRevertRefs ?? resolveMycoBinaryUpdateRefs;
+  const resolveRevertRefs = deps.resolveRevertRefs ?? ((ch: ReleaseChannel) => resolveMycoBinaryUpdateRefs(ch, undefined, currentVersion));
   const stageBinaryFn = deps.stageBinary ?? stageBinary;
   const stageDeps = deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS;
 

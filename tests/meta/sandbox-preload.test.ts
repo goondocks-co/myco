@@ -1,3 +1,4 @@
+import { assertTestPath } from '../../scripts/test-environment.mjs';
 import { afterAll, describe, expect, it } from 'bun:test';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -128,7 +129,7 @@ describe('sandbox preload', () => {
     expect(Bun.which('myco')).toBeNull();
     expect(Bun.which('myco-dev')).toBeNull();
     for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-      expect(dir.startsWith(os.homedir() + path.sep)).toBe(true);
+      expect(() => assertTestPath(process.env.MYCO_TEST_RUN_ROOT!, dir, 'PATH')).not.toThrow();
     }
     expect(execFileSync('/bin/sh', ['-c', 'command -v myco || true'], { encoding: 'utf8' }).trim()).toBe('');
     expect(Bun.which('git')).not.toBeNull();

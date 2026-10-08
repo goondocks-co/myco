@@ -4,8 +4,14 @@
  * installs no service, the global agent install leaves every agent's config
  * alone, and credential-less `myco tool` and `myco mcp` refuse with the
  * credential-backed alternative. A home with no membership keeps 1.4's
- * behaviour.
+ * behaviour, except that a home still holding 1.4 vaults never starts this
+ * binary's daemon: it exits 0, which a supervisor leaves down, without
+ * opening them, so a 1.4 updater that swapped this binary in never sees it
+ * healthy and restores 1.4; the adopt-failed mark on its version slot keeps
+ * that updater from adopting it again.
  */
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
+import { allocateOwnedFixture } from '../support/owned-fixtures.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -15,7 +21,8 @@ import { DaemonClient } from '@myco/daemon/client.js';
 import { runSymbiontDetection } from '@myco/cli/bootstrap.js';
 import { assertSafeServiceMutation } from '@myco/cli/service.js';
 import { ensureSelfInstalledAsService } from '@myco/service/self-install.js';
-import { isMemberHome } from '@myco/member/home-role.js';
+import { isMemberHome, unmovedLegacyVaults } from '@myco/member/home-role.js';
+import { getPluginVersion } from '@myco/version.js';
 import type { ServiceManager } from '@myco/service/types.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 
@@ -46,6 +53,16 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
   });
   afterEach(() => {
     for (const [k, v] of Object.entries(held)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses an unreadable legacy-vault directory instead of treating it as empty', () => {
+    const legacy = allocateOwnedFixture('myco-unreadable-vault-');
+    const groves = path.join(legacy, 'groves');
+    fs.mkdirSync(path.join(groves, 'g'), { recursive: true });
+    fs.writeFileSync(path.join(groves, 'g/myco.db'), 'vault');
+    fs.chmodSync(groves, 0o000);
+    try { expect(() => unmovedLegacyVaults(legacy)).toThrow(); }
+    finally { setFixturePermissions(groves, 0o700); fs.rmSync(legacy, { recursive: true, force: true }); }
   });
 
   it('knows a member home by its membership or its cutover record', () => {
@@ -122,5 +139,32 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
     fs.rmSync(path.join(mycoHome, 'member'), { recursive: true });
     expect(isMemberHome(mycoHome)).toBe(false);
     expect(new DaemonClient(path.join(home, 'proj', '.myco')).memberHomeRefusal()).toBeNull();
+  });
+
+  it('never starts in a home 1.4 still serves, and marks its version slot so 1.4 does not adopt it again', () => {
+    fs.rmSync(path.join(mycoHome, 'member'), { recursive: true });
+    const vault = path.join(mycoHome, 'groves', 'grove_a', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    fs.writeFileSync(vault, 'a 1.4 vault');
+    const stamp = fs.statSync(vault).mtimeMs;
+    const slot = path.join(mycoHome, 'bin', 'versions', getPluginVersion());
+    fs.mkdirSync(slot, { recursive: true });
+    expect(unmovedLegacyVaults(mycoHome)).toEqual([vault]);
+    const before = (fs.readdirSync(mycoHome, { recursive: true }) as string[]).sort();
+
+    const daemon = spawnSync(process.execPath, [CLI, 'daemon'], { cwd: home, env: { ...process.env, HOME: home, MYCO_HOME: mycoHome }, encoding: 'utf8', timeout: 60_000 });
+    expect(daemon.status).toBe(0);
+    expect(daemon.stderr).toContain(`${mycoHome} holds Myco 1.4 vaults (${path.join(mycoHome, 'groves')}) that no cutover has moved to Myco 2.0`);
+    expect(fs.readFileSync(vault, 'utf8')).toBe('a 1.4 vault');
+    expect(fs.statSync(vault).mtimeMs).toBe(stamp);
+    expect((fs.readdirSync(mycoHome, { recursive: true }) as string[]).sort()).toEqual([...before, path.join('bin', 'versions', getPluginVersion(), '.adopt-failed')].sort());
+
+    // A cutover record, or a membership, makes it a member home, which the member gate answers instead.
+    fs.mkdirSync(path.join(mycoHome, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(mycoHome, 'member', 'cutover.json'), '{}');
+    expect(unmovedLegacyVaults(mycoHome)).toEqual([]);
+    const moved = spawnSync(process.execPath, [CLI, 'daemon'], { cwd: home, env: { ...process.env, HOME: home, MYCO_HOME: mycoHome }, encoding: 'utf8', timeout: 60_000 });
+    expect(moved.status).toBe(0);
+    expect(moved.stderr).toContain('is a Myco 2.0 member home');
   });
 });

@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { testExecHelper } from './test-service-exec.mjs';
 
 const REGISTRY_NAME = '.test-processes';
 const PROCESS_QUERY_TIMEOUT_MS = 15_000;
@@ -77,4 +78,58 @@ export function stopTestProcessGroup(pid, signal, root = process.env.MYCO_TEST_R
   if (process.platform === 'win32') return stopRegisteredTestProcesses(root);
   try { process.kill(-pid, signal); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }
+}
+
+function processSample(pid, field, override) {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error('Test process PID must be positive');
+  const native = process.platform === 'darwin' && !override;
+  const command = override ?? (native ? testExecHelper('process-info', 'test-process-info.c', ['-lproc']) : 'ps');
+  const format = { rss: 'rss=', state: 'stat=', pgid: 'pgid=', command: 'command=' }[field];
+  const args = native ? [String(pid), ...(field === 'rss' ? [] : [field])] : ['-o', format, '-p', String(pid)];
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: PROCESS_QUERY_TIMEOUT_MS });
+  if (result.error) throw result.error;
+  if (field === 'state' && result.status === 1 && !result.stdout.trim() && !result.stderr.trim()) return null;
+  if (result.status !== 0) throw new Error(`Test process ${field} probe failed for PID ${pid} (exit ${result.status}): ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+export function readTestProcessRssKiB(pid) {
+  const rss = Number(processSample(pid, 'rss'));
+  if (!Number.isFinite(rss) || rss < 0) throw new Error('Invalid test RSS sample');
+  return rss;
+}
+
+export function readTestProcessGroupId(pid) {
+  const group = Number(processSample(pid, 'pgid'));
+  if (!Number.isInteger(group) || group <= 0) throw new Error('Invalid test process group');
+  return group;
+}
+
+export function readTestProcessState(pid, override) {
+  return processSample(pid, 'state', override) || null;
+}
+
+export function readTestProcessTable() {
+  const command = process.platform === 'darwin' ? testExecHelper('process-info', 'test-process-info.c', ['-lproc']) : 'ps';
+  const args = process.platform === 'darwin' ? ['list'] : ['-axo', 'pid=,ppid=,pgid=,lstart='];
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: PROCESS_QUERY_TIMEOUT_MS });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Test process table failed (exit ${result.status}): ${result.stderr}`);
+  const table = new Map();
+  for (const line of result.stdout.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), pgid: Number(match[3]), started: match[4].replace(/\s+/g, ' ') });
+  }
+  return table;
+}
+
+export function readTestProcessCommands(pids) {
+  const table = readTestProcessTable();
+  return pids.flatMap(pid => {
+    const row = table.get(pid);
+    if (!row) return [];
+    const args = processSample(pid, 'command');
+    const command = process.platform === 'darwin' ? args.replace(/^\d+\s*/, '') : args;
+    return [`${pid} ${row.ppid} ${row.pgid} ${command}`];
+  }).join('\n');
 }

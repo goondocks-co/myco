@@ -12,11 +12,17 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
 const CLI = path.resolve(import.meta.dir, '..', '..', 'packages', 'myco', 'src', 'entries', 'cli.ts');
 
 function cli(args: string[], opts: { cwd: string; env: NodeJS.ProcessEnv }): { status: number | null; out: string } {
-  const run = spawnSync(process.execPath, [CLI, ...args], { cwd: opts.cwd, env: opts.env, encoding: 'utf-8', timeout: 60_000 });
+  const root = opts.env.HOME!;
+  const preload = path.join(root, 'bare-home-preload.ts');
+  fs.writeFileSync(preload, 'delete process.env.MYCO_HOME;\n');
+  const before = opts.env.MYCO_HOME === undefined ? ['--preload', preload] : [];
+  const env = sandboxChildEnv(root, { HOME: root, ...(opts.env.MYCO_HOME ? { MYCO_HOME: opts.env.MYCO_HOME } : {}) }, opts.env);
+  const run = spawnSync(process.execPath, [...before, CLI, ...args], { cwd: opts.cwd, env, encoding: 'utf-8', timeout: 60_000 });
   return { status: run.status, out: `${run.stdout}${run.stderr}` };
 }
 

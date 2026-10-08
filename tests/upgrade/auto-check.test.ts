@@ -114,7 +114,7 @@ describe('checkAndStage: up-to-date no-op', () => {
       },
     );
     expect(result.status).toBe('noop');
-    expect((result as { reason: string }).reason).toBe('up-to-date');
+    expect((result as { reason: string }).reason).toBe('older-release');
   });
 
   it('no-ops when resolver returns null (no release for channel)', async () => {

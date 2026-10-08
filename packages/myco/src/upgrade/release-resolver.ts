@@ -17,15 +17,20 @@
  * `release-assets` stays pure; the single `fetch` lives here.
  */
 
+import { isV2Version } from '../../scripts/release-policy.mjs';
+
 import {
   mycoReleasesApiUrl,
   githubHeaders,
   pickRelease,
   resolveAssetRefs,
   resolveTargetTriple,
+  assetName,
   type AssetRefs,
   type GitHubRelease,
 } from './release-assets.js';
+import { getPluginVersion } from '../version.js';
+import type { FetchLike } from '../utils/instrumented-fetch.js';
 import type { ReleaseChannel } from '../constants/update.js';
 
 /** Timeout for the GitHub releases fetch. Mirrors the update-checker probe. */
@@ -39,19 +44,25 @@ export interface MycoReleaseResolverDeps {
   targetTriple: () => ReturnType<typeof resolveTargetTriple>;
 }
 
-async function fetchReleases(): Promise<GitHubRelease[]> {
-  const res = await fetch(mycoReleasesApiUrl(), {
-    headers: githubHeaders(),
-    signal: AbortSignal.timeout(RELEASES_FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub releases responded with ${res.status}`);
+/** Bound release discovery; exhaustion fails instead of choosing from a partial list. */
+export const MAX_RELEASE_PAGES = 100;
+
+export async function fetchMycoReleases(fetchFn: FetchLike = globalThis.fetch): Promise<GitHubRelease[]> {
+  const releases: GitHubRelease[] = [];
+  for (let page = 1; page <= MAX_RELEASE_PAGES; page++) {
+    const url = mycoReleasesApiUrl() + (page === 1 ? '' : `&page=${page}`);
+    const res = await fetchFn(url, { headers: githubHeaders(), signal: AbortSignal.timeout(RELEASES_FETCH_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`GitHub releases responded with ${res.status}`);
+    const batch = await res.json() as GitHubRelease[];
+    if (!Array.isArray(batch)) throw new Error('GitHub releases response must be an array');
+    releases.push(...batch);
+    if (batch.length < 100) return releases;
   }
-  return (await res.json()) as GitHubRelease[];
+  throw new Error(`GitHub release discovery exceeded ${MAX_RELEASE_PAGES} pages`);
 }
 
 export const DEFAULT_RELEASE_RESOLVER_DEPS: MycoReleaseResolverDeps = {
-  fetchReleases,
+  fetchReleases: fetchMycoReleases,
   targetTriple: () => resolveTargetTriple(),
 };
 
@@ -66,11 +77,20 @@ export const DEFAULT_RELEASE_RESOLVER_DEPS: MycoReleaseResolverDeps = {
 export async function resolveMycoBinaryUpdateRefs(
   channel: ReleaseChannel,
   deps: MycoReleaseResolverDeps = DEFAULT_RELEASE_RESOLVER_DEPS,
+  currentVersion: string = getPluginVersion(),
 ): Promise<AssetRefs | null> {
   const releases = await deps.fetchReleases();
-  const release = pickRelease(releases, channel);
-  if (!release) return null;
   const triple = deps.targetTriple();
+  const isV2 = isV2Version(currentVersion);
+  const release = pickRelease(releases, channel, {
+    asset: isV2 ? assetName(triple) : undefined, currentVersion: isV2 ? currentVersion : undefined,
+    minimumMajor: isV2 ? 2 : 1, maximumMajor: isV2 ? undefined : 1,
+  });
+  if (!release) {
+    const candidate = pickRelease(releases, channel, { asset: assetName(triple), minimumMajor: isV2 ? 2 : 1, maximumMajor: isV2 ? undefined : 1 });
+    if (candidate && isV2) console.warn(`Newest eligible ${channel} release ${candidate.tag_name.slice(6)} is older than installed ${currentVersion}; staying put.`);
+    return null;
+  }
   return resolveAssetRefs(release, triple);
 }
 

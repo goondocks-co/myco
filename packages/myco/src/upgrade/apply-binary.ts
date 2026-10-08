@@ -322,6 +322,7 @@ export async function adoptStaged(
     platform: NodeJS.Platform;
     version: string;
     localAppData?: string;
+    destination?: string;
   },
   _deps: AdoptStagedDeps = {},
 ): Promise<void> {
@@ -329,7 +330,7 @@ export async function adoptStaged(
 
   placeExecutable(
     versionBinaryPath(home, platform, version, localAppData),
-    managedBinaryPath(home, platform, localAppData),
+    params.destination ?? managedBinaryPath(home, platform, localAppData),
     { platform },
   );
 }

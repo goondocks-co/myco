@@ -45,7 +45,8 @@ That knowledge also evolves. Myco is not an ever-growing static archive. It keep
 macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
 
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+myco login <invite link>
 ```
 
 On Windows x64 (PowerShell):
@@ -54,11 +55,7 @@ On Windows x64 (PowerShell):
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Myco is a self-contained native binary — **no Node runtime required**. The installer downloads the binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents. Once a project has joined a Deployment, `myco open` opens that Deployment's dashboard. Open any git project in a supported coding agent and Myco auto-registers it into your default Grove when the agent starts working there.
-
-The dashboard is served by your Deployment, not by the local install: open it at the Deployment's address, or run `myco open` inside a project that has joined it.
-
-Already have Node? `npm install -g @goondocks/myco` also works — it's a thin bootstrap that converges to the same native binary.
+Myco is a self-contained native binary — **no Node runtime required**. The installer defaults to stable releases only: it retains the 1.4 install and managed-service behavior until a 2.x stable release exists. Opt in to 2.0 with `curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh` (alpha, beta or stable builds) or `MYCO_CHANNEL=beta` (beta or stable builds). A 2.0 install places the binary in `~/.myco/bin`, records its channel in `install.json`, and refreshes an existing membership; a first-time 2.0 install starts no service. `myco login` with the invite link your Deployment's administrator sent you signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer installs nothing and says how to move over: `sh -s -- --replace-1.4` installs 2.0 in 1.4's place, then `myco login`, `myco cutover --dry-run` and `myco cutover` move the machine (see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14)).
 
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 
@@ -72,7 +69,7 @@ See [Quickstart](docs/quickstart.md) for setup details and platform notes, and [
 
 Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle.
 
-No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel stable|beta`, but the automatic path is the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
+No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel alpha|beta|stable`, but the automatic path is the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
 
 Team Host operator commands (`myco host`, `myco join`, `myco attach`) are part of the main binary and upgrade with it — no separate package.
 

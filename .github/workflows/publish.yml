@@ -39,6 +39,7 @@ jobs:
       package_dir: ${{ steps.extract.outputs.package_dir }}
       tarball_prefix: ${{ steps.extract.outputs.tarball_prefix }}
     steps:
+      - uses: actions/checkout@v4
       - name: Extract package and version from tag
         id: extract
         env:
@@ -71,19 +72,26 @@ jobs:
           echo "package_dir=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
           echo "tarball_prefix=$TARBALL_PREFIX" >> "$GITHUB_OUTPUT"
 
-          if [[ "$VERSION" =~ -alpha\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ -beta\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=beta" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" =~ -rc\. ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          # A version is <major>.<minor>.<patch>, or that with a -alpha.N,
+          # -beta.N or -rc.N prerelease. Every hyphenated version is a
+          # prerelease under its own npm dist-tag, never latest; any other
+          # shape fails here, before anything is built or published.
+          if ! VERSION="$VERSION" node --input-type=module -e 'import { releaseKey } from "./packages/myco/scripts/release-policy.mjs"; if (!releaseKey(process.env.VERSION)) process.exit(1)'; then
+            echo "Malformed version in release tag: $TAG_NAME" >&2
+            exit 1
           fi
+          case "$VERSION" in
+            *-alpha.*) IS_PRERELEASE=true; NPM_TAG=alpha ;;
+            *-beta.*)  IS_PRERELEASE=true; NPM_TAG=beta ;;
+            *-rc.*)    IS_PRERELEASE=true; NPM_TAG=next ;;
+            *-*)
+              echo "Unsupported prerelease in release tag: $TAG_NAME (use -alpha.N, -beta.N or -rc.N)" >&2
+              exit 1
+              ;;
+            *) IS_PRERELEASE=false; NPM_TAG=latest ;;
+          esac
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
 
   # Per-target libsqlite3 compile, gated on myco tags only.
   # Runner OS per target:
@@ -550,15 +558,21 @@ jobs:
           if [ "$TAG_PREFIX" = "myco" ]; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               INSTALL_BLOCK='```bash
-          npm install -g @goondocks/myco@beta
-          myco open
-          ```'
+          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.npm_tag }} sh
+          myco login <invite link>
+          ```
+
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
+              if [ '${{ needs.validate-tag.outputs.npm_tag }}' = 'next' ]; then
+                INSTALL_BLOCK='RC builds are outside the automatic release channels. Download the binary and SHA256SUMS from this release for manual evaluation.'
+              fi
             else
               INSTALL_BLOCK='```bash
-          curl -fsSL https://myco.sh/install.sh | sh  # fresh install
-          npm update -g @goondocks/myco              # upgrade existing
-          myco open
-          ```'
+          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+          myco login <invite link>
+          ```
+
+          Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
             fi
           else
             if [ "$IS_PRERELEASE" = "true" ]; then
@@ -578,7 +592,7 @@ jobs:
             cat > release-notes.md <<NOTES_EOF
           \`${PACKAGE_NAME}\` · ${RANGE_BLURB} · **Pre-release**
 
-          > Pre-release. May contain bugs or incomplete features. Opt into the Beta channel per project from the Operations page.
+          > Pre-release. May contain bugs or incomplete features. Install alpha with \`MYCO_CHANNEL=alpha\`, or beta with \`MYCO_CHANNEL=beta\`. Stable selects releases only and stays on 1.4 until 2.x GA. Alpha admits alpha, beta and stable; beta admits beta and stable. Updates stay within the recorded channel and never downgrade. Cut the stable/next tag first; delete old prerelease tags only after its release is published.
 
           ## Install
 
@@ -592,6 +606,8 @@ jobs:
             RELEASE_TITLE="${DISPLAY_NAME} ${VERSION}"
             cat > release-notes.md <<NOTES_EOF
           \`${PACKAGE_NAME}\` · ${RANGE_BLURB}
+
+          Cut the stable/next tag first; delete old prerelease tags only after its release is published. Installed machines never downgrade when a channel target is older.
 
           ## Install / Upgrade
 
@@ -623,7 +639,11 @@ jobs:
           printf '%s\n' "${assets[@]}" > release-assets.txt
           cat release-assets.txt
 
+      # The release is created as a draft, and made public only by the last step
+      # below, once every asset is attached: an installer reading the releases
+      # list never sees a release whose binaries or SHA256SUMS are still missing.
       - name: Create or update GitHub Release
+        id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
@@ -634,23 +654,20 @@ jobs:
 
           mapfile -t assets < release-assets.txt
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            edit_args=(
-              "$TAG_NAME"
-              --draft=false
-              --title "$RELEASE_TITLE"
-              --notes-file release-notes.md
-            )
-            if [ "$IS_PRERELEASE" = "true" ]; then
-              edit_args+=(--prerelease)
-            fi
-            gh release edit "${edit_args[@]}"
+          if existing_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            case "$existing_draft" in
+              false) echo "published=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              true) ;;
+              *) echo "Invalid release draft status" >&2; exit 1 ;;
+            esac
+            gh release edit "$TAG_NAME" --title "$RELEASE_TITLE" --notes-file release-notes.md
             gh release upload "$TAG_NAME" "${assets[@]}" --clobber
           else
             create_args=(
               "$TAG_NAME"
               "${assets[@]}"
               --verify-tag
+              --draft
               --title "$RELEASE_TITLE"
               --notes-file release-notes.md
             )
@@ -664,7 +681,7 @@ jobs:
       # tags) and attach them to the GitHub Release under canonical asset names.
       # Additive: the .tgz upload above is untouched.
       - name: Download raw binaries artifact (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        if: needs.validate-tag.outputs.tag_prefix == 'myco' && steps.release.outputs.published != 'true'
         uses: actions/download-artifact@v8
         with:
           name: myco-raw-binaries
@@ -675,8 +692,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+          RELEASE_PUBLISHED: ${{ steps.release.outputs.published }}
         run: |
           set -euo pipefail
+          if [ "${RELEASE_PUBLISHED:-false}" = "true" ]; then exit 0; fi
 
           # The artifact was uploaded as a flat release-binaries/ dir in the build
           # job, so download-artifact roots extraction at raw-binaries-staging/ and
@@ -691,6 +710,23 @@ jobs:
           ( cd raw-binaries-staging && sha256sum myco-darwin-arm64 myco-darwin-x64 myco-linux-x64 myco-linux-arm64 myco-windows-x64.exe > SHA256SUMS )
 
           gh release upload "$TAG_NAME" raw-binaries-staging/* --clobber
+
+      # Every asset is attached: only now does the release become public. A
+      # prerelease never becomes the repository's latest release.
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+          RELEASE_PUBLISHED: ${{ steps.release.outputs.published }}
+          IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          if [ "${RELEASE_PUBLISHED:-false}" = "true" ]; then exit 0; fi
+          publish_args=("$TAG_NAME" --draft=false)
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            publish_args+=(--prerelease --latest=false)
+          fi
+          gh release edit "${publish_args[@]}"
 
   publish:
     name: Publish to npmjs.org

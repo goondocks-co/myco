@@ -31,6 +31,9 @@ export interface LaunchctlRunner {
  * their own `LaunchctlRunner` stub via `LaunchdManagerOptions.runner`.
  */
 export class RealLaunchctlRunner implements LaunchctlRunner {
+  protected spawn(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+    return spawnCombinedOutput('launchctl', args);
+  }
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
       return {
@@ -38,7 +41,7 @@ export class RealLaunchctlRunner implements LaunchctlRunner {
         exitCode: args[0] === 'print' ? 1 : 0,
       };
     }
-    return spawnCombinedOutput('launchctl', args);
+    return this.spawn(args);
   }
 }
 

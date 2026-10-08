@@ -95,17 +95,19 @@ export async function runWorkerRig(action: string, config: WorkerRigConfig): Pro
   console.log(JSON.stringify(await manager.status(spec.label)));
 }
 
-if (import.meta.main) {
+export function workerRigConfigFromEnv(env: NodeJS.ProcessEnv): WorkerRigConfig {
   const required = (name: string): string => {
-    const value = process.env[name];
+    const value = env[name];
     assert(value !== undefined && value.trim().length > 0, `Set ${name} explicitly`);
     return value;
   };
   const startAt = required('MYCO_SMOKE_START_AT');
   assert(startAt === 'login' || startAt === 'boot', 'MYCO_SMOKE_START_AT must be login or boot');
-  await runWorkerRig(process.argv[2] ?? 'plan', {
+  return {
     binary: required('MYCO_SMOKE_BINARY'), mycoHome: required('MYCO_HOME'),
     root: required('MYCO_SMOKE_ROOT'), server: required('MYCO_SMOKE_SERVER'),
     harness: required('MYCO_SMOKE_HARNESS'), pathEnv: required('PATH'), startAt,
-  });
+  };
 }
+
+if (import.meta.main) await runWorkerRig(process.argv[2] ?? 'plan', workerRigConfigFromEnv(process.env));

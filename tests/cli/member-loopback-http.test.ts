@@ -22,6 +22,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
@@ -32,7 +33,6 @@ import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deploy
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
 import { deploymentPath, registryEntryPath } from '@myco/member/registry.js';
-import { tempMycoHome } from '../member/helpers/server.js';
 
 const CLI = path.resolve('packages/myco/src/cli.ts');
 const PROJECT = 'proj_1';
@@ -116,11 +116,14 @@ interface Machine { checkout: string; home: string; userHome: string; env: Recor
 function machine(env: Record<string, string> = {}): Machine {
   const checkout = tempDir('myco-loopback-checkout-');
   execFileSync('git', ['init', '-q', checkout]);
-  const home = tempMycoHome();
+  const home = path.join(checkout, 'myco-home');
+  fs.mkdirSync(home);
   cleanup.push(() => fs.rmSync(home, { recursive: true, force: true }));
   // Its own machine, so each joins as a member of its own.
   fs.writeFileSync(path.join(home, 'machine_id'), `machine_${path.basename(checkout).replace(/[^A-Za-z0-9]/g, '')}`, 'utf-8');
-  return { checkout, home, userHome: tempDir('myco-loopback-user-'), env };
+  const userHome = path.join(checkout, 'user-home');
+  fs.mkdirSync(userHome);
+  return { checkout, home, userHome, env };
 }
 
 function cli(m: Machine, args: string[], stdin?: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
@@ -129,7 +132,7 @@ function cli(m: Machine, args: string[], stdin?: string): Promise<{ status: numb
   for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_JOIN_CODE, 'NO_PROXY', 'no_proxy']) delete env[key];
   Object.assign(env, { HOME: m.userHome, MYCO_HOME: m.home, MYCO_NO_AUTO_SPAWN: '1', HTTP_PROXY: proxyUrl, http_proxy: proxyUrl, HTTPS_PROXY: proxyUrl }, m.env);
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd: m.checkout, env, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI, ...args], { cwd: m.checkout, env: sandboxChildEnv(m.checkout, { HOME: m.userHome, MYCO_HOME: m.home }, env), stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += String(chunk); });

@@ -14,7 +14,7 @@ import { parseShard, selectGroup, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
-import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup } from './test-process-tree.mjs';
+import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup, readTestProcessTable, readTestProcessCommands } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-run temp root
@@ -1005,14 +1005,7 @@ function writeOverBudgetJunit(reportFile, label, files) {
  * can name a later process that reused it. Null when the table cannot be read.
  */
 function readProcessTable() {
-  const ps = spawnSync('ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], { encoding: 'utf8', timeout: 10000 });
-  if (ps.error || ps.status !== 0) return null;
-  const table = new Map();
-  for (const line of (ps.stdout ?? '').split('\n')) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
-    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), pgid: Number(match[3]), started: match[4].replace(/\s+/g, ' ') });
-  }
-  return table;
+  try { return readTestProcessTable(); } catch { return null; }
 }
 
 /**
@@ -1047,7 +1040,10 @@ function diagnostic(command, args) {
  */
 function captureHangDiagnostics(pids, hangFile, heading) {
   const sections = [`${heading}\n`, `pids: ${pids.join(' ')}\n`];
-  if (pids.length > 0) sections.push('\n--- ps\n', diagnostic('ps', ['-o', 'pid,ppid,pgid,stat,%cpu,etime,command', '-p', pids.join(',')]));
+  if (pids.length > 0) {
+    try { sections.push('\n--- process arguments\n', readTestProcessCommands(pids)); }
+    catch (error) { sections.push(`\n(process arguments unavailable: ${error.message})\n`); }
+  }
   for (const pid of pids) {
     sections.push(`\n=== pid ${pid}\n`);
     if (process.platform === 'darwin') {

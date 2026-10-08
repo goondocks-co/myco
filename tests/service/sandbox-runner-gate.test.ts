@@ -186,16 +186,21 @@ describe('Real runners refuse to shell out when sandbox env var is set', () => {
   });
 });
 
-describe('Real runners DO shell out when not in sandbox mode', () => {
+describe('Real runner command seams outside sandbox mode', () => {
   beforeEach(() => { delete process.env[SERVICE_UNIT_DIR_ENV]; });
 
-  test('RealLaunchctlRunner with no sandbox env spawns launchctl (returns whatever launchctl says)', async () => {
-    // We can't predict the exit code on every CI host, so just assert
-    // we did NOT take the sandbox-skip path. The marker is the contract.
-    if (process.platform !== 'darwin') return;
-    const runner = new RealLaunchctlRunner();
+  test('RealLaunchctlRunner with no sandbox env uses its command seam', async () => {
+    class RecordingRunner extends RealLaunchctlRunner {
+      calls: string[][] = [];
+      protected override async spawn(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+        this.calls.push(args);
+        return { stdout: 'fixture launchctl', exitCode: 0 };
+      }
+    }
+    const runner = new RecordingRunner();
     const result = await runner.run(['version']);
-    expect(result.stdout).not.toMatch(/^\[sandbox\] skipped /);
+    expect(result).toEqual({ stdout: 'fixture launchctl', exitCode: 0 });
+    expect(runner.calls).toEqual([['version']]);
   });
 });
 

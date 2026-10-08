@@ -116,13 +116,7 @@ If a serving machine needs replacing, restore its backup onto the replacement us
 
 Setting up a headless machine, or scripting a new host? Everything the Team page does is available at the terminal.
 
-At install time, in one command:
-
-```bash
-curl -fsSL https://myco.sh/install.sh | sh -s -- --serve
-```
-
-`--serve` installs Myco, serves this machine's default project storage to the team, and prints a ready-to-paste `myco join …` command for your first teammate. You don't pass an address — the host publishes one through its Tailscale Funnel once the daemon comes up. This installer flag is available on macOS and Linux (see [Before you start](#before-you-start)), and the host machine needs Tailscale signed in with Funnel available.
+The Myco 2.0 installer no longer takes `--serve`; to run your own Myco 2.0 server, see [Self-hosting](self-hosting.md).
 
 On a machine where Myco is already installed:
 

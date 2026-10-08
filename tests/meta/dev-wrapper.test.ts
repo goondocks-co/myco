@@ -40,11 +40,14 @@ describe.skipIf(!hasMake)('the dev wrapper a pinned hook re-executes into', () =
   /** Run the launch preamble for a hook in a directory pinned to `pin`, as a hook process would. */
   function trampoline(pin: string, dir: string): void {
     delete process.env.MYCO_TRAMPOLINED;
+    const clearHome = path.join(dir, 'bare-home.sh');
+    fs.writeFileSync(clearHome, '#!/bin/sh\nunset MYCO_HOME\nexec "$@"\n', { mode: 0o755 });
+    const withoutHome = process.env.MYCO_HOME === undefined;
     const deps: LaunchPreambleDeps = {
       execPath: path.join(dir, 'not-the-pin'), cwd: () => dir, chdir: () => {},
       exit: (code) => { throw new Exited(code); },
       resolveRuntimePin: () => pin, realpathSync: (p) => p, readFd0: () => Buffer.alloc(0),
-      execFileSync: (file, args, options) => execFileSync(file, args, options) as unknown as Buffer,
+      execFileSync: (file, args, options) => execFileSync(withoutHome ? clearHome : file, withoutHome ? [file, ...args] : args, options) as unknown as Buffer,
       platform: process.platform, existsSync: fs.existsSync, pathDirs: () => [], pathExts: () => [],
     };
     expect(() => runLaunchPreamble('hook', ['session-start', '--symbiont', 'claude-code'], deps)).toThrow('exit(0)');

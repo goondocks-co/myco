@@ -1,23 +1,6 @@
-// SINGLE SOURCE OF TRUTH for the managed-binary path layout.
-//
-// Imported by BOTH:
-//   - the npm postinstall (`select-binary.mjs`) at install time, straight from
-//     the published tarball (plain ESM, no build step), and
-//   - `src/install/managed-binary.ts`, which re-exports these and is compiled
-//     into the bun binary.
-//
-// Keeping the layout in ONE plain-ESM module is what makes the JS (postinstall)
-// and TS (binary) copies structurally unable to drift — the doubled-path bug
-// (`~/.myco/.myco/bin`) shipped precisely because the logic was duplicated and
-// the two copies disagreed on what `home` meant.
-//
-// CONVENTION: callers pass the resolved MYCO-HOME — `resolveMycoHome()` in TS
-// (`~/.myco` or `$MYCO_HOME`). On POSIX the bin dir is `<mycoHome>/bin`. On
-// win32 the managed bin lives at `%LOCALAPPDATA%\Myco\bin`, which is NOT under
-// the myco-home: the `mycoHome` argument is unused there. When `localAppData`
-// is absent (rare — real callers pass `process.env.LOCALAPPDATA`), the fallback
-// derives the OS home via `os.homedir()` independently, so a custom `$MYCO_HOME`
-// can never relocate the Windows bin and no doubling can occur on any platform.
+// Managed binary paths shared by the npm postinstall, install helpers and runtime resolver.
+// Callers pass the resolved Myco home. POSIX binaries live under that home;
+// Windows binaries live under LOCALAPPDATA independently of the Myco home.
 
 import os from 'node:os';
 import path from 'node:path';

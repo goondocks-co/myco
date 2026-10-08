@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readTestProcessGroupId } from '../../scripts/test-process-tree.mjs';
+import { testExecHelper } from '../../scripts/test-service-exec.mjs';
 
 import {
   SERVER_UNIT,
@@ -364,16 +366,21 @@ describe('a unit loaded again from a process of its own', () => {
     const home = mkdtempSync(join(tmpdir(), 'myco-reload-'));
     try {
       const log = join(home, 'logs', 'helper.log');
-      expect(platformDetachedSpawner('/bin/sh', ['-c', 'echo "$$ $(ps -o pgid= -p $$)"'], log)).toBe(true);
+      const probe = process.platform === 'darwin'
+        ? `'${testExecHelper('process-info', 'test-process-info.c', ['-lproc']).replaceAll("'", "'\\''")}' $$ pgid`
+        : 'ps -o pgid= -p $$';
+      expect(platformDetachedSpawner('/bin/sh', ['-c', `echo "$$ $(${probe})"`], log)).toBe(true);
       let text = '';
       for (let i = 0; i < 100 && !/\d+ +\d+/.test(text); i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 20));
         text = existsSync(log) ? readFileSync(log, 'utf8') : '';
       }
       const [pid, pgid] = text.trim().split(/\s+/).map(Number);
+      expect(pid).toBeGreaterThan(0);
+      expect(pgid).toBeGreaterThan(0);
       // A session leader leads its own process group; the test runner's group is another.
       expect(pgid).toBe(pid!);
-      expect(pgid).not.toBe(Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim()));
+      expect(pgid).not.toBe(readTestProcessGroupId(process.pid));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

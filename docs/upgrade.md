@@ -1,30 +1,22 @@
 # Upgrading Myco
 
-Myco keeps itself up to date. It's a self-contained native binary, and the local service self-updates from your release channel in the background while it's idle — no command to run, no Node required. The binary carries the CLI, local service, dashboard, agent connections, and built-in intelligence features.
+For Myco 2.0, the installer records `alpha`, `beta`, or `stable` in `install.json`. The install marker is the channel authority for installed machines. The existing channel-setting operation updates the marker atomically; installations without a marker use machine `daemon.update_channel`. The manual machine setting still disables automatic updates. Alpha selects the newest alpha, beta or stable build; beta selects the newest beta or stable; stable selects releases only. Release candidates (`rc`) and unknown prerelease shapes are outside these channels. Ordering uses numeric SemVer precedence, independent of GitHub publish order. Updates and repeat online installs keep the running build if the newest eligible tag is older, and report that they are staying put.
 
-## TL;DR
+Release operators must publish the stable or next tag **first**, then delete old prerelease tags. Removing a prerelease before its replacement exists must not force installed machines onto an older stable release. Repoint npm prerelease dist-tags when retiring the corresponding releases. Releases require green main-push CI on the exact tagged SHA; alpha tags may be cut from main only after that gate passes.
 
-Nothing to do — Myco upgrades itself automatically. When you want to take an update now rather than wait for the idle self-update, open the **Upgrade** section of the dashboard's **Settings** page and click **Upgrade & Restart**.
+Myco 2.0 updates on demand. It runs no member update timer or local service. Check the recorded channel and adopt an eligible build with:
 
-For advanced or scripted use, a CLI is available:
-
-```bash
-myco upgrade                  # upgrade on the current channel
-myco upgrade --channel beta   # switch to and upgrade on the beta channel
+```sh
+myco upgrade --check
+myco upgrade
+myco upgrade --channel beta   # choose beta for this run only
 ```
 
-The dashboard is Myco's primary interface; the CLI is for bootstrap and advanced use.
+The updater verifies SHA256SUMS, atomically replaces the recorded binary destination, and refreshes the agents on a joined machine. It keeps the running build when no newer eligible release exists. Repeat installs preserve the recorded channel unless `MYCO_CHANNEL` or `--channel` explicitly changes it. A fresh install defaults to stable.
 
-## What the upgrade does
+## Myco 1.4 updates
 
-When Myco self-updates (automatically, from the Settings page's Upgrade section, or via `myco upgrade`):
-
-1. **Updates Myco's local service and dashboard** to the new version.
-2. **Refreshes supported agent connections** while preserving settings you already had in those agents.
-3. **Archives Myco-owned files from older per-project installs** instead of deleting them.
-4. **Keeps registered Groves and projects intact** and reports anything that needs attention through the dashboard and `myco doctor`.
-
-Project registration continues automatically as you use supported agents from git projects.
+Myco 1.4 retains its local service and background updater. Its dashboard Settings page offers **Upgrade & Restart**; `myco upgrade` is also available for explicit updates. The following migration and local-service guidance applies to 1.4 installations.
 
 ## v1.0: agent and embedding settings now live in the Grove
 
@@ -133,3 +125,19 @@ If the local service stays down after a downgrade and `myco doctor` reports the 
 ### Downgrade leftovers when external access was on
 
 If a machine had **external agent access** enabled (Team page) and is moved to an older Myco that predates the feature, external access quietly turns off, and the public address entry it published through Tailscale Funnel can be left behind. It is inert but visible in `tailscale funnel status`; re-upgrading Myco cleans it up, or remove it manually with `tailscale funnel --https=443 off`. A machine that was mid-enable when the newer version stopped will refuse to start the older binary and say why — finish or disable external access on the newer version first.
+
+## Upgrading from Myco 1.4
+
+Installing 2.0 over 1.4 replaces the binary immediately. Its old hooks stop capturing until you finish joining a Deployment and cut over. The installer refuses this by default; the public stable installer continues installing 1.4 until a 2.x stable release is available.
+
+Choose a Deployment and obtain its invite link before replacing 1.4. Keep a backup of the 1.4 home. To preview the install and then opt in to alpha:
+
+```sh
+curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh -s -- --dry-run --replace-1.4
+curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh -s -- --replace-1.4
+myco login <invite-link>
+myco cutover --dry-run
+myco cutover
+```
+
+Use `MYCO_CHANNEL=beta` for beta or stable builds, or omit the channel once 2.0 is stable. Review the cutover preview before proceeding. Cutover copies and imports the 1.4 data; the installer does not move or delete vaults. Verify the imported projects, sessions, spores and plans in the Deployment and confirm that new sessions are captured before retiring any 1.4 data.

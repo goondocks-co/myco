@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
 const SCRIPT_SOURCE = path.resolve('packages/myco/scripts/select-binary.mjs');
 
@@ -42,16 +43,14 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
   const pkgRoot = path.join(tmpDir, 'package');
   const scriptsDir = path.join(pkgRoot, 'scripts');
   fs.mkdirSync(scriptsDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgRoot, 'package.json'), JSON.stringify({ name: '@goondocks/myco', version: '0.0.0' }));
 
   const scriptPath = path.join(scriptsDir, 'select-binary.mjs');
   fs.copyFileSync(SCRIPT_SOURCE, scriptPath);
-  // select-binary.mjs imports the shared `./managed-paths.mjs` path module — it
-  // ships alongside the script in `scripts/` and must travel with it into the
-  // scaffolded package, or the postinstall subprocess crashes at module load.
-  fs.copyFileSync(
-    path.resolve('packages/myco/scripts/managed-paths.mjs'),
-    path.join(scriptsDir, 'managed-paths.mjs'),
-  );
+  // The npm tarball carries the shared path and release-policy modules.
+  for (const file of ['managed-paths.mjs', 'release-policy.mjs', 'home-role.mjs', 'install-marker.mjs']) {
+    fs.copyFileSync(path.resolve('packages/myco/scripts', file), path.join(scriptsDir, file));
+  }
 
   if (options?.sourceCheckout) {
     fs.mkdirSync(path.join(pkgRoot, 'src'), { recursive: true });
@@ -75,15 +74,10 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
     fs.writeFileSync(binaryPath, 'binary');
   }
 
-  // HERMETIC SANDBOX (critical): the postinstall CONVERGES into MYCO_HOME,
-  // which DEFAULTS to ~/.myco. Every spawn MUST redirect HOME + MYCO_HOME into
-  // the temp tree — otherwise a test with a real platform binary present writes
-  // the fixture's fake binary over the developer's REAL ~/.myco/bin/myco, which
-  // breaks every hook on the machine (the runtime.command pin execs that path).
   const sandboxHome = path.join(tmpDir, 'sandbox-home');
   const mycoHome = path.join(sandboxHome, '.myco');
   fs.mkdirSync(sandboxHome, { recursive: true });
-  const scriptEnv = { ...process.env, HOME: sandboxHome, MYCO_HOME: mycoHome };
+  const scriptEnv = sandboxChildEnv(tmpDir, { HOME: sandboxHome, MYCO_HOME: mycoHome });
 
   return { tmpDir, pkgRoot, scriptPath, target, binaryName, binaryPath, scriptEnv, mycoHome };
 }
@@ -96,6 +90,37 @@ describe('select-binary postinstall', () => {
       fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
     }
     fixtures = [];
+  });
+
+  it('refuses a packaged 2.0 npm install into an unmoved legacy home before publishing a dispatch target', () => {
+    const fixture = makeFixture({ includeBinary: true });
+    fixtures.push(fixture);
+    fs.writeFileSync(path.join(fixture.pkgRoot, 'package.json'), JSON.stringify({ version: '2.0.0-alpha.1' }));
+    const vault = path.join(fixture.mycoHome, 'groves', 'legacy', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    fs.writeFileSync(vault, 'vault bytes');
+    const result = spawnSync(process.execPath, [fixture.scriptPath], {
+      cwd: fixture.pkgRoot, encoding: 'utf8', env: { ...fixture.scriptEnv, MYCO_REPLACE_LEGACY: '0' },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Myco 1.4 is on this machine');
+    expect(fs.readFileSync(vault, 'utf8')).toBe('vault bytes');
+    expect(fs.existsSync(path.join(fixture.pkgRoot, 'vendor', 'resolved.json'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.mycoHome, 'install.json'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.mycoHome, 'bin'))).toBe(false);
+  });
+
+  it('rejects invalid packaged version metadata before publishing a dispatch target', () => {
+    const fixture = makeFixture({ includeBinary: true });
+    fixtures.push(fixture);
+    fs.writeFileSync(path.join(fixture.pkgRoot, 'package.json'), JSON.stringify({ version: 'unknown' }));
+    const result = spawnSync(process.execPath, [fixture.scriptPath], {
+      cwd: fixture.pkgRoot, encoding: 'utf8', env: fixture.scriptEnv,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('not a valid release version');
+    expect(fs.existsSync(path.join(fixture.pkgRoot, 'vendor', 'resolved.json'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.mycoHome, 'install.json'))).toBe(false);
   });
 
   it('soft-skips missing binaries in a source checkout', () => {
