@@ -129,7 +129,9 @@ async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Pr
     if (removed.length > 0) console.log(`  ✓ Removed ${removed.length} worker service${removed.length === 1 ? '' : 's'}`);
     for (const unit of kept) console.log(`  ⚠ Left worker service ${unit.unitFile}: ${unit.reason}`);
   } catch (err) {
-    console.log(`  ⚠ Worker service removal skipped: ${(err as Error).message}`);
+    console.error(`  ✗ Executor services could not be stopped: ${(err as Error).message}. Removal aborted; the home is preserved.`);
+    process.exitCode = 1;
+    return;
   }
 
   // --- Stop the daemon before deleting its files. Unregistering the service

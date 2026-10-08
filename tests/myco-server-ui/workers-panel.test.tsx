@@ -35,15 +35,21 @@ const status = (over: Partial<WorkerStatus> = {}): WorkerStatus => ({
 const names = { machine: 'Ada’s studio Mac', project: (id: string) => (id === MYCO ? 'Myco' : null) };
 
 describe('a machine running Myco’s work, in words', () => {
+  it('names an enrolled runner separately from member machines', () => {
+    const row = worker({ runner: { id: 'runner-mini', name: 'Homelab mini', state: 'enabled' } });
+    expect(workerLine(row, NOW, names).line).toContain('Homelab mini · Registered runner');
+    expect(workerLine(row, NOW, names).line).not.toContain('member credential');
+  });
+
   it('shows an idle machine as waiting, with the agents it reported and what that does not prove', () => {
-    expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Waiting for work · last checked in 3s ago' });
+    expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work · last checked in 3s ago' });
     expect(agentsWords(worker())).toBe('Reports Codex and Claude Code signed in; their providers aren’t tested here.');
   });
 
   it('shows a busy machine by its lease and the project by name, without promising the lease will be renewed', () => {
     const busy = worker({ busy: { runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'title-summary', leaseExpiresAt: NOW + 62_000 } });
     const { line } = workerLine(busy, NOW, names);
-    expect(line).toBe('Ada’s studio Mac · Running titling in Myco · due to check in within 62s');
+    expect(line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running titling in Myco · due to check in within 62s');
     expect(line).not.toMatch(/renew/i);
     expect(line).not.toContain(MYCO);
     expect(lastClaimWords(busy)).toBeNull();
@@ -51,13 +57,13 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('leaves out a project it cannot name rather than showing its id', () => {
     const busy = worker({ busy: { runId: 'run_1', projectId: 'proj_ffffffffffffffffffffffffffffffff', task: null, leaseExpiresAt: NOW + 30_000 } });
-    expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Running a task · due to check in within 30s');
+    expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running a task · due to check in within 30s');
     expect(taskWords('something-new')).toBe('a task');
   });
 
   it('says a machine has not been heard from lately without claiming it stopped', () => {
     const { tone, line } = workerLine(worker({ recent: false, lastSeenAt: NOW - 14 * 60_000 }), NOW, names);
-    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Ada’s studio Mac · Not checking in now · last checked in 14m ago' });
+    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Not checking in now · last checked in 14m ago' });
     for (const word of [/stopped/i, /terminated/i, /offline/i, /dead/i]) expect(line).not.toMatch(word);
   });
 
@@ -69,7 +75,7 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('does not call a machine ready when it reported no agent signed in', () => {
     const w = worker({ offers: [{ id: 'codex', authenticated: false }] });
-    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, but reported no agent signed in · last checked in 3s ago' });
+    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work, but reported no agent signed in · last checked in 3s ago' });
     expect(agentsWords(w)).toBe('Reported no agent signed in.');
     expect(agentsWords(worker({ offers: [] }))).toBe('Reported no agents.');
   });
@@ -77,18 +83,18 @@ describe('a machine running Myco’s work, in words', () => {
   it('says the agents are unknown rather than none when there is no readable report, and never treats it as ready', () => {
     const w = worker({ offers: null, capabilities: null });
     expect(agentsWords(w)).toBe('Which agents it can run is unknown.');
-    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Waiting for work, with no readable report of its agents · last checked in 3s ago' });
+    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work, with no readable report of its agents · last checked in 3s ago' });
   });
 
   it('says a machine whose claims the server would refuse is not waiting for work', () => {
     const { line } = workerLine(worker({ eligible: false }), NOW, names);
-    expect(line).toBe('Ada’s studio Mac · It can’t take work now · last checked in 3s ago');
+    expect(line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · It can’t take work now · last checked in 3s ago');
     expect(line).not.toContain('Waiting');
   });
 
   it('shows a lease holder from before contacts were kept as busy, with no invented contact time', () => {
     const w = worker({ lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_9', projectId: MYCO, task: null, leaseExpiresAt: NOW + 30_000 } });
-    expect(workerLine(w, NOW, names).line).toBe('Ada’s studio Mac · Running a task in Myco · due to check in within 30s');
+    expect(workerLine(w, NOW, names).line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running a task in Myco · due to check in within 30s');
   });
 });
 

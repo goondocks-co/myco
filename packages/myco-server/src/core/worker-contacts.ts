@@ -462,8 +462,8 @@ export async function recentWorkerReports(db: RelationalStore, now: number): Pro
 }
 
 /**
- * Forget workers not heard from for `olderThanMs`, keeping any that hold a live
- * lease. Bounded to `batch` rows per call, taken by the sweep that already ends
+ * Forget revoked workers not heard from for `olderThanMs`, keeping any that
+ * hold a live lease. Unrevoked legacy contacts remain in the migration inventory. Bounded to `batch` rows per call, taken by the sweep that already ends
  * a worker's lease.
  */
 export async function pruneWorkerContacts(db: RelationalStore, now: number, olderThanMs: number, batch: number): Promise<number> {
@@ -472,6 +472,7 @@ export async function pruneWorkerContacts(db: RelationalStore, now: number, olde
       WHERE credential_id IN (
         SELECT credential_id FROM worker_contacts
          WHERE last_seen_at < ?
+           AND credential_id IN (SELECT c.id FROM member_credentials c LEFT JOIN members m ON m.id = c.member_id WHERE c.revoked_at IS NOT NULL OR m.revoked_at IS NOT NULL)
            AND credential_id NOT IN (SELECT leased_by FROM agent_runs WHERE leased_by IS NOT NULL AND status = 'running' AND lease_expires_at > ?)
          ORDER BY last_seen_at
          LIMIT ?)`,

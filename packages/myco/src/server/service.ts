@@ -478,10 +478,14 @@ export function startService(spec: ServiceSpec, options: ServiceOptions = {}): S
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
   if (!existsSync(paths.unitFile)) return { unitFile: paths.unitFile, loaded: false, running: false, changed: false, detail: 'no service unit is installed' };
+  const before = statusOfService(spec, options);
+  if (before.loaded && before.running) return { unitFile: paths.unitFile, loaded: true, running: true, changed: false };
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).load) runner(command!, args);
   const verify = statusOfService(spec, options);
   return { unitFile: paths.unitFile, loaded: verify.loaded, running: verify.running, changed: true, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
 }
+
+export class ServiceStopFailed extends Error {}
 
 /**
  * Stop the service and remove its unit. The platform is asked to let go of the
@@ -493,6 +497,10 @@ export function uninstallService(spec: ServiceSpec, options: ServiceOptions = {}
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).unload) runner(command!, args);
+  const state = statusOfService(spec, { ...options, inspectMissing: true });
+  if (state.loaded || state.running || (state.detail !== undefined && state.detail !== UNIT_NOT_HELD)) {
+    throw new ServiceStopFailed(`service ${spec.unit.unitName} could not be stopped; its unit was retained (${state.detail ?? 'still held by the service manager'})`);
+  }
   const removed = existsSync(paths.unitFile);
   rmSync(paths.unitFile, { force: true });
   return { unitFile: paths.unitFile, removed };
@@ -516,11 +524,12 @@ export interface ServiceStatus {
  * platform rather than from the unit file: launchd lists a running job with its
  * PID, systemd answers `is-active`, Task Scheduler reports the task's state.
  */
-export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {}): ServiceStatus {
+export function statusOfService(spec: ServiceSpec, options: ServiceOptions & { inspectMissing?: boolean } = {}): ServiceStatus {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
-  if (!existsSync(paths.unitFile)) return { installed: false, loaded: false, running: false, detail: 'no service unit is installed' };
+  const installed = existsSync(paths.unitFile);
+  if (!installed && options.inspectMissing !== true) return { installed, loaded: false, running: false, detail: 'no service unit is installed' };
   const ask = (probe: readonly string[]): CommandResult => runner(probe[0]!, probe.slice(1));
   let loaded: CommandResult;
   let running: boolean;
@@ -536,9 +545,9 @@ export function statusOfService(spec: ServiceSpec, options: ServiceOptions = {})
     running = loaded.status === 0
       && ask(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `(Get-ScheduledTask -TaskName '${spec.unit.unitName}').State`]).stdout?.trim() === 'Running';
   }
-  if (loaded.error !== undefined) return { installed: true, loaded: false, running: false, detail: `the platform's service manager could not be run` };
-  if (loaded.status !== 0) return { installed: true, loaded: false, running: false, detail: UNIT_NOT_HELD };
+  if (loaded.error !== undefined) return { installed, loaded: false, running: false, detail: `the platform's service manager could not be run` };
+  if (loaded.status !== 0) return { installed, loaded: false, running, detail: UNIT_NOT_HELD };
   return running
-    ? { installed: true, loaded: true, running: true }
-    : { installed: true, loaded: true, running: false, detail: 'the platform holds the unit and its process is not running' };
+    ? { installed, loaded: true, running: true }
+    : { installed, loaded: true, running: false, detail: 'the platform holds the unit and its process is not running' };
 }

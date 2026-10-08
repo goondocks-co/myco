@@ -52,7 +52,7 @@ import { postRoute } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
-import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
+import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
 
@@ -65,12 +65,12 @@ Ops:
   join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>] [--no-worker]
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
-                     --provision installs the agent's hooks and MCP entry globally. A worker for the
-                     server is installed to run at login (\`myco worker install\`) unless --no-worker.
+                     --provision installs the agent's hooks and MCP entry globally. Execution is a
+                     separate opt-in through \`myco runner register <host>\` and \`myco runner install\`.
   leave [--purge]    Forget this project's membership, and remove the surfaces that answer over it: any
                      member plugin (OpenCode, Pi) and the project's own Myco MCP entry, so those agents
-                     fall back to what is installed for all your projects. Leaving the last project on a
-                     server removes its worker service. The spool is kept unless
+                     fall back to what is installed for all your projects. Runner and legacy worker
+                     services are kept. The spool is kept unless
                      --purge is given, which also removes the hooks this project was provisioned with.
   drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
                      no harness budget, the offline latch is ignored, retention is applied first.
@@ -343,7 +343,6 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   // The settings the Deployment holds for this machine, cached before the first session reads them.
   await seedMachineSettings({ serverUrl: parsed.serverUrl, token }, { mycoHome, fetch: deps.fetch });
   if (parsed.provision && !provisionAgent(parsed.provision, root, mycoHome, deps, out, fail)) return null;
-  if (!parsed.noWorker) await joinWorker(parsed.serverUrl, mycoHome, deps, out);
 
   // #1148: the machine's existing history for this project, once, bounded by
   // what the Deployment allows. A failure never fails the join — the membership
@@ -476,15 +475,6 @@ async function connectFolder(
   const imported = report?.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
   if (imported > 0) out(`Imported ${imported} past sessions; run \`myco import\` to reach further back.`);
   return entry;
-}
-
-/**
- * Keep a worker for the joined Deployment running at login. A machine that
- * cannot host one is told why and stays joined: the membership is what the
- * join is for, and `myco worker install` retries the service on its own.
- */
-async function joinWorker(serverUrl: string, mycoHome: string, deps: MemberCliDeps, out: (line: string) => void): Promise<void> {
-  out(`${deploymentUrl(serverUrl)}: ${ensuredWorkerWords(await ensureWorkerService(serverUrl, { ...deps.worker, mycoHome })).line}`);
 }
 
 /**
@@ -842,12 +832,6 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
   out(`left ${entry.projectId} for ${root}; auto-join leaves it alone until you join it again`);
-  // The last binding on a Deployment takes its membership with it, and a worker
-  // service left behind would restart all day with nothing to claim under.
-  if (readDeploymentMembership(entry.serverUrl, mycoHome) === null && describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })?.installed === true) {
-    const removed = removeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome });
-    if ('removed' in removed && removed.removed) out(`removed the worker service for ${deploymentUrl(entry.serverUrl)}`);
-  }
   // The pin points at a home that no longer holds this project. Left standing it
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.

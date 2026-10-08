@@ -43,6 +43,8 @@ const SHARED_SRC = path.join(REPO_ROOT, 'packages', 'myco-shared', 'src');
  * covered by an old one.
  */
 const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
+  'features/admin/workers.ts:Legacy worker — uses member credential':
+    'The migration inventory must name the credential class so the owner can distinguish legacy execution from runner enrollment',
   'features/admin/settings/catalogue.ts:agent.harnesses. … .credential':
     'A setting key assembled for the API, never shown as page copy',
   'myco-shared/member-protocol.ts:ask a Deployment admin for an invitation for your existing member':

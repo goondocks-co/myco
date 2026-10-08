@@ -58,6 +58,31 @@ export const runnerIdentity: ParityScenario = {
     expect(await answer(post(target, '/auth/device/poll', { device_code: first.device_code }))).toEqual({ error: 'invalid_grant' });
     expect(await answer(asRunner(target, token, '/runners/contact', { machineId: 'parity-mini' }))).toMatchObject({ persisted: true, runner: { id: runnerId, state: 'enabled' } });
 
+    const legacyId = 'mt_runner_inventory_parity';
+    const legacyToken = 'runner-inventory-parity-member'.padEnd(43, 'x');
+    await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, lineage_root, lineage_started_at)
+      VALUES (${lit(legacyId)}, ${lit(ADMIN)}, 'legacy-parity', ${lit(await sha256Hex(legacyToken))}, ${now}, ${now + PARK_MS}, ${lit(legacyId)}, ${now})`);
+    await target.sql(`INSERT INTO worker_contacts (credential_id,machine_id,offers,capabilities,last_reason,last_seen_at,updated_at)
+      VALUES (${lit(legacyId)},'legacy-parity','[]','[]','no_work',${now - 31 * 24 * 60 * 60 * 1000},${now})`);
+    try {
+      await target.clockWake();
+      expect(await target.sql(`SELECT credential_id FROM worker_contacts WHERE credential_id = ${lit(legacyId)}`)).toEqual([{ credential_id: legacyId }]);
+      await target.sql(`INSERT OR IGNORE INTO projects(project_id, name, created_at) VALUES (${lit(target.projectId)}, 'Runner parity', ${now})`);
+      await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
+      await target.sql(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, started_at, leased_by, lease_expires_at, dispatched_by)
+        VALUES ('run_legacy_inventory_parity', ${lit(target.projectId)}, 'myco-agent', 'title-summary', 'running', ${now}, ${now}, ${lit(legacyId)}, ${now + PARK_MS}, NULL)`);
+      const response = await fetch(`${target.url}/api/workers/legacy`, { headers: admin });
+      expect(response.status).toBe(200);
+      const inventory = await response.json() as { workers: Array<{ credentialId: string; runner: unknown; lastSeenAt: number }> };
+      expect(inventory.workers.find((worker) => worker.credentialId === legacyId)).toMatchObject({ runner: null, lastSeenAt: now - 31 * 24 * 60 * 60 * 1000, busy: { runId: 'run_legacy_inventory_parity', leaseExpiresAt: now + PARK_MS } });
+      expect(inventory.workers.some((worker) => worker.runner != null)).toBe(false);
+      expect((await fetch(`${target.url}/api/workers/legacy`, { headers: { authorization: `Bearer ${token}`, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL), 'cf-connecting-ip': '1.2.3.4' } })).status).toBe(401);
+    } finally {
+      await target.sql(`DELETE FROM agent_runs WHERE id = 'run_legacy_inventory_parity'`);
+      await target.sql(`DELETE FROM worker_contacts WHERE credential_id = ${lit(legacyId)}`);
+      await target.sql(`DELETE FROM member_credentials WHERE id = ${lit(legacyId)}`);
+    }
+
     // A registration batch that fails at its credential leaves no runner, no decision and no audit on this store.
     const runners = await count('runners');
     const audits = await count('runner_audit');

@@ -89,7 +89,7 @@ describe('myco runner register', () => {
   it('opens no browser and reaches nothing of the member, login or service machinery', () => {
     const closure = closureOf([path.join(REPO_ROOT, 'packages/myco/src/cli/runner.ts')]);
     const reached = [...closure.modules.keys()];
-    const forbidden = [/open-browser/, /cli\/open\.ts$/, /symbionts\/installer/, /cli\/login\.ts$/, /cli\/worker-service\.ts$/, /runner\/service\.ts$/];
+    const forbidden = [/open-browser/, /cli\/open\.ts$/, /symbionts\/installer/, /cli\/login\.ts$/];
     for (const pattern of forbidden) expect(reached.filter((key) => pattern.test(key))).toEqual([]);
     for (const key of reached) {
       const source = fs.readFileSync(closure.modules.get(key)!, 'utf-8');

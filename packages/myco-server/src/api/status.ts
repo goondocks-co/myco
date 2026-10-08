@@ -14,6 +14,7 @@ import { ok } from './scope.js';
 import { captureRecency } from '../read/capture.js';
 import { machinesOf } from '../read/machines.js';
 import { isAdmin } from '../auth/roles.js';
+import { deploymentIdentity } from '../auth/authorization.js';
 
 /**
  * What this Deployment can do, in the product's vocabulary.
@@ -115,6 +116,7 @@ export const handleMemberStatus = emptyBodyRoute(async (env: ServerEnv, ctx: Cre
   const stored = await storedBytes(env.db, ctx.tokenId);
   return ok({
     persisted: true,
+    deploymentId: await deploymentIdentity(env.db),
     target: deploymentTarget(env),
     schema: schemaCheck(await schemaVersion(env.db)),
     stored: stored === null ? { state: 'unavailable', reason: 'no saved access key matches this token' } satisfies ByteFact : bytes(stored),

@@ -31,9 +31,9 @@ export const REASON_WORDS: Record<NonNullable<WorkerRow['lastReason']>, string> 
 
 /** How a person sets a machine to run Myco's work, said wherever none is: the words around the command, and the command. */
 export const ATTACH_WORDS = {
-  before: 'A machine runs Myco’s work where a coding agent is signed in. Running',
-  command: 'myco worker install',
-  after: 'on an administrator’s machine keeps it running whenever they are signed in.',
+  before: 'Explicitly enroll this machine with myco runner register <address>. Running',
+  command: 'myco runner install',
+  after: 'starts the enrolled runner at login.',
 } as const;
 
 /** What Myco's tasks are called, by the task name a run carries. */
@@ -75,10 +75,15 @@ export function workerState(worker: WorkerRow, now: number, project: WorkerNames
   return { tone: ready ? 'ok' : 'bad', line: `${polling} · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
 }
 
+/** The credential class the executor reports. */
+export function workerKindWords(worker: Pick<WorkerRow, 'runner'>): string {
+  return worker.runner ? 'Registered runner' : 'Legacy worker — uses member credential';
+}
+
 /** One worker's state in one line, led by its machine's name, and the tone of its dot. */
 export function workerLine(worker: WorkerRow, now: number, names: WorkerNames): { tone: HealthTone; line: string } {
   const state = workerState(worker, now, names.project);
-  return { tone: state.tone, line: `${names.machine} · ${state.line}` };
+  return { tone: state.tone, line: `${worker.runner ? worker.runner.name : names.machine} · ${workerKindWords(worker)} · ${state.line}` };
 }
 
 /** Why the last claim took nothing, when it took nothing: that poll's answer, never the queue's. */

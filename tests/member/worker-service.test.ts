@@ -27,8 +27,6 @@ import {
 } from '@myco/runner/service.js';
 import {
   describeWorkerService,
-  ensuredWorkerWords,
-  ensureWorkerService,
   sweepWorkerServices,
   workerServiceWords,
   type WorkerServiceDeps,
@@ -37,8 +35,7 @@ import { run as runWorkerCli } from '@myco/cli/worker.js';
 import { checkWorkerServices } from '@myco/cli/doctor.js';
 import { deploymentPath, removeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { holdWorkerInstance } from '@myco/runner/instance.js';
-import { readWorkerRefusal, recordWorkerRefusal } from '@myco/runner/refusal.js';
-import { resolveMycoHome } from '@myco/paths/home.js';
+import { recordWorkerRefusal } from '@myco/runner/refusal.js';
 import { recordingPlatform } from './helpers/service-platform.js';
 
 const URL_ = 'https://myco.example';
@@ -121,14 +118,14 @@ describe('the worker unit', () => {
 
 describe('installing and removing the worker service', () => {
   for (const platform of ['darwin', 'linux'] as const) {
-    it(`worker install uses the recorded service manager on ${platform}`, async () => {
+    it(`worker install requires runner enrollment on ${platform}`, async () => {
       member();
       const rec = recordingPlatform();
       expect(await runWorkerCli(['install', '--server', URL_], {
         mycoHome, home, platform, binaryPath: path.join(home, 'bin', 'myco'),
         detect: () => LOGGED_IN, runner: rec.runner,
-      })).toBe(true);
-      expect(rec.commands.some(command => command.startsWith(platform === 'darwin' ? 'launchctl ' : 'systemctl '))).toBe(true);
+      })).toBe(false);
+      expect(rec.commands).toEqual([]);
     });
   }
 
@@ -239,64 +236,11 @@ describe('when a worker service belongs on this machine', () => {
     };
   };
 
-  it('installs for an administrator\'s membership with a logged-in harness, and twice is the same as once', async () => {
-    member();
-    const d = deps();
-    expect((await ensureWorkerService(URL_, d)).kind).toBe('installed');
-    const second = await ensureWorkerService(URL_, d);
-    expect(second).toMatchObject({ kind: 'installed', outcome: { running: true, changed: false } });
-    expect(ensuredWorkerWords(second).line).toMatch(/^the worker was already running/);
-  });
-
-  it('refuses a membership the Deployment will not admit as a worker, records why, and does not install over the record', async () => {
-    member();
-    const refused = await ensureWorkerService(URL_, deps({ admission: async () => 'not_admin' }));
-    expect(refused).toMatchObject({ kind: 'refused', refusal: { reason: 'not_admin' } });
-    expect(ensuredWorkerWords(refused).ok).toBe(true);
-    expect(readWorkerRefusal(mycoHome, URL_)?.code).toBe('not_admin');
-    expect(fs.existsSync(path.join(home, 'Library', 'LaunchAgents'))).toBe(false);
-
-    // The Deployment cannot be asked again: the recorded refusal stands, until forced.
-    const later = await ensureWorkerService(URL_, deps({ admission: async () => 'unknown' }));
-    expect(later).toMatchObject({ kind: 'refused', refusal: { reason: 'not_admin', detail: expect.stringContaining('--force') } });
-    expect((await ensureWorkerService(URL_, deps({ admission: async () => 'unknown', force: true } as WorkerServiceDeps))).kind).toBe('installed');
-    // The worker it starts records a refusal again if the Deployment still has one.
-    expect(readWorkerRefusal(mycoHome, URL_)).toBeNull();
-  });
-
-  it('refuses a development build for the default home, before asking anything', async () => {
-    let asked = false;
-    const outcome = await ensureWorkerService(URL_, deps({
-      mycoHome: resolveMycoHome({ env: {} }),
-      binaryPath: '/Users/dev/Repos/myco/packages/myco-darwin-arm64/bin/myco',
-      detect: () => { asked = true; return LOGGED_IN; },
-    }));
-    expect(outcome).toMatchObject({ kind: 'unsupported', detail: expect.stringContaining('development build') });
-    expect(asked).toBe(false);
-  });
-
-  it('refuses before detecting anything when this process is not the installed binary', async () => {
-    member();
-    let detected = false;
-    const outcome = await ensureWorkerService(URL_, deps({ binaryPath: '/opt/homebrew/bin/bun', detect: () => { detected = true; return LOGGED_IN; } }));
-    expect(outcome.kind).toBe('unsupported');
-    expect(detected).toBe(false);
-  });
-
-  it('writes nothing for a home with no membership, or for the Deployment this machine runs itself', async () => {
-    const d = deps();
-    expect(await ensureWorkerService(URL_, d)).toMatchObject({ kind: 'refused', refusal: { reason: 'no_membership' } });
-    member();
-    expect(await ensureWorkerService(URL_, deps({ ownDeploymentUrls: async () => [URL_] }))).toMatchObject({ kind: 'refused', refusal: { reason: 'own_deployment' } });
-    expect(d.rec.commands).toEqual([]);
-    expect(fs.existsSync(path.join(home, 'Library', 'LaunchAgents'))).toBe(false);
-  });
-
   it('says whether the service is installed, running, and which process serves the Deployment', async () => {
     member();
     const d = deps();
-    expect(workerServiceWords(describeWorkerService(URL_, d))).toMatchObject({ status: 'warn', line: expect.stringMatching(/^not installed, and no worker on this machine serves this Deployment/) });
-    await ensureWorkerService(URL_, d);
+    expect(workerServiceWords(describeWorkerService(URL_, d))).toEqual({ status: 'ok', line: 'no executor on this machine (member only)' });
+    installWorkerService(target(), [], { runner: d.runner });
     expect(workerServiceWords(describeWorkerService(URL_, d))).toMatchObject({ status: 'warn', line: expect.stringMatching(/^running at login, and not yet serving/) });
 
     const held = holdWorkerInstance(d.lockDir!, [URL_]);
@@ -306,37 +250,40 @@ describe('when a worker service belongs on this machine', () => {
     } finally {
       held.release();
     }
-    expect(workerServiceWords(null).status).toBe('warn');
+    expect(workerServiceWords(null).status).toBe('ok');
   });
 
   it('says so when a reload left the unit unloaded, and `myco worker install` loads it again', async () => {
     member();
     const d = deps();
-    await ensureWorkerService(URL_, d);
+    installWorkerService(target(), [], { runner: d.runner });
     // The reload helper unloaded the unit and could not load it again.
     const unitFile = servicePaths(workerServiceSpec(target(), []), 'darwin').unitFile;
     d.rec.runner('launchctl', ['unload', unitFile]);
     expect(fs.existsSync(unitFile)).toBe(true);
     expect(workerServiceWords(describeWorkerService(URL_, d))).toEqual({
       status: 'warn',
-      line: 'installed, and the platform is not holding it — run `myco worker install`',
+      line: 'installed, and the platform is not holding it — inspect it with `myco worker doctor --server <url>`',
     });
     const [check] = await checkWorkerServices(scratch, d);
-    expect(check).toMatchObject({ status: 'warn', detail: expect.stringContaining('myco worker install') });
-    expect(await ensureWorkerService(URL_, d)).toMatchObject({ kind: 'installed', outcome: { loaded: true, running: true } });
+    expect(check).toMatchObject({ status: 'warn', detail: expect.stringContaining('myco worker doctor --server') });
+    expect(await runWorkerCli(['install', '--server', URL_], { ...d, stdout: () => {} })).toBe(true);
+    expect(d.rec.running.size).toBe(1);
   });
 
   it('tells a membership that cannot run a worker so, and never to install one', async () => {
     member();
+    const d = deps();
+    installWorkerService(target(), [], { runner: d.runner });
     recordWorkerRefusal(mycoHome, URL_, 'not_admin', 1);
-    const words = workerServiceWords(describeWorkerService(URL_, deps()));
+    const words = workerServiceWords(describeWorkerService(URL_, d));
     expect(words).toEqual({ status: 'ok', line: 'no worker: this membership is not an administrator\'s, so it cannot run work for this Deployment' });
-    const [check] = await checkWorkerServices(scratch, deps());
+    const [check] = await checkWorkerServices(scratch, d);
     expect(check).toMatchObject({ status: 'ok' });
     expect(check!.detail).not.toContain('worker install');
 
     recordWorkerRefusal(mycoHome, URL_, 'unauthorized', 2);
-    expect(workerServiceWords(describeWorkerService(URL_, deps()))).toMatchObject({ status: 'warn', line: expect.stringContaining('myco login') });
+    expect(workerServiceWords(describeWorkerService(URL_, d))).toMatchObject({ status: 'warn', line: expect.stringContaining('myco login') });
   });
 });
 

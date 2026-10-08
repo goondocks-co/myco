@@ -123,6 +123,9 @@ export interface WorkerOptions {
   listModels?: ListModels;
   /** The route of the compatibility read made before every claim. Defaults to the member status route. */
   compatibilityPath?: string;
+  /** The enrolled Deployment; a different authenticated contact refuses execution. */
+  deploymentId?: string;
+  onContact?: (body: Record<string, unknown>) => Promise<void>;
   /** What a harness probe reads of a credential file. Defaults to reading it. */
   detection?: DetectionMode;
 }
@@ -762,11 +765,26 @@ export async function probeWorkerAdmission(options: Requester): Promise<WorkerAd
 export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> {
   const instance = await becomeInstance(options);
   if (instance === null) return { driven: 0, refused: null };
+  const identityLock: { instance: { release: () => void } | null } = { instance: null };
+  let heldIdentity: string | undefined;
   try {
     const recovery = recoverAbandonedRunDirectories(options.runRoot);
     if (recovery.recovered > 0) options.log(`reclaimed ${recovery.recovered} abandoned run directories`);
-    return await claimUntilStopped(options, watchWake(options.clock, options.wakeSettle));
+    return await claimUntilStopped(options, watchWake(options.clock, options.wakeSettle), async (body) => {
+      const runner = body.runner as { deploymentId?: unknown } | undefined;
+      const identity = runner?.deploymentId ?? body.deploymentId;
+      if (typeof identity !== 'string' || identity === '') return options.deploymentId === undefined;
+      if ((options.deploymentId !== undefined && identity !== options.deploymentId) || (heldIdentity !== undefined && identity !== heldIdentity)) return false;
+      if (options.lockDir !== null && identityLock.instance === null) {
+        identityLock.instance = await becomeInstance({ ...options, deploymentUrls: [] }, identity);
+        if (identityLock.instance === null) return false;
+        heldIdentity = identity;
+      }
+      await options.onContact?.(body);
+      return true;
+    });
   } finally {
+    identityLock.instance?.release();
     instance.release();
   }
 }
@@ -776,12 +794,12 @@ export async function runWorker(options: WorkerOptions): Promise<WorkerOutcome> 
  * worker holds them and checking again at the idle poll interval. Null when the
  * worker is stopped before it gets them.
  */
-async function becomeInstance(options: WorkerOptions): Promise<{ release: () => void } | null> {
+async function becomeInstance(options: WorkerOptions, deploymentId?: string): Promise<{ release: () => void } | null> {
   if (options.lockDir === null) return { release: () => {} };
   const urls = options.deploymentUrls ?? [options.serverUrl];
   let said = false;
   while (!options.signal.aborted) {
-    const attempt = holdWorkerInstance(options.lockDir, urls);
+    const attempt = holdWorkerInstance(options.lockDir, urls, deploymentId);
     if (attempt.held) {
       if (said) options.log('the other worker stopped; this one serves the Deployment now');
       return attempt;
@@ -802,7 +820,7 @@ function retryRunDirectoryDiscards(options: WorkerOptions): void {
   catch (error) { options.log(`could not discard waiting run directories: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
-async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promise<WorkerOutcome> {
+async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitIdentity: (body: Record<string, unknown>) => Promise<boolean>): Promise<WorkerOutcome> {
   let offerSignature: string | null = null;
   let driven = 0;
   let unreachable = false;
@@ -881,6 +899,11 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
           if (!needsServerUpdate) { needsServerUpdate = true; options.log('this server needs updating before it can give this worker work'); }
           await pause(options.pollIdleMs);
           continue;
+        }
+        if (!await admitIdentity(compatibility.body)) {
+          if (options.signal.aborted) return { driven, refused: null };
+          options.log('the contact names another Deployment or carries no enrolled Deployment identity; no work is claimed');
+          return { driven, refused: 'unauthorized' };
         }
         advertisesCatalog = compatibility.modelCatalog;
         await deliverStepLogs(options, compatibility.steps, requestMs);

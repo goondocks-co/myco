@@ -1,17 +1,4 @@
-/**
- * A member's worker as a login service.
- *
- * One unit per Deployment per member home, running `myco worker --server <url>`
- * under the home the membership is read from, restarted when it exits and
- * started again at every login. The unit is the per-user service every Myco
- * service is (`server/service.ts`); this module says what a worker's unit is and
- * when one should exist.
- *
- * A worker needs a membership to claim with, a harness logged in to drive, and a
- * Deployment that does not already run a worker of its own on this machine. Each
- * is checked before a unit is written, because a unit written without one is a
- * process restarting all day to do nothing.
- */
+/** Per-user executor units with credential-class commands over the shared platform adapter. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,8 +20,6 @@ import {
 import type { LockHolder } from '../utils/lifecycle-lock.js';
 import { readWorkerRefusal, type WorkerRefusalRecord } from './refusal.js';
 
-const WORKER_LABEL_PREFIX = 'co.goondocks.myco-worker';
-const WORKER_UNIT_PREFIX = 'myco-worker';
 const UNIT_ID_HEX_CHARS = 16;
 
 /**
@@ -44,10 +29,11 @@ const UNIT_ID_HEX_CHARS = 16;
  */
 export const WORKER_RESTART_DELAY_SECONDS = 60;
 
-/** Where a worker service runs from: the Deployment, the member home holding its membership, and the machine it runs on. */
+/** The Deployment, credential home and machine paths an executor service names. */
 export interface WorkerServiceTarget {
+  executor?: 'runner' | 'legacy-member';
   serverUrl: string;
-  /** The member home the unit runs under, which is where its membership is read. */
+  /** The credential home the unit reads through MYCO_HOME. */
   mycoHome: string;
   /** The installed `myco` binary the unit runs. */
   binaryPath: string;
@@ -56,26 +42,28 @@ export interface WorkerServiceTarget {
   platform?: NodeJS.Platform;
 }
 
-/** The unit for one Deployment from one member home; two homes joined to one Deployment get two units, and one lock between them. */
-export function workerServiceUnit(serverUrl: string, mycoHome: string): ServiceUnit {
+/** Deployment and credential home name the unit; machine-wide locks serialize execution. */
+export function workerServiceUnit(serverUrl: string, mycoHome: string, executor: 'runner' | 'legacy-member' = 'legacy-member'): ServiceUnit {
   const url = deploymentUrl(serverUrl);
   const id = crypto.createHash('sha256').update(JSON.stringify([url, path.resolve(mycoHome)])).digest('hex').slice(0, UNIT_ID_HEX_CHARS);
-  return unitWithId(id, url);
+  return unitWithId(id, url, executor);
 }
 
-function unitWithId(id: string, url: string): ServiceUnit {
+function unitWithId(id: string, url: string, executor: 'runner' | 'legacy-member' = 'legacy-member'): ServiceUnit {
+  const kind = executor === 'runner' ? 'runner' : 'worker';
   return {
-    label: `${WORKER_LABEL_PREFIX}.${id}`,
-    unitName: `${WORKER_UNIT_PREFIX}-${id}`,
-    description: `Myco worker for ${url}`,
-    args: ['worker', '--server', url],
-    logName: `worker-${new URL(url).host.replace(/[^A-Za-z0-9.-]/g, '_')}`,
+    label: `co.goondocks.myco-${kind}.${id}`,
+    unitName: `myco-${kind}-${id}`,
+    description: `Myco ${kind} for ${url}`,
+    args: executor === 'runner' ? ['runner', 'run', '--server', url] : ['worker', '--server', url],
+    logName: `${kind}-${new URL(url).host.replace(/[^A-Za-z0-9.-]/g, '_')}`,
     restartDelaySeconds: WORKER_RESTART_DELAY_SECONDS,
   };
 }
 
 /** A worker unit found on disk, with the Deployment and member home it names where it can be read. */
 export interface FoundWorkerUnit {
+  executor: 'runner' | 'legacy-member';
   unitFile: string;
   serverUrl: string | null;
   mycoHome: string | null;
@@ -83,9 +71,9 @@ export interface FoundWorkerUnit {
 }
 
 const UNIT_FILE = {
-  darwin: new RegExp(`^${WORKER_LABEL_PREFIX.replace(/\./g, '\\.')}\\.([0-9a-f]{${UNIT_ID_HEX_CHARS}})\\.plist$`),
-  linux: new RegExp(`^${WORKER_UNIT_PREFIX}-([0-9a-f]{${UNIT_ID_HEX_CHARS}})\\.service$`),
-  win32: new RegExp(`^${WORKER_UNIT_PREFIX}-([0-9a-f]{${UNIT_ID_HEX_CHARS}})\\.task\\.xml$`),
+  darwin: /^co\.goondocks\.myco-(worker|runner)\.([0-9a-f]{16})\.plist$/,
+  linux: /^myco-(worker|runner)-([0-9a-f]{16})\.service$/,
+  win32: /^myco-(worker|runner)-([0-9a-f]{16})\.task\.xml$/,
 } as const;
 
 const unescapeXml = (value: string): string =>
@@ -97,7 +85,7 @@ const unescapeXml = (value: string): string =>
  * environment; a unit that cannot be read names neither, and can still be
  * removed by its file name.
  */
-export function listWorkerUnits(home: string, platform: NodeJS.Platform = process.platform): FoundWorkerUnit[] {
+export function listWorkerUnits(home: string, platform: NodeJS.Platform = process.platform, includeRunners = false): FoundWorkerUnit[] {
   const pattern = UNIT_FILE[platform as keyof typeof UNIT_FILE];
   if (pattern === undefined) return [];
   const probe: ServiceSpec = {
@@ -107,15 +95,17 @@ export function listWorkerUnits(home: string, platform: NodeJS.Platform = proces
   if (!fs.existsSync(dir)) return [];
   const found: FoundWorkerUnit[] = [];
   for (const name of fs.readdirSync(dir).sort()) {
-    const id = pattern.exec(name)?.[1];
-    if (id === undefined) continue;
+    const match = pattern.exec(name);
+    if (match === null || (!includeRunners && match[1] === 'runner')) continue;
+    const executor = match[1] === 'runner' ? 'runner' : 'legacy-member';
+    const id = match[2]!;
     const unitFile = path.join(dir, name);
     const text = unescapeXml(fs.readFileSync(unitFile, 'utf8'));
     const serverUrl = /--server(?:<\/string>\s*<string>|\s+)([^<\s"]+)/.exec(text)?.[1] ?? null;
     const mycoHome = /MYCO_HOME(?:<\/key><string>|=)([^<\n"]+)/.exec(text)?.[1] ?? null;
     found.push({
-      unitFile, serverUrl, mycoHome,
-      spec: { ...probe, unit: unitWithId(id, serverUrl ?? 'https://unit.invalid') },
+      executor, unitFile, serverUrl, mycoHome,
+      spec: { ...probe, unit: unitWithId(id, serverUrl ?? 'https://unit.invalid', executor) },
     });
   }
   return found;
@@ -131,7 +121,7 @@ export function harnessDirectories(find: (binary: string) => string | null = loc
 export function workerServiceSpec(target: WorkerServiceTarget, harnessDirs: readonly string[]): ServiceSpec {
   const platform = target.platform ?? process.platform;
   return {
-    unit: workerServiceUnit(target.serverUrl, target.mycoHome),
+    unit: workerServiceUnit(target.serverUrl, target.mycoHome, target.executor),
     binaryPath: target.binaryPath,
     home: target.home,
     pathEnv: servicePathEnv(target.binaryPath, target.home, platform, harnessDirs),
@@ -144,7 +134,7 @@ export function workerServiceSpec(target: WorkerServiceTarget, harnessDirs: read
 export interface WorkerServicePreconditions {
   /** Whether the member home holds a membership of the Deployment. */
   member: boolean;
-  /** The addresses this machine's own native Deployment answers at, whose `server run` process already runs a worker. */
+  /** The addresses this machine's own native Deployment answers at. */
   ownDeploymentUrls: readonly string[];
   /** What this machine has, as the worker will offer it. */
   harnesses: readonly DetectedHarness[];
@@ -163,7 +153,7 @@ export function workerServiceRefusal(serverUrl: string, pre: WorkerServicePrecon
   const url = deploymentUrl(serverUrl);
   if (!pre.member) return { reason: 'no_membership', detail: `this home holds no membership of ${url}. Run \`myco login\` first.` };
   if (pre.ownDeploymentUrls.some((own) => deploymentUrl(own) === url)) {
-    return { reason: 'own_deployment', detail: `${url} is this machine's own Deployment, and \`myco server run\` already runs its worker.` };
+    return { reason: 'own_deployment', detail: `${url} names this machine's native Deployment. Enroll explicitly with \`myco runner register ${url}\`, then \`myco runner install\`.` };
   }
   const offer = offerOf(pre.harnesses);
   if (!offer.offered.some((h) => h.authenticated)) {
@@ -220,7 +210,7 @@ export function workerServiceStatus(
     loaded: state.loaded,
     running: state.running,
     ...(state.detail === undefined ? {} : { detail: state.detail }),
-    refusal: readWorkerRefusal(target.mycoHome, target.serverUrl),
+    refusal: target.executor === 'runner' ? null : readWorkerRefusal(target.mycoHome, target.serverUrl),
     serving: workerHolder(options.lockDir ?? workerLockDir(target.home), target.serverUrl),
     outLog: paths.outLog,
     errLog: paths.errLog,

@@ -45,6 +45,7 @@ describe('POST /members/status', () => {
     expect(before.status).toBe(200);
     expect(await jsonBody(before)).toEqual({
       persisted: true,
+      deploymentId: (e.sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value: string }).value,
       target: e.serverEnv.platform.name,
       schema: { expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true },
       stored: measured(charged),

@@ -5,7 +5,7 @@ export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run'
 export type SubjectKind = typeof SUBJECT_KINDS[number];
 export const ACTIONS = ['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'claim', 'lease', 'never'] as const;
 export type Action = typeof ACTIONS[number];
-export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner'] as const;
+export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner', 'legacy-worker'] as const;
 export type ResourceKind = typeof RESOURCE_KINDS[number];
 export type Transport = 'http' | 'mcp';
 
@@ -70,7 +70,7 @@ export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly Authoriz
   machine: ['machine', 'deployment'], 'machine-settings': ['machine'], project: ['project', 'deployment'],
   processed: ['project', 'deployment'], plan: ['project', 'deployment'], spore: ['project', 'deployment'],
   raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment', 'enrollment', 'self-enrollment'], backup: ['deployment'],
-  queue: ['deployment'], runner: ['runner', 'deployment'],
+  queue: ['deployment'], runner: ['runner', 'deployment'], 'legacy-worker': ['deployment'],
 };
 
 export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>> = {
@@ -80,7 +80,7 @@ export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>>
   project: ['read', 'create', 'admin'], processed: ['read', 'admin', 'capture'],
   plan: ['read', 'edit', 'status', 'capture'], spore: ['read', 'edit'], raw: ['read', 'enumerate', 'append', 'owner'], 'raw-index': ['enumerate'],
   run: ['read', 'dispatch', 'admin', 'cancel', 'execute'], grant: ['admin'], enrollment: ['protocol', 'admin', 'owner', 'enroll.self'], backup: ['admin'],
-  queue: ['claim', 'lease'], runner: ['read', 'edit', 'admin'],
+  queue: ['claim', 'lease'], runner: ['read', 'edit', 'admin'], 'legacy-worker': ['read'],
 };
 
 /** The policy receives only identities and resource evidence resolved by the serving store. */
@@ -110,6 +110,7 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (!subject.memberId || !subject.role || !['owner', 'admin', 'member'].includes(subject.role)) return false;
   const admin = subject.role === 'owner' || subject.role === 'admin';
+  if (resource.kind === 'legacy-worker') return subject.transport === 'http' && admin && action === 'read';
   if (resource.kind === 'queue') return subject.transport === 'http' && admin;
   if (resource.kind === 'runner') return subject.transport === 'http' && (action === 'read' || (action === 'admin' && admin));
   if (action === 'enroll.self') return subject.transport === 'http' && resource.kind === 'enrollment'

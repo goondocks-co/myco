@@ -101,6 +101,29 @@ function rig(options: { onSql?: (sql: string) => void; deploymentId?: string } =
   };
 }
 
+describe('legacy execution inventory', () => {
+  it('owner and admin see member executors with contact and live leases, separate from runners', async () => {
+    const r = rig();
+    try {
+      await r.register();
+      const legacy = await issueMemberToken(r.e.db, { memberId: ADMIN, machineId: 'legacy-mini' }, r.now());
+      await r.queueTitling();
+      const claimed = await r.json(r.asRunner(legacy.token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES }));
+      expect(claimed.claimed).toBe(true);
+      r.e.sqlite.run('UPDATE worker_contacts SET last_seen_at = ? WHERE credential_id = ?', [r.now() - 300000, legacy.tokenId]);
+      for (const role of [OWNER_SUB, ADMIN_SUB]) {
+        const response = await r.asSession('/api/workers/legacy', {}, role, 'GET');
+        expect(response.status).toBe(200);
+        const inventory = await r.json(response);
+        expect(inventory.workers).toHaveLength(1);
+        expect(inventory.workers[0]).toMatchObject({ credentialId: legacy.tokenId, machineId: 'legacy-mini', runner: null, recent: false, busy: { runId: claimed.run.id } });
+        expect(JSON.stringify(inventory)).not.toContain(legacy.token);
+      }
+      expect((await r.asSession('/api/workers/legacy', {}, MEMBER_SUB, 'GET')).status).toBe(404);
+    } finally { r.e.sqlite.close(); }
+  });
+});
+
 describe('runner registration through the device flow', () => {
   it('names the runner on the approval, binds the client\'s candidate at the approval, and mints nothing at the poll', async () => {
     const r = rig();

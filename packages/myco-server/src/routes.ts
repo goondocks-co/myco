@@ -1,5 +1,5 @@
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
-import { handleControlRunner, handleListRunners, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
+import { handleControlRunner, handleListRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
@@ -148,6 +148,7 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['runner-registration']), method: 'POST', path: '/auth/runner/poll', auth: 'enroll', subject: 'runner-registration', handler: handleRunnerDevicePoll },
   { authorization: httpPolicy('runner', 'read', 'runner', ['runner']), method: 'POST', path: '/runners/contact', auth: 'runner', bodyMode: 'json', shape: 'persisted', runner: handleRunnerContact },
   { authorization: httpPolicy('runner', 'edit', 'runner', ['runner']), method: 'POST', path: '/runners/rotate', auth: 'runner', bodyMode: 'json', shape: 'persisted', admitsLapsed: true, runner: handleRunnerRotate },
+  { authorization: httpPolicy('legacy-worker', 'read', 'deployment', ['member']), method: 'GET', path: '/api/workers/legacy', auth: 'session', authority: 'member', handler: handleLegacyWorkers },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners', auth: 'session', authority: 'member', handler: handleListRunners },
   ...(['pause', 'resume', 'remove'] as const).map((control): Route => ({
     authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: `/api/runners/{runnerId}/${control}`,

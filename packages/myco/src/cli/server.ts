@@ -31,21 +31,13 @@ import { existsSync } from 'node:fs';
 import { parseFlags } from './flags.js';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
-import { readDeploymentMembership } from '../member/registry.js';
-import { runWorker, type WorkerOptions } from '../runner/loop.js';
-import { workerLogLine } from '../runner/log.js';
-import { keepMachineAwake } from '../runner/keep-awake.js';
-import { workerLockDir } from '../runner/instance.js';
 
-/** What a worker waits before its first answer tells it the Deployment's own cadence. */
-const WORKER_POLL_IDLE_MS = 2_000;
 import {
   DEFAULT_LOCAL_RECORD,
   LocalDeploymentAbsent,
   LocalRecordUnreadable,
   createLocalDeployment,
   localDeploymentPresent,
-  localDeploymentUrls,
   readLocalRecord,
   removeLocalDeployment,
   resolveLocalPaths,
@@ -241,61 +233,6 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-/**
- * The worker inside the laptop server process.
- *
- * It attaches over the loopback address the Deployment just bound, under the
- * membership this machine holds for it. A machine that holds none serves
- * without a worker and says so: the Deployment still takes work, and the queue
- * waits for a worker that can claim it.
- */
-/**
- * Where the in-process worker claims from and what it locks: its own loopback,
- * and the origin members reach it at, so no other worker on this machine claims
- * for the same Deployment under either address.
- */
-export function localWorkerTarget(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>, mycoHome: string, lockDir = workerLockDir()): Pick<WorkerOptions, 'serverUrl' | 'token' | 'lockDir' | 'deploymentUrls' | 'runRoot' | 'stepRoot'> {
-  const urls = localDeploymentUrls(record);
-  const serverUrl = urls[0]!;
-  return {
-    serverUrl,
-    token: () => readDeploymentMembership(serverUrl, mycoHome)?.token ?? null,
-    lockDir,
-    deploymentUrls: urls,
-    runRoot: path.join(mycoHome, 'worker', 'runs'),
-    stepRoot: path.join(mycoHome, 'worker', 'steps'),
-  };
-}
-
-async function startLocalWorker(record: Pick<LocalDeploymentRecord, 'port' | 'origin'>): Promise<void> {
-  const mycoHome = resolveMycoHome();
-  const target = localWorkerTarget(record, mycoHome);
-  const membership = readDeploymentMembership(target.serverUrl, mycoHome);
-  if (membership === null) {
-    console.log('No membership for this Deployment on this machine; serving without a worker. Run `myco login` to attach one.');
-    return;
-  }
-  const stopping = new AbortController();
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopping.abort(); });
-  // The Deployment serves whatever becomes of the worker, so its end is reported
-  // in the same words as a machine that holds no membership at all: a refused
-  // worker and an absent one leave the same queue waiting, and the operator
-  // needs to be told which. An unexpected failure is reported rather than left
-  // to surface as an unhandled rejection, which would say nothing about what the
-  // queue is now waiting for.
-  void runWorker({
-    ...target,
-    pollIdleMs: WORKER_POLL_IDLE_MS,
-    log: (line) => { console.log(workerLogLine(line)); },
-    keepAwake: keepMachineAwake,
-    signal: stopping.signal,
-  }).then(({ refused }) => {
-    if (refused !== null) console.log(`This Deployment refused the worker on this machine (${refused}); serving without one.`);
-  }).catch((error: unknown) => {
-    console.log(`The worker on this machine stopped (${error instanceof Error ? error.message : String(error)}); serving without one.`);
-  });
-}
-
 /** What `create --target cloudflare --dry-run` prints: each step with what it would do, the bindings, and the address. */
 export function createPlanLines(plan: CreatePlan): string[] {
   const width = Math.max(...plan.steps.map((s) => s.action.length));
@@ -401,11 +338,7 @@ export async function run(args: string[]): Promise<void> {
       if (command === 'run') {
         const started = await runLocalDeployment(paths);
         console.log(`Deployment serving on http://127.0.0.1:${started.port}`);
-        // #1151: a laptop Deployment runs a worker of its own, so a default
-        // install produces spores rather than a queue nothing claims. It is an
-        // ordinary client of the HTTP surface, the same one a worker on another
-        // machine is, so both run identical code.
-        if (flags.get('no-worker') !== 'true') await startLocalWorker({ port: started.port, origin: readLocalRecord(paths).origin });
+        console.log(`Agent work requires an explicitly opted-in machine: on this machine or another, run \`myco runner register http://127.0.0.1:${started.port}\` (use this Deployment's reachable address remotely), then \`myco runner install\`.`);
         // The process stays up until the platform signals it; `startDeployment`
         // owns the drain.
         await new Promise<never>(() => {});

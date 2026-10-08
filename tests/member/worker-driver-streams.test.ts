@@ -1995,6 +1995,6 @@ describe('a harness no worker offers', () => {
     try {
       expect(await runWorkerCli(['--detect', '--harness', 'antigravity'])).toBe(true);
     } finally { console.log = log; agy.remove(); }
-    expect(printed).toEqual([`${'antigravity'.padEnd(14)} installed  logged in  not offered: ${WITHHELD_REASON}`]);
+    expect(printed).toEqual(['myco worker is a compatibility alias; enroll with `myco runner register <host>`.', `${'antigravity'.padEnd(14)} installed  logged in  not offered: ${WITHHELD_REASON}`]);
   });
 });

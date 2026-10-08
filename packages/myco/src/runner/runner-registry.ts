@@ -67,6 +67,7 @@ export interface RunnerRecord {
   tokenId?: string;
   tokenExpiresAt?: number;
   refreshAfter?: number;
+  lastContactAt?: number;
   pending?: RunnerPending;
 }
 
@@ -135,7 +136,7 @@ function parseRecord(file: string, value: unknown, serverUrl?: string): RunnerRe
   for (const field of ['deploymentId', 'runnerId', 'tokenId'] as const) {
     if (record[field] !== undefined && !isString(record[field])) throw new RunnerRecordError(file, `${field} is not a string`);
   }
-  for (const field of ['tokenExpiresAt', 'refreshAfter'] as const) {
+  for (const field of ['tokenExpiresAt', 'refreshAfter', 'lastContactAt'] as const) {
     if (record[field] !== undefined && !isTime(record[field])) throw new RunnerRecordError(file, `${field} is not a time`);
   }
   if (record.token !== undefined && !isRunnerBearer(record.token)) throw new RunnerRecordError(file, 'token is not a runner bearer');
@@ -278,4 +279,16 @@ export function clearPending(lock: RunnerLock): RunnerRecord | null {
   delete kept.pending;
   publishRunnerRecord(lock, kept);
   return kept;
+}
+
+/** Keep an acknowledged contact only for the runner and Deployment this record names. */
+export async function recordRunnerContact(serverUrl: string, identity: { runnerId: string; deploymentId: string }, at: number, mycoHome?: string): Promise<boolean> {
+  const result = await withRunnerLock(serverUrl, (lock) => {
+    const record = readRunnerRecord(serverUrl, lock.mycoHome);
+    if (!isLiveRunner(record) || record.runnerId !== identity.runnerId || record.deploymentId !== identity.deploymentId) {
+      throw new RunnerRecordError(runnerRecordPath(serverUrl, lock.mycoHome), 'contact names another runner or Deployment');
+    }
+    publishRunnerRecord(lock, { ...record, lastContactAt: Math.max(record.lastContactAt ?? 0, at) });
+  }, mycoHome);
+  return result.held;
 }

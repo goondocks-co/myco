@@ -45,7 +45,7 @@ const MEMBER_ACTIONS: Readonly<Partial<Record<ResourceKind, readonly Action[]>>>
 const PRIVILEGED_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
   settings: ['admin'], secret: ['admin'], credential: ['admin'],
   project: ['admin'], processed: ['admin'], grant: ['admin'], enrollment: ['admin'], backup: ['admin'], run: ['admin'], member: ['admin', 'bootstrap'],
-  queue: ['claim', 'lease'], runner: ['admin'],
+  queue: ['claim', 'lease'], runner: ['admin'], 'legacy-worker': ['read'],
 };
 /** A runner reaches the run queue and its own runner record over HTTP, and nothing else but the protocol. */
 const RUNNER_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
@@ -110,6 +110,7 @@ describe('Deployment authorization policy', () => {
       ['POST', '/auth/runner/start', 'protocol', 'protocol', 'protocol', ['runner-registration'], ['runner-registration']],
       ['POST', '/auth/runner/poll', 'protocol', 'protocol', 'protocol', ['runner-registration'], ['runner-registration']],
       ['POST', '/api/device/approve-runner', 'runner', 'admin', 'deployment', ['member'], ['owner', 'admin']],
+      ['GET', '/api/workers/legacy', 'legacy-worker', 'read', 'deployment', ['member'], ['owner', 'admin']],
       ['GET', '/api/runners', 'runner', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
       ['POST', '/api/runners/{runnerId}/pause', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/resume', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
@@ -202,7 +203,7 @@ describe('Deployment authorization policy', () => {
   });
 
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {
-    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner'].sort());
+    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner', 'legacy-worker'].sort());
     expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'claim', 'lease', 'never'].sort());
     expect(new Set(Object.values(SUBJECTS).map((s) => s.kind))).toEqual(new Set(SUBJECT_KINDS));
     for (const [actor, initial] of Object.entries(SUBJECTS)) {
