@@ -46,7 +46,7 @@ import type { PackageCheckResult } from '@myco/upgrade/checker.js';
 import { resolveMycoBinaryUpdateRefs } from '@myco/upgrade/release-resolver.js';
 import { stageBinary, DEFAULT_BINARY_UPDATE_DEPS } from '@myco/upgrade/apply-binary.js';
 import type { StageBinaryDeps } from '@myco/upgrade/apply-binary.js';
-import type { AssetRefs } from '@myco/upgrade/release-assets.js';
+import { parseMycoUpdateVersion, type AssetRefs } from '@myco/upgrade/release-assets.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveNewestStagedVersion } from '@myco/upgrade/auto-check.js';
 import { versionBinaryPath } from '../../install/managed-binary.js';
@@ -185,11 +185,11 @@ function buildPackagesFromCache(
   return UPDATE_PACKAGES.map((pkg) => {
     const cached = cache.packages[pkg.id];
     const installedVersion = installedVersions[pkg.id];
-    const latestStableRaw = cached?.latest_stable ?? null;
+    const latestStableRaw = parseMycoUpdateVersion(cached?.latest_stable ?? '')?.version ?? null;
     // `latest_stable ?? currentVersion` — mirrors upgrade/checker.ts convention
     // so the revert/update logic always has a clean comparison base.
     const latestStable = latestStableRaw ?? currentVersion;
-    const latestBeta = cached?.latest_beta ?? null;
+    const latestBeta = parseMycoUpdateVersion(cached?.latest_beta ?? '')?.version ?? null;
     const latestVersion = cached
       ? resolveTargetFromCache(latestStable, latestBeta, channel)
       : null;
@@ -391,7 +391,7 @@ export function createUpgradeHandlers(deps: UpgradeDeps) {
       const installedVersion = getInstalledVersion(globalPrefix);
       if (
         installedVersion &&
-        semver.valid(installedVersion) &&
+        parseMycoUpdateVersion(installedVersion) &&
         semver.valid(currentVersion) &&
         semver.gt(installedVersion, currentVersion)
       ) {

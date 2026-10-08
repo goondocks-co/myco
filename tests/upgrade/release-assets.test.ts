@@ -3,6 +3,7 @@ import {
   resolveTargetTriple,
   assetName,
   pickRelease,
+  resolveAssetRefs,
   assetDownloadUrl,
   parseSha256Sum,
   githubHeaders,
@@ -151,7 +152,7 @@ describe('pickRelease', () => {
   it('prerelease detection: prerelease flag OR semver prerelease component', () => {
     // Tag is labeled prerelease:false but has -alpha in version (semver component)
     const fixture: GitHubRelease[] = [
-      makeRelease('myco/v2.0.0-alpha.1', false), // flag says false, semver says prerelease
+      makeRelease('myco/v1.10.0-alpha.1', false), // flag says false, semver says prerelease
       makeRelease('myco/v1.9.0', false),
     ];
     // stable channel should NOT pick the alpha even though flag is false
@@ -159,12 +160,12 @@ describe('pickRelease', () => {
     expect(stableResult?.tag_name).toBe('myco/v1.9.0');
     // beta channel should include it and pick the higher one
     const betaResult = pickRelease(fixture, 'beta');
-    expect(betaResult?.tag_name).toBe('myco/v2.0.0-alpha.1');
+    expect(betaResult?.tag_name).toBe('myco/v1.10.0-alpha.1');
   });
 
   it('prerelease detection: rc suffix counts as prerelease', () => {
     const fixture: GitHubRelease[] = [
-      makeRelease('myco/v2.0.0-rc.1', true),
+      makeRelease('myco/v1.10.0-rc.1', true),
       makeRelease('myco/v1.9.0', false),
     ];
     const stableResult = pickRelease(fixture, 'stable');
@@ -378,13 +379,13 @@ describe('resolveMycoVersions', () => {
   it('semver component detection: flag=false but -alpha suffix → treated as prerelease', () => {
     // The prerelease flag is false but the semver prerelease component is present
     const releases: GitHubRelease[] = [
-      makeReleaseFull('myco/v2.0.0-alpha.1', false), // flag=false but semver says prerelease
+      makeReleaseFull('myco/v1.10.0-alpha.1', false), // flag=false but semver says prerelease
       makeReleaseFull('myco/v1.9.0', false),          // genuine stable
     ];
 
     const result = resolveMycoVersions(releases);
     expect(result.latest_stable).toBe('1.9.0');
-    expect(result.latest_beta).toBe('2.0.0-alpha.1');
+    expect(result.latest_beta).toBe('1.10.0-alpha.1');
   });
 
   it('picks the highest stable across multiple stable releases', () => {
@@ -406,5 +407,29 @@ describe('resolveMycoVersions', () => {
 
     const result = resolveMycoVersions(releases);
     expect(result.latest_stable).toBe('1.0.0');
+  });
+});
+
+describe('1.4 update major cap', () => {
+  const outsideVersions = ['0.99.0', '2.0.0-alpha.1', '2.0.0-beta.1', '2.0.0', '3.0.0'];
+  const outside = outsideVersions.map((version) => makeRelease(`myco/v${version}`, false));
+
+  for (const channel of ['stable', 'beta'] as const) {
+    it(`${channel} selects 1.4.9 with future majors present`, () => {
+      const releases = [...outside, makeRelease('myco/v1.4.8', false), makeRelease('myco/v1.4.9', false)];
+      expect(pickRelease(releases, channel)?.tag_name).toBe('myco/v1.4.9');
+      expect(pickRelease(outside, channel)).toBeNull();
+    });
+  }
+
+  it('reports only major-one versions for update checks', () => {
+    expect(resolveMycoVersions([...outside, makeRelease('myco/v1.4.9', false), makeRelease('myco/v1.4.10-beta.1', true)]))
+      .toEqual({ latest_stable: '1.4.9', latest_beta: '1.4.10-beta.1' });
+    expect(resolveMycoVersions(outside)).toEqual({ latest_stable: null, latest_beta: null });
+  });
+
+  it('rejects direct asset resolution outside major one', () => {
+    for (const release of outside) expect(resolveAssetRefs(release, 'darwin-arm64')).toBeNull();
+    expect(resolveAssetRefs(makeRelease('myco/v1.4.9', false), 'darwin-arm64')?.targetVersion).toBe('1.4.9');
   });
 });

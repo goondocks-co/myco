@@ -222,6 +222,19 @@ describe('handleUpgradeStatus', () => {
     expect(resolveMycoPackageCheck).not.toHaveBeenCalled();
   });
 
+  for (const channel of ['stable', 'beta'] as const) {
+    it(`ignores cached future-major targets on ${channel}`, async () => {
+      const cache = makeUpdateCache();
+      cache.packages.myco.latest_stable = '2.0.0';
+      Object.assign(cache.packages.myco, { latest_beta: '2.0.0-beta.1' });
+      (readCachedCheck as AnyMock).mockReturnValue(cache);
+      (readProjectReleaseChannel as AnyMock).mockReturnValue(channel);
+      const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps());
+      const result = await handleUpgradeStatus(makeReq());
+      expect(result.body).toMatchObject({ update_available: false, latest_version: '1.0.0', latest_beta: null });
+    });
+  }
+
   it('kicks off background check when cache is stale', async () => {
     (readCachedCheck as AnyMock).mockReturnValue(makeNoUpdateCache());
     (isCacheStale as AnyMock).mockReturnValue(true);
@@ -318,6 +331,18 @@ describe('handleUpgradeStatus — version-sync restart', () => {
     expect(scheduleShutdown).toHaveBeenCalled();
     expect(result.body).toMatchObject({ restarting: true, reason: 'version_sync' });
   });
+
+  for (const version of ['2.0.0-alpha.1', '2.0.0-beta.1', '2.0.0']) {
+    it(`does not restart a 1.4 daemon onto npm-installed ${version}`, async () => {
+      (getInstalledVersion as AnyMock).mockReturnValue(version);
+      const scheduleShutdown = vi.fn();
+      const { handleUpgradeStatus } = createUpgradeHandlers(makeDeps({ scheduleShutdown, globalPrefix: '/usr/local' }));
+      const result = await handleUpgradeStatus(makeReq());
+      expect(spawnRestartScript).not.toHaveBeenCalled();
+      expect(scheduleShutdown).not.toHaveBeenCalled();
+      expect((result.body as Record<string, unknown>).restarting).toBeUndefined();
+    });
+  }
 
   it('does not trigger restart when installed version matches running', async () => {
     (getInstalledVersion as AnyMock).mockReturnValue('1.0.0');
