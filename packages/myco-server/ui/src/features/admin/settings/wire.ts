@@ -81,5 +81,5 @@ export interface TitlingBackfillProgress {
   completedToday: number;
   failedToday: number;
   /** What holds the next title while sessions wait for one; null when nothing does. */
-  waiting: { reason: 'interval' | 'overlap' | 'ceiling'; until: number | null } | null;
+  waiting: { reason: 'interval' | 'overlap' | 'ceiling' | 'reserved'; until: number | null } | null;
 }

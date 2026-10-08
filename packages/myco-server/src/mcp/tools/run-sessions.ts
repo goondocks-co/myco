@@ -10,7 +10,7 @@
  * dispatch named, resolved from the run row before any handler runs, so there
  * is no id for a caller to get wrong and no check to forget. The titling mode
  * is the dispatch's too: at a session's end a title is written only where none
- * exists, on an owner's ask over whatever is there. The material served is
+ * exists, on an owner's ask or a refresh over whatever is there. The material served is
  * recorded as the run's read of its session.
  */
 import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
@@ -65,7 +65,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       prompt_count: counts.prompts,
       ...(session.title === null ? {} : { current_title: session.title }),
       ...(session.summary === null ? {} : { current_summary: session.summary }),
-      ...(params.mode === 'owner' ? { note: 'The batches are the session\'s earliest and latest prompts in order; the middle is omitted.' } : {}),
+      ...(params.mode !== 'claim' ? { note: 'The batches are the session\'s earliest and latest prompts in order; the middle is omitted.' } : {}),
       batches: material.map((line, i) => ({ prompt_number: i + 1, user_prompt: line.prompt, response_excerpt: line.response })),
     };
   }
@@ -76,7 +76,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
     return failure(`a title is 1 to ${TITLE_MAX_CHARS} characters and a summary 1 to ${SUMMARY_MAX_CHARS}; both are required`);
   }
   const attribution = { runId: run.runId, toolName: TITLE_WRITE_TOOL, op: 'title', recordedAt: ctx.now, detail: { session_id: sessionId } };
-  const written = params.mode === 'owner'
+  const written = params.mode !== 'claim'
     ? await overwriteTitle(db, ctx.projectId, sessionId, title, summary, params.by ?? null, attribution)
     : await writeTitle(db, ctx.projectId, sessionId, title, summary, attribution);
   if (!written) await assertSessionMaterialReady(db, ctx.projectId, sessionId);

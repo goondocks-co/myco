@@ -11,10 +11,12 @@ export const SUMMARY_MAX_CHARS = 1200;
  * How a title is asked for. `claim` is the end of a session: one attempt ever,
  * writing only where no title exists, over the session's opening prompts. `owner`
  * is a person asking from the dashboard: any session, ended or not, over the
- * opening and closing prompts, writing over whatever title is there.
+ * opening and closing prompts, writing over whatever title is there. `refresh` is the Deployment
+ * renewing the title of a session still open after it has gone on: the same material and the
+ * same overwrite as an owner's ask, attributed to no member.
  */
-export type TitlingMode = 'claim' | 'owner';
-export const TITLING_MODES: readonly TitlingMode[] = ['claim', 'owner'];
+export type TitlingMode = 'claim' | 'owner' | 'refresh';
+export const TITLING_MODES: readonly TitlingMode[] = ['claim', 'owner', 'refresh'];
 
 /** The parameters a titling run is dispatched with, as the runtime and the run routes read them back from the run's context the server wrote. */
 export interface TitlingParams {

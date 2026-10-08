@@ -102,6 +102,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.scheduled_tasks_active_window_days': { type: 'integer', min: 0, max: 365 },
   'agent.scheduled_tasks_enabled': BOOLEAN_SPEC,
   'agent.tasks': { type: 'task-overrides' },
+  'agent.titling_idle_close_minutes': { type: 'integer', min: 5, max: 10_080 },
   'backup.auto_interval_hours': { type: 'integer', min: 1, max: 720 },
   // #1547: whether a member's machine may create a project for a repository it meets that no project holds. Absent
   // means on; an admin turns it off to keep project creation with admins.

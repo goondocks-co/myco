@@ -22,7 +22,7 @@ import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { SPORE_PREVIEW_CHARS } from '@myco-server-worker/core/spores.js';
 import { RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { GRANT_INSTRUCTIONS, RUN_INSTRUCTIONS, runInstructionsFor, SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_MAX_BYTES } from '@myco-server-worker/mcp/server.js';
-import { acceptedActions, RUN_CLOSE_ERROR, RUN_CLOSE_RULES, RUN_SKIP_ACTION, runCloseRefusal, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
+import { acceptedActions, RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_CLOSE_RULES, RUN_SKIP_ACTION, runCloseRefusal, unacceptedActionError } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/core/runs.js';
 import { runToolCalls } from '@myco-server-worker/read/runs.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
@@ -534,6 +534,40 @@ describe('a titling run reads and writes its own session', () => {
     await second.dispatch('run_t2', TITLING, { mode: 'claim' });
     second.sqlite.run(`UPDATE sessions SET title = 'Already', summary = 'Set' WHERE session_id = 'sess_1'`);
     expect((await second.call(second.harness.token, 'myco_run_sessions', { op: 'title', title: 'B', summary: 'C' }) as any).result.written).toBe(false);
+  });
+
+  it('overwrites the standing title on a refresh of a session still open, and gives search and embedding the new text under a new revision', async () => {
+    const { harness, dispatch, call, sqlite, prompt } = await setup();
+    prompt('first');
+    sqlite.run(`UPDATE sessions SET ended_at = NULL, title = 'Old title', summary = 'Old summary', titled_by = 'mem_asked' WHERE session_id = 'sess_1'`);
+    const revision = () => (sqlite.query(`SELECT revision FROM embedding_versions WHERE type = 'session' AND record_id = 'sess_1'`).get() as { revision: string }).revision;
+    const before = revision();
+    await dispatch('run_r', TITLING, { mode: 'refresh' });
+
+    const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' })).result;
+    expect(material).toMatchObject({ status: 'active', current_title: 'Old title', current_summary: 'Old summary' });
+    expect(material.note).toContain('earliest and latest prompts');
+
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'New title', summary: 'New summary covering the whole session' })).result)
+      .toEqual({ session_id: 'sess_1', written: true });
+    expect(sqlite.query(`SELECT title, summary, titled_by, ended_at FROM sessions WHERE session_id = 'sess_1'`).get())
+      .toEqual({ title: 'New title', summary: 'New summary covering the whole session', titled_by: null, ended_at: null });
+    expect(revision()).not.toBe(before);
+    expect(sqlite.query(`SELECT status, text FROM embedding_sources WHERE type = 'session' AND record_id = 'sess_1'`).get())
+      .toEqual({ status: 'active', text: 'New title\nNew summary covering the whole session' });
+    expect(sqlite.query(`SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'whole'`).all()).toHaveLength(1);
+    expect(sqlite.query(`SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Old'`).all()).toHaveLength(0);
+  });
+
+  it('supports a skip on a standing title for a claim run, and for a refresh none, since a refresh exists to replace the title', async () => {
+    for (const [mode, refusal] of [['claim', null], ['refresh', RUN_CLOSE_ARTIFACT_ERROR]] as const) {
+      const { db, dispatch, sqlite } = await setup();
+      sqlite.run(`UPDATE sessions SET title = 'Standing', summary = 'Its summary' WHERE session_id = 'sess_1'`);
+      await dispatch(`run_${mode}`, TITLING, { mode });
+      sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, created_at) VALUES ('proj_1', ?, 'myco-agent', ?, 'a title stands', NULL, ?)`, [`run_${mode}`, RUN_SKIP_ACTION, NOW]);
+      const run = await getRun(db, { projectId: 'proj_1' }, `run_${mode}`);
+      expect({ mode, refusal: await runCloseRefusal(db, { projectId: 'proj_1' }, run!) }).toEqual({ mode, refusal });
+    }
   });
 
   it('records each call it failed against the run with what the failure said, and a call off the run\'s surface not at all', async () => {

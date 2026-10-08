@@ -85,6 +85,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0075_v75.sql': '02da28917e27738af41acef31c5aa0b29af26e99cda1a8833d9b24f58fcb93b5',
   '0076_v76.sql': 'd7616df59876096cc02c7a7bf1f80ee8b0305382d5df41e37937ba35d329850e',
   '0077_v77.sql': 'b8b77ef73a44befa8f6eaa9b435a4143ec2bcc530142cdc43e5f9f9ca416f7bf',
+  '0078_v78.sql': '9d5cf706bdb1f5035b72d594269af05794cce472621b8cc89e4fe74968b634ec',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -286,7 +287,7 @@ describe('versioned schema steps', () => {
       const agents = Object.fromEntries(after.map((row) => [row.session_id, row.agent]));
       expect(agents).toEqual({ 'one-agent': 'codex', 'two-transcripts-one-agent': 'claude-code', 'two-agents': null, 'unnamed-transcript': null, 'no-transcript': null, 'already-named': 'cursor' });
       // The v45 presentation columns arrive NULL on every existing session: a backfill would be history the parse has not read.
-      expect(after.map((row) => ({ ...row, agent: null }))).toEqual(before.map((row) => ({ ...row, agent: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null })));
+      expect(after.map((row) => ({ ...row, agent: null }))).toEqual(before.map((row) => ({ ...row, agent: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null })));
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
       expect(sqlite.query('SELECT * FROM sessions ORDER BY session_id').all()).toEqual(after);
     } finally { sqlite.close(); }
@@ -300,7 +301,7 @@ describe('versioned schema steps', () => {
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary', 2, 'mem_1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(39));
-      expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null });
+      expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
   });
@@ -313,7 +314,7 @@ describe('versioned schema steps', () => {
         VALUES ('proj_1', 'old', 'm1', 't1', 1, 2, 2, 'Existing title', 'Existing summary')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM sessions').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(36));
-      expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null });
+      expect(sqlite.query('SELECT * FROM sessions').get()).toEqual({ ...before, titling_requested_at: null, ended_by: null, occurred_started_at: null, occurred_ended_at: null, titling_attempts: 0, working_since: null, last_turn_end_at: null, last_live_received_at: null, title_material_at: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally { sqlite.close(); }
   });

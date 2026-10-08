@@ -199,30 +199,98 @@ export async function listReadyTitleSessions(db: RelationalStore, limit: number,
 const importedSessionSql = (alias: string): string => `EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)
   AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id AND t.imported_at IS NULL)`;
 
+/** A session the titling convergence may take next: a first title (`claim`) or a refresh of the one standing (`refresh`), with the instant its recency is ranked by. */
+export interface TitleCandidate { projectId: string; sessionId: string; mode: 'claim' | 'refresh'; at: number }
+
+/** The instants that decide which sessions the convergence may take, and how ready each must be. */
+export interface TitleCandidateWindow {
+  /** The latest stamp an earlier attempt may carry for a retry. */
+  retryBefore: number;
+  /** A session still open whose last receipt is at or before this counts as ended. */
+  idleBefore: number;
+  /** A session whose latest activity or end is at or after this is fresh work; an earlier one is backlog, and takes no refresh. */
+  freshAfter: number;
+  /** A titled session is due a refresh only when its last titling stamp is at or before this. */
+  refreshBefore: number;
+  /** The user prompts a titled session takes after the material of its standing title before it is due a refresh. */
+  refreshPrompts: number;
+  /** Whether wholly imported sessions are admitted. */
+  imported: boolean;
+}
+
+const claimableSql = `${titlingClaimAvailableSql('s')} AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}`;
+const importedAdmittedSql = `(? = 1 OR s.titling_requested_at IS NOT NULL OR NOT (${importedSessionSql('s')}))`;
+
 /**
  * The ended, untitled sessions the titling convergence may claim: every
  * transcript parsed, inline material, and an available claim. A live end
- * request's first attempt is `session-titling`'s and is left out. Binds two
- * values: the latest stamp a retry may replace, then 1 when wholly imported
- * sessions are admitted and 0 when they are not.
+ * request's first attempt is `session-titling`'s and is left out.
  */
-const CONVERGENCE_SQL = `FROM sessions s
+const ENDED_UNTITLED_SQL = `FROM sessions s
     WHERE s.ended_at IS NOT NULL AND s.title IS NULL AND NOT (s.titled_at IS NULL AND s.titling_requested_at IS NOT NULL)
-      AND ${titlingClaimAvailableSql('s')} AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND ${sessionHasMaterialSql('s')}
-      AND (? = 1 OR s.titling_requested_at IS NOT NULL OR NOT (${importedSessionSql('s')}))`;
+      AND ${claimableSql} AND ${importedAdmittedSql}`;
 
-/** Up to `limit` sessions the titling convergence may claim next, newest first. */
-export async function listConvergenceTitleSessions(db: RelationalStore, limit: number, retryBefore: number, imported: boolean): Promise<{ projectId: string; sessionId: string }[]> {
-  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId ${CONVERGENCE_SQL}
-    ORDER BY s.ended_at DESC, s.project_id, s.session_id LIMIT ?`).bind(retryBefore, imported ? 1 : 0, limit).all<{ projectId: string; sessionId: string }>();
-  return results;
+/** The open, untitled sessions whose last receipt is at or before `idleBefore`: ended for titling, not for the session. */
+const IDLE_UNTITLED_SQL = `FROM sessions s
+    WHERE s.ended_at IS NULL AND s.title IS NULL AND s.last_received_at <= ?
+      AND ${claimableSql} AND ${importedAdmittedSql}`;
+
+/**
+ * Titled sessions, open or ended, with activity after the material of their standing title, due a refresh: stamped at or before the
+ * bound, no title run of the session in flight, and at least a number of user prompts received after the material of the
+ * standing title. A refresh that closed without a write leaves that material instant where it was, so its session stays due.
+ * Binds: the recency bound, the stamp bound, then the prompt number twice.
+ */
+const REFRESH_DUE_SQL = `FROM sessions s
+    WHERE s.title IS NOT NULL AND s.last_received_at >= ? AND s.last_received_at > COALESCE(s.title_material_at, s.titled_at) AND s.titled_at <= ?
+      AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')} AND NOT ${titleRunInFlightSql('s')}
+      AND (SELECT COUNT(*) FROM (SELECT 1 FROM prompt_batches pb
+            WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user'
+              AND pb.received_at > COALESCE(s.title_material_at, s.titled_at) LIMIT ?)) >= ?`;
+
+/** Candidates in the order the convergence takes them: first titles before refreshes, and fresh work before backlog within each. */
+export interface TitleCandidates { freshClaims: TitleCandidate[]; freshRefreshes: TitleCandidate[]; backlogClaims: TitleCandidate[] }
+
+/** The page of one kind of candidate, ordered by the column its partial index holds. */
+async function candidatePage(db: RelationalStore, mode: TitleCandidate['mode'], sql: string, at: string, order: string, binds: readonly unknown[], limit: number): Promise<TitleCandidate[]> {
+  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId, ${at} AS at ${sql} ORDER BY ${order} LIMIT ?`)
+    .bind(...binds, limit).all<{ projectId: string; sessionId: string; at: number }>();
+  return results.map((r) => ({ ...r, mode }));
 }
 
-/** What the titling convergence has left: sessions whose own capture owes them a title, and wholly imported sessions the backfill switch admits. */
-export async function countConvergenceTitleSessions(db: RelationalStore, retryBefore: number): Promise<{ live: number; imported: number }> {
-  const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(s.titling_requested_at IS NULL AND ${importedSessionSql('s')}), 0) AS imported ${CONVERGENCE_SQL}`)
-    .bind(retryBefore, 1).first<{ total: number; imported: number }>();
-  return { live: (row?.total ?? 0) - (row?.imported ?? 0), imported: row?.imported ?? 0 };
+/**
+ * Up to `limit` candidates of each kind, newest first: first titles of sessions ended or gone quiet within the freshness
+ * window and outside it, and refreshes of sessions active within it. Each read is bounded by its own partial index and by
+ * the cohort's recency bound before its limit, so older work never hides newer work and no page sorts a backlog.
+ */
+export async function listTitleCandidates(db: RelationalStore, window: TitleCandidateWindow, limit: number): Promise<TitleCandidates> {
+  const imported = window.imported ? 1 : 0;
+  const ended = (side: 'fresh' | 'backlog') => candidatePage(db, 'claim', `${ENDED_UNTITLED_SQL} AND s.ended_at ${side === 'fresh' ? '>=' : '<'} ?`, 's.ended_at',
+    's.ended_at DESC, s.project_id, s.session_id', [window.retryBefore, imported, window.freshAfter], limit);
+  const idle = (side: 'fresh' | 'backlog') => candidatePage(db, 'claim', `${IDLE_UNTITLED_SQL} AND s.last_received_at ${side === 'fresh' ? '>=' : '<'} ?`, 's.last_received_at',
+    's.last_received_at DESC, s.project_id, s.session_id', [window.idleBefore, window.retryBefore, imported, window.freshAfter], limit);
+  const refresh = () => candidatePage(db, 'refresh', REFRESH_DUE_SQL, 's.last_received_at', 's.last_received_at DESC, s.project_id, s.session_id',
+    [window.freshAfter, window.refreshBefore, window.refreshPrompts, window.refreshPrompts], limit);
+  const [endedFresh, idleFresh, endedBacklog, idleBacklog, freshRefreshes] = await Promise.all([ended('fresh'), idle('fresh'), ended('backlog'), idle('backlog'), refresh()]);
+  const newest = (rows: TitleCandidate[]) => rows.sort((a, b) => b.at - a.at || a.projectId.localeCompare(b.projectId) || a.sessionId.localeCompare(b.sessionId)).slice(0, limit);
+  return { freshClaims: newest([...endedFresh, ...idleFresh]), freshRefreshes, backlogClaims: newest([...endedBacklog, ...idleBacklog]) };
+}
+
+/** The ended or quiet, untitled sessions a statement selects, split by whether their own capture owes the title or the backfill switch admits it. */
+async function countOwed(db: RelationalStore, selection: string, binds: readonly unknown[]): Promise<{ live: number; imported: number }> {
+  const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(s.titling_requested_at IS NULL AND ${importedSessionSql('s')}), 0) AS imported ${selection}`)
+    .bind(...binds).first<{ total: number; imported: number }>();
+  const imported = row?.imported ?? 0;
+  return { live: (row?.total ?? 0) - imported, imported };
+}
+
+/** What the titling convergence has left: sessions whose own capture owes them a title (ended, or gone quiet), and wholly imported sessions the backfill switch admits. */
+export async function countConvergenceTitleSessions(db: RelationalStore, retryBefore: number, idleBefore: number): Promise<{ live: number; imported: number }> {
+  const [ended, quiet] = await Promise.all([
+    countOwed(db, ENDED_UNTITLED_SQL, [retryBefore, 1]),
+    countOwed(db, IDLE_UNTITLED_SQL, [idleBefore, retryBefore, 1]),
+  ]);
+  return { live: ended.live + quiet.live, imported: ended.imported + quiet.imported };
 }
 
 /** Why an ended session carries no title yet, in the order a reader can act on it. */

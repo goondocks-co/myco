@@ -71,7 +71,7 @@ export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId), template: () => ({ promptTemplate: seedingPrompt(TEMPLATE_REPOSITORY), standingRules: SEEDING_RULES, templateVariants: [] }) },
   [TITLING_TASK]: {
     build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}),
-    template: () => ({ promptTemplate: titlingPrompt('{{session.id}}', 'claim'), standingRules: null, templateVariants: [{ name: 'When a person asks for a fresh title', prompt: titlingPrompt('{{session.id}}', 'owner') }] }),
+    template: () => ({ promptTemplate: titlingPrompt('{{session.id}}', 'claim'), standingRules: null, templateVariants: [{ name: 'When a person asks for a fresh title', prompt: titlingPrompt('{{session.id}}', 'owner') }, { name: 'When a session still open has gone on since its title', prompt: titlingPrompt('{{session.id}}', 'refresh') }] }),
   },
   [MAP_TASK]: {
     build: (env, projectId, _now, options) => buildMapInput(env, projectId, options),

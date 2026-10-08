@@ -118,6 +118,8 @@ describe('the events route', () => {
 
     await post({ eventId: uuid(1), kind: 'prompt', payload: { promptId: uuid(20), text: 'long ago', origin: 'user' } });
     await e.deferred.settle();
+    // The quiet session stays short of idle, so the live end below is the only ask for a title.
+    e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.titling_idle_close_minutes', '10080', 1, 'mem_1')`);
     e.sqlite.run(`UPDATE sessions SET last_received_at = last_received_at - ?`, [2 * POWER_THRESHOLDS.deepSleepMs]);
     e.sqlite.run(`DELETE FROM schema_meta WHERE key = 'last_request_at'`);
     await runTick(env, Date.now());
