@@ -27,7 +27,7 @@ function fixture(id: string, leaveLeader: boolean, detachedHelper = false): { di
   mkdirSync(bin);
   const pidFile = join(dir, 'pids.json');
   const helperReady = join(dir, 'helper.pid');
-  const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(helperReady)}, String(process.pid)); setInterval(() => {}, 1000);`;
+  const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(`${helperReady}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${helperReady}.tmp`)}, ${JSON.stringify(helperReady)}); setInterval(() => {}, 1000);`;
   const script = join(dir, 'harness.cjs');
   writeFileSync(script, `
 const fs = require('node:fs');
@@ -37,7 +37,8 @@ const helper = spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdi
 const ready = setInterval(() => {
   if (!fs.existsSync(${JSON.stringify(helperReady)})) return;
   clearInterval(ready);
-  fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, helper.pid]));
+  fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, JSON.stringify([process.pid, helper.pid]));
+  fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
   if (${JSON.stringify(id)} === 'claude-code') console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fixture_session' }));
   else if (${JSON.stringify(id)} === 'codex') console.log(JSON.stringify({ type: 'thread.started', thread_id: 'fixture_session' }));
   if (${JSON.stringify(leaveLeader)}) process.exit(0);

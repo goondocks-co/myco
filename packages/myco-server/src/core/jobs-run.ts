@@ -181,7 +181,8 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
 
 /**
  * Reclaims finished enrollment authorities — spent, revoked or expired — past
- * the retention window. A live invitation is never touched whatever its age:
+ * the retention window, and undecided device requests past their TTL. A live
+ * invitation is never touched whatever its age:
  * ending one early is retention deciding to revoke, which the operator does.
  */
 export async function inviteExpiry(env: ServerEnv, now: number): Promise<number> {

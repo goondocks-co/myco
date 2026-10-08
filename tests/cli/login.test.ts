@@ -187,7 +187,7 @@ describe('myco login', () => {
     let calls = 0;
     const counting = ((input: string | URL | Request, init?: RequestInit) => { calls += 1; return rig.fetch(input, init); }) as typeof fetch;
     const cases: Array<[string[], string]> = [
-      [['nonsense'], 'that is not a URL'],
+      [['not a host'], 'must be https'],
       [[`http://myco.example.com/join#${'k'.repeat(43)}`], 'must be https'],
       [[`https://s/enroll#${'k'.repeat(43)}`], 'path must be /join'],
       [['https://s/join'], 'carries no invitation'],
@@ -211,7 +211,7 @@ describe('myco login', () => {
 
     err.length = 0;
     expect(await run([link, link], deps(rig))).toBe(false);
-    expect(err.join('\n')).toContain('one invite link');
+    expect(err.join('\n')).toContain('one Deployment address or invite link');
     expect(err.join('\n')).not.toContain(link);
   });
 
@@ -226,7 +226,7 @@ describe('myco login', () => {
     // Compared against what it was, never against a literal: the exit status is a
     // global this file shares with every other file in its test process.
     const before = process.exitCode;
-    for (const args of [[], ['nonsense'], ['https://s/join#short']]) {
+    for (const args of [[], ['not a host'], ['https://s/join#short']]) {
       expect({ args, ok: await run(args, deps(rig)) }).toEqual({ args, ok: false });
       expect({ args, exitCode: process.exitCode }).toEqual({ args, exitCode: before });
     }

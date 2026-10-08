@@ -1,19 +1,12 @@
 /**
- * Enrollment authorities — the invitation that a join exchanges for a member
- * credential. An enrollment authority is never the credential used for ordinary
- * requests: its only accepted use is the join route.
- *
- * The properties are the ones the 1.4 Team Host join keys already proved, moved
- * from a file on one host into the Deployment's store so one implementation
- * serves every target:
+ * Enrollment authorities — evidence exchanged for a member credential by the
+ * shared enrollment operation, never credentials used for ordinary requests.
  *
  *   - 256 bits of entropy. Nothing rate-limits a guess into existence.
- *   - HASHED AT REST. The raw value exists exactly twice — the mint reveal and
- *     the one join request — so a key read out of the store is not replayable.
+ *   - HASHED AT REST. The raw value is revealed to the enrolling machine, never
+ *     persisted in the Deployment's store.
  *   - SINGLE USE, spent by an atomic conditional update that reports whether it
- *     changed a row. A read-then-mark-used spend admits two joins on one key
- *     under a race; a vendor whose core business is device enrollment shipped
- *     exactly that bug.
+ *     changed a row.
  *   - EXPIRING, so an invitation left in a chat log stops working on its own.
  *   - REVOCABLE before use, and recording which runtime spent it.
  */
@@ -25,6 +18,9 @@ import { asMemberRole, MEMBER_ROLES_SQL, type MemberRole } from './roles.js';
 import { authorize, enrollmentAuthorityPredicate, enrollmentResource, memberSubject, memberWritePredicate } from './authorization.js';
 
 export type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
+
+/** The identity grammar for enrolled machines and their runtime labels and kinds. */
+export const ENROLLMENT_IDENTITY_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 export class EnrollmentAuthorizationError extends Error {
   constructor() { super('enrollment authority refused'); }
@@ -83,16 +79,16 @@ export interface IssuedEnrollmentAuthority {
  */
 export function enrollmentInsert(
   db: RelationalStore, nowMs: number, ttlMs: number, issuer: EnrollmentIssuer, keyHash: string, id: string,
-  role: MemberRole, memberId: string | null = null, projectId: string | null = null,
+  role: MemberRole, memberId: string | null = null, projectId: string | null = null, gate?: Fragment,
 ): { statement: PreparedStatement; expiresAt: number } {
   const createdByMember = enrollmentIssuerMember(issuer);
   const expiresAt = nowMs + ttlMs;
   const statement = db
-    .prepare(`WITH candidate AS (SELECT ? AS created_by_member, ? AS member_id, ? AS role)
+    .prepare(`WITH candidate AS (SELECT ? AS created_by_member, ? AS member_id, ? AS role, ? AS id)
               INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member, member_id, role, project_id)
-              SELECT ?, ?, ?, ?, NULL, NULL, NULL, candidate.created_by_member, candidate.member_id, candidate.role, ?
-                FROM candidate WHERE ${enrollmentAuthorityPredicate('candidate')}`)
-    .bind(createdByMember, memberId, role, id, keyHash, nowMs, expiresAt, projectId);
+              SELECT candidate.id, ?, ?, ?, NULL, NULL, NULL, candidate.created_by_member, candidate.member_id, candidate.role, ?
+                FROM candidate WHERE ${enrollmentAuthorityPredicate('candidate')}${gate === undefined ? '' : ` AND (${gate.sql})`}`)
+    .bind(createdByMember, memberId, role, id, keyHash, nowMs, expiresAt, projectId, ...(gate?.params ?? []));
   return { statement, expiresAt };
 }
 
@@ -352,7 +348,8 @@ export async function ensureMember(db: RelationalStore, id: string, nowMs: numbe
 
 /**
  * Reclaims authorities that are finished — spent, revoked, or expired — and older
- * than `ENROLLMENT_RETENTION_MS`. `changes` says how many were reclaimed.
+ * than `ENROLLMENT_RETENTION_MS`. Undecided device requests expire at their TTL;
+ * decided requests retain this window and their independent audit receipts stay.
  *
  * The `invite-expiry` tick job is the one caller. Bounding the delete keeps a
  * Deployment that accumulated a large backlog to a fixed slice per tick; the
@@ -373,7 +370,20 @@ export async function reclaimEnrollmentAuthorities(db: RelationalStore, nowMs: n
                   LIMIT ?)`)
     .bind(cutoff, cutoff, cutoff, limit)
     .run();
-  return { reclaimed: result.meta.changes };
+  const pendingDevices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
+    SELECT id FROM device_requests WHERE decision IS NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?)`)
+    .bind(nowMs, limit).run();
+  const decidedDevices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
+    SELECT id FROM device_requests WHERE decision IS NOT NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?)`)
+    .bind(cutoff, limit).run();
+  return { reclaimed: result.meta.changes + pendingDevices.meta.changes + decidedDevices.meta.changes };
+}
+
+/** Undecided requests and decided requests past retention hold housekeeping depth until reclaimed. */
+export async function deviceReclamationPending(db: RelationalStore, nowMs: number): Promise<boolean> {
+  if (await db.prepare('SELECT 1 AS pending FROM device_requests WHERE decision IS NULL LIMIT 1').first() !== null) return true;
+  return await db.prepare('SELECT 1 AS pending FROM device_requests WHERE decision IS NOT NULL AND expires_at <= ? LIMIT 1')
+    .bind(nowMs - ENROLLMENT_RETENTION_MS).first() !== null;
 }
 
 /**

@@ -1,27 +1,12 @@
-/**
- * `myco login <url>` — redeem an invite link for this machine's membership.
- *
- * The link is the whole credential: its origin names the Deployment and its
- * fragment carries the single-use invitation. Nothing is read from a config
- * file, so this works on a machine that has never seen Myco.
- *
- * The invitation is spent once and cannot be replayed, so every check that can
- * be made on the string alone is made before the request. A mistyped link costs
- * nothing; a spent one is reported as spent rather than as a failure to reach
- * the Deployment.
- *
- * What this writes is the Deployment membership — the credential — and, when the
- * invitation named a Project, the binding for the current project root as well.
- * An invitation that names no Project admits a person to the Deployment; they
- * bind their first project afterwards with `myco member join --project`.
- */
+import { normalizeMemberServerAddress, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
+import { deviceLogin } from './device-login.js';
 import { warmProjectContext } from '../member/prefetch.js';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '../member/default-deployment.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { getMachineId } from '../machine-id.js';
 import path from 'node:path';
-import { hostname } from 'node:os';
+import { hostname, platform } from 'node:os';
 import { memberHomeFor, pinnedHomeLine } from '../member/home-for-folder.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
@@ -32,10 +17,18 @@ import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
 
-export const LOGIN_HELP = `Usage: myco login <invite-link>
+export const LOGIN_HELP = `Usage: myco login <server-url-or-invite-link>
 
-Signs this machine in to a Myco deployment. Ask an admin on the deployment for
-an invite link, then run:
+Signs this machine in to a Myco deployment. Run:
+
+  myco login myco.example.com
+  myco login https://myco.example.com
+
+Open the printed URL on any machine signed in to the dashboard, check the code
+and machine details, and approve. This terminal waits for approval. No browser
+is needed here, so it works over SSH. Bare addresses default to HTTPS.
+
+An invite link still works:
 
   myco login https://myco.example.com/join#<key>
 
@@ -73,6 +66,9 @@ export interface LoginDeps {
   machineId?: string;
   /** This machine's host name, sent as the name the machine shows under; defaults to `os.hostname()`. */
   hostname?: () => string;
+  os?: () => string;
+  sleep?: (ms: number) => Promise<void>;
+  clock?: () => number;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   /** How an administrator's worker service is installed. */
@@ -112,14 +108,14 @@ function parseArgs(args: readonly string[]): LoginArgs {
     } else if (parsed.url === undefined) {
       parsed.url = arg;
     } else {
-      refuse('login takes one invite link');
+      refuse('login takes one Deployment address or invite link');
     }
   }
   return parsed;
 }
 
 /**
- * Redeem the link, and report whether it worked.
+ * Sign in through a device approval or invite link, and report whether it worked.
  *
  * The outcome is RETURNED, never written to `process.exitCode` here. A verb that
  * stamps the process it runs in cannot be called twice in one process, and the
@@ -135,12 +131,25 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   if (parsed.error) return fail(parsed.error);
   if (!parsed.url) { err(LOGIN_HELP.trimEnd()); return false; }
 
-  const code = parseJoinCode(parsed.url);
+  const address = normalizeMemberServerAddress(parsed.url);
+  if (address === null) {
+    if (parsed.url.includes('#')) {
+      const invalidLink = parseJoinCode(parsed.url);
+      if ('error' in invalidLink) return fail(JOIN_CODE_REFUSALS[invalidLink.error]);
+    }
+    return fail(`a Deployment address must be ${MEMBER_SERVER_URL_RULE}, with no account or password`);
+  }
+  const invite = address.hash !== '' || address.pathname.replace(/\/+$/, '') !== '';
+  const code = invite ? parseJoinCode(address.href) : { serverUrl: address.origin };
   if ('error' in code) return fail(JOIN_CODE_REFUSALS[code.error]);
+  if (!invite && address.search !== '') return fail('a Deployment address must carry no query');
 
   const machineId = deps.machineId ?? getMachineId();
   const runtimeLabel = runtimeLabelOf((deps.hostname ?? hostname)());
-  const exchange = await exchangeJoinCode(code, { fetch: deps.fetch, machineId, runtimeKind: 'persistent', runtimeLabel });
+  const exchange = 'key' in code
+    ? await exchangeJoinCode(code, { fetch: deps.fetch, machineId, runtimeKind: 'persistent', runtimeLabel })
+    : await deviceLogin(code.serverUrl, { machineId, machineName: (deps.hostname ?? hostname)(), os: (deps.os ?? platform)() },
+      { fetch: deps.fetch, stdout: out, sleep: deps.sleep, clock: deps.clock });
   if (!exchange.ok) {
     // This machine's identity is its member's for as long as that member stands, whatever became of its credential.
     if (exchange.code === 'identity_claimed') return fail(`this machine already belongs to a member of ${code.serverUrl} (identity_claimed) — ${REJOIN_HINT}. ${MACHINE_IDENTITY_NOTE}.`);

@@ -3,7 +3,7 @@ import { MEMBER_ROLES_SQL } from './roles.js';
 
 export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'internal'] as const;
 export type SubjectKind = typeof SUBJECT_KINDS[number];
-export const ACTIONS = ['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'] as const;
+export const ACTIONS = ['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'] as const;
 export type Action = typeof ACTIONS[number];
 export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup'] as const;
 export type ResourceKind = typeof RESOURCE_KINDS[number];
@@ -58,7 +58,7 @@ export interface AuthorizationDeclaration {
   subjects: readonly SubjectKind[];
   transport: Transport;
   resource: ResourceKind;
-  resolver: 'deployment' | 'project' | 'machine' | 'credential' | 'member' | 'run' | 'raw' | 'protocol' | 'enrollment';
+  resolver: 'deployment' | 'project' | 'machine' | 'credential' | 'member' | 'run' | 'raw' | 'protocol' | 'enrollment' | 'self-enrollment';
   action: Action | { actions: readonly Action[]; resolve(input: Record<string, unknown>, resource?: AuthorizationResource): Action | null };
 }
 
@@ -67,7 +67,7 @@ export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly Authoriz
   directory: ['deployment'], member: ['member', 'deployment'], credential: ['credential', 'deployment', 'machine'],
   machine: ['machine', 'deployment'], 'machine-settings': ['machine'], project: ['project', 'deployment'],
   processed: ['project', 'deployment'], plan: ['project', 'deployment'], spore: ['project', 'deployment'],
-  raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment', 'enrollment'], backup: ['deployment'],
+  raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment', 'enrollment', 'self-enrollment'], backup: ['deployment'],
 };
 
 export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>> = {
@@ -76,7 +76,7 @@ export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>>
   machine: ['read', 'edit', 'capture'], 'machine-settings': ['claimant.read', 'claimant.edit', 'capture'],
   project: ['read', 'create', 'admin'], processed: ['read', 'admin', 'capture'],
   plan: ['read', 'edit', 'status', 'capture'], spore: ['read', 'edit'], raw: ['read', 'enumerate', 'append', 'owner'], 'raw-index': ['enumerate'],
-  run: ['read', 'dispatch', 'admin', 'cancel', 'execute'], grant: ['admin'], enrollment: ['protocol', 'admin', 'owner'], backup: ['admin'],
+  run: ['read', 'dispatch', 'admin', 'cancel', 'execute'], grant: ['admin'], enrollment: ['protocol', 'admin', 'owner', 'enroll.self'], backup: ['admin'],
 };
 
 /** The policy receives only identities and resource evidence resolved by the serving store. */
@@ -101,6 +101,9 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (!subject.memberId || !subject.role || !['owner', 'admin', 'member'].includes(subject.role)) return false;
   const admin = subject.role === 'owner' || subject.role === 'admin';
+  if (action === 'enroll.self') return subject.transport === 'http' && resource.kind === 'enrollment'
+    && resource.ownerMemberId === subject.memberId && resource.grantedRole !== undefined
+    && (subject.role === 'owner' || resource.grantedRole === 'member' || resource.grantedRole === subject.role);
   if (resource.kind === 'enrollment' && (resource.grantedRole === 'owner' || resource.grantedRole === 'admin') && subject.role !== 'owner') return false;
   if (action === 'owner') return subject.transport === 'http' && subject.role === 'owner';
   if (action === 'bootstrap') return subject.transport === 'http' && admin && resource.bootstrapAllowed === true && resource.ownerMemberId === subject.memberId;
@@ -165,8 +168,11 @@ export function enrollmentAuthorityPredicate(alias: string): string {
       WHERE recipient.id = ${alias}.member_id AND recipient.revoked_at IS NULL AND recipient.role IN (${MEMBER_ROLES_SQL})))
     AND (${alias}.created_by_member IS NULL OR EXISTS (SELECT 1 FROM members issuer
       WHERE issuer.id = ${alias}.created_by_member AND issuer.revoked_at IS NULL AND issuer.role IN (${MEMBER_ROLES_SQL})
-        AND (issuer.role = 'admin' OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id))
+        AND (issuer.role = 'admin' OR (${alias}.member_id = issuer.id AND EXISTS (SELECT 1 FROM device_requests device WHERE device.id = ${alias}.id))
+          OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id))
         AND (EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id)
+          OR (${alias}.member_id = issuer.id AND (${alias}.role = 'member' OR ${alias}.role = issuer.role)
+            AND EXISTS (SELECT 1 FROM device_requests device WHERE device.id = ${alias}.id))
           OR (${alias}.role = 'member' AND NOT EXISTS (SELECT 1 FROM members recipient
             LEFT JOIN deployment_ownership o ON o.id = 1 WHERE recipient.id = ${alias}.member_id
               AND (recipient.role = 'admin' OR recipient.id = o.member_id))))))`;

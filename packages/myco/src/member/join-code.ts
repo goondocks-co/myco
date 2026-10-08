@@ -181,7 +181,7 @@ export async function exchangeJoinCode(
 
 /** Record what the exchange answered: the membership always, and a project binding only when the code named a Project and a root is known. */
 export function recordJoinAnswer(
-  code: JoinCode, answer: JoinAnswer, opts: { mycoHome?: string; root?: string; now?: number; machineId?: string; locked?: boolean } = {},
+  code: JoinCode | Pick<JoinCode, 'serverUrl'>, answer: JoinAnswer, opts: { mycoHome?: string; root?: string; now?: number; machineId?: string; locked?: boolean } = {},
 ): void {
   const now = opts.now ?? Date.now();
   const machineId = opts.machineId ?? getMachineId();

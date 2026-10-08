@@ -1,3 +1,4 @@
+import { Device } from '../pages/Device';
 import type { RouteObject } from 'react-router-dom';
 import { Join } from '../pages/Join';
 import { LinkPage } from '../pages/Link';
@@ -16,6 +17,7 @@ import { workRoutes } from './work';
  * and, inside the shell, every page. The feature ledger reads its paths (`docs/architecture/myco-2.0.md` §7.2).
  */
 export const ROUTES: RouteObject[] = [
+  { path: '/device', element: <Device /> },
   { path: '/link', element: <LinkPage /> },
   { path: '/join', element: <Join /> },
   ...movedRoutes,
