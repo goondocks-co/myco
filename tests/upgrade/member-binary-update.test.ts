@@ -1,13 +1,17 @@
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeEach, afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { run } from '../../packages/myco/src/cli/upgrade.js';
 import { writeInstallMarker } from '../../packages/myco/src/install/managed-binary.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-update-'));
+let restoreHome: () => void;
+beforeEach(() => { restoreHome = bindSandboxChildHome(root); });
+afterEach(() => restoreHome());
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe('2.0 member binary update through the CLI', () => {

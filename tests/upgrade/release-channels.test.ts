@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { renderReleaseSelector, selectChannelRelease } from '../../packages/myco/scripts/release-policy.mjs';
 import { fetchMycoReleases, resolveMycoBinaryUpdateRefs } from '../../packages/myco/src/upgrade/release-resolver.js';
 import { resolveMycoPackageCheck } from '../../packages/myco/src/upgrade/checker.js';
@@ -26,7 +27,7 @@ function shellPick(releases: GitHubRelease[], channel: ReleaseChannel, current =
   fs.writeFileSync(file, JSON.stringify(releases, null, 2));
   const result = spawnSync('/bin/sh', [], {
     input: `${source.slice(0, source.lastIndexOf('main "$@"'))}\nPAGE_FILE='${file}'\nRELEASES_FILE='${file}.rows'\nASSET=${asset}\nrelease_rows > \"$RELEASES_FILE\"\npick_tag ${channel} '${current}'\n`,
-    encoding: 'utf8', env: { ...process.env, HOME: root, CODEX_HOME: path.join(root, 'codex'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), MYCO_HOME: path.join(root, 'myco') },
+    encoding: 'utf8', env: sandboxChildEnv(root),
   });
   expect(result.status).toBe(0);
   return result.stdout.trim();

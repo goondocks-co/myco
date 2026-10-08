@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import crypto from 'node:crypto';
 
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
@@ -148,16 +149,12 @@ interface FakeHome {
 
 function setupFakeHome(): FakeHome {
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-integ-'));
-  const prevHome = process.env.HOME;
-  const prevMycoHome = process.env.MYCO_HOME;
-  process.env.HOME = tmpHome;
-  process.env.MYCO_HOME = path.join(tmpHome, '.myco');
+  const restoreHome = bindSandboxChildHome(tmpHome);
   return {
     tmpHome,
     cleanup: () => {
       fs.rmSync(tmpHome, { recursive: true, force: true });
-      if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
-      if (prevMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = prevMycoHome;
+      restoreHome();
     },
   };
 }

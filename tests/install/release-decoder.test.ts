@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { selectChannelRelease } from '../../packages/myco/scripts/release-policy.mjs';
 import { resolveTargetTriple } from '../../packages/myco/src/upgrade/release-assets.js';
 
@@ -68,7 +69,7 @@ printf 200
     const home = path.join(root, `perf-home-${jq}`);
     fs.mkdirSync(home);
     const started = performance.now();
-    const result = await boundedInstaller({ PATH: bin, HOME: home, MYCO_HOME: path.join(home, 'myco'), TMPDIR: root });
+    const result = await boundedInstaller(sandboxChildEnv(root, { PATH: bin, HOME: home, MYCO_HOME: path.join(home, 'myco'), TMPDIR: root }));
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
     expect(result.stdout).toContain('myco/v1.4.8');
     expect(performance.now() - started).toBeLessThan(5000);
@@ -100,7 +101,7 @@ printf 200
         commands += `tag="$(pick_tag ${channel} '')"\nprintf '%s\\n' "\${tag:-none}"\n`;
       }
     }
-    const result = spawnSync('/bin/sh', [], { input: commands, env: { PATH: bin }, encoding: 'utf8', timeout: 45_000 });
+    const result = spawnSync('/bin/sh', [], { input: commands, env: sandboxChildEnv(root, { PATH: bin }), encoding: 'utf8', timeout: 45_000 });
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
     expect(result.stdout.trim().split('\n')).toEqual(expected);
   }, 60_000);
@@ -111,7 +112,7 @@ for (const jq of modes) it(`refuses malformed pages before selecting a cached pa
   for (const input of ['[{"tag_name":"myco/v2.0.0",}', '[{"tag_name":"unterminated]', '{}', '[1]', '[null]', '', '[] []']) {
     const file = path.join(root, 'bad.json');
     fs.writeFileSync(file, input);
-    const result = spawnSync('/bin/sh', [], { input: definitions + `\nASSET='${asset}'\nPAGE_FILE='${file}'\nrelease_rows\n`, env: { PATH: bin }, encoding: 'utf8' });
+    const result = spawnSync('/bin/sh', [], { input: definitions + `\nASSET='${asset}'\nPAGE_FILE='${file}'\nrelease_rows\n`, env: sandboxChildEnv(root, { PATH: bin }), encoding: 'utf8' });
     expect(result.status).not.toBe(0);
   }
 });

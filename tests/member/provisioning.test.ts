@@ -23,7 +23,8 @@ import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js'
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
-import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
+import { memberRig, type MemberRig } from './helpers/server.js';
 import { recordingPlatform } from './helpers/service-platform.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
@@ -34,7 +35,8 @@ const PROJECT = 'proj_1';
 let mycoHome: string;
 let home: string;
 let projectRoot: string;
-const saved = { home: process.env.HOME, mycoHome: process.env.MYCO_HOME };
+let fixtureRoot: string;
+let restoreHome: () => void;
 
 const claudeCode = () => loadManifests().find((m) => m.name === 'claude-code')!;
 const memberInstaller = (root = projectRoot) => new SymbiontInstaller(claudeCode(), root, PKG_ROOT, false, undefined, null, 'member-project');
@@ -54,19 +56,20 @@ function initRepo(root: string): void {
 }
 
 beforeEach(() => {
-  mycoHome = tempMycoHome();
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-home-dir-'));
-  projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-project-'));
-  process.env.MYCO_HOME = mycoHome;
-  process.env.HOME = home;
+  fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-provisioning-'));
+  home = path.join(fixtureRoot, 'home');
+  mycoHome = path.join(home, '.myco');
+  projectRoot = path.join(fixtureRoot, 'project');
+  fs.mkdirSync(mycoHome, { recursive: true });
+  fs.mkdirSync(projectRoot);
+  fs.writeFileSync(path.join(mycoHome, 'machine_id'), 'm1');
+  restoreHome = bindSandboxChildHome(fixtureRoot, { HOME: home, MYCO_HOME: mycoHome });
   resetMachineIdCache();
 });
 afterEach(() => {
-  if (saved.home === undefined) delete process.env.HOME; else process.env.HOME = saved.home;
-  if (saved.mycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = saved.mycoHome;
+  restoreHome();
   resetMachineIdCache();
-  fs.rmSync(projectRoot, { recursive: true, force: true });
-  fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
 describe('the member-project install scope', () => {

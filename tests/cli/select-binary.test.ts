@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
 const SCRIPT_SOURCE = path.resolve('packages/myco/scripts/select-binary.mjs');
 
@@ -73,15 +74,10 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
     fs.writeFileSync(binaryPath, 'binary');
   }
 
-  // HERMETIC SANDBOX (critical): the postinstall CONVERGES into MYCO_HOME,
-  // which DEFAULTS to ~/.myco. Every spawn MUST redirect HOME + MYCO_HOME into
-  // the temp tree — otherwise a test with a real platform binary present writes
-  // the fixture's fake binary over the developer's REAL ~/.myco/bin/myco, which
-  // breaks every hook on the machine (the runtime.command pin execs that path).
   const sandboxHome = path.join(tmpDir, 'sandbox-home');
   const mycoHome = path.join(sandboxHome, '.myco');
   fs.mkdirSync(sandboxHome, { recursive: true });
-  const scriptEnv = { ...process.env, HOME: sandboxHome, MYCO_HOME: mycoHome };
+  const scriptEnv = sandboxChildEnv(tmpDir, { HOME: sandboxHome, MYCO_HOME: mycoHome });
 
   return { tmpDir, pkgRoot, scriptPath, target, binaryName, binaryPath, scriptEnv, mycoHome };
 }

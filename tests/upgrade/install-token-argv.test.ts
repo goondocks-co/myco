@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from '../support/fenced-fs.mjs';
 
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+
 import { assertPrivate, assertTokenFree } from '../support/installer-token-gate.js';
 
 const SHELLS = ['/bin/sh', '/bin/bash', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])];
@@ -52,13 +54,12 @@ if (argv.includes('-w')) {
   try {
     const result = spawnSync(shell, [...(trace ? ['-x'] : []), INSTALLER], {
       encoding: 'utf8',
-      env: {
-        ...process.env,
+      env: sandboxChildEnv(root, {
         HOME: home, CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'),
         MYCO_CHANNEL: 'stable', MYCO_HOME: join(home, '.myco'), MYCO_BIN_DIR: join(home, '.myco/bin'), TMPDIR: temp,
         PATH: `${bin}:${process.env.PATH}`, GITHUB_TOKEN: '', GH_TOKEN: '', ...tokens,
         CURL_LOG: log, FAIL_DOWNLOAD: fail ? '1' : '0',
-      },
+      }),
       timeout: 15_000,
     });
     expect(result.error, 'installer must finish before its subprocess timeout').toBeUndefined();

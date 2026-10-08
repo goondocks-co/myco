@@ -16,14 +16,15 @@
  * which it would do and changes nothing; a binary that fails its checksum,
  * is missing from SHA256SUMS or does not run is never installed; only a
  * well-formed, non-draft Myco 2.x tag is chosen, in semver order, a
- * prerelease only while no 2.x release exists (or on the beta channel), and
- * with no 2.x at all it says 2.0 is not released yet; every request is
+ * prerelease only on its eligible preview channel, and stable keeps the public
+ * 1.4 flow until a 2.x release exists; every request is
  * HTTPS-only; a script cut short runs nothing; the 1.4 `--serve` option is
  * refused.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { sandboxChildEnv, assertTestPath } from '../../scripts/test-environment.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,15 +34,18 @@ const TARGET = `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.
 const HAS_CC = spawnSync('sh', ['-c', 'command -v cc'], { encoding: 'utf8' }).status === 0;
 
 /** The tools the installer uses, linked into one directory: a PATH with exactly these on it. */
+const mockedToolPaths = new Set<string>();
 function toolbox(dir: string, opts: { jq: boolean; curl?: string }): string {
   fs.mkdirSync(dir, { recursive: true });
-  const tools = ['sh', 'uname', 'mktemp', 'sed', 'grep', 'awk', 'sort', 'head', 'tail', 'cut', 'tr', 'cat', 'rm', 'mkdir', 'mv', 'cp', 'chmod', 'sleep', 'kill', 'date',
-    'sha256sum', 'shasum', 'codesign', 'xattr', 'perl', ...(opts.jq ? ['jq'] : []), ...(opts.curl ? [] : ['curl'])];
+  const tools = ['sh', 'env', 'uname', 'mktemp', 'sed', 'grep', 'awk', 'sort', 'head', 'tail', 'cut', 'tr', 'cat', 'rm', 'mkdir', 'mv', 'cp', 'chmod', 'sleep', 'kill', 'date',
+    'sha256sum', 'shasum', 'codesign', 'xattr', 'perl', ...(opts.jq ? ['jq'] : [])];
   for (const tool of tools) {
     const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
     if (found) fs.symlinkSync(found, path.join(dir, tool));
   }
-  if (opts.curl) { fs.writeFileSync(path.join(dir, 'curl'), opts.curl); fs.chmodSync(path.join(dir, 'curl'), 0o755); }
+  fs.writeFileSync(path.join(dir, 'curl'), opts.curl ?? '#!/bin/sh\necho "TEST SAFETY: public installer downloads are disabled" >&2\nexit 97\n');
+  fs.chmodSync(path.join(dir, 'curl'), 0o755);
+  mockedToolPaths.add(dir);
   return dir;
 }
 
@@ -63,12 +67,24 @@ const made: string[] = [];
 const tmp = (prefix: string): string => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); made.push(dir); return dir; };
 afterAll(() => { for (const dir of made) fs.rmSync(dir, { recursive: true, force: true }); });
 
+const standInHashes = new Set<string>();
+const digest = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
 interface Run { status: number | null; out: string; home: string }
 
 function install(home: string, env: Record<string, string>, args: string[] = [], toolPath?: string): Run {
+  if (!env.MYCO_INSTALL_FROM && !mockedToolPaths.has(toolPath ?? '')) throw new Error('TEST SAFETY: installer requires an offline source or mocked curl');
+  if (env.MYCO_BIN_DIR !== undefined) assertTestPath(home, path.resolve(home, env.MYCO_BIN_DIR), 'MYCO_BIN_DIR');
+  if (env.MYCO_INSTALL_FROM) {
+    assertTestPath(process.env.MYCO_TEST_RUN_ROOT!, env.MYCO_INSTALL_FROM, 'MYCO_INSTALL_FROM');
+    const binaries = fs.readdirSync(env.MYCO_INSTALL_FROM).filter(name => /^myco-(darwin|linux)-/.test(name));
+    if (binaries.length === 0 || binaries.some(name => !standInHashes.has(digest(path.join(env.MYCO_INSTALL_FROM, name))))) {
+      throw new Error('TEST SAFETY: installer accepts only generated stand-in binaries');
+    }
+  }
   const result = spawnSync('sh', [SCRIPT, ...args], {
     cwd: home,
-    env: { PATH: toolPath ?? '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, ...env }, encoding: 'utf8', timeout: 90_000,
+    env: sandboxChildEnv(home, { PATH: toolPath ?? offlineTools, ...env }, {}), encoding: 'utf8', timeout: 90_000,
   });
   return { status: result.status, out: `${result.stdout}${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, ''), home };
 }
@@ -77,6 +93,7 @@ function install(home: string, env: Record<string, string>, args: string[] = [],
 const files = (dir: string): string[] => (fs.existsSync(dir) ? (fs.readdirSync(dir, { recursive: true }) as string[]).filter((f) => fs.statSync(path.join(dir, f)).isFile()).sort() : []);
 
 let artifacts: string;
+let offlineTools: string;
 /**
  * Install sources: a good build, one whose bytes no longer match SHA256SUMS, one SHA256SUMS does not list, one that
  * does not run, and two builds that record every other command they are given in `$MYCO_HOME/commands.log`, one
@@ -84,6 +101,7 @@ let artifacts: string;
  */
 const sources = { tampered: '', unlisted: '', broken: '', recording: '', refusing: '', slow: '', stalling: '', legacyRecording: '' };
 beforeAll(() => {
+  offlineTools = toolbox(tmp('myco-install-offline-tools-'), { jq: false });
   artifacts = tmp('myco-install-artifacts-');
   if (!HAS_CC) return;
   const build = (dir: string, body: string): string => {
@@ -163,6 +181,9 @@ int main(int argc, char **argv) {
   return 0;
 }
 `));
+  for (const file of files(artifacts).filter(file => /^myco-(darwin|linux)-/.test(path.basename(file)))) {
+    standInHashes.add(digest(path.join(artifacts, file)));
+  }
 });
 
 const freshHome = () => fs.realpathSync.native(tmp('myco-install-home-'));
@@ -184,6 +205,18 @@ function legacyHome(opts: { binary: boolean }): { home: string; vault: string; b
 }
 
 describe('the Myco 2.0 installer', () => {
+  it('refuses an unmocked public install before spawning a child', () => {
+    const home = freshHome();
+    expect(() => install(home, {}, ['--serve'])).toThrow(/TEST SAFETY: installer requires/);
+    const untrusted = path.join(home, 'untrusted-tools');
+    fs.mkdirSync(untrusted);
+    expect(() => install(home, {}, [], untrusted)).toThrow(/TEST SAFETY: installer requires/);
+    expect(() => install(home, { ...FROM(), MYCO_BIN_DIR: tmp('myco-untrusted-bin-') })).toThrow(/TEST SAFETY: spawned child MYCO_BIN_DIR/);
+    const source = path.join(home, 'untrusted-binary');
+    fs.mkdirSync(source);
+    fs.writeFileSync(path.join(source, `myco-${TARGET}`), '#!/bin/sh\nexit 0\n');
+    expect(() => install(home, { MYCO_INSTALL_FROM: source })).toThrow(/TEST SAFETY: installer accepts only generated/);
+  });
   it.skipIf(!HAS_CC)('installs the binary for a first-time user, starts nothing, and points at `myco login`', () => {
     const home = freshHome();
     const run = install(home, FROM());
@@ -343,7 +376,7 @@ exec '${mv}' "$@"
     const home = freshHome();
     const bin = path.join(home, '.myco', 'bin');
     const child = spawn('sh', [SCRIPT], {
-      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, MYCO_INSTALL_FROM: sources.slow, MYCO_INSTALL_VERSION: '2.0.0-beta.1' }, stdio: 'ignore',
+      env: sandboxChildEnv(home, { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', MYCO_INSTALL_FROM: sources.slow, MYCO_INSTALL_VERSION: '2.0.0-beta.1' }, {}), stdio: 'ignore',
     });
     const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
     // Interrupted while it checks the staged build runs.
@@ -458,7 +491,7 @@ exec '${mv}' "$@"
     const cut = path.join(tmp('myco-install-cut-'), 'install.sh');
     fs.writeFileSync(cut, script.slice(0, script.lastIndexOf('main "$@"')));
     const home = freshHome();
-    const result = spawnSync('sh', [cut], { env: { PATH: '/usr/bin:/bin', HOME: home, ...FROM() }, encoding: 'utf8' });
+    const result = spawnSync('sh', [cut], { env: sandboxChildEnv(home, { PATH: '/usr/bin:/bin', ...FROM() }, {}), encoding: 'utf8' });
     expect({ status: result.status, out: `${result.stdout}${result.stderr}` }).toEqual({ status: 0, out: '' });
     expect(files(home)).toEqual([]);
   });

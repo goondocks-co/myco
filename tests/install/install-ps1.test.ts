@@ -7,11 +7,15 @@
  * a 1.x release is chosen past any 2.x tag, and with only 2.x on offer it says
  * Myco 2.0 on Windows isn't supported by this installer yet and exits 1.
  */
-import { describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-install-pwsh-'));
+afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 const SCRIPT = fs.readFileSync(path.join(import.meta.dir, '..', '..', 'docs', 'install.ps1'), 'utf8');
 const PWSH = spawnSync('sh', ['-c', 'command -v pwsh'], { encoding: 'utf8' }).stdout.trim();
 
@@ -35,7 +39,7 @@ function select(releases: unknown[], channel: 'stable' | 'beta'): { status: numb
     selectionBlock(),
     'Write-Output "CHOSEN $tag"',
   ].join('\n');
-  const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', '-'], { input: program, encoding: 'utf8', timeout: 60_000 });
+  const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', '-'], { env: sandboxChildEnv(root), input: program, encoding: 'utf8', timeout: 60_000 });
   return { status: run.status, out: `${run.stdout}${run.stderr}` };
 }
 
