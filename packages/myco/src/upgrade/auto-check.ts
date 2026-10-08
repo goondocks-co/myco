@@ -46,7 +46,7 @@ import { isDefaultMycoHome } from '../grove/paths.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
 import type { ReleaseChannel } from '../constants/update.js';
-import type { AssetRefs } from './release-assets.js';
+import { parseMycoUpdateVersion, type AssetRefs } from './release-assets.js';
 
 // ---------------------------------------------------------------------------
 // checkAndStage deps (injectable for tests)
@@ -202,7 +202,7 @@ export async function checkAndStage(
 
   // No-downgrade rule: only stage when target is STRICTLY newer.
   if (
-    !semver.valid(targetVersion) ||
+    !parseMycoUpdateVersion(targetVersion) ||
     !semver.valid(currentVersion) ||
     !semver.gt(targetVersion, currentVersion)
   ) {
@@ -300,7 +300,7 @@ export function resolveNewestStagedVersion(
   }
 
   const candidates = entries
-    .filter((entry) => semver.valid(entry) !== null)
+    .filter((entry) => parseMycoUpdateVersion(entry) !== null)
     .filter((entry) => semver.gt(entry, currentVersion))
     // Skip versions whose adopt already failed (marker in the slot) — otherwise a
     // known-bad release is re-adopted on every idle tick / stale-window.

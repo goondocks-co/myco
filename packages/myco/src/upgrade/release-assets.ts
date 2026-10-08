@@ -104,6 +104,13 @@ export function assetName(triple: TargetTriple): string {
 // ---------------------------------------------------------------------------
 
 const MYCO_TAG_RE = /^myco\/v(.+)$/;
+const UPDATE_MAJOR_VERSION = 1;
+
+/** Parse versions eligible for the 1.x updater. */
+export function parseMycoUpdateVersion(version: string): semver.SemVer | null {
+  const parsed = semver.parse(version);
+  return parsed?.major === UPDATE_MAJOR_VERSION ? parsed : null;
+}
 
 /**
  * Determine whether a release is a prerelease.
@@ -124,7 +131,7 @@ function isPrerelease(release: GitHubRelease, parsed: semver.SemVer): boolean {
  *
  * Filtering:
  *   - Only tags matching `^myco/v` (excludes `myco-team/v*`, `myco-collective/v*`).
- *   - Tags whose suffix is not valid semver are skipped.
+ *   - Tags whose suffix is not valid semver with major version 1 are skipped.
  *
  * Selection:
  *   - `stable`:  highest-semver release that is NOT a prerelease.
@@ -145,8 +152,8 @@ export function pickRelease(
     const match = MYCO_TAG_RE.exec(release.tag_name);
     if (!match) continue; // excludes myco-team/v*, myco-collective/v*, etc.
 
-    const parsed = semver.parse(match[1]);
-    if (!parsed) continue; // invalid semver suffix
+    const parsed = parseMycoUpdateVersion(match[1]);
+    if (!parsed) continue; // invalid or unsupported version
 
     candidates.push({ release, parsed });
   }
@@ -239,13 +246,13 @@ export interface AssetRefs {
  *
  * PURE: no network, no env. The daemon layer fetches the releases list,
  * `pickRelease`s the channel's release, then calls this. Returns null when the
- * release tag isn't a parseable `myco/v<semver>` (a sibling-package release the
+ * release tag isn't an eligible `myco/v<semver>` (a sibling-package release the
  * caller should never have selected) or the asset URL can't be resolved.
  */
 export function resolveAssetRefs(release: GitHubRelease, triple: TargetTriple): AssetRefs | null {
   const match = MYCO_TAG_RE.exec(release.tag_name);
   if (!match) return null;
-  const parsed = semver.parse(match[1]);
+  const parsed = parseMycoUpdateVersion(match[1]);
   if (!parsed) return null;
 
   const assetUrl = assetDownloadUrl(release, triple);
@@ -320,8 +327,8 @@ export function mycoReleasesApiUrl(): string {
  *
  * Only tags matching `^myco/v` are considered (sibling package tags such as
  * `myco-team/v*` and `myco-collective/v*` are excluded). Tags whose suffix is
- * not valid semver are skipped. Returns null for a category when no releases
- * match it (e.g. a beta-only repository has `latest_stable === null`).
+ * not valid semver with major version 1 are skipped. Returns null for a category
+ * when no releases match it (e.g. a beta-only repository has `latest_stable === null`).
  *
  * Reuses the module-internal `isPrerelease` helper so prerelease detection
  * is consistent with `pickRelease`.
@@ -337,8 +344,8 @@ export function resolveMycoVersions(releases: GitHubRelease[]): {
     const match = MYCO_TAG_RE.exec(release.tag_name);
     if (!match) continue; // excludes myco-team/v*, myco-collective/v*, etc.
 
-    const parsed = semver.parse(match[1]);
-    if (!parsed) continue; // invalid semver suffix
+    const parsed = parseMycoUpdateVersion(match[1]);
+    if (!parsed) continue; // invalid or unsupported version
 
     if (isPrerelease(release, parsed)) {
       if (latestBeta === null || semver.gt(parsed, latestBeta)) {

@@ -568,18 +568,19 @@ describe('myco upgrade: adopt opts', () => {
 
 describe('myco upgrade <older-version>: schema-gap guard', () => {
   const OLD_RELEASES = [
-    makeRelease('myco/v0.9.0', false),
     makeRelease('myco/v1.0.0', false),
+    makeRelease('myco/v1.1.0', false),
   ];
 
   it('refuses across the gap: exit 1, nothing staged, message names versions + recovery', async () => {
     const deps = makeDeps({
+      currentVersion: '1.1.0',
       fetchReleases: vi.fn(async () => OLD_RELEASES),
       readMaxStampedSchemaVersion: vi.fn(() => 76),
       readSupportedSchemaVersion: vi.fn(() => 71),
     });
 
-    await expect(run(['0.9.0'], deps)).rejects.toThrow('__exit__1__');
+    await expect(run(['1.0.0'], deps)).rejects.toThrow('__exit__1__');
 
     expect(deps.stageBinary).not.toHaveBeenCalled();
     expect(deps.initiateAdopt).not.toHaveBeenCalled();
@@ -591,42 +592,45 @@ describe('myco upgrade <older-version>: schema-gap guard', () => {
 
   it('refuses when the target has no stamp (unknown fails closed)', async () => {
     const deps = makeDeps({
+      currentVersion: '1.1.0',
       fetchReleases: vi.fn(async () => OLD_RELEASES),
       readMaxStampedSchemaVersion: vi.fn(() => 76),
       readSupportedSchemaVersion: vi.fn(() => null),
     });
 
-    await expect(run(['0.9.0'], deps)).rejects.toThrow('__exit__1__');
+    await expect(run(['1.0.0'], deps)).rejects.toThrow('__exit__1__');
     expect(deps.stageBinary).not.toHaveBeenCalled();
   });
 
   it('proceeds when the target\'s stamp covers the vault', async () => {
     const deps = makeDeps({
+      currentVersion: '1.1.0',
       fetchReleases: vi.fn(async () => OLD_RELEASES),
       stageBinary: vi.fn(async (_params, _deps) => ({
-        versionDir: '/fake/versions/0.9.0',
-        version: '0.9.0',
+        versionDir: '/fake/versions/1.0.0',
+        version: '1.0.0',
       })),
       readMaxStampedSchemaVersion: vi.fn(() => 76),
       readSupportedSchemaVersion: vi.fn(() => 76),
     });
 
-    await run(['0.9.0'], deps);
+    await run(['1.0.0'], deps);
     expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
   });
 
   it('proceeds when no vault is readable (fresh install)', async () => {
     const deps = makeDeps({
+      currentVersion: '1.1.0',
       fetchReleases: vi.fn(async () => OLD_RELEASES),
       stageBinary: vi.fn(async (_params, _deps) => ({
-        versionDir: '/fake/versions/0.9.0',
-        version: '0.9.0',
+        versionDir: '/fake/versions/1.0.0',
+        version: '1.0.0',
       })),
       readMaxStampedSchemaVersion: vi.fn(() => null),
       readSupportedSchemaVersion: vi.fn(() => null),
     });
 
-    await run(['0.9.0'], deps);
+    await run(['1.0.0'], deps);
     expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
   });
 
@@ -666,4 +670,17 @@ describe('myco upgrade <older-version>: schema-gap guard', () => {
     await run(['1.2.13'], deps);
     expect(deps.initiateAdopt).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('myco upgrade: 1.4 update major cap', () => {
+  for (const version of ['2.0.0-alpha.1', '2.0.0-beta.1', '2.0.0']) {
+    for (const args of [[version], ['--target-version', version]]) {
+      it(`refuses ${args.join(' ')} before staging or adoption`, async () => {
+        const deps = makeDeps({ fetchReleases: async () => [makeRelease(`myco/v${version}`, true)] });
+        await expect(run(args, deps)).rejects.toThrow('__exit__1__');
+        expect(deps.stageBinary).not.toHaveBeenCalled();
+        expect(deps.initiateAdopt).not.toHaveBeenCalled();
+      });
+    }
+  }
 });

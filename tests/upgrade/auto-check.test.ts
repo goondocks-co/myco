@@ -526,3 +526,30 @@ describe('markAdoptFailed', () => {
     expect(fs.existsSync(path.join(versionsDir(tmpHome, PLATFORM), '9.9.9'))).toBe(false);
   });
 });
+
+describe('staged 1.4 update major cap', () => {
+  it('ignores already-staged future majors', () => {
+    const outside = ['2.0.0-alpha.1', '2.0.0-beta.1', '2.0.0'];
+    const vDir = versionsDir(tmpHome, PLATFORM);
+    const exists = (p: string) => p === vDir;
+    expect(resolveNewestStagedVersion(tmpHome, PLATFORM, '1.4.8', undefined, exists, () => [...outside, '1.4.9'])).toBe('1.4.9');
+    expect(resolveNewestStagedVersion(tmpHome, PLATFORM, '1.4.8', undefined, exists, () => outside)).toBeNull();
+  });
+});
+
+describe('auto-stage 1.4 update major cap', () => {
+  for (const channel of ['stable', 'beta'] as const) {
+    for (const targetVersion of ['2.0.0-alpha.1', '2.0.0-beta.1', '2.0.0']) {
+      it(`${channel} never stages ${targetVersion}`, async () => {
+        const stage = mockStageBinaryError();
+        const result = await checkAndStage('1.4.8', makeOpts(channel), {
+          resolveRefs: async () => ({ assetUrl: 'http://x', sha256sumsUrl: 'http://y', assetName: 'myco-linux-x64', targetVersion }),
+          stageBinary: stage,
+          isManualChannel: () => false,
+        });
+        expect(result).toEqual({ status: 'noop', reason: 'up-to-date' });
+        expect(stage).not.toHaveBeenCalled();
+      });
+    }
+  }
+});
