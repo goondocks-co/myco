@@ -1505,6 +1505,7 @@ describe('gates', () => {
       'session:member GET /api/tasks/start',
       'session:member GET /api/uncaptured',
       'session:member GET /api/work',
+      'session:member GET /api/workers/legacy',
       'session:member PATCH /api/machines/{machineId}',
       'session:member POST /api/machines/{machineId}/stop',
       'session:member POST /api/credentials/{id}/revoke',

@@ -56,7 +56,7 @@ export const SHIPPED_SKILLS: readonly ShippedSkill[] = [
   },
   {
     "name": "myco-setup",
-    "description": "Finish setting Myco up on this machine. The plugin alone gives you skills and the Myco tools; the binary adds session capture, plan capture, import and the worker. This skill checks what is present, installs the binary with the user's consent, signs in or redeems a join code, wires the agent's hooks and verifies the result — and names the outcome plainly when an install cannot proceed.",
+    "description": "Finish setting Myco up on this machine. The plugin alone gives you skills and the Myco tools; the binary adds session capture, plan capture, import and the optional runner. This skill checks what is present, installs the binary with the user's consent, signs in or redeems a join code, wires the agent's hooks and verifies the result — and names the outcome plainly when an install cannot proceed.",
     "when_to_use": "Use when no Myco context arrives at session start, when this project's sessions are not being recorded, when a Myco tool call is refused for want of a credential, or when the user says \"set up Myco\", \"install Myco\", \"connect me to our Myco deployment\" or \"why isn't my work being captured\"."
   }
 ];

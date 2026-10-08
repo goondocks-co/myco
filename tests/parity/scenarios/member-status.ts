@@ -43,12 +43,13 @@ export const memberStatus: ParityScenario = {
     const res = await read('{}');
     expect(res.status).toBe(200);
     const health = (await res.json()) as {
-      persisted: boolean; target: string | null; schema: unknown;
+      deploymentId: string; persisted: boolean; target: string | null; schema: unknown;
       stored: unknown; retention: unknown;
       storage: Array<Measurement & { measuredAt: number | null }>;
     };
-    expect(Object.keys(health).sort()).toEqual(['persisted', 'retention', 'schema', 'storage', 'stored', 'target']);
+    expect(Object.keys(health).sort()).toEqual(['deploymentId', 'persisted', 'retention', 'schema', 'storage', 'stored', 'target']);
     expect(health.persisted).toBe(true);
+    expect(health.deploymentId).toBe(target.deploymentId);
     expect(health.target).toBe(target.name === 'cloudflare' ? 'cloudflare' : 'bun');
     expect(health.schema).toEqual({ expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true });
     expect(health.stored).toEqual({ state: 'measured', value: await stored(), unit: 'bytes' });

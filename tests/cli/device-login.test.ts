@@ -9,6 +9,7 @@ import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { recordingPlatform } from '../helpers/fake-service-manager.js';
 
 const SECRET = 'd'.repeat(43);
 const CODE = 'BCDF-2345';
@@ -116,7 +117,7 @@ describe('terminal device sign-in', () => {
       const e = sqliteEnv();
       let now = Date.now();
       const serverUrl = normalizeMemberServerAddress(address)!.origin;
-      e.sqlite.run("UPDATE members SET role = 'member', github_id = '770001' WHERE id = 'mem_machine_2'");
+      e.sqlite.run("UPDATE members SET role = 'admin', github_id = '770001' WHERE id = 'mem_machine_2'");
       const server = createServer({ now: () => now, sourceOf: () => '192.0.2.10', fetchImpl: () => { throw new Error('unexpected OAuth'); } });
       const env = { ...e.serverEnv, secrets: OWNER_ENV };
       const out: string[] = [];
@@ -134,12 +135,18 @@ describe('terminal device sign-in', () => {
         return response;
       };
       try {
+        const platform = recordingPlatform();
         expect(await run([address, '--no-agents', '--root', home], { mycoHome: home, cwd: home, machineId: 'cli_device', hostname: () => 'CLI laptop', os: () => 'linux',
+          worker: { mycoHome: home, home, platform: 'darwin', binaryPath: path.join(home, 'bin', 'myco'), runner: platform.runner,
+            detect: () => [{ id: 'codex', installed: true, authenticated: true }], admission: async () => 'admitted',
+            ownDeploymentUrls: async () => [], harnessDirs: () => [], lockDir: path.join(home, 'locks') },
           fetch: fetchImpl, sleep: async ms => { now += ms; }, clock: () => now, stdout: line => out.push(line), stderr: line => err.push(line), agents: () => { throw new Error('no-agents must skip installer'); } })).toBe(true);
         expect(readDeploymentMembership(serverUrl, home)?.memberId).toBe('mem_machine_2');
         expect(readRegistryEntry(home, home)).toBeNull();
         expect(out.join('\n')).toContain(`Signed in to ${serverUrl}`);
         expect(err).toEqual([]);
+        expect(platform.commands).toEqual([]);
+        expect(out.join('\n')).not.toContain('a worker now runs');
       } finally { e.sqlite.close(); fs.rmSync(home, { recursive: true, force: true }); }
     }
   });

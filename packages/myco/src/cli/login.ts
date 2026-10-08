@@ -11,8 +11,8 @@ import { memberHomeFor, pinnedHomeLine } from '../member/home-for-folder.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { runImport } from '../member/import.js';
-import { ADMIN_ROLE, exchangeJoinCode, parseJoinCode, recordJoinAnswer, runtimeLabelOf, JOIN_CODE_REFUSALS } from '../member/join-code.js';
-import { ensuredWorkerWords, ensureWorkerService, type WorkerServiceDeps } from './worker-service.js';
+import { exchangeJoinCode, parseJoinCode, recordJoinAnswer, runtimeLabelOf, JOIN_CODE_REFUSALS } from '../member/join-code.js';
+import type { WorkerServiceDeps } from './worker-service.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
@@ -71,7 +71,7 @@ export interface LoginDeps {
   clock?: () => number;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
-  /** How an administrator's worker service is installed. */
+  /** Optional executor adapter; login never installs a service. */
   worker?: WorkerServiceDeps;
   /** The agents installed on this machine; defaults to `detectMachineInstalledSymbionts`. */
   agents?: () => string[];
@@ -180,8 +180,6 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
   if (pinned !== null) out(pinned);
   out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
-  // An administrator's machine runs the Deployment's work; a sign-in keeps its worker running at login.
-  if (answer.role === ADMIN_ROLE) out(`  ${ensuredWorkerWords(await ensureWorkerService(code.serverUrl, { ...deps.worker, mycoHome })).line}`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
   const held = readDefaultDeployment(mycoHome);

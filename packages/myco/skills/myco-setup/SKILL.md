@@ -3,7 +3,7 @@ name: myco-setup
 description: >-
   Finish setting Myco up on this machine. The plugin alone gives you skills and
   the Myco tools; the binary adds session capture, plan capture, import and the
-  worker. This skill checks what is present, installs the binary with the user's
+  optional runner. This skill checks what is present, installs the binary with the user's
   consent, signs in or redeems a join code, wires the agent's hooks and verifies
   the result — and names the outcome plainly when an install cannot proceed.
 when_to_use: >-
@@ -22,7 +22,7 @@ Two things can be installed, and they are independent.
 | Installed | You get |
 |---|---|
 | The plugin | the skills, and the Myco tools over your deployment's URL |
-| The binary as well | session capture, plan capture, import, and the worker |
+| The binary as well | session capture, plan capture, import, and optional runner commands |
 
 If the tools answer but nothing is being captured, the plugin is installed and the binary is not. That is a working configuration. This skill is for when the user wants the second half.
 
@@ -75,13 +75,20 @@ myco update
 
 This is the reconcile: it detects installed agents, writes their hooks with the binary's absolute path, and refreshes the managed files. It is safe to run repeatedly.
 
-## 5. Keep a worker running
+## 5. Optional: the owner opts a machine into agent work
+
+Developer laptops run no agent work by default. Login, member join, provision and server startup configure no executor. Capture and runner execution are independent.
+
+Continue here only when the machine's owner explicitly asks to make it a runner for this Deployment. Otherwise skip to verification. Name the Deployment and machine in the request; a membership is not runner enrollment.
 
 ```bash
-myco worker install
+myco runner register <host>
+myco runner install --server <url>
 ```
 
-The worker is what runs the deployment's analysis on this machine's logged-in agent. This keeps one running whenever the user is logged in, restarting it if it stops. Only an administrator's machine can run one. It needs an agent logged in first, and it is safe to run again.
+The owner or an administrator approves registration on the Deployment's device page. Installation then starts this enrolled runner's per-user service. It offers supported agents already signed in on that machine. Verify with `myco runner doctor --server <url>`.
+
+Existing legacy worker services remain until explicitly retired in their owning home. `myco worker status` lists them and prints the exact retirement command. Preserve active work; stopping a legacy service leaves membership and capture unchanged.
 
 ## 6. Verify
 

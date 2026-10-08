@@ -448,6 +448,15 @@ describe('myco remove (global) confirmation gate', () => {
     expect(fs.existsSync(sandbox.mycoHome)).toBe(true);
   });
 
+  it('preserves the complete home and reports failure when an executor cannot stop', async () => {
+    const { run } = await import('@myco/cli/remove.js');
+    fs.writeFileSync(path.join(sandbox.mycoHome, 'active-run'), 'owned bytes');
+    sweepWorkerServices.mockImplementationOnce(() => { throw new Error('runner could not be stopped'); });
+    await run(['--purge', '--yes']);
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(path.join(sandbox.mycoHome, 'active-run'), 'utf8')).toBe('owned bytes');
+  });
+
   it('mentions ~/.myco deletion in the summary and purges it on --purge --yes', async () => {
     confirmMock.mockResolvedValue(true);
 

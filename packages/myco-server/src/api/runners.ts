@@ -7,7 +7,7 @@ import type { OwnerContext, RunnerContext } from '../context.js';
 import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { controlRunner, listRunners, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
-import { runnerContactStatement } from '../core/worker-contacts.js';
+import { runnerContactStatement, readWorkerFleet } from '../core/worker-contacts.js';
 import { ok, parseJsonObject } from './scope.js';
 
 const REPORTED_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -56,6 +56,12 @@ export async function handleRunnerRotate(env: ServerEnv, ctx: RunnerContext): Pr
 /** Every runner with its state, last contact and live lease, for any member: read-only. */
 export async function handleListRunners(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   return ok({ runners: await listRunners(env.db, ctx.now) });
+}
+
+/** Member-credential executors and their valid leases, from the shared fleet projection. */
+export async function handleLegacyWorkers(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const fleet = await readWorkerFleet(env.db, ctx.now);
+  return ok({ workers: fleet.filter((worker) => worker.runner === null) });
 }
 
 /** An owner or administrator's pause, resume or removal of one runner. */
