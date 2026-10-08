@@ -279,10 +279,9 @@ export async function ensureVectorIndexFilters(options: CloudflareOptions & { ve
  * reused rather than a second attempted.
  */
 export async function ensureSecretsStore(options: CloudflareOptions): Promise<{ storeId: string; created: boolean }> {
+  const existing = await findSecretsStore(options);
+  if (existing !== null) return { storeId: existing, created: false };
   const { runner, env } = resolved(options);
-  const listed = await runner.run('npx', wrangler('secrets-store', 'store', 'list', '--remote'), { cwd: options.configDir, env });
-  const existing = /[0-9a-f]{32}/.exec(listed.stdout)?.[0];
-  if (listed.code === 0 && existing !== undefined) return { storeId: existing, created: false };
   const result = await runOrThrow(runner, 'npx', wrangler('secrets-store', 'store', 'create', 'myco', '--remote'), { cwd: options.configDir, env });
   const id = /[0-9a-f]{32}/.exec(result.stdout)?.[0];
   if (id === undefined) throw new Error('wrangler created the secrets store without printing its id; run `wrangler secrets-store store list --remote` and add storeId to the deployment record');
@@ -293,6 +292,8 @@ const STORE_SECRETS_PAGE = 100;
 const STORE_SECRETS_PAGES = 100;
 /** Wrangler's answer to a store-secret page past the last one, or to an empty store. */
 const NO_STORE_SECRETS = /List request returned no secrets/;
+/** Wrangler's answer when the account has no secrets store. */
+const NO_SECRETS_STORES = /List request returned no stores/;
 const STORE_SECRETS_HEADER = /│\s*Name\s*│\s*ID\s*│/;
 const STORE_SECRET_ROW = /│\s*([A-Za-z0-9_-]+)\s*│\s*[0-9a-f]{32}\s*│/g;
 
@@ -320,7 +321,10 @@ export async function storeSecretNames(options: CloudflareOptions & { storeId: s
 /** The secrets store this account holds, read without creating one; null where it holds none. A failed list is thrown. */
 export async function findSecretsStore(options: CloudflareOptions): Promise<string | null> {
   const { runner, env } = resolved(options);
-  const listed = await runOrThrow(runner, 'npx', wrangler('secrets-store', 'store', 'list', '--remote'), { cwd: options.configDir, env });
+  const args = wrangler('secrets-store', 'store', 'list', '--remote');
+  const listed = await runner.run('npx', args, { cwd: options.configDir, env });
+  if (NO_SECRETS_STORES.test(listed.stdout + listed.stderr)) return null;
+  if (listed.code !== 0) throw new CommandFailed('npx', args, listed);
   return /[0-9a-f]{32}/.exec(listed.stdout)?.[0] ?? null;
 }
 
