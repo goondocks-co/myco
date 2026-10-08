@@ -64,14 +64,20 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
     const shim = path.join(dir, 'bin');
     fs.mkdirSync(shim);
     const log = path.join(dir, 'git.log');
-    // Each call is logged; a dirty question also holds for 50 ms and logs when it ran, so the two can be seen to overlap.
+    // Both dirty queries meet while their processes are live before running git.
     const spans = path.join(dir, 'spans.log');
+    const rendezvous = path.join(dir, 'diff');
     fs.writeFileSync(path.join(shim, 'git'), [
       '#!/bin/sh',
       `printf '%s\\n' "$*" >> "${log}"`,
       'case "$1" in diff)',
-      `  s=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); sleep 0.05; "${realGit}" "$@"; rc=$?`,
-      `  e=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000'); printf '%s %s\\n' "$s" "$e" >> "${spans}"; exit $rc ;;`,
+      '  if [ "$2" = --cached ]; then self=staged; peer=unstaged; else self=unstaged; peer=staged; fi',
+      `  printf '%s\\n' "$$" > "${rendezvous}.$self.pid"`,
+      `  while [ ! -s "${rendezvous}.$peer.pid" ]; do sleep 0.001; done`,
+      `  read -r peer_pid < "${rendezvous}.$peer.pid"; kill -0 "$peer_pid" || exit 1`,
+      `  printf '%s\\n' "$self" >> "${spans}"; : > "${rendezvous}.$self.ready"`,
+      `  while [ ! -f "${rendezvous}.$peer.ready" ]; do sleep 0.001; done`,
+      `  exec "${realGit}" "$@" ;;`,
       'esac',
       `exec "${realGit}" "$@"`,
       '',
@@ -83,6 +89,8 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
     fs.writeFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
     const calls = (hook: string, extra: Record<string, unknown> = {}, source: 'registry' | 'env' = 'registry'): string[] => {
       fs.writeFileSync(log, '');
+      fs.writeFileSync(spans, '');
+      for (const kind of ['staged', 'unstaged']) for (const suffix of ['pid', 'ready']) fs.rmSync(`${rendezvous}.${kind}.${suffix}`, { force: true });
       const credential = source === 'env' ? { MYCO_SERVER_URL: 'https://member-test.invalid', MYCO_MEMBER_TOKEN: 'mt_tok', MYCO_PROJECT: 'proj_1' } : {};
       const result = spawnSync(process.execPath, [HOOK_PROCESS, hook, '--symbiont', 'claude-code', '--credential', source], {
         cwd: repo,
@@ -98,9 +106,7 @@ describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook 
     expect(calls('user-prompt-submit', { hook_event_name: 'UserPromptSubmit' })).toEqual([]);
     expect(calls('stop', { hook_event_name: 'Stop' })).toEqual([]);
     expect(calls('session-end', { hook_event_name: 'SessionEnd' }).sort()).toEqual(['diff --cached --quiet --', 'diff --quiet --']);
-    // Asked at once: each started before the other ended.
-    const [a, b] = fs.readFileSync(spans, 'utf-8').trim().split('\n').map((line) => line.split(' ').map(Number));
-    expect({ overlap: a[0] < b[1] && b[0] < a[1] }).toEqual({ overlap: true });
+    expect(fs.readFileSync(spans, 'utf-8').trim().split('\n').sort()).toEqual(['staged', 'unstaged']);
 
     // A sandbox: its ends run the helper's pass in the hook, which asks git for the remote the start's ask carries.
     const remote = 'remote get-url origin';
