@@ -62,7 +62,7 @@ export function runPermissionFixture(fixture: PermissionFixture, directory: stri
     try {
       tightenSecretsPermissions(directory);
       assert.equal(fs.statSync(target).mode & 0o777, fixture === 'secret-file' ? 0o600 : 0o700);
-      assert.deepEqual(readSecrets(directory), { REPAIRED: 'value' });
+      assert.deepEqual(readSecrets(directory), Object.assign(Object.create(null), { REPAIRED: 'value' }));
     } finally { fs.chmodSync(target, fixture === 'secret-file' ? 0o600 : 0o700); }
   `);
 }

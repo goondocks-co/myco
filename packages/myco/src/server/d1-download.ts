@@ -1,4 +1,4 @@
-// The package entry bypasses Bun's native Undici shim, whose fetch has no socket read backpressure.
+// The package entry selects Undici's request transport with its content-encoding headers intact.
 import { request, Agent, interceptors } from 'undici/index.js';
 import { createGunzip, createInflate, createBrotliDecompress } from 'node:zlib';
 import type { Readable, Transform } from 'node:stream';

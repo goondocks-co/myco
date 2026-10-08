@@ -8,6 +8,54 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const body = () => new Blob(['durable body']).stream();
+const NATIVE_READ_ATTEMPTS = 100;
+const DESCRIPTOR_GROWTH_TOLERANCE = 10;
+
+describe('native blob range reads', () => {
+  it('preserves the requested suffix when a response consumes the stream', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myco-blob-range-'));
+    try {
+      const store = diskBlobStore(root);
+      const prefix = 'prefix\n'.repeat(459);
+      const suffix = 'suffix\n'.repeat(404);
+      const content = prefix + suffix;
+      await store.put('project/content', new Blob([content]).stream());
+      for (const offset of [0, prefix.length, content.length]) {
+        const object = await store.get('project/content', { range: { offset } });
+        expect(object?.size).toBe(content.length);
+        const received = await new Response(object!.body).arrayBuffer();
+        expect(new TextDecoder().decode(received)).toBe(content.slice(offset));
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('closes a cancelled read and leaves unread bodies unopened', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myco-blob-range-'));
+    try {
+      const store = diskBlobStore(root);
+      const prefix = 'chunk\n';
+      const content = prefix.repeat(1024 ** 2);
+      await store.put('project/content', new Blob([content]).stream());
+      const descriptors = async () => (await fs.readdir('/dev/fd')).length;
+      const before = process.platform === 'win32' ? undefined : await descriptors();
+      for (let i = 0; i < NATIVE_READ_ATTEMPTS; i += 1) {
+        const object = await store.get('project/content', { range: { offset: prefix.length } });
+        const reader = object!.body!.getReader();
+        const chunk = await reader.read();
+        expect(chunk.done).toBe(false);
+        expect(chunk.value!.byteLength).toBeLessThan(content.length - prefix.length);
+        await reader.cancel();
+        reader.releaseLock();
+      }
+      for (let i = 0; i < NATIVE_READ_ATTEMPTS; i += 1) await store.get('project/content');
+      if (before !== undefined) expect(await descriptors() - before).toBeLessThan(DESCRIPTOR_GROWTH_TOLERANCE);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('blob publication durability', () => {
   it('acknowledges native publication after syncing the file and its directory entry', async () => {

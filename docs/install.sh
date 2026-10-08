@@ -304,7 +304,7 @@ fi
 # so a watchdog kills a probe that hangs.
 "${TMP_DIR}/myco" --version >/dev/null 2>&1 &
 _probe=$!
-( sleep 30; kill -9 "$_probe" 2>/dev/null ) &
+( sleep 30; kill -9 "$_probe" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
 _watchdog=$!
 if wait "$_probe"; then _runs=1; else _runs=0; fi
 kill "$_watchdog" 2>/dev/null || true

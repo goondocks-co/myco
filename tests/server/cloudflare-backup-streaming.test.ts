@@ -13,6 +13,8 @@ const MAX_RSS_GROWTH_KIB = MAX_RSS_GROWTH_MIB * 1024;
 const BASELINE_ROWS = 8192;
 const LARGE_ROWS = 65537;
 const MAX_METADATA_CHARACTERS = 4096;
+const MAX_DOWNLOAD_CHUNK_BYTES = 4 * 1024 ** 2;
+const MAX_PEAK_SAMPLE_RATIO = 2;
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 
 async function withServer(rows: number, mode: string, run: (metadata: string) => Promise<void>): Promise<void> {
@@ -48,11 +50,25 @@ async function measureExports(fixtures: ExportFixture[]): Promise<number[]> {
     JSON.stringify(fixtures.map((fixture) => JSON.parse(fixture.metadata)))],
   { env: process.env, stdout: 'pipe', stderr: 'pipe' });
   let measuredKiB = 0;
+  let peakLinuxMemory: { rssKiB: number; anonKiB: number; fileKiB: number } | undefined;
   let monitorError: unknown = null;
   const monitor = setInterval(() => {
     try {
       const rss = Number(execFileSync('ps', ['-o', 'rss=', '-p', String(child.pid)], { encoding: 'utf8' }).trim());
       measuredKiB = Math.max(measuredKiB, rss);
+      if (process.platform === 'linux') {
+        const status = fs.readFileSync(`/proc/${child.pid}/status`, 'utf8');
+        if (/^State:\s+Z/m.test(status)) return;
+        const field = (name: string): number => {
+          const value = new RegExp(`^${name}:\\s+(\\d+) kB$`, 'm').exec(status);
+          if (value === null) throw new Error(`Linux memory sample has no ${name}`);
+          return Number(value[1]);
+        };
+        const rssKiB = field('VmRSS');
+        if (rssKiB > (peakLinuxMemory?.rssKiB ?? 0)) {
+          peakLinuxMemory = { rssKiB, anonKiB: field('RssAnon'), fileKiB: field('RssFile') };
+        }
+      }
       if (rss > MAX_RSS_KIB) child.kill();
     } catch (error) {
       if (child.exitCode === null) { monitorError = error; child.kill(); }
@@ -63,16 +79,21 @@ async function measureExports(fixtures: ExportFixture[]): Promise<number[]> {
     const progressFile = path.join(root, 'progress.json');
     const progress = fs.existsSync(progressFile) ? fs.readFileSync(progressFile, 'utf8') : '{"phase":"download"}';
     console.log(`D1 streaming: measured peak ${measuredKiB} KiB; progress ${progress}; ${stdout.trim()}`);
+    if (peakLinuxMemory) console.log(`D1 streaming Linux peak: ${JSON.stringify(peakLinuxMemory)}`);
     expect(monitorError).toBeNull();
     expect({ code, stderr, measuredKiB }).toMatchObject({ code: 0, stderr: '' });
     expect(measuredKiB).toBeLessThan(MAX_RSS_KIB);
     const results = JSON.parse(stdout);
     expect(results).toHaveLength(fixtures.length);
+    expect(Math.max(...results.map((result: { peakKiB: number }) => result.peakKiB)))
+      .toBeGreaterThan(measuredKiB / MAX_PEAK_SAMPLE_RATIO);
     return fixtures.map(({ rows, interrupted }, index) => {
       const result = results[index];
       expect(result.rows).toBe(rows);
       expect(result.peakKiB).toBeGreaterThan(0);
       expect(result.peakKiB).toBeLessThan(MAX_RSS_KIB);
+      expect(result.maxDownloadChunkBytes).toBeGreaterThan(0);
+      expect(result.maxDownloadChunkBytes).toBeLessThan(MAX_DOWNLOAD_CHUNK_BYTES);
       expect(result.result).toEqual({ rows, characters: result.expectedCharacters });
       expect(result.starts).toBe(1);
       expect(result.downloads).toBe(interrupted ? 2 : 1);

@@ -8,7 +8,7 @@
 # CI holds the manifest to exactly those two, since a Dockerfile that quietly
 # stops building for one would pass every other job.
 
-ARG BUN_VERSION=1.3.13
+ARG BUN_VERSION=1.4.0
 
 # --- dependencies ----------------------------------------------------------
 # The server's runtime dependencies, resolved from the root lockfile so the
