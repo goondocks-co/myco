@@ -78,7 +78,7 @@ describe('device approval page', () => {
     mount('/');
     expect(await screen.findByText('Check machine')).toBeTruthy();
     expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('');
-    expect(pendingDeviceCode()).toBeNull();
+    await waitFor(() => expect(pendingDeviceCode()).toBeNull());
   });
 
   it('resumes a previously typed code once without leaving a callback redirect', async () => {
@@ -87,7 +87,7 @@ describe('device approval page', () => {
     mount('/');
     await screen.findByText('Check machine');
     expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('BCDF-2345');
-    expect(pendingDeviceCode()).toBeNull();
+    await waitFor(() => expect(pendingDeviceCode()).toBeNull());
   });
 
   it('clears pending storage when an approval fails', async () => {
@@ -102,7 +102,7 @@ describe('device approval page', () => {
     pendingDeviceCode('BCDF-2345');
     fireEvent.click(screen.getByText('Approve this machine'));
     await screen.findByText(/This code has expired/);
-    expect(pendingDeviceCode()).toBeNull();
+    await waitFor(() => expect(pendingDeviceCode()).toBeNull());
   });
 
   it('a non-owner admin can approve their own machine at their own role', async () => {
