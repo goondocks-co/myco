@@ -1,7 +1,18 @@
 import { describe, expect, test } from 'bun:test';
-import { parseShard, selectShard } from '../../scripts/test-shards.mjs';
+import { parseShard, selectGroup, selectShard } from '../../scripts/test-shards.mjs';
 
 describe('test shard selection', () => {
+  test('selects an intact group after shard assignment and refuses a group from another shard', () => {
+    const groups = [
+      { label: 'first', files: ['a', 'b'], weight: 100 },
+      { label: 'second', files: ['c'], weight: 50 },
+    ];
+    const shard = selectShard(groups, parseShard('1/2'), (group) => group.weight);
+    expect(selectGroup(shard, 'first')).toEqual([groups[0]]);
+    expect(selectGroup(shard, undefined)).toBe(shard);
+    expect(() => selectGroup(shard, 'second')).toThrow('not in the selected shard');
+    expect(() => selectGroup(shard, 'missing')).toThrow('not in the selected shard');
+  });
   test('partitions uneven work exactly once while preserving order and whole groups', () => {
     const groups = [1, 100, 2, 40, 3, 20, 4, 10];
     const partitions = [1, 2, 3].map((index) => selectShard(groups, { index, count: 3 }, (weight) => weight));

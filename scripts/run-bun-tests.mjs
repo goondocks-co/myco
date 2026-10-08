@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
-import { parseShard, selectShard } from './test-shards.mjs';
+import { parseShard, selectGroup, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
@@ -1578,7 +1578,10 @@ const candidates = [
     label: file, args: [file], isolate: true, kind: 'dom',
   }))),
 ];
-const selected = selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args)));
+const selected = selectGroup(
+  selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args))),
+  process.env.MYCO_TEST_GROUP,
+);
 const nonDomPhases = selected.filter((phase) => phase.kind === 'node');
 const selectedDomFiles = selected.filter((phase) => phase.kind === 'dom').flatMap((phase) => phase.args);
 const dom = selectedDomFiles.length > 0
