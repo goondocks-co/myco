@@ -1558,6 +1558,8 @@ function stripDuplicateReact() {
 const testKind = process.env.MYCO_TEST_KIND ?? 'all';
 if (!['all', 'node', 'dom'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
 const shard = parseShard(process.env.MYCO_TEST_SHARD);
+const groupLabel = process.env.MYCO_TEST_GROUP;
+delete process.env.MYCO_TEST_GROUP;
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
 const DEFAULT_FILE_DURATION_MS = 100;
 const built = buildArgs();
@@ -1580,7 +1582,7 @@ const candidates = [
 ];
 const selected = selectGroup(
   selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args))),
-  process.env.MYCO_TEST_GROUP,
+  groupLabel,
 );
 const nonDomPhases = selected.filter((phase) => phase.kind === 'node');
 const selectedDomFiles = selected.filter((phase) => phase.kind === 'dom').flatMap((phase) => phase.args);
