@@ -1,3 +1,4 @@
+import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
 import { deviceLogin } from '@myco/cli/device-login.js';
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
@@ -15,6 +16,46 @@ async function cookie(target: ParityTarget, sub: string): Promise<Record<string,
 function post(target: ParityTarget, path: string, body: unknown, headers: Record<string, string> = { 'cf-connecting-ip': '1.2.3.4' }): Promise<Response> {
   return fetch(`${target.url}${path}`, { method: 'POST', headers: { ...headers, origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 }
+
+/** A foreign-restore member hold fences decisions and redemption until an owner assigns the member's role. */
+export const deviceForeignLineageHold: ParityScenario = {
+  name: 'device login: foreign-lineage hold refuses approval and issuance until owner re-admission',
+  dedicated: { timeoutMs: 240000 },
+  async run(target) {
+    const held = 'mem_device_held';
+    await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(MEMBER_ID)}, revision = revision + 1 WHERE id = 1`);
+    await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES (${lit(held)},'Held admin','admin','168903',${Date.now()})`);
+    const headers = await cookie(target, '168903');
+    const start = async (machineId: string): Promise<Started> => {
+      const response = await post(target, '/auth/device/start', { machineId, machineName: 'Held laptop', os: 'linux' });
+      expect(response.status).toBe(200);
+      return await response.json() as Started;
+    };
+    const approve = (device: Started) => post(target, '/api/device/approve', { user_code: device.user_code }, headers);
+    const poll = async (device: Started) => await (await post(target, '/auth/device/poll', { device_code: device.device_code })).json() as Record<string, unknown>;
+    const count = () => target.sql(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ${lit(held)}`);
+    const approved = await start('held_approved');
+    const pending = await start('held_pending');
+    expect((await approve(approved)).status).toBe(200);
+    await target.sql(`UPDATE members SET revoked_at = ${Date.now()}, revoked_by = ${lit(FOREIGN_LINEAGE_REVOKER)} WHERE id = ${lit(held)}`);
+    expect((await approve(pending)).status).toBe(401);
+    expect(await poll(approved)).toEqual({ error: 'invalid_grant' });
+    expect(await count()).toEqual([{ n: 0 }]);
+    expect(await target.sql(`SELECT used_at FROM enrollment_authorities WHERE member_id = ${lit(held)}`)).toEqual([{ used_at: null }]);
+    expect(await target.sql("SELECT decision FROM device_requests WHERE machine_id = 'held_pending'")).toEqual([{ decision: null }]);
+    expect(await target.sql("SELECT machine_id FROM machine_claims WHERE machine_id IN ('held_approved','held_pending')")).toEqual([]);
+
+    const readmitted = await post(target, `/api/members/${held}/role`, { role: 'admin', expected_revision: '0' }, target.ownerHeaders());
+    expect(readmitted.status).toBe(200);
+    expect(await target.sql(`SELECT revoked_at,revoked_by,role FROM members WHERE id = ${lit(held)}`)).toEqual([{ revoked_at: null, revoked_by: null, role: 'admin' }]);
+    expect(await target.sql(`SELECT actor_id,role FROM member_role_audit WHERE member_id = ${lit(held)}`)).toEqual([{ actor_id: MEMBER_ID, role: 'admin' }]);
+    expect((await approve(pending)).status).toBe(200);
+    expect(await poll(pending)).toMatchObject({ joined: true, memberId: held, role: 'admin' });
+    await Bun.sleep(5000);
+    expect(await poll(approved)).toMatchObject({ joined: true, memberId: held, role: 'admin' });
+    expect(await count()).toEqual([{ n: 2 }]);
+  },
+};
 
 /** The same public and dashboard HTTP contract runs through the native entry and workerd with their own real stores. */
 export const deviceLoginFlow: ParityScenario = {

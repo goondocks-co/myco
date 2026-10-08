@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
+import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
 import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { reclaimEnrollmentAuthorities, ENROLLMENT_RETENTION_MS } from '@myco-server-worker/auth/enrollment.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -33,6 +34,33 @@ function rig(onSql?: NonNullable<Parameters<typeof sqliteEnv>[0]>['onSql']) {
 }
 
 describe('device authorization', () => {
+  it('refuses approval and issuance for a foreign-lineage held member until the owner re-admits them', async () => {
+    const r = rig();
+    try {
+      const approved = await r.start('held_approved');
+      const pending = await r.start('held_pending');
+      expect((await r.decide(approved.user_code, 'approve', '770003')).status).toBe(200);
+      const before = r.count();
+      r.e.sqlite.query('UPDATE members SET revoked_at = ?, revoked_by = ? WHERE id = ?').run(NOW, FOREIGN_LINEAGE_REVOKER, ADMIN);
+      expect((await r.decide(pending.user_code, 'approve', '770003')).status).toBe(401);
+      expect(await r.poll(approved.device_code)).toEqual({ error: 'invalid_grant' });
+      expect(r.count()).toBe(before);
+      expect(r.e.sqlite.query('SELECT used_at FROM enrollment_authorities WHERE member_id = ?').all(ADMIN)).toEqual([{ used_at: null }]);
+      expect(r.e.sqlite.query("SELECT decision FROM device_requests WHERE machine_id = 'held_pending'").get()).toEqual({ decision: null });
+      expect(r.e.sqlite.query("SELECT machine_id FROM machine_claims WHERE machine_id IN ('held_approved','held_pending')").all()).toEqual([]);
+
+      const readmitted = await r.post(`/api/members/${ADMIN}/role`, { role: 'admin', expected_revision: '0' }, await ownerCookie(r.e.db, NOW));
+      expect(readmitted.status).toBe(200);
+      expect(r.e.sqlite.query('SELECT revoked_at,revoked_by,role FROM members WHERE id = ?').get(ADMIN)).toEqual({ revoked_at: null, revoked_by: null, role: 'admin' });
+      expect(r.e.sqlite.query('SELECT actor_id,role FROM member_role_audit WHERE member_id = ?').all(ADMIN)).toEqual([{ actor_id: OWNER, role: 'admin' }]);
+      expect((await r.decide(pending.user_code, 'approve', '770003')).status).toBe(200);
+      expect(await r.poll(pending.device_code)).toMatchObject({ joined: true, memberId: ADMIN, role: 'admin' });
+      r.advance();
+      expect(await r.poll(approved.device_code)).toMatchObject({ joined: true, memberId: ADMIN, role: 'admin' });
+      expect(r.count()).toBe(before + 2);
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('starts digest-only, shows trusted machine/IP/scope, approves self, and redeems once through join', async () => {
     const r = rig();
     const logs: string[] = [];
