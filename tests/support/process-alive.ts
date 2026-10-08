@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process';
 function tableState(pid: number): string | null {
   const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
   if (ps.error !== undefined) throw ps.error;
-  // `ps -p` exits 1 with nothing printed when the process is not in the table.
-  if (ps.status === 1 && ps.stdout.trim() === '') return null;
+  // `ps -p` exits 1 with nothing on either stream when the process is not in the table; a diagnostic is a fault.
+  if (ps.status === 1 && ps.stdout.trim() === '' && ps.stderr.trim() === '') return null;
   if (ps.status !== 0) throw new Error(`ps -p ${pid} exited ${ps.status}: ${ps.stderr}`);
   return ps.stdout.trim();
 }
