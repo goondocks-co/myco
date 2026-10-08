@@ -18,6 +18,19 @@ MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
 MYCO_PARITY_SHARD=1/3 npm run test:parity
 ```
 
+To repeat one whole group, use the workflow's shard assignment and the label
+printed by `MYCO_RUNNER_DRY_RUN=1 npm test`. `MYCO_TEST_GROUP` filters after shard
+assignment; an unknown label or a group assigned elsewhere is an error.
+
+```sh
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/5 \
+  MYCO_TEST_GROUP='node env shared tests-myco-server-3' \
+  MYCO_RUNNER_GROUP_BUDGET_MS=3600000 npm test -- --rerun-each 20
+```
+
+The larger group budget covers the repeated work. Each test keeps its normal
+timeout, and every sibling file in the selected group still runs.
+
 Without those variables, the commands run their full suites. Do not run multiple
 shards in the same checkout concurrently: the runner owns shared bundle/report
 directories and swaps the Bun configuration for DOM tests. CI uses separate

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
-import { parseShard, selectShard } from './test-shards.mjs';
+import { parseShard, selectGroup, selectShard } from './test-shards.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
@@ -1558,6 +1558,8 @@ function stripDuplicateReact() {
 const testKind = process.env.MYCO_TEST_KIND ?? 'all';
 if (!['all', 'node', 'dom'].includes(testKind)) throw new Error(`Unknown test kind: ${testKind}`);
 const shard = parseShard(process.env.MYCO_TEST_SHARD);
+const groupLabel = process.env.MYCO_TEST_GROUP;
+delete process.env.MYCO_TEST_GROUP;
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
 const DEFAULT_FILE_DURATION_MS = 100;
 const built = buildArgs();
@@ -1578,7 +1580,10 @@ const candidates = [
     label: file, args: [file], isolate: true, kind: 'dom',
   }))),
 ];
-const selected = selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args)));
+const selected = selectGroup(
+  selectShard(candidates, shard, (phase) => estimate(sourceFiles(phase.args))),
+  groupLabel,
+);
 const nonDomPhases = selected.filter((phase) => phase.kind === 'node');
 const selectedDomFiles = selected.filter((phase) => phase.kind === 'dom').flatMap((phase) => phase.args);
 const dom = selectedDomFiles.length > 0
