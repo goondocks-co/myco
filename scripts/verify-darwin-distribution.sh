@@ -9,6 +9,7 @@ case "$mode" in
   native|signature-only) ;;
   *) echo "Unknown verification mode: $mode" >&2; exit 1 ;;
 esac
+asset="$(cd "$(dirname "$asset")" && pwd)/$(basename "$asset")"
 
 scratch="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/myco-darwin-gate.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
@@ -18,16 +19,26 @@ mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$XDG_CONFIG_HOME" "$MYCO_HO
 
 tar -xzf "$tarball" -C "$scratch" package/bin/myco
 packed="$scratch/package/bin/myco"
-cmp "$asset" "$packed"
+for binary in "$asset" "$packed"; do
+  if ! codesign --verify --strict "$binary"; then
+    echo "$binary: invalid code signature; refusing distribution verification" >&2
+    exit 1
+  fi
+done
+asset_sha="$(shasum -a 256 "$asset")"
+packed_sha="$(shasum -a 256 "$packed")"
+if [ "${asset_sha%% *}" != "${packed_sha%% *}" ]; then
+  echo "$tarball: packed binary SHA256 differs from the staged asset" >&2
+  exit 1
+fi
 if [ ! -x "$packed" ]; then
   echo "$tarball: package/bin/myco must be executable in the packed tarball" >&2
   exit 1
 fi
 chmod +x "$asset"
 for binary in "$asset" "$packed"; do
-  codesign --verify --strict "$binary"
   if [ "$mode" = native ]; then
-    actual="$("$binary" --version)"
+    actual="$(cd "$scratch" && "$binary" --version)"
     if [ "$actual" != "$version" ]; then
       echo "$binary: expected version $version, got $actual" >&2
       exit 1

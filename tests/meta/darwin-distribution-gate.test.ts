@@ -34,20 +34,22 @@ test.skipIf(process.platform === 'win32')('the Darwin distribution gate rejects 
     };
     pack();
     expect(verify().status).toBe(0);
-    expect(fs.readFileSync(calls, 'utf8')).toBe('verify\nlaunch\nverify\nlaunch\n');
-    expect(verify({ MYCO_GATE_SIGNATURE_EXIT: '17' }).status).toBe(17);
+    expect(fs.readFileSync(calls, 'utf8')).toBe('verify\nverify\nlaunch\nlaunch\n');
+    const refused = verify({ MYCO_GATE_SIGNATURE_EXIT: '17' });
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain('invalid code signature; refusing distribution verification');
     expect(fs.readFileSync(calls, 'utf8')).toBe('verify\n');
     expect(verify({ MYCO_GATE_VERSION: '1.2.4' }).status).toBe(1);
     expect(verify({ MYCO_GATE_LAUNCH_EXIT: '23' }).status).toBe(23);
     fs.chmodSync(packed, 0o644);
     pack();
     expect(verify().status).toBe(1);
-    expect(fs.readFileSync(calls, 'utf8')).toBe('');
+    expect(fs.readFileSync(calls, 'utf8')).toBe('verify\nverify\n');
     fs.chmodSync(packed, 0o755);
     fs.writeFileSync(packed, fixture + '\n');
     pack();
     expect(verify().status).not.toBe(0);
-    expect(fs.readFileSync(calls, 'utf8')).toBe('');
+    expect(fs.readFileSync(calls, 'utf8')).toBe('verify\nverify\n');
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

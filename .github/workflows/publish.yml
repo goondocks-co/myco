@@ -248,14 +248,13 @@ jobs:
       matrix:
         target: [darwin-arm64, darwin-x64]
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: myco-binary-${{ matrix.target }}
           path: binary/
       - name: Sign macOS executable
-        run: |
-          codesign --force --sign - --preserve-metadata=entitlements,identifier binary/myco
-          codesign --verify --strict binary/myco
+        run: bash scripts/sign-darwin-binary.sh binary/myco
       - name: Replace binary artifact with signed bytes
         uses: actions/upload-artifact@v7
         with:

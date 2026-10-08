@@ -23,11 +23,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      darwin_distribution_required: ${{ steps.darwin-inputs.outputs.required }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
+      - name: Select Darwin release recipe checks
+        id: darwin-inputs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/darwin-release-inputs.mjs
       - uses: ./.github/actions/ci-setup
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
       - name: The standalone dashboard matches its committed bundle without shared build artifacts
@@ -89,6 +96,14 @@ jobs:
         if: matrix.target == 'windows-x64'
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh "${{ matrix.target }}"
+      - name: Hand the Darwin native library to the Linux cross-compiler
+        if: matrix.target == 'darwin-arm64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-libsqlite3-darwin-arm64
+          path: packages/myco/vendor-src/libsqlite3/darwin-arm64/
+          if-no-files-found: error
+          retention-days: 1
       - name: Set macOS distribution smoke version
         if: matrix.target == 'darwin-arm64'
         run: node scripts/sync-package-versions.mjs --target myco --version 0.0.0-ci
@@ -126,6 +141,70 @@ jobs:
           path: packages/myco-${{ matrix.target }}/bin/myco.exe
           if-no-files-found: error
           retention-days: 1
+
+  darwin-release-build:
+    name: Cross-compile Darwin release recipe
+    needs: [build, hook-startup]
+    if: needs.build.outputs.darwin_distribution_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: npm ci --ignore-scripts
+      - run: node scripts/sync-package-versions.mjs --target myco --version 0.0.0-ci
+      - name: Install Darwin target subpackages
+        run: |
+          set -euo pipefail
+          SQLITE_VEC_VERSION="$(node -p "require('./node_modules/sqlite-vec/package.json').version")"
+          RG_VERSION="$(node -p "require('./node_modules/@vscode/ripgrep/package.json').version")"
+          npm install "sqlite-vec-darwin-arm64@${SQLITE_VEC_VERSION}" "@vscode/ripgrep-darwin-arm64@${RG_VERSION}" --no-save --ignore-scripts --force
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-libsqlite3-darwin-arm64
+          path: packages/myco/vendor-src/libsqlite3/darwin-arm64/
+      - run: npm run build:ui -w @goondocks/myco
+      - run: npm run codegen -w @goondocks/myco
+      - run: TARGET=darwin-arm64 npm run build:binary -w @goondocks/myco
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ci-myco-cross-darwin-arm64
+          path: packages/myco-darwin-arm64/bin/
+          if-no-files-found: error
+          retention-days: 1
+
+  darwin-release-verify:
+    name: Sign and verify Linux-built Darwin distribution
+    needs: [build, darwin-release-build]
+    if: needs.build.outputs.darwin_distribution_required == 'true'
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8
+        with:
+          name: ci-myco-cross-darwin-arm64
+          path: binary/
+      - name: Sign macOS executable
+        run: bash scripts/sign-darwin-binary.sh binary/myco
+      - name: Pack and verify signed distribution
+        run: |
+          set -euo pipefail
+          node scripts/sync-package-versions.mjs --target myco --version 0.0.0-ci
+          chmod +x binary/myco
+          mkdir -p packages/myco-darwin-arm64/bin target/darwin-release
+          cp binary/myco packages/myco-darwin-arm64/bin/myco
+          node scripts/inject-platform-metadata.mjs darwin-arm64
+          (cd packages/myco-darwin-arm64 && npm pack --pack-destination ../../target/darwin-release)
+          bash scripts/verify-darwin-distribution.sh 0.0.0-ci binary/myco target/darwin-release/goondocks-myco-darwin-arm64-0.0.0-ci.tgz native
 
   hook-startup-windows:
     name: hook startup (windows-x64, measured)
@@ -248,15 +327,16 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, build, tests, parity, self-hosted-container, windows-native, ui-screens, hook-startup, hook-startup-windows]
+    needs: [lint, build, tests, parity, self-hosted-container, windows-native, ui-screens, hook-startup, hook-startup-windows, darwin-release-build, darwin-release-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every job to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          DARWIN_DISTRIBUTION_REQUIRED: ${{ needs.build.outputs.darwin_distribution_required }}
         run: |
-          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+          echo "$RESULTS" | jq -e --arg required "$DARWIN_DISTRIBUTION_REQUIRED" 'all(to_entries[]; .value.result == "success" or ($required == "false" and (.key == "darwin-release-build" or .key == "darwin-release-verify") and .value.result == "skipped"))'
 
   # The self-hosted Deployment, on the platform it actually ships to.
   #
