@@ -2,6 +2,12 @@
 
 All notable changes to Myco are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.9] - 2026-10-07
+
+### Fixed
+
+- **1.4 updates stay on major version 1.** Stable and beta update checks, explicit upgrades, staged updates, and refreshes after an npm install refuse other major versions, including 2.0 alphas, betas, and stable releases. Moving to Myco 2.0 requires the designed cutover.
+
 ## [1.4.8] - 2026-08-15
 
 ### Fixed
