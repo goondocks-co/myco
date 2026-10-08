@@ -51,3 +51,18 @@ phase durations in their summaries and upload JUnit reports and logs.
 Aim for PR feedback within five minutes. Compare completed workflow elapsed time,
 including runner queues and the aggregate gate, rather than summing parallel job
 durations. Splitting jobs adds setup work and may increase billed runner minutes.
+
+macOS distribution builds also verify the staged executable and the binary
+inside the packed npm platform package. Tagged releases require this gate
+before GitHub or npm publication; see [macOS release signing](development/macos-release-signing.md).
+
+Every main push and PRs changing build or release inputs also cross-compile
+darwin-arm64 on Linux, then sign it on macos-14 through the release's shared
+signing script and verify the staged and npm-packed binaries in execute mode.
+The selector covers workflows, actions, scripts, package manifests and lockfiles,
+and `.bun-version`; other PRs retain the native Darwin verification. The aggregate
+allows the two release-recipe jobs to skip only when the selector says they are
+not required. darwin-x64 remains signature-only in the release gate because the
+runner's Rosetta cannot execute the Bun x64 build. Ad hoc signing with preserved
+metadata is validated on an arm64 Mac against the Linux-built x64 release asset;
+native x64 execution and the hosted workflow remain validation limits.
