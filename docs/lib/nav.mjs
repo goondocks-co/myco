@@ -7,6 +7,7 @@ export const NAV = [
     group: 'Getting started',
     items: [
       { slug: 'quickstart', title: 'Quickstart' },
+      { slug: 'self-hosting', title: 'Self-hosting' },
       { slug: 'migrating-from-oak', title: 'Migrating from OAK' },
       { slug: 'upgrade', title: 'Upgrading Myco' },
     ],
