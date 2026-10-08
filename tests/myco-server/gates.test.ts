@@ -451,7 +451,7 @@ describe('gates', () => {
   it('keeps request stream ownership with the runtime; only object-store readers own their readers', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
-      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts') || f.endsWith('/core/stored-object.ts') || f.endsWith('/core/event-content.ts') || f.endsWith('/core/registered-content.ts') || f.endsWith('/core/archive-bundle.ts')) {
+      if (f.endsWith('/core/search-index.ts') || f.endsWith('/core/embedding/reconcile.ts') || f.endsWith('/core/stored-object.ts') || f.endsWith('/core/event-content.ts') || f.endsWith('/core/registered-content.ts') || f.endsWith('/core/archive-bundle.ts') || f.endsWith('/platform/bun/file-body.ts')) {
         expect(t).not.toMatch(/\bRequest\b|\bRouteContext\b|\bServerEnv\b/);
         continue;
       }
