@@ -140,9 +140,14 @@ export interface RunToolCallRow {
 }
 
 /** One claim of a run, and what its worker's step log holds. */
+/** Who took an attempt: a runner by its id and name, or a legacy worker by the member its credential belongs to. */
+export type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'member'; memberId: string | null };
+
 export interface RunAttemptRow {
   attemptId: string;
   claimedAt: number;
+  /** The executor that took this attempt, kept once the run moves to another; a runner is never read through a member credential. */
+  executor: RunAttemptExecutor;
   /**
    * The attempt's step log: the steps its worker observed (`total`), those the Deployment holds (`received`), those
    * past the log's bound (`overflow`) and the stream records the worker could not read. Null where no page of the log
@@ -458,12 +463,18 @@ function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
 }
 
 const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
+  a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
+  CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId,
   (SELECT COUNT(*) FROM agent_run_steps s WHERE s.project_id = a.project_id AND s.run_id = a.run_id AND s.attempt_id = a.attempt_id) AS received`;
 
-type AttemptRecord = { attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null; received: number };
+type AttemptRecord = {
+  attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null; received: number;
+  ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null;
+};
 
 const attemptOf = (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
+  executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'member', memberId: row.memberId },
   steps: row.total === null ? null : { total: Number(row.total), received: Number(row.received), overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
 });
 

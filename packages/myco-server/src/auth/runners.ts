@@ -143,9 +143,12 @@ export class RunnerWriteRefused extends Error {
   constructor() { super('runner credential holds no authority'); }
 }
 
-/** The assertion every runner-admitted mutation commits with: the presenting credential still carries its runner's authority. */
-export function runnerWriteAssertion(db: RelationalStore, credentialId: string): () => PreparedStatement {
-  return () => db.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM runner_credentials c WHERE c.id = ? AND ${runnerCredentialAuthority('c', SQL_NOW_MS)})
+/**
+ * The assertion every runner-admitted mutation commits with: the presenting credential still carries its runner's
+ * authority, under the same expiry its route admitted it with — `lapsed` on the rotation route alone.
+ */
+export function runnerWriteAssertion(db: RelationalStore, credentialId: string, expiry: 'live' | 'lapsed' = 'live'): () => PreparedStatement {
+  return () => db.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM runner_credentials c WHERE c.id = ? AND ${runnerCredentialAuthority('c', SQL_NOW_MS, expiry)})
     THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(credentialId, RUNNER_WRITE_REFUSED);
 }
 
@@ -155,8 +158,8 @@ export function runnerWriteRefusal(error: unknown): never {
 }
 
 /** The request's mutations commit only while its runner credential still carries authority, in the same atomic batch. */
-export function runnerWriteStore(db: RelationalStore, credentialId: string): RelationalStore {
-  return writeGuardStore(db, runnerWriteAssertion(db, credentialId), runnerWriteRefusal);
+export function runnerWriteStore(db: RelationalStore, credentialId: string, expiry: 'live' | 'lapsed' = 'live'): RelationalStore {
+  return writeGuardStore(db, runnerWriteAssertion(db, credentialId, expiry), runnerWriteRefusal);
 }
 
 /**
@@ -319,7 +322,8 @@ export async function readRunner(db: RelationalStore, runnerId: string): Promise
 /**
  * An owner or administrator's control of one runner, attributed and audited in one batch. Pause and resume move only
  * its state; removal also moves its epoch and revokes every credential it holds. A control the runner's current state
- * does not admit changes nothing and answers the runner as it stands.
+ * does not admit, or one another control won first, changes nothing, writes no receipt, and answers the runner as it
+ * stands: a revision has one receipt, the one its own transition wrote.
  */
 export async function controlRunner(db: RelationalStore, actorId: string, runnerId: string, control: RunnerControl, now: number): Promise<{ changed: boolean; runner: RunnerRecord } | null> {
   const before = await readRunner(db, runnerId);
@@ -334,7 +338,8 @@ export async function controlRunner(db: RelationalStore, actorId: string, runner
       AND EXISTS (SELECT 1 FROM runners WHERE id = ? AND state = 'removed' AND revision = ?)`)
       .bind(now, RUNNER_REMOVAL_REVOKER, runnerId, runnerId, before.revision + 1)] : []),
     db.prepare(`INSERT INTO runner_audit (id, runner_id, actor_member, action, revision, at)
-      SELECT ?, id, ?, ?, revision, ? FROM runners WHERE id = ? AND revision = ? AND state = ?`)
+      SELECT ?, id, ?, ?, revision, ? FROM runners WHERE id = ? AND revision = ? AND state = ?
+        AND NOT EXISTS (SELECT 1 FROM runner_audit receipt WHERE receipt.runner_id = runners.id AND receipt.revision = runners.revision)`)
       .bind(crypto.randomUUID(), actorId, transition.audit, now, runnerId, before.revision + 1, transition.to),
   ]);
   const runner = await readRunner(db, runnerId);

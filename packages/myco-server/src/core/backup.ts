@@ -1,3 +1,4 @@
+import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
 import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
@@ -491,14 +492,15 @@ export async function restoreArtifact(
   const stamped = Number(await metaValue(db, 'version'));
   if (header.schemaVersion > stamped) throw new BackupSchemaError(header.schemaVersion, stamped);
 
+  const restoredAt = opts.now ?? Date.now();
   const byTable = new Map<string, Record<string, unknown>[]>();
   for (const parsed of restoreRows(lines.slice(1))) {
     const rows = byTable.get(parsed.t) ?? [];
-    rows.push(portableRow(parsed.t, parsed.r));
+    rows.push(parsed.t === 'device_requests' ? expireCarriedDeviceRequest(portableRow(parsed.t, parsed.r), restoredAt) : portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
   }
   const foreign = header.deploymentId !== live;
-  if (foreign) revokeForeignAuthority(byTable, opts.now ?? Date.now());
+  if (foreign) revokeForeignAuthority(byTable, restoredAt);
 
   db = await authorizeRestore(db, opts.authorization, byTable.keys());
   try { assertArchivedContentClosure(byTable); }

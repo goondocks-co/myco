@@ -80,7 +80,7 @@ describe('a step page', () => {
     expect(await r.send(r.first.token, 'run_1', page!)).toEqual({ persisted: true, stored: true, landed: 0 });
     expect(r.stored('run_1', run.attemptId)).toEqual(steps(3));
     const detail = await getRunDetail(r.e.db, SCOPE, 'run_1', NOW + 2, 'mem_worker');
-    expect(detail?.attempts).toEqual([{ attemptId: run.attemptId, claimedAt: NOW + 1, steps: { total: 3, received: 3, overflow: 0, unrecognized: UNRECOGNIZED } }]);
+    expect(detail?.attempts).toEqual([{ attemptId: run.attemptId, claimedAt: NOW + 1, executor: { kind: 'member', memberId: 'mem_worker' }, steps: { total: 3, received: 3, overflow: 0, unrecognized: UNRECOGNIZED } }]);
     expect(detail?.steps).toEqual({ attemptId: run.attemptId, rows: steps(3), cursor: null });
   });
 

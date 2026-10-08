@@ -3,7 +3,7 @@ import { getMachineId } from '../machine-id.js';
 import { getPluginVersion } from '../version.js';
 import { deploymentUrl } from '../member/registry.js';
 import {
-  clearPending, isLiveRunner, newRunnerBearer, publishRunnerRecord, readRunnerRecord, removeRunnerRecord, RUNNER_RECORD_VERSION, stagePending, withRunnerLock,
+  clearPending, isLiveRunner, newRunnerBearer, publishRunnerRecord, readRunnerRecord, RUNNER_RECORD_VERSION, stagePending, withRunnerLock,
   type PendingRegister, type RunnerLock, type RunnerRecord,
 } from '../runner/runner-registry.js';
 import { contactRunner, parseContact, type RunnerContact } from '../runner/runner-routes.js';
@@ -112,17 +112,14 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
     commit(lock, candidate, { runnerId: contact.runner.id, name: contact.runner.name, deploymentId: contact.runner.deploymentId }, contact);
 
   const locked = await withRunnerLock(serverUrl, async (lock): Promise<boolean> => {
-    let held = readRunnerRecord(serverUrl, mycoHome);
-    if (isLiveRunner(held)) {
-      if (!replace) return fail(`this machine is already registered with ${serverUrl} as ${held.name}`);
-      removeRunnerRecord(lock);
-      held = null;
-    }
+    const held = readRunnerRecord(serverUrl, mycoHome);
+    // A replacement is staged beside the acknowledged credential, which stays usable until the new one commits.
+    if (isLiveRunner(held) && !replace) return fail(`this machine is already registered with ${serverUrl} as ${held.name}`);
     let pending: PendingRegister | null = held?.pending?.kind === 'register' ? held.pending : null;
     let grant: DeviceGrant | null = null;
     let displayName = name;
     if (pending !== null) {
-      displayName = held!.name;
+      displayName = pending.name ?? held!.name;
       const settled = await committedWith(serverUrl, pending.candidate, metadata, deps.fetch);
       if (settled.kind === 'committed') return commitContact(lock, pending.candidate, settled.contact);
       if (settled.kind === 'unknown') return fail(`could not tell whether the earlier registration completed (${settled.detail}); run it again to settle it`);
@@ -134,7 +131,7 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
       }
     }
     if (pending === null) {
-      pending = { kind: 'register', candidate: newRunnerBearer(), startedAt: now() };
+      pending = { kind: 'register', candidate: newRunnerBearer(), name: displayName, startedAt: now() };
       stagePending(lock, pending, displayName);
     }
     const candidate = pending.candidate;

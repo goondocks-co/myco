@@ -105,6 +105,8 @@ export async function rotateRunnerCredential(serverUrl: string, options: Rotatio
     const held = readRunnerRecord(serverUrl, lock.mycoHome);
     if (held === null || held.token === undefined) return { status: 'no-entry', record: held };
     if (held.token !== before.token || (options.force !== true && !rotationDue(held, now()))) return { status: 'not-due', record: held };
+    // A replacement registration holds the record's pending slot; the acknowledged credential rotates once it settles.
+    if (held.pending?.kind === 'register') return { status: 'not-due', record: held, detail: 'a replacement registration is pending' };
     const staged = held.pending?.kind === 'rotate' ? held : stagePending(lock, {
       kind: 'rotate', candidate: newRunnerBearer(), startedAt: now(),
       ...(held.tokenId === undefined ? {} : { predecessorTokenId: held.tokenId }),

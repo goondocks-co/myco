@@ -134,6 +134,8 @@ export interface RunReport {
 export interface RunAttempt {
   attemptId: string;
   claimedAt: number;
+  /** Who took the attempt: a runner by name, or the member whose worker credential claimed it. */
+  executor: { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'member'; memberId: string | null };
   steps: { total: number; received: number; overflow: number; unrecognized: UnrecognizedCount | null } | null;
 }
 

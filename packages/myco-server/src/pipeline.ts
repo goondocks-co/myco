@@ -772,10 +772,11 @@ export function createServer(deps: ServerDeps) {
       if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
       return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
     }
-    if (route.auth === 'runner') return await route.runner(env, { auth, body: body.text, now, origin: url.origin });
+    const guarded = { ...env, db: runnerWriteStore(env.db, auth.credentialId, expiry) };
     const worker: WorkerPrincipal = { kind: 'runner', runnerId: auth.runnerId, credentialId: auth.credentialId, machineId: null };
     try {
-      return await route.deployment({ ...env, db: runnerWriteStore(env.db, auth.credentialId) }, { worker, body: body.text, now, clock: deps.now });
+      if (route.auth === 'runner') return await route.runner(guarded, { auth, body: body.text, now, origin: url.origin });
+      return await route.deployment(guarded, { worker, body: body.text, now, clock: deps.now });
     } catch (err) {
       if (err instanceof RunnerWriteRefused) return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
       throw err;

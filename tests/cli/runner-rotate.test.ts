@@ -48,6 +48,16 @@ describe('runner credential rotation', () => {
   const rotated = (n: number): Response => Response.json({ persisted: true, rotated: true, credentialId: `rc_${n}`, expiresAt: NOW + 7 * DAY_MS, refreshAfter: NOW + 5 * DAY_MS });
   const opts = (fetchImpl: typeof fetch, extra = {}) => ({ mycoHome: home, fetch: fetchImpl, now: () => NOW, ...extra });
 
+  it('sends nothing while a replacement registration holds the pending slot, and leaves it staged', async () => {
+    const staged = { kind: 'register' as const, candidate: `mycorun_${'r'.repeat(43)}`, name: 'next', startedAt: NOW };
+    await seed({ pending: staged });
+    const fetchImpl = rotatingFetch(() => rotated(1));
+    const report = await rotateRunnerCredential(SERVER, opts(fetchImpl, { force: true }));
+    expect(report.status).toBe('not-due');
+    expect(calls).toEqual([]);
+    expect(readRunnerRecord(SERVER, home)).toMatchObject({ token: FIRST, pending: staged });
+  });
+
   it('writes the candidate to the record before sending it, presents the current token, and swaps on success', async () => {
     await seed();
     let pendingAtSend: RunnerRecord['pending'];

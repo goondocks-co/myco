@@ -6,7 +6,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RunnerContext } from '../context.js';
 import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { deploymentIdentity } from '../auth/authorization.js';
-import { controlRunner, listRunners, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
+import { controlRunner, listRunners, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
 import { runnerContactStatement } from '../core/worker-contacts.js';
 import { ok, parseJsonObject } from './scope.js';
 
@@ -21,8 +21,9 @@ function reported(value: unknown, shape: 'id' | 'text'): string | null {
 }
 
 /**
- * A runner's contact: what it reports about its machine is recorded as metadata, never as authentication, and the
- * answer is its own registration as this Deployment holds it, the credential it presented, and the cadence it keeps.
+ * A runner's contact: what it reports about its machine is recorded as metadata, never as authentication, under the
+ * runner write guard, and the answer is its own registration as this Deployment holds it after that write, the
+ * credential it presented, and the cadence it keeps.
  * A client that holds its candidate but not the registration reply recovers its record here.
  */
 export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): Promise<Response> {
@@ -31,9 +32,11 @@ export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): P
   await runnerContactStatement(env.db, {
     runnerId: ctx.auth.runnerId, machineId: reported(body.machineId, 'id'), os: reported(body.os, 'text'), version: reported(body.version, 'id'), now: ctx.now,
   }).run();
+  const runner = await readRunner(env.db, ctx.auth.runnerId);
+  if (runner === null) throw new Error('an authenticated runner has no row');
   return ok({
     persisted: true,
-    runner: { id: ctx.auth.runnerId, name: ctx.auth.name, state: ctx.auth.state, deploymentId: await deploymentIdentity(env.db) },
+    runner: { id: runner.id, name: runner.name, state: runner.state, deploymentId: await deploymentIdentity(env.db) },
     credential: { id: ctx.auth.credentialId, expiresAt: ctx.auth.expiresAt, refreshAfter: runnerWindowOpensAt(ctx.auth.expiresAt) },
     heartbeatMs: WORKER_HEARTBEAT_MS, pollIdleMs: WORKER_POLL_IDLE_MS,
   });

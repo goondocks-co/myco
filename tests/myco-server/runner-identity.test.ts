@@ -23,7 +23,8 @@ import { readWorkerFleet } from '@myco-server-worker/core/worker-contacts.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { prepareRecoveredTenant } from '@myco-server-worker/core/recovered-tenant.js';
-import { registerRunner, runnerWriteStore, RunnerWriteRefused, RUNNER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/runners.js';
+import { controlRunner, registerRunner, runnerWriteStore, RunnerWriteRefused, RUNNER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/runners.js';
+import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -594,6 +595,100 @@ describe('the stored lease owner', () => {
       await r.json(r.asSession(`/api/runners/${a.runnerId}/remove`, {}));
       expect(() => r.e.sqlite.run(`UPDATE runners SET state = 'enabled' WHERE id = ?`, [a.runnerId])).toThrow(/stays removed/);
       expect(() => r.e.sqlite.run(`DELETE FROM runners WHERE id = ?`, [a.runnerId])).toThrow(/never deleted/);
+    } finally { r.e.sqlite.close(); }
+  });
+});
+
+describe('the review corrections', () => {
+  it('commits no contact once the runner is removed between admission and the write, and answers the state the store holds', async () => {
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      r.arm((sql) => {
+        if (!/INSERT INTO runner_contacts/.test(sql)) return;
+        r.arm(undefined);
+        r.e.sqlite.run(`UPDATE runners SET state = 'removed', removed_at = ?, credential_epoch = credential_epoch + 1, revision = revision + 1 WHERE id = ?`, [r.now(), runnerId]);
+        r.e.sqlite.run(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'test' WHERE runner_id = ?`, [r.now(), runnerId]);
+      });
+      expect(await r.json(r.asRunner(token, '/runners/contact', { machineId: 'revoked-machine' }))).toMatchObject({ persisted: false, code: 'refused' });
+      expect(r.row('SELECT COUNT(*) AS n FROM runner_contacts WHERE machine_id = ?', 'revoked-machine')).toEqual({ n: 0 });
+      // Paused after admission: the answer is the state the write left, not the one authentication read.
+      const s = rig();
+      try {
+        const live = await s.register();
+        s.arm((sql) => {
+          if (!/INSERT INTO runner_contacts/.test(sql)) return;
+          s.arm(undefined);
+          s.e.sqlite.run(`UPDATE runners SET state = 'paused', revision = revision + 1 WHERE id = ?`, [live.runnerId]);
+        });
+        expect(await s.json(s.asRunner(live.token, '/runners/contact', {}))).toMatchObject({ persisted: true, runner: { state: 'paused' } });
+      } finally { s.e.sqlite.close(); }
+      // Rotation keeps its lapsed admission under the same guard.
+      const t = rig();
+      try {
+        const lapsed = await t.register();
+        t.e.sqlite.run('UPDATE runner_credentials SET expires_at = ? WHERE runner_id = ?', [t.now() - 1, lapsed.runnerId]);
+        expect(await t.json(t.asRunner(lapsed.token, '/runners/rotate', { candidate: bearer() }))).toMatchObject({ persisted: true, rotated: true });
+      } finally { t.e.sqlite.close(); }
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('carries no approvable registration through a portable restore, into the same Deployment or another', async () => {
+    const a = rig({ deploymentId: 'deployment-a' });
+    const b = rig({ deploymentId: 'deployment-b' });
+    try {
+      const asked = await a.start('pending-backup');
+      a.e.sqlite.run('UPDATE deployment_ownership SET member_id = NULL, revision = 0 WHERE id = 1');
+      const saved = await createBackup(a.e.db, a.e.bucket, { producer: 'test', now: a.now() });
+      const artifact = (await backupArtifact(a.e.db, a.e.bucket, saved.id))!;
+      a.e.sqlite.run('UPDATE deployment_ownership SET member_id = ?, revision = 1 WHERE id = 1', [OWNER]);
+      const request = a.row(`SELECT id FROM device_requests WHERE subject = 'runner'`)!.id;
+      a.e.sqlite.run('DELETE FROM device_requests WHERE id = ?', [request]);
+      await restoreArtifact(a.e.db, { text: artifact.text, authorization: { kind: 'recovery' }, now: a.now() });
+      expect(a.row('SELECT decision, expires_at FROM device_requests WHERE id = ?', request)).toEqual({ decision: null, expires_at: a.now() });
+      expect((await a.asSession('/api/device/approve-runner', { user_code: asked.user_code })).status).toBe(409);
+      await restoreArtifact(b.e.db, { text: artifact.text, authorization: { kind: 'recovery' }, allowForeignLineage: true, now: b.now() });
+      expect((await b.asSession('/api/device/approve-runner', { user_code: asked.user_code })).status).toBe(409);
+      expect((await b.asRunner(asked.candidate, '/runners/contact', {})).status).toBe(401);
+      expect({ a: a.row('SELECT COUNT(*) AS n FROM runners'), b: b.row('SELECT COUNT(*) AS n FROM runners') }).toEqual({ a: { n: 0 }, b: { n: 0 } });
+    } finally { a.e.sqlite.close(); b.e.sqlite.close(); }
+  });
+
+  it('writes one receipt per transition: the losing control of a race records nothing', async () => {
+    for (const control of ['pause', 'remove'] as const) {
+      const r = rig();
+      try {
+        const { runnerId } = await r.register();
+        const outcomes = await Promise.all([controlRunner(r.e.db, OWNER, runnerId, control, r.now()), controlRunner(r.e.db, ADMIN, runnerId, control, r.now())]);
+        expect({ control, changed: outcomes.map((o) => o?.changed).sort() }).toEqual({ control, changed: [false, true] });
+        const winner = outcomes[0]!.changed ? OWNER : ADMIN;
+        const action = control === 'pause' ? 'paused' : 'removed';
+        expect({ control, receipts: r.e.sqlite.query('SELECT actor_member, revision FROM runner_audit WHERE runner_id = ? AND action = ?').all(runnerId, action) })
+          .toEqual({ control, receipts: [{ actor_member: winner, revision: 2 }] });
+      } finally { r.e.sqlite.close(); }
+    }
+  });
+
+  it('names the executor of every attempt, so a requeue keeps the runner that took the earlier one', async () => {
+    const r = rig();
+    try {
+      const a = await r.register('first-runner');
+      const b = await r.register('second-runner');
+      await r.queueTitling();
+      const first = (await r.claim(a.token)).run;
+      r.advance(WORKER_LEASE_MS + 1);
+      expect(await expireLeases(r.e.serverEnv, r.now())).toBe(1);
+      expect((await r.claim(b.token)).run.id).toBe(first.id);
+      r.advance(WORKER_LEASE_MS + 1);
+      expect(await expireLeases(r.e.serverEnv, r.now())).toBe(1);
+      const member = await issueMemberToken(r.e.db, { memberId: ADMIN, machineId: 'm_admin' }, r.now());
+      expect(await r.json(r.post('/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES }, memberHeaders(member.token)))).toMatchObject({ claimed: true });
+      const detail = (await getRunDetail(r.e.db, { projectId: 'proj_1' }, first.id, r.now(), OWNER))!;
+      expect(detail.attempts.map((attempt) => attempt.executor)).toEqual([
+        { kind: 'runner', runnerId: a.runnerId, name: 'first-runner' },
+        { kind: 'runner', runnerId: b.runnerId, name: 'second-runner' },
+        { kind: 'member', memberId: ADMIN },
+      ]);
     } finally { r.e.sqlite.close(); }
   });
 });

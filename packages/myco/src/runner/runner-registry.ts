@@ -37,6 +37,8 @@ const TEMP_SUFFIX_CHARS = 6;
 export interface PendingRegister {
   kind: 'register';
   candidate: string;
+  /** The name the registration asks for; a replacement differs from the acknowledged record's own name until it commits. */
+  name?: string;
   deviceCode?: string;
   userCode?: string;
   /** Epoch milliseconds at which the device grant lapses. */

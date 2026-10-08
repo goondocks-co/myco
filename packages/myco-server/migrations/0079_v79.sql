@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS runner_audit (
     at INTEGER NOT NULL
   );
 
-CREATE INDEX IF NOT EXISTS idx_runner_audit_runner ON runner_audit(runner_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_audit_revision ON runner_audit(runner_id, revision);
 
 CREATE INDEX IF NOT EXISTS idx_runner_audit_actor ON runner_audit(actor_member);
 

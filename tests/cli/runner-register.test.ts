@@ -220,6 +220,45 @@ describe('myco runner register', () => {
     expect(readRunnerRecord(SERVER, home)!.token).toBe(OLD_BEARER);
   });
 
+  describe('--replace keeps the acknowledged credential until the replacement commits', () => {
+    const acknowledged = () => withRunnerLock(SERVER, (lock) => publishRunnerRecord(lock, {
+      version: RUNNER_RECORD_VERSION, serverUrl: SERVER, name: 'earlier', deploymentId: 'dep_0', runnerId: 'run_0', token: OLD_BEARER,
+    }), home);
+
+    it('keeps it when the Deployment cannot be reached, staging the replacement beside it', async () => {
+      await acknowledged();
+      const offline = (async () => { throw new Error('offline'); }) as typeof fetch;
+      expect(await run(['register', SERVER, '--name', 'next', '--replace'], deps(offline))).toBe(false);
+      const record = readRunnerRecord(SERVER, home)!;
+      expect(record).toMatchObject({ token: OLD_BEARER, runnerId: 'run_0', name: 'earlier' });
+      expect(record.pending).toMatchObject({ kind: 'register', name: 'next' });
+    });
+
+    it('keeps it, and drops the staged replacement, when the approval is denied', async () => {
+      await acknowledged();
+      const fetchImpl = serverRoutes((call) => (call.path === '/auth/runner/start' ? Response.json(START) : Response.json({ error: 'access_denied' }, { status: 400 })));
+      expect(await run(['register', SERVER, '--name', 'next', '--replace'], deps(fetchImpl))).toBe(false);
+      const record = readRunnerRecord(SERVER, home)!;
+      expect(record).toMatchObject({ token: OLD_BEARER, runnerId: 'run_0', name: 'earlier' });
+      expect(record.pending).toBeUndefined();
+    });
+
+    it('holds both while the approval is outstanding, so an interruption leaves a usable credential', async () => {
+      await acknowledged();
+      let during: ReturnType<typeof readRunnerRecord> = null;
+      const fetchImpl = serverRoutes((call) => {
+        if (call.path === '/auth/runner/start') return Response.json(START);
+        during = readRunnerRecord(SERVER, home);
+        return registered(String(callsTo('/auth/runner/start')[0]!.body.candidate));
+      });
+      expect(await run(['register', SERVER, '--name', 'next', '--replace'], deps(fetchImpl))).toBe(true);
+      expect(during).toMatchObject({ token: OLD_BEARER, pending: { kind: 'register', name: 'next', deviceCode: DEVICE } });
+      const candidate = String(callsTo('/auth/runner/start')[0]!.body.candidate);
+      expect(readRunnerRecord(SERVER, home)).toMatchObject({ token: candidate, runnerId: 'run_1', name: NAME });
+      expect(readRunnerRecord(SERVER, home)!.pending).toBeUndefined();
+    });
+  });
+
   it('rejects a runner name the Deployment would refuse', async () => {
     const fetchImpl = serverRoutes(() => Response.json(START));
     expect(await run(['register', SERVER, '--name', 'has space'], deps(fetchImpl))).toBe(false);

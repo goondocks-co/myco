@@ -1,5 +1,6 @@
 import type { RelationalStore } from './adapters.js';
 import { deploymentIdentity } from '../auth/authorization.js';
+import { expireCarriedDeviceRequests } from '../auth/device.js';
 import { IN_FLIGHT_RUN_STATUSES } from './runs.js';
 
 export type RecoveryTenantMode = 'replacement' | 'fork';
@@ -18,7 +19,7 @@ export async function prepareRecoveredTenant(db: RelationalStore, mode: Recovery
   const original = await deploymentIdentity(db);
   if (mode !== 'replacement' && mode !== 'fork') throw new Error('unknown recovery tenant mode');
   const stale = [
-    db.prepare('UPDATE device_requests SET expires_at = ? WHERE decision IS NULL AND expires_at > ?').bind(now, now),
+    expireCarriedDeviceRequests(db, now),
     db.prepare('DELETE FROM runner_contacts'),
     db.prepare('DELETE FROM runner_model_catalogs'),
   ];

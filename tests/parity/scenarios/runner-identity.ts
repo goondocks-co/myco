@@ -102,12 +102,38 @@ export const runnerIdentity: ParityScenario = {
         { authorization: `Bearer ${claimed.run.runToken}`, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL), [PROJECT_HEADER]: target.projectId, 'cf-connecting-ip': '1.2.3.4' })).json() as Record<string, any>;
       expect((await mcp()).result?.tools?.length).toBeGreaterThan(0);
 
+      // Two owner pauses at once write one receipt, and a guarded contact answers the state the store holds.
+      const paused = await Promise.all([1, 2].map(async () => (await post(target, `/api/runners/${runnerId}/pause`, {}, target.ownerHeaders())).json() as Promise<Record<string, any>>));
+      expect(paused.map((answer) => answer.changed).sort()).toEqual([false, true]);
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM runner_audit WHERE runner_id = ${lit(runnerId)} AND action = 'paused'`)).toEqual([{ n: 1 }]);
+      expect(await answer(asRunner(target, token, '/runners/contact', { machineId: 'parity-mini-2' }))).toMatchObject({ persisted: true, runner: { state: 'paused' } });
+      expect(await target.sql(`SELECT machine_id FROM runner_contacts WHERE runner_id = ${lit(runnerId)}`)).toEqual([{ machine_id: 'parity-mini-2' }]);
+
       // Removal ends the runner credential, its lease and its run token's reads at once.
       const removed = await post(target, `/api/runners/${runnerId}/remove`, {}, target.ownerHeaders());
       expect(await removed.json()).toMatchObject({ changed: true, runner: { state: 'removed' } });
       expect((await asRunner(target, token, '/worker/lease', { projectId: target.projectId, runId, attemptId: claimed.run.attemptId })).status).toBe(401);
       expect((await mcp()).error?.data?.code).toBe('no_run');
       expect(await target.sql(`SELECT COUNT(*) AS n FROM runner_credentials WHERE runner_id = ${lit(runnerId)} AND revoked_at IS NULL`)).toEqual([{ n: 0 }]);
+      expect((await asRunner(target, token, '/runners/contact', { machineId: 'parity-removed' })).status).toBe(401);
+      expect(await target.sql(`SELECT machine_id FROM runner_contacts WHERE runner_id = ${lit(runnerId)}`)).toEqual([{ machine_id: 'parity-mini-2' }]);
+
+      // A pending runner registration a portable restore carries arrives expired: no owner can approve it here.
+      const code = Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) => 'BCDFGHJKLMNPQRSTVWXYZ23456789'[byte % 29]).join('');
+      const meta = await target.sql(`SELECT key, value FROM schema_meta WHERE key IN ('deployment_id', 'version')`);
+      const carriedAt = Date.now();
+      const artifact = [
+        { format: 'myco-backup/1', deploymentId: meta.find((row) => row.key === 'deployment_id')!.value, schemaVersion: Number(meta.find((row) => row.key === 'version')!.value), createdAt: carriedAt, producer: 'parity', counts: { device_requests: 1 } },
+        { t: 'device_requests', r: {
+          id: `en_device_carried_${carriedAt}`, device_hash: await sha256Hex(bearer()), user_hash: await sha256Hex(code), machine_id: 'carried', machine_name: 'Carried', os: 'linux',
+          source_ip: '1.2.3.4', created_at: carriedAt, expires_at: carriedAt + 600_000, interval_seconds: 5, next_poll_at: carriedAt, slowed: 0,
+          decision: null, decided_by: null, decided_at: null, subject: 'runner', runner_name: 'carried', candidate_hash: await sha256Hex(bearer()) } },
+      ].map((line) => JSON.stringify(line)).join('\n') + '\n';
+      const restored = await post(target, '/api/backups/restore-upload', { artifact }, target.ownerHeaders());
+      expect(restored.status).toBe(200);
+      const [carried] = await target.sql(`SELECT expires_at FROM device_requests WHERE id = ${lit(`en_device_carried_${carriedAt}`)}`) as Array<{ expires_at: number }>;
+      expect(carried!.expires_at).toBeLessThanOrEqual(Date.now());
+      expect((await post(target, '/api/device/approve-runner', { user_code: `${code.slice(0, 4)}-${code.slice(4)}` }, target.ownerHeaders())).status).toBe(409);
     } finally {
       await target.sql(`UPDATE agent_runs SET status = 'failed', completed_at = ${Date.now()}, lease_expires_at = NULL WHERE id = ${lit(runId)}`);
       await target.sql(`UPDATE members SET revoked_at = NULL, revoked_by = NULL WHERE id = ${lit(ADMIN)}`);

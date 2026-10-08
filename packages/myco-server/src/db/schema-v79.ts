@@ -6,7 +6,8 @@
  *   epoch, and every run token minted under it, stops carrying authority the moment the epoch moves.
  * - `runner_credentials` holds each runner bearer's digest with its rotation lineage, separate from member
  *   credentials so no member role, enrollment or capture rule ever reads one.
- * - `runner_audit` is the immutable record of each registration and owner control.
+ * - `runner_audit` is the immutable record of each registration and owner control: one receipt per runner revision,
+ *   written by the batch that moved the runner to it.
  * - `runner_contacts` and `runner_model_catalogs` are transient reports keyed by the stable runner, so a rotation
  *   never duplicates a runner.
  * - `agent_runs.leased_runner_id` and `leased_runner_credential_id` name a runner lease; `leased_by` keeps naming a
@@ -59,7 +60,7 @@ export const V79_STATEMENTS: readonly string[] = [
     revision INTEGER NOT NULL,
     at INTEGER NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS idx_runner_audit_runner ON runner_audit(runner_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_audit_revision ON runner_audit(runner_id, revision)`,
   `CREATE INDEX IF NOT EXISTS idx_runner_audit_actor ON runner_audit(actor_member)`,
   `CREATE TRIGGER IF NOT EXISTS runner_audit_immutable BEFORE UPDATE ON runner_audit BEGIN
     SELECT RAISE(ABORT, 'runner audit is immutable'); END`,
