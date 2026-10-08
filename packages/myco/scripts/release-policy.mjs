@@ -24,7 +24,7 @@ export function isV2Version(version) {
 
 export function releaseKey(version) {
   const match = new RegExp(RELEASE_POLICY.versionPattern).exec(version);
-  if (!match) return null;
+  if (!match || match[0] !== version) return null;
   const phase = match[5] ?? 'stable';
   const values = { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]),
     phase: RELEASE_POLICY.phases[phase], iteration: Number(match[6] ?? 0) };

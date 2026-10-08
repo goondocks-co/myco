@@ -15,6 +15,9 @@ on:
       - '.github/workflows/publish.yml'
       - 'scripts/**'
       - 'packages/myco/scripts/**'
+      - 'packages/myco/plugin-version.json'
+      - 'plugins/myco/**'
+      - '.claude-plugin/marketplace.json'
       - '**/package.json'
       - '**/package-lock.json'
       - '.bun-version'
@@ -76,10 +79,10 @@ jobs:
           DRY_RUN_PACKAGE: ${{ inputs.package || 'myco' }}
         run: |
           if [ "$EVENT_NAME" = push ]; then
-            echo 'dry_run=false' >> "$GITHUB_OUTPUT"
+            DRY_RUN=false
           else
             TAG_NAME="${DRY_RUN_PACKAGE}/v${DRY_RUN_VERSION}"
-            echo 'dry_run=true' >> "$GITHUB_OUTPUT"
+            DRY_RUN=true
           fi
           TAG_PREFIX="${TAG_NAME%%/v*}"
           VERSION="${TAG_NAME#"${TAG_PREFIX}/v"}"
@@ -101,13 +104,6 @@ jobs:
               ;;
           esac
 
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "tag_prefix=$TAG_PREFIX" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
-          echo "package_dir=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
-          echo "tarball_prefix=$TARBALL_PREFIX" >> "$GITHUB_OUTPUT"
-
           # A version is <major>.<minor>.<patch>, or that with a -alpha.N,
           # -beta.N or -rc.N prerelease. Every hyphenated version is a
           # prerelease under its own npm dist-tag, never latest; any other
@@ -126,8 +122,22 @@ jobs:
               ;;
             *) IS_PRERELEASE=false; NPM_TAG=latest ;;
           esac
-          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "dry_run=$DRY_RUN" "tag_name=$TAG_NAME" \
+            "tag_prefix=$TAG_PREFIX" "version=$VERSION" \
+            "package_name=$PACKAGE_NAME" "package_dir=$PACKAGE_DIR" \
+            "tarball_prefix=$TARBALL_PREFIX" "is_prerelease=$IS_PRERELEASE" \
+            "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Require the committed Git plugin release version
+        if: github.event_name == 'push' && steps.extract.outputs.tag_prefix == 'myco'
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const { version } = JSON.parse(fs.readFileSync("packages/myco/plugin-version.json", "utf8"));
+            if (version !== process.env.VERSION) throw new Error("Commit the matching Git plugin bundle with scripts/prepare-plugin-release.mjs before tagging");
+          '
 
   # Per-target libsqlite3 compile, gated on myco tags only.
   # Runner OS per target:
@@ -332,10 +342,9 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      - name: Regenerate versioned plugin bundle
+      - name: Verify committed plugin bundle
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
-          node --import tsx packages/myco/scripts/gen-plugin-bundle.ts
           node --import tsx packages/myco/scripts/gen-plugin-bundle.ts --check
 
       # For myco-shared tags, run the normal build (bun build). For
@@ -391,6 +400,12 @@ jobs:
       - name: Verify release binary version
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: npm run build:verify -w @goondocks/myco
+
+      - name: Smoke release binary database and HTTP server
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: node scripts/verify-release-binary.mjs packages/myco-linux-x64/bin/myco "$VERSION"
 
       # Stage raw binaries into a flat directory with canonical asset names so
       # upload-artifact has a single directory to root from, eliminating the
