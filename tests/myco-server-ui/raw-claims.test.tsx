@@ -20,7 +20,7 @@ const PREVIEW: RawClaimPreview = { revision: 'reviewed-r1', complete: true, proj
   { kind: 'transcript', count: 1, oldestAt: DATE, newestAt: DATE },
 ] }] };
 
-function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewerLabel?: string | null; login?: string; preview?: () => RawClaimPreview; claim?: (body: unknown) => Response; ownership?: (init?: RequestInit) => Response; roleChange?: (body: unknown) => Response } = {}) {
+function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewerLabel?: string | null; login?: string; preview?: () => RawClaimPreview; claim?: (body: unknown) => Response; ownership?: (init?: RequestInit) => Response; roleChange?: (body: unknown) => Response; held?: boolean } = {}) {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
@@ -35,6 +35,7 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewe
         { id: 'mem_member', label: 'Lin', role: 'member', roleRevision: 'lin-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
         { id: 'mem_not_linked', label: 'Unlinked', role: 'admin', roleRevision: 'unlinked-r1', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
         { id: 'mem_system', label: 'Myco', system: true, role: 'admin', roleRevision: 'system-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
+        ...(options.held ? [{ id: 'mem_held', label: 'Sam', role: 'admin', roleRevision: 'sam-r3', linked: true, createdAt: 0, revokedAt: 5, revokedBy: 'foreign-lineage-restore', awaitingAdmission: true, liveCredentials: 0 }] : []),
       ] });
       case '/api/enrollment': return Response.json({ invitations: [] });
       case '/api/credentials': return Response.json({ rows: [], cursor: null });
@@ -42,6 +43,7 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewe
       case '/api/ownership': return options.ownership?.(init) ?? Response.json({ ownerMemberId: OWNER, revision: 'owner-r1', candidates: [{ memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' }], proposalMemberId: null });
       case '/api/ownership/transfer': return options.ownership?.(init) ?? Response.json({ ownerMemberId: 'mem_next', revision: 'owner-r2', candidates: [], proposalMemberId: null });
       case '/api/members/mem_member/role': return options.roleChange?.(body) ?? Response.json({ memberId: 'mem_member', role: 'admin', roleRevision: 'lin-r2' });
+      case '/api/members/mem_held/role': return Response.json({ memberId: 'mem_held', role: 'admin', roleRevision: 'sam-r4' });
       case '/api/members/mem_not_linked/role': return options.roleChange?.(body) ?? Response.json({ memberId: 'mem_not_linked', role: 'member', roleRevision: 'unlinked-r2' });
       case '/api/raw-claims': return method === 'POST' ? options.claim?.(body) ?? Response.json({ claimId: 'claim_one', preview: { revision: 'claimed-r2', complete: true, projects: [] } }) : Response.json(options.preview?.() ?? PREVIEW);
       default: return new Response(null, { status: 404 });
@@ -236,6 +238,27 @@ describe('explicit initial ownership', () => {
     await waitFor(() => expect(requests.filter((r) => r.path === '/api/members/mem_member/role' && r.method === 'POST')).toEqual([
       { method: 'POST', path: '/api/members/mem_member/role', body: { member_id: 'mem_member', role: 'admin', expected_revision: 'lin-r1' } },
     ]));
+  });
+
+  it('lists a person a restore from another server held apart from the members, and lets only the owner re-admit them in their role', async () => {
+    const { requests } = deployment({ held: true });
+    const held = await screen.findByRole('list', { name: 'Waiting to be re-admitted' });
+    expect(held.textContent).toContain('Sam');
+    expect(held.textContent).toContain('can’t sign in until the owner re-admits them');
+    expect(within(await screen.findByRole('list', { name: 'Members' })).queryByText('Sam')).toBeNull();
+    fireEvent.click(within(held).getByRole('button', { name: 'Re-admit' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Re-admit Sam?' });
+    expect(dialog.textContent).toContain('as an admin');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Re-admit' }));
+    await waitFor(() => expect(requests.filter((r) => r.path === '/api/members/mem_held/role' && r.method === 'POST')).toEqual([
+      { method: 'POST', path: '/api/members/mem_held/role', body: { member_id: 'mem_held', role: 'admin', expected_revision: 'sam-r3' } },
+    ]));
+  });
+
+  it('shows a held person to a nonowner admin without the re-admit action', async () => {
+    deployment({ owner: false, held: true });
+    const held = await screen.findByRole('list', { name: 'Waiting to be re-admitted' });
+    expect(within(held).queryByRole('button', { name: 'Re-admit' })).toBeNull();
   });
 
   it('shows roles read-only to an ordinary member through the People route', async () => {
