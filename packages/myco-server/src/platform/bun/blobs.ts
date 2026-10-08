@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
+import { fileBody } from './file-body.js';
 import type { BlobGetOptions, BlobPutOptions, BlobStore, StoredObject, StoredObjectBody } from '../../core/adapters.js';
 
 /** The message a digest rejection carries. This store's own platform recognises it; shared code matches no message text. */
@@ -125,7 +126,7 @@ export function diskBlobStore(root: string, sync: SyncHandle = syncHandle): Blob
       // opened here and closed only at end-of-stream leaks one per response the
       // reader never consumes, which an owner navigating away produces routinely.
       const offset = options?.range?.offset ?? 0;
-      return { size, body: (offset > 0 ? Bun.file(file).slice(offset) : Bun.file(file)).stream() };
+      return { size, body: fileBody(file, offset) };
     },
 
     async put(key, value, options?: BlobPutOptions): Promise<StoredObject> {

@@ -11,9 +11,10 @@ interface Fixture {
   rows: number; signedUrl: string; definition: string; expectedCharacters: number;
 }
 const fixtures = JSON.parse(metadata) as Fixture[];
-/** Process-wide RSS high-water mark, cumulative across exports. */
-const peakKiB = () => process.resourceUsage().maxRSS / (process.platform === 'darwin' ? 1024 : 1);
+/** Process-wide RSS high-water mark in KiB, cumulative across exports. */
+const peakKiB = () => process.resourceUsage().maxRSS;
 const CONSUMER_PAUSE_MS = 2;
+const PROGRESS_BYTES = 16 * 1024 ** 2;
 
 async function measureExport(root: string, { rows, signedUrl, definition, expectedCharacters }: Fixture) {
   const exportRoot = path.join(root, String(rows));
@@ -23,6 +24,11 @@ async function measureExport(root: string, { rows, signedUrl, definition, expect
   let resumed = false;
   const sqlPath = path.join(exportRoot, 'export.sql');
   const databasePath = path.join(exportRoot, 'snapshot.sqlite');
+  const progressFile = path.join(root, 'progress.json');
+  let readBytes = 0;
+  let reportedBytes = 0;
+  let maxDownloadChunkBytes = 0;
+  fs.writeFileSync(progressFile, JSON.stringify({ rows, phase: 'download', readBytes }));
   await exportD1({
     accountId: 'fixture', databaseId: 'fixture', tables: ['payloads'], schema: 'fixture', output: sqlPath, recordDir: exportRoot,
     login: { current: async () => new Headers(), headers: async () => new Headers(), refused: () => {} },
@@ -35,7 +41,15 @@ async function measureExport(root: string, { rows, signedUrl, definition, expect
       return { ...response, reader: {
         async read() {
           const chunk = await reader.read();
-          if (!chunk.done) await new Promise((resolve) => setTimeout(resolve, CONSUMER_PAUSE_MS));
+          if (!chunk.done) {
+            readBytes += chunk.value.byteLength;
+            maxDownloadChunkBytes = Math.max(maxDownloadChunkBytes, chunk.value.byteLength);
+            if (readBytes - reportedBytes >= PROGRESS_BYTES) {
+              reportedBytes = readBytes;
+              fs.writeFileSync(progressFile, JSON.stringify({ rows, phase: 'download', readBytes, maxDownloadChunkBytes }));
+            }
+            await new Promise((resolve) => setTimeout(resolve, CONSUMER_PAUSE_MS));
+          }
           return chunk;
         },
         cancel: (reason) => reader.cancel(reason),
@@ -47,13 +61,13 @@ async function measureExport(root: string, { rows, signedUrl, definition, expect
     },
   });
   const downloadPeakKiB = peakKiB();
-  fs.writeFileSync(path.join(root, 'progress.json'), JSON.stringify({ rows, phase: 'import', downloadPeakKiB, bytes: fs.statSync(sqlPath).size }));
+  fs.writeFileSync(progressFile, JSON.stringify({ rows, phase: 'import', downloadPeakKiB, maxDownloadChunkBytes, bytes: fs.statSync(sqlPath).size }));
   await buildSnapshotDatabase(databasePath, sqlPath, [{ type: 'table', name: 'payloads', sql: definition, storage: 'table' }]);
   const db = new Database(databasePath, { readonly: true });
   try {
     const result = db.query('SELECT count(*) AS rows, sum(length(value)) AS characters FROM payloads').get();
     return { bytes: fs.statSync(sqlPath).size, rows, result, starts, downloads, resumed,
-      downloadPeakKiB, peakKiB: peakKiB(), expectedCharacters };
+      downloadPeakKiB, maxDownloadChunkBytes, peakKiB: peakKiB(), expectedCharacters };
   } finally {
     db.close();
     fs.rmSync(exportRoot, { recursive: true, force: true });

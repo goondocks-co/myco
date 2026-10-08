@@ -62,6 +62,7 @@ if (argv.includes('-w')) {
       },
       timeout: 15_000,
     });
+    expect(result.error, 'installer must finish before its subprocess timeout').toBeUndefined();
     const secrets = Object.values(tokens).flatMap(token => [token, token.replaceAll('\\', '\\\\').replaceAll('"', '\\"')]);
     assertTokenFree(result.stdout + result.stderr, secrets);
     expect(result.status === (fail ? 22 : 0), 'installer exit status must match the scenario').toBe(true);
