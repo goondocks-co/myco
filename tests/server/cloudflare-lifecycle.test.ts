@@ -11,13 +11,14 @@ import { join } from 'node:path';
 import {
   cloudflareDeploymentStatus,
   createCloudflareDeployment,
+  planCloudflareDeployment,
   rollbackCloudflareDeployment,
   destroyCloudflareDeployment,
   updateCloudflareDeployment,
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
 import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
-import { deployedWorkerSecretNames, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
+import { deployedWorkerSecretNames, ensureSecretsStore, findSecretsStore, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
@@ -128,6 +129,47 @@ const EVERY_VERB: ReadonlyArray<{ verb: string; run: (options: { accountId: stri
 const recordFor = (home: string): void => {
   writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: 'old-version', deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
 };
+
+describe('account secrets store', () => {
+  for (const output of ['stdout', 'stderr'] as const) {
+    it(`plans and creates the store when the empty-account answer is on ${output}`, async () => {
+      const { home, options } = setup();
+      const selected = runner({ 'secrets-store store list': { code: 1, [output]: '✘ [ERROR] List request returned no stores.' } });
+      const plan = await planCloudflareDeployment({ ...options, runner: selected });
+      expect(plan.steps).toContainEqual({ kind: 'secrets store', name: 'myco', action: 'create' });
+      expect(calls.some((c) => c.args.includes('create'))).toBe(false);
+      const result = await createCloudflareDeployment({ ...options, runner: selected });
+      expect(result.createdResources).toContain('secrets store');
+      expect(readDeploymentRecord(home)?.storeId).toBe(STORE);
+      expect(calls.filter((c) => c.args.join(' ').includes('secrets-store store create myco --remote'))).toHaveLength(1);
+    });
+  }
+
+  it('plans reuse and reuses an existing store without creating one', async () => {
+    const { home, options } = setup();
+    const selected = runner({ 'secrets-store store list': { stdout: `│ another-store │ ${STORE} │` } });
+    const plan = await planCloudflareDeployment({ ...options, runner: selected });
+    expect(plan.steps).toContainEqual({ kind: 'secrets store', name: STORE, action: 'reuse' });
+    const result = await createCloudflareDeployment({ ...options, runner: selected });
+    expect(result.createdResources).not.toContain('secrets store');
+    expect(readDeploymentRecord(home)?.storeId).toBe(STORE);
+    expect(calls.some((c) => c.args.join(' ').includes('secrets-store store create'))).toBe(false);
+  });
+
+  for (const failure of ['Authentication error', 'Network request failed', 'Unexpected response']) {
+    it(`throws without creating a store when the list reports ${failure}`, async () => {
+      const { dir } = setup();
+      const selected = runner({ 'secrets-store store list': { code: 1, stdout: STORE, stderr: failure } });
+      const options = { accountId: ACCOUNT, configDir: dir, runner: selected };
+      await expect(findSecretsStore(options)).rejects.toThrow(failure);
+      await expect(ensureSecretsStore(options)).rejects.toThrow(failure);
+      expect(calls.map((c) => c.args.join(' '))).toEqual([
+        '--no-install wrangler secrets-store store list --remote',
+        '--no-install wrangler secrets-store store list --remote',
+      ]);
+    });
+  }
+});
 
 describe('create', () => {
   it('records the fresh database receipt before staging can fail, so create can resume', async () => {
@@ -540,13 +582,15 @@ describe('what the CLI prints when this machine is not ready', () => {
   };
 
   const withEnvironment = async (npxDir: string, argv: string[], home = freshHome()): Promise<{ exited: boolean; said: string; printed: string }> => {
-    const held = { path: process.env.PATH, home: process.env.MYCO_HOME, token: process.env.CLOUDFLARE_API_TOKEN };
+    const held = { path: process.env.PATH, home: process.env.MYCO_HOME, token: process.env.CLOUDFLARE_API_TOKEN, cwd: process.cwd() };
     process.env.PATH = `${npxDir}:${held.path ?? ''}`;
     process.env.MYCO_HOME = home;
     delete process.env.CLOUDFLARE_API_TOKEN;
     try {
+      process.chdir(home);
       return await drive(argv);
     } finally {
+      process.chdir(held.cwd);
       if (held.path === undefined) delete process.env.PATH; else process.env.PATH = held.path;
       if (held.home === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = held.home;
       if (held.token !== undefined) process.env.CLOUDFLARE_API_TOKEN = held.token;
@@ -568,7 +612,7 @@ describe('what the CLI prints when this machine is not ready', () => {
    */
   const wranglerAnswers = (version: string, account: 'held' | 'empty' = 'held'): string => [
     'case "$*" in',
-    ...(account === 'empty' ? ['  *"vectorize list --json"*) echo "[]";;', '  *"secrets-store store list"*) echo "";;'] : []),
+    ...(account === 'empty' ? ['  *"vectorize list --json"*) echo "[]";;', '  *"secrets-store store list"*) echo "✘ [ERROR] List request returned no stores." >&2; exit 1;;'] : []),
     `  *"vectorize list-metadata-index"*) echo '${JSON.stringify(VECTOR_METADATA_FIELDS.map((field) => ({ propertyName: field, indexType: field === 'created_at' ? 'Number' : 'String' })))}';;`,
     `  *"vectorize list --json"*) echo '[{"name":"${VECTOR_INDEX_NAME}"}]';;`,
     `  *"vectorize get"*) echo '{"config":{"dimensions":${VECTOR_INDEX_DIMENSIONS},"metric":"cosine"}}';;`,
