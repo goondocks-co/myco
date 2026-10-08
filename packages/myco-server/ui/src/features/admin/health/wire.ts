@@ -53,9 +53,11 @@ export interface BackupsAnswer {
 /** `POST /api/backups/{id}/restore-preview`: what a restore would add and whether this member may apply it. */
 export interface RestorePreview {
   header: { deploymentId: string; schemaVersion: number; createdAt: number; counts: Record<string, number> };
-  /** The backup names another Deployment: restoring it makes that Deployment's members live here. */
+  /** The backup names another Deployment: restoring it lists that Deployment's people here without access. */
   foreignLineage: boolean;
   restore: { allowed: boolean; reason: string | null };
+  /** For a foreign-lineage backup, the people and access it carries that land without authority, in words for the owner. */
+  authorityExcluded: { tables: string[]; notice: string } | null;
 }
 
 /** `POST /api/backups/{id}/restore`: what each table took. */

@@ -118,9 +118,12 @@ export function BackupsSection() {
               <div className="flex items-start gap-s3 rounded-control bg-warn-bg p-s3">
                 <Switch id="restore-adopt" checked={adopt} onCheckedChange={setAdopt} />
                 <label htmlFor="restore-adopt" className="t-small text-ink">
-                  This backup comes from another server. Restoring it makes that server’s members, and their sign-ins, live here.
+                  This backup comes from another server. Its people are listed here without access until the owner re-admits them.
                 </label>
               </div>
+            )}
+            {confirming.preview.authorityExcluded?.notice !== undefined && (
+              <p className="t-small text-muted" data-restore-authority-excluded="">{confirming.preview.authorityExcluded.notice}</p>
             )}
           </>
         )}

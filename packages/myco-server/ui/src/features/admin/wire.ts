@@ -23,6 +23,8 @@ export interface MemberRow {
   createdAt: number;
   revokedAt: number | null;
   revokedBy: string | null;
+  /** Brought in held by a restore from another server: listed, unable to sign in, until the owner re-admits them by assigning a role. */
+  awaitingAdmission?: boolean;
   /** How many of this member's own runtimes authenticate now. */
   liveCredentials: number;
   /**
