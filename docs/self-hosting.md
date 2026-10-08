@@ -167,4 +167,6 @@ Everything the server holds is in one directory. Stop it, copy `~/.myco/server/l
 
 A server started this way is verified end to end in the test suite: it comes up on a fresh directory, accepts a session, and serves its dashboard, all through the artifacts the binary carries rather than anything installed on the machine.
 
-Two things are not yet verified by an automated test. The released binary has not been run end to end as a compiled artifact, only built and exercised from source. And the path from a running server to a first piece of captured knowledge depends on work that has not landed, so this page stops at a running server.
+Each release also runs its compiled Linux binary before publishing. The binary creates a server on a fresh directory and answers its health check.
+
+Turning captured sessions into knowledge (titles and summaries, extracted observations, the Canopy map and the seeded vault) is done by agent runs. `myco server run` starts a worker beside the server that claims those runs and drives a coding agent you are signed in to on that machine. No automated test runs that path against a real agent subscription yet, so expect rough edges there.

@@ -19,6 +19,11 @@ jobs:
       - uses: ./.github/actions/ci-setup
       - run: npm run lint
       - run: node scripts/run-test-command.mjs node scripts/check-test-shards.mjs
+      - name: Build docs site
+        working-directory: docs
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
 
   build:
     runs-on: ubuntu-latest
