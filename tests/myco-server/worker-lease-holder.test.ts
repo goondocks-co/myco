@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * Who holds a run, and who ran it (#1424).
@@ -44,7 +45,7 @@ async function rig() {
     const res = await worker_.fetch(new Request(`https://s${path}`, { method: 'POST', headers: memberHeaders(issued.get(tokenId)!), body: JSON.stringify(body) }), e.env);
     return await res.json() as Record<string, unknown>;
   };
-  const claim = (tokenId: string, now: number) => claimNextRun(e.serverEnv, { tokenId, machineId: 'unused', harnesses: OFFERED, now });
+  const claim = (tokenId: string, now: number) => claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, 'unused'), harnesses: OFFERED, now });
   const row = () => e.sqlite.query(`SELECT status, leased_by AS leasedBy, lease_expires_at AS leaseExpiresAt FROM agent_runs WHERE id = 'run_1'`).get() as Record<string, unknown>;
   return { e, worker, claim, row, route };
 }
@@ -57,7 +58,7 @@ describe('the lease on a run', () => {
     // Every instant inside the lease: the other worker is told there is nothing to take, and cannot renew it.
     for (const at of [NOW + 1, NOW + WORKER_LEASE_MS / 2, NOW + WORKER_LEASE_MS - 1]) {
       expect(await r.claim(vm, at)).toEqual({ claimed: false, reason: 'no_work' });
-      expect((await renewLease(r.e.serverEnv, { tokenId: vm, now: at }, RUN)).held).toBe(false);
+      expect((await renewLease(r.e.serverEnv, { principal: legacyWorker(vm, 'm1'), now: at }, RUN)).held).toBe(false);
       expect(await expireLeases(r.e.serverEnv, at)).toBe(0);
     }
     expect(r.row()).toMatchObject({ status: 'running', leasedBy: mac });
@@ -72,8 +73,8 @@ describe('the lease on a run', () => {
     expect(taken.claimed).toBe(true);
     expect(r.row()).toMatchObject({ status: 'running', leasedBy: vm });
     // The lapsed holder learns it lost the run, and cannot end it.
-    expect((await renewLease(r.e.serverEnv, { tokenId: mac, now: NOW + WORKER_LEASE_MS + 2 }, RUN)).held).toBe(false);
-    expect(await endLeasedRun(r.e.serverEnv, { tokenId: mac, now: NOW + WORKER_LEASE_MS + 3 }, { ...RUN, status: 'completed' }))
+    expect((await renewLease(r.e.serverEnv, { principal: legacyWorker(mac, 'm1'), now: NOW + WORKER_LEASE_MS + 2 }, RUN)).held).toBe(false);
+    expect(await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(mac, 'm1'), now: NOW + WORKER_LEASE_MS + 3 }, { ...RUN, status: 'completed' }))
       .toEqual({ ended: false, reason: 'the lease is no longer held' });
     expect(r.row()).toMatchObject({ status: 'running', leasedBy: vm });
   });
@@ -118,7 +119,7 @@ describe('the worker that ran a run', () => {
     const claimed = await r.claim(vm, NOW);
     if (!claimed.claimed) throw new Error('not claimed');
     expect(await r.claim(mac, NOW + 1)).toEqual({ claimed: false, reason: 'no_work' });
-    expect(await endLeasedRun(r.e.serverEnv, { tokenId: vm, now: NOW + 5_000 }, { ...RUN, status: 'failed', error: 'x', attemptId: claimed.run.attemptId }))
+    expect(await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(vm, 'm1'), now: NOW + 5_000 }, { ...RUN, status: 'failed', error: 'x', attemptId: claimed.run.attemptId }))
       .toMatchObject({ ended: true });
 
     // The lease is over, and the run still says whose it was.

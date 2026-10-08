@@ -21,7 +21,8 @@ import { claimNextRun, endLeasedRun, renewLease, type OfferedHarness } from '../
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
-import { recordWorkerContact } from '../core/worker-contacts.js';
+import { recordWorkerContact, runnerContactStatement, type ContactOutcome } from '../core/worker-contacts.js';
+import type { WorkerPrincipal } from '../core/worker-lease.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 import { parseModelCatalog, parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { recordModelCatalog } from '../core/model-catalogs.js';
@@ -73,6 +74,12 @@ function named(value: Record<string, unknown>): { projectId: string; runId: stri
   return projectId === null || runId === null ? null : { projectId, runId };
 }
 
+/** Record a claim's contact under the executor that made it: a legacy worker's credential, or the runner itself. */
+async function recordContact(env: ServerEnv, worker: WorkerPrincipal, report: { offers?: OfferedHarness[]; capabilities?: string[]; reason?: ContactOutcome; now: number }): Promise<void> {
+  if (worker.kind === 'member') await recordWorkerContact(env.db, { credentialId: worker.tokenId, machineId: worker.machineId, ...report });
+  else await runnerContactStatement(env.db, { runnerId: worker.runnerId, ...report }).run();
+}
+
 /**
  * Take the next run this worker can run, or answer that there is none.
  *
@@ -87,22 +94,11 @@ export async function handleWorkerClaim(env: ServerEnv, ctx: DeploymentContext):
   const harnesses = offered(asked.harnesses);
   const capabilities = Array.isArray(asked.capabilities) ? asked.capabilities.filter((value): value is string => typeof value === 'string') : [];
   // Profile resolution consumes the offers admitted by this claim.
-  await recordWorkerContact(env.db, {
-    credentialId: ctx.tokenId, machineId: ctx.machineId, offers: harnesses, capabilities, now: ctx.now,
-  });
-  const outcome = await claimNextRun(env, {
-    tokenId: ctx.tokenId,
-    machineId: ctx.machineId,
-    harnesses,
-    capabilities,
-    now: ctx.now,
-  });
+  await recordContact(env, ctx.worker, { offers: harnesses, capabilities, now: ctx.now });
+  const outcome = await claimNextRun(env, { principal: ctx.worker, harnesses, capabilities, now: ctx.now });
   // An authenticated claim is contact whatever it answers: a worker told
   // `no_work` is attached and idle, which nothing else in the schema records.
-  if (!outcome.claimed) await recordWorkerContact(env.db, {
-    credentialId: ctx.tokenId, machineId: ctx.machineId,
-    reason: outcome.reason, now: ctx.now,
-  });
+  if (!outcome.claimed) await recordContact(env, ctx.worker, { reason: outcome.reason, now: ctx.now });
   // The Deployment decides the cadence and says it on every answer: a worker
   // carries none of its own, so a lease changed here changes what every
   // attached worker does without shipping one.
@@ -130,7 +126,7 @@ export async function handleWorkerLease(env: ServerEnv, ctx: DeploymentContext):
     if (error instanceof WorkerUsageError) return ok({ persisted: false, code: 'parse', reason: error.message });
     throw error;
   }
-  const outcome = await renewLease(env, { tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now }, { ...run, ...(attemptId === undefined ? {} : { attemptId }) });
+  const outcome = await renewLease(env, { principal: ctx.worker, now: ctx.now }, { ...run, ...(attemptId === undefined ? {} : { attemptId }) });
   return ok(outcome.held
     ? { persisted: true, held: true, expiresAt: outcome.expiresAt, leaseMs: outcome.expiresAt - ctx.now }
     : { persisted: true, held: false, reason: 'the lease is no longer held' });
@@ -145,7 +141,7 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
   const status = asked.status === 'completed' || asked.status === 'failed' ? asked.status : null;
   if (status === null) return ok({ persisted: true, ended: false, reason: 'end names a status of completed or failed' });
   try {
-    const outcome = await endLeasedRun(env, { tokenId: ctx.tokenId, now: ctx.now, clock: ctx.clock }, {
+    const outcome = await endLeasedRun(env, { principal: ctx.worker, now: ctx.now, clock: ctx.clock }, {
       ...run, status, ...parseWorkerAccounting(asked), error: typeof asked.error === 'string' ? asked.error : null,
       refusal: parseProfileRefusal(asked.refusal),
     });
@@ -164,7 +160,7 @@ export async function handleWorkerRepository(env: ServerEnv, ctx: DeploymentCont
   if (run === null) return ok({ persisted: false, code: 'parse', reason: 'repository names a projectId and a runId' });
   try {
     const { attemptId } = parseWorkerAccounting({ attemptId: asked.attemptId });
-    const result = await prepareWorkerRepository(env, { tokenId: ctx.tokenId, clock: ctx.clock }, {
+    const result = await prepareWorkerRepository(env, { worker: ctx.worker, clock: ctx.clock }, {
       ...run, ...(attemptId === undefined ? {} : { attemptId }), body: asked,
     });
     return Response.json({ persisted: true, ...result }, { headers: { 'cache-control': 'no-store' } });
@@ -184,7 +180,10 @@ export async function handleWorkerModels(env: ServerEnv, ctx: DeploymentContext)
   if (asked === null) return unreadable();
   const catalog = parseModelCatalog(asked.catalog);
   if (catalog === null) return ok({ persisted: true, recorded: false, reason: 'the list names no agent whose models Settings sets, or no source, sign-in, listing time or models' });
-  await recordModelCatalog(env.db, { machineId: ctx.machineId, catalog, now: ctx.now });
+  await recordModelCatalog(env.db, {
+    owner: ctx.worker.kind === 'member' ? { kind: 'machine', machineId: ctx.worker.machineId } : { kind: 'runner', runnerId: ctx.worker.runnerId },
+    catalog, now: ctx.now,
+  });
   return ok({ persisted: true, recorded: true, models: catalog.models.length });
 }
 
@@ -201,7 +200,7 @@ export async function handleWorkerSteps(env: ServerEnv, ctx: DeploymentContext):
   const { projectId: _project, runId: _run, ...rest } = asked;
   try {
     const page = parseStepPage(rest, MYCO_TOOL_OPS);
-    const outcome = await storeStepPage(env.db, { projectId: run.projectId }, run.runId, page, { tokenId: ctx.tokenId, machineId: ctx.machineId }, ctx.now);
+    const outcome = await storeStepPage(env.db, { projectId: run.projectId }, run.runId, page, ctx.worker, ctx.now);
     return ok({ persisted: true, ...outcome });
   } catch (error) {
     if (error instanceof WorkerStepsError) return ok({ persisted: false, code: 'parse', reason: error.message });

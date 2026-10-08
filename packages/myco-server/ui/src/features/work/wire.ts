@@ -30,6 +30,8 @@ export interface RunWorker {
   machineName: string | null;
   /** The member the machine belongs to, served to every viewer; Myco's own runtime is named Myco. Null where the server holds none. */
   member: { id: string; label: string | null } | null;
+  /** The runner that ran it, by the name every member may read; null for a member's machine. */
+  runner: { id: string; name: string | null } | null;
 }
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */

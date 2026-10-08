@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * The repository map as a worker run outcome, from the dispatch to the row it
@@ -78,14 +79,14 @@ async function rig() {
     now += 10;
     expect(await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, now))
       .toMatchObject({ dispatched: true, queued: true });
-    const claimed = await claimNextRun(e.serverEnv, { tokenId: workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
+    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
     if (!claimed.claimed) throw new Error(`the map run was not claimed: ${claimed.reason}`);
     return claimed.run;
   };
   /** The worker's repository step, pinning the checkout to a commit. */
   const pinCommit = (runId: string, commit: string) =>
-    prepareWorkerRepository(e.serverEnv, { tokenId: workerCredential.tokenId, clock }, { projectId: 'proj_1', runId, body: { ...SOURCE, commit } });
-  const end = (runId: string) => endLeasedRun(e.serverEnv, { tokenId: workerCredential.tokenId, now: clock() }, { projectId: 'proj_1', runId, status: 'completed' });
+    prepareWorkerRepository(e.serverEnv, { worker: legacyWorker(workerCredential.tokenId, 'm1'), clock }, { projectId: 'proj_1', runId, body: { ...SOURCE, commit } });
+  const end = (runId: string) => endLeasedRun(e.serverEnv, { principal: legacyWorker(workerCredential.tokenId, 'm1'), now: clock() }, { projectId: 'proj_1', runId, status: 'completed' });
   return { e, repositories, workerCredential, call, claimMap, pinCommit, end, advance: (ms: number) => { now += ms; }, clock };
 }
 
@@ -102,7 +103,7 @@ describe('a map run a worker claimed', () => {
     await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
     r.advance(10);
     expect(await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock())).toMatchObject({ dispatched: true, queued: true });
-    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { tokenId: r.workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
     // A worker that checks source out but writes no listing: the run would report the listing absent and write nothing.
     expect(capabilitiesRequiredBy(MAP_TASK)).toEqual([REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY]);
     expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ claimed: false, reason: 'no_work' });
@@ -122,7 +123,7 @@ describe('a map run a worker claimed', () => {
     const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
     if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
     const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
-    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { tokenId: r.workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
     expect(holder()).toBe('worker');
 
     // A worker built before the listing asks, and no worker that writes one has been heard from.
@@ -171,7 +172,7 @@ describe('a map run a worker claimed', () => {
     const db: RelationalStore = { prepare: (sql: string) => counted(r.e.serverEnv.db.prepare(sql), sql), batch: (statements) => r.e.serverEnv.db.batch(statements) };
     const claim = async (capabilities: readonly string[]) => {
       rewritten = 0;
-      await claimNextRun({ ...r.e.serverEnv, db }, { tokenId: r.workerCredential.tokenId, machineId: 'm1', harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+      await claimNextRun({ ...r.e.serverEnv, db }, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
       return { holder: holder(), rewritten };
     };
 

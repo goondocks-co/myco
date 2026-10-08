@@ -11,7 +11,7 @@
  */
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
@@ -112,15 +112,38 @@ async function fileHoldsAsync(at: string | null, requires: readonly string[]): P
   try { return holdsCredentials(await readFile(at, 'utf8'), requires); } catch { return false; }
 }
 
+/** What a file probe reads of a credential file. */
+export interface DetectionMode {
+  /** False limits a file probe to whether the file exists and is non-empty; its bytes are never read. */
+  credentialBytes: boolean;
+}
+
+const READ_CREDENTIAL_BYTES: DetectionMode = { credentialBytes: true };
+const ABSENT_PATH_CODES: readonly string[] = ['ENOENT', 'ENOTDIR'];
+
+/** A credential file that exists as a regular file with content, decided from its metadata alone. */
+async function fileNonEmpty(at: string | null): Promise<boolean> {
+  if (at === null) return false;
+  try {
+    const found = await stat(at);
+    return found.isFile() && found.size > 0;
+  } catch (error) {
+    if (ABSENT_PATH_CODES.includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+    throw error;
+  }
+}
+
 /** Worker detection leaves the event loop free for leases, requests and shutdown. */
-export async function detectHarnessesAsync(only?: readonly string[], signal?: AbortSignal): Promise<DetectedHarness[]> {
+export async function detectHarnessesAsync(only?: readonly string[], signal?: AbortSignal, mode: DetectionMode = READ_CREDENTIAL_BYTES): Promise<DetectedHarness[]> {
   const wanted = only === undefined || only.length === 0 ? null : new Set(only);
   return Promise.all(HARNESSES.filter((harness) => wanted === null || wanted.has(harness.id)).map(async (harness) => {
     const found = await probeCommand(process.platform === 'win32' ? 'where' : 'which', [harness.binary], signal);
     const installed = (found?.split('\n')[0]?.trim() ?? '').length > 0;
     if (!installed) return { id: harness.id, installed, authenticated: false };
     const probe = harness.credential;
-    const fileAuthenticated = probe.kind !== 'command' && await fileHoldsAsync(credentialFile(harness), probe.requires);
+    const fileAuthenticated = probe.kind !== 'command' && (mode.credentialBytes
+      ? await fileHoldsAsync(credentialFile(harness), probe.requires)
+      : await fileNonEmpty(credentialFile(harness)));
     const authenticated = fileAuthenticated || (probe.kind !== 'file' && await probeCommand(harness.binary, probe.args, signal) !== null);
     return { id: harness.id, installed, authenticated };
   }));

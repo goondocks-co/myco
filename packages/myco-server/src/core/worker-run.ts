@@ -1,8 +1,9 @@
 import type { ServerEnv } from './adapters.js';
 import { getRun, renewRunLease, workerRunLeaseExpiry, type RunRow } from './runs.js';
 import { WORKER_LEASE_MS } from '../constants.js';
+import type { WorkerPrincipal } from './worker-lease.js';
 
-export interface WorkerLeaseOwner { tokenId: string; clock: () => number }
+export interface WorkerLeaseOwner { worker: WorkerPrincipal; clock: () => number }
 export interface WorkerRunIdentity { projectId: string; runId: string; attemptId?: string }
 
 /** Lease admission for an operation on the worker's currently dispatched attempt. */
@@ -16,10 +17,10 @@ function leasedRun<Input extends WorkerRunIdentity, Result>(
     if (row === null) return { held: false, reason: 'no run of that id' };
     if (row.dispatchedBy === null || row.status !== 'running') return { held: false, reason: 'the run is not running' };
     const dispatchedBy = row.dispatchedBy;
-    if (input.attemptId !== undefined && input.attemptId !== dispatchedBy) return { held: false, reason: 'the lease is no longer held' };
+    if (input.attemptId === undefined ? worker.worker.kind === 'runner' : input.attemptId !== dispatchedBy) return { held: false, reason: 'the lease is no longer held' };
     const verify = () => {
       const now = worker.clock();
-      return workerRunLeaseExpiry(env.db, scope, input.runId, worker.tokenId, now, dispatchedBy);
+      return workerRunLeaseExpiry(env.db, scope, input.runId, worker.worker, now, dispatchedBy);
     };
     if ((await verify()) === null) {
       return { held: false, reason: 'the lease is no longer held' };
@@ -28,7 +29,7 @@ function leasedRun<Input extends WorkerRunIdentity, Result>(
     if (finish === 'committed') return result;
     if (finish === 'renew') {
       const now = worker.clock();
-      if (!(await renewRunLease(env.db, scope, input.runId, worker.tokenId, now + WORKER_LEASE_MS, now, dispatchedBy)))
+      if (!(await renewRunLease(env.db, scope, input.runId, worker.worker, now + WORKER_LEASE_MS, now, dispatchedBy)))
         return { held: false, reason: 'the lease is no longer held' };
     } else if ((await verify()) === null) return { held: false, reason: 'the lease is no longer held' };
     return result;

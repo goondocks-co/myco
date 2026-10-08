@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 /**
@@ -77,7 +78,7 @@ async function rig() {
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's1', 'p1', 'e1', 'add a retry to the runner', 'user', 'h1', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
     const asked = await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now, origin: ORIGIN });
     expect(asked.outcome).toBe('queued');
-    const claimed = await claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
+    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) throw new Error('the titling run was not claimed');
     return claimed.run;
@@ -88,14 +89,14 @@ async function rig() {
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's2', 'p2', 'e2', 'rename the thing', 'user', 'h2', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
     const asked = await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's2', now, origin: ORIGIN }, { mode: 'owner', by: 'mem_worker' });
     expect(asked.outcome).toBe('queued');
-    const claimed = await claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
+    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) throw new Error('the re-title run was not claimed');
     return claimed.run;
   };
   /** The worker's own report that the harness ended its turn. */
   const workerEnds = (runId: string, status: 'completed' | 'failed', now: number, error?: string) =>
-    endLeasedRun(e.serverEnv, { tokenId: workerToken, now }, { projectId: 'proj_1', runId, status, ...(error === undefined ? {} : { error }) });
+    endLeasedRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), now }, { projectId: 'proj_1', runId, status, ...(error === undefined ? {} : { error }) });
   return { e, workerToken, asRun, outcome, calls, claimedTitling, claimedRetitle, workerEnds, verifyOutcome };
 }
 
@@ -128,7 +129,7 @@ describe('the context a claimed run carries', () => {
        VALUES ('proj_1', 'run_x', 'myco-agent', ?, 'queued', ?, 'worker', ?, ?, 'read the prompts')`,
       [EXTRACTION_TASK, NOW, JSON.stringify({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: 900 }), JSON.stringify({ timeoutSeconds: 900, input_hash: 'a'.repeat(64), counts: { page: 20 } })],
     );
-    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
 
@@ -230,7 +231,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     r.e.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at) VALUES ('proj_1', 'resp3', 's3', 'p3', 'e3r', 'The lease renewal re-claims it; wrap only the claim call.', 'hr3', ?, 'tok_1', ?)`, [NOW - 4000, NOW - 4000]);
     const asked = await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
     expect(asked).toMatchObject({ dispatched: true, queued: true });
-    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     const run = claimed.run;
@@ -275,7 +276,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     r.e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
     r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
     expect(await dispatchTask(r.e.serverEnv, SEEDING_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW)).toMatchObject({ dispatched: true, queued: true });
-    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     const run = claimed.run;
@@ -305,7 +306,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     r.e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
     r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
     queue('run_seed_a', NOW);
-    const a = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    const a = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     if (!a.claimed) throw new Error('not claimed');
     await r.asRun(a.run.runToken, 'myco_spores', { op: 'save', type: 'architecture', content: 'One core.', agent_line: 'One core, two doors.' });
     await r.asRun(a.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: SEEDING_REPORT_ACTION, summary: 'seeded' });
@@ -313,7 +314,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(r.outcome(a.run.id)).toEqual({ status: 'completed', error: null });
     expect((await r.verifyOutcome(a.run.id)).spores).toHaveLength(1);
     queue('run_seed_b', NOW + 3);
-    const b = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 4 });
+    const b = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 4 });
     if (!b.claimed) throw new Error('not claimed');
     // A skip over a Project with one spore is the model's word; the server reads it unseeded.
     await r.asRun(b.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'already seeded' });
@@ -324,7 +325,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
-    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     if (!claimed.claimed) throw new Error('not claimed');
     expect(await r.asRun(claimed.run.runToken, 'myco_run', { op: 'agents_block', block: 'Generated rule' })).toEqual({ failed: 'Unknown tool: myco_run' });
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_state WHERE key = 'agents_block'`).get()).toEqual({ n: 0 });
@@ -335,7 +336,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
-    const claimed = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     expect((await r.asRun(claimed.run.runToken, 'myco_run_prompts', { op: 'unprocessed', include_text: true })).prompts).toEqual([]);
@@ -347,7 +348,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's4', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
     r.e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's4', 'p4', 'e4', 'an unread prompt', 'user', 'h4', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
     await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW + 4);
-    const second = await claimNextRun(r.e.serverEnv, { tokenId: r.workerToken, machineId: 'm1', harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 5 });
+    const second = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 5 });
     if (!second.claimed) throw new Error('the second pass was not claimed');
     await r.asRun(second.run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: RUN_SKIP_ACTION, summary: 'nothing to read' });
     expect(await r.workerEnds(second.run.id, 'completed', NOW + 6)).toEqual({ ended: true, status: 'failed' });
@@ -361,7 +362,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     ] as const) {
       const r = await rig();
       const run = await r.claimedTitling(NOW + 1);
-      expect(await endLeasedRun(r.e.serverEnv, { tokenId: r.workerToken, now: NOW + 3 }, { projectId: 'proj_1', runId: run.id, status: 'failed', error }))
+      expect(await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), now: NOW + 3 }, { projectId: 'proj_1', runId: run.id, status: 'failed', error }))
         .toEqual({ ended: true, status: 'failed' });
       expect(r.outcome(run.id)).toEqual({ status: 'failed', error: kept });
     }

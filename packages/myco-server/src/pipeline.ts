@@ -26,6 +26,8 @@ import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } fro
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
 import { memberByGithubId } from './auth/identity-link.js';
+import { activateRunnerSuccessor, authenticateRunner, detectRunnerReplay, revokeRunnerLineage, RUNNER_LINEAGE_IDLE_MS, RUNNER_TOKEN_PATTERN, runnerSubject, runnerWriteStore, RunnerWriteRefused, type RunnerAuth } from './auth/runners.js';
+import type { WorkerPrincipal } from './core/worker-lease.js';
 
 /**
  * The platform's error recogniser, read defensively.
@@ -85,6 +87,14 @@ const deploymentScoped = (route: MemberRoute): route is DeploymentRoute => 'scop
 /** A route answered on the presented credential alone, with no Project read or resolved. */
 type CredentialRoute = Extract<MemberRoute, { scope: 'credential' }>;
 const credentialScoped = (route: MemberRoute): route is CredentialRoute => 'scope' in route && route.scope === 'credential';
+/** A route a runner bearer reaches: a runner's own route, or a Deployment-scoped worker route whose declaration names the runner subject. */
+type RunnerRoute = Extract<Route, { auth: 'runner' }>;
+const admitsRunner = (route: Route): route is RunnerRoute | DeploymentRoute =>
+  route.auth === 'runner' || (route.auth === 'member' && deploymentScoped(route) && route.authorization.subjects.includes('runner'));
+/** A server-side failure on a runner-reachable route, in the shape every such route answers. */
+const runnerUnavailable = (): Response => refusalResponse('persisted', UNAVAILABLE, UNAVAILABLE, 'retryable');
+/** What a runner credential is told when it no longer carries authority for the route it asked. */
+export const RUNNER_SCOPE_REFUSAL = 'this runner credential carries no authority for that request';
 /** A member route that also admits an External Agent grant. */
 type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
 const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
@@ -245,15 +255,16 @@ function refuseGrant(auth: GrantAuth, route: MemberRoute, reason: string, classi
   return refusalResponse(shapeOf(route), classifier, reason, 'terminal');
 }
 
-type Presented = { kind: 'member'; token: string } | { kind: 'grant'; key: string };
+type Presented = { kind: 'member'; token: string } | { kind: 'grant'; key: string } | { kind: 'runner'; token: string };
 
-/** The presented credential by its shape — a minted member token or an External Agent grant key — or null for anything else. The two shapes are disjoint. The scheme name is case-insensitive. */
+/** The presented credential by its shape — a minted member token, an External Agent grant key or a runner bearer — or null for anything else. The three shapes are disjoint. The scheme name is case-insensitive. */
 function credential(request: Request): Presented | null {
   const header = request.headers.get('authorization');
   const match = header === null ? null : /^bearer\s+(\S+)$/i.exec(header);
   if (!match) return null;
   if (MEMBER_TOKEN_PATTERN.test(match[1])) return { kind: 'member', token: match[1] };
   if (GRANT_KEY_PATTERN.test(match[1])) return { kind: 'grant', key: match[1] };
+  if (RUNNER_TOKEN_PATTERN.test(match[1])) return { kind: 'runner', token: match[1] };
   return null;
 }
 
@@ -286,7 +297,7 @@ function machineContractHeaders(request: Request): { machineSettingsFeature?: tr
 }
 
 /** Order: route → public → source identity → credential shape → authenticate → successor activation (a successor's first authenticated use takes over its predecessor's held bytes and revokes it, once) → token limit → protocol window → route kind → machine identity (a token without one is refused every write, on every member route, in the route's shape) → project header (a request naming no Project in grammar is refused before its body is read) → body (json routes: bounded read; stream routes: content-length required and capped, body left to the handler) → project resolution (the first write on the path, so it runs after every refusal the caller cannot retry into success; a Deployment at its Project ceiling answers 503 with retry-after rather than a refusal: nothing the caller sends differs next time) → handler. The source bucket is charged only when a request ends without a member identity: that refusal answers 429 once the bucket is exhausted and 401 before. An authenticated member never charges the source bucket and is never refused by source, on matched and unmatched routes alike. After authentication, a failure of the caller's own request answers 200 with a reason and is never retried; a failure on the server's side — a limiter, a handler, or the storage behind it — answers 503 with retry-after and is retried, in the route's own refusal shape once the route is known. Every response after authentication carries the server's protocol number; responses before it do not. */
-function protocolAdmitted(route: Route, kind: 'public' | 'enrollment'): boolean {
+function protocolAdmitted(route: Route, kind: 'public' | 'enrollment' | 'runner-registration'): boolean {
   return authorizeDeclaration({ kind, deploymentId: 'protocol', transport: 'http', live: true }, route.authorization, {}, { kind: 'protocol', deploymentId: 'protocol', exists: true });
 }
 
@@ -320,7 +331,7 @@ export function createServer(deps: ServerDeps) {
     // cost of one conditional update each time.
     if (matched?.route.auth === 'enroll') {
       if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
-      if (!protocolAdmitted(matched.route, 'enrollment')) return unauthorized();
+      if (!protocolAdmitted(matched.route, matched.route.subject ?? 'enrollment')) return unauthorized();
       const bodyBound = (matched.route as { maxBodyBytes?: number }).maxBodyBytes ?? MAX_BODY_BYTES;
       const bounded = await boundedRequest(request, bodyBound);
       if (bounded === null) return refuseOversized(bodyBound);
@@ -415,6 +426,7 @@ export function createServer(deps: ServerDeps) {
     const credentialPresented = credential(request);
     if (!credentialPresented) return anonymous();
     if (credentialPresented.kind === 'grant') return grant(request, env, credentialPresented.key, matched, url, now, source, anonymous);
+    if (credentialPresented.kind === 'runner') return runner(request, env, credentialPresented.token, matched, url, now, source, anonymous);
     const presented = credentialPresented.token;
 
     let auth: MemberAuth | null;
@@ -423,8 +435,7 @@ export function createServer(deps: ServerDeps) {
     } catch (err) {
       if (!(err instanceof SchemaMismatchError)) throw err;
       emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
-      if (!matched) return unavailable();
-      return unavailableFor(matched.route);
+      return matched?.route.auth === 'member' ? unavailableFor(matched.route) : unavailable();
     }
     if (!auth) {
       const digest = await sha256Hex(presented);
@@ -692,10 +703,82 @@ export function createServer(deps: ServerDeps) {
         if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
-      return await route.deployment({ ...env, db: memberWriteStore(env.db, auth.memberId, 'admin') }, { memberId: auth.memberId, machineId, tokenId: auth.tokenId, body: body.text, now, clock: deps.now });
+      const worker: WorkerPrincipal = { kind: 'member', tokenId: auth.tokenId, machineId };
+      return await route.deployment({ ...env, db: memberWriteStore(env.db, auth.memberId, 'admin') }, { worker, body: body.text, now, clock: deps.now });
     } catch (err) {
       if (err instanceof MemberWriteRefused) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       return failed(env, auth, route, err);
+    }
+  }
+
+  /**
+   * A runner bearer: authenticated against runner credentials alone, admitted only to a route only a runner reaches
+   * or a Deployment-scoped worker route whose declaration names the runner subject, and refused everywhere else as
+   * an unknown credential. A superseded credential presented to the rotation route inside its idle bound ends every
+   * credential of its runner.
+   */
+  async function runner(
+    request: Request, env: ServerEnv, token: string, matched: ReturnType<typeof matchRoute>, url: URL, now: number, source: string,
+    anonymous: () => Promise<Response>,
+  ): Promise<Response> {
+    const digest = await sha256Hex(token);
+    const rotation = matched?.route.auth === 'runner' && matched.route.admitsLapsed === true;
+    let auth: RunnerAuth | null;
+    try {
+      auth = await authenticateRunner(env.db, digest, now, rotation ? 'lapsed' : 'live');
+    } catch (err) {
+      if (!(err instanceof SchemaMismatchError)) throw err;
+      emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
+      return matched && admitsRunner(matched.route) ? runnerUnavailable() : unavailable();
+    }
+    if (auth === null) {
+      emit({ kind: 'auth_failed', credential: 'runner', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
+      const replay = await detectRunnerReplay(env.db, digest);
+      if (replay !== null && rotation && replay.issuedAt + RUNNER_LINEAGE_IDLE_MS > now) {
+        const revoked = await revokeRunnerLineage(env.db, replay, now);
+        emit({ kind: 'runner_lineage_replayed', runnerId: replay.runnerId, tokenId: replay.credentialId, revoked });
+        return (await env.sourceLimit.limit({ key: source })).success ? replayRevoked() : limited();
+      }
+      return anonymous();
+    }
+    try {
+      return withProtocol(await admittedRunner(request, env, auth, matched, url, now));
+    } catch (err) {
+      emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), runnerId: auth.runnerId, tokenId: auth.credentialId });
+      return withProtocol(matched && admitsRunner(matched.route) ? runnerUnavailable() : unavailable());
+    }
+  }
+
+  /** Order: successor activation → token limit → protocol window → route admission → body → declared authorization → handler under the runner write guard. */
+  async function admittedRunner(request: Request, env: ServerEnv, auth: RunnerAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
+    if (auth.predecessorId !== null && auth.firstUsedAt === null) {
+      await activateRunnerSuccessor(env.db, { ...auth, predecessorId: auth.predecessorId }, now);
+      emit({ kind: 'successor_activated', runnerId: auth.runnerId, tokenId: auth.credentialId, predecessorId: auth.predecessorId });
+    }
+    if (!(await env.tokenLimit.limit({ key: auth.credentialId })).success) return limited();
+    if (!protocolSupported(request)) return unsupportedProtocol();
+    if (!matched) return wrongMethod(request.method, url.pathname, admitsRunner) ?? unauthorized();
+    const { route, params } = matched;
+    if (!admitsRunner(route)) return unauthorized();
+    const refuseRunner = (reason: string, classifier: Classifier): Response => {
+      emit({ kind: 'ingest_refused', runnerId: auth.runnerId, tokenId: auth.credentialId, reason: classifier });
+      return refusalResponse('persisted', classifier, reason, 'terminal');
+    };
+    const body = await readBoundedBody(request, MAX_BODY_BYTES);
+    if (!body.ok) return refuseRunner(body.reason, 'body_cap');
+    const expiry = route.auth === 'runner' && route.admitsLapsed === true ? 'lapsed' : 'live';
+    const subject = await runnerSubject(env.db, auth, now, expiry);
+    if (!await authorizeHttp(env, route.authorization, subject, { body: body.text, params })) {
+      if (!subject.live && ['/worker/lease', '/worker/end', '/worker/repository'].includes(route.path)) return Response.json({ persisted: true, [route.path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
+      return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
+    }
+    if (route.auth === 'runner') return await route.runner(env, { auth, body: body.text, now, origin: url.origin });
+    const worker: WorkerPrincipal = { kind: 'runner', runnerId: auth.runnerId, credentialId: auth.credentialId, machineId: null };
+    try {
+      return await route.deployment({ ...env, db: runnerWriteStore(env.db, auth.credentialId) }, { worker, body: body.text, now, clock: deps.now });
+    } catch (err) {
+      if (err instanceof RunnerWriteRefused) return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
+      throw err;
     }
   }
 

@@ -33,7 +33,7 @@ function boundaryViolations(source: string, module: string): string[] {
   const registryAliases = new Set(['entry', 'route']);
   const blobCalls = new Set<string>();
   const dispatchCalls = new Set<string>();
-  const dispatchProperties = new Set(['handler', 'credential', 'deployment', 'unbound', 'grant', 'run']);
+  const dispatchProperties = new Set(['handler', 'credential', 'deployment', 'unbound', 'grant', 'run', 'runner']);
   const unwrap = (node: ts.Expression): ts.Expression => {
     while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAsExpression(node)
       || ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node)) node = node.expression;
@@ -156,7 +156,7 @@ function validDeclaration(where: string, declaration: AuthorizationDeclaration |
   expect(declaration.subjects.length).toBeGreaterThan(0);
   expect(new Set(declaration.subjects).size).toBe(declaration.subjects.length);
   for (const subject of declaration.subjects) expect(SUBJECT_KINDS.includes(subject)).toBe(true);
-  expect(['deployment', 'project', 'machine', 'credential', 'member', 'run', 'raw', 'protocol', 'enrollment', 'self-enrollment']).toContain(declaration.resolver);
+  expect(['deployment', 'project', 'machine', 'credential', 'member', 'run', 'raw', 'protocol', 'enrollment', 'self-enrollment', 'runner']).toContain(declaration.resolver);
   expect(RESOURCE_RESOLVERS[declaration.resource]).toContain(declaration.resolver);
   const actions = typeof declaration.action === 'string' ? [declaration.action] : declaration.action.actions;
   expect(actions.length).toBeGreaterThan(0);
@@ -200,6 +200,27 @@ describe('authorization registry and bypass boundary', () => {
             expect(entry.authorization.resource).toBe('protocol');
             expect(entry.authorization.action).toBe('never');
           }
+        }
+      }
+    }
+  });
+
+  it('admits a runner on the worker control plane and its own routes alone, a registration on its two enrollment routes alone, and neither on any MCP operation', () => {
+    const declaring = (kind: 'runner' | 'runner-registration') => ROUTES
+      .filter((route) => route.authorization.subjects.includes(kind)).map((route) => `${route.method} ${route.path}`).sort();
+    expect(declaring('runner')).toEqual([
+      'POST /runners/contact', 'POST /runners/rotate',
+      'POST /worker/claim', 'POST /worker/end', 'POST /worker/lease', 'POST /worker/models', 'POST /worker/repository', 'POST /worker/steps',
+    ]);
+    expect(declaring('runner-registration')).toEqual(['POST /auth/runner/poll', 'POST /auth/runner/start']);
+    for (const route of ROUTES.filter((r) => r.authorization.subjects.includes('runner'))) {
+      expect({ route: route.path, resource: route.authorization.resource }).toEqual({ route: route.path, resource: route.path.startsWith('/worker/') ? 'queue' : 'runner' });
+    }
+    for (const registry of [TOOL_REGISTRY, RUN_TOOL_REGISTRY]) {
+      for (const [tool, entry] of Object.entries(registry)) {
+        for (const [op, operation] of Object.entries(entry.ops)) {
+          const subjects = operation.authorization.subjects.filter((subject) => subject === 'runner' || subject === 'runner-registration');
+          expect({ tool, op, subjects }).toEqual({ tool, op, subjects: [] });
         }
       }
     }

@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -27,7 +28,7 @@ for (const path of paths) {
         f.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
         f.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
           VALUES ('proj_1','live-run','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
-        const claimed = await claimNextRun(f.serverEnv, { tokenId: issued.tokenId, machineId: 'worker-machine', harnesses: [offeredHarness('claude-code')], now });
+        const claimed = await claimNextRun(f.serverEnv, { principal: legacyWorker(issued.tokenId, 'worker-machine'), harnesses: [offeredHarness('claude-code')], now });
         if (!claimed.claimed) throw new Error('fixture run was not claimed');
         if (path === '/worker/repository') {
           f.sqlite.run(`INSERT INTO project_repositories (project_id,revision,url,branch,updated_at,updated_by) VALUES ('proj_1','r1','https://example.test/source','main',?,'fixture')`, [now]);

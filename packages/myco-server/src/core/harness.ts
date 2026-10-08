@@ -30,11 +30,13 @@ import { projectExists } from '../read/sessions.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
-import { workerContactStatement, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
-import { catalogResolution, pruneModelCatalogs } from './model-catalogs.js';
+import { runnerContactStatement, workerContactStatement, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
+import { catalogResolution, pruneModelCatalogs, type CatalogOwner } from './model-catalogs.js';
+import { workerKey, type WorkerPrincipal } from './worker-lease.js';
+import { runnerAcceptsWork } from '../auth/runners.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { workerClaimPredicate, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { workerClaimAdmission, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
@@ -828,7 +830,7 @@ export interface ClaimedRun extends ClaimedRunRow {
 
 export type ClaimOutcome =
   | { claimed: true; run: ClaimedRun }
-  | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' | 'at_limit' };
+  | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' | 'at_limit' | 'paused' };
 
 /**
  * The key a chosen agent's run is handed: nothing for a worker's own sign-in,
@@ -841,6 +843,13 @@ const claimLogin = (env: ServerEnv): LoginStep<Record<string, string>> => async 
   const credentialEnv = key === null ? {} : credentialEnvFor(harness, key);
   return Object.keys(credentialEnv).length === 0 ? { reason: credentialUnavailable(harness) } : { login: credentialEnv };
 };
+
+/** A runner's run is always handed its harness's own sign-in on that runner: no stored login is opened for it. */
+const RUNNER_LOGIN: LoginStep<Record<string, string>> = async () => ({ login: {} });
+
+/** The executor a telemetry event names: a legacy worker's member credential, or a runner. */
+const workerTelemetry = (worker: WorkerPrincipal): { tokenId: string } | { runnerId: string } =>
+  worker.kind === 'member' ? { tokenId: worker.tokenId } : { runnerId: worker.runnerId };
 
 /**
  * Name on each queued repository run the worker capability it waits for, while no worker heard from lately
@@ -874,17 +883,17 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
 type SelectedExecution = { harness: string; profile: ExecutionProfile; credentialEnv: Record<string, string> };
 
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
-export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
-  const { selected, reason } = await selectExecution(env, task, offers, settings, claimLogin(env));
+export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
+  const { selected, reason } = await selectExecution(env, task, offers, settings, worker?.kind === 'runner' ? RUNNER_LOGIN : claimLogin(env));
   return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
 }
 
 /** Keep profile holders based on the recent fleet's offers and current Settings. */
-async function recordProfileHolds(env: ServerEnv, worker: { tokenId: string; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number }, settings: ReadonlyMap<string, string>): Promise<void> {
+async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number }, settings: ReadonlyMap<string, string>): Promise<void> {
   const reports = (await recentWorkerReports(env.db, worker.now))
-    .filter((report) => report.credentialId !== worker.tokenId)
-    .map((report) => ({ offers: report.offers, capabilities: report.capabilities }));
-  reports.push({ offers: [...worker.harnesses], capabilities: [...(worker.capabilities ?? [])] });
+    .filter((report) => report.credentialId !== workerKey(worker.principal))
+    .map((report) => ({ offers: report.offers, capabilities: report.capabilities, runner: report.runner }));
+  reports.push({ offers: [...worker.harnesses], capabilities: [...(worker.capabilities ?? [])], runner: worker.principal.kind === 'runner' });
   for (const task of OUTCOME_TASKS) {
     const tierRefusal = taskTierRefusal(task, settings);
     if (tierRefusal !== null) {
@@ -898,7 +907,7 @@ async function recordProfileHolds(env: ServerEnv, worker: { tokenId: string; har
 
 /** What `reports` would run `task` under at a claim now, or the holder a queued run of it waits under (`fleetSelection`). */
 export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; holder: string }> {
-  const { selected, holder } = await fleetSelection(env, task, reports, settings, claimLogin(env));
+  const { selected, holder } = await fleetSelection(env, task, reports, settings, (report) => (report.runner === true ? RUNNER_LOGIN : claimLogin(env)));
   return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, holder };
 }
 
@@ -913,8 +922,9 @@ export async function fleetExecution(env: ServerEnv, task: string, reports: read
  */
 export async function claimNextRun(
   env: ServerEnv,
-  worker: { tokenId: string; machineId: string; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number },
+  worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number },
 ): Promise<ClaimOutcome> {
+  if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
   // A task is offered only to a worker that reports everything it needs.
   const reported = worker.capabilities ?? [];
   const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
@@ -926,7 +936,7 @@ export async function claimNextRun(
   let chosen: SelectedExecution | null = null;
   let held = false;
   while (candidate !== null) {
-    const { selected } = await selectWorkerExecution(env, candidate.task, worker.harnesses, settings);
+    const { selected } = await selectWorkerExecution(env, candidate.task, worker.harnesses, settings, worker.principal);
     chosen = selected;
     if (chosen !== null) break;
     held = true;
@@ -936,7 +946,8 @@ export async function claimNextRun(
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : 'no_work' };
   const { harness, credentialEnv } = chosen;
   // What the claiming machine's harness listed the requested model as resolving to, so the run's model is judged against it.
-  const resolvesTo = await catalogResolution(env.db, worker.machineId, harness, chosen.profile.model, worker.now);
+  const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
+  const resolvesTo = await catalogResolution(env.db, catalogOwner, harness, chosen.profile.model, worker.now);
   const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
 
   // A task whose prompt the server builds has it built again here: the run
@@ -975,7 +986,7 @@ export async function claimNextRun(
 
   const limits = await readDispatchLimits(env);
   const admission = { limits, now: worker.now, ...(capability === null ? {} : { capability }) };
-  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false, gate: workerClaimPredicate(candidate, admission) });
+  const mint = await mintInsert(env.db, { memberId: HARNESS_MEMBER_ID, machineId: HARNESS_MACHINE_ID }, worker.now, null, NO_RUNTIME_CLAIMS, { rotates: false, gate: workerClaimAdmission(candidate, admission, worker.principal, worker.now) });
   const minted = mint.issued;
   const setup = [
     ensureMemberStatement(env.db, HARNESS_MEMBER_ID, worker.now, 'member', undefined, 'harness runtime'),
@@ -987,10 +998,11 @@ export async function claimNextRun(
   // held by a limit stays queued with that limit recorded on it, and two
   // workers deciding at once cannot both pass a limit of one.
   const row = await claimQueuedRun(env.db, candidate, {
-    dispatchedBy: minted.tokenId, leasedBy: worker.tokenId, machineId: worker.machineId, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
+    dispatchedBy: minted.tokenId, worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now,
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   }, { ...admission, setup });
   if (row === null) {
+    if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
     if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
     if (held === null) return { claimed: false, reason: 'lost_race' };
@@ -998,7 +1010,7 @@ export async function claimNextRun(
     return { claimed: false, reason: 'at_limit' };
   }
 
-  emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, tokenId: worker.tokenId });
+  emit({ kind: 'worker_claimed', runId: row.id, task: row.task, projectId: row.projectId, harness, ...workerTelemetry(worker.principal) });
   return {
     claimed: true,
     run: {
@@ -1018,10 +1030,14 @@ export async function claimNextRun(
 }
 
 /** Extend a lease this worker still holds, on the attempt it names when it names one. `held: false` says the lease is gone, and the worker stops driving a run it no longer owns. */
-export async function renewLease(env: ServerEnv, worker: { tokenId: string; machineId?: string | null; now: number }, run: { projectId: string; runId: string; attemptId?: string }): Promise<{ held: boolean; expiresAt: number }> {
+export async function renewLease(env: ServerEnv, worker: { principal: WorkerPrincipal; now: number }, run: { projectId: string; runId: string; attemptId?: string }): Promise<{ held: boolean; expiresAt: number }> {
   const expiresAt = worker.now + WORKER_LEASE_MS;
-  const contact = await workerContactStatement(env.db, { credentialId: worker.tokenId, machineId: worker.machineId ?? null, now: worker.now }, run);
-  const stored = await renewRunLeaseExpiry(env.db, { projectId: run.projectId }, run.runId, worker.tokenId, expiresAt, worker.now, run.attemptId, contact);
+  const { principal } = worker;
+  if (principal.kind === 'runner' && run.attemptId === undefined) return { held: false, expiresAt };
+  const contact = principal.kind === 'member'
+    ? await workerContactStatement(env.db, { credentialId: principal.tokenId, machineId: principal.machineId, now: worker.now }, run)
+    : runnerContactStatement(env.db, { runnerId: principal.runnerId, now: worker.now }, run, principal);
+  const stored = await renewRunLeaseExpiry(env.db, { projectId: run.projectId }, run.runId, principal, expiresAt, worker.now, run.attemptId, contact);
   return { held: stored !== null, expiresAt: stored ?? expiresAt };
 }
 
@@ -1046,17 +1062,17 @@ export async function renewLease(env: ServerEnv, worker: { tokenId: string; mach
  */
 export async function endLeasedRun(
   env: ServerEnv,
-  worker: { tokenId: string; now: number; clock?: () => number },
+  worker: { principal: WorkerPrincipal; now: number; clock?: () => number },
   run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; identity?: ExecutionIdentity; accountingVersion?: number; attemptId?: string; refusal?: ProfileRefusal | null },
 ): Promise<{ ended: boolean; reason?: string; status?: 'completed' | 'failed' }> {
   const clock = worker.clock ?? (() => worker.now);
-  const prepared = await prepareWorkerEnd(env, { tokenId: worker.tokenId, clock }, run);
+  const prepared = await prepareWorkerEnd(env, { worker: worker.principal, clock }, run);
   if ('held' in prepared) return { ended: false, reason: prepared.reason };
   const { row, unmet, status, update, errorCode, context } = prepared;
   const now = clock();
   const statement = runUpdateStatement(env.db, { projectId: run.projectId }, run.runId, {
     ...update, completed_at: now,
-  }, { tokenId: worker.tokenId, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
+  }, { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
   if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
   const [changed, retired] = await env.db.batch([statement, revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, {
     sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')}))`,
@@ -1065,9 +1081,9 @@ export async function endLeasedRun(
   if (changed!.meta.changes === 0) return { ended: false, reason: 'the lease is no longer held' };
   emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.meta.changes === 1 });
   if (unmet !== null) {
-    emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, tokenId: worker.tokenId });
+    emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, ...workerTelemetry(worker.principal) });
   }
-  emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status, tokenId: worker.tokenId });
+  emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status, ...workerTelemetry(worker.principal) });
   return { ended: true, status };
 }
 
@@ -1082,10 +1098,11 @@ export async function endLeasedRun(
 export async function expireLeases(env: ServerEnv, now: number): Promise<number> {
   let requeued = 0;
   for (const lapsed of await lapsedLeases(env.db, now, DRAIN_BATCH)) {
-    if (!(await requeueLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.leasedBy, now))) continue;
+    if (!(await requeueLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.owner, now))) continue;
     await retireDispatchCredential(env, lapsed.dispatchedBy, now);
     requeued += 1;
-    emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId, tokenId: lapsed.leasedBy });
+    emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId,
+      ...(lapsed.owner?.kind === 'runner' ? { runnerId: lapsed.owner.runnerId } : { tokenId: lapsed.owner?.leasedBy ?? null }) });
   }
   // The same sweep forgets a worker unheard from past the contact horizon,
   // bounded like the lease batch above. A worker holding a live lease keeps its

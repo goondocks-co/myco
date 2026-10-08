@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
@@ -21,7 +22,7 @@ async function rig(context: string | null = JSON.stringify({ timeoutSeconds: 60 
   [SCOPE.projectId, RUN, NOW, resumedAt, context, worker.tokenId, NOW + 1_000_000, worker.tokenId]);
   const deadline = runDeadline((await getRun(e.db, SCOPE, RUN))!);
   const expiry = () => (e.sqlite.query('SELECT lease_expires_at AS expiry FROM agent_runs WHERE id=?').get(RUN) as { expiry: number }).expiry;
-  const renew = (at: number, expiresAt: number) => renewRunLease(e.db, SCOPE, RUN, worker.tokenId, expiresAt, at, worker.tokenId);
+  const renew = (at: number, expiresAt: number) => renewRunLease(e.db, SCOPE, RUN, legacyWorker(worker.tokenId, 'm1'), expiresAt, at, worker.tokenId);
   return { e, deadline, expiry, renew, worker };
 }
 
@@ -29,7 +30,7 @@ describe('a worker lease is bounded by its run deadline', () => {
   it('answers the expiry the shared renewal actually stored', async () => {
     const r = await rig();
     try {
-      expect(await renewLease(r.e.serverEnv, { tokenId: r.worker.tokenId, now: r.deadline - 1 }, { projectId: SCOPE.projectId, runId: RUN, attemptId: r.worker.tokenId }))
+      expect(await renewLease(r.e.serverEnv, { principal: legacyWorker(r.worker.tokenId, 'm1'), now: r.deadline - 1 }, { projectId: SCOPE.projectId, runId: RUN, attemptId: r.worker.tokenId }))
         .toEqual({ held: true, expiresAt: r.deadline });
     } finally { r.e.sqlite.close(); }
   });
@@ -125,7 +126,7 @@ describe('a worker lease is bounded by its run deadline', () => {
       return results;
     };
     try {
-      const outcome = await renewLease(r.e.serverEnv, { tokenId: r.worker.tokenId, now: NOW + 1 }, { projectId: SCOPE.projectId, runId: RUN, attemptId: r.worker.tokenId });
+      const outcome = await renewLease(r.e.serverEnv, { principal: legacyWorker(r.worker.tokenId, 'm1'), now: NOW + 1 }, { projectId: SCOPE.projectId, runId: RUN, attemptId: r.worker.tokenId });
       expect(outcome).toEqual({ held: true, expiresAt: committedExpiry! });
       expect(outcome.expiresAt).not.toBe(r.expiry());
     } finally { r.e.sqlite.close(); }

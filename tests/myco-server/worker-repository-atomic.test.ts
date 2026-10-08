@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { expect, it } from 'bun:test';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
@@ -29,7 +30,7 @@ async function rig(onSql: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sq
   await repositories.save('proj_1', { ...SOURCE, revision: null, credential: { username: 'reader', token: 'synthetic-source-secret' } }, MEMBER, now);
   const dispatch = await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: 'https://s', actor: MEMBER }, now);
   if (!dispatch.dispatched) throw new Error('fixture map run was not dispatched');
-  const claimed = await claimNextRun(e.serverEnv, { tokenId: credential.tokenId, machineId: 'm1', harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
+  const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(credential.tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
   if (!claimed.claimed) throw new Error('fixture map run was not claimed');
   const request = (body: Record<string, unknown>) => worker.fetch(new Request('https://s/worker/repository', {
     method: 'POST', headers: memberHeaders(credential.token), body: JSON.stringify({ projectId: 'proj_1', runId: claimed.run.id, ...body }),
@@ -101,7 +102,7 @@ for (const task of ['map', 'repository', 'credential'] as const) {
       const env = { ...r.e.serverEnv, db: memberWriteStore(r.e.db, MEMBER, 'admin') };
       const before = r.state().context;
       armed = true;
-      const result = await prepareWorkerRepository(env, { tokenId: r.credential.tokenId, clock: () => stale }, {
+      const result = await prepareWorkerRepository(env, { worker: legacyWorker(r.credential.tokenId, 'm1'), clock: () => stale }, {
         projectId: 'proj_1', runId: r.runId, body: task === 'credential' ? {} : { ...SOURCE, commit: COMMIT },
       });
       expect(expired).toBe(true);

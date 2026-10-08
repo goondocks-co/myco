@@ -88,7 +88,7 @@ describe('catalog availability from current machine offers', () => {
   it('admits an explicit report when another credential changes the machine after its throttle snapshot', async () => {
     const r = await rig();
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
-    await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
+    await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     const report = (credentialId: string, authenticated: boolean) => recordWorkerContact(r.db, {
       credentialId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated }], capabilities: [], now: r.now,
     });
@@ -123,7 +123,7 @@ describe('catalog availability from current machine offers', () => {
   it('orders conflicting reports in the same millisecond and reauthenticates across another credential’s throttle conflict', async () => {
     const r = await rig();
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
-    await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
+    await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     const report = (credentialId: string, authenticated: boolean) => recordWorkerContact(r.db, {
       credentialId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated }], capabilities: [], now: r.now,
     });
@@ -145,7 +145,7 @@ describe('catalog availability from current machine offers', () => {
     const r = await rig();
     r.sqlite.run(`INSERT OR IGNORE INTO machine_claims (machine_id,member_id,claimed_at) VALUES ('machine-1','mem_machine_1',?)`, [r.now]);
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
-    await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
+    await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     const machine = async () => {
       const response = await worker.fetch(await asOwner(r.db, '/api/machines'), r.env);
       expect(response.status).toBe(200);
@@ -166,7 +166,7 @@ describe('catalog availability from current machine offers', () => {
   it('keeps contact liveness monotonic and outcome writes from reordering explicit offers', async () => {
     const r = await rig();
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
-    await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
+    await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     await recordWorkerContact(r.db, { credentialId: r.token.tokenId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], now: r.now });
     await recordWorkerContact(r.db, { credentialId: successor.tokenId, machineId: 'machine-1', offers: [], capabilities: [], now: r.now + 1 });
     await recordWorkerContact(r.db, { credentialId: r.token.tokenId, machineId: 'machine-1', now: r.now + 60_000 });
@@ -184,7 +184,7 @@ describe('catalog availability from current machine offers', () => {
       expect(answer.claimed).toBe(false);
     };
     const list = () => r.json(memberPost(r.token.token, { catalog: catalog(r.now) }, '/worker/models'));
-    const resolution = () => catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', Date.now());
+    const resolution = () => catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', Date.now());
     expect((await list()).recorded).toBe(true);
     expect(await r.models()).toHaveLength(1);
     expect(await resolution()).toBe('claude-opus-fixture');
@@ -212,7 +212,7 @@ describe('catalog availability from current machine offers', () => {
     const renewedUnrelated = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-2' }, r.now);
     const unknown = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'unknown-machine' }, r.now);
     for (const machineId of ['machine-1', 'machine-2', 'unknown-machine', 'initial-machine']) {
-      await recordModelCatalog(r.db, { machineId, catalog: catalog(r.now), now: r.now });
+      await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId }, catalog: catalog(r.now), now: r.now });
     }
     await recordWorkerContact(r.db, { credentialId: r.token.tokenId, machineId: 'machine-1', offers: [], capabilities: [], now: r.now + 1 });
     await recordWorkerContact(r.db, { credentialId: successor.tokenId, machineId: 'machine-1', now: r.now + 2 });
@@ -220,27 +220,27 @@ describe('catalog availability from current machine offers', () => {
     await recordWorkerContact(r.db, { credentialId: unknown.tokenId, machineId: 'unknown-machine', now: r.now + 4 });
     await recordWorkerContact(r.db, { credentialId: renewedUnrelated.tokenId, machineId: 'machine-2', now: r.now + 5 });
     expect(await readModelCatalogs(r.db, r.now + 10)).toHaveLength(2);
-    expect(await catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', r.now + 10)).toBeUndefined();
-    expect(await catalogResolution(r.db, 'machine-2', 'claude-code', 'opus', r.now + 10)).toBe('claude-opus-fixture');
-    expect(await catalogResolution(r.db, 'unknown-machine', 'claude-code', 'opus', r.now + 10)).toBeUndefined();
-    expect(await catalogResolution(r.db, 'initial-machine', 'claude-code', 'opus', r.now + 10)).toBe('claude-opus-fixture');
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', r.now + 10)).toBeUndefined();
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'machine-2' }, 'claude-code', 'opus', r.now + 10)).toBe('claude-opus-fixture');
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'unknown-machine' }, 'claude-code', 'opus', r.now + 10)).toBeUndefined();
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'initial-machine' }, 'claude-code', 'opus', r.now + 10)).toBe('claude-opus-fixture');
     r.sqlite.run(`UPDATE worker_contacts SET offers = '{unreadable' WHERE credential_id = ?`, [successor.tokenId]);
-    expect(await catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', r.now + 10)).toBeUndefined();
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', r.now + 10)).toBeUndefined();
     await recordWorkerContact(r.db, { credentialId: successor.tokenId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], now: r.now + 20 });
     expect(await readModelCatalogs(r.db, r.now + 20)).toHaveLength(3);
-    expect(await catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', r.now + 20)).toBe('claude-opus-fixture');
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', r.now + 20)).toBe('claude-opus-fixture');
   });
 
   it('surfaces failure reading worker availability instead of returning a misleading catalog result', async () => {
     const r = await rig();
-    await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
+    await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     const original = r.db.prepare.bind(r.db);
     r.db.prepare = (sql) => {
       if (sql.includes('FROM worker_contacts')) throw new Error('worker availability unavailable');
       return original(sql);
     };
     await expect(readModelCatalogs(r.db, r.now)).rejects.toThrow('worker availability unavailable');
-    await expect(catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', r.now)).rejects.toThrow('worker availability unavailable');
+    await expect(catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', r.now)).rejects.toThrow('worker availability unavailable');
   });
 
   it('resolves the cached model on the first reauthenticated claim using that claim’s current offers', async () => {
@@ -262,16 +262,16 @@ describe('catalog availability from current machine offers', () => {
   it('keeps a newer withdrawal authoritative when an older authenticated credential renews its liveness', async () => {
     const r = await rig();
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
-    await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
+    await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     await recordWorkerContact(r.db, { credentialId: r.token.tokenId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], now: r.now + 1 });
     await recordWorkerContact(r.db, { credentialId: successor.tokenId, machineId: 'machine-1', offers: [], capabilities: [], now: r.now + 2 });
     const renewedAt = r.now + CONTACT_THROTTLE_MS + 3;
     await recordWorkerContact(r.db, { credentialId: r.token.tokenId, machineId: 'machine-1', now: renewedAt });
     expect(await readModelCatalogs(r.db, renewedAt)).toEqual([]);
-    expect(await catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', renewedAt)).toBeUndefined();
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', renewedAt)).toBeUndefined();
     expect(r.sqlite.query(`SELECT last_seen_at FROM worker_contacts WHERE credential_id = ?`).get(r.token.tokenId)).toEqual({ last_seen_at: renewedAt });
     await recordWorkerContact(r.db, { credentialId: successor.tokenId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], now: renewedAt + 1 });
     expect(await readModelCatalogs(r.db, renewedAt + 1)).toHaveLength(1);
-    expect(await catalogResolution(r.db, 'machine-1', 'claude-code', 'opus', renewedAt + 1)).toBe('claude-opus-fixture');
+    expect(await catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', renewedAt + 1)).toBe('claude-opus-fixture');
   });
 });
