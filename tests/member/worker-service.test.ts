@@ -33,6 +33,7 @@ import {
   workerServiceWords,
   type WorkerServiceDeps,
 } from '@myco/cli/worker-service.js';
+import { run as runWorkerCli } from '@myco/cli/worker.js';
 import { checkWorkerServices } from '@myco/cli/doctor.js';
 import { deploymentPath, removeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { holdWorkerInstance } from '@myco/runner/instance.js';
@@ -119,6 +120,18 @@ describe('the worker unit', () => {
 });
 
 describe('installing and removing the worker service', () => {
+  for (const platform of ['darwin', 'linux'] as const) {
+    it(`worker install uses the recorded service manager on ${platform}`, async () => {
+      member();
+      const rec = recordingPlatform();
+      expect(await runWorkerCli(['install', '--server', URL_], {
+        mycoHome, home, platform, binaryPath: path.join(home, 'bin', 'myco'),
+        detect: () => LOGGED_IN, runner: rec.runner,
+      })).toBe(true);
+      expect(rec.commands.some(command => command.startsWith(platform === 'darwin' ? 'launchctl ' : 'systemctl '))).toBe(true);
+    });
+  }
+
   for (const platform of ['darwin', 'linux'] as const) {
     it(`installs once, leaves a running worker alone on a second install, and removes it on ${platform}`, () => {
       const rec = recordingPlatform();

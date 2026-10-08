@@ -1,3 +1,4 @@
+import { readTestProcessTable } from '../../scripts/test-process-tree.mjs';
 /**
  * Two guards of the test runner, each driven through the real runner:
  *   - a test group never reads the runner's stdin, so a test that reads fd 0
@@ -67,8 +68,7 @@ function alive(pid: number): boolean {
 
 /** Every live pid whose process group is `pgid`. */
 function processGroupMembers(pgid: number): number[] {
-  const table = spawnSync('ps', ['-axo', 'pid=,pgid='], { encoding: 'utf8' }).stdout;
-  return table.split('\n').map((line) => line.trim().split(/\s+/).map(Number)).filter(([, group]) => group === pgid).map(([pid]) => pid);
+  return [...readTestProcessTable()].filter(([, row]) => row.pgid === pgid).map(([pid]) => pid);
 }
 
 function withReportDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {

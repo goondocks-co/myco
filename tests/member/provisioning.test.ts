@@ -206,7 +206,8 @@ describe('myco member join / leave', () => {
   beforeEach(async () => { rig = await memberRig(); initRepo(projectRoot); });
 
   const join = (args: string[], deps: Record<string, unknown> = {}) =>
-    runJoin(args, { mycoHome, cwd: projectRoot, fetch: rig.fetch, packageRoot: PKG_ROOT, stdout: () => {}, stderr: () => {}, ...deps });
+    runJoin(args, { mycoHome, cwd: projectRoot, fetch: rig.fetch, packageRoot: PKG_ROOT, stdout: () => {}, stderr: () => {},
+      worker: { home, runner: recordingPlatform().runner }, ...deps });
 
   it('verifies without writing to the server, records the entry, and provisions the agent', async () => {
     const seen: string[] = [];

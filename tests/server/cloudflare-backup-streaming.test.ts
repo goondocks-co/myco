@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { readTestProcessRssKiB } from '../../scripts/test-process-tree.mjs';
 import { fetchD1Download } from '@myco/server/d1-download.js';
 
 const MAX_RSS_MIB = 1536;
@@ -54,7 +54,7 @@ async function measureExports(fixtures: ExportFixture[]): Promise<number[]> {
   let monitorError: unknown = null;
   const monitor = setInterval(() => {
     try {
-      const rss = Number(execFileSync('ps', ['-o', 'rss=', '-p', String(child.pid)], { encoding: 'utf8' }).trim());
+      const rss = readTestProcessRssKiB(child.pid);
       measuredKiB = Math.max(measuredKiB, rss);
       if (process.platform === 'linux') {
         const status = fs.readFileSync(`/proc/${child.pid}/status`, 'utf8');

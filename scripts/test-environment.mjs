@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { sandboxPath } from './test-tool-path.mjs';
+export { sandboxPath } from './test-tool-path.mjs';
+import { serviceGuardEnvironment, guardedServicePath } from './test-service-exec.mjs';
 
 export function sandboxTestHome(root) {
   const home = fs.mkdtempSync(path.join(root, 'h-'));
@@ -14,40 +17,9 @@ export function sandboxTestHome(root) {
   process.env.MYCO_TEST_RUN_HOME = home;
   delete process.env.MYCO_TEST_CHILD_ROOT;
   process.env.PATH = sandboxPath(home);
+  Object.assign(process.env, serviceGuardEnvironment(root));
+  process.env.PATH = guardedServicePath(process.env);
   return home;
-}
-
-// Only test tooling is reachable by name; installed harnesses and Myco are excluded.
-export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
-  const bin = path.join(home, 'bin');
-  fs.mkdirSync(bin);
-  const tools = [
-    'bun', 'node', 'make', 'npm', 'npx', 'git', 'sh', 'bash', 'env', 'cat', 'tee',
-    'ls', 'ps', 'lsof', 'sample', 'kill', 'sleep', 'printf', 'chmod', 'mkdir', 'rm', 'cp', 'mv', 'ln',
-    'touch', 'head', 'tail', 'sed', 'awk', 'grep', 'rg', 'wc', 'sort', 'uniq',
-    'find', 'xargs', 'dirname', 'basename', 'codesign', 'xattr', 'launchctl', 'plutil', 'cut', 'tr', 'date', 'uname', 'id', 'whoami', 'which', 'jq',
-    'taskkill', 'tasklist', 'cmd', 'powershell', 'pwsh', 'where',
-    'perl', 'python', 'python3', 'ruby', 'file', 'stat', 'readlink', 'realpath', 'getconf',
-    'cmp', 'diff', 'dd', 'mktemp', 'du', 'df', 'cc', 'as', 'ld',
-    'sha256sum', 'shasum', 'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'prlimit', 'timeout',
-  ];
-  const extensions = process.platform === 'win32'
-    ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')]
-    : [''];
-  for (const name of tools) {
-    const executable = incomingPath.split(path.delimiter)
-      .flatMap((dir) => extensions.map((extension) => path.join(dir, name + extension)))
-      .find((candidate) => {
-      try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
-      catch { return false; }
-    });
-    if (executable) {
-      if (name === 'pwsh') process.env.MYCO_TEST_PWSH_EXECUTABLE = fs.realpathSync(executable);
-      const suffix = process.platform === 'win32' ? path.extname(executable) : '';
-      fs.symlinkSync(executable, path.join(bin, name + suffix), 'file');
-    }
-  }
-  return bin;
 }
 
 export const CHILD_HOME_NAMES = ['HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'MYCO_HOME', 'MYCO_LAUNCH_AGENTS_DIR', 'MYCO_TEAM_HOME'];
@@ -82,6 +54,7 @@ export function assertSandboxChildEnv(root, env) {
 }
 
 export function sandboxChildEnv(root, overrides = {}, base = process.env) {
+  if (process.env.MYCO_TEST_RUN_ROOT) assertTestPath(process.env.MYCO_TEST_RUN_ROOT, root, 'child fixture root');
   const home = overrides.HOME ?? root;
   const env = {
     ...base, TMPDIR: root, TEMP: root, TMP: root,
@@ -91,6 +64,9 @@ export function sandboxChildEnv(root, overrides = {}, base = process.env) {
     MYCO_LAUNCH_AGENTS_DIR: path.join(home, 'service-units'), MYCO_TEAM_HOME: path.join(home, '.myco-team'),
     ...overrides, MYCO_TEST_CHILD_ROOT: root,
   };
+  env.MYCO_TEST_RUN_ROOT ??= process.env.MYCO_TEST_RUN_ROOT ?? root;
+  Object.assign(env, serviceGuardEnvironment(env.MYCO_TEST_RUN_ROOT, env));
+  env.PATH = guardedServicePath(env);
   assertSandboxChildEnv(root, env);
   return env;
 }

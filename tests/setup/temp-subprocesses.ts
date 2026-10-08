@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CHILD_HOME_NAMES, assertSandboxChildEnv, assertTestPath } from '../../scripts/test-environment.mjs';
 import { registerTestProcess } from '../../scripts/test-process-tree.mjs';
+import { afterAll } from 'bun:test';
+import { serviceGuardEnvironment, guardedServicePath, sandboxServiceChild, assertAllServiceExecutions } from '../../scripts/test-service-exec.mjs';
 
 const TEMP_ENV_NAMES = ['TMPDIR', 'TEMP', 'TMP'];
 function tempEnvironment(env: NodeJS.ProcessEnv = process.env, cwd: string | URL = process.cwd()): NodeJS.ProcessEnv {
@@ -29,11 +31,19 @@ function tempEnvironment(env: NodeJS.ProcessEnv = process.env, cwd: string | URL
   if (result.MYCO_BIN_DIR !== undefined) {
     assertTestPath(root, path.resolve(typeof cwd === 'string' ? cwd : fileURLToPath(cwd), result.MYCO_BIN_DIR), 'MYCO_BIN_DIR');
   }
+  if (!result.MYCO_TEST_RUN_ROOT) {
+    result.MYCO_TEST_CREATE_TEMP_RUN = '1';
+    result.MYCO_TEST_RUN_ROOT = TEST_TEMP_ROOT;
+  }
+  assertTestPath(TEST_TEMP_ROOT, result.MYCO_TEST_RUN_ROOT, 'MYCO_TEST_RUN_ROOT');
+  result.PATH ??= process.env.PATH;
+  Object.assign(result, serviceGuardEnvironment(result.MYCO_TEST_RUN_ROOT, result));
+  result.PATH = guardedServicePath(result);
   return result;
 }
 
 type Operation = (...args: unknown[]) => unknown;
-function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) => number, tracksChild = false): Operation {
+function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) => number, tracksChild = false, bunPrimitive = false): Operation {
   return function (this: unknown, ...args: unknown[]) {
     const index = optionsIndex(args);
     const options = args[index];
@@ -41,6 +51,14 @@ function withTempOptions(operation: Operation, optionsIndex: (args: unknown[]) =
     const isolated = { ...object, env: tempEnvironment(object.env, object.cwd) };
     if (typeof options === 'function') args.splice(index, 0, isolated);
     else args[index] = isolated;
+    if (bunPrimitive) {
+      const cwd = object.cwd === undefined ? process.cwd() : typeof object.cwd === 'string' ? object.cwd : fileURLToPath(object.cwd);
+      if (Array.isArray(args[0])) args[0] = sandboxServiceChild(args[0] as string[], isolated.env, cwd);
+      else {
+        const bunOptions = args[0] as { cmd: string[] };
+        args[0] = { ...bunOptions, cmd: sandboxServiceChild(bunOptions.cmd, isolated.env, cwd) };
+      }
+    }
     const child = operation.apply(this, args);
     if (tracksChild) registerTestProcess(child as { pid?: number; kill(signal: NodeJS.Signals): unknown });
     return child;
@@ -55,5 +73,6 @@ for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'e
 }
 const bunProcess = Bun as unknown as Record<string, Operation>;
 for (const name of ['spawn', 'spawnSync']) {
-  bunProcess[name] = withTempOptions(bunProcess[name]!, (args) => Array.isArray(args[0]) ? 1 : 0, name === 'spawn');
+  bunProcess[name] = withTempOptions(bunProcess[name]!, (args) => Array.isArray(args[0]) ? 1 : 0, name === 'spawn', true);
 }
+afterAll(assertAllServiceExecutions);
