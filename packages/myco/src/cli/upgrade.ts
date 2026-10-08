@@ -1,37 +1,12 @@
-/**
- * `myco upgrade` — user-facing binary-upgrade entry point.
- *
- * Drives the upgrade domain directly (no intent file / no daemon round-trip):
- *
- *   --check                Report-only: resolve the channel target, print
- *                          update/revert status, NEVER adopt.
- *
- *   myco upgrade           check → stage → initiateAdopt INLINE (foreground).
- *   myco upgrade --now     Identical to bare `myco upgrade`.
- *
- *   myco upgrade <version>
- *   myco upgrade --target-version <version>
- *                          Resolve refs for a SPECIFIC version (owned here,
- *                          NOT the daemon's resolveMycoBinaryUpdateRefsForVersion)
- *                          → stage → initiateAdopt INLINE. Task 9 will delete
- *                          the daemon copy.
- *
- *   --channel <stable|beta>
- *                          Resolve against this channel for this run only; it is
- *                          not saved (a machine's channel is a setting its
- *                          Deployment will hold, #922). Switching to `stable`
- *                          while running a beta adopts the stable target (the
- *                          beta→stable revert path).
- *
- * CLI path for adopt (via `initiateAdopt`):
- *   POSIX — inline orchestration (this process is not the image being replaced)
- *   win32 — re-execs via `resolveOrchestratorBinary` (temp copy of self)
- */
+/** `myco upgrade` resolves, verifies and adopts a binary within the selected channel. */
 
+import semver from 'semver';
+import { selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import { parseStrictFlags } from './args.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import {
   resolveMycoBinaryUpdateRefs,
+  fetchMycoReleases,
   type MycoReleaseResolverDeps,
 } from '../upgrade/release-resolver.js';
 import {
@@ -43,6 +18,7 @@ import {
 } from '../upgrade/release-assets.js';
 import {
   stageBinary,
+  adoptStaged,
   DEFAULT_BINARY_UPDATE_DEPS,
   type StageBinaryDeps,
 } from '../upgrade/apply-binary.js';
@@ -56,7 +32,7 @@ import {
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
 import { readProjectReleaseChannel } from '../daemon/update-checker.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import { managedBinaryPath } from '../install/managed-binary.js';
+import { readInstallMarker, managedBinaryPath } from '../install/managed-binary.js';
 import { isMemberHome } from '../member/home-role.js';
 import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
 import { getPluginVersion } from '../version.js';
@@ -74,7 +50,7 @@ Options:
   --now                        Upgrade immediately (identical to bare \`myco upgrade\`)
   --check                      Report available upgrades only — never adopt
   --target-version <version>   Upgrade to this exact version (flag form)
-  --channel <stable|beta>      Upgrade on this channel, this run only
+  --channel <alpha|beta|stable>      Upgrade on this channel, this run only
   -h, --help                   Show this help
 `;
 
@@ -93,6 +69,8 @@ export interface UpgradeDeps {
   stageDeps?: StageBinaryDeps;
   /** Inject initiateAdopt (for testing the adopt path). */
   initiateAdopt?: typeof initiateAdopt;
+  /** Place a verified member binary without a local daemon. */
+  adoptStaged?: typeof adoptStaged;
   /** Override the current version. */
   currentVersion?: string;
   /** Override myco home dir. */
@@ -183,7 +161,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   // Validate channel arg.
   const channelArg = parsed.value('--channel');
   if (channelArg !== undefined && !RELEASE_CHANNELS.includes(channelArg as ReleaseChannel)) {
-    console.error(`myco upgrade: --channel must be 'stable' or 'beta'; got '${channelArg}'`);
+    console.error(`myco upgrade: --channel must be 'alpha', 'beta' or 'stable'; got '${channelArg}'`);
     process.exit(1);
   }
 
@@ -201,6 +179,8 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   // A channel named here is this run's: nothing is saved, so the next upgrade uses the machine's own again.
   if (channelArg) console.log(`Upgrading on the '${channelArg}' channel for this run; it is not saved.`);
 
+  const currentVersion = deps.currentVersion ?? getPluginVersion();
+
   // Resolve the asset refs for the upgrade target.
   const refs = await resolveAssetRefsForTarget(targetVersionArg, channel, deps);
   if (!refs) {
@@ -212,8 +192,6 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       process.exit(0);
     }
   }
-
-  const currentVersion = deps.currentVersion ?? getPluginVersion();
 
   // No-downgrade rule, EXCEPT when the user explicitly switches channel or requests
   // a specific version — those are intentional version changes (incl. beta→stable revert).
@@ -229,6 +207,12 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       );
       process.exit(0);
     }
+  }
+
+  const isV2 = isV2Version(currentVersion);
+  if (isV2 && !selectChannelRelease([{ tag_name: `myco/v${refs.targetVersion}`, prerelease: semver.prerelease(refs.targetVersion) !== null, assets: [] }], channel, { currentVersion })) {
+    console.log(`Channel target ${refs.targetVersion} is older or outside '${channel}'; staying put at ${currentVersion}.`);
+    return;
   }
 
   console.log(`Upgrading myco ${currentVersion} → ${refs.targetVersion}…`);
@@ -283,14 +267,23 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   console.log(`  Staged ${stageResult.version} to ${stageResult.versionDir}`);
 
-  // Adopt: copy staged binary → managed path, restart daemon, health-watch.
+  // Adopt the verified staged binary.
   console.log('  Adopting…');
 
-  // Copy TARGET: the managed slot regardless of what currently exists there.
+  // Installed member binaries retain the destination recorded by their installer.
   const mycoBinary = deps.mycoBinary
+    ?? (isV2 ? readInstallMarker(home, true)?.bin : undefined)
     ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform, localAppData }).path;
   const projectRoot = deps.projectRoot ?? process.cwd();
   const daemonPort = deps.daemonPort ?? resolveGlobalDaemonPort();
+
+  if (isV2) {
+    if (platform === 'win32') throw new Error('Myco 2.0 member binary updates on Windows are not supported yet; the installed binary is unchanged.');
+    await (deps.adoptStaged ?? adoptStaged)({ home, platform, localAppData, version: stageResult.version, destination: mycoBinary });
+    console.log(`myco ${stageResult.version} is now active.`);
+    if ((deps.isMemberHome ?? isMemberHome)(home)) await (deps.refreshMember ?? refreshMemberSetup)(mycoBinary, home);
+    return;
+  }
 
   // Resolve the restart-routing label at adopt time, keyed on the installed
   // unit (not pid-identity): the CLI never shares the daemon's pid, so a
@@ -319,8 +312,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   await adoptFn(adoptOpts);
 
   console.log(`myco ${stageResult.version} is now active.`);
-  // A member home's agent hooks, MCP entries and skill links are refreshed by the binary just adopted, so what they
-  // run and read is that build's (#1499).
+  // The adopted binary refreshes a member home's hooks, MCP entries and skill links.
   if ((deps.isMemberHome ?? isMemberHome)(home)) await (deps.refreshMember ?? refreshMemberSetup)(mycoBinary, home);
 }
 
@@ -360,6 +352,8 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps): Promise<voi
   if (checkResult.update_available) {
     console.log(`Update available: ${currentVersion} → ${checkResult.latest_version}`);
     console.log(`Run \`myco upgrade\` to apply.`);
+  } else if (checkResult.staying_put) {
+    console.log(`The newest eligible '${channel}' release is older than installed ${currentVersion}; staying put.`);
   } else if (checkResult.revert_available) {
     console.log(
       `Stable revert available: ${currentVersion} → ${checkResult.latest_stable} (switch from beta to stable)`,
@@ -403,18 +397,10 @@ async function resolveAssetRefsForTarget(
     return resolveAssetRefs(release, triple);
   }
 
-  const resolveRefsFn = deps.resolveRefs ?? resolveMycoBinaryUpdateRefs;
+  const resolveRefsFn = deps.resolveRefs ?? ((ch: ReleaseChannel) => resolveMycoBinaryUpdateRefs(ch, undefined, deps.currentVersion ?? getPluginVersion()));
   return resolveRefsFn(channel);
 }
 
 async function defaultFetchReleases(): Promise<GitHubRelease[]> {
-  const { mycoReleasesApiUrl, githubHeaders } = await import('../upgrade/release-assets.js');
-  const res = await fetch(mycoReleasesApiUrl(), {
-    headers: githubHeaders(),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub releases responded with ${res.status}`);
-  }
-  return (await res.json()) as GitHubRelease[];
+  return fetchMycoReleases();
 }

@@ -157,9 +157,10 @@ describe('pickRelease', () => {
     // stable channel should NOT pick the alpha even though flag is false
     const stableResult = pickRelease(fixture, 'stable');
     expect(stableResult?.tag_name).toBe('myco/v1.9.0');
-    // beta channel should include it and pick the higher one
+    // Beta admits beta and stable tags.
     const betaResult = pickRelease(fixture, 'beta');
-    expect(betaResult?.tag_name).toBe('myco/v2.0.0-alpha.1');
+    expect(betaResult?.tag_name).toBe('myco/v1.9.0');
+    expect(pickRelease(fixture, 'alpha')?.tag_name).toBe('myco/v2.0.0-alpha.1');
   });
 
   it('prerelease detection: rc suffix counts as prerelease', () => {

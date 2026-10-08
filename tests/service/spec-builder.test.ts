@@ -28,7 +28,15 @@ function makeVendorBinary(): string {
 describe('buildServiceSpec', () => {
   test('default home (~/.myco): prod label, service/ paths, MYCO_DAEMON_MANAGED=1 + MYCO_HOME, no MYCO_SERVICE_VARIANT', () => {
     const bin = makeFakeBinary();
-    const spec = buildServiceSpec({ mycoHome: DEFAULT_HOME, executable: bin });
+    const saved = process.env[SERVICE_UNIT_DIR_ENV];
+    let spec: ReturnType<typeof buildServiceSpec>;
+    try {
+      delete process.env[SERVICE_UNIT_DIR_ENV];
+      spec = buildServiceSpec({ mycoHome: DEFAULT_HOME, executable: bin });
+    } finally {
+      if (saved === undefined) delete process.env[SERVICE_UNIT_DIR_ENV];
+      else process.env[SERVICE_UNIT_DIR_ENV] = saved;
+    }
     expect(spec.label).toBe('co.goondocks.myco');
     expect(spec.variant).toBe('prod');
     expect(spec.executable).toBe(bin);

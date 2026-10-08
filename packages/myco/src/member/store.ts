@@ -11,7 +11,8 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { MEMBER_DIR_MODE, MEMBER_FILE_MODE } from './constants.js';
 
-export const MEMBER_DIRNAME = 'member';
+import { MEMBER_DIRNAME } from '../../scripts/home-role.mjs';
+export { MEMBER_DIRNAME } from '../../scripts/home-role.mjs';
 
 /**
  * Whether nothing is at `target`.

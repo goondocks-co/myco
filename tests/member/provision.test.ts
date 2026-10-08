@@ -16,27 +16,27 @@ import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/m
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
-import { tempMycoHome } from './helpers/server.js';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
 const TOKEN = 'A'.repeat(43);
 const SERVER = 'https://myco.example';
 let mycoHome: string;
 let root: string;
 let agentHome: string;
-let previousHome: string | undefined;
+let restoreHome: () => void;
 beforeEach(() => {
-  mycoHome = tempMycoHome();
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-provision-')));
+  agentHome = path.join(root, 'agent-home');
+  mycoHome = path.join(agentHome, '.myco');
+  fs.mkdirSync(mycoHome, { recursive: true });
+  fs.writeFileSync(path.join(mycoHome, 'machine_id'), 'm1');
+  restoreHome = bindSandboxChildHome(root, { HOME: agentHome, MYCO_HOME: mycoHome });
   execFileSync('git', ['init', '-q', root]);
-  agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-provision-agent-home-'));
-  previousHome = process.env.HOME;
-  process.env.HOME = agentHome;
 });
 afterEach(() => {
+  restoreHome();
   fs.rmSync(root, { recursive: true, force: true });
   process.exitCode = 0;
-  if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
-  fs.rmSync(agentHome, { recursive: true, force: true });
 });
 
 const join = (): void => writeRegistryEntry({

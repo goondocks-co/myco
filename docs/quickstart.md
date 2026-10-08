@@ -25,20 +25,18 @@ When you're ready to enable intelligence features, you'll need:
 ## Install
 
 ```bash
-curl -fsSL https://myco.sh/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
+myco login <invite link>
 ```
+
+The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. The default stable channel selects releases only and keeps the 1.4 managed-service behavior until a 2.x release exists. `MYCO_CHANNEL=alpha` admits alpha, beta and stable builds; `MYCO_CHANNEL=beta` admits beta and stable builds. The channel is recorded for updates, which never downgrade; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).
 
 On Windows x64 (PowerShell, beta):
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The installer downloads the native binary to `~/.myco/bin` (`%LOCALAPPDATA%\Myco\bin` on Windows), starts the managed local service, and connects supported coding agents — no Node runtime required.
-
-If you already have Node, you can install with npm instead. This is a thin bootstrap that converges to the same native binary:
-```bash
-npm install -g @goondocks/myco
-```
+No Node runtime is required. On Windows, the PowerShell installer is still the Myco 1.4 one.
 
 ### Plugin only
 
@@ -50,7 +48,7 @@ The access key reaches one project, is minted by a deployment administrator, and
 
 Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page. There is nothing to run by hand and no `npm update` step.
 
-For advanced or scripted use, the `myco upgrade` CLI (with `--channel stable|beta`) is available, but the automatic and dashboard paths are the normal way to stay current.
+For advanced or scripted use, the `myco upgrade` CLI (with `--channel alpha|beta|stable`) is available, but the automatic and dashboard paths are the normal way to stay current.
 
 ## That's it — ready by default
 

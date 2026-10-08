@@ -9,16 +9,20 @@
  *   resolveMycoPackageCheck(...)  — fetch GitHub Releases + derive PackageCheckResult for myco
  */
 
+import { isV2Version } from '../../scripts/release-policy.mjs';
+
 import type { FetchLike } from '../utils/instrumented-fetch.js';
 import {
-  mycoReleasesApiUrl,
   resolveMycoVersions,
-  githubHeaders,
+  pickRelease,
+  assetName,
+  resolveTargetTriple,
   type GitHubRelease,
 } from './release-assets.js';
 import type { ReleaseChannel, UpdatePackageId } from '../constants/update.js';
 import { NPM_PACKAGE_NAME } from '../constants/update.js';
 import semver from 'semver';
+import { fetchMycoReleases } from './release-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Public types (re-exported for consumer convenience)
@@ -45,13 +49,14 @@ export interface PackageCheckResult {
    * marker when present — NOT from the retired managed-runtime pin.
    */
   revert_available: boolean;
+  /** An eligible remote release is older than this running build. */
+  staying_put?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,17 +95,27 @@ export async function resolveMycoPackageCheck(
   installedVersion: string | null,
   fetchFn: FetchLike = globalThis.fetch,
 ): Promise<PackageCheckResult> {
-  const response = await fetchFn(mycoReleasesApiUrl(), {
-    headers: githubHeaders(),
-    signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    throw new Error(`@goondocks/myco: GitHub releases responded with ${response.status}`);
+  const releases = await fetchMycoReleases(fetchFn);
+  const isV2 = isV2Version(currentVersion);
+  const lineReleases = isV2 ? releases : releases.filter(r => (semver.parse(r.tag_name.replace(/^myco\/v/, ''))?.major ?? 0) < 2);
+  if (isV2) {
+    const asset = assetName(resolveTargetTriple());
+    const version = (r: GitHubRelease | null) => r?.tag_name.slice(6) ?? null;
+    const latestStable = version(pickRelease(lineReleases, 'stable', { minimumMajor: 2, asset }));
+    const latestBeta = version(pickRelease(lineReleases, 'beta', { minimumMajor: 2, asset }));
+    const candidate = version(pickRelease(lineReleases, channel, { minimumMajor: 2, asset }));
+    const target = version(pickRelease(lineReleases, channel, { minimumMajor: 2, asset, currentVersion }));
+    return {
+      id: 'myco', display_name: 'Myco', package_name: NPM_PACKAGE_NAME,
+      installed: installedVersion !== null, installed_version: installedVersion,
+      latest_version: target ?? currentVersion, latest_stable: latestStable, latest_beta: latestBeta,
+      update_available: installedVersion !== null && target !== null && semver.gt(target, currentVersion)
+        && semver.valid(installedVersion) !== null && semver.gt(target, installedVersion),
+      revert_available: false,
+      staying_put: candidate !== null && semver.lt(candidate, currentVersion),
+    };
   }
-
-  const releases = await response.json() as GitHubRelease[];
-  const { latest_stable, latest_beta } = resolveMycoVersions(releases);
+  const { latest_stable, latest_beta } = resolveMycoVersions(lineReleases);
 
   // Determine the target version for the active channel
   const latestStableStr = latest_stable ?? currentVersion;

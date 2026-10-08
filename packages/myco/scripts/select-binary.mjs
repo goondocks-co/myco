@@ -1,39 +1,28 @@
-// Postinstall: bootstrap npm into the single self-updating managed binary.
+// Postinstall: bootstrap npm into the single managed binary.
 //
 // Each supported platform has its own published package
 // (`@goondocks/myco-<target>`) whose `package.json` carries the matching
 // `os` and `cpu` filters. npm installs only the matching one; the rest are
 // skipped. This script uses `require.resolve` to find the binary inside the
-// installed platform package, writes `vendor/resolved.json` (so a fallback
-// `bin/myco` dispatch can find it), and then CONVERGES: it copies the
-// selected binary into the canonical managed location (`~/.myco/bin/myco`),
-// reconciles the `runtime.command` pin so every CLI invocation re-execs the
-// managed binary, and writes the install marker. The daemon heals the OS
-// service unit on its next startup via `ensureSelfInstalledAsService`, so
-// the postinstall does NOT need to call any service-install logic — doing so
-// would require `dist/src/` modules that are never emitted in the published
-// tarball (the build only produces a bun binary).
+// installed platform package, converges it into the canonical managed binary,
+// and publishes vendor/resolved.json for the npm dispatch path. Myco 2.0
+// records its channel without installing a local daemon or service.
 //
-// The path-layout helpers come from `./managed-paths.mjs` — a shared plain-ESM
-// module imported BOTH here and (re-exported) by `src/install/managed-binary.ts`,
-// so the postinstall and the compiled binary cannot disagree on the layout.
-// (We still cannot import `dist/src/` — it is never emitted in the published
-// tarball — which is why the shared module is plain ESM under `scripts/`.)
-//
-// This module exports `convergeNpmInstall` so the convergence mechanics are
-// unit-testable in isolation. The postinstall side effects run only when the
-// file is executed as the main module (the is-main guard at the bottom), so
-// importing it for a test is side-effect free.
+// The path layout, home-role predicates and marker publisher are shared
+// plain-ESM modules used by both the postinstall and the compiled binary.
+// Imports are side-effect free; only execution as the main module installs.
 
 import fs from 'node:fs';
+import { releaseKey, isV2Version } from './release-policy.mjs';
+import { isMemberHome, legacyVaultFiles } from './home-role.mjs';
+import { writeInstallMarker } from './install-marker.mjs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// The PATH layout is imported from the shared `./managed-paths.mjs` module —
-// the SINGLE source of truth that both this postinstall and the compiled binary
-// (`src/install/managed-binary.ts` re-exports it) use, so they cannot drift.
+// Both the postinstall and compiled binary use the canonical path layout.
 import { managedBinaryPath, versionBinaryPath } from './managed-paths.mjs';
 
 // ---------------------------------------------------------------------------
@@ -61,11 +50,28 @@ function detectTarget() {
   return null;
 }
 
+class LegacyInstallRefusal extends Error {}
+
+function replacingLegacy(home, dest, version, replaceLegacy) {
+  if (!version || !isV2Version(version)) return false;
+  let current = null;
+  if (fs.existsSync(dest)) {
+    const probe = spawnSync(dest, ['--version'], { encoding: 'utf8', timeout: 30_000 });
+    if (probe.status !== 0) throw new LegacyInstallRefusal('Cannot inspect the installed Myco binary; nothing was replaced.');
+    current = probe.stdout.match(/[0-9]+[.][0-9]+[.][0-9]+[^ \r\n]*/)?.[0];
+    if (!current) throw new LegacyInstallRefusal('Cannot read the installed Myco version; nothing was replaced.');
+  }
+  const legacy = current?.startsWith('1.') || ((!current || !isV2Version(current)) && !isMemberHome(home) && legacyVaultFiles(home).length > 0);
+  if (legacy && !replaceLegacy) {
+    throw new LegacyInstallRefusal('Myco 1.4 is on this machine. Nothing was replaced. To opt in, set MYCO_REPLACE_LEGACY=1, then run myco login <invite link>, myco cutover --dry-run, and myco cutover.');
+  }
+  return legacy;
+}
+
 /**
  * Converge the npm install onto the single managed binary. Pure-ish: all fs
- * I/O is confined to `home` / `dest`. Every step is wrapped so a failure logs
- * to stderr and is NON-FATAL — npm postinstall must never fail because the
- * daemon's lazy-spawn path and `myco doctor` still recover the gap.
+ * I/O is confined to `home` / `dest`. Legacy refusal and replacement staging
+ * fail closed; placement failures for other installs are reported to stderr.
  *
  * `dest` and `versionedDest` are INJECTED so tests can supply arbitrary paths
  * without touching the real home directory.
@@ -82,7 +88,16 @@ function detectTarget() {
  *
  * @param {{ mycoHome: string, platform: string, resolvedBinary: string, dest: string, channel: string, version?: string, versionedDest?: string, writeMarker?: Function }} args
  */
-export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, channel, version, versionedDest, writeMarker }) {
+export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, channel, version, versionedDest, writeMarker, replaceLegacy = process.env.MYCO_REPLACE_LEGACY === '1' }) {
+  let replacedLegacy;
+  try {
+    replacedLegacy = replacingLegacy(mycoHome, dest, version, replaceLegacy);
+  } catch (error) {
+    throw new LegacyInstallRefusal(error.message);
+  }
+  if (replacedLegacy && !versionedDest) throw new LegacyInstallRefusal(
+    'A versioned destination is required before replacing Myco 1.4. Nothing was replaced.',
+  );
   const log = (msg) => process.stderr.write(`[myco] ${msg}\n`);
   let copied = false;
   let pinAction = 'skipped';
@@ -95,6 +110,7 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
   if (versionedDest) {
     try {
       fs.mkdirSync(path.dirname(versionedDest), { recursive: true });
+      if (replacedLegacy) fs.writeFileSync(path.join(path.dirname(versionedDest), '.adopt-failed'), new Date().toISOString());
       const tmpV = `${versionedDest}.tmp-${process.pid}`;
       try {
         fs.copyFileSync(resolvedBinary, tmpV);
@@ -110,6 +126,7 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
         throw err;
       }
     } catch (err) {
+      if (replacedLegacy) throw new LegacyInstallRefusal(`Myco 1.4 replacement could not be staged: ${err.message}`);
       log(`versioned binary placement skipped: ${err?.message ?? err}`);
       // Fall back to copying directly from the resolved source binary.
     }
@@ -133,8 +150,8 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
       // Clean up the temp file on any failure.
       try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
       // On win32 the existing managed binary may be running (the daemon /
-      // the launcher), so the rename fails EBUSY/EPERM. Task 9 handles the
-      // win32 in-place swap; here we skip and continue, non-fatal.
+      // the launcher), so the rename fails EBUSY/EPERM during a
+      // win32 in-place swap; leave the old binary and marker in place.
       if (platform === 'win32' && (err?.code === 'EBUSY' || err?.code === 'EPERM')) {
         log('managed binary in use; skipped (win32 swap deferred to update path)');
       } else {
@@ -148,7 +165,7 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
   // --- Pin migration ------------------------------------------------------
   // `runtime.command` is an operator override; its absence is the normal
   // state — every consumer falls through to the managed binary on its own.
-  // A pin naming the managed binary (what earlier postinstalls wrote) is
+  // A pin naming the managed binary is
   // redundant by construction and is removed. Any other pin carries operator
   // intent and is untouched.
   try {
@@ -177,38 +194,23 @@ export function convergeNpmInstall({ mycoHome, platform, resolvedBinary, dest, c
     log(`runtime.command migration skipped: ${err?.message ?? err}`);
   }
 
-  // --- Install marker -----------------------------------------------------
-  // `writeMarker` is an optional injection seam for tests. Production callers
-  // omit it; the inline fallback writes the same JSON shape.
-  try {
-    if (writeMarker) {
-      writeMarker(mycoHome, { channel, source: 'npm', bin: dest });
-    } else {
-      fs.mkdirSync(mycoHome, { recursive: true });
-      fs.writeFileSync(
-        path.join(mycoHome, 'install.json'),
-        JSON.stringify({ channel, source: 'npm', bin: dest }, null, 2),
-      );
-    }
-  } catch (err) {
-    log(`install marker skipped: ${err?.message ?? err}`);
+  // Publish the channel only for a binary that reached its managed destination.
+  if (copied) {
+    (writeMarker ?? writeInstallMarker)(mycoHome, { channel, source: 'npm', bin: dest });
   }
 
   return { dest, copied, pinAction };
 }
 
-/**
- * Derive the release channel from this package's own version: a semver
- * prerelease component (`-beta`, `-alpha`, `-rc`, …) => 'beta', else 'stable'.
- * Any error defaults to 'stable'.
- */
-function deriveChannel(pkgRoot) {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
-    return /-(?:beta|alpha|rc|next|canary|dev)\b/.test(String(pkg.version)) ? 'beta' : 'stable';
-  } catch {
-    return 'stable';
-  }
+const DEVELOPMENT_VERSION = '0.0.0-dev';
+
+/** Package alpha builds record alpha; beta/RC and local development builds record beta. */
+export function deriveChannel(pkgRoot) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+  if (pkg.version === DEVELOPMENT_VERSION) return 'beta';
+  const parsed = typeof pkg.version === 'string' ? releaseKey(pkg.version) : null;
+  if (!parsed) throw new Error('Package version is not a valid release version');
+  return parsed.phase === 'rc' ? 'beta' : parsed.phase;
 }
 
 async function main() {
@@ -258,6 +260,26 @@ async function main() {
     try { fs.chmodSync(binaryPath, 0o755); } catch { /* best effort */ }
   }
 
+  // Refuse an unsafe replacement before publishing the npm dispatch target.
+  if (!isSourceCheckout) {
+    const mycoHome = resolveMycoHome();
+    const platform = process.platform;
+    const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
+    const channel = deriveChannel(pkgRoot);
+    const version = pkg.version;
+    const dest = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
+    const versionedDest = versionBinaryPath(mycoHome, platform, version, process.env.LOCALAPPDATA);
+    const result = convergeNpmInstall({
+      mycoHome,
+      platform,
+      resolvedBinary: binaryPath,
+      dest,
+      channel,
+      version,
+      versionedDest,
+    });
+    if (!result.copied) throw new Error('The managed binary could not be placed; npm dispatch was not changed.');
+  }
   const vendorDir = path.join(pkgRoot, 'vendor');
   fs.mkdirSync(vendorDir, { recursive: true });
   const resolvedPath = path.join(vendorDir, 'resolved.json');
@@ -269,46 +291,7 @@ async function main() {
 
   process.stdout.write(`[myco] Selected platform binary: ${binaryPath}\n`);
 
-  // Converge npm into the single managed binary. Skipped in source checkouts
-  // (no platform binary present before `make dev-link`). Wrapped so a failure
-  // logs to stderr and is NON-FATAL — the daemon's lazy-spawn path still works
-  // and `myco doctor` surfaces any gap. Plan reference: Decision 13 / Step 12.
-  //
-  // Service install is intentionally NOT performed here. The daemon calls
-  // `ensureSelfInstalledAsService` on every startup (daemon/main.ts), which is
-  // idempotent and handles the service unit. Attempting it from the postinstall
-  // would require dist/src/service/self-install.js, which is never emitted in
-  // the published tarball.
-  if (!isSourceCheckout) {
-    try {
-      const mycoHome = resolveMycoHome();
-      const platform = process.platform;
-      // `pkg.version` is the bare semver (e.g. "1.2.3") — npm packages never
-      // carry the "myco/v" tag prefix that curl installers use. This is the
-      // exact version string the daemon's versionBinaryPath() expects.
-      let pkg = { version: null };
-      try {
-        pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'));
-      } catch { /* version stays null; versionedDest skipped */ }
-      const version = pkg.version ?? null;
-      const dest = managedBinaryPath(mycoHome, platform, process.env.LOCALAPPDATA);
-      const versionedDest = version
-        ? versionBinaryPath(mycoHome, platform, version, process.env.LOCALAPPDATA)
-        : null;
-      const channel = deriveChannel(pkgRoot);
-      convergeNpmInstall({
-        mycoHome,
-        platform,
-        resolvedBinary: binaryPath,
-        dest,
-        channel,
-        version,
-        versionedDest,
-      });
-    } catch (err) {
-      process.stderr.write(`[myco] Convergence skipped: ${err?.message ?? err}\n`);
-    }
-  }
+
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

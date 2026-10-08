@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from '../support/fenced-fs.mjs'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { processAlive } from './process-alive.js';
+import { readTestProcessState } from '../../scripts/test-process-tree.mjs';
 import { removeWhenTestsEnd } from './remove-when-tests-end.js';
 
 describe('processAlive', () => {
@@ -47,7 +48,7 @@ describe('processAlive classification of the real ps', () => {
   // The test process always passes the signal probe, so the outcome is the shimmed table lookup's.
   const lookup = (script: string | null): boolean => {
     process.env.PATH = pathWithPs(script);
-    return processAlive(process.pid);
+    return processAlive(process.pid, pid => readTestProcessState(pid, 'ps'));
   };
 
   it('reads status 1 with nothing printed as a process gone from the table', () => {
@@ -64,7 +65,7 @@ describe('processAlive classification of the real ps', () => {
   });
 
   it('throws on any other failure status', () => {
-    expect(() => lookup('exit 2')).toThrow('exited 2');
+    expect(() => lookup('exit 2')).toThrow('exit 2');
   });
 
   it('throws when ps cannot be executed', () => {

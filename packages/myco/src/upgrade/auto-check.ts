@@ -41,11 +41,12 @@ import {
   versionDir,
   versionBinaryPath,
 } from '../install/managed-binary.js';
-import { releaseChannelIsManual, resolveMycoBinary } from '../daemon/update-checker.js';
+import { readProjectReleaseChannel, releaseChannelIsManual, resolveMycoBinary } from '../daemon/update-checker.js';
 import { isDefaultMycoHome } from '../grove/paths.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
 import type { ReleaseChannel } from '../constants/update.js';
+import { selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import type { AssetRefs } from './release-assets.js';
 
 // ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ export interface CheckAndStageDeps {
 
 export type CheckAndStageResult =
   | { status: 'staged'; version: string }
-  | { status: 'noop'; reason: 'manual-channel' | 'dev-build' | 'up-to-date' | 'already-staged' }
+  | { status: 'noop'; reason: 'manual-channel' | 'dev-build' | 'up-to-date' | 'already-staged' | 'older-release' | 'ineligible-release' }
   | { status: 'error'; error: string };
 
 /**
@@ -181,7 +182,7 @@ export async function checkAndStage(
   const { home, platform, localAppData, logger, channel } = opts;
 
   // Resolve deps with defaults.
-  const resolveRefsFn = deps.resolveRefs ?? ((ch: ReleaseChannel) => resolveMycoBinaryUpdateRefs(ch));
+  const resolveRefsFn = deps.resolveRefs ?? ((ch: ReleaseChannel) => resolveMycoBinaryUpdateRefs(ch, undefined, currentVersion));
   const stageBinaryFn = deps.stageBinary ?? stageBinary;
   const stageDeps = deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS;
   const existsSyncFn = deps.existsSync ?? ((p: string) => fs.existsSync(p));
@@ -200,13 +201,21 @@ export async function checkAndStage(
 
   const { targetVersion } = refs;
 
+  const isV2 = isV2Version(currentVersion);
+  const eligible = isV2
+    ? selectChannelRelease([{ tag_name: `myco/v${targetVersion}`, prerelease: semver.prerelease(targetVersion) !== null, assets: [] }], channel) !== null
+    : (semver.parse(targetVersion)?.major ?? 0) < 2;
+  if (!eligible) return { status: 'noop', reason: 'ineligible-release' };
+
   // No-downgrade rule: only stage when target is STRICTLY newer.
   if (
     !semver.valid(targetVersion) ||
     !semver.valid(currentVersion) ||
     !semver.gt(targetVersion, currentVersion)
   ) {
-    return { status: 'noop', reason: 'up-to-date' };
+    const older = semver.valid(targetVersion) && semver.valid(currentVersion) && semver.lt(targetVersion, currentVersion);
+    if (older) logger.info('upgrade', 'Newest eligible release is older; staying put', { current_version: currentVersion, target_version: targetVersion, channel });
+    return { status: 'noop', reason: older ? 'older-release' : 'up-to-date' };
   }
 
   // Already-staged guard: if the versioned binary exists on disk, nothing to do.
@@ -288,6 +297,7 @@ export function resolveNewestStagedVersion(
   localAppData?: string,
   existsSyncFn: (p: string) => boolean = (p) => fs.existsSync(p),
   readdirSyncFn: (p: string) => string[] = (p) => fs.readdirSync(p) as string[],
+  channel: ReleaseChannel = readProjectReleaseChannel(),
 ): string | null {
   const vDir = versionsDir(home, platform, localAppData);
   if (!existsSyncFn(vDir)) return null;
@@ -302,6 +312,9 @@ export function resolveNewestStagedVersion(
   const candidates = entries
     .filter((entry) => semver.valid(entry) !== null)
     .filter((entry) => semver.gt(entry, currentVersion))
+    .filter((entry) => !isV2Version(currentVersion)
+      ? (semver.parse(entry)?.major ?? 0) < 2
+      : selectChannelRelease([{ tag_name: `myco/v${entry}`, prerelease: semver.prerelease(entry) !== null, assets: [] }], channel, { currentVersion }) !== null)
     // Skip versions whose adopt already failed (marker in the slot) — otherwise a
     // known-bad release is re-adopted on every idle tick / stale-window.
     .filter(

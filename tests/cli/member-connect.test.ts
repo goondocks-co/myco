@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { recordingPlatform } from '../member/helpers/service-platform.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run as login } from '@myco/cli/login.js';
 import { runJoin } from '@myco/cli/member.js';
@@ -44,11 +45,11 @@ describe('myco member join inside a repository', () => {
   const signedIn = async () => {
     const rig = unjoinedRig();
     const key = (await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' })).key;
-    expect(await login([`https://s/join#${key}`, '--no-agents'], { fetch: rig.fetch as typeof fetch, mycoHome: home, machineId: 'machine_person', cwd: repos, stdout: () => {}, stderr: () => {} })).toBe(true);
+    expect(await login([`https://s/join#${key}`, '--no-agents'], { fetch: rig.fetch as typeof fetch, mycoHome: home, machineId: 'machine_person', cwd: repos, stdout: () => {}, stderr: () => {}, worker: { home, runner: recordingPlatform().runner } })).toBe(true);
     return rig;
   };
   const deps = (rig: ReturnType<typeof unjoinedRig>, cwd: string, extra: Record<string, unknown> = {}) => ({
-    fetch: rig.fetch as typeof fetch, mycoHome: home, cwd, agents: () => [], stdout: (l: string) => out.push(l), stderr: (l: string) => err.push(l), ...extra,
+    fetch: rig.fetch as typeof fetch, mycoHome: home, cwd, agents: () => [], stdout: (l: string) => out.push(l), stderr: (l: string) => err.push(l), worker: { home, runner: recordingPlatform().runner }, ...extra,
   });
   const projects = (rig: ReturnType<typeof unjoinedRig>) => rig.env.sqlite.query('SELECT project_id, name FROM projects ORDER BY created_at, project_id').all() as { project_id: string; name: string }[];
 

@@ -6,6 +6,9 @@
 #   GITHUB_TOKEN   — or GH_TOKEN — avoid GitHub API rate limits
 #
 # Requires Windows PowerShell 5.1+ (ships with Windows 10/11).
+#
+# This installer sets up Myco 1.x only. Myco 2.0 on Windows is not supported
+# by it yet: a 2.x release is never chosen, on either channel.
 
 [CmdletBinding()]
 param(
@@ -105,8 +108,13 @@ function Invoke-GhDownload {
 # Release selection — Select-MycoRelease
 #   Filters releases to the myco/v* namespace (excludes myco-team/*, myco-collective/*)
 #   Stable: highest non-prerelease; Beta: max(stable, prerelease) no-downgrade.
+#   Myco 1.x only: a 2.x tag is never chosen (this installer sets up 1.4's
+#   service), and $script:Myco2Seen records that one was passed over.
 #   Parses Major.Minor.Patch as [int] via .Split('.') — no [version] or [semver] needed.
 # ---------------------------------------------------------------------------
+$MaxMajor = 1
+$script:Myco2Seen = $false
+
 function Select-MycoRelease {
     param(
         [object[]]$Releases,
@@ -144,6 +152,7 @@ function Select-MycoRelease {
 
         $parts = $core.Split('.')
         $major = [int]$parts[0]
+        if ($major -ge $MaxMajor + 1) { $script:Myco2Seen = $true; continue }
         $minor = [int]$parts[1]
         $patch = [int]$parts[2]
 
@@ -194,8 +203,11 @@ $releases    = $resp.Content | ConvertFrom-Json
 
 $tag = Select-MycoRelease -Releases $releases -Channel $Channel
 
+if ($script:Myco2Seen) {
+    Write-Host "Myco 2.0 on Windows isn't supported by this installer yet." -ForegroundColor Yellow
+}
 if (-not $tag) {
-    Write-Host "No $Channel release found for myco. Check https://github.com/$Repo/releases" -ForegroundColor Red
+    Write-Host "No $Channel release of Myco 1.x found. Check https://github.com/$Repo/releases" -ForegroundColor Red
     exit 1
 }
 

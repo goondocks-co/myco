@@ -17,6 +17,7 @@
  */
 
 import semver from 'semver';
+import { selectChannelRelease } from '../../scripts/release-policy.mjs';
 import type { ReleaseChannel } from '@myco/constants/update';
 
 // Derived from package.json `repository.url`
@@ -43,6 +44,7 @@ export interface GitHubAsset {
 export interface GitHubRelease {
   tag_name: string;
   prerelease: boolean;
+  draft?: boolean;
   assets: GitHubAsset[];
 }
 
@@ -119,52 +121,13 @@ function isPrerelease(release: GitHubRelease, parsed: semver.SemVer): boolean {
 // pickRelease
 // ---------------------------------------------------------------------------
 
-/**
- * Select the best release for the given channel from a GitHub releases array.
- *
- * Filtering:
- *   - Only tags matching `^myco/v` (excludes `myco-team/v*`, `myco-collective/v*`).
- *   - Tags whose suffix is not valid semver are skipped.
- *
- * Selection:
- *   - `stable`:  highest-semver release that is NOT a prerelease.
- *   - `beta`:    `max(highest-stable, highest-prerelease)` by semver.
- *                A stable `myco/v1.4.0` BEATS a prerelease `myco/v1.3.0-beta.1`
- *                (no-downgrade guarantee).
- *
- * Returns null if nothing matches.
- */
+/** Highest eligible release by the shared channel policy. */
 export function pickRelease(
   releases: GitHubRelease[],
   channel: ReleaseChannel,
+  options: { asset?: string; currentVersion?: string; minimumMajor?: number; maximumMajor?: number } = {},
 ): GitHubRelease | null {
-  // Parse + classify all valid myco/v* releases
-  const candidates: Array<{ release: GitHubRelease; parsed: semver.SemVer }> = [];
-
-  for (const release of releases) {
-    const match = MYCO_TAG_RE.exec(release.tag_name);
-    if (!match) continue; // excludes myco-team/v*, myco-collective/v*, etc.
-
-    const parsed = semver.parse(match[1]);
-    if (!parsed) continue; // invalid semver suffix
-
-    candidates.push({ release, parsed });
-  }
-
-  if (candidates.length === 0) return null;
-
-  if (channel === 'stable') {
-    const stableCandidates = candidates.filter(
-      ({ release, parsed }) => !isPrerelease(release, parsed),
-    );
-    if (stableCandidates.length === 0) return null;
-    stableCandidates.sort((a, b) => semver.rcompare(a.parsed, b.parsed));
-    return stableCandidates[0].release;
-  }
-
-  // beta: max(stable, prerelease) — semver comparison handles the no-downgrade
-  candidates.sort((a, b) => semver.rcompare(a.parsed, b.parsed));
-  return candidates[0].release;
+  return selectChannelRelease(releases, channel, { minimumMajor: 1, ...options });
 }
 
 // ---------------------------------------------------------------------------

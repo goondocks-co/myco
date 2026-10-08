@@ -9,7 +9,7 @@
  * name is the record of that difference.
  *
  * The layout itself lives in `scripts/managed-paths.mjs` (shared with the npm
- * postinstall); this module re-uses it via `install/managed-binary.ts`.
+ * postinstall); this module imports that layout directly.
  *
  * Standalone mirrors of this contract exist where imports cannot reach:
  * `bin/binary-resolution.cjs` (npm tarball shims) and the Pi plugin template.
@@ -21,7 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { managedBinDir, managedBinaryPath } from '../install/managed-binary.js';
+import { managedBinDir, managedBinaryPath } from '../../scripts/managed-paths.mjs';
 import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { selfExecOf } from './self-exec.js';

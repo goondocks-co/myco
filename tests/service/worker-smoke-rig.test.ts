@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { workerRigSpec, type WorkerRigConfig } from '../../scripts/smoke-worker-service.js';
+import { workerRigConfigFromEnv, workerRigSpec, type WorkerRigConfig } from '../../scripts/smoke-worker-service.js';
 import { renderLaunchdPlist } from '../../packages/myco/src/service/launchd-plist.js';
 
 const config: WorkerRigConfig = {
@@ -11,14 +11,19 @@ const config: WorkerRigConfig = {
 };
 
 describe('worker smoke rig service', () => {
-  test('the actual command refuses an absent explicit membership home before running a worker', () => {
+  test('the command env reader refuses an absent explicit membership home before running a worker', () => {
+    const env: NodeJS.ProcessEnv = { MYCO_SMOKE_START_AT: 'login', MYCO_SMOKE_BINARY: config.binary };
+    expect(() => workerRigConfigFromEnv(env)).toThrow('Set MYCO_HOME explicitly');
+  });
+
+  test('the actual command refuses an absent explicit rig root before running a worker', () => {
     const env: NodeJS.ProcessEnv = { ...process.env, MYCO_SMOKE_START_AT: 'login', MYCO_SMOKE_BINARY: config.binary };
-    delete env.MYCO_HOME;
+    delete env.MYCO_SMOKE_ROOT;
     const result = spawnSync(process.execPath, ['--no-env-file', fileURLToPath(new URL('../../scripts/smoke-worker-service.ts', import.meta.url)), 'plan'], {
       env, encoding: 'utf8', timeout: 10_000,
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('Set MYCO_HOME explicitly');
+    expect(result.stderr).toContain('Set MYCO_SMOKE_ROOT explicitly');
   });
 
   test('runs the selected worker with its membership home and login runtime', () => {

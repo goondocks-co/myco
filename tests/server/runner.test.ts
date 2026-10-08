@@ -8,6 +8,8 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "../support/fenced-fs.mjs";
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { readTestProcessGroupId } from '../../scripts/test-process-tree.mjs';
+import { testExecHelper } from '../../scripts/test-service-exec.mjs';
 import {
   CommandCancelled, CommandFailed, commandFailureDetail, CommandTimedOut, isCommandFailure, processTreeEndOfSignal,
   processTreeEndOfTaskkill, systemRunner, WorkingDirectoryMissing,
@@ -134,13 +136,13 @@ describe('a command that outran its deadline', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  // POSIX only: `ps -o pgid=` and process groups are what this asserts, and Windows has neither. The deadline
-  // test above is the portable one, and on Windows it exercises the `taskkill` path instead.
   it.skipIf(process.platform === 'win32')('GATE: gives only a bounded command a group of its own, so an unbounded one still ends with this process', async () => {
-    // `$$` is the shell's own pid, and `ps` answers the group it belongs to.
+    const probe = process.platform === 'darwin'
+      ? `'${testExecHelper('process-info', 'test-process-info.c', ['-lproc']).replaceAll("'", "'\\''")}' $$ pgid`
+      : 'ps -o pgid= -p $$';
     const groupOf = async (options: { timeoutMs?: number }): Promise<string> =>
-      (await systemRunner().run('/bin/sh', ['-c', 'ps -o pgid= -p $$'], options)).stdout.trim();
-    const mine = (await systemRunner().run('/bin/sh', ['-c', `ps -o pgid= -p ${process.pid}`], {})).stdout.trim();
+      (await systemRunner().run('/bin/sh', ['-c', probe], options)).stdout.trim();
+    const mine = String(readTestProcessGroupId(process.pid));
 
     // An unbounded command shares this process's group: the terminal that ends this one ends it too.
     expect(await groupOf({})).toBe(mine);

@@ -4,17 +4,18 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from '../support/fenced-fs.mjs';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { assertTokenFree } from '../support/installer-token-gate.js';
 
 const FAKE_TOKEN = 'ghp_fake_installer_1644';
 const SHELLS = ['/bin/sh', '/bin/bash', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])];
 
 function isolatedEnv(home: string) {
-  return {
-    ...process.env, HOME: home, CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'),
+  return sandboxChildEnv(home, {
+    HOME: home, CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'),
     MYCO_HOME: join(home, '.myco'), NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1', CURL_HOME: home, XDG_CONFIG_HOME: home,
     GITHUB_TOKEN: '', GH_TOKEN: '',
-  };
+  });
 }
 
 function request(shell: string, script: string, env: NodeJS.ProcessEnv) {
@@ -47,8 +48,8 @@ describe('installer credential logging protections', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('loopback listener must have a port');
       const source = readFileSync(resolve('docs/install.sh'), 'utf8');
-      const helpers = source.slice(source.indexOf('auth_token()'), source.indexOf('# ---------------------------------------------------------------------------\n# Platform detection'));
-      const script = `set -eu\nREPO=goondocks-co/myco\nerror() { printf '%s\\n' "$1" >&2; }\n${helpers}\ngh_curl http://127.0.0.1:${address.port}/\n`;
+      const helpers = source.slice(source.indexOf('auth_token()'), source.indexOf('# Run'));
+      const script = `set -eu\nREPO=goondocks-co/myco\nerror() { printf '%s\\n' "$1" >&2; }\n${helpers}\ngh_request -fsSL http://127.0.0.1:${address.port}/\n`;
       for (const shell of SHELLS) {
         for (const mode of ['verbose', 'trace']) {
           const trace = join(root, `${shell.split('/').at(-1)}-${mode}.trace`);

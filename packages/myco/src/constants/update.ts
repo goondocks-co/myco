@@ -69,7 +69,7 @@ export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 export const UPDATE_SCRIPT_DELAY_SECONDS = 2;
 
 /** Valid release channels. */
-export const RELEASE_CHANNELS = ['stable', 'beta'] as const;
+export const RELEASE_CHANNELS = ['stable', 'beta', 'alpha'] as const;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
 
 /** Default release channel. */

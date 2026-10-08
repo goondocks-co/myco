@@ -20,11 +20,12 @@
  * driven the way a user meets it — as a process, over its `runtime.command`
  * pin — so what is compared is the environment it hands its child.
  */
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname ?? __dirname, '..', '..');
 const SNIPPET = path.join(REPO_ROOT, 'packages/myco/src/symbionts/templates/_shared/plugin-helpers.ts.snippet');
@@ -32,15 +33,14 @@ const HOME_MODULE = path.join(REPO_ROOT, 'packages/myco/src/paths/home.ts');
 const REDIRECT_MODULE = path.join(REPO_ROOT, 'packages/myco/bin/runtime-redirect.cjs');
 const POSIX = process.platform !== 'win32';
 
-const tmpDirs: string[] = [];
+let fixtureRoot: string;
+beforeEach(() => { fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-home-agreement-')); });
 afterEach(() => {
-  for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
 function tmpdir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tmpDirs.push(dir);
-  return dir;
+  return fs.mkdtempSync(path.join(fixtureRoot, prefix));
 }
 
 function writePin(dir: string, home: string, mode = 0o644): string {
@@ -62,6 +62,7 @@ import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { resolveMycoHome as binaryHome } from ${JSON.stringify(HOME_MODULE)};
+if (process.env.MYCO_TEST_UNSET_HOME === '1') delete process.env.MYCO_HOME;
 
 ${snippet}
 
@@ -91,12 +92,13 @@ function shimHomeFor(dir: string, env: { HOME: string; MYCO_HOME?: string }): st
   const driver = path.join(tmpdir('myco-shim-driver-'), 'driver.cjs');
   fs.writeFileSync(driver, `
 const redirect = require(${JSON.stringify(REDIRECT_MODULE)});
+if (process.env.MYCO_TEST_UNSET_HOME === '1') delete process.env.MYCO_HOME;
 redirect.maybeRedirect('/nonexistent/self-binary', process.env, process.cwd());
 process.stdout.write('NO-REDIRECT');
 `);
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: env.HOME };
-  if (env.MYCO_HOME === undefined) delete childEnv.MYCO_HOME;
-  else childEnv.MYCO_HOME = env.MYCO_HOME;
+  const childEnv = sandboxChildEnv(fixtureRoot, { HOME: env.HOME,
+    ...(env.MYCO_HOME === undefined ? { MYCO_TEST_UNSET_HOME: '1' } : { MYCO_HOME: env.MYCO_HOME }),
+  });
   return execFileSync(process.execPath, [driver], { cwd: dir, env: childEnv, encoding: 'utf-8' });
 }
 
@@ -117,9 +119,9 @@ function writeCommandPin(dir: string): void {
 function resolveBoth(dirs: string[], env: { HOME: string; MYCO_HOME?: string }): Answer[] {
   const driver = path.join(tmpdir('myco-home-driver-'), 'driver.ts');
   fs.writeFileSync(driver, driverScript());
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: env.HOME };
-  if (env.MYCO_HOME === undefined) delete childEnv.MYCO_HOME;
-  else childEnv.MYCO_HOME = env.MYCO_HOME;
+  const childEnv = sandboxChildEnv(fixtureRoot, { HOME: env.HOME,
+    ...(env.MYCO_HOME === undefined ? { MYCO_TEST_UNSET_HOME: '1' } : { MYCO_HOME: env.MYCO_HOME }),
+  });
   const out = execFileSync(process.execPath, [driver, ...dirs], {
     cwd: dirs[0],
     env: childEnv,

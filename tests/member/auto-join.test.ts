@@ -540,7 +540,7 @@ describe('held capture reaches the project however the repository is connected',
     await runHook('session-start', { session_id: 'sess-m', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-m'), cwd: root }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'missed', reason: 'no_remote' });
     expect(uncaptured()).toHaveLength(1);
-    await runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+    await runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents', '--no-worker'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
     expect(uncaptured()).toEqual([]);
     expect(listPending({ mycoHome, now: Date.now() })).toEqual([]);
     await runMemberCli(['drain', '--all'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
@@ -700,7 +700,7 @@ describe('a repository left with myco member leave', () => {
     await join(['--root', root]);
     await runMemberCli(['leave', '--root', root], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
     expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(true);
-    await runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+    await runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents', '--no-worker'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
     expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(false);
   });
 });
@@ -991,7 +991,7 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
 
   it('leaves a repository left after a join alone: a request made before the join never joins it again', async () => {
     const joiners: Array<[string, (root: string) => Promise<unknown>]> = [
-      ['myco member join', (root) => runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} })],
+      ['myco member join', (root) => runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents', '--no-worker'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} })],
       ['myco member auto-join --root', (root) => join(['--root', root])],
     ];
     for (const [how, joinIt] of joiners) {
