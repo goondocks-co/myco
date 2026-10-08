@@ -156,7 +156,7 @@ function validDeclaration(where: string, declaration: AuthorizationDeclaration |
   expect(declaration.subjects.length).toBeGreaterThan(0);
   expect(new Set(declaration.subjects).size).toBe(declaration.subjects.length);
   for (const subject of declaration.subjects) expect(SUBJECT_KINDS.includes(subject)).toBe(true);
-  expect(['deployment', 'project', 'machine', 'credential', 'member', 'run', 'raw', 'protocol', 'enrollment']).toContain(declaration.resolver);
+  expect(['deployment', 'project', 'machine', 'credential', 'member', 'run', 'raw', 'protocol', 'enrollment', 'self-enrollment']).toContain(declaration.resolver);
   expect(RESOURCE_RESOLVERS[declaration.resource]).toContain(declaration.resolver);
   const actions = typeof declaration.action === 'string' ? [declaration.action] : declaration.action.actions;
   expect(actions.length).toBeGreaterThan(0);

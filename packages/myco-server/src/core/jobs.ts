@@ -98,7 +98,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'invite-expiry',
     runsThrough: 'sleep',
-    converges: 'no spent, revoked or expired enrollment authority outlives the retention window; a live invitation is untouched whatever its age',
+    converges: 'expired undecided device requests are reclaimed; finished enrollment and decided requests obey retention; decision audits and live invitations remain',
   },
   // #1147 — transcript-first ingest
   {

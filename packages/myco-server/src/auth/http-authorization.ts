@@ -54,6 +54,7 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
   const resource: AuthorizationResource = { kind: declaration.resource, deploymentId: await deploymentIdentity(env.db), exists: true };
   const params = input.params ?? {};
   const parsed = parseJsonObject(input.body ?? '') ?? {};
+  if (declaration.resolver === 'self-enrollment') return enrollmentResource(env.db, subject.memberId ?? '', 'member');
   if (declaration.resolver === 'enrollment') {
     return enrollmentResource(env.db, typeof parsed.memberId === 'string' && MEMBER_ID.test(parsed.memberId) ? parsed.memberId : null, parsed.role === 'admin' ? 'admin' : 'member');
   }

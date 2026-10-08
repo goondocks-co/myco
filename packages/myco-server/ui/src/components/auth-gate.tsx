@@ -7,7 +7,7 @@ import { readPendingLink } from '../lib/pending-link';
 import { SignedOut } from '../pages/SignedOut';
 
 /** The paths rendered whether or not anyone is signed in. */
-const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/link', '/join']);
+const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/link', '/join', '/device']);
 /** The public paths that show the same thing to everyone, so never ask who is signed in. */
 const SESSIONLESS_PATHS: ReadonlySet<string> = new Set(['/join']);
 

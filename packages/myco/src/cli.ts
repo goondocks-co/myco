@@ -45,7 +45,7 @@ Commands:
   attach <project> --host <h>   Route a project to a Team Host (going-forward)
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
-  login <invite-link>      Redeem an invite link and sign this machine in
+  login <server-url>       Approve this machine in the dashboard and sign in
   import                   Bring this machine's existing agent history to its Deployment
   cutover                  Move this machine from Myco 1.4 to its Deployment (--dry-run first)
   member <op>              2.0 member: join | leave | drain | status | export | refresh

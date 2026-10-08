@@ -25,6 +25,8 @@ export interface OwnerContext {
   params: Record<string, string>;
   url: URL;
   now: number;
+  /** Source identity established by the serving entry, never a caller-supplied body or header. */
+  source: string;
 }
 
 /** Context for the two routes that serve a signed-in account ahead of membership: `member` is null for an account no member is linked to. */

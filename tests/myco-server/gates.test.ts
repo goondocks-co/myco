@@ -209,23 +209,29 @@ describe('gates', () => {
     }
   });
 
-  it('refuses every declared non-public route without a credential, via the deployed entry — and the one route that takes an enrollment authority instead still refuses a key it does not hold', async () => {
+  it('refuses credential-free access to protected routes; public enrollment grants nothing without admitted evidence', async () => {
     for (const r of ROUTES.filter((x) => x.auth !== 'public' && x.auth !== 'enroll')) {
       const res = await worker.fetch(withSource(r.path, { method: r.method, body: r.method === 'GET' ? undefined : '{}' }), env());
       expect(res.status).toBe(401);
     }
-    // The join route answers 200 with a refusal rather than 401: it has no credential to
-    // reject. Its admission is the key, so the property to hold is that a key the
-    // Deployment never minted buys nothing — checked here so the exemption above cannot
-    // quietly become an unauthenticated route that admits.
+    // Enrollment accepts protocol evidence in place of a member credential.
     const enroll = ROUTES.filter((x) => x.auth === 'enroll');
-    expect(enroll.map((r) => `${r.method} ${r.path}`)).toEqual(['POST /members/join']);
+    expect(enroll.map((r) => `${r.method} ${r.path}`)).toEqual(['POST /auth/device/start', 'POST /auth/device/poll', 'POST /members/join']);
     const e = sqliteEnv({ workerLogin: true });
     for (const key of ['x'.repeat(43), 'not-a-key', '']) {
       const res = await worker.fetch(withSource('/members/join', { method: 'POST', body: JSON.stringify({ key, machineId: 'machine_9' }) }), e.env);
       expect({ key: key.slice(0, 8), status: res.status, body: await res.json() })
         .toEqual({ key: key.slice(0, 8), status: 200, body: { joined: false, code: 'enrollment_unknown', reason: 'enrollment key unknown' } });
     }
+    const started = await worker.fetch(withSource('/auth/device/start', { method: 'POST',
+      body: JSON.stringify({ machineId: 'unapproved_machine', machineName: 'Unapproved', os: 'linux' }),
+    }), e.env);
+    expect(started.status).toBe(200);
+    const device = await started.json() as { device_code: string };
+    const pending = await worker.fetch(withSource('/auth/device/poll', { method: 'POST', body: JSON.stringify({ device_code: device.device_code }) }), e.env);
+    expect(await pending.json() as Record<string, unknown>).toEqual({ error: 'authorization_pending' });
+    const unknown = await worker.fetch(withSource('/auth/device/poll', { method: 'POST', body: JSON.stringify({ device_code: 'x'.repeat(43) }) }), e.env);
+    expect(await unknown.json() as Record<string, unknown>).toEqual({ error: 'invalid_grant' });
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as any).c).toBe(0);
   });
 
@@ -1322,6 +1328,8 @@ describe('gates', () => {
       'session:admin PATCH /api/storage-cleanup',
       'auth GET /auth/callback',
       'auth GET /auth/login',
+      'enroll POST /auth/device/start',
+      'enroll POST /auth/device/poll',
       'enroll POST /members/join',
       'member POST /blobs/{sha256}',
       'member POST /context/prompt',
@@ -1486,6 +1494,9 @@ describe('gates', () => {
       'session:member PATCH /api/machines/{machineId}',
       'session:member POST /api/machines/{machineId}/stop',
       'session:member POST /api/credentials/{id}/revoke',
+      'session:member POST /api/device/approve',
+      'session:member POST /api/device/deny',
+      'session:member POST /api/device/preview',
       'session:member POST /api/harness/dispatch',
       'session:member POST /api/projects/{projectId}/runs/{runId}/cancel',
       'session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',

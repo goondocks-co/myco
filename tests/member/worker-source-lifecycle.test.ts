@@ -38,7 +38,7 @@ function fixture(id: 'claude-code' | 'opencode' | 'codex') {
   ]) : removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-source-harness-bin-')));
   const pidFile = join(bin, 'pids.json');
   const helperReady = join(bin, 'helper.pid');
-  const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(helperReady)}, String(process.pid)); setInterval(() => {}, 1000);`;
+  const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(`${helperReady}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${helperReady}.tmp`)}, ${JSON.stringify(helperReady)}); setInterval(() => {}, 1000);`;
   const ownership = `
 const { spawn } = require('node:child_process');
 process.on('SIGTERM', () => {});

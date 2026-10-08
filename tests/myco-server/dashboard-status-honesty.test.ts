@@ -12,6 +12,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 
 const context = (aud: string, role: 'admin' | 'member' = 'admin'): OwnerContext => ({
+  source: '127.0.0.1',
   member: role === 'admin' ? PRINCIPAL : MEMBER_PRINCIPAL,
   now: Date.now(), url: new URL('https://s/api/status'), params: {},
   request: new Request('https://s/api/status'),

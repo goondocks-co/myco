@@ -206,9 +206,10 @@ describe('every route that mints an authority able to outlive the credential (#1
       'api/access.ts handleIssueMemberLink -> issueIdentityLinkAuthority', // owner session, an admin's
       'api/access.ts handleMintInvitation -> issueEnrollmentAuthority', // owner session
       'auth/enrollment.ts issueEnrollmentAuthority -> enrollmentInsert',
+      'auth/device.ts handleDeviceApprove -> enrollmentInsert', // authenticated dashboard self-enrollment
       'api/grants.ts handleMintGrant -> issueExternalGrant', // owner session
       'api/grants.ts handleRotateGrant -> rotateExternalGrant', // owner session
-      'auth/join.ts handleJoin -> mintInsert', // an enrollment key, no member credential
+      'auth/join.ts joinMember -> mintInsert', // invite join or device poll, admitted enrollment evidence
       'auth/members.ts handleLinkGithub -> issueIdentityLinkAuthority', // POST /members/link-github — mintsAuthority
       'auth/tokens.ts issueMemberToken -> mintInsert', // the insert itself
       'auth/tokens.ts refreshMemberToken -> mintInsert', // POST /tokens/refresh — mintsAuthority

@@ -14,6 +14,8 @@ import { lastActivityAt, REQUEST_STAMP_INTERVAL_MS, stampRequest } from '@myco-s
 import { CHAINED_WAKE_MS, POWER_THRESHOLDS, runTick, tickPacer, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { ENROLLMENT_RETENTION_MS } from '@myco-server-worker/auth/enrollment.js';
+import { handleDeviceStart } from '@myco-server-worker/auth/device.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -53,6 +55,33 @@ describe('the run bound the sweep reads', () => {
 });
 
 describe('when the Deployment last saw activity', () => {
+  it('undecided device requests hold housekeeping through expiry even without authenticated activity', async () => {
+    const f = fixture();
+    try {
+      expect((await runTick(f.env, NOW)).state).toBe('deep_sleep');
+      expect((await handleDeviceStart(f.env, new Request('https://s/auth/device/start', { method: 'POST', body: JSON.stringify({ machineId: 'sleep_device', machineName: 'Laptop', os: 'linux' }) }), NOW, '192.0.2.10')).status).toBe(200);
+      expect(await runTick(f.env, NOW)).toMatchObject({ state: 'sleep', heldBy: 'device:pending' });
+      expect(await runTick(f.env, NOW + 10 * 60_000)).toMatchObject({ state: 'sleep', heldBy: 'device:pending' });
+      expect(f.count('device_requests')).toBe(0);
+      expect((await runTick(f.env, NOW + 10 * 60_000)).state).toBe('deep_sleep');
+    } finally { f.sqlite.close(); }
+  });
+  it('due decided device rows hold housekeeping on an inactive Deployment while their durable audits remain', async () => {
+    const f = fixture();
+    try {
+      await handleDeviceStart(f.env, new Request('https://s/auth/device/start', { method: 'POST', body: JSON.stringify({ machineId: 'decided_device', machineName: 'Laptop', os: 'linux' }) }), NOW, '192.0.2.10');
+      f.sqlite.run("UPDATE device_requests SET decision = 'denied', decided_by = 'mem_machine_1', decided_at = ?", [NOW]);
+      f.sqlite.run("INSERT INTO device_decision_audit(request_id,member_id,machine_id,machine_name,os,source_hash,decision,decided_at) SELECT id,decided_by,machine_id,machine_name,os,'source-digest',decision,decided_at FROM device_requests");
+      expect((await runTick(f.env, NOW)).state).toBe('deep_sleep');
+      expect(f.count('device_requests')).toBe(1);
+      const due = NOW + ENROLLMENT_RETENTION_MS + 10 * 60_000;
+      expect(await runTick(f.env, due)).toMatchObject({ state: 'sleep', heldBy: 'device:pending' });
+      expect(f.count('device_requests')).toBe(0);
+      expect(f.count('device_decision_audit')).toBe(1);
+      expect((await runTick(f.env, due)).state).toBe('deep_sleep');
+    } finally { f.sqlite.close(); }
+  });
+
   it('is the latest of a capture receipt, a run start and an owner request, or null when nothing ever happened', async () => {
     const f = fixture();
     expect(await lastActivityAt(f.env.db)).toBeNull();

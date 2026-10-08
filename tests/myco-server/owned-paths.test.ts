@@ -26,7 +26,7 @@ const SHELL = '<!doctype html><div id="root"></div>';
 const SERVER = 'server';
 
 /** The dashboard's pages in the plan's URL scheme, each at its bare path. */
-const PAGES = ['/', '/sessions', '/knowledge', '/knowledge/plans', '/work', '/projects', '/people', '/settings', '/status', '/me/machines', '/join', '/link', '/spores', '/plans', '/p/proj_1/sessions'];
+const PAGES = ['/', '/sessions', '/knowledge', '/knowledge/plans', '/work', '/projects', '/people', '/settings', '/status', '/me/machines', '/join', '/link', '/device', '/spores', '/plans', '/p/proj_1/sessions'];
 /** Every route path, live and retired, with its parameters filled in. */
 const ROUTE_PATHS = [...ROUTES, ...RETIRED_ROUTES].map((r) => r.path.replace(/\{[^}]+\}/g, 'x'));
 /** The bare path of every `/x/*` pattern that no route serves exactly: what the pattern must not own. */
