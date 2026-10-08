@@ -26,14 +26,16 @@ test.skipIf(process.platform === 'win32')('the Darwin distribution gate rejects 
     const verify = (overrides: Record<string, string> = {}) => {
       fs.writeFileSync(calls, '');
       const result = spawnSync('bash', ['scripts/verify-darwin-distribution.sh', '1.2.3', asset, tarball, 'native'], {
-        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, MYCO_GATE_CALLS: calls,
+        env: { ...process.env, RUNNER_TEMP: scratch, PATH: `${bin}${path.delimiter}${process.env.PATH}`, MYCO_GATE_CALLS: calls,
           MYCO_GATE_VERSION: '1.2.3', ...overrides }, encoding: 'utf8', timeout: 10_000,
       });
       if (result.error) throw result.error;
       return result;
     };
     pack();
-    expect(verify().status).toBe(0);
+    const accepted = verify();
+    expect(accepted.stderr).toBe('');
+    expect(accepted.status).toBe(0);
     expect(fs.readFileSync(calls, 'utf8')).toBe('verify\nverify\nlaunch\nlaunch\n');
     const refused = verify({ MYCO_GATE_SIGNATURE_EXIT: '17' });
     expect(refused.status).toBe(1);
