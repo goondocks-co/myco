@@ -1,6 +1,6 @@
 name: Release
 
-# Triggered on tag push for any of the per-package tag prefixes.
+# Tag pushes publish; pull requests and manual dispatches verify the release recipe.
 on:
   push:
     tags:
@@ -9,10 +9,31 @@ on:
       - 'myco-shared/v*.*.*'
       - 'myco-shared/v*.*.*-*'
 
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish.yml'
+      - 'scripts/**'
+      - 'packages/myco/scripts/**'
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '.bun-version'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build without publishing
+        required: true
+        default: '2.0.0-alpha.1'
+        type: string
+      package:
+        description: Package family to verify
+        default: myco
+        type: choice
+        options: [myco, myco-shared]
+
 permissions:
   actions: read
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   require-ci:
@@ -22,14 +43,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Require the canonical CI aggregate on main
+        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/require-release-ci.mjs
+      - name: Dry-run admission
+        if: github.event_name != 'push'
+        run: echo 'Dry run verifies release artifacts; publication requires the exact-SHA main CI aggregate.'
 
   validate-tag:
     name: Validate Release Tag
     runs-on: ubuntu-latest
     outputs:
+      dry_run: ${{ steps.extract.outputs.dry_run }}
+      publication_allowed: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && steps.extract.outputs.dry_run == 'false' }}
       tag_name: ${{ steps.extract.outputs.tag_name }}
       tag_prefix: ${{ steps.extract.outputs.tag_prefix }}
       version: ${{ steps.extract.outputs.version }}
@@ -44,9 +71,18 @@ jobs:
         id: extract
         env:
           TAG_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          DRY_RUN_VERSION: ${{ inputs.version || '2.0.0-alpha.1' }}
+          DRY_RUN_PACKAGE: ${{ inputs.package || 'myco' }}
         run: |
+          if [ "$EVENT_NAME" = push ]; then
+            echo 'dry_run=false' >> "$GITHUB_OUTPUT"
+          else
+            TAG_NAME="${DRY_RUN_PACKAGE}/v${DRY_RUN_VERSION}"
+            echo 'dry_run=true' >> "$GITHUB_OUTPUT"
+          fi
           TAG_PREFIX="${TAG_NAME%%/v*}"
-          VERSION="${TAG_NAME#${TAG_PREFIX}/v}"
+          VERSION="${TAG_NAME#"${TAG_PREFIX}/v"}"
 
           case "$TAG_PREFIX" in
             myco)
@@ -264,7 +300,7 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: Build and Test
+    name: Build and verify release artifacts
     runs-on: ubuntu-latest
     needs: [validate-tag, cross-compile, sign-darwin]
     # cross-compile is skipped for myco-shared tags, which would
@@ -296,11 +332,11 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Run test suite under Bun
-        run: npm test
+      - name: Regenerate versioned plugin bundle
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: |
+          node --import tsx packages/myco/scripts/gen-plugin-bundle.ts
+          node --import tsx packages/myco/scripts/gen-plugin-bundle.ts --check
 
       # For myco-shared tags, run the normal build (bun build). For
       # myco tags, the binaries arrive from the cross-compile matrix —
@@ -351,6 +387,10 @@ jobs:
             fi
             chmod +x "$binary"
           done
+
+      - name: Verify release binary version
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: npm run build:verify -w @goondocks/myco
 
       # Stage raw binaries into a flat directory with canonical asset names so
       # upload-artifact has a single directory to root from, eliminating the
@@ -534,6 +574,8 @@ jobs:
 
   create-release:
     name: Create GitHub Release
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     needs: [validate-tag, build, require-ci, verify-darwin]
     # build runs for all tag prefixes via its always() gate; this gate
@@ -541,6 +583,7 @@ jobs:
     # the GitHub Release UI for it but still let publish run.
     if: |
       always() &&
+      needs.validate-tag.outputs.publication_allowed == 'true' &&
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
       needs.require-ci.result == 'success' &&
@@ -796,12 +839,16 @@ jobs:
 
   publish:
     name: Publish to npmjs.org
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     needs: [validate-tag, build, create-release, require-ci, verify-darwin]
     environment: npm-publish
     # Build supplies the npm tarballs. Internal packages skip the GitHub Release.
     if: |
       always() &&
+      needs.validate-tag.outputs.publication_allowed == 'true' &&
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
       needs.require-ci.result == 'success' &&

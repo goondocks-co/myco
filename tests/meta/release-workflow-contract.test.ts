@@ -1,5 +1,9 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import fs, { mkdtempSync, rmSync } from '../support/fenced-fs.mjs';
+import { CLIENTS } from '../../packages/myco/scripts/gen-plugin-bundle.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { latestExactCiRun, releaseCiDecision } from '../../scripts/require-release-ci.mjs';
@@ -385,4 +389,159 @@ test('CI runs the real container preservation and destructive-image gates', () =
   const workflow = ci.jobs['self-hosted-container'];
   expect(workflow.steps.some((step: { run?: string }) => step.run?.includes('scripts/smoke-container-persistence.mjs'))).toBe(true);
   expect(workflow.steps.some((step: { run?: string }) => step.run?.includes('scripts/test-container-persistence-mutations.mjs'))).toBe(true);
+});
+
+
+function publicationAllowed(workflow: typeof release, job: string, event: string, ref: string, dryRun: string): boolean {
+  const expression = workflow.jobs['validate-tag'].outputs.publication_allowed.slice(3, -2);
+  const github = { event_name: event, ref };
+  const startsWith = (value: string, prefix: string) => value.startsWith(prefix);
+  const admitted = new Function('github', 'steps', 'startsWith', `return (${expression});`)(
+    github, { extract: { outputs: { dry_run: dryRun } } }, startsWith,
+  );
+  const needs = Object.fromEntries(workflow.jobs[job].needs.map((name: string) => [name, {
+    result: 'success', outputs: { tag_prefix: 'myco', dry_run: dryRun, publication_allowed: String(admitted) },
+  }]));
+  return Boolean(new Function('github', 'needs', 'always', 'startsWith',
+    `return (${workflow.jobs[job].if.replace(/needs\.([\w-]+)/g, "needs['$1']")});`)(
+    github, needs, () => true, startsWith,
+  ));
+}
+
+function assertDryRunPublication(workflow: typeof release): void {
+  expect(workflow.permissions).toEqual({ actions: 'read', contents: 'read' });
+  for (const [name, job] of Object.entries<typeof release.jobs.build>(workflow.jobs)) {
+    if (name === 'create-release' || name === 'publish') continue;
+    expect(job.permissions?.contents ?? workflow.permissions.contents).toBe('read');
+    expect(job.permissions?.['id-token']).not.toBe('write');
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|NPM_TOKEN/);
+  }
+  for (const job of ['create-release', 'publish']) {
+    for (const event of ['pull_request', 'workflow_dispatch']) {
+      for (const ref of ['refs/pull/1/merge', 'refs/heads/main', 'refs/tags/myco/v2.0.0-alpha.1']) {
+        for (const dryRun of ['true', 'false', '']) {
+          expect(publicationAllowed(workflow, job, event, ref, dryRun)).toBe(false);
+        }
+      }
+    }
+    expect(publicationAllowed(workflow, job, 'push', 'refs/heads/main', 'false')).toBe(false);
+    expect(publicationAllowed(workflow, job, 'push', 'refs/tags/myco/v2.0.0-alpha.1', 'true')).toBe(false);
+    expect(publicationAllowed(workflow, job, 'push', 'refs/tags/myco/v2.0.0-alpha.1', 'false')).toBe(true);
+  }
+  expect(workflow.jobs['create-release'].permissions).toEqual({ contents: 'write' });
+  expect(workflow.jobs.publish.permissions).toEqual({ contents: 'read', 'id-token': 'write' });
+}
+
+test('PR and manual dry runs have no publication authority, even with successful dependencies', () => {
+  assertDryRunPublication(release);
+  for (const job of ['create-release', 'publish']) {
+    const mutant = structuredClone(release);
+    mutant.jobs[job].if = mutant.jobs[job].if
+      .replace("needs.validate-tag.outputs.publication_allowed == 'true' &&", '');
+    expect(publicationAllowed(mutant, job, 'workflow_dispatch', 'refs/heads/main', 'true')).toBe(true);
+    expect(() => assertDryRunPublication(mutant)).toThrow();
+  }
+  const elevated = structuredClone(release);
+  elevated.permissions.contents = 'write';
+  expect(() => assertDryRunPublication(elevated)).toThrow();
+  const credential = structuredClone(release);
+  credential.jobs.build.env = { NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}' };
+  expect(() => assertDryRunPublication(credential)).toThrow();
+});
+
+test('release-relevant PRs and supplied manual versions run the full distribution recipe', () => {
+  expect(release.on.pull_request.branches).toContain('main');
+  for (const path of ['.github/workflows/publish.yml', 'scripts/**', 'packages/myco/scripts/**',
+    '**/package.json', '**/package-lock.json', '.bun-version']) {
+    expect(release.on.pull_request.paths).toContain(path);
+  }
+  expect(release.on.workflow_dispatch.inputs.version).toMatchObject({ required: true, type: 'string' });
+  for (const job of ['validate-tag', 'compile-libsqlite3', 'cross-compile', 'sign-darwin', 'build', 'verify-darwin']) {
+    expect(release.jobs[job].if ?? '').not.toMatch(/github\.event_name|dry_run/);
+  }
+  const requireCi = release.jobs['require-ci'].steps.find((step: { run?: string }) => step.run?.includes('require-release-ci.mjs'));
+  expect(requireCi.if).toBe("github.event_name == 'push'");
+  const extract = release.jobs['validate-tag'].steps.find((step: { id?: string }) => step.id === 'extract');
+  expect(extract.env.DRY_RUN_VERSION).toBe("${{ inputs.version || '2.0.0-alpha.1' }}");
+  const scratch = mkdtempSync(join(tmpdir(), 'myco-release-validation-'));
+  try {
+    for (const [event, version, valid] of [
+      ['pull_request', '2.0.0-alpha.1', true], ['workflow_dispatch', '2.0.0-beta.2', true],
+      ['workflow_dispatch', 'bad-version', false], ['push', '2.0.0-alpha.1', true],
+    ] as const) {
+      const output = join(scratch, `${event}-${version}`);
+      const result = spawnSync('bash', ['-eu', '-c', extract.run], { encoding: 'utf8', env: {
+        ...process.env, EVENT_NAME: event, TAG_NAME: 'myco/v2.0.0-alpha.1',
+        DRY_RUN_VERSION: version, DRY_RUN_PACKAGE: 'myco', GITHUB_OUTPUT: output,
+      } });
+      expect(result.status, result.stderr).toBe(valid ? 0 : 1);
+      if (valid) {
+        const values = readFileSync(output, 'utf8');
+        expect(values).toContain(`version=${version}\n`);
+        expect(values).toContain(`dry_run=${event !== 'push'}\n`);
+        expect(values).toContain('tag_prefix=myco\n');
+      }
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('release verifies versioned build output after staging and delegates the suite to canonical CI', () => {
+  const build = release.jobs.build.steps;
+  expect(build.some((step: { run?: string }) => /npm (?:test|run lint)\b/.test(step.run ?? ''))).toBe(false);
+  const sync = build.findIndex((step: { run?: string }) => step.run?.includes('sync-package-versions.mjs'));
+  const generate = build.findIndex((step: { run?: string }) => step.run?.includes('gen-plugin-bundle.ts'));
+  expect(generate).toBeGreaterThan(sync);
+  expect(sync).toBeGreaterThanOrEqual(0);
+  expect(build[generate].run).toContain('gen-plugin-bundle.ts --check');
+  const stage = build.findIndex((step: { name?: string }) => step.name === 'Verify platform binaries');
+  const verify = build.findIndex((step: { run?: string }) => step.run === 'npm run build:verify -w @goondocks/myco');
+  const pack = build.findIndex((step: { name?: string }) => step.name === 'Pack platform packages (myco)');
+  expect(verify).toBeGreaterThan(stage);
+  expect(stage).toBeGreaterThanOrEqual(0);
+  expect(pack).toBeGreaterThan(verify);
+  assertPublication(release);
+  const compile = release.jobs['cross-compile'].steps;
+  const compileSync = compile.findIndex((step: { run?: string }) => step.run?.includes('sync-package-versions.mjs'));
+  const codegen = compile.findIndex((step: { run?: string }) => step.run === 'npm run codegen -w @goondocks/myco');
+  const binary = compile.findIndex((step: { run?: string }) => step.run?.includes('npm run build:binary'));
+  expect(codegen).toBeGreaterThan(compileSync);
+  expect(compileSync).toBeGreaterThanOrEqual(0);
+  expect(binary).toBeGreaterThan(codegen);
+});
+
+
+test('version sync requires fresh plugin manifests and regeneration stamps every client and marketplace', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'myco-release-codegen-'));
+  try {
+    for (const file of ['scripts/sync-package-versions.mjs', 'packages/myco/package.json',
+      'packages/myco/scripts/gen-plugin-bundle.ts', 'packages/myco/scripts/codegen-bundle.mjs',
+      'packages/myco/src/plugins/spec.ts', 'packages/myco/skills', 'packages/myco/evals']) {
+      const destination = join(scratch, file);
+      fs.mkdirSync(join(destination, '..'), { recursive: true });
+      fs.cpSync(file, destination, { recursive: true });
+    }
+    fs.symlinkSync(join(process.cwd(), 'node_modules'), join(scratch, 'node_modules'), 'dir');
+    const generate = (check = false) => spawnSync('node', ['--import', 'tsx',
+      'packages/myco/scripts/gen-plugin-bundle.ts', ...(check ? ['--check'] : [])], { cwd: scratch, encoding: 'utf8' });
+    expect(generate().status).toBe(0);
+    const sync = spawnSync('node', ['scripts/sync-package-versions.mjs', '--target', 'myco', '--version', '2.0.0-alpha.1'],
+      { cwd: scratch, encoding: 'utf8' });
+    expect(sync.status, sync.stderr).toBe(0);
+    const stale = generate(true);
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain('plugins/myco/plugin.json');
+    expect(generate().status).toBe(0);
+    expect(generate(true).status).toBe(0);
+    for (const client of CLIENTS) {
+      if (client.manifestPath === undefined) continue;
+      const manifest = JSON.parse(readFileSync(join(scratch, 'plugins/myco', client.manifestPath), 'utf8'));
+      expect(manifest.version).toBe('2.0.0-alpha.1');
+    }
+    const marketplace = JSON.parse(readFileSync(join(scratch, '.claude-plugin/marketplace.json'), 'utf8'));
+    expect(marketplace.plugins[0].version).toBe('2.0.0-alpha.1');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
