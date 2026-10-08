@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 import { selectChannelRelease } from '../../packages/myco/scripts/release-policy.mjs';
 import { resolveTargetTriple } from '../../packages/myco/src/upgrade/release-assets.js';
 
@@ -17,7 +17,7 @@ function tools(name: string, jq: boolean): string {
   const bin = path.join(root, name);
   fs.mkdirSync(bin);
   for (const tool of ['awk', 'tr', 'sh', 'uname', 'mktemp', 'cat', 'rm', 'sed', 'sha256sum', 'shasum', ...(jq ? ['jq'] : [])]) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+    const found = resolveTestTool(tool);
     if (found) fs.symlinkSync(found, path.join(bin, tool));
   }
   return bin;

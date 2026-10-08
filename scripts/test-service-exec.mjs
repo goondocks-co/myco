@@ -40,6 +40,97 @@ function refuse(dir, name) {
   throw new Error(`TEST SAFETY: real service-manager execution refused (${name})`);
 }
 
+// Quoted arguments are data; command substitutions retain their execution positions.
+function inspectShell(script, check, expansionsOnly = false) {
+  let index = 0, word = '', started = false, quoted = false, command = true, redirect = null, wrapper = null, wrapperArgument = false;
+  const heredocs = [];
+  const finish = () => {
+    if (!started) return;
+    if (redirect) {
+      if (redirect.heredoc) heredocs.push({ delimiter: word, stripTabs: redirect.stripTabs, expand: !quoted });
+      redirect = null;
+    } else if (wrapperArgument) wrapperArgument = false;
+    else if (command) {
+      if (['sudo', 'env', 'command', 'exec'].includes(word)) wrapper = word;
+      else if (wrapper && word.startsWith('-')) {
+        if (wrapper === 'command' && ['-v', '-V'].includes(word)) command = false;
+        if ((wrapper === 'sudo' && ['-u', '-g', '-h', '-p', '-C', '-T'].includes(word)) || (wrapper === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(word))) wrapperArgument = true;
+      } else if (!['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', '{', '}'].includes(word) && !/^[A-Za-z_][A-Za-z_0-9]*=/.test(word)) {
+        check(word);
+        command = false;
+      }
+    }
+    word = ''; started = false; quoted = false;
+  };
+  const substitution = delimiter => {
+    const start = index;
+    let depth = 1, quote = null;
+    for (; index < script.length; index++) {
+      const character = script[index];
+      if (character === '\\' && quote !== "'") { index++; continue; }
+      if (quote) { if (character === quote) quote = null; continue; }
+      if (character === "'" || character === '"') { quote = character; continue; }
+      if (delimiter === ')' && character === '(') depth++;
+      if (character === delimiter && --depth === 0) break;
+    }
+    inspectShell(script.slice(start, index), check);
+    index++;
+  };
+  while (index < script.length) {
+    const character = script[index++];
+    if (expansionsOnly) {
+      if (character === '\\') index++;
+      else if (character === '$' && script[index] === '(') { index++; substitution(')'); }
+      else if (character === '`') substitution('`');
+      continue;
+    }
+    if (character === '\\') { started = true; quoted = true; if (script[index] === '\n') index++; else word += script[index++] ?? ''; continue; }
+    if (character === "'" || character === '"') {
+      started = true; quoted = true;
+      while (index < script.length && script[index] !== character) {
+        const next = script[index++];
+        if (character === '"' && next === '\\') {
+          if ('$`"\\\n'.includes(script[index] ?? '\0')) { const escaped = script[index++]; if (escaped !== '\n') word += escaped; }
+          else word += next;
+          continue;
+        }
+        if (character === '"' && next === '$' && script[index] === '(') { index++; substitution(')'); continue; }
+        if (character === '"' && next === '`') { substitution('`'); continue; }
+        word += next;
+      }
+      index++; continue;
+    }
+    if (character === '$' && script[index] === '(') { started = true; index++; substitution(')'); continue; }
+    if (character === '`') { started = true; substitution('`'); continue; }
+    if (character === '#' && !started) { while (index < script.length && script[index] !== '\n') index++; continue; }
+    if (';\n|&()'.includes(character)) {
+      finish(); command = true; redirect = null; wrapper = null; wrapperArgument = false;
+      if (character === '\n') for (const document of heredocs.splice(0)) {
+        const start = index;
+        while (index < script.length) {
+          const end = script.indexOf('\n', index), next = end < 0 ? script.length : end;
+          const line = script.slice(index, next);
+          if ((document.stripTabs ? line.replace(/^\t+/, '') : line) === document.delimiter) {
+            if (document.expand) inspectShell(script.slice(start, index), check, true);
+            index = next + 1; break;
+          }
+          index = next + 1;
+        }
+      }
+      continue;
+    }
+    if (character === '<' || character === '>') {
+      finish(); redirect = { heredoc: character === '<' && script[index] === '<' && script[index + 1] !== '<', stripTabs: false };
+      while (script[index] === character) index++;
+      if (redirect.heredoc && script[index] === '-') { redirect.stripTabs = true; index++; }
+      continue;
+    }
+    if (/\s/.test(character)) { finish(); continue; }
+    started = true; word += character;
+  }
+  finish();
+}
+
 export function assertServiceCommand(cmd, env, cwd = process.cwd()) {
   const dir = env[GUARD_ENV];
   if (!dir || !cmd.length) return;
@@ -65,7 +156,7 @@ export function assertServiceCommand(cmd, env, cwd = process.cwd()) {
         catch (error) { if (!['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error.code)) throw error; }
       }
     }
-    if (script) for (const match of script.matchAll(/(?:^|[;\n|&(){}])\s*(?:(?:if|then|while|do|exec|sudo|command|env)\s+)*['"]?((?:\/[^\s'";|&]+\/)?(?:launchctl|systemctl))(?=[\s'";|&]|$)/g)) check(match[1]);
+    if (script) inspectShell(script, check);
   }
 
 }

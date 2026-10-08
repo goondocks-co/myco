@@ -24,7 +24,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import { sandboxChildEnv, assertTestPath } from '../../scripts/test-environment.mjs';
+import { sandboxChildEnv, assertTestPath, resolveTestTool } from '../../scripts/test-environment.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,7 +40,7 @@ function toolbox(dir: string, opts: { jq: boolean; curl?: string }): string {
   const tools = ['sh', 'env', 'uname', 'mktemp', 'sed', 'grep', 'awk', 'sort', 'head', 'tail', 'cut', 'tr', 'cat', 'rm', 'mkdir', 'mv', 'cp', 'chmod', 'sleep', 'kill', 'date',
     'sha256sum', 'shasum', 'codesign', 'xattr', 'perl', ...(opts.jq ? ['jq'] : [])];
   for (const tool of tools) {
-    const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+    const found = resolveTestTool(tool);
     if (found) fs.symlinkSync(found, path.join(dir, tool));
   }
   fs.writeFileSync(path.join(dir, 'curl'), opts.curl ?? '#!/bin/sh\necho "TEST SAFETY: public installer downloads are disabled" >&2\nexit 97\n');
@@ -86,6 +86,7 @@ function install(home: string, env: Record<string, string>, args: string[] = [],
     cwd: home,
     env: sandboxChildEnv(home, { PATH: toolPath ?? offlineTools, ...env }, {}), encoding: 'utf8', timeout: 90_000,
   });
+  if (result.error) throw result.error;
   return { status: result.status, out: `${result.stdout}${result.stderr}`.replace(/\x1b\[[0-9;]*m/g, ''), home };
 }
 
@@ -205,6 +206,15 @@ function legacyHome(opts: { binary: boolean }): { home: string; vault: string; b
 }
 
 describe('the Myco 2.0 installer', () => {
+  it('fixture tools resolve executable files even when the shell has a builtin', () => {
+    for (const name of fs.readdirSync(offlineTools).filter(name => name !== 'curl')) {
+      const resolved = fs.realpathSync(path.join(offlineTools, name));
+      expect(path.isAbsolute(resolved)).toBe(true);
+      expect(fs.statSync(resolved).isFile()).toBe(true);
+    }
+    if (resolveTestTool('kill')) expect(fs.existsSync(path.join(offlineTools, 'kill'))).toBe(true);
+  });
+
   it('refuses an unmocked public install before spawning a child', () => {
     const home = freshHome();
     expect(() => install(home, {}, ['--serve'])).toThrow(/TEST SAFETY: installer requires/);

@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readTestProcessRssKiB, readTestProcessTable, readTestProcessGroupId } from '../../scripts/test-process-tree.mjs';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
-import { sandboxServiceChild, assertNoServiceExecutions, assertAllServiceExecutions, consumeServiceExecDenials } from '../../scripts/test-service-exec.mjs';
+import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
+import { assertServiceCommand, sandboxServiceChild, assertNoServiceExecutions, assertAllServiceExecutions, consumeServiceExecDenials } from '../../scripts/test-service-exec.mjs';
 
 const roots: string[] = [];
 const fresh = () => {
@@ -18,8 +18,38 @@ afterEach(() => { for (const root of roots.splice(0)) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 const environment = (root: string) => sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root });
+const sqliteExecutable = resolveTestTool('sqlite3') ?? (fs.existsSync('/usr/bin/sqlite3') ? '/usr/bin/sqlite3' : null);
 
 describe('service-manager process containment', () => {
+  it.skipIf(!sqliteExecutable)('nested native SQLite probes remain admitted', () => {
+    const root = fresh(), env = environment(root);
+    const sqlite = sqliteExecutable!;
+    const child = spawnSync(process.execPath, ['-e', `const result = Bun.spawnSync([${JSON.stringify(sqlite)}, ':memory:', 'select 1;']); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.exitCode);`], { env, encoding: 'utf8' });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(child.stdout.trim()).toBe('1');
+  });
+
+  it('quoted SQL and comments mentioning service managers remain data', () => {
+    const root = fresh(), env = environment(root);
+    const data = `INSERT INTO spores SELECT '"managed LWCR" (launchctl print: managed LWCR); systemctl start example'`;
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    for (const script of [`printf '%s' ${quote(data)}`, `printf '%s' "note (launchctl print); systemctl start"`, '# /bin/launchctl bootstrap\nprintf safe', 'cat <<EOF\nlaunchctl print\nEOF', "cat <<'EOF'\n$(/bin/launchctl print)\nEOF", '"/bin/launch\\ctl" version', 'command -v launchctl']) {
+      expect(() => assertServiceCommand(['/bin/sh', '-c', script], env)).not.toThrow();
+    }
+    const child = spawnSync('/bin/sh', ['-c', `printf '%s' ${quote(data)}`], { env, encoding: 'utf8' });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(child.stdout).toBe(data);
+    expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).not.toThrow();
+  });
+
+  it('shell executable words and substitutions are refused before execution', () => {
+    const root = fresh(), env = environment(root);
+    for (const script of ["'/bin/launchctl' version", 'if :; then "systemctl" start example; fi', '( launchctl version )', 'printf "%s" "$(/bin/launchctl version)"', 'printf "%s" `systemctl status`', '! /bin/launchctl version', 'sudo -u user /bin/launchctl version', 'cat <<EOF\n$(/bin/launchctl version)\nEOF']) {
+      expect(() => assertServiceCommand(['/bin/sh', '-c', script], env)).toThrow('TEST SAFETY');
+      expect(consumeServiceExecDenials(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toMatch(/launchctl|systemctl/);
+    }
+  });
+
   it.skipIf(process.platform !== 'linux')('the execution boundary preserves fixture renames and hard links', () => {
     const root = fresh();
     const script = `const fs = require('node:fs'), path = require('node:path');

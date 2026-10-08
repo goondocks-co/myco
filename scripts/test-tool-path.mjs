@@ -1,6 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export function resolveTestTool(name, incomingPath = process.env.PATH ?? '') {
+  const extensions = process.platform === 'win32'
+    ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')]
+    : [''];
+  for (const dir of incomingPath.split(path.delimiter)) for (const extension of extensions) {
+    const candidate = path.resolve(dir, name + extension);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(error.code)) throw error;
+    }
+  }
+  return null;
+}
+
 // Only test tooling is reachable by name; installed harnesses and Myco are excluded.
 export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
   const bin = path.join(home, 'bin');
@@ -13,18 +29,10 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
     'taskkill', 'tasklist', 'cmd', 'powershell', 'pwsh', 'where',
     'perl', 'python', 'python3', 'ruby', 'file', 'stat', 'readlink', 'realpath', 'getconf',
     'cmp', 'diff', 'dd', 'mktemp', 'du', 'df', 'cc', 'as', 'ld',
-    'sha256sum', 'shasum', 'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'prlimit', 'timeout',
+    'sha256sum', 'shasum', 'openssl', 'curl', 'tar', 'gzip', 'unzip', 'setsid', 'setpriv', 'prlimit', 'timeout', 'sqlite3', 'shellcheck',
   ];
-  const extensions = process.platform === 'win32'
-    ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')]
-    : [''];
   for (const name of tools) {
-    const executable = incomingPath.split(path.delimiter)
-      .flatMap((dir) => extensions.map((extension) => path.join(dir, name + extension)))
-      .find((candidate) => {
-      try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
-      catch { return false; }
-    });
+    const executable = resolveTestTool(name, incomingPath);
     if (executable) {
       if (name === 'pwsh') process.env.MYCO_TEST_PWSH_EXECUTABLE = fs.realpathSync(executable);
       const suffix = process.platform === 'win32' ? path.extname(executable) : '';
@@ -34,4 +42,3 @@ export function sandboxPath(home, incomingPath = process.env.PATH ?? '') {
   }
   return bin;
 }
-

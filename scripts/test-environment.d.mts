@@ -1,4 +1,5 @@
 export function sandboxPath(home: string, incomingPath?: string): string;
+export function resolveTestTool(name: string, incomingPath?: string): string | null;
 export function sandboxTestHome(root: string): string;
 export const CHILD_HOME_NAMES: readonly string[];
 export function assertSandboxChildEnv(root: string, env: NodeJS.ProcessEnv): void;

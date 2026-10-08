@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sandboxPath } from './test-tool-path.mjs';
-export { sandboxPath } from './test-tool-path.mjs';
+export { sandboxPath, resolveTestTool } from './test-tool-path.mjs';
 import { serviceGuardEnvironment, guardedServicePath } from './test-service-exec.mjs';
 
 export function sandboxTestHome(root) {
