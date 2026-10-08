@@ -55,7 +55,7 @@ export function Device() {
           <a href="/auth/login" onClick={() => { pendingDeviceCode(code); }} className={buttonVariants({ variant: 'primary' })}>Sign in with GitHub</a>
         </> : me.isPending ? <p role="status">Checking your sign-in…</p>
           : me.error ? <p role="alert">This server is not answering. Reload to try again.</p>
-            : !me.data?.member ? <p role="alert">Your GitHub account is not connected to a member of this server.</p>
+            : !me.data?.member ? <p role="alert">{me.data?.membership?.reason ?? 'Your GitHub account is not connected to a member of this server.'}</p>
               : <>
                 <form onSubmit={e => { e.preventDefault(); void check(); }} className="flex flex-col gap-s3">
                   <label className="t-body text-ink" htmlFor="device-code">Code from your terminal</label>

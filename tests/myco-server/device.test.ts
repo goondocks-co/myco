@@ -26,7 +26,7 @@ function rig(onSql?: NonNullable<Parameters<typeof sqliteEnv>[0]>['onSql']) {
   }), env);
   const start = async (machineId = `device_${crypto.randomUUID()}`) => json(await post('/auth/device/start', { machineId, machineName: 'Test laptop', os: 'darwin' }));
   const poll = (code: string) => post('/auth/device/poll', { device_code: code }).then(json);
-  const decide = async (code: string, decision: 'approve' | 'deny' | 'preview' = 'approve', who = '770001') => post(`/api/device/${decision}`, { user_code: code }, await ownerCookie(now, who));
+  const decide = async (code: string, decision: 'approve' | 'deny' | 'preview' = 'approve', who = '770001') => post(`/api/device/${decision}`, { user_code: code }, await ownerCookie(e.db, now, who));
   const advance = (ms = 5000) => { now += ms; };
   const count = () => (e.sqlite.query('SELECT COUNT(*) AS n FROM member_credentials').get() as { n: number }).n;
   return { e, env, post, start, poll, decide, advance, count, now: () => now, source: (value: string) => { source = value; } };
@@ -108,7 +108,7 @@ describe('device authorization', () => {
       }
       const start = await r.start();
       for (const extra of [{ memberId: OWNER }, { role: 'admin' }, { role: 'owner' }]) {
-        expect((await r.post('/api/device/approve', { user_code: start.user_code, ...extra }, await ownerCookie(NOW, '770003'))).status).toBe(400);
+        expect((await r.post('/api/device/approve', { user_code: start.user_code, ...extra }, await ownerCookie(r.e.db, NOW, '770003'))).status).toBe(400);
       }
     } finally { r.e.sqlite.close(); }
   });
@@ -118,7 +118,7 @@ describe('device authorization', () => {
     try {
       const start = await r.start();
       expect((await r.post('/api/device/approve', { user_code: start.user_code })).status).toBe(401);
-      expect((await r.post('/api/device/approve', { user_code: start.user_code }, await ownerCookie(NOW, '770001'), 'https://attacker')).status).toBe(403);
+      expect((await r.post('/api/device/approve', { user_code: start.user_code }, await ownerCookie(r.e.db, NOW, '770001'), 'https://attacker')).status).toBe(403);
       r.env.sourceLimit = { limit: async () => ({ success: false }) };
       expect((await r.post('/auth/device/start', { machineId: 'new', machineName: 'New', os: 'linux' })).status).toBe(429);
       expect((await r.post('/auth/device/poll', { device_code: start.device_code })).status).toBe(429);

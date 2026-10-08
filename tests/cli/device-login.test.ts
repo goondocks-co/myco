@@ -127,7 +127,7 @@ describe('terminal device sign-in', () => {
         if (new URL(request.url).pathname === '/auth/device/start') {
           const started = await response.clone().json() as { user_code: string };
           const approval = await server.handleRequest(new Request(`${serverUrl}/api/device/approve`, {
-            method: 'POST', headers: { origin: serverUrl, cookie: await ownerCookie(now, '770001') }, body: JSON.stringify({ user_code: started.user_code }),
+            method: 'POST', headers: { origin: serverUrl, cookie: await ownerCookie(e.db, now, '770001') }, body: JSON.stringify({ user_code: started.user_code }),
           }), env);
           expect(approval.status).toBe(200);
         }

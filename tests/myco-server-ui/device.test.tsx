@@ -6,10 +6,11 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { createQueryClient } from '../../packages/myco-server/ui/src/lib/query-client';
 import { pendingDeviceCode } from '../../packages/myco-server/ui/src/lib/pending-device';
+import { dashboardMe } from '../helpers/dashboard-permissions';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; pendingDeviceCode(null); window.history.replaceState(null, '', '/'); });
-const ME = { sub: '168901', login: 'test', owner: false, member: { id: 'mem_test', label: 'Test', role: 'member' } };
+const ME = dashboardMe({ sub: '168901', login: 'test', owner: false, member: { id: 'mem_test', label: 'Test', role: 'member' } });
 const PREVIEW = { machineName: 'SSH laptop', os: 'linux', ip: '192.0.2.10', approverIp: '192.0.2.20', ageSeconds: 42, alreadyYours: true, scope: 'membership', expiresAt: Date.now() + 600000 };
 
 function mount(path = '/device') {
@@ -18,6 +19,20 @@ function mount(path = '/device') {
 }
 
 describe('device approval page', () => {
+  it('shows the server reason for inactive membership and offers no device actions', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async input => {
+      calls.push(String(input));
+      return Response.json({ ...ME, member: null, membership: { state: 'inactive', reason: 'Your membership is no longer active.' } });
+    }) as typeof fetch;
+    mount();
+    expect(await screen.findByText('Your membership is no longer active.')).toBeTruthy();
+    expect(screen.queryByText('Check machine')).toBeNull();
+    expect(screen.queryByText('Approve this machine')).toBeNull();
+    expect(screen.queryByText('Deny')).toBeNull();
+    expect(new Set(calls)).toEqual(new Set(['/auth/me']));
+  });
+
   for (const decision of ['approve', 'deny']) {
     it(`shows the code, machine, OS and IP before ${decision}, and posts only the human code`, async () => {
       const calls: Array<{ url: string; body: unknown }> = [];

@@ -7,9 +7,9 @@ interface Started { device_code: string; user_code: string; interval: number; ex
 const MEMBER = 'mem_device_parity';
 const ADMIN = 'mem_device_admin';
 
-async function cookie(sub: string): Promise<Record<string, string>> {
+async function cookie(target: ParityTarget, sub: string): Promise<Record<string, string>> {
   const now = Date.now();
-  return { cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub, login: 'device', iat: now, exp: now + 3600000 })}`, 'cf-connecting-ip': '1.2.3.4' };
+  return { cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: 'device', iat: now, exp: now + 3600000 })}`, 'cf-connecting-ip': '1.2.3.4' };
 }
 
 function post(target: ParityTarget, path: string, body: unknown, headers: Record<string, string> = { 'cf-connecting-ip': '1.2.3.4' }): Promise<Response> {
@@ -25,8 +25,8 @@ export const deviceLoginFlow: ParityScenario = {
     await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(MEMBER_ID)}, revision = revision + 1 WHERE id = 1`);
     await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES
       (${lit(MEMBER)},'device member','member','168901',${now}), (${lit(ADMIN)},'device admin','admin','168902',${now})`);
-    const memberHeaders = await cookie('168901');
-    const adminHeaders = await cookie('168902');
+    const memberHeaders = await cookie(target, '168901');
+    const adminHeaders = await cookie(target, '168902');
     const start = async (machine = `device_${crypto.randomUUID()}`): Promise<Started> => {
       const response = await post(target, '/auth/device/start', { machineId: machine, machineName: 'Parity laptop', os: 'linux' });
       expect(response.status).toBe(200);

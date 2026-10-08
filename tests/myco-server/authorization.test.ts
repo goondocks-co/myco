@@ -73,6 +73,46 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
 }
 
 describe('Deployment authorization policy', () => {
+  it('declares each device route and refuses inactive, foreign and incompatible actors', () => {
+    const rows = [
+      ['/auth/device/start', 'protocol', 'protocol', 'protocol', ['enrollment']],
+      ['/auth/device/poll', 'protocol', 'protocol', 'protocol', ['enrollment']],
+      ['/api/device/preview', 'directory', 'read', 'deployment', ['member']],
+      ['/api/device/approve', 'enrollment', 'enroll.self', 'self-enrollment', ['member']],
+      ['/api/device/deny', 'directory', 'read', 'deployment', ['member']],
+    ] as const;
+    for (const [path, kind, action, resolver, subjects] of rows) {
+      const declaration = ROUTES.find(route => route.method === 'POST' && route.path === path)?.authorization;
+      expect(declaration).toEqual({ resource: kind, action, resolver, subjects: [...subjects], transport: 'http' });
+      for (const [actor, subject] of Object.entries(SUBJECTS)) {
+        const resolved = { ...resource(kind), grantedRole: subject.role ?? 'member' };
+        const expected = path.startsWith('/auth/') ? actor === 'enrollment' : ['owner', 'admin', 'member'].includes(actor);
+        expect({ path, actor, allowed: authorizeDeclaration(subject, declaration, {}, resolved) }).toEqual({ path, actor, allowed: expected });
+        expect(authorizeDeclaration({ ...subject, live: false }, declaration, {}, resolved)).toBe(false);
+        expect(authorizeDeclaration({ ...subject, deploymentId: 'deployment-b' }, declaration, {}, resolved)).toBe(false);
+        expect(authorizeDeclaration({ ...subject, transport: 'mcp' }, declaration, {}, resolved)).toBe(false);
+        expect(authorizeDeclaration(subject, undefined, {}, resolved)).toBe(false);
+      }
+    }
+  });
+
+  it('resolves device approval to the actor and their current role despite requested identities', async () => {
+    const e = sqliteEnv();
+    try {
+      e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
+      e.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_2'");
+      const declaration = ROUTES.find(route => route.path === '/api/device/approve')!.authorization;
+      for (const [memberId, role] of [['mem_machine_1', 'owner'], ['mem_machine_3', 'admin'], ['mem_machine_2', 'member']] as const) {
+        const subject = await memberSubject(e.db, memberId, 'http');
+        const resolved = await resolveHttpResource(e.serverEnv, declaration, subject, { body: JSON.stringify({ memberId: 'someone-else', role: 'owner' }) });
+        expect(resolved).toMatchObject({ ownerMemberId: memberId, grantedRole: role });
+        expect(authorizeDeclaration(subject, declaration, {}, resolved)).toBe(true);
+        e.sqlite.query('UPDATE members SET revoked_at = ? WHERE id = ?').run(100, memberId);
+        expect(await authorizeHttp(e.serverEnv, declaration, await memberSubject(e.db, memberId, 'http'), {})).toBe(false);
+      }
+    } finally { e.sqlite.close(); }
+  });
+
   it('resolves every invitation target authority before selecting its finite action', async () => {
     const e = sqliteEnv();
     try {
