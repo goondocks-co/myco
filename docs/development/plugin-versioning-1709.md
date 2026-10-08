@@ -13,7 +13,7 @@ Removing `version` from every emitted manifest is not a documented compatibility
 | Agent Plugins 1.0 root `plugin.json` | Yes. | The normative required fields and JSON Schema require only `$schema` and `name`. Version is metadata; clients may use it for updates and freshness. [Specification](https://agent-plugins.org/specification), [schema](https://agent-plugins.org/schemas/1.0.0/plugin.schema.json) |
 | Codex standalone `.codex-plugin/plugin.json` | Keep it. | OpenAI explicitly marks `version` required in the Codex package format, optional in the portable schema. This documents the package/submission contract; it does not prove every local loader rejects an omitted version. [Package identity table](https://developers.openai.com/plugins/deploy/submission#package-identity-and-components) |
 
-OpenAI also supports a portable root manifest with a Codex compatibility overlay. The portable root remains canonical for identity. Omitting versions through that route would need separate validation of the actual bundle and supported clients; native-format omission must not be inferred from portable-schema optionality. [OpenAI package guide](https://developers.openai.com/plugins/build/plugins#plugin-structure)
+OpenAI also supports a portable root manifest with Codex compatibility metadata. The portable root remains canonical for identity. Omitting versions through that route would need separate validation of the actual bundle and supported clients; native-format omission must not be inferred from portable-schema optionality. [OpenAI package guide](https://developers.openai.com/plugins/build/plugins#plugin-structure)
 
 ## Git updates
 
