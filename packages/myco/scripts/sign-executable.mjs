@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -13,7 +13,7 @@ const STEP_TIMEOUT_MS = 60_000;
  */
 export function signExecutable({ target, outfile, platform = process.platform, run = spawnSync }) {
   if (platform !== 'darwin' || !target.startsWith('darwin-')) return;
-  const probeDir = mkdtempSync(path.join(tmpdir(), 'myco-sign-verify-'));
+  const probeDir = fs.mkdtempSync(path.join(tmpdir(), 'myco-sign-verify-'));
   const executable = path.resolve(outfile);
   try {
     for (const [command, args] of [
@@ -28,6 +28,6 @@ export function signExecutable({ target, outfile, platform = process.platform, r
       }
     }
   } finally {
-    rmSync(probeDir, { recursive: true, force: true });
+    fs.rmSync(probeDir, { recursive: true, force: true });
   }
 }
