@@ -1,10 +1,11 @@
-import { commitAttributedWrite, type RunWrite } from '../core/runs.js';
+import { commitAttributedWrite, titleRunInFlightSql, type RunWrite } from '../core/runs.js';
 import type { PreparedStatement, RelationalStore, RunResult } from '../core/adapters.js';
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../db/session-dates.js';
 import { containsPattern, inListChunks, keyset, page, projectsFiltering, type Page, type ProjectSet, type ReadScope } from './scope.js';
 export { containsPattern };
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
+import { SQL_NOW_MS } from '../core/run-deadline.js';
 
 export interface ProjectRow {
   projectId: string;
@@ -682,20 +683,35 @@ const titlingStamp = (db: RelationalStore, projectId: string, sessionId: string)
   db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();
 
 /**
- * Claims an ended session's first automatic attempt or, given `retryBefore`, a
- * retry of one that ended untitled with its stamp before that instant; null
- * admits a first attempt only. Answers the stamp it replaced, so an attempt that
- * never launches can put exactly that back.
+ * Claims the first automatic attempt on a session that has ended or, given `idleBefore`, gone quiet (its last receipt at or before
+ * that instant), or, given `retryBefore`, a retry of one that ended untitled with its stamp before that instant; null admits a
+ * first attempt only. Answers the stamp it replaced, so an attempt that never launches can put exactly that back.
  */
-export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, retryBefore: number | null): Promise<{ claimed: boolean; previous: number | null }> {
+export async function claimTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, retryBefore: number | null, idleBefore: number | null = null): Promise<{ claimed: boolean; previous: number | null }> {
   const row = await titlingStamp(db, projectId, sessionId);
   if (row === null) return { claimed: false, previous: null };
   const previous = row.titled_at ?? null;
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at IS ? AND ended_at IS NOT NULL AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
-    .bind(nowMs, projectId, sessionId, previous, retryBefore)
+    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at IS ? AND (ended_at IS NOT NULL OR last_received_at <= ?) AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .bind(nowMs, projectId, sessionId, previous, idleBefore ?? 0, retryBefore)
     .run();
   return { claimed: result.meta.changes === 1, previous };
+}
+
+/**
+ * Claims the refresh of a titled session, open or ended: its title stamped at or before `refreshBefore`, a later receipt, and no
+ * title run of it in flight. Stamps `titled_at`, which holds the next refresh off for the interval and leaves `title_material_at`,
+ * the material of the standing title, where it is; answers the stamp it replaced so an attempt that never launches can put it back.
+ */
+export async function claimRefreshTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, refreshBefore: number): Promise<{ claimed: boolean; previous: number | null }> {
+  const row = await titlingStamp(db, projectId, sessionId);
+  if (row === null || row.titled_at === null) return { claimed: false, previous: null };
+  const result = await db
+    .prepare(`UPDATE sessions SET titled_at = ?, title_material_at = COALESCE(title_material_at, titled_at) WHERE project_id = ? AND session_id = ? AND titled_at = ? AND titled_at <= ? AND title IS NOT NULL AND last_received_at > COALESCE(title_material_at, titled_at)
+      AND NOT ${titleRunInFlightSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .bind(nowMs, projectId, sessionId, row.titled_at, refreshBefore)
+    .run();
+  return { claimed: result.meta.changes === 1, previous: row.titled_at };
 }
 
 /**
@@ -705,7 +721,7 @@ export async function claimOwnerTitling(db: RelationalStore, projectId: string, 
   const row = await titlingStamp(db, projectId, sessionId);
   if (row === null) return { claimed: false, previous: null };
   const result = await db
-    .prepare(`UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?) AND ${sessionMaterialReadySql('sessions')}`)
+    .prepare(`UPDATE sessions SET titled_at = ?, title_material_at = CASE WHEN title IS NULL THEN title_material_at ELSE COALESCE(title_material_at, titled_at) END WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?) AND ${sessionMaterialReadySql('sessions')}`)
     .bind(nowMs, projectId, sessionId, nowMs - inFlightMs)
     .run();
   return { claimed: result.meta.changes === 1, previous: row.titled_at ?? null };
@@ -722,7 +738,7 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
 /** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
 export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null, attribution?: RunWrite): Promise<boolean> {
   const statement = db
-    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ? WHERE project_id = ? AND session_id = ? AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .prepare(`UPDATE sessions SET title = ?, summary = ?, titled_by = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}) WHERE project_id = ? AND session_id = ? AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
     .bind(title, summary, titledBy, projectId, sessionId);
   const result = await commitAttributedWrite(db, { projectId }, statement, attribution);
   return result.meta.changes > 0;
@@ -740,7 +756,7 @@ export async function sessionCarriesTitle(db: RelationalStore, scope: ReadScope,
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
   const statement = db
-    .prepare(`UPDATE sessions SET title = ?, summary = ? WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
+    .prepare(`UPDATE sessions SET title = ?, summary = ?, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS}) WHERE project_id = ? AND session_id = ? AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${sessionMaterialReadySql('sessions')}`)
     .bind(title, summary, projectId, sessionId);
   const result = await commitAttributedWrite(db, { projectId }, statement, attribution);
   return result.meta.changes > 0;

@@ -37,6 +37,7 @@ export function waitingWords(p: Pick<TitlingBackfillProgress, 'waiting' | 'runsP
     if (p.runsPerDay === 0) return 'The daily limit is 0, so nothing is titled until it is raised under Task overrides.';
     return `Today’s limit of ${p.runsPerDay ?? 0} is reached; the next title can start ${liftsAt(w.until, now)}.`;
   }
+  if (w.reason === 'reserved') return `The rest of today’s limit of ${p.runsPerDay ?? 0} is kept for sessions that ended, went quiet or went on today; older sessions can start ${liftsAt(w.until, now)}.`;
   if (w.reason === 'overlap') return 'Waiting for the title in progress to finish.';
   return `The next titles can start ${liftsAt(w.until, now)}.`;
 }

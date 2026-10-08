@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 77;
+export const SERVER_SCHEMA_VERSION = 78;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
@@ -25,6 +25,16 @@ export const TITLING_MAX_ATTEMPTS = 3;
  * sends. It exceeds the longest hook timeout a symbiont template declares.
  */
 export const SESSION_END_SETTLE_MS = 35_000;
+/** Titling: how long a session still open must have sent nothing before it counts as ended for titling, when `agent.titling_idle_close_minutes` holds no value. */
+export const TITLING_IDLE_CLOSE_MINUTES_DEFAULT = 120;
+/** Titling: how many user prompts a titled, still-open session takes after its last titling before it is titled again. */
+export const TITLING_REFRESH_MIN_PROMPTS = 10;
+/** Titling: the least time between two titlings of one session that is still open. */
+export const TITLING_REFRESH_MIN_INTERVAL_MS = 4 * 3_600_000;
+/** Titling: a session whose latest activity or end falls inside this window is fresh work, ahead of older backlog. */
+export const TITLING_FRESH_WINDOW_MS = 86_400_000;
+/** Titling: the fraction of the daily ceiling kept for fresh sessions is one over this number, rounded down; older backlog may use the rest. */
+export const TITLING_FRESH_RESERVE_DIVISOR = 3;
 export const SERVER_PROTOCOL = 1;
 export const MIN_COMPAT_MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';

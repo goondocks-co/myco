@@ -114,7 +114,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'titling-backfill',
     runsThrough: 'idle',
-    converges: 'every ended, untitled session with fully parsed material is claimed, newest first, until it carries a title or workers have taken the attempt bound on it, inside the Deployment\'s daily titling ceiling and pace; a session its own capture owes a title always, a wholly imported one only while the backfill is on',
+    converges: 'every ended or quiet, untitled session with fully parsed material is claimed, fresh work before older backlog and newest first, until it carries a title or workers have taken the attempt bound on it, and a titled session still open is refreshed after enough new prompts, inside the Deployment\'s daily titling ceiling and pace; a session its own capture owes a title always, a wholly imported one only while the backfill is on',
   },
   { name: 'storage-content-cleanup', runsThrough: 'idle', converges: 'selected duplicate event bodies and large tool inputs are durably archived before a bounded atomic clear, and behind-cursor writes remain queued' },
   // #1151 — worker mode
@@ -248,12 +248,14 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
  * and under the same `agent.tasks` override as every scheduled task:
  * `enabled`, off until an operator turns it on, admits wholly imported sessions,
  * `runIn` the power states a wake dispatches in, `maxRunsPerDay` a ceiling
- * counted across the Deployment by the backfill's actor, `intervalSeconds` the
+ * counted across the Deployment by the backfill's actor (a third of it kept for
+ * sessions that ended, went quiet or went on within the day, so older backlog may
+ * use two thirds), `intervalSeconds` the
  * least time between two wakes that dispatch, and `overlap: 'skip'` holds a
  * wake while a backfill run is still in flight. The `titling-backfill` job
  * reads it; the clock's per-Project loop does not.
  */
-export const TITLING_BACKFILL_SCHEDULE: TaskSchedule = { enabled: false, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', maxRunsPerDay: 24 };
+export const TITLING_BACKFILL_SCHEDULE: TaskSchedule = { enabled: false, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', maxRunsPerDay: 36 };
 
 /** The schedule this Deployment declares for a task: the block, or null for a task it schedules nothing for and for a name it does not serve. */
 export function declaredScheduleFor(task: string): TaskSchedule | null {

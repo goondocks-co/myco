@@ -46,6 +46,7 @@ import { listUnprocessedPrompts } from '../read/prompts.js';
 import { PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
+import { titlingParamsOf } from './titling-params.js';
 import { parseRunAudit } from './run-audit.js';
 import { runHasAttempt } from './run-steps.js';
 import { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
@@ -138,9 +139,10 @@ export async function alreadySeeded(db: RelationalStore, scope: ReadScope): Prom
   return (await countSpores(db, scope, { status: 'active' })) >= SEEDED_SPORE_FLOOR;
 }
 
-/** A titling skip holds when the session its dispatch named carries a title. */
+/** A titling skip holds when the session its dispatch named carries a title; a refresh exists to replace that title, so none holds for it. */
 export async function titleStands(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   const sessionId = sessionNamedByRun(run);
+  if (titlingParamsOf(run.runContext)?.mode === 'refresh') return false;
   return sessionId !== null && (await sessionCarriesTitle(db, scope, sessionId));
 }
 

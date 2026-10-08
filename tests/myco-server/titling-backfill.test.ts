@@ -9,19 +9,26 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import {
-  backfillTitles, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
+  backfillTitles, freshReserve, sessionMaterial, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, titlingIdleCloseMinutes, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
 } from '@myco-server-worker/core/titling.js';
 import { deploymentTaskCeilingWindow } from '@myco-server-worker/core/runs.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { listConvergenceTitleSessions, untitledReason } from '@myco-server-worker/read/children.js';
+import { overwriteTitle } from '@myco-server-worker/read/sessions.js';
+import { listTitleCandidates, untitledReason, type TitleCandidateWindow } from '@myco-server-worker/read/children.js';
 import { count, sqliteEnv, withHarness } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
 const ORIGIN = 'https://s';
+const HOUR = 3_600_000;
+
+/** The instants a wake at `now` reads candidates by, under the default idle bound and every imported session admitted. */
+const windowAt = (now: number): TitleCandidateWindow => ({
+  retryBefore: now - 600_000, idleBefore: now - 2 * HOUR, freshAfter: now - DAY, refreshBefore: now - 4 * HOUR, refreshPrompts: 10, imported: true,
+});
 
 function rig() {
   const e = sqliteEnv();
@@ -54,13 +61,13 @@ function rig() {
 describe('the imported-session backfill', () => {
   it('is declared as a job at idle depth, with a block that is off until an operator turns it on', () => {
     expect(SERVER_JOBS.find((j) => j.name === 'titling-backfill')?.runsThrough).toBe('idle');
-    expect(TITLING_BACKFILL_SCHEDULE).toEqual({ enabled: false, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', maxRunsPerDay: 24 });
+    expect(TITLING_BACKFILL_SCHEDULE).toEqual({ enabled: false, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', maxRunsPerDay: 36 });
   });
 
   it('dispatches nothing while scheduling is off, or while its own block is off, and leaves no claim behind', async () => {
     const r = rig();
     r.session('s1');
-    expect(await titlingBackfillPolicy(r.env)).toEqual({ scheduledTasksEnabled: false, backfillEnabled: false, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false });
+    expect(await titlingBackfillPolicy(r.env)).toEqual({ scheduledTasksEnabled: false, backfillEnabled: false, runsPerDay: 36, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: false });
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
     r.setting('agent.scheduled_tasks_enabled', true);
     expect((await titlingBackfillPolicy(r.env)).enabled).toBe(false);
@@ -76,7 +83,7 @@ describe('the imported-session backfill', () => {
   it('titles untitled imported sessions with parsed material, newest first, as a claim attributed to the backfill; every other session is left alone', async () => {
     const r = rig();
     r.on();
-    r.session('older', { endedAt: NOW - DAY });
+    r.session('older', { endedAt: NOW - 2 * DAY });
     r.session('newest', { endedAt: NOW - 1000 });
     r.session('middle', { endedAt: NOW - 3600_000, project: 'proj_2' });
     r.session('unparsed', { parsed: false });
@@ -85,7 +92,8 @@ describe('the imported-session backfill', () => {
     r.session('deleted');
     r.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES ('proj_1', 'deleted', NULL, ?, 'mem_1')`, [NOW]);
 
-    expect((await listConvergenceTitleSessions(r.env.db, 10, NOW, true)).map((c) => c.sessionId)).toEqual(['newest', 'middle', 'older']);
+    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 10)).freshClaims.map((c) => c.sessionId)).toEqual(['newest', 'middle']);
+    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 10)).backlogClaims.map((c) => c.sessionId)).toEqual(['older']);
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(3);
     expect(r.runs().map((run) => [run.projectId, run.sessionId, run.mode, run.actor]).sort()).toEqual([
       ['proj_1', 'newest', 'claim', TITLING_BACKFILL_ACTOR], ['proj_1', 'older', 'claim', TITLING_BACKFILL_ACTOR], ['proj_2', 'middle', 'claim', TITLING_BACKFILL_ACTOR],
@@ -247,13 +255,20 @@ describe('the imported-session backfill', () => {
     expect(r.runs().map((run) => [run.sessionId, run.actor])).toEqual([['a', TITLING_BACKFILL_ACTOR]]);
   });
 
-  it('reads the ended, untitled sessions through their own partial index', () => {
+  it('reads every candidate kind through its own partial index, and counts a refresh\'s new prompts through the receipt index', async () => {
     const r = rig();
-    const plan = (sql: string, binds: unknown[]) => (r.sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(binds as never[])) as { detail: string }[]).map((row) => row.detail);
-    let captured = '';
-    const store = { prepare: (sql: string) => { captured = sql; return { bind: () => ({ all: async () => ({ results: [] }), first: async () => null }) }; } } as unknown as RelationalStore;
-    void listConvergenceTitleSessions(store, 5, NOW, true);
-    expect(plan(captured, [NOW, 1, 5])[0]).toContain('USING INDEX idx_sessions_untitled_ended');
+    const plan = (sql: string, binds: unknown[]) => (r.sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(binds as never[])) as { detail: string }[]).map((row) => row.detail).join('\n');
+    const statements: Array<{ sql: string; binds: unknown[] }> = [];
+    const store = { prepare: (sql: string) => ({ bind: (...binds: unknown[]) => { statements.push({ sql, binds }); return { all: async () => ({ results: [] }) }; } }) } as unknown as RelationalStore;
+    await listTitleCandidates(store, windowAt(NOW), 5);
+    const plans = statements.map((st) => plan(st.sql, st.binds));
+    const using = (index: string) => plans.filter((p) => p.includes(`SEARCH s USING INDEX ${index}`) || p.includes(`SCAN s USING INDEX ${index}`));
+    expect(statements).toHaveLength(5);
+    expect(using('idx_sessions_untitled_ended')).toHaveLength(2);
+    expect(using('idx_sessions_untitled_open')).toHaveLength(2);
+    expect(using('idx_sessions_titled_recent')).toHaveLength(1);
+    expect(plans.find((p) => p.includes('idx_sessions_titled_recent'))).toMatch(/idx_prompt_batches_user_received/);
+    for (const p of plans) expect(p).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/);
   });
 
   it('names why each ended session is untitled, and nothing for a titled or open one', async () => {
@@ -340,12 +355,12 @@ describe('the imported-session backfill', () => {
     let releaseCounts!: () => void;
     const allCounted = new Promise<void>((resolve) => { releaseCounts = resolve; });
     let inserts = 0;
-    const insertLanded: Array<() => void> = [];
-    const afterInsert = (n: number) => new Promise<void>((resolve) => { if (inserts >= n) resolve(); else insertLanded[n] = resolve; });
+    const insertLanded: Array<Array<() => void>> = [];
+    const afterInsert = (n: number) => new Promise<void>((resolve) => { if (inserts >= n) resolve(); else (insertLanded[n] ??= []).push(resolve); });
     const env: ServerEnv = { ...r.env, db: staged(r.env.db, (sql, kind, n) => {
       if (kind === 'first' && isCeilingCount(sql)) { counted += 1; if (counted === wakes) releaseCounts(); return allCounted; }
       if (kind === 'all' && isCandidateList(sql) && n > 1) return afterInsert(n - 1);
-      if (kind === 'run' && isRunInsert(sql)) return Promise.resolve().then(() => { inserts += 1; insertLanded[inserts]?.(); });
+      if (kind === 'run' && isRunInsert(sql)) return Promise.resolve().then(() => { inserts += 1; for (const release of insertLanded[inserts] ?? []) release(); });
       return undefined;
     }) };
 
@@ -428,7 +443,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     }
     const events = waits();
     const policy = await titlingBackfillPolicy(r.env);
-    expect(policy).toMatchObject({ runsPerDay: 24, intervalSeconds: 900 });
+    expect(policy).toMatchObject({ runsPerDay: 36, intervalSeconds: 900 });
 
     // A wake a minute, as the hosted clock delivers them while the Deployment is in use.
     let now = NOW;
@@ -440,13 +455,13 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     expect(r.runs().every((run) => run.sessionId.startsWith('backlog-'))).toBe(true);
     const lastEntry = Math.max(...(r.sqlite.query(`SELECT queued_at AS at FROM agent_runs WHERE task = ?`).all(TITLING_TASK) as { at: number }[]).map((row) => row.at));
     // One report per wait, not one per wake: each interval between dispatches, then the ceiling with when it lifts.
-    const ceiling = events.filter((e) => e.wait === 'ceiling');
-    expect(ceiling).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: firstEntry! + DAY + 1, runsPerDay: 24 }]);
+    const ceiling = events.filter((e) => e.wait === 'reserved');
+    expect(ceiling).toEqual([{ kind: 'titling_backfill_waiting', wait: 'reserved', until: firstEntry! + DAY + 1, runsPerDay: 36 }]);
     expect(events.filter((e) => e.wait === 'interval').map((e) => e.until)).toEqual(
       [...new Set((r.sqlite.query(`SELECT queued_at AS at FROM agent_runs WHERE task = ? ORDER BY queued_at`).all(TITLING_TASK) as { at: number }[]).map((row) => row.at))].map((at) => at + 900_000),
     );
     expect(lastEntry).toBeLessThan(firstEntry! + DAY);
-    expect(await titlingBackfillProgress(r.env, now)).toMatchObject({ owed: 7, usedToday: 24, waiting: { reason: 'ceiling', until: firstEntry! + DAY + 1 } });
+    expect(await titlingBackfillProgress(r.env, now)).toMatchObject({ owed: 7, usedToday: 24, waiting: { reason: 'reserved', until: firstEntry! + DAY + 1 } });
 
     // Nothing moves, and nothing more is reported, until the window frees a place; that wake takes the older shapes.
     now = firstEntry! + DAY;
@@ -458,7 +473,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     expect(taken()).toEqual(['never-stamped', 'titling-live-0', 'titling-live-1', 'titling-live-2', 'titling-live-3']);
     // The window is full again; the next place frees as the second page of the backlog leaves it, and the rest go.
     const second = [...new Set((r.sqlite.query(`SELECT queued_at AS at FROM agent_runs WHERE task = ? ORDER BY queued_at`).all(TITLING_TASK) as { at: number }[]).map((row) => row.at))][1]!;
-    expect(await titlingBackfillProgress(r.env, now + 1)).toMatchObject({ owed: 2, waiting: { reason: 'ceiling', until: second + DAY + 1 } });
+    expect(await titlingBackfillProgress(r.env, now + 1)).toMatchObject({ owed: 2, waiting: { reason: 'reserved', until: second + DAY + 1 } });
     expect(await backfillTitles(r.env, second + DAY + 1, 'active')).toBe(2);
     expect(taken()).toEqual(['never-stamped', 'stamped-untitled', 'titling-live-0', 'titling-live-1', 'titling-live-2', 'titling-live-3', 'titling-live-4']);
   });
@@ -634,5 +649,229 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     expect(await titlingBackfillProgress(r.env, NOW + 50)).toMatchObject({ owed: 0, usedToday: 5, waiting: null });
     r.session('late', { imported: false, endedAt: NOW + 40 });
     expect(await titlingBackfillProgress(r.env, NOW + 50)).toMatchObject({ owed: 1, waiting: { reason: 'ceiling', until: NOW + 20 + DAY + 1 } });
+  });
+});
+
+describe('sessions that never end', () => {
+  /** An open session: no `ended_at`, `prompts` user prompts spread over its last hour, and its last receipt `quietFor` ms ago. */
+  function open(r: ReturnType<typeof rig>, id: string, over: { quietFor?: number; prompts?: number; title?: string; titledAt?: number; materialAt?: number; clockBehind?: number; endedAt?: number } = {}) {
+    const lastReceivedAt = NOW - (over.quietFor ?? 1000);
+    r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, title, summary, titled_at, title_material_at, ended_at)
+                  VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, 'codex', ?, ?, ?, ?, ?, ?)`,
+      [id, lastReceivedAt - 2 * DAY, lastReceivedAt, lastReceivedAt - 2 * DAY, over.title ?? null, over.title === undefined ? null : 'Standing summary', over.titledAt ?? null, over.materialAt ?? null, over.endedAt ?? null]);
+    for (let i = 0; i < (over.prompts ?? 1); i += 1) {
+      const at = lastReceivedAt - i * 1000;
+      r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                    VALUES ('proj_1', ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [id, `p_${id}_${i}`, `e_${id}_${i}`, `Work on ${id} step ${i}`, `h_${id}_${i}`, at - (over.clockBehind ?? 0), at - (over.clockBehind ?? 0), at]);
+    }
+  }
+  const endedAt = (r: ReturnType<typeof rig>, id: string) => (r.sqlite.query(`SELECT ended_at FROM sessions WHERE session_id = ?`).get(id) as { ended_at: number | null }).ended_at;
+
+  it('titles an open session once it has been quiet past the idle bound, and leaves its ended_at alone', async () => {
+    const r = rig();
+    open(r, 'pane-removed', { quietFor: 3 * HOUR });
+    open(r, 'just-working', { quietFor: HOUR });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    expect(r.runs().map((run) => [run.sessionId, run.mode, run.actor])).toEqual([['pane-removed', 'claim', TITLING_BACKFILL_ACTOR]]);
+    expect(r.titledAt('pane-removed')).toBe(NOW);
+    expect(endedAt(r, 'pane-removed')).toBeNull();
+    expect(r.titledAt('just-working')).toBeNull();
+  });
+
+  it('takes the idle bound from the Deployment\'s setting, falling back to the default for a value its rule refuses', async () => {
+    const r = rig();
+    open(r, 'forty', { quietFor: 40 * 60_000 });
+    expect(await titlingIdleCloseMinutes(r.env)).toBe(120);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(0);
+    r.setting('agent.titling_idle_close_minutes', 4);
+    expect(await titlingIdleCloseMinutes(r.env)).toBe(120);
+    r.setting('agent.titling_idle_close_minutes', 30);
+    expect(await titlingIdleCloseMinutes(r.env)).toBe(30);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    expect(endedAt(r, 'forty')).toBeNull();
+  });
+
+  it('counts a quiet open session as owed, and leaves a session whose capture is still unread', async () => {
+    const r = rig();
+    open(r, 'quiet', { quietFor: 3 * HOUR });
+    open(r, 'unread', { quietFor: 3 * HOUR });
+    r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id)
+                  VALUES ('proj_1', 'tx_unread', 'unread', 'm1', 100, 40, ?, ?, 'tok_1')`, [NOW, NOW]);
+    expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 1, remaining: 0 });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    expect(r.runs().map((run) => run.sessionId)).toEqual(['quiet']);
+  });
+
+  it('refreshes the title of a live session after enough new prompts and enough time, as a refresh that never counts as an attempt', async () => {
+    const r = rig();
+    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
+    open(r, 'few-prompts', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 9 });
+    open(r, 'just-titled', { title: 'Wire the build', titledAt: NOW - HOUR, prompts: 12 });
+    open(r, 'nothing-since', { title: 'Wire the build', titledAt: NOW + 10, prompts: 12 });
+    // Only a session due a refresh is offered, so one the claim would refuse never takes a place in the page.
+    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 5)).freshRefreshes.map((c) => [c.sessionId, c.mode])).toEqual([['long', 'refresh']]);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    expect(r.runs().map((run) => [run.sessionId, run.mode, run.actor])).toEqual([['long', 'refresh', TITLING_BACKFILL_ACTOR]]);
+    expect(r.titledAt('long')).toBe(NOW);
+    // A worker taking the run costs no attempt: only a `claim` is bounded.
+    r.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE status = 'queued'`);
+    expect((r.sqlite.query(`SELECT titling_attempts AS n FROM sessions WHERE session_id = 'long'`).get() as { n: number }).n).toBe(0);
+    // A second wake finds the stamp new: the refresh waits out the interval.
+    expect(await backfillTitles(r.env, NOW + 1000, 'idle')).toBe(0);
+    expect(r.runs()).toHaveLength(1);
+  });
+
+  it('reads a refresh\'s material from both ends of a long session, where a first title reads its opening', async () => {
+    const r = rig();
+    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 30 });
+    const texts = async (mode: 'claim' | 'refresh') => (await sessionMaterial(r.env.db, 'proj_1', 'long', mode)).map((line) => line.prompt);
+    const opening = await texts('claim');
+    expect(opening).toContain('Work on long step 29');
+    expect(opening).not.toContain('Work on long step 0');
+    const both = await texts('refresh');
+    expect(both).toContain('Work on long step 29');
+    expect(both).toContain('Work on long step 0');
+    expect(both).not.toContain('Work on long step 15');
+  });
+
+  it('refuses a refresh inside the interval at the claim itself, whoever asks', async () => {
+    const r = rig();
+    open(r, 'recent', { title: 'Wire the build', titledAt: NOW - HOUR, prompts: 12 });
+    const refused = await titleSession(r.env, { projectId: 'proj_1', sessionId: 'recent', now: NOW, origin: ORIGIN }, { mode: 'refresh', actor: TITLING_BACKFILL_ACTOR });
+    expect(refused.outcome).toBe('already');
+    expect(r.titledAt('recent')).toBe(NOW - HOUR);
+    expect(r.runs()).toEqual([]);
+  });
+
+  it('offers a refresh only to a session active within the day, however long ago it was titled', async () => {
+    const r = rig();
+    open(r, 'active', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
+    open(r, 'dormant', { title: 'Wire the build', titledAt: NOW - 4 * DAY, prompts: 12, quietFor: 3 * DAY });
+    const candidates = await listTitleCandidates(r.env.db, windowAt(NOW), 5);
+    expect(candidates.freshRefreshes.map((c) => [c.sessionId, c.mode])).toEqual([['active', 'refresh']]);
+    expect(candidates.freshClaims).toEqual([]);
+    expect(candidates.backlogClaims).toEqual([]);
+  });
+
+  it('selects the most recently active refreshes before it limits, so older titled sessions never hide newer ones', async () => {
+    const r = rig();
+    // The oldest titling stamp belongs to the session least recently active.
+    open(r, 'a-day-ago', { title: 'T', titledAt: NOW - 10 * HOUR, prompts: 12, quietFor: 20 * HOUR });
+    open(r, 'hours-ago', { title: 'T', titledAt: NOW - 9 * HOUR, prompts: 12, quietFor: 3 * HOUR });
+    open(r, 'just-now', { title: 'T', titledAt: NOW - 5 * HOUR, prompts: 12, quietFor: 1000 });
+    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 2)).freshRefreshes.map((c) => c.sessionId)).toEqual(['just-now', 'hours-ago']);
+  });
+
+  it('gives a fresh session its first title before any refresh, and keeps the last third of the ceiling from refreshes', async () => {
+    const r = rig();
+    settle(r, 3);
+    for (const id of ['r1', 'r2', 'r3']) open(r, id, { title: 'T', titledAt: NOW - 5 * HOUR, prompts: 12 });
+    open(r, 'never-titled', { quietFor: 3 * HOUR });
+    // Three refreshes are due, but the quiet untitled session is taken first and the refreshes stop at two runs in all.
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(2);
+    const taken = r.runs().map((run) => [run.sessionId.startsWith('r') ? 'refresh' : run.sessionId, run.mode]).sort();
+    expect(taken).toEqual([['never-titled', 'claim'], ['refresh', 'refresh']]);
+    // The held run is still there for the next session to end.
+    r.session('just-ended', { imported: false, endedAt: NOW + 1000 });
+    expect(await backfillTitles(r.env, NOW + 2000, 'idle')).toBe(1);
+    expect(r.runs().map((run) => run.sessionId)).toContain('just-ended');
+  });
+
+  it('keeps a refresh that closed without its write due, since only a written title moves the material it counts from', async () => {
+    const r = rig();
+    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    r.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [NOW + 1000]);
+    expect((r.sqlite.query(`SELECT title_material_at AS at FROM sessions WHERE session_id = 'long'`).get() as { at: number }).at).toBe(NOW - 5 * HOUR);
+    // Inside the interval the stamp holds it off; past the interval it is due again on the same prompts.
+    expect(await backfillTitles(r.env, NOW + HOUR, 'idle')).toBe(0);
+    expect(await backfillTitles(r.env, NOW + 5 * HOUR, 'idle')).toBe(1);
+    expect(r.runs().map((run) => run.mode)).toEqual(['refresh', 'refresh']);
+  });
+
+  it('records what a written title read, so the next refresh counts only the prompts after it', async () => {
+    const r = rig();
+    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    await overwriteTitle(r.env.db, 'proj_1', 'long', 'Wired the build', 'Done.', null);
+    expect((r.sqlite.query(`SELECT title_material_at AS at, titled_at AS stamp FROM sessions WHERE session_id = 'long'`).get() as { at: number; stamp: number })).toEqual({ at: NOW, stamp: NOW });
+    r.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ?`, [NOW + 1000]);
+    expect(await backfillTitles(r.env, NOW + 5 * HOUR, 'idle')).toBe(0);
+  });
+
+  it('counts new prompts by the server\'s receipt time, so a member whose clock runs behind still gets its refresh', async () => {
+    const r = rig();
+    open(r, 'behind', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12, clockBehind: 6 * HOUR });
+    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 5)).freshRefreshes.map((c) => c.sessionId)).toEqual(['behind']);
+  });
+
+  it('refreshes a session that was titled while idle, resumed, and then ended, leaving its end as it is', async () => {
+    const r = rig();
+    open(r, 'resumed', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12, endedAt: NOW - 500 });
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+    expect(r.runs().map((run) => [run.sessionId, run.mode])).toEqual([['resumed', 'refresh']]);
+    expect(endedAt(r, 'resumed')).toBe(NOW - 500);
+  });
+
+  it('classifies a quiet session of imported transcripts as imported, as it does an ended one', async () => {
+    const r = rig();
+    open(r, 'quiet-import', { quietFor: 3 * HOUR });
+    r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
+                  VALUES ('proj_1', 'tx_qi', 'quiet-import', 'm1', 100, 100, ?, ?, 'tok_1', ?)`, [NOW, NOW, NOW]);
+    expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1 });
+  });
+
+  it('puts the stamp back when the ceiling refuses a refresh, and leaves the standing title alone', async () => {
+    const r = rig();
+    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
+    const refused = await titleSession(r.env, { projectId: 'proj_1', sessionId: 'long', now: NOW, origin: ORIGIN },
+      { mode: 'refresh', actor: TITLING_BACKFILL_ACTOR, ceiling: { actor: TITLING_BACKFILL_ACTOR, task: TITLING_TASK, perDay: 0, sinceMs: NOW - DAY } });
+    expect(refused.outcome).toBe('ceiling');
+    expect(r.titledAt('long')).toBe(NOW - 5 * HOUR);
+    expect(r.runs()).toEqual([]);
+    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
+  });
+
+  const settle = (r: ReturnType<typeof rig>, perDay: number) => r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: perDay } } });
+
+  describe('with the daily ceiling held by backlog', () => {
+    /** An ended session more than a day old: backlog to the convergence. */
+    const backlog = (r: ReturnType<typeof rig>, id: string, ago: number) => r.session(id, { imported: false, endedAt: NOW - 2 * DAY - ago });
+
+    it('takes fresh work before backlog in the same wake, whatever the backlog\'s size', async () => {
+      const r = rig();
+      settle(r, 3);
+      for (let i = 0; i < 8; i += 1) backlog(r, `old${i}`, i * 1000);
+      r.session('new', { imported: false, endedAt: NOW - 1000 });
+      // Fresh work is not capped by the share backlog may use, and backlog takes what that share leaves.
+      expect(await backfillTitles(r.env, NOW, 'idle')).toBe(2);
+      expect(r.runs().map((run) => run.sessionId).sort()).toEqual(['new', 'old0']);
+      // With more fresh work than a page holds, no backlog goes.
+      const crowded = rig();
+      for (let i = 0; i < 7; i += 1) crowded.session(`fresh${i}`, { imported: false, endedAt: NOW - 1000 - i });
+      for (let i = 0; i < 4; i += 1) backlog(crowded, `old${i}`, i * 1000);
+      expect(await backfillTitles(crowded.env, NOW, 'idle')).toBe(TITLING_BACKFILL_BATCH);
+      expect(crowded.runs().every((run) => run.sessionId.startsWith('fresh'))).toBe(true);
+    });
+
+    it('holds a third of the ceiling for fresh work, so a session ending after the backlog drained the rest is still titled the same day', async () => {
+      const r = rig();
+      settle(r, 6);
+      for (let i = 0; i < 12; i += 1) backlog(r, `old${i}`, i * 1000);
+      expect(freshReserve(6)).toBe(2);
+      // Backlog alone may use four of the six runs.
+      expect(await backfillTitles(r.env, NOW, 'idle')).toBe(4);
+      expect(await backfillTitles(r.env, NOW + 1000, 'idle')).toBe(0);
+      expect(r.runs()).toHaveLength(4);
+      // New work, an ended session and a quiet open one, takes the two held runs.
+      r.session('ended-later', { imported: false, endedAt: NOW + 2000 });
+      open(r, 'went-quiet', { quietFor: -3000 + 3 * HOUR });
+      expect(await backfillTitles(r.env, NOW + 3 * HOUR, 'idle')).toBe(2);
+      expect(r.runs().slice(4).map((run) => run.sessionId).sort()).toEqual(['ended-later', 'went-quiet']);
+      // The ceiling itself still holds.
+      r.session('one-too-many', { imported: false, endedAt: NOW + 4000 });
+      expect(await backfillTitles(r.env, NOW + 3 * HOUR + 1000, 'idle')).toBe(0);
+      expect(r.runs()).toHaveLength(6);
+    });
   });
 });

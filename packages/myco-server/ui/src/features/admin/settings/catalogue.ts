@@ -80,6 +80,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on a schedule', kind: 'toggle' },
       { leaf: 'agent.scheduled_tasks_active_window_days', label: 'Treat a project as active for', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.cold_project_threshold_days', label: 'Treat a project as quiet after', kind: 'number', min: 0, max: 365, unit: 'days' },
+      { leaf: 'agent.titling_idle_close_minutes', label: 'Title a session once it has been quiet for', kind: 'number', min: 5, max: 10080, unit: 'minutes', note: 'A session that never reports an end, such as a closed terminal pane, is titled once it has been quiet this long. The session itself stays open.' },
       { leaf: 'release_provenance.reconcile_interval_minutes', label: 'Check what has shipped every', kind: 'number', min: 1, max: 1440, unit: 'minutes', note: 'How often each project with release tracking on is checked against its release tags.' },
     ],
   },
