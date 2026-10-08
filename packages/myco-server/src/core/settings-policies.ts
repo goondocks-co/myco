@@ -30,6 +30,7 @@ import { readMapSettings } from './canopy.js';
 import { ACCELERATORS, PRE_CONDITIONS } from './schedule-rules.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { reconcileIntervalMinutes } from './release-provenance.js';
+import { titlingIdleCloseMinutes } from './titling.js';
 import { runRetentionDays } from './jobs-run.js';
 import { scheduledIntervalHours } from './recovery-schedule.js';
 import { keptStagings } from './staging-retention.js';
@@ -92,6 +93,16 @@ const scheduling: SettingPolicy = {
         : !map.enabled ? { effective: minutes, state: 'inactive', reason: leaves.enabled ? 'The map is not updated on its own.' : SCHEDULE_OFF }
           : { effective: minutes, meanwhile: `The map updates every ${minutes} minutes` },
     };
+  },
+};
+
+const titling: SettingPolicy = {
+  id: 'titling',
+  owners: ['core/titling.ts'],
+  leaves: ['agent.titling_idle_close_minutes'],
+  async resolve(env) {
+    const minutes = await titlingIdleCloseMinutes(env);
+    return { 'agent.titling_idle_close_minutes': { effective: minutes, meanwhile: `A session quiet for ${minutes} minutes is titled` } };
   },
 };
 
@@ -338,7 +349,7 @@ const taskOverrides: SettingPolicy = {
 
 /** Every live leaf's policy. A leaf belongs to exactly one, and every live leaf to one: the contract gate holds both. */
 export const SETTING_POLICIES: readonly SettingPolicy[] = [
-  scheduling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
+  scheduling, titling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
 ];
 
 /** The live leaves: every Deployment leaf not retired. */

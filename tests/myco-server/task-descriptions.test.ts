@@ -74,8 +74,9 @@ describe('task description registry gates', () => {
         if (built === null || built.unchanged) throw new Error('Missing build');
         expect(task.promptTemplate).toBe(built.input.instruction);
         expect(task.standingRules).toBe(built.input.instructions ?? null);
-        for (const variant of task.templateVariants) {
-          const alternate = await buildTaskInput(f.serverEnv, task.task, 'proj_1', 1, task.task === 'title-summary' ? { params: { session_id: '{{session.id}}', mode: 'owner' } } : { fresh: true });
+        const titlingVariantModes = ['owner', 'refresh'];
+        for (const [index, variant] of task.templateVariants.entries()) {
+          const alternate = await buildTaskInput(f.serverEnv, task.task, 'proj_1', 1, task.task === 'title-summary' ? { params: { session_id: '{{session.id}}', mode: titlingVariantModes[index] } } : { fresh: true });
           if (alternate === null || alternate.unchanged) throw new Error('Missing alternate build');
           expect(variant.prompt).toBe(alternate.input.instruction);
         }

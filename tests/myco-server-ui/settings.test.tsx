@@ -996,6 +996,7 @@ describe('Title imported sessions', () => {
     expect(waitingWords({ runsPerDay: 24, waiting: null }, now)).toBe('');
     expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'ceiling', until: later } }, now)).toBe(`Today’s limit of 24 is reached; the next title can start at ${clock(later)} (in 3h).`);
     expect(waitingWords({ runsPerDay: 0, waiting: { reason: 'ceiling', until: null } }, now)).toBe('The daily limit is 0, so nothing is titled until it is raised under Task overrides.');
+    expect(waitingWords({ runsPerDay: 36, waiting: { reason: 'reserved', until: later } }, now)).toBe(`The rest of today’s limit of 36 is kept for sessions that ended, went quiet or went on today; older sessions can start at ${clock(later)} (in 3h).`);
     expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'overlap', until: null } }, now)).toBe('Waiting for the title in progress to finish.');
     expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now + 12 * 60_000 } }, now)).toBe(`The next titles can start at ${clock(now + 12 * 60_000)} (in 12m).`);
     expect(waitingWords({ runsPerDay: 24, waiting: { reason: 'interval', until: now - 1 } }, now)).toBe('The next titles can start soon.');

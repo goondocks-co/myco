@@ -21,6 +21,7 @@ import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 const MODE_NOTE: Readonly<Record<TitlingMode, string>> = {
   claim: 'The session has just ended. Its material is the opening prompts, in order. A title already standing is kept: your write is refused, and you close with the skip action instead.',
   owner: 'A person asked for a fresh title from the dashboard. Its material is the earliest and the latest prompts, in order, with the middle omitted. Write over whatever title stands.',
+  refresh: 'The session is still open and has gone on since it was last titled. Its material is the earliest and the latest prompts, in order, with the middle omitted, beside the title and summary standing now. Write a title and summary for the whole session so far, over the ones standing.',
 };
 
 /** The instruction for the run these parameters describe, or null when they name no session. */

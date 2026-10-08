@@ -24,7 +24,7 @@ import { DEPLOYMENT_LEAF_SPECS, settingTexts } from '@myco-server-worker/core/se
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { taskFactsKey } from '@myco-server-worker/core/runs.js';
-import { titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
+import { backfillTitles, titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
 import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';
 import { mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
@@ -174,6 +174,21 @@ async function dispatched(r: Rig): Promise<number> {
   r.sqlite.run(`DELETE FROM agent_runs`);
   return report.dispatched;
 }
+/** Whether the titling convergence takes an open session that has been quiet for an hour; the session and every run are removed again. */
+async function titlesQuietSession(r: Rig): Promise<number> {
+  const quietSince = NOW - 3_600_000;
+  r.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 's_quiet', 'machine_1', 'tok_1', ?, ?, 'claude-code')`, [quietSince, quietSince]);
+  r.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at, processed) VALUES ('proj_1', 's_quiet', 'p_quiet', 'e_quiet', 'a session gone quiet', 'user', 'h_quiet', ?, ?, 'tok_1', ?, 1)`, [quietSince, quietSince, quietSince]);
+  try {
+    await backfillTitles(r.env, NOW, 'idle');
+    return (r.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE json_extract(run_context, '$.session_id') = 's_quiet'`).get() as { n: number }).n;
+  } finally {
+    r.sqlite.run(`DELETE FROM agent_runs`);
+    r.sqlite.run(`DELETE FROM prompt_batches WHERE session_id = 's_quiet'`);
+    r.sqlite.run(`DELETE FROM sessions WHERE session_id = 's_quiet'`);
+    r.sqlite.run(`UPDATE sessions SET titled_at = NULL`);
+  }
+}
 const mapSchedule = async (r: Rig) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === MAP_TASK)?.schedule ?? null;
 const sessionParts = async (r: Rig, kind: 'start' | 'subagent') =>
   (await composeSessionContext(r.env.db, { projectId: 'proj_1' }, await readRecallLeaves(r.env.db), true,
@@ -237,6 +252,7 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     consumer: at('core/scheduled-tasks.ts', decideTask), setup: () => [['agent.scheduled_tasks_enabled', true], ['agent.scheduled_tasks_active_window_days', 30]],
     value: () => 30, invalid: () => 30.5, observe: quietDecision,
   },
+  'agent.titling_idle_close_minutes': { consumer: at('core/titling.ts', backfillTitles), value: () => 30, invalid: () => 4, observe: titlesQuietSession },
   'cortex.canopy.refresh.background_enabled': {
     consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
     value: () => true, invalid: () => 1, observe: async (r) => (await mapSchedule(r))?.enabled ?? null,
