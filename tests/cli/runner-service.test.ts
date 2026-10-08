@@ -10,7 +10,7 @@ import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 import { sweepWorkerServices } from '@myco/cli/worker-service.js';
-import { installWorkerService, workerServiceSpec } from '@myco/runner/service.js';
+import { installWorkerService, listWorkerUnits, workerServiceSpec } from '@myco/runner/service.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 
 const SERVER = 'https://runner.example';
@@ -45,6 +45,16 @@ const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
 });
 
 describe('explicit runner service opt-in', () => {
+  it('retirement names the exact legacy unit when path-prefixed addresses share a lock', async () => {
+    const a = `${SERVER}/a`, b = `${SERVER}/b`;
+    const units = [a, b].map(serverUrl => installWorkerService({ ...deps(), serverUrl }, [], { runner: platform.runner }));
+    expect(await worker(['uninstall', '--server', SERVER], deps())).toBe(false);
+    expect(units.every(unit => fs.existsSync(unit.unitFile))).toBe(true);
+    const selected = listWorkerUnits(home, 'darwin').at(-1)!;
+    expect(await worker(['uninstall', '--server', selected.serverUrl!], deps())).toBe(true);
+    for (const unit of units) expect(fs.existsSync(unit.unitFile)).toBe(unit.unitFile !== selected.unitFile);
+  });
+
   it('status inventories legacy workers across homes without registration or a matching local unit', async () => {
     const otherHome = path.join(root, 'other home');
     installWorkerService({ ...deps(), mycoHome: otherHome, serverUrl: SERVER }, [], { runner: platform.runner });

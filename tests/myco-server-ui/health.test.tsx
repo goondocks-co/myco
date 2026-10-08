@@ -249,6 +249,7 @@ describe('Health', () => {
     const workers = await screen.findByRole('region', { name: 'Workers' });
     expect(await within(workers).findByText('myco runner install')).toBeTruthy();
     expect(workers.textContent).toContain('No machine is running Myco’s work.');
+    expect(workers.textContent).not.toContain('Work is waiting, but no machine has checked in');
   });
 
   it('makes queued work with no executor contact an explicit owner opt-in', async () => {

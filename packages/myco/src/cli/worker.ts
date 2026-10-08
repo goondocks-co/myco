@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
-import { readDeploymentMembership } from '../member/registry.js';
+import { deploymentUrl, readDeploymentMembership } from '../member/registry.js';
 import { unboundedBudget } from '../member/budget.js';
 import { refreshMembership } from '../member/refresh.js';
 import { offerOf, WITHHELD_REASON } from '../runner/detect.js';
@@ -48,7 +48,14 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
   const machineLegacyUnits = listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform ?? process.platform);
   const legacyUnits = machineLegacyUnits.filter((unit) => unit.mycoHome === mycoHome);
   const legacyUrls = legacyUnits.flatMap((unit) => unit.serverUrl === null ? [] : [unit.serverUrl]);
-  const legacyUrl = named === undefined || named === 'true' ? undefined : legacyUrls.find((url) => workerLockPath('', url) === workerLockPath('', named));
+  const matches = named === undefined || named === 'true' ? [] : legacyUrls.filter(url => workerLockPath('', url) === workerLockPath('', named));
+  const exact = named === undefined ? undefined : legacyUrls.find(url => deploymentUrl(url) === deploymentUrl(named));
+  if (exact === undefined && matches.length > 1) {
+    legacyWorkerInventory(deps).forEach(line => (deps.stdout ?? console.log)(line));
+    (deps.stderr ?? console.error)('myco worker: multiple legacy units share this origin; name the exact --server address printed in the inventory. No service changed.');
+    return false;
+  }
+  const legacyUrl = exact ?? matches[0];
   const legacy = legacyUrl !== undefined;
   const verb = args[0];
   if (verb === 'install' && named === undefined && machineLegacyUnits.length > 0) {
