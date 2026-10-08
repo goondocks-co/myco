@@ -29,7 +29,7 @@ function runClassify(tag: string): { status: number | null; outputs: Record<stri
   const out = path.join(dir, 'output');
   fs.writeFileSync(out, '');
   const result = spawnSync('bash', ['-c', step('validate-tag', 'Extract package and version from tag')], {
-    env: { PATH: process.env.PATH, TAG_NAME: tag, GITHUB_OUTPUT: out }, encoding: 'utf8',
+    env: { PATH: process.env.PATH, EVENT_NAME: 'push', TAG_NAME: tag, GITHUB_OUTPUT: out }, encoding: 'utf8',
   });
   const text = fs.readFileSync(out, 'utf8').trim();
   fs.rmSync(dir, { recursive: true, force: true });
