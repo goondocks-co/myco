@@ -14,6 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -42,8 +43,13 @@ const DEV_VERSION_PLACEHOLDER = '0.0.0-dev';
 const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8'));
 const expectedVersion = pkg.version;
 let bakedVersion;
+const probeDir = fs.mkdtempSync(path.join(tmpdir(), 'myco-build-verify-'));
 try {
-  bakedVersion = execFileSync(binaryPath, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    bakedVersion = execFileSync(binaryPath, ['--version'], { cwd: probeDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
 } catch (err) {
   fail(`cannot probe binary --version (${binaryPath}): ${err.message}`);
 }

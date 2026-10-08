@@ -35,6 +35,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { listSkillDirs, readTextFile, walk } from './codegen-bundle.mjs';
+import { releaseKey } from './release-policy.mjs';
 import {
   ACCESS_KEY_KEY,
   AGENT_PLUGINS_SCHEMA,
@@ -63,8 +64,11 @@ const MARKETPLACE_PATH = path.resolve(REPO_ROOT, '.claude-plugin', 'marketplace.
 const CATALOGUE_PATH = path.resolve(REPO_ROOT, 'packages/myco-shared/src/skills.generated.ts');
 const MEMBER_BUNDLE_PATH = path.resolve(PKG_ROOT, 'src/symbionts/skills.generated.ts');
 
-const version = (): string =>
-  (JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf-8')) as { version: string }).version;
+const version = (): string => {
+  const { version } = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'plugin-version.json'), 'utf-8')) as { version: string };
+  if (!releaseKey(version)) throw new Error(`[${LABEL}] invalid plugin release version: ${version}`);
+  return version;
+};
 
 const json = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
 
