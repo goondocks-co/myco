@@ -28,7 +28,7 @@ import { serve } from '@myco-server-worker/entry/bun.js';
 import { httpHarnessLaunch } from '@myco-server-worker/platform/bun/harness-runner.js';
 import { RuntimeDraining } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { startSupervisor, type RunningSupervisor } from '@myco/agent/runtime/supervisor.js';
+import { startSupervisor, type SpawnPlan } from '@myco/agent/runtime/supervisor.js';
 
 const MEMBER_ID = 'mem_seam';
 const MACHINE_ID = 'machine_seam';
@@ -52,13 +52,14 @@ interface Seam {
   url: string;
   root: string;
   /** The deployment's own store, read the way a deploy reads it. */
-  sql(command: string): Record<string, unknown>[];
+  sql(command: string): Promise<Record<string, unknown>[]>;
   ownerHeaders(): Record<string, string>;
   dispatch(): Promise<{ runId: string; queued?: boolean; heldBy?: string }>;
   wake(): Promise<{ drained: number }>;
   /** The environment the child received, once it has run. */
   childEnv(): Record<string, string>;
-  supervisor: RunningSupervisor;
+  finishChild(runId: string): Promise<void>;
+  childReady(runId: string): Promise<void>;
   /** Stop the supervisor, as a Compose update stops the harness before it rolls the server. */
   stopHarness(): Promise<void>;
   /** Bring a supervisor back at the same address the deployment already holds. */
@@ -67,6 +68,19 @@ interface Seam {
   loseNextAnswer(): void;
   probe(): Promise<{ draining: boolean; children: unknown[] }>;
   stop(): Promise<void>;
+}
+
+const CHILD_EVENT_TIMEOUT_MS = 30_000;
+
+async function childEvent<T>(event: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([event, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`runtime did not ${label}`)), CHILD_EVENT_TIMEOUT_MS);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const live: Seam[] = [];
@@ -96,15 +110,24 @@ async function boot(): Promise<Seam> {
   writeFileSync(tokenPath, `${HARNESS_TOKEN}\n`);
   const supervisorPort = freePort();
   const workDir = join(root, 'work');
-  let supervisor = startSupervisor({
-    token: HARNESS_TOKEN,
-    entry: STAND_IN,
-    workDir,
-    port: supervisorPort,
-    hostname: '127.0.0.1',
-    events: { on: () => undefined },
-    exit: () => undefined,
-  });
+  const children = new Map<string, { ready: Promise<void>; child: Bun.Subprocess<'ignore', 'inherit', 'inherit'> }>();
+  const supervisorOptions = {
+    token: HARNESS_TOKEN, entry: STAND_IN, workDir, port: supervisorPort, hostname: '127.0.0.1',
+    events: { on: () => undefined }, exit: () => undefined,
+    spawn: (plan: SpawnPlan) => {
+      const runId = plan.env.MYCO_RUN_ID!;
+      let ready!: () => void;
+      const readyEvent = new Promise<void>((resolve) => { ready = resolve; });
+      const child = Bun.spawn({
+        ...plan, env: { ...plan.env, STANDIN_ENV_OUT: envOut },
+        stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
+        ipc: (message) => { if (message === 'ready') ready(); },
+      });
+      children.set(runId, { child, ready: readyEvent });
+      return { pid: child.pid, exited: child.exited, kill: (signal: NodeJS.Signals) => { child.kill(signal); } };
+    },
+  };
+  let supervisor = startSupervisor(supervisorOptions);
 
   // The adapter is built before the socket is bound, and reads the port it
   // bound at each launch, exactly as the process entry wires it.
@@ -142,22 +165,28 @@ async function boot(): Promise<Seam> {
   const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'seam', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
   const ownerHeaders = () => ({ cookie, origin: url });
 
-  const sql = (command: string): Record<string, unknown>[] => {
-    const handle = new Database(databasePath);
-    handle.exec('PRAGMA busy_timeout = 5000');
-    try {
-      return handle.query(command).all() as Record<string, unknown>[];
-    } finally {
-      handle.close();
-    }
-  };
+  const sql = async (command: string): Promise<Record<string, unknown>[]> =>
+    (await started.env.db.prepare(command).all()).results;
 
   const seam: Seam = {
     url,
     root,
     sql,
     ownerHeaders,
-    supervisor,
+    childReady: async (runId) => {
+      const runtime = children.get(runId);
+      if (runtime === undefined) throw new Error(`no runtime launched for ${runId}`);
+      await childEvent(Promise.race([
+        runtime.ready,
+        runtime.child.exited.then((code) => { throw new Error(`runtime exited before readiness: ${code}`); }),
+      ]), `become ready for ${runId}`);
+    },
+    finishChild: async (runId) => {
+      await seam.childReady(runId);
+      const runtime = children.get(runId)!;
+      runtime.child.send('claim');
+      expect(await childEvent(runtime.child.exited, `exit for ${runId}`)).toBe(0);
+    },
     dispatch: async () => {
       const res = await fetch(`${url}/api/harness/dispatch`, {
         method: 'POST',
@@ -176,38 +205,30 @@ async function boot(): Promise<Seam> {
     stopHarness: async () => { await supervisor.stop(); },
     loseNextAnswer: () => { loseAnswers += 1; },
     startHarness: () => {
-      supervisor = startSupervisor({
-        token: HARNESS_TOKEN, entry: STAND_IN, workDir, port: supervisorPort, hostname: '127.0.0.1',
-        events: { on: () => undefined }, exit: () => undefined,
-      });
-      seam.supervisor = supervisor;
+      supervisor = startSupervisor(supervisorOptions);
     },
     probe: async () => await (await fetch(`http://127.0.0.1:${supervisorPort}/probe`)).json() as { draining: boolean; children: unknown[] },
     stop: async () => {
-      delete process.env.STANDIN_ENV_OUT;
-      await supervisor.stop().catch(() => undefined);
-      await started.stop();
-      rmSync(root, { recursive: true, force: true });
+      const outcomes = await Promise.allSettled([
+        supervisor.stop(),
+        ...[...children.values()].map(({ child }) => childEvent(child.exited, 'stop')),
+      ]);
+      const [serverOutcome] = await Promise.allSettled([started.stop()]);
+      outcomes.push(serverOutcome!);
+      if (serverOutcome!.status === 'fulfilled' && [...children.values()].every(({ child }) => child.exitCode !== null)) {
+        rmSync(root, { recursive: true, force: true });
+      }
+      const errors = outcomes.flatMap((outcome) => outcome.status === 'rejected' ? [outcome.reason] : []);
+      if (errors.length > 0) throw new AggregateError(errors, 'dispatch seam shutdown failed');
     },
   };
-  // The supervisor hands its own environment to every child, which is how the
-  // child learns where to record what it receives.
-  process.env.STANDIN_ENV_OUT = envOut;
   live.push(seam);
   return seam;
 }
 
-/** Polls the volume until the run reads terminal, or gives up saying what it last read. */
-async function settled(seam: Seam, runId: string, ms = 45_000): Promise<Record<string, unknown>> {
-  const read = () => seam.sql(`SELECT id, status, dispatched_by AS dispatchedBy, error FROM agent_runs WHERE id = '${runId}'`)[0] ?? {};
-  const deadline = Date.now() + ms;
-  let row = read();
-  const terminal = new Set(['completed', 'failed', 'skipped']);
-  while (!terminal.has(String(row.status)) && Date.now() < deadline) {
-    await Bun.sleep(100);
-    row = read();
-  }
-  return row;
+async function settled(seam: Seam, runId: string): Promise<Record<string, unknown>> {
+  await seam.finishChild(runId);
+  return (await seam.sql(`SELECT id, status, dispatched_by AS dispatchedBy, error FROM agent_runs WHERE id = '${runId}'`))[0] ?? {};
 }
 
 describe('a dispatch that starts a real runtime', () => {
@@ -218,7 +239,7 @@ describe('a dispatch that starts a real runtime', () => {
     expect(dispatched.queued).toBe(false);
 
     // The row exists before the runtime does, carrying the credential minted for it.
-    const dispatchedBy = String(seam.sql(`SELECT dispatched_by AS d FROM agent_runs WHERE id = '${dispatched.runId}'`)[0]!.d);
+    const dispatchedBy = String((await seam.sql(`SELECT dispatched_by AS d FROM agent_runs WHERE id = '${dispatched.runId}'`))[0]!.d);
     expect(dispatchedBy.length).toBeGreaterThan(0);
 
     const row = await settled(seam, dispatched.runId);
@@ -227,11 +248,11 @@ describe('a dispatch that starts a real runtime', () => {
     expect(row.dispatchedBy).toBe(dispatchedBy);
 
     // The report the runtime wrote is on the run.
-    expect(seam.sql(`SELECT action, summary FROM agent_reports WHERE run_id = '${dispatched.runId}'`))
+    expect(await seam.sql(`SELECT action, summary FROM agent_reports WHERE run_id = '${dispatched.runId}'`))
       .toEqual([{ action: TASK, summary: 'the runtime ran' }]);
 
     // A credential that exists for one run is revoked when that run closes.
-    expect(seam.sql(`SELECT revoked_at AS revokedAt FROM member_credentials WHERE id = '${dispatchedBy}' AND member_id = '${HARNESS_MEMBER_ID}'`)
+    expect((await seam.sql(`SELECT revoked_at AS revokedAt FROM member_credentials WHERE id = '${dispatchedBy}' AND member_id = '${HARNESS_MEMBER_ID}'`))
       .map((r) => r.revokedAt !== null)).toEqual([true]);
 
     // The adapter, not the request, decided where the runtime called back.
@@ -246,67 +267,47 @@ describe('a dispatch that starts a real runtime', () => {
       expect(child[name]).toBeUndefined();
     }
 
-    // The supervisor holds nothing once the child has gone — which is after the
-    // run's own ending lands, not with it.
-    const deadline = Date.now() + 10_000;
-    let probe = await seam.probe();
-    while (probe.children.length > 0 && Date.now() < deadline) {
-      await Bun.sleep(20);
-      probe = await seam.probe();
-    }
-    expect(probe).toEqual({ ok: true, draining: false, children: [] } as never);
+    expect(await seam.probe()).toEqual({ ok: true, draining: false, children: [] } as never);
   }, 60_000);
 
   it('lands a run whose launch was answered too late, rather than failing a child that is running', async () => {
     const seam = await boot();
-    // The launch starts a child that claims a second and a half from now, and
-    // then answers as one that timed out.
+    // The child waits for permission to claim while its launch answer is lost.
     seam.loseNextAnswer();
-    process.env.STANDIN_CLAIM_DELAY_MS = '1500';
-    try {
-      const held = await seam.dispatch();
-      expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
-      const launched = seam.sql(`SELECT dispatched_by AS d FROM agent_runs WHERE id = '${held.runId}'`)[0]!.d as string;
-      // The credential the running child holds stays live on the queued row.
-      expect(launched).not.toBeNull();
+    const held = await seam.dispatch();
+    expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
+    const launched = (await seam.sql(`SELECT dispatched_by AS d FROM agent_runs WHERE id = '${held.runId}'`))[0]!.d as string;
+    // The credential the running child holds stays live on the queued row.
+    expect(launched).not.toBeNull();
 
-      // The drain offers it again; the supervisor is already running it, so the
-      // row goes back to pending under the credential that child holds.
-      expect((await seam.wake()).drained).toBe(1);
-      expect(seam.sql(`SELECT status, dispatched_by AS d FROM agent_runs WHERE id = '${held.runId}'`))
-        .toEqual([{ status: 'pending', d: launched }]);
+    await seam.childReady(held.runId);
+    // The drain offers it again; the supervisor is already running it, so the
+    // row goes back to pending under the credential that child holds.
+    expect((await seam.wake()).drained).toBe(1);
+    expect(await seam.sql(`SELECT status, dispatched_by AS d FROM agent_runs WHERE id = '${held.runId}'`))
+      .toEqual([{ status: 'pending', d: launched }]);
 
-      // The child wakes, claims under it, and the run ends as any other does.
-      const row = await settled(seam, held.runId);
-      expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });
-    } finally {
-      delete process.env.STANDIN_CLAIM_DELAY_MS;
-    }
+    // The child is released, claims under it, and the run ends as any other does.
+    const row = await settled(seam, held.runId);
+    expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });
   }, 60_000);
 
   it('lets the child of a launch the queue took back claim the row it is still named on', async () => {
     const seam = await boot();
-    // Short enough that the child claims while the row is still queued: the
-    // launch's answer is lost, the row goes back to the queue, and the child it
-    // started reaches the deployment before any drain does.
+    // The launch answer is lost and no drain runs before the child claims.
     seam.loseNextAnswer();
-    process.env.STANDIN_CLAIM_DELAY_MS = '250';
-    try {
-      const held = await seam.dispatch();
-      expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
+    const held = await seam.dispatch();
+    expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
 
-      // The claim lands on the queued row, which becomes a run like any other.
-      const row = await settled(seam, held.runId);
-      expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });
-      const [ended] = seam.sql(`SELECT held_by AS heldBy, started_at AS startedAt, queued_at AS queuedAt FROM agent_runs WHERE id = '${held.runId}'`);
-      // The holder that described a waiting run is gone, it has the start every
-      // reader needs, and it keeps the place it took in the queue.
-      expect(ended!.heldBy).toBeNull();
-      expect(ended!.startedAt).not.toBeNull();
-      expect(ended!.queuedAt).not.toBeNull();
-    } finally {
-      delete process.env.STANDIN_CLAIM_DELAY_MS;
-    }
+    // The claim lands on the queued row, which becomes a run like any other.
+    const row = await settled(seam, held.runId);
+    expect({ status: row.status, error: row.error }).toEqual({ status: 'completed', error: null });
+    const [ended] = await seam.sql(`SELECT held_by AS heldBy, started_at AS startedAt, queued_at AS queuedAt FROM agent_runs WHERE id = '${held.runId}'`);
+    // The holder that described a waiting run is gone, it has the start every
+    // reader needs, and it keeps the place it took in the queue.
+    expect(ended!.heldBy).toBeNull();
+    expect(ended!.startedAt).not.toBeNull();
+    expect(ended!.queuedAt).not.toBeNull();
   }, 60_000);
 
   it('queues the dispatch while no runtime will take it, and drains it when one is back', async () => {
@@ -319,18 +320,18 @@ describe('a dispatch that starts a real runtime', () => {
     expect(held).toMatchObject({ queued: true, heldBy: 'runtime' });
     // The row keeps the credential its launch minted: a launch that answered
     // nothing may still have started a child, and the dispatcher cannot know.
-    const [waiting] = seam.sql(`SELECT status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = '${held.runId}'`);
+    const [waiting] = await seam.sql(`SELECT status, held_by AS heldBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = '${held.runId}'`);
     expect(waiting).toMatchObject({ status: 'queued', heldBy: 'runtime' });
     const carried = waiting!.dispatchedBy as string;
-    expect(seam.sql(`SELECT revoked_at AS r FROM member_credentials WHERE id = '${carried}'`)).toEqual([{ r: null }]);
+    expect(await seam.sql(`SELECT revoked_at AS r FROM member_credentials WHERE id = '${carried}'`)).toEqual([{ r: null }]);
     // Nothing failed, and nothing is running.
-    expect(seam.sql(`SELECT COUNT(*) AS c FROM agent_runs WHERE status = 'failed'`)).toEqual([{ c: 0 }]);
+    expect(await seam.sql(`SELECT COUNT(*) AS c FROM agent_runs WHERE status = 'failed'`)).toEqual([{ c: 0 }]);
 
     seam.startHarness();
     expect((await seam.wake()).drained).toBe(1);
     // The relaunch starts a fresh child, and retires the credential of the
     // attempt it replaced.
-    expect(seam.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = '${carried}'`))
+    expect(await seam.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = '${carried}'`))
       .toEqual([{ revoked: 1 }]);
 
     const row = await settled(seam, held.runId);

@@ -39,10 +39,16 @@ if (!serverUrl || !token || !projectId || !runId || !taskName) {
   process.exit(10);
 }
 
-// A runtime that claims late: the launch that started it can be answered after
-// its own deadline, and the dispatcher's recovery has to leave this claim good.
-const delay = Number(env('STANDIN_CLAIM_DELAY_MS') ?? '0');
-if (Number.isFinite(delay) && delay > 0) await Bun.sleep(delay);
+const claimAllowed = new Promise<void>((resolve) => {
+  process.once('message', (message) => {
+    if (message !== 'claim') throw new Error('stand-in runtime: expected claim permission');
+    resolve();
+  });
+});
+if (process.send === undefined) throw new Error('stand-in runtime: no control channel');
+process.send('ready');
+await claimAllowed;
+process.disconnect?.();
 
 const admission = env('MYCO_TASK_ADMISSION');
 const budget = { connectTimeoutMs: 10_000, requestTimeoutMs: 30_000 };

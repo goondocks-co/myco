@@ -1,6 +1,14 @@
 const MAX_SHARDS = 256;
 export const PARITY_PLAN_PREFIX = '[myco-parity-plan] ';
 
+/** Select one intact group from an already assigned shard. */
+export function selectGroup(groups, label) {
+  if (label === undefined) return groups;
+  const selected = groups.filter((group) => group.label === label);
+  if (selected.length === 0) throw new Error(`Group ${label} is not in the selected shard`);
+  return selected;
+}
+
 export function parseShard(value) {
   if (value === undefined) return { index: 1, count: 1 };
   if (!/^[1-9]\d*\/[1-9]\d*$/.test(value)) throw new Error(`Invalid shard: ${value}; expected index/count`);
