@@ -1,6 +1,6 @@
 import type { DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-claims';
 import type { RelationalStore, PreparedStatement } from './adapters.js';
-import { HARNESS_MEMBER_ID } from '../constants.js';
+import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import type { MemberRole } from '../auth/roles.js';
 import { memberWriteOutcome } from '../auth/member-write-refusal.js';
 
@@ -62,20 +62,25 @@ export async function transferOwnership(db: RelationalStore, actor: string, cand
 
 export interface MemberRoleOutcome { memberId: string; role: MemberRole; roleRevision: string }
 
-/** Role changes and their immutable receipts share one batch, with authorization and recovery checked at the write. */
+/**
+ * Role changes and their immutable receipts share one batch, with authorization and recovery checked at the write.
+ * A member a restore from another Deployment held (`FOREIGN_LINEAGE_REVOKER`) is re-admitted by the role the owner
+ * assigns it, the same role included; the receipt records that admission. Every other revoked member stays revoked.
+ */
 export async function changeMemberRole(db: RelationalStore, actor: string, memberId: string, role: MemberRole, revision: string, now: number): Promise<MemberRoleOutcome> {
   await requireOwner(db, actor);
-  const before = await db.prepare('SELECT role,role_revision,revoked_at FROM members WHERE id = ?').bind(memberId)
-    .first<{ role: MemberRole; role_revision: number; revoked_at: number | null }>();
-  if (before === null || before.revoked_at !== null || memberId === HARNESS_MEMBER_ID) throw new OwnershipRefusal('invalid_member');
+  const before = await db.prepare('SELECT role,role_revision,revoked_at,revoked_by FROM members WHERE id = ?').bind(memberId)
+    .first<{ role: MemberRole; role_revision: number; revoked_at: number | null; revoked_by: string | null }>();
+  const held = before !== null && before.revoked_at !== null && before.revoked_by === FOREIGN_LINEAGE_REVOKER;
+  if (before === null || (before.revoked_at !== null && !held) || memberId === HARNESS_MEMBER_ID) throw new OwnershipRefusal('invalid_member');
   if (String(before.role_revision) !== revision) throw new OwnershipRefusal('revision_conflict');
-  if (before.role === role) return { memberId, role, roleRevision: revision };
+  if (before.role === role && !held) return { memberId, role, roleRevision: revision };
   if (memberId === actor && role === 'member') throw new OwnershipRefusal('active_owner');
   const results = await db.batch([
-    db.prepare(`UPDATE members SET role = ?, role_revision = role_revision + 1
-      WHERE id = ? AND revoked_at IS NULL AND role_revision = ? AND role = ?
+    db.prepare(`UPDATE members SET role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL
+      WHERE id = ? AND (revoked_at IS NULL OR (? = 1 AND revoked_by = ?)) AND role_revision = ? AND role = ?
         AND ${deploymentOwnerSql('?')} AND (? = 'admin' OR (${removableAdministratorSql('members')}))`)
-      .bind(role, memberId, revision, before.role, actor, role),
+      .bind(role, memberId, held ? 1 : 0, FOREIGN_LINEAGE_REVOKER, revision, before.role, actor, role),
     db.prepare(`INSERT INTO member_role_audit (member_id,revision,previous_role,role,actor_id,created_at)
       SELECT id,role_revision,?,role,?,? FROM members WHERE id = ? AND role = ? AND role_revision = ?
         AND changes() = 1`).bind(before.role, actor, now, memberId, role, Number(revision) + 1),

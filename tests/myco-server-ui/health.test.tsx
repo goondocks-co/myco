@@ -254,7 +254,8 @@ describe('Health', () => {
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
     const { posts } = server(routes({
       '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null } }),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null },
+        authorityExcluded: { tables: ['members', 'member_credentials'], notice: 'People from the other server are listed here but cannot sign in until the owner re-admits them.' } }),
       '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: true, tables: { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } } }),
     }));
     mount();
@@ -263,6 +264,8 @@ describe('Health', () => {
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
     expect(dialog.textContent).toContain('It holds sessions 4 · spores 12');
     expect(dialog.textContent).toContain('comes from another server');
+    expect(dialog.textContent).toContain('People from the other server are listed here but cannot sign in until the owner re-admits them.');
+    expect(dialog.textContent).not.toContain('their sign-ins, live here');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('Turn on the switch');
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
@@ -275,7 +278,7 @@ describe('Health', () => {
 
   it('cancels a restore with nothing sent past the preview', async () => {
     const { posts } = server(routes({
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false, restore: { allowed: true, reason: null } }),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false, restore: { allowed: true, reason: null }, authorityExcluded: null }),
     }));
     mount();
     const list = await screen.findByRole('group', { name: 'Backups' });
@@ -283,6 +286,7 @@ describe('Health', () => {
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('switch')).toBeNull();
     expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(dialog.querySelector('[data-restore-authority-excluded]')).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);

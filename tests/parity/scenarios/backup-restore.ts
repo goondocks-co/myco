@@ -1,5 +1,7 @@
 import { expect } from 'bun:test';
-import { MEMBER_ID, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
+import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
+import { MEMBER_ID, SESSION_SECRET, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { bootSelfhosted } from '../targets/selfhosted.ts';
 
 // State-changing owner routes hold a same-origin line; a scenario names its own origin the way a browser would.
@@ -114,11 +116,44 @@ export const backupRestore: ParityScenario = {
         expect({ status: adopted.status, applied: adopted.body.applied, sessions: Number((rows[0] as { c: unknown }).c) }).toEqual({ status: 200, applied: true, sessions: 1 });
       }
 
-      // The reverse direction: the sibling's own backup lands here under the same adoption rule.
+      // The reverse direction: the sibling's own backup lands here under the same adoption rule. The sibling's live
+      // member credential and External Agent grant land revoked, and its GitHub-linked admin lands held: none of them
+      // acts here until this server's owner re-admits the admin.
+      const heldAdmin = 'mem_sibling_admin';
+      await sibling.sql(`INSERT INTO members (id, label, created_at, role, github_id) VALUES (${lit(heldAdmin)}, 'sibling admin', 1, 'admin', '970001')`);
+      const signedIn = async (on: ParityTarget) => ({ cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: on.deploymentId, sub: '970001', login: 'sibling-admin', iat: Date.now(), exp: Date.now() + 3_600_000 })}`,
+        'cf-connecting-ip': '1.2.3.4', origin: on.url, 'content-type': 'application/json' });
+      const adminRead = async (on: ParityTarget) => (await fetch(`${on.url}/api/members`, { headers: await signedIn(on) })).status;
+      const adminWrite = async (on: ParityTarget) => (await fetch(`${on.url}/api/projects/${on.projectId}/grants`, { method: 'POST', headers: await signedIn(on), body: JSON.stringify({ label: 'held admin' }) })).status;
+      expect({ sibling: await adminRead(sibling), target: await adminRead(target) }).toEqual({ sibling: 200, target: 401 });
+      const minted = await ownerPost<{ key: string; id: string }>(sibling, `/api/projects/${sibling.projectId}/grants`, { label: 'sibling grant' });
+      expect(minted.status).toBe(201);
+      const siblingAuthority = (await sibling.sql(`SELECT id FROM member_credentials WHERE revoked_at IS NULL
+        UNION ALL SELECT id FROM external_grants WHERE revoked_at IS NULL`)).map((row) => String(row.id));
+      expect(siblingAuthority).toContain(minted.body.id);
+      const memberRead = (on: ParityTarget) => fetch(`${on.url}/members/status`, { method: 'POST',
+        headers: { ...memberHeadersFor(sibling.memberToken, on.projectId), 'content-type': 'application/json' }, body: '{}' });
+      const grantList = (on: ParityTarget) => fetch(`${on.url}/mcp`, { method: 'POST',
+        headers: { ...on.grantHeaders(minted.body.key), 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
+      expect({ member: (await memberRead(sibling)).status, grant: (await grantList(sibling)).status }).toEqual({ member: 200, grant: 200 });
       const siblingBackup = await ownerPost<{ backup: { id: string } }>(sibling, '/api/backups', {});
       const siblingArtifact = await fetch(`${sibling.url}/api/backups/${siblingBackup.body.backup.id}/artifact`, { headers: ownerJson(sibling) });
       const back = await ownerPost<{ applied: boolean }>(target, '/api/backups/restore-upload', { artifact: await siblingArtifact.text(), allowForeignLineage: true });
       expect({ status: back.status, applied: back.body.applied }).toEqual({ status: 200, applied: true });
+      const ids = siblingAuthority.map(lit).join(', ');
+      const landed = await target.sql(`SELECT id, revoked_at IS NULL AS live, revoked_by FROM member_credentials WHERE id IN (${ids})
+        UNION ALL SELECT id, revoked_at IS NULL AS live, revoked_by FROM external_grants WHERE id IN (${ids})`);
+      expect(landed.map((row) => ({ id: String(row.id), live: Number(row.live), revokedBy: row.revoked_by })).sort((x, y) => x.id.localeCompare(y.id)))
+        .toEqual([...siblingAuthority].sort().map((id) => ({ id, live: 0, revokedBy: FOREIGN_LINEAGE_REVOKER })));
+      expect({ member: (await memberRead(target)).status, grant: (await grantList(target)).status }).toEqual({ member: 401, grant: 401 });
+      expect({ read: await adminRead(target), write: await adminWrite(target) }).toEqual({ read: 401, write: 401 });
+      expect(await target.sql(`SELECT role, revoked_by FROM members WHERE id = ${lit(heldAdmin)}`)).toEqual([{ role: 'admin', revoked_by: FOREIGN_LINEAGE_REVOKER }]);
+      const revision = String((await target.sql(`SELECT role_revision FROM members WHERE id = ${lit(heldAdmin)}`))[0]!.role_revision);
+      const readmitted = await ownerPost<{ role: string }>(target, `/api/members/${heldAdmin}/role`, { role: 'admin', expected_revision: revision });
+      expect({ status: readmitted.status, role: readmitted.body.role }).toEqual({ status: 200, role: 'admin' });
+      expect(await target.sql(`SELECT previous_role, role, actor_id FROM member_role_audit WHERE member_id = ${lit(heldAdmin)} AND revision = ${Number(revision) + 1}`))
+        .toEqual([{ previous_role: 'admin', role: 'admin', actor_id: MEMBER_ID }]);
+      expect({ read: await adminRead(target), write: await adminWrite(target) }).toEqual({ read: 200, write: 201 });
     } finally {
       await sibling.stop();
     }

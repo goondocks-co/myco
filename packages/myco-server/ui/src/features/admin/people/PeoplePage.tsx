@@ -64,7 +64,8 @@ export function PeoplePage() {
   const all = members.data?.members ?? [];
   const people = peopleOf(all);
   const live = people.filter((m) => m.revokedAt === null);
-  const removed = people.filter((m) => m.revokedAt !== null);
+  const held = people.filter((m) => m.revokedAt !== null && m.awaitingAdmission === true);
+  const removed = people.filter((m) => m.revokedAt !== null && m.awaitingAdmission !== true);
   const choices = live.map((m) => ({ id: m.id, name: nameOfPerson(m) }));
   // The viewer first, so adding a machine starts on their own.
   choices.sort((a, b) => Number(b.id === viewerId) - Number(a.id === viewerId));
@@ -91,6 +92,7 @@ export function PeoplePage() {
           : (
             <PeopleList
               live={live}
+              held={held}
               removed={removed}
               viewerId={viewerId}
               isAdmin={isAdmin}
@@ -133,6 +135,8 @@ export function PeoplePage() {
 
 interface PeopleListProps {
   live: MemberRow[];
+  /** People a restore from another server listed without access, until the owner re-admits them. */
+  held: MemberRow[];
   removed: MemberRow[];
   viewerId: string | null;
   isAdmin: boolean;
@@ -144,7 +148,7 @@ interface PeopleListProps {
   onAddMachine: (memberId: string) => void;
 }
 
-function PeopleList({ live, removed, viewerId, isAdmin, isOwner, ownerMemberId, nameOf, machineCount, machinesComplete, onAddMachine }: PeopleListProps) {
+function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemberId, nameOf, machineCount, machinesComplete, onAddMachine }: PeopleListProps) {
   const nameOfPerson = usePersonName();
   const actions = useAccessActions();
   const [removing, setRemoving] = useState<MemberRow | null>(null);
@@ -153,6 +157,8 @@ function PeopleList({ live, removed, viewerId, isAdmin, isOwner, ownerMemberId, 
   const [roleReview, setRoleReview] = useState<MemberRow | null>(null);
   const [roleError, setRoleError] = useState<string | null>(null);
   const [roleConfirmed, setRoleConfirmed] = useState(false);
+  const [readmitting, setReadmitting] = useState<MemberRow | null>(null);
+  const [readmitError, setReadmitError] = useState<string | null>(null);
   const self = removing !== null && removing.id === viewerId;
   const removingName = removing === null ? '' : nameOfPerson(removing);
 
@@ -176,6 +182,22 @@ function PeopleList({ live, removed, viewerId, isAdmin, isOwner, ownerMemberId, 
                   ...(isAdmin && member.id !== ownerMemberId && !(isOwner && member.id === viewerId) && (member.role === 'member' || isOwner) ? [{ label: 'Remove', tone: 'danger' as const, onSelect: () => { setRemoveError(null); actions.revokeMember.reset(); setRemoving(member); } }] : []),
                 ]}
               />
+            ))}
+          </ul>
+        </Card>
+      )}
+      {held.length > 0 && (
+        <Card padding="flush">
+          <ul aria-label="Waiting to be re-admitted" className="flex flex-col divide-y divide-line">
+            {held.map((member) => (
+              <li key={member.id} className="flex items-center gap-s3 px-s4 py-s3" data-person-held="">
+                <Avatar name={nameOfPerson(member)} />
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="t-body text-ink-2">{nameOfPerson(member)}</span>
+                  <span className="t-small text-muted">From another server’s backup. They can’t sign in until the owner re-admits them.</span>
+                </div>
+                {isOwner && <Button onClick={() => { setReadmitError(null); actions.changeRole.reset(); setReadmitting(member); }}>Re-admit</Button>}
+              </li>
             ))}
           </ul>
         </Card>
@@ -244,6 +266,23 @@ function PeopleList({ live, removed, viewerId, isAdmin, isOwner, ownerMemberId, 
         <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={roleConfirmed} onChange={(event) => setRoleConfirmed(event.target.checked)} />I reviewed this role change.</label>
       </ConfirmDialog>
       {roleReview === null && roleError !== null && <p role="alert" className="t-small text-bad">{roleError}</p>}
+      <ConfirmDialog
+        open={readmitting !== null}
+        onOpenChange={(open) => { if (!open) setReadmitting(null); }}
+        title={`Re-admit ${readmitting === null ? '' : nameOfPerson(readmitting)}?`}
+        description={`They can sign in with their GitHub account again, as ${readmitting?.role === 'admin' ? 'an admin' : 'a member'}. Their machines need adding again.`}
+        confirmLabel="Re-admit"
+        tone="primary"
+        pending={actions.changeRole.isPending}
+        error={readmitError}
+        onConfirm={() => {
+          if (readmitting === null) return;
+          actions.changeRole.mutate({ memberId: readmitting.id, role: readmitting.role, expectedRevision: readmitting.roleRevision }, {
+            onSuccess: () => setReadmitting(null),
+            onError: (failure) => setReadmitError(refusalText(failure)),
+          });
+        }}
+      />
     </div>
   );
 }

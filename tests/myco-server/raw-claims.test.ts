@@ -235,7 +235,8 @@ describe('explicit owner claim of missing raw uploader', () => {
       const backup = await createBackup(source.db, source.bucket, { producer: 'restore claim gate', now: 3 });
       const artifact = (await backupArtifact(source.db, source.bucket, backup.id))!;
       event(destination, 'destination-unreviewed', 'destination-missing');
-      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      destination.sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'deployment_id'`, [await deploymentId(source.db)]);
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: artifact.text });
       expect(await ownershipPreview(destination.db)).toMatchObject({ ownerMemberId: 'mem_machine_1', revision: '1' });
       expect(destination.sqlite.query('SELECT member_id,actor_id FROM deployment_ownership_audit').all())
         .toEqual([{ member_id: 'mem_machine_1', actor_id: 'mem_machine_1' }]);
@@ -245,7 +246,7 @@ describe('explicit owner claim of missing raw uploader', () => {
       expect(await reader(destination, 'mem_machine_1').event('new-after-recovery')).toBeNull();
       await complete(destination);
       expect(await reader(destination, 'mem_machine_1').event('destination-unreviewed')).toBeNull();
-      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      await restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text: artifact.text });
       expect(await reader(destination, 'mem_machine_1').event('new-after-recovery')).toBeNull();
       expect(destination.sqlite.query('SELECT COUNT(*) AS n FROM raw_restore_revisions').get()).toEqual({ n: 1 });
     } finally { source.sqlite.close(); destination.sqlite.close(); }

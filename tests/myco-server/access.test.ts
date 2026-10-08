@@ -235,7 +235,7 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
       'src/auth/identity-link.ts: github_id = ?', // break-glass linkStatement: a validated account id, never NULL
       'src/auth/members-admin.ts: label = ?', // nameMemberFromLogin: a name, only where none is held
       'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?',
-      'src/core/ownership.ts: role = ?, role_revision = role_revision + 1', // revokeMember: guarded below
+      'src/core/ownership.ts: role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL', // changeMemberRole: guarded below; clears only a foreign-restore hold
     ]);
     const source = readFileSync(join(ROOT, 'src', 'auth', 'identity-link.ts'), 'utf8');
     expect(source).toMatch(/UPDATE members SET github_id = \?\s+WHERE id = \? AND revoked_at IS NULL AND \(github_id IS NULL OR github_id = \?\)/);

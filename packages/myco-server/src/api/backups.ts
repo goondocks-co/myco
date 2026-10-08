@@ -46,7 +46,7 @@ export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Prom
   return ok({ backups: await listBackups(env.db, env.blobs) });
 }
 
-/** What a restore would touch and whether this member may apply its rows. */
+/** What a restore would touch, the authority a foreign-lineage restore lands without, and whether this member may apply its rows. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   try {
     const preview = await previewRestore(env.db, env.blobs, ctx.params.backupId);
@@ -76,6 +76,7 @@ export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Pr
       id: ctx.params.backupId,
       allowForeignLineage: body.allowForeignLineage === true,
       authorization: { kind: 'member', memberId: ctx.member.id },
+      now: ctx.now,
     });
     if (outcome === null) return notFound();
     return ok({ applied: true, ...outcome });
@@ -124,7 +125,7 @@ export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Pr
   }
   try {
     assertBackupSize(body.artifact);
-    const outcome = await restoreArtifact(env.db, { text: body.artifact, blobs: env.blobs, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id } });
+    const outcome = await restoreArtifact(env.db, { text: body.artifact, blobs: env.blobs, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id }, now: ctx.now });
     return ok({ applied: true, ...outcome });
   } catch (err) {
     if (err instanceof RestoreAuthorizationError) return Response.json({ error: err.code }, { status: err.code === 'owner_pending' ? 409 : 403 });

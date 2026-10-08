@@ -1,4 +1,4 @@
-import { HARNESS_MEMBER_ID } from '../constants.js';
+import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
 import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
 /**
@@ -92,6 +92,24 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
   '_v48_credential_rows', '_v48_guard_rows_kept',
 ]);
+
+/**
+ * Carried tables whose rows let someone act here: a bearer secret's hash, which presenting the secret proves, or a
+ * member's linked GitHub account, which a dashboard sign-in proves. An artifact from another Deployment inserts every
+ * row of these already revoked, by `FOREIGN_LINEAGE_REVOKER`, so the rows keep the attribution its history names and
+ * none of them authenticates here. A member row so held stays listed until the owner re-admits it by assigning a
+ * role; a credential, key or grant so revoked never authenticates again. The Deployment's own runtime member, and
+ * every row the destination already holds, are untouched. A same-lineage restore inserts them as they are.
+ */
+export const FOREIGN_AUTHORITY_TABLES: readonly string[] = ['members', 'enrollment_authorities', 'identity_link_authorities', 'member_credentials', 'external_grants'];
+/** What a foreign-lineage preview tells the owner about the people and access the artifact carries. */
+export const FOREIGN_AUTHORITY_NOTICE = 'People from the other server are listed here but cannot sign in until the owner re-admits them on the People page. Its machine sign-ins, enrollment and account-link keys, and external agent grants arrive revoked and cannot be used here: enroll machines and issue agent grants again on this server. This server keeps its own owner.';
+
+export interface ForeignAuthorityExclusion {
+  /** The `FOREIGN_AUTHORITY_TABLES` this artifact holds rows for. */
+  tables: string[];
+  notice: string;
+}
 
 export interface BackupHeader {
   format: string;
@@ -302,7 +320,7 @@ function* restoreRows(lines: Iterable<string>): IterableIterator<{ t: string; r:
 /** What a restore would touch, answered from a verified artifact without executing its rows. */
 export async function previewRestore(
   db: RelationalStore, blobs: BlobStore, id: string,
-): Promise<{ header: BackupHeader; foreignLineage: boolean; tableKeys: string[] } | null> {
+): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[] } | null> {
   const artifact = await readArtifact(db, blobs, id);
   if (artifact === null) return null;
   const newline = artifact.text.indexOf('\n');
@@ -310,7 +328,30 @@ export async function previewRestore(
   const header = JSON.parse(artifact.text.slice(0, newline)) as BackupHeader;
   const tableKeys = new Set<string>();
   for (const row of restoreRows(artifact.text.slice(newline + 1).split('\n'))) tableKeys.add(row.t);
-  return { header, foreignLineage: header.deploymentId !== (await deploymentId(db)), tableKeys: [...tableKeys] };
+  const foreignLineage = header.deploymentId !== (await deploymentId(db));
+  const authorityExcluded = foreignLineage
+    ? { tables: FOREIGN_AUTHORITY_TABLES.filter((table) => tableKeys.has(table)), notice: FOREIGN_AUTHORITY_NOTICE }
+    : null;
+  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys] };
+}
+
+/**
+ * Another Deployment's authority lands revoked. A live member is held for re-admission; a member its source already
+ * revoked keeps that revocation. Every credential, key and grant names `FOREIGN_LINEAGE_REVOKER`, keeping its own
+ * instant when it already had one, so no exception that reads `revoked_by` admits it.
+ */
+function revokeForeignAuthority(byTable: ReadonlyMap<string, Record<string, unknown>[]>, now: number): void {
+  for (const table of FOREIGN_AUTHORITY_TABLES) {
+    for (const row of byTable.get(table) ?? []) {
+      if (table === 'members') {
+        if (row.id === HARNESS_MEMBER_ID || typeof row.revoked_at === 'number') continue;
+        row.revoked_at = now;
+      } else {
+        row.revoked_at = typeof row.revoked_at === 'number' ? row.revoked_at : now;
+      }
+      row.revoked_by = FOREIGN_LINEAGE_REVOKER;
+    }
+  }
 }
 
 export interface RestoreOutcome {
@@ -422,14 +463,16 @@ async function restoreTranscriptReference(
  * per row in bounded batches. Rows the target already holds stay exactly as
  * they are — a restore never overwrites, so the target's revocations and
  * edits always win. A re-run converges: every insert is a no-op the second time.
+ * An artifact from another Deployment inserts its authority already revoked
+ * (`FOREIGN_AUTHORITY_TABLES`) and leaves this Deployment's owner as it is.
  */
 export async function restoreBackup(
   db: RelationalStore, blobs: BlobStore,
-  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization },
+  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number },
 ): Promise<RestoreOutcome | null> {
   const artifact = await readArtifact(db, blobs, opts.id);
   if (artifact === null) return null;
-  return restoreArtifact(db, { text: artifact.text, blobs, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization });
+  return restoreArtifact(db, { text: artifact.text, blobs, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization, now: opts.now });
 }
 
 /**
@@ -438,7 +481,7 @@ export async function restoreBackup(
  */
 export async function restoreArtifact(
   db: RelationalStore,
-  opts: { text: string; blobs?: BlobStore; allowForeignLineage?: boolean; authorization: RestoreAuthorization },
+  opts: { text: string; blobs?: BlobStore; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number },
 ): Promise<RestoreOutcome> {
   const lines = opts.text.split('\n').filter((l) => l.length > 0);
   const header = JSON.parse(lines[0]!) as BackupHeader;
@@ -454,6 +497,8 @@ export async function restoreArtifact(
     rows.push(portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
   }
+  const foreign = header.deploymentId !== live;
+  if (foreign) revokeForeignAuthority(byTable, opts.now ?? Date.now());
 
   db = await authorizeRestore(db, opts.authorization, byTable.keys());
   try { assertArchivedContentClosure(byTable); }
@@ -541,6 +586,10 @@ export async function restoreArtifact(
       continue;
     }
     if (table === 'deployment_ownership') {
+      if (foreign) {
+        outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'this server keeps its own owner; another server\'s owner is not restored' };
+        continue;
+      }
       const row = rows[0]!;
       if (typeof row.member_id === 'string') await restoreOwnership(db, { member_id: row.member_id, revision: Number(row.revision) },
         { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number,

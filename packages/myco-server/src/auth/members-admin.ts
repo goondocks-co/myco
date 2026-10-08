@@ -15,7 +15,7 @@
  */
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { emit } from '../telemetry.js';
-import { HARNESS_MEMBER_ID } from '../constants.js';
+import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
 import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
@@ -37,6 +37,8 @@ export interface MemberRow {
   createdAt: number;
   revokedAt: number | null;
   revokedBy: string | null;
+  /** Whether a restore from another Deployment brought this member in held: listed, unable to sign in, until the owner re-admits it by assigning a role. */
+  awaitingAdmission: boolean;
   /** How many of this member's own runtimes authenticate now. Run credentials are counted under their purpose, not here. */
   liveCredentials: number;
   /** Whether this member is the Deployment's own, the account the runs it starts sign in as, rather than a person. */
@@ -60,6 +62,7 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
     createdAt: r.created_at as number,
     revokedAt: (r.revoked_at as number | null) ?? null,
     revokedBy: (r.revoked_by as string | null) ?? null,
+    awaitingAdmission: r.revoked_at !== null && r.revoked_by === FOREIGN_LINEAGE_REVOKER,
     liveCredentials: Number(r.live_credentials),
     system: r.id === HARNESS_MEMBER_ID,
   }));

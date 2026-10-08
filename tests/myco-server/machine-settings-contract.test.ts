@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { DEPLOYMENT_TARGETS, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
 import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, parseMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import { MACHINE_LEAF_SPECS, MACHINE_SETTINGS_SNAPSHOT_LIMIT, type MachineLeaf } from '@myco-server-worker/core/machine-settings.js';
-import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
@@ -280,7 +280,8 @@ describe('machine settings effective contract', () => {
       const artifact = (await backupArtifact(source.env.db, source.bucket, saved.id))!;
       const restored = await rig(target);
       restored.sqlite.run(`DELETE FROM machine_claims WHERE machine_id = 'machine_1'`);
-      await restoreArtifact(restored.env.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      restored.sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'deployment_id'`, [await deploymentId(source.env.db)]);
+      await restoreArtifact(restored.env.db, { authorization: { kind: 'recovery' }, text: artifact.text });
       const ask = (headers: Record<string, string>) => restored.request(memberPost(source.token, {}, '/members/settings', headers));
       const lostResponse = await ask(oldHeaders);
       expect(lostResponse.status).toBe(200);
