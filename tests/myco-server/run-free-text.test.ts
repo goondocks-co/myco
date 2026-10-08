@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { runRouteFixture } from './helpers/run-routes.js';
 /**
  * Every free-text field a worker, a harness or an agent supplies to a run, judged by the adversarial secret corpus on
@@ -58,7 +59,7 @@ async function claimedRun() {
   e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
   e.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', 's1', 'p1', 'e1', 'add a retry to the runner', 'user', 'h1', ?, ?, 'tok_1', ?)`, [NOW - 5000, NOW - 5000, NOW - 5000]);
   expect((await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now: NOW + 1, origin: ORIGIN })).outcome).toBe('queued');
-  const claimed = await claimNextRun(e.serverEnv, { tokenId: workerToken, machineId: 'm1', harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 2 });
+  const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 2 });
   if (!claimed.claimed) throw new Error('the titling run was not claimed');
   const report = async (input: Record<string, unknown>) => {
     const res = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
@@ -67,7 +68,7 @@ async function claimedRun() {
     }), e.env);
     expect(res.status).toBe(200);
   };
-  const end = (error: string) => endLeasedRun(e.serverEnv, { tokenId: workerToken, now: NOW + 9 }, { projectId: 'proj_1', runId: claimed.run.id, status: 'failed', error });
+  const end = (error: string) => endLeasedRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), now: NOW + 9 }, { projectId: 'proj_1', runId: claimed.run.id, status: 'failed', error });
   const stored = (): string => JSON.stringify([
     e.sqlite.query('SELECT error, error_code FROM agent_runs WHERE id = ?').get(claimed.run.id),
     e.sqlite.query('SELECT summary, details, audit FROM agent_reports WHERE run_id = ?').all(claimed.run.id),

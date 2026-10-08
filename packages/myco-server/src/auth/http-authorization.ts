@@ -93,6 +93,11 @@ export async function resolveHttpResource(env: ServerEnv, declaration: Authoriza
       resource.bootstrapAllowed = linked === null;
     }
   }
+  if (declaration.resolver === 'runner') {
+    const row = await env.db.prepare('SELECT id FROM runners WHERE id = ?').bind(params.runnerId ?? subject.runnerId ?? '').first<{ id: string }>();
+    resource.exists = row !== null;
+    resource.id = row?.id;
+  }
   if (declaration.resolver === 'deployment' && resource.kind === 'member') {
     const owner = await env.db.prepare('SELECT member_id FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null }>();
     if (owner === null) throw new Error('Deployment ownership record is missing');

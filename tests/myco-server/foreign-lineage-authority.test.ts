@@ -11,6 +11,7 @@ import {
 } from '@myco-server-worker/core/backup.js';
 import { authenticateServerMemberToken, releasedRunCredential } from '@myco-server-worker/auth/tokens.js';
 import { authenticateGrant } from '@myco-server-worker/auth/grants.js';
+import { authenticateRunner } from '@myco-server-worker/auth/runners.js';
 import { memberByGithubId } from '@myco-server-worker/auth/identity-link.js';
 import { memberSubject } from '@myco-server-worker/auth/authorization.js';
 import { listMembers } from '@myco-server-worker/auth/members-admin.js';
@@ -47,9 +48,11 @@ function issueAfterFork(env: Env): void {
   env.sqlite.run(`INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, member_id) VALUES ('enr_post', 'enr_hash', 2, ?, 'mem_new')`, [FUTURE]);
   env.sqlite.run(`INSERT INTO identity_link_authorities (id, key_hash, member_id, created_at, expires_at) VALUES ('link_post', 'link_hash', 'mem_new', 2, ?)`, [FUTURE]);
   env.sqlite.run(`INSERT INTO external_grants (id, project_id, key_hash, created_by, created_at, expires_at) VALUES ('grant_post', ?, 'grant_hash', 'mem_new', 2, ?)`, [PROJECT, FUTURE]);
+  env.sqlite.run(`INSERT INTO runners (id, name, created_at, created_by_member) VALUES ('rn_post', 'mini', 2, 'mem_new')`);
+  env.sqlite.run(`INSERT INTO runner_credentials (id, runner_id, token_hash, epoch, issued_at, expires_at, lineage_root) VALUES ('rc_post', 'rn_post', 'runner_hash', 1, 2, ?, 'rc_post')`, [FUTURE]);
 }
 
-const BEARER_IDS = ['cred_pre', 'cred_post', 'cred_new', 'cred_harness', 'enr_post', 'link_post', 'grant_post'];
+const BEARER_IDS = ['cred_pre', 'cred_post', 'cred_new', 'cred_harness', 'enr_post', 'link_post', 'grant_post', 'rc_post'];
 
 function liveBearers(env: Env): string[] {
   return BEARER_TABLES.flatMap((table) => env.sqlite.query<{ id: string }, []>(
@@ -63,12 +66,13 @@ async function authenticated(env: Env): Promise<string[]> {
   if (await authenticateServerMemberToken(env.db, 'hash_new', NOW) !== null) hits.push('new admin credential');
   if (await releasedRunCredential(env.db, 'hash_harness', NOW) !== null) hits.push('released harness credential');
   if (await authenticateGrant(env.db, 'grant_hash', NOW) !== null) hits.push('external grant');
+  if (await authenticateRunner(env.db, 'runner_hash', NOW) !== null) hits.push('runner credential');
   if (await memberByGithubId(env.db, NEW_ADMIN_GITHUB) !== null) hits.push('new admin GitHub sign-in');
   if ((await memberSubject(env.db, 'mem_new', 'http')).live) hits.push('new admin live actor');
   return hits;
 }
 
-const ALL_AUTHORITY = ['member credential', 'new admin credential', 'released harness credential', 'external grant', 'new admin GitHub sign-in', 'new admin live actor'];
+const ALL_AUTHORITY = ['member credential', 'new admin credential', 'released harness credential', 'external grant', 'runner credential', 'new admin GitHub sign-in', 'new admin live actor'];
 
 /** A stored copy of a backup in `env`'s own index and bucket, as an owner download-and-upload would leave it. */
 async function storeIn(env: Env, source: Env, id: string): Promise<void> {

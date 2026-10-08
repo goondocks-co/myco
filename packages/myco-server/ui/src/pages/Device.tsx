@@ -4,11 +4,11 @@ import { useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
 import { pendingDeviceCode } from '../lib/pending-device';
 
-interface Preview { machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; alreadyYours: boolean; scope: string; expiresAt: number }
+interface Preview { subject: 'member' | 'runner'; runnerName?: string; machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; alreadyYours?: boolean; scope: string; expiresAt: number }
 
 function refusal(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403 || error.status === 404 && error.code === 'not_found') return 'You cannot approve this sign-in with your current membership.';
+    if (error.status === 403 || error.status === 404 && error.code === 'not_found') return 'You cannot approve this request with your current membership.';
     if (error.code === 'expired_token' || error.code === 'request_finished' || error.code === 'invalid_user_code' || error.code === 'approval_refused') return 'This code has expired, was already used, or does not match. Run myco login again for a new code.';
     if (error.status === 429) return 'Too many attempts. Wait a moment and try again.';
   }
@@ -40,7 +40,7 @@ export function Device() {
     if (preview === null || preview.code !== code) return;
     setPending(true); setError(null);
     try {
-      await postJson(`/api/device/${decision}`, { user_code: preview.code });
+      await postJson(`/api/device/${decision === 'approve' && preview.subject === 'runner' ? 'approve-runner' : decision}`, { user_code: preview.code });
       setFinished(decision === 'approve' ? 'approved' : 'denied');
       pendingDeviceCode(null);
     } catch (e) { pendingDeviceCode(null); setError(refusal(e)); }
@@ -48,8 +48,10 @@ export function Device() {
   };
   return <main className="flex min-h-screen items-center justify-center bg-bg p-gutter">
     <Card className="flex w-full max-w-measure flex-col gap-s4 p-s5">
-      <h1 className="t-display text-ink">Sign in a machine</h1>
-      {finished ? <p role="status" className="t-body text-ink">{finished === 'approved' ? 'Approved. Return to your terminal to finish signing in.' : 'Denied. This machine will not be signed in.'}</p>
+      <h1 className="t-display text-ink">{preview?.subject === 'runner' ? `Register a runner named ${preview.runnerName ?? ''}` : 'Sign in a machine'}</h1>
+      {finished ? <p role="status" className="t-body text-ink">{finished === 'approved'
+        ? (preview?.subject === 'runner' ? 'Registered. Return to your terminal to finish registering the runner.' : 'Approved. Return to your terminal to finish signing in.')
+        : (preview?.subject === 'runner' ? 'Denied. This runner will not be registered.' : 'Denied. This machine will not be signed in.')}</p>
         : me.error instanceof SignedOutError ? <>
           <p className="t-body text-muted">Sign in with your GitHub account to approve your machine.</p>
           <a href="/auth/login" onClick={() => { pendingDeviceCode(code); }} className={buttonVariants({ variant: 'primary' })}>Sign in with GitHub</a>
@@ -63,7 +65,27 @@ export function Device() {
                     onChange={e => { ++revision.current; setCode(e.target.value.toUpperCase()); setPreview(null); setPending(false); }} />
                   <Button type="submit" pending={pending} disabled={!code.trim()}>Check machine</Button>
                 </form>
-                {preview && preview.code === code && <>
+                {preview && preview.code === code && preview.subject === 'runner' && <>
+                  <FactsPanel>
+                    <FactRow term="Request">Register a runner named {preview.runnerName}</FactRow>
+                    <FactRow term="Machine">{preview.machineName}</FactRow>
+                    <FactRow term="Operating system">{preview.os}</FactRow>
+                    <FactRow term="Request IP address">{preview.ip}</FactRow>
+                    <FactRow term="Your IP address">{preview.approverIp}</FactRow>
+                    <FactRow term="Requested">{preview.ageSeconds} seconds ago</FactRow>
+                    <FactRow term="Code">{preview.code}</FactRow>
+                    <FactRow term="Access">A runner takes Myco’s queued work and runs it on that machine with its own signed-in agents. It is not a member: it cannot read project memory, capture sessions or administer the server.</FactRow>
+                  </FactsPanel>
+                  <p className="t-body text-muted">Runner name, machine name and operating system are reported by the requesting machine.</p>
+                  {preview.ip !== preview.approverIp && <p role="alert" className="t-body text-muted">The request IP differs from yours. Check that this is the machine you are registering, especially over SSH.</p>}
+                  {me.data.member.role !== 'admin' && !me.data.owner && <p role="alert" className="t-body text-muted">Only the owner or an administrator can register a runner.</p>}
+                  <p className="t-body text-muted">Register only if you started this request and the code matches your terminal. A registered runner receives the prompts and repository input of the work it takes until it is removed.</p>
+                  <div className="flex gap-s3">
+                    <Button variant="primary" pending={pending} onClick={() => void decide('approve')}>Register this runner</Button>
+                    <Button pending={pending} onClick={() => void decide('deny')}>Deny</Button>
+                  </div>
+                </>}
+                {preview && preview.code === code && preview.subject !== 'runner' && <>
                   <FactsPanel>
                     <FactRow term="Machine">{preview.machineName}</FactRow>
                     <FactRow term="Operating system">{preview.os}</FactRow>

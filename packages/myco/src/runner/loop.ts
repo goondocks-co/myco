@@ -27,7 +27,7 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import nodeFs from 'node:fs';
 const { mkdirSync, realpathSync } = nodeFs;
 import { join } from 'node:path';
-import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, WITHHELD_REASON } from './detect.js';
+import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, WITHHELD_REASON, type DetectionMode } from './detect.js';
 import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
 import { STOP_GRACE_MS } from './process-group.js';
@@ -121,7 +121,14 @@ export interface WorkerOptions {
   keepAwake?: KeepAwake;
   /** Lists the models of the harnesses this worker offers, for a Deployment that stores them. Defaults to each manifest's listing (`models.ts`). */
   listModels?: ListModels;
+  /** The route of the compatibility read made before every claim. Defaults to the member status route. */
+  compatibilityPath?: string;
+  /** What a harness probe reads of a credential file. Defaults to reading it. */
+  detection?: DetectionMode;
 }
+
+/** The route a member worker's compatibility read goes to. */
+export const MEMBER_COMPATIBILITY_PATH = '/members/status';
 
 /** What a request needs of a worker: where, as whom, and when to give up. */
 type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImpl' | 'signal'>;
@@ -299,6 +306,9 @@ const leaseDeadline = (sentAt: number, leaseMs: unknown): number =>
 
 /** What a worker keeps only until a Deployment tells it otherwise, which is on its first answer. */
 const DEFAULT_HEARTBEAT_MS = 30_000;
+
+/** What a worker waits between claims before its first answer tells it the Deployment's own cadence. */
+export const CLAIM_IDLE_POLL_MS = 2_000;
 
 /**
  * How long past its own budget a run's child is left alone before the worker
@@ -821,7 +831,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
   };
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
-  const detection = harnessDetection({ detect: () => detectHarnessesAsync(options.only, options.signal), clock });
+  const detection = harnessDetection({ detect: () => detectHarnessesAsync(options.only, options.signal, options.detection), clock });
   const catalogs = modelCatalogs({
     harnesses: [],
     list: options.listModels ?? ((ids, signal) => listModels(ids, options.runRoot, signal, clock)),
@@ -857,7 +867,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch): Promi
       // Compatibility is checked on a read before the queue can be claimed.
       let advertisesCatalog = false;
       {
-        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/members/status', {}));
+        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, {}));
         if (compatibility.kind === 'refused') {
           options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
           return { driven, refused: compatibility.code };

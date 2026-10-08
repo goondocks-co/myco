@@ -17,6 +17,8 @@ import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
  */
 export const titlingBackfill: ParityScenario = {
   name: 'titling backfill: imported sessions off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent; what live capture owes converges regardless, bounded by worker-claimed attempts; at the ceiling the owner reads the wait and when it lifts',
+  // A wake's page takes every untitled session in the Deployment, newest first, so this scenario owns its target.
+  dedicated: { timeoutMs: 240000 },
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, channel: 'cli' | 'import' = 'import') => {

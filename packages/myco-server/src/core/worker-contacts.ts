@@ -18,7 +18,7 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
 import { asMemberRole, isAdmin } from '../auth/roles.js';
-import { renewingLeaseAuthority } from './worker-lease.js';
+import { renewingLeaseAuthority, type LeaseHolder } from './worker-lease.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 /** A harness a worker reports, as it reports it. `authenticated` is the worker's own probe, not a provider check. */
@@ -29,7 +29,7 @@ export interface ReportedHarness {
 }
 
 /** Why the worker's last claim took no run, in the claim's own vocabulary; null when it took one. */
-export const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race'] as const;
+export const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race', 'paused'] as const;
 export type ContactOutcome = (typeof CONTACT_OUTCOMES)[number];
 
 /** Whether a stored value belongs to the contact outcome vocabulary. */
@@ -39,6 +39,7 @@ export const isContactOutcome = (value: string): value is ContactOutcome => (CON
 const MAX_OFFERS = 16;
 const MAX_CAPABILITIES = 16;
 const MAX_ID = 64;
+const MAX_METADATA = 128;
 
 /**
  * How long an unchanged observation may go unwritten: half the heartbeat, so a
@@ -75,8 +76,10 @@ export interface WorkerContact {
   lastSeenAt: number;
 }
 
-/** One attached-or-remembered worker, as the status surface reports it. */
+/** One attached-or-remembered worker, as the status surface reports it. `credentialId` is a legacy worker's member credential, or a runner's id. */
 export interface WorkerFleetRow extends WorkerContact {
+  /** The runner this row reports, or null for a legacy worker presenting a member credential. */
+  runner: { id: string; name: string; state: 'enabled' | 'paused' | 'removed' } | null;
   /** Held from a live lease, which decides busy; a stored claim reason never does. */
   busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
   /** Whether a claim from this credential would be admitted now: the worker route's own rule, credential and role together. */
@@ -190,7 +193,7 @@ export async function workerContactStatement(
     const observation = machineOfferObservationsOf(results).get(String(machineId));
     if (observation !== undefined && observation.offers !== null && sameOffers(observation.offers, offers)) skipRevision = observation.revision;
   }
-  const authority = lease === undefined ? null : renewingLeaseAuthority(contact.credentialId, contact.now, lease.attemptId);
+  const authority = lease === undefined ? null : renewingLeaseAuthority({ kind: 'member', tokenId: contact.credentialId }, contact.now, lease.attemptId);
   return db.prepare(
     `WITH observation AS (
        SELECT ? AS credential_id, ? AS machine_id, ? AS offers, ? AS capabilities, ? AS reason, ? AS seen_at,
@@ -220,6 +223,50 @@ export async function workerContactStatement(
   );
 }
 
+/**
+ * Record a runner's contact under its stable id, with whatever it reports: machine, system and version metadata, its
+ * offers and capabilities on a claim, and the claim's outcome. Unsupplied fields keep what is held. An unchanged
+ * observation inside `CONTACT_THROTTLE_MS` writes nothing. Given a lease, the write lands only while that runner
+ * holds it.
+ */
+export function runnerContactStatement(
+  db: RelationalStore,
+  contact: { runnerId: string; machineId?: string | null; os?: string | null; version?: string | null; offers?: readonly ReportedHarness[]; capabilities?: readonly string[]; reason?: ContactOutcome; now: number },
+  lease?: { projectId: string; runId: string; attemptId?: string },
+  worker?: LeaseHolder,
+): PreparedStatement {
+  const offers = contact.offers === undefined ? null : JSON.stringify(boundedOffers(contact.offers));
+  const capabilities = contact.capabilities === undefined ? null : JSON.stringify(boundedCapabilities(contact.capabilities));
+  const explicitOffers = contact.offers === undefined ? 0 : 1;
+  const explicitCapabilities = contact.capabilities === undefined ? 0 : 1;
+  const authority = lease === undefined || worker === undefined ? null : renewingLeaseAuthority(worker, contact.now, lease.attemptId);
+  const text = (value: string | null | undefined, bound: number): string | null => (value == null ? null : value.slice(0, bound));
+  return db.prepare(
+    `INSERT INTO runner_contacts (runner_id, machine_id, os, version, offers, capabilities, last_reason, last_seen_at, updated_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE 1${authority === null ? '' : ` AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND ${authority.sql})`}
+     ON CONFLICT (runner_id) DO UPDATE SET
+       machine_id = COALESCE(excluded.machine_id, runner_contacts.machine_id),
+       os = COALESCE(excluded.os, runner_contacts.os),
+       version = COALESCE(excluded.version, runner_contacts.version),
+       offers = CASE WHEN ${explicitOffers} = 1 THEN excluded.offers ELSE runner_contacts.offers END,
+       capabilities = CASE WHEN ${explicitCapabilities} = 1 THEN excluded.capabilities ELSE runner_contacts.capabilities END,
+       last_reason = COALESCE(excluded.last_reason, runner_contacts.last_reason),
+       last_seen_at = MAX(runner_contacts.last_seen_at, excluded.last_seen_at),
+       updated_at = CASE WHEN ${explicitOffers} = 1 AND excluded.offers IS NOT runner_contacts.offers THEN MAX(excluded.updated_at, runner_contacts.updated_at + 1) ELSE runner_contacts.updated_at END
+     WHERE excluded.last_seen_at - runner_contacts.last_seen_at >= ?
+       OR (${explicitOffers} = 1 AND excluded.offers IS NOT runner_contacts.offers)
+       OR (${explicitCapabilities} = 1 AND excluded.capabilities IS NOT runner_contacts.capabilities)
+       OR (excluded.last_reason IS NOT NULL AND excluded.last_reason IS NOT runner_contacts.last_reason)
+       OR (excluded.machine_id IS NOT NULL AND excluded.machine_id IS NOT runner_contacts.machine_id)
+       OR (excluded.version IS NOT NULL AND excluded.version IS NOT runner_contacts.version)`,
+  ).bind(
+    contact.runnerId, text(contact.machineId, MAX_ID), text(contact.os, MAX_METADATA), text(contact.version, MAX_ID), offers, capabilities,
+    contact.reason ?? null, contact.now, contact.now,
+    ...(authority === null ? [] : [lease!.projectId, lease!.runId, ...authority.params]),
+    CONTACT_THROTTLE_MS,
+  );
+}
+
 /** Record one contact through the same statement used by atomic worker operations. */
 export async function recordWorkerContact(db: RelationalStore, contact: Parameters<typeof workerContactStatement>[1]): Promise<boolean> {
   const statement = await workerContactStatement(db, contact);
@@ -236,7 +283,7 @@ export async function recordWorkerContact(db: RelationalStore, contact: Paramete
  * as busy, with no contact time.
  */
 export async function readWorkerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
-  const { results } = await db.prepare(
+  const { results: memberRows } = await db.prepare(
     `SELECT c.id AS credential_id, c.machine_id AS credential_machine_id, c.revoked_at, c.expires_at,
             m.role AS member_role, m.revoked_at AS member_revoked_at,
             w.machine_id AS contact_machine_id, w.offers, w.capabilities, w.last_reason, w.last_seen_at,
@@ -245,10 +292,9 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
        LEFT JOIN members m ON m.id = c.member_id
        LEFT JOIN worker_contacts w ON w.credential_id = c.id
        LEFT JOIN agent_runs r ON r.leased_by = c.id AND r.status = 'running' AND r.lease_expires_at > ?
-      WHERE w.credential_id IS NOT NULL OR r.id IS NOT NULL
-      ORDER BY COALESCE(w.last_seen_at, r.lease_expires_at) DESC`,
+      WHERE w.credential_id IS NOT NULL OR r.id IS NOT NULL`,
   ).bind(now).all<Record<string, unknown>>();
-  return (results ?? []).map((row) => {
+  const members = (memberRows ?? []).map((row): WorkerFleetRow => {
     const lastSeenAt = row.last_seen_at == null ? 0 : Number(row.last_seen_at);
     const revoked = row.revoked_at != null;
     const expired = row.expires_at != null && Number(row.expires_at) <= now;
@@ -271,6 +317,45 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
       },
       eligible: !revoked && !expired && admits,
       recent: lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS,
+      runner: null,
+    };
+  });
+  const heardAt = (row: WorkerFleetRow): number => (row.lastSeenAt > 0 ? row.lastSeenAt : row.busy?.leaseExpiresAt ?? 0);
+  return [...members, ...await readRunnerFleet(db, now)].sort((left, right) => heardAt(right) - heardAt(left));
+}
+
+/**
+ * Every runner heard from, or holding a live lease, keyed by its stable id: a rotation never makes a second row. A
+ * runner is eligible while it is enabled and holds a credential of its current epoch.
+ */
+async function readRunnerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
+  const { results } = await db.prepare(
+    `SELECT r.id, r.name, r.state, w.machine_id, w.offers, w.capabilities, w.last_reason, w.last_seen_at,
+            a.id AS run_id, a.project_id, a.task, a.lease_expires_at,
+            EXISTS (SELECT 1 FROM runner_credentials c WHERE c.runner_id = r.id AND c.epoch = r.credential_epoch
+              AND c.revoked_at IS NULL AND c.expires_at > ?) AS credentialed
+       FROM runners r
+       LEFT JOIN runner_contacts w ON w.runner_id = r.id
+       LEFT JOIN agent_runs a INDEXED BY idx_agent_runs_runner_lease ON a.leased_runner_id = r.id AND a.status = 'running' AND a.lease_expires_at > ?
+      WHERE w.runner_id IS NOT NULL OR a.id IS NOT NULL`,
+  ).bind(now, now).all<Record<string, unknown>>();
+  return (results ?? []).map((row) => {
+    const lastSeenAt = row.last_seen_at == null ? 0 : Number(row.last_seen_at);
+    const state = String(row.state) as 'enabled' | 'paused' | 'removed';
+    return {
+      credentialId: String(row.id),
+      machineId: row.machine_id == null ? null : String(row.machine_id),
+      offers: parseOffers(row.offers),
+      capabilities: parseCapabilities(row.capabilities),
+      lastReason: row.last_reason == null ? null : String(row.last_reason) as ContactOutcome,
+      lastSeenAt,
+      busy: row.run_id == null ? null : {
+        runId: String(row.run_id), projectId: String(row.project_id),
+        task: row.task == null ? null : String(row.task), leaseExpiresAt: Number(row.lease_expires_at ?? 0),
+      },
+      eligible: state === 'enabled' && Number(row.credentialed) === 1,
+      recent: lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS,
+      runner: { id: String(row.id), name: String(row.name), state },
     };
   });
 }
@@ -357,22 +442,23 @@ export async function readMachineOffers(db: RelationalStore): Promise<Map<string
 
 /** The latest instant any worker reported in, or null when none ever has. */
 export async function lastWorkerContactAt(db: RelationalStore): Promise<number | null> {
-  const row = await db.prepare(`SELECT MAX(last_seen_at) AS at FROM worker_contacts`).first<{ at: number | null }>();
+  const row = await db.prepare(`SELECT MAX(at) AS at FROM (SELECT MAX(last_seen_at) AS at FROM worker_contacts UNION ALL SELECT MAX(last_seen_at) FROM runner_contacts)`).first<{ at: number | null }>();
   return row?.at ?? null;
 }
 
 /** The capabilities every worker heard from within `CONTACT_RECENT_MS` of `now` reported, one list per worker. */
 export async function recentWorkerCapabilities(db: RelationalStore, now: number): Promise<string[][]> {
-  const { results } = await db.prepare(`SELECT capabilities FROM worker_contacts WHERE last_seen_at >= ?`)
-    .bind(now - CONTACT_RECENT_MS).all<{ capabilities: unknown }>();
+  const { results } = await db.prepare(`SELECT capabilities FROM worker_contacts WHERE last_seen_at >= ?
+    UNION ALL SELECT w.capabilities FROM runner_contacts w JOIN runners r ON r.id = w.runner_id WHERE w.last_seen_at >= ? AND r.state = 'enabled'`)
+    .bind(now - CONTACT_RECENT_MS, now - CONTACT_RECENT_MS).all<{ capabilities: unknown }>();
   return (results ?? []).map((row) => parseCapabilities(row.capabilities) ?? []);
 }
 
 /** Recent offers and repository capabilities describe a task's fleet profile gap. */
-export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[] }>> {
+export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[]; runner: boolean }>> {
   const fleet = await readWorkerFleet(db, now);
   return fleet.filter((row) => row.recent && row.eligible)
-    .map((row) => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [] }));
+    .map((row) => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [], runner: row.runner !== null }));
 }
 
 /**
@@ -390,5 +476,15 @@ export async function pruneWorkerContacts(db: RelationalStore, now: number, olde
          ORDER BY last_seen_at
          LIMIT ?)`,
   ).bind(now - olderThanMs, now, batch).run();
-  return result.meta.changes ?? 0;
+  const runners = await db.prepare(
+    `DELETE FROM runner_contacts
+      WHERE runner_id IN (
+        SELECT runner_id FROM runner_contacts
+         WHERE last_seen_at < ?
+           AND runner_id NOT IN (SELECT leased_runner_id FROM agent_runs INDEXED BY idx_agent_runs_runner_lease
+             WHERE leased_runner_id IS NOT NULL AND status = 'running' AND lease_expires_at > ?)
+         ORDER BY last_seen_at
+         LIMIT ?)`,
+  ).bind(now - olderThanMs, now, batch).run();
+  return (result.meta.changes ?? 0) + (runners.meta.changes ?? 0);
 }

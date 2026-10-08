@@ -48,21 +48,28 @@ export interface TaskStartPreview {
   capability: { name: string; on: boolean } | null;
 }
 
+/** A runner's agent always signs itself in. */
+const RUNNER_PREVIEW_LOGIN: LoginStep<true> = async () => ({ login: true });
+
 /** A login counts as usable when the worker signs itself in, or when the agent's own slot holds one. */
 const storedLogin = (db: RelationalStore): LoginStep<true> => async (harness, plan) =>
   plan.kind === 'worker-login' || await secretStored(db, plan.slot) ? { login: true } : { reason: credentialUnavailable(harness) };
 
-/** The workers behind credentials, each named as `viewerId` may see it. */
+/** The workers behind credentials and runners, each named as `viewerId` may see it: a runner by its own name. */
 async function startWorkers(db: RelationalStore, reports: ReadonlyArray<{ credentialId: string; machineId: string | null }>, viewerId: string, now: number): Promise<Map<string, StartWorker>> {
   if (reports.length === 0) return new Map();
   const ids = reports.map((report) => report.credentialId);
-  const [owners, ownNames] = await Promise.all([
+  const [owners, runners, ownNames] = await Promise.all([
     db.prepare(`SELECT c.id AS id, c.member_id AS member_id, m.label AS label FROM member_credentials c LEFT JOIN members m ON m.id = c.member_id WHERE c.id IN (${ids.map(() => '?').join(', ')})`)
       .bind(...ids).all<{ id: string; member_id: string | null; label: string | null }>(),
+    db.prepare(`SELECT id, name FROM runners WHERE id IN (SELECT value FROM json_each(?))`).bind(JSON.stringify(ids)).all<{ id: string; name: string }>(),
     ownMachineNames(db, viewerId, now),
   ]);
   const byId = new Map((owners.results ?? []).map((row) => [row.id, row]));
+  const runnerNames = new Map((runners.results ?? []).map((row) => [row.id, row.name]));
   return new Map(reports.map((report) => {
+    const runnerName = runnerNames.get(report.credentialId);
+    if (runnerName !== undefined) return [report.credentialId, { credentialId: report.credentialId, machineId: report.machineId, machineName: runnerName, member: null }];
     const owner = byId.get(report.credentialId);
     const member = owner?.member_id == null ? null : { id: owner.member_id, label: owner.member_id === HARNESS_MEMBER_ID ? 'Myco' : owner.label };
     return [report.credentialId, {
@@ -83,7 +90,7 @@ export async function readTaskStartPreview(env: ServerEnv, projectId: string, ta
     hasLiveTaskRun(env.db, { projectId }, task),
     capability === null ? Promise.resolve(null) : capabilityOn(env.db, projectId, capability),
   ]);
-  const { executions, heldBy } = await previewSelection(env, task, reports, settings, storedLogin(env.db));
+  const { executions, heldBy } = await previewSelection(env, task, reports, settings, (report) => (report.runner === true ? RUNNER_PREVIEW_LOGIN : storedLogin(env.db)));
   const workers = await startWorkers(env.db, reports, viewerId, now);
   const condition = declaredSchedule === null || leaves === null ? undefined : scheduleFor(task, declaredSchedule, leaves.overrides).preCondition;
   const check = condition === undefined ? undefined : declared(PRE_CONDITIONS, condition);

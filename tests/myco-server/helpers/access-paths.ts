@@ -48,6 +48,9 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_machine_claims_member', 'a machine belongs to a member, not a Project: a viewer\'s own machines are named, and a member\'s page of machines read, by member'],
   ['idx_machine_claims_claimed', 'machine claims are paged across the Deployment by claim time and id'],
   ['idx_member_credentials_machine', 'a canonical machine summary seeks its credentials by machine and newest issue time'],
+  ['idx_runner_contacts_seen', 'the worker-contact sweep forgets runner observations by age across the Deployment, and a runner names no Project'],
+  ['idx_runner_model_catalogs_received', 'Settings reads the model lists runners sent lately, and the lease sweep forgets the rest by age; a runner names no Project'],
+  ['idx_device_requests_candidate', 'a runner registration admits each client-generated candidate once across the Deployment, before any runner exists'],
 ]);
 
 /** True when `statement` creates one of the indexes above. */

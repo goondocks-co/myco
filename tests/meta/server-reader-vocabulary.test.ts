@@ -42,6 +42,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'api/settings.ts:body must be an empty JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
   'api/machine-settings.ts:body must be a JSON object carrying a value': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
   'api/worker.ts:body must be a JSON object': 'Request grammar for API clients; the dashboard sends well-formed bodies and never shows it.',
+  'api/runners.ts:body must be a JSON object': 'Runner protocol request grammar; only a runner client sends it and the dashboard never shows it.',
 };
 
 function sources(dir: string): string[] {

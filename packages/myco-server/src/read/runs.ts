@@ -55,7 +55,7 @@ export interface RunListRow {
   replaces: string | null;
   /** The harness the claim chose; null when the row records none. */
   harness: string | null;
-  /** The worker credential holding the run now; null once the run ends or returns to the queue, and for a run no worker took. */
+  /** The worker credential holding the run now — a legacy worker's member credential or a runner's — null once the run ends or returns to the queue, and for a run no worker took. */
   leasedBy: string | null;
   /**
    * The worker that ran the run: the credential that held it last, the
@@ -65,8 +65,9 @@ export interface RunListRow {
    * viewer: a run is attributed to the person whose machine ran it. The
    * machine's name is served to that member alone. A run Myco's own runtime ran
    * (`HARNESS_MEMBER_ID`, the member `/api/members` marks `system`) names Myco.
+   * A runner's run names the runner, by the name every member may read, and no member.
    */
-  worker: { credentialId: string; machineId: string | null; machineName: string | null; member: { id: string; label: string | null } | null } | null;
+  worker: { credentialId: string; machineId: string | null; machineName: string | null; member: { id: string; label: string | null } | null; runner: { id: string; name: string | null } | null } | null;
   /** When the held lease ends; null whenever the row names no holder. */
   leaseExpiresAt: number | null;
   /** Who started the run: the member who asked for it by hand, or the process that started it on its own (`clock`, `backfill`); null where the run names no one. */
@@ -139,9 +140,14 @@ export interface RunToolCallRow {
 }
 
 /** One claim of a run, and what its worker's step log holds. */
+/** Who took an attempt: a runner by its id and name, or a legacy worker by the member its credential belongs to. */
+export type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'member'; memberId: string | null };
+
 export interface RunAttemptRow {
   attemptId: string;
   claimedAt: number;
+  /** The executor that took this attempt, kept once the run moves to another; a runner is never read through a member credential. */
+  executor: RunAttemptExecutor;
   /**
    * The attempt's step log: the steps its worker observed (`total`), those the Deployment holds (`received`), those
    * past the log's bound (`overflow`) and the stream records the worker could not read. Null where no page of the log
@@ -210,7 +216,8 @@ const LIST_COLUMNS = `id, agent_id, task, status, provider, model, usage_data,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by, CASE WHEN status = 'queued' THEN ${POSITION_SQL} ELSE NULL END AS position,
   ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
-  harness, leased_by, lease_expires_at,
+  harness, leased_by, lease_expires_at, leased_runner_id, leased_runner_credential_id,
+  (SELECT r.name FROM runners r WHERE r.id = agent_runs.leased_runner_id) AS leased_runner_name,
   (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine,
   (SELECT c.member_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_member,
   (SELECT m.label FROM member_credentials c CROSS JOIN members m ON m.id = c.member_id WHERE c.id = agent_runs.leased_by) AS leased_member_label,
@@ -229,6 +236,11 @@ const flag = (value: unknown): boolean => Number(value) === 1;
 
 /** The worker that held a run: its member to anyone, and its machine named from `ownNames`, the viewer's own machines alone. */
 function workerOf(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): NonNullable<RunListRow['worker']> {
+  const runnerId = text(row.leased_runner_id);
+  if (runnerId !== null) {
+    const name = text(row.leased_runner_name);
+    return { credentialId: row.leased_runner_credential_id as string, machineId: null, machineName: name, member: null, runner: { id: runnerId, name } };
+  }
   const machineId = text(row.leased_machine);
   const memberId = text(row.leased_member);
   return {
@@ -236,6 +248,7 @@ function workerOf(row: Record<string, unknown>, ownNames: ReadonlyMap<string, st
     machineId,
     machineName: machineId === null ? null : ownNames.get(machineId) ?? null,
     member: memberId === null ? null : { id: memberId, label: memberId === HARNESS_MEMBER_ID ? 'Myco' : text(row.leased_member_label) },
+    runner: null,
   };
 }
 
@@ -268,8 +281,8 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     replaced: flag(row.replaced),
     replaces: text(row.replaces),
     harness: text(row.harness),
-    leasedBy: ended ? null : text(row.leased_by),
-    worker: row.leased_by == null ? null : workerOf(row, ownNames),
+    leasedBy: ended ? null : text(row.leased_by) ?? text(row.leased_runner_credential_id),
+    worker: row.leased_by == null && row.leased_runner_id == null ? null : workerOf(row, ownNames),
     leaseExpiresAt: ended ? null : num(row.lease_expires_at),
     startedBy: text(row.started_by),
     targetSessionId: text(row.target_session_id),
@@ -450,12 +463,18 @@ function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
 }
 
 const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
+  a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
+  CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId,
   (SELECT COUNT(*) FROM agent_run_steps s WHERE s.project_id = a.project_id AND s.run_id = a.run_id AND s.attempt_id = a.attempt_id) AS received`;
 
-type AttemptRecord = { attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null; received: number };
+type AttemptRecord = {
+  attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null; received: number;
+  ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null;
+};
 
 const attemptOf = (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
+  executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'member', memberId: row.memberId },
   steps: row.total === null ? null : { total: Number(row.total), received: Number(row.received), overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
 });
 

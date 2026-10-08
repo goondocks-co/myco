@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
@@ -48,7 +49,7 @@ async function fixture() {
   const claimUnder = async (harness: string, at: number, source: 'deployment' | 'worker-login' = 'deployment') => {
     await settings.setLeaf(`agent.harnesses.${harness}.credential`, source, 'mem_w', at);
     queue(`run_${harness}_${at}`);
-    const outcome = await claimNextRun(env, { tokenId: token, machineId: 'm1', harnesses: [offeredHarness(harness)], now: at });
+    const outcome = await claimNextRun(env, { principal: legacyWorker(token, 'm1'), harnesses: [offeredHarness(harness)], now: at });
     expect(outcome.claimed).toBe(true);
     if (!outcome.claimed) throw new Error('unreachable');
     e.sqlite.run(`UPDATE agent_runs SET status = 'completed' WHERE id = ?`, [outcome.run.id]);
@@ -67,7 +68,7 @@ describe('the run credential a claim mints (#1420)', () => {
       [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
     const worker = (f.e.sqlite.query(`SELECT id FROM member_credentials WHERE member_id = 'mem_w'`).get() as { id: string }).id;
-    const outcome = await claimNextRun(f.env, { tokenId: worker, machineId: 'm1', harnesses: [offeredHarness('claude-code')], now: NOW + 1 });
+    const outcome = await claimNextRun(f.env, { principal: legacyWorker(worker, 'm1'), harnesses: [offeredHarness('claude-code')], now: NOW + 1 });
     expect(outcome.claimed).toBe(true);
     const dispatchedBy = (f.e.sqlite.query(`SELECT dispatched_by FROM agent_runs WHERE id = 'run_rot'`).get() as { dispatched_by: string }).dispatched_by;
     expect(f.e.sqlite.query(`SELECT member_id, rotates FROM member_credentials WHERE id = ?`).get(dispatchedBy)).toEqual({ member_id: HARNESS_MEMBER_ID, rotates: 0 });

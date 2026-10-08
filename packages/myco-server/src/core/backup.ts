@@ -1,3 +1,4 @@
+import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
 import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
@@ -45,7 +46,7 @@ const RESTORE_CHUNK_ROWS = 20;
  */
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'device_decision_audit', 'device_requests', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
-  'member_credentials', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
+  'member_credentials', 'runners', 'runner_credentials', 'runner_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections',
@@ -86,7 +87,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'backup_restore_progress', 'recovery_forget_commands',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
-  'worker_contacts', 'worker_model_catalogs', 'machine_harness_reports', 'machine_settings_snapshots',
+  'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_model_catalogs', 'machine_harness_reports', 'machine_settings_snapshots',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v68_guard_retired_settings',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',
@@ -101,9 +102,9 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
  * role; a credential, key or grant so revoked never authenticates again. The Deployment's own runtime member, and
  * every row the destination already holds, are untouched. A same-lineage restore inserts them as they are.
  */
-export const FOREIGN_AUTHORITY_TABLES: readonly string[] = ['members', 'enrollment_authorities', 'identity_link_authorities', 'member_credentials', 'external_grants'];
+export const FOREIGN_AUTHORITY_TABLES: readonly string[] = ['members', 'enrollment_authorities', 'identity_link_authorities', 'member_credentials', 'runner_credentials', 'external_grants'];
 /** What a foreign-lineage preview tells the owner about the people and access the artifact carries. */
-export const FOREIGN_AUTHORITY_NOTICE = 'People from the other server are listed here but cannot sign in until the owner re-admits them on the People page. Its machine sign-ins, enrollment and account-link keys, and external agent grants arrive revoked and cannot be used here: enroll machines and issue agent grants again on this server. This server keeps its own owner.';
+export const FOREIGN_AUTHORITY_NOTICE = 'People from the other server are listed here but cannot sign in until the owner re-admits them on the People page. Its machine sign-ins, runner credentials, enrollment and account-link keys, and external agent grants arrive revoked and cannot be used here: enroll machines, register runners and issue agent grants again on this server. This server keeps its own owner.';
 
 export interface ForeignAuthorityExclusion {
   /** The `FOREIGN_AUTHORITY_TABLES` this artifact holds rows for. */
@@ -491,14 +492,15 @@ export async function restoreArtifact(
   const stamped = Number(await metaValue(db, 'version'));
   if (header.schemaVersion > stamped) throw new BackupSchemaError(header.schemaVersion, stamped);
 
+  const restoredAt = opts.now ?? Date.now();
   const byTable = new Map<string, Record<string, unknown>[]>();
   for (const parsed of restoreRows(lines.slice(1))) {
     const rows = byTable.get(parsed.t) ?? [];
-    rows.push(portableRow(parsed.t, parsed.r));
+    rows.push(parsed.t === 'device_requests' ? expireCarriedDeviceRequest(portableRow(parsed.t, parsed.r), restoredAt) : portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
   }
   const foreign = header.deploymentId !== live;
-  if (foreign) revokeForeignAuthority(byTable, opts.now ?? Date.now());
+  if (foreign) revokeForeignAuthority(byTable, restoredAt);
 
   db = await authorizeRestore(db, opts.authorization, byTable.keys());
   try { assertArchivedContentClosure(byTable); }

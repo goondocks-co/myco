@@ -32,7 +32,7 @@ import { PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
 import type { DispatchLimits } from './limits.js';
 import type { RunErrorCode } from './reader-codes.js';
 import { storedAudit, type RunAudit } from './run-audit.js';
-import { workerContactStatement } from './worker-contacts.js';
+import { runnerContactStatement, workerContactStatement } from './worker-contacts.js';
 import { recordAttemptStatement } from './run-steps.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
@@ -41,7 +41,8 @@ import { CAPABILITY_ON_SQL, settingsWriter, type ProjectCapability } from './set
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
-import { renewingLeaseAuthority, workerLeaseAuthority } from './worker-lease.js';
+import { leaseOwnerColumns, renewingLeaseAuthority, workerLeaseAuthority, type WorkerPrincipal } from './worker-lease.js';
+import { runParentLive } from '../auth/runners.js';
 import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
 
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
@@ -593,17 +594,17 @@ export async function getRequestedWorkerProfile(db: RelationalStore, scope: Read
 /** A run row with the Project it belongs to: what a read keyed by credential answers; a credential spans every Project of its Deployment. */
 export type HeldRun = RunRow & { projectId: string };
 
-/** Every row bound to a dispatch credential, including its pending claim and terminal acknowledgement. */
+/** Every row bound to a dispatch credential whose runner parent keeps its authority, including its pending claim and terminal acknowledgement. */
 export async function runsOfCredential(db: RelationalStore, tokenId: string): Promise<HeldRun[]> {
-  const { results } = await db.prepare(`SELECT project_id AS projectId, ${RUN_COLUMNS} FROM agent_runs WHERE dispatched_by = ?`)
+  const { results } = await db.prepare(`SELECT project_id AS projectId, ${RUN_COLUMNS} FROM agent_runs WHERE dispatched_by = ? AND ${runParentLive()}`)
     .bind(tokenId).all<HeldRun>();
   return results;
 }
 
-/** Every `running` row this credential dispatched, in any Project — read by the credential alone, which `idx_agent_runs_credential` serves. */
+/** Every `running` row this credential dispatched whose runner parent keeps its authority, in any Project — read by the credential alone, which `idx_agent_runs_credential` serves. */
 export async function liveRunsOfCredential(db: RelationalStore, tokenId: string): Promise<HeldRun[]> {
   const { results } = await db
-    .prepare(`SELECT project_id AS projectId, ${RUN_COLUMNS} FROM agent_runs WHERE dispatched_by = ? AND status = 'running'`)
+    .prepare(`SELECT project_id AS projectId, ${RUN_COLUMNS} FROM agent_runs WHERE dispatched_by = ? AND status = 'running' AND ${runParentLive()}`)
     .bind(tokenId)
     .all<HeldRun>();
   return results;
@@ -676,7 +677,7 @@ export function runCallerGuard(caller: RunCaller | undefined, statuses = LIVE_RU
   if (caller === undefined) return { sql: '', params: [] };
   return {
     sql: ` AND dispatched_by = ? AND ${statuses} AND (lease_expires_at IS NULL OR lease_expires_at > ${SQL_NOW_MS}) AND ? > ${SQL_NOW_MS}
-      AND ${runDeadlineSql()} > ${SQL_NOW_MS}
+      AND ${runDeadlineSql()} > ${SQL_NOW_MS} AND ${runParentLive()}
       AND EXISTS (SELECT 1 FROM member_credentials c JOIN members m ON m.id = c.member_id
         WHERE c.id = ? AND c.revoked_at IS NULL AND c.expires_at > ${SQL_NOW_MS} AND m.revoked_at IS NULL)`,
     params: [caller.tokenId, caller.deadline, caller.tokenId],
@@ -725,7 +726,7 @@ export function runUpdateStatement(
   if (columns.length === 0) return null;
   const guarded = 'status' in update;
   const guard = guarded ? ` AND status NOT IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')})` : '';
-  const authority = lease === undefined ? null : workerLeaseAuthority(lease, lease.dispatchedBy, true);
+  const authority = lease === undefined ? null : workerLeaseAuthority(lease.worker, lease.now, lease.dispatchedBy, true);
   const leaseGuard = authority === null ? '' : ` AND ${authority.sql}`;
   // A terminal transition ends the worker's lease and keeps the worker it
   // named: the row goes on saying which worker credential, and so which
@@ -1387,29 +1388,60 @@ export function workerClaimPredicate(candidate: ClaimCandidate, admission: Write
 export async function claimQueuedRun(
   db: RelationalStore,
   candidate: ClaimCandidate,
-  claim: { dispatchedBy: string; leasedBy: string; machineId: string | null; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; input?: ClaimedInput },
+  claim: { dispatchedBy: string; worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; input?: ClaimedInput },
   admission: WriteAdmission,
 ): Promise<ClaimedRunRow | null> {
   if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
   const authority = workerClaimPredicate(candidate, admission);
-  const contact = await workerContactStatement(db, { credentialId: claim.leasedBy, machineId: claim.machineId, reason: 'claimed', now: claim.now }, { projectId: candidate.projectId, runId: candidate.id, attemptId: claim.dispatchedBy });
+  const owner = leaseOwnerColumns(claim.worker);
+  const gate = runnerClaimGate(claim.worker, claim.now);
+  const lease = { projectId: candidate.projectId, runId: candidate.id, attemptId: claim.dispatchedBy };
+  const contact = claim.worker.kind === 'member'
+    ? await workerContactStatement(db, { credentialId: claim.worker.tokenId, machineId: claim.worker.machineId, reason: 'claimed', now: claim.now }, lease)
+    : runnerContactStatement(db, { runnerId: claim.worker.runnerId, reason: 'claimed', now: claim.now }, lease, claim.worker);
   const results = await db.batch([...(admission.setup ?? []), db.prepare(
     `UPDATE agent_runs
-        SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, lease_expires_at = ?, harness = ?, held_by = NULL,
+        SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, leased_runner_id = ?, leased_runner_credential_id = ?,
+            lease_expires_at = ?, harness = ?, held_by = NULL,
             reasoning_level = ?, model = ?, execution_overrides = ?
-      WHERE project_id = ? AND id = ? AND ${authority.sql}
+      WHERE project_id = ? AND id = ? AND ${authority.sql} AND ${gate.sql}
       RETURNING project_id AS projectId, id, task, instruction, run_context AS runContext, dry_run AS dryRun`,
   ).bind(
-    claim.now, claim.dispatchedBy, claim.leasedBy, claim.leaseExpiresAt, claim.harness,
+    claim.now, claim.dispatchedBy, owner.leasedBy, owner.runnerId, owner.runnerCredentialId, claim.leaseExpiresAt, claim.harness,
     claim.profile.tier, claim.profile.model,
     JSON.stringify({ requested: claim.profile, harness: claim.harness }),
     candidate.projectId, candidate.id,
-    ...authority.params,
-  ), recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, { tokenId: claim.leasedBy, machineId: claim.machineId }, claim.now),
+    ...authority.params, ...gate.params,
+  ), recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, claim.worker, claim.now),
     ...(claim.input === undefined ? [] : [claimedInputStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, claim.input)]),
     ...(contact === null ? [] : [contact]),
+    ...(claim.worker.kind === 'runner' ? [db.prepare(`UPDATE runners SET last_assigned_at = ? WHERE id = ?
+      AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND leased_runner_id = runners.id AND dispatched_by = ?)`)
+      .bind(claim.now, claim.worker.runnerId, candidate.projectId, candidate.id, claim.dispatchedBy)] : []),
   ]);
   return (results[admission.setup?.length ?? 0]?.results[0] as ClaimedRunRow | undefined) ?? null;
+}
+
+/** The claim admission and the runner gate as one condition, for the statements a claim's batch must land together. */
+export function workerClaimAdmission(candidate: ClaimCandidate, admission: WriteAdmission, worker: WorkerPrincipal, now: number): { sql: string; params: unknown[] } {
+  const authority = workerClaimPredicate(candidate, admission);
+  const gate = runnerClaimGate(worker, now);
+  return { sql: `${authority.sql} AND ${gate.sql}`, params: [...authority.params, ...gate.params] };
+}
+
+/**
+ * What a runner's claim must also meet at its write: the runner is enabled, not paused or removed, and drives no other
+ * live lease, so one runner holds one attempt however many processes present its credential. A legacy worker's claim
+ * meets nothing more.
+ */
+export function runnerClaimGate(worker: WorkerPrincipal, now: number): { sql: string; params: unknown[] } {
+  if (worker.kind === 'member') return { sql: '1', params: [] };
+  return {
+    sql: `EXISTS (SELECT 1 FROM runners claimant WHERE claimant.id = ? AND claimant.state = 'enabled')
+      AND NOT EXISTS (SELECT 1 FROM agent_runs held INDEXED BY idx_agent_runs_runner_lease
+        WHERE held.leased_runner_id = ? AND held.status = 'running' AND held.lease_expires_at > ?)`,
+    params: [worker.runnerId, worker.runnerId, now],
+  };
 }
 
 /**
@@ -1443,9 +1475,9 @@ function claimedInputStatement(
 
 /** Extend a lease the caller still holds. False says the lease is gone: swept, or the run ended. */
 export async function renewRunLeaseExpiry(
-  db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, expiresAt: number, now: number, dispatchedBy?: string, contact?: PreparedStatement | null,
+  db: RelationalStore, scope: ReadScope, runId: string, worker: WorkerPrincipal, expiresAt: number, now: number, dispatchedBy?: string, contact?: PreparedStatement | null,
 ): Promise<number | null> {
-  const authority = renewingLeaseAuthority(leasedBy, now, dispatchedBy, true);
+  const authority = renewingLeaseAuthority(worker, now, dispatchedBy, true);
   const deadline = runDeadlineSql();
   const statement = db.prepare(
     `UPDATE agent_runs SET lease_expires_at = MIN(${deadline}, MAX(lease_expires_at, ?))
@@ -1457,16 +1489,16 @@ export async function renewRunLeaseExpiry(
 
 /** Extend a held lease through the shared renewal and report whether it landed. */
 export async function renewRunLease(
-  db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, expiresAt: number, now: number, dispatchedBy?: string,
+  db: RelationalStore, scope: ReadScope, runId: string, worker: WorkerPrincipal, expiresAt: number, now: number, dispatchedBy?: string,
 ): Promise<boolean> {
-  return await renewRunLeaseExpiry(db, scope, runId, leasedBy, expiresAt, now, dispatchedBy) !== null;
+  return await renewRunLeaseExpiry(db, scope, runId, worker, expiresAt, now, dispatchedBy) !== null;
 }
 
 /** Read the expiry only while the authenticated worker still holds this attempt. */
 export async function workerRunLeaseExpiry(
-  db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, now: number, dispatchedBy?: string,
+  db: RelationalStore, scope: ReadScope, runId: string, worker: WorkerPrincipal, now: number, dispatchedBy?: string,
 ): Promise<number | null> {
-  const authority = renewingLeaseAuthority(leasedBy, now, dispatchedBy, true);
+  const authority = renewingLeaseAuthority(worker, now, dispatchedBy, true);
   const row = await db.prepare(`SELECT lease_expires_at AS expiresAt FROM agent_runs
     WHERE project_id = ? AND id = ? AND ${authority.sql}`)
     .bind(scope.projectId, runId, ...authority.params).first<{ expiresAt: number }>();
@@ -1479,13 +1511,22 @@ export async function workerRunLeaseExpiry(
  * queue and every row read here is requeued, so an order would buy a sort over
  * the running rows and change nothing.
  */
-export async function lapsedLeases(db: RelationalStore, now: number, limit: number): Promise<Array<{ projectId: string; id: string; leasedBy: string; dispatchedBy: string | null }>> {
+export type LeaseOwner = { kind: 'member'; leasedBy: string } | { kind: 'runner'; runnerId: string; credentialId: string };
+
+/** The owner a stored lease names, or null for a row that names none. */
+export function leaseOwnerOf(row: { leasedBy: string | null; leasedRunnerId: string | null; leasedRunnerCredentialId: string | null }): LeaseOwner | null {
+  if (row.leasedRunnerId !== null && row.leasedRunnerCredentialId !== null) return { kind: 'runner', runnerId: row.leasedRunnerId, credentialId: row.leasedRunnerCredentialId };
+  return row.leasedBy === null ? null : { kind: 'member', leasedBy: row.leasedBy };
+}
+
+export async function lapsedLeases(db: RelationalStore, now: number, limit: number): Promise<Array<{ projectId: string; id: string; owner: LeaseOwner | null; dispatchedBy: string | null }>> {
   const { results } = await db.prepare(
-    `SELECT project_id AS projectId, id, leased_by AS leasedBy, dispatched_by AS dispatchedBy FROM agent_runs
+    `SELECT project_id AS projectId, id, leased_by AS leasedBy, leased_runner_id AS leasedRunnerId, leased_runner_credential_id AS leasedRunnerCredentialId,
+            dispatched_by AS dispatchedBy FROM agent_runs
       WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
       LIMIT ?`,
-  ).bind(now, limit).all<{ projectId: string; id: string; leasedBy: string; dispatchedBy: string | null }>();
-  return results;
+  ).bind(now, limit).all<{ projectId: string; id: string; leasedBy: string | null; leasedRunnerId: string | null; leasedRunnerCredentialId: string | null; dispatchedBy: string | null }>();
+  return results.map(({ leasedBy, leasedRunnerId, leasedRunnerCredentialId, ...row }) => ({ ...row, owner: leaseOwnerOf({ leasedBy, leasedRunnerId, leasedRunnerCredentialId }) }));
 }
 
 /**
@@ -1499,11 +1540,15 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
  * waits for a worker again, and says so: a claim cleared its holder, and a row
  * naming none reads as held by a limit.
  */
-export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, leasedBy: string, now: number): Promise<boolean> {
+export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, owner: LeaseOwner | null, now: number): Promise<boolean> {
+  const named = owner === null ? 'leased_by IS NULL AND leased_runner_id IS NULL'
+    : owner.kind === 'member' ? 'leased_by = ? AND leased_runner_id IS NULL' : 'leased_by IS NULL AND leased_runner_id = ? AND leased_runner_credential_id = ?';
+  const params = owner === null ? [] : owner.kind === 'member' ? [owner.leasedBy] : [owner.runnerId, owner.credentialId];
   const result = await db.prepare(
-    `UPDATE agent_runs SET status = 'queued', leased_by = NULL, lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL, held_by = 'worker'
-      WHERE project_id = ? AND id = ? AND status = 'running' AND leased_by = ? AND lease_expires_at <= ?`,
-  ).bind(scope.projectId, runId, leasedBy, now).run();
+    `UPDATE agent_runs SET status = 'queued', leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL,
+        lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL, held_by = 'worker'
+      WHERE project_id = ? AND id = ? AND status = 'running' AND ${named} AND lease_expires_at <= ?`,
+  ).bind(scope.projectId, runId, ...params, now).run();
   return result.meta.changes === 1;
 }
 
@@ -1520,7 +1565,8 @@ export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, 
 export async function workerLiveness(db: RelationalStore, now: number): Promise<{ workersBusy: number; runsQueued: number }> {
   const row = await db.prepare(
     `SELECT
-       (SELECT COUNT(DISTINCT leased_by) FROM agent_runs WHERE status = 'running' AND lease_expires_at > ?) AS workersBusy,
+       (SELECT COUNT(DISTINCT CASE WHEN leased_runner_id IS NOT NULL THEN 'runner:' || leased_runner_id ELSE 'member:' || leased_by END)
+          FROM agent_runs WHERE status = 'running' AND lease_expires_at > ? AND (leased_by IS NOT NULL OR leased_runner_id IS NOT NULL)) AS workersBusy,
        (SELECT COUNT(*) FROM agent_runs WHERE status = 'queued') AS runsQueued`,
   ).bind(now).first<{ workersBusy: number; runsQueued: number }>();
   return { workersBusy: Number(row?.workersBusy ?? 0), runsQueued: Number(row?.runsQueued ?? 0) };
@@ -1814,7 +1860,7 @@ export function repositoryPinOfRun(run: Pick<RunRow, 'runContext'>): RepositoryP
 }
 
 /** Worker identity and the instant its preparation write is admitted. */
-export interface RunLease { tokenId: string; now: number }
+export interface RunLease { worker: WorkerPrincipal; now: number }
 
 /** Pin once while the dispatched run is held; a repeat reads the first committed identity. */
 export async function pinRepositoryForRun(db: RelationalStore, scope: ReadScope, run: RunRow, pin: RepositoryPin, lease?: RunLease): Promise<RepositoryPin | null> {
@@ -1828,7 +1874,7 @@ export async function pinMapRepositoryForRun(
   db: RelationalStore, scope: ReadScope, run: RunRow, repository: RepositoryPin, source: MapSourcePin, lease: RunLease,
 ): Promise<{ committed: true } | { committed: false; row: RunRow } | null> {
   if (run.dispatchedBy === null) return null;
-  const authority = renewingLeaseAuthority(lease.tokenId, lease.now, run.dispatchedBy, true);
+  const authority = renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy, true);
   const write = await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'),
       '$.repository', json(?), '$.canopy', json(?))
     WHERE project_id = ? AND id = ? AND ${authority.sql}
@@ -1840,7 +1886,7 @@ export async function pinMapRepositoryForRun(
     .bind(JSON.stringify(repository), JSON.stringify(source), scope.projectId, run.id, ...authority.params,
       repository.url, repository.branch, repository.commit).run();
   if (write.meta.changes === 1) return { committed: true };
-  if (await workerRunLeaseExpiry(db, scope, run.id, lease.tokenId, lease.now, run.dispatchedBy) === null) return null;
+  if (await workerRunLeaseExpiry(db, scope, run.id, lease.worker, lease.now, run.dispatchedBy) === null) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
   return { committed: false, row: fresh };
@@ -1864,13 +1910,13 @@ async function pinRunPreparation(db: RelationalStore, scope: ReadScope, run: Run
   const path = `$.${key}`;
   const authority = lease === undefined
     ? { sql: "status = 'running' AND dispatched_by = ?", params: [run.dispatchedBy] }
-    : renewingLeaseAuthority(lease.tokenId, lease.now, run.dispatchedBy ?? undefined, true);
+    : renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy ?? undefined, true);
   const write = await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), ?, json(?))
     WHERE project_id = ? AND id = ? AND ${authority.sql}
       AND json_type(COALESCE(run_context, '{}'), ?) IS NULL`)
     .bind(path, JSON.stringify(value), scope.projectId, run.id, ...authority.params, path).run();
   if (write.meta.changes === 1) return { committed: true };
-  if (lease !== undefined && await workerRunLeaseExpiry(db, scope, run.id, lease.tokenId, lease.now, run.dispatchedBy ?? undefined) === null) return null;
+  if (lease !== undefined && await workerRunLeaseExpiry(db, scope, run.id, lease.worker, lease.now, run.dispatchedBy ?? undefined) === null) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
   return { committed: false, row: fresh };

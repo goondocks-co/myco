@@ -6,6 +6,7 @@
  * that arrives after the run ended or after another attempt took it changes no outcome. A log longer than a page is
  * read back whole, page by page, and every step goes with its run.
  */
+import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -44,7 +45,7 @@ async function rig() {
     [id, NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   const claim = async (tokenId: string, machineId: string, now: number) => {
-    const claimed = await claimNextRun(e.serverEnv, { tokenId, machineId, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
+    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, machineId), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
     if (!claimed.claimed) throw new Error(`nothing claimed: ${claimed.reason}`);
     return claimed.run;
   };
@@ -79,7 +80,7 @@ describe('a step page', () => {
     expect(await r.send(r.first.token, 'run_1', page!)).toEqual({ persisted: true, stored: true, landed: 0 });
     expect(r.stored('run_1', run.attemptId)).toEqual(steps(3));
     const detail = await getRunDetail(r.e.db, SCOPE, 'run_1', NOW + 2, 'mem_worker');
-    expect(detail?.attempts).toEqual([{ attemptId: run.attemptId, claimedAt: NOW + 1, steps: { total: 3, received: 3, overflow: 0, unrecognized: UNRECOGNIZED } }]);
+    expect(detail?.attempts).toEqual([{ attemptId: run.attemptId, claimedAt: NOW + 1, executor: { kind: 'member', memberId: 'mem_worker' }, steps: { total: 3, received: 3, overflow: 0, unrecognized: UNRECOGNIZED } }]);
     expect(detail?.steps).toEqual({ attemptId: run.attemptId, rows: steps(3), cursor: null });
   });
 
@@ -164,7 +165,7 @@ describe('a run another attempt took', () => {
     expect(await expireLeases(r.e.serverEnv, NOW + 1 + WORKER_LEASE_MS + 1)).toBe(1);
     const b = await r.claim(r.other.tokenId, 'm2', NOW + 2 + WORKER_LEASE_MS);
     expect(b.attemptId).not.toBe(a.attemptId);
-    expect(await endLeasedRun(r.e.serverEnv, { tokenId: r.other.tokenId, now: NOW + 3 + WORKER_LEASE_MS }, {
+    expect(await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(r.other.tokenId, 'm1'), now: NOW + 3 + WORKER_LEASE_MS }, {
       projectId: 'proj_1', runId: 'run_1', status: 'failed', error: 'the harness stopped: error', attemptId: b.attemptId,
       accountingVersion: 1, identity: { status: 'unknown', reason: 'harness_not_started' }, usage: null,
     })).toMatchObject({ ended: true, status: 'failed' });
@@ -189,7 +190,7 @@ describe('a run\'s log over its lifetime', () => {
     r.queue('run_1');
     const run = await r.claim(r.first.tokenId, 'm1', NOW + 1);
     await r.send(r.first.token, 'run_1', stepPages(run.attemptId, steps(3), 0, { total: 0, shapes: {} })[0]!);
-    await endLeasedRun(r.e.serverEnv, { tokenId: r.first.tokenId, now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed', error: 'stopped' });
+    await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(r.first.tokenId, 'm1'), now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed', error: 'stopped' });
     expect(BACKUP_TABLES.indexOf('agent_run_attempts')).toBeGreaterThan(BACKUP_TABLES.indexOf('agent_runs'));
     expect(BACKUP_TABLES.indexOf('agent_run_steps')).toBeGreaterThan(BACKUP_TABLES.indexOf('agent_run_attempts'));
     expect(await pruneTerminalRuns(r.e.db, NOW + 10, 100)).toBeGreaterThanOrEqual(1);
@@ -203,7 +204,7 @@ describe('a run\'s log over its lifetime', () => {
     const run = await r.claim(r.first.tokenId, 'm1', NOW + 1);
     await r.send(r.first.token, 'run_1', stepPages(run.attemptId, steps(150), 0, { total: 0, shapes: {} })[0]!);
     await r.send(r.first.token, 'run_1', stepPages(run.attemptId, steps(150), 0, { total: 0, shapes: {} })[1]!);
-    await endLeasedRun(r.e.serverEnv, { tokenId: r.first.tokenId, now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed', error: 'stopped' });
+    await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(r.first.tokenId, 'm1'), now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed', error: 'stopped' });
     r.e.sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES ('proj_1', 'run_1', 'myco-agent', 'extract', 'kept', ?)`, [NOW]);
     const left = () => r.e.sqlite.query(`SELECT (SELECT COUNT(*) FROM agent_run_steps WHERE run_id = 'run_1') AS steps, (SELECT COUNT(*) FROM agent_reports WHERE run_id = 'run_1') AS reports,
       (SELECT COUNT(*) FROM agent_runs WHERE id = 'run_1') AS runs`).get();

@@ -21,7 +21,7 @@ import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } fr
 import { unboundedBudget } from '../member/budget.js';
 import { refreshMembership } from '../member/refresh.js';
 import { detectHarnesses, offerOf, WITHHELD_REASON } from '../runner/detect.js';
-import { runWorker, sleep, type WorkerOptions } from '../runner/loop.js';
+import { CLAIM_IDLE_POLL_MS, runWorker, sleep, type WorkerOptions } from '../runner/loop.js';
 import { workerLogLine } from '../runner/log.js';
 import { keepMachineAwake } from '../runner/keep-awake.js';
 import { clearWorkerRefusal, isTerminalRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
@@ -30,7 +30,7 @@ import { workerLockDir } from '../runner/instance.js';
 import { workerServiceSpec, workerServiceUnit } from '../runner/service.js';
 import { reloadServiceDetached, type ServiceSpec } from '../server/service.js';
 import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
-import { parseFlags } from './flags.js';
+import { harnessesNamed, parseFlags } from './flags.js';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 
 export const WORKER_HELP = `myco worker — run tasks for a Deployment on this machine's harnesses
@@ -57,16 +57,6 @@ A worker offers the harnesses it finds installed and logged in. The Deployment
 chooses which one runs each task, from the harness it prefers and the order it
 falls back through. One worker serves a Deployment per machine: a second one
 waits until the first stops.`;
-
-/** What a worker waits before its first answer tells it the Deployment's own cadence. */
-const POLL_IDLE_MS = 2_000;
-
-/** Every `--harness` given, in order. */
-function harnessesNamed(args: readonly string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i += 1) if (args[i] === '--harness' && typeof args[i + 1] === 'string') out.push(args[i + 1]!);
-  return out;
-}
 
 /** The Deployments a service verb acts on: the one named, else every one this home holds a membership of. */
 function serversFor(flags: Map<string, string>, mycoHome: string): string[] | { error: string } {
@@ -137,7 +127,7 @@ export async function run(args: string[], deps: WorkerServiceDeps = {}): Promise
     ...attach,
     ...(only.length === 0 ? {} : { only }),
     ...(flags.get('once') === 'true' ? { once: true } : {}),
-    pollIdleMs: POLL_IDLE_MS,
+    pollIdleMs: CLAIM_IDLE_POLL_MS,
     signal: stopping.signal,
   });
   attach.log(`drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`);
