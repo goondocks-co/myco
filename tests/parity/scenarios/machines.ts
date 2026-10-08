@@ -28,7 +28,7 @@ export const machines: ParityScenario = {
       expect(joined.joined).toBe(true);
       otherMember = joined.memberId;
       await target.sql(`UPDATE members SET github_id = '5150616' WHERE id = ${lit(joined.memberId)}`);
-      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: '5150616', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: '5150616', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
       const asOther = { cookie, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
       const list = async (headers: Record<string, string>) => {
         const res = await fetch(`${target.url}/api/machines`, { headers });

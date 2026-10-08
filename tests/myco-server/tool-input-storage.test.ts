@@ -226,7 +226,7 @@ describe('tool input storage', () => {
       expect(rows[3].filesAffected).toBe('["/repo/late.ts"]');
       expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', uuid(104)))
         .toBe(JSON.stringify({ text: `${'é'.repeat(1018)}🙂tail`, file_path: '/repo/late.ts' }));
-      const full = await worker.fetch(await asOwner(`/api/projects/proj_1/processed/tool-input/${uuid(104)}`), { ...f.env, ...OWNER_ENV });
+      const full = await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${uuid(104)}`), { ...f.env, ...OWNER_ENV });
       expect([full.status, await full.text(), full.headers.get('cache-control')]).toEqual([
         200, JSON.stringify({ text: `${'é'.repeat(1018)}🙂tail`, file_path: '/repo/late.ts' }), 'private, no-store',
       ]);
@@ -288,7 +288,7 @@ describe('tool input storage', () => {
       expect(f.sqlite.query(`SELECT entry_count FROM archive_bundles a JOIN tool_calls t ON t.input_bundle_id=a.id WHERE t.tool_call_id=?`).get(id)).toEqual({entry_count:1});
       expect(f.sqlite.query(`SELECT event_id FROM tool_calls WHERE tool_call_id=?`).get(id)).toEqual({ event_id: successEvent });
       expect(await processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).toBe(JSON.stringify(original));
-      const full = await worker.fetch(await asOwner(`/api/projects/proj_1/processed/tool-input/${id}`), { ...f.env, ...OWNER_ENV });
+      const full = await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${id}`), { ...f.env, ...OWNER_ENV });
       expect([full.status, await full.text()]).toEqual([200, JSON.stringify(original)]);
       expect((await createBackup(f.db, f.serverEnv.blobs, { producer: 'test', now: NOW })).size_bytes).toBeGreaterThan(0);
     } finally { f.sqlite.close(); }
@@ -304,13 +304,13 @@ describe('tool input storage', () => {
       const proof=f.sqlite.query('SELECT * FROM registered_content_proofs WHERE key=?').get(row.key) as Record<string,unknown>;
       f.sqlite.run('DELETE FROM registered_content_proofs WHERE key=?',[row.key]);
       await expect(processedBody(f.serverEnv,{projectId:'proj_1'},'tool-input',id)).rejects.toThrow('event_content_reference_invalid');
-      expect((await worker.fetch(await asOwner(`/api/projects/proj_1/processed/tool-input/${id}`),{...f.env,...OWNER_ENV})).status).toBe(503);
+      expect((await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${id}`),{...f.env,...OWNER_ENV})).status).toBe(503);
       const columns=Object.keys(proof);
       f.sqlite.query(`INSERT INTO registered_content_proofs(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).run(...columns.map(key=>proof[key]));
       const objectKey = (f.sqlite.query(`SELECT project_id || '/' || key || '~' || generation AS object_key FROM blobs WHERE project_id = 'proj_1' AND key = ?`).get(row.key) as { object_key: string }).object_key;
       f.bucket.seed(objectKey, { size: 3, bytes: new TextEncoder().encode('bad') });
       await expect(processedBody(f.serverEnv, { projectId: 'proj_1' }, 'tool-input', id)).rejects.toThrow('event_content_archive_invalid');
-      expect((await worker.fetch(await asOwner(`/api/projects/proj_1/processed/tool-input/${id}`), { ...f.env, ...OWNER_ENV })).status).toBe(503);
+      expect((await worker.fetch(await asOwner(f.db, `/api/projects/proj_1/processed/tool-input/${id}`), { ...f.env, ...OWNER_ENV })).status).toBe(503);
     } finally { f.sqlite.close(); }
   });
 

@@ -64,6 +64,30 @@ describe('cancelRun writer', () => {
 });
 
 describe('POST /api/projects/{projectId}/runs/{runId}/cancel', () => {
+  it('projects the authorization engine decision for each run and the live actor role', async () => {
+    const r = rig();
+    seedMemberRoleAccount(r.sqlite);
+    r.add('proj_1', 'own', REQUESTER, 'queued');
+    r.add('proj_1', 'sibling', OTHER, 'queued');
+    r.add('proj_1', 'scheduled', null, 'pending');
+    const env = { ...r.env, ...OWNER_ENV };
+    const detail = async (runId: string, sub: string) => {
+      const response = await worker.fetch(new Request(`https://s/api/projects/proj_1/runs/${runId}`, {
+        headers: { cookie: await ownerCookie(r.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' },
+      }), env);
+      expect(response.status).toBe(200);
+      return (await response.json() as { run: { canCancel: boolean; cancelReason: string | null } }).run;
+    };
+    expect(await detail('own', MEMBER_SUB)).toMatchObject({ canCancel: true, cancelReason: null });
+    for (const runId of ['sibling', 'scheduled']) {
+      expect(await detail(runId, MEMBER_SUB)).toMatchObject({ canCancel: false,
+        cancelReason: 'Only the member who requested this run or an administrator can cancel it.' });
+      expect(await detail(runId, '583231')).toMatchObject({ canCancel: true, cancelReason: null });
+    }
+    r.sqlite.run("UPDATE members SET role = 'member' WHERE id = ?", [ADMIN]);
+    expect(await detail('sibling', '583231')).toMatchObject({ canCancel: false });
+  });
+
   it('uses the signed-in member, refusing a sibling request and allowing the requester and admin', async () => {
     const r = rig();
     seedMemberRoleAccount(r.sqlite);
@@ -73,7 +97,7 @@ describe('POST /api/projects/{projectId}/runs/{runId}/cancel', () => {
     const cancel = async (runId: string, sub: string) => {
       const response = await worker.fetch(new Request(`https://s/api/projects/proj_1/runs/${runId}/cancel`, {
         method: 'POST',
-        headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+        headers: { cookie: await ownerCookie(r.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
       }), env);
       return { status: response.status, body: await response.json() as Record<string, unknown> };
     };

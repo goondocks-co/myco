@@ -23,7 +23,7 @@ describe('api scope resolution', () => {
 describe('GET /api/projects', () => {
   it('lists projects for the owner', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(await asOwner('/api/projects'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/projects'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     expect((await res.json() as { projects: { projectId: string }[] }).projects.map((p) => p.projectId).sort()).toEqual(['proj_1', 'proj_2']);
   });
@@ -45,7 +45,7 @@ describe('sessions', () => {
   it('returns a session with the facts that identify the run', async () => {
     const e = sqliteEnv();
     seed(e);
-    const res = await worker.fetch(await asOwner('/api/projects/proj_1/sessions/s1'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions/s1'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     const body = await res.json() as { session: Record<string, unknown>; counts: Record<string, number> };
     expect(body.session).toMatchObject({
@@ -58,9 +58,9 @@ describe('sessions', () => {
   it('never serves another project\'s session under the same id', async () => {
     const e = sqliteEnv();
     seed(e);
-    const res = await worker.fetch(await asOwner('/api/projects/proj_1/sessions/s1'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions/s1'), { ...e.env, ...OWNER_ENV });
     expect((await res.json() as { session: { machineId: string } }).session.machineId).toBe('machine_1');
-    const other = await worker.fetch(await asOwner('/api/projects/proj_2/sessions/s1'), { ...e.env, ...OWNER_ENV });
+    const other = await worker.fetch(await asOwner(e.db, '/api/projects/proj_2/sessions/s1'), { ...e.env, ...OWNER_ENV });
     expect((await other.json() as { session: { machineId: string } }).session.machineId).toBe('machine_9');
   });
 
@@ -68,7 +68,7 @@ describe('sessions', () => {
     const e = sqliteEnv();
     seed(e);
     for (const path of ['/api/projects/proj_1/sessions/nope', '/api/projects/proj_missing/sessions/s1']) {
-      const res = await worker.fetch(await asOwner(path), { ...e.env, ...OWNER_ENV });
+      const res = await worker.fetch(await asOwner(e.db, path), { ...e.env, ...OWNER_ENV });
       expect({ path, status: res.status }).toEqual({ path, status: 404 });
       expect(await jsonBody(res)).toEqual({ error: 'not_found' });
     }
@@ -76,7 +76,7 @@ describe('sessions', () => {
 
   it('refuses a malformed cursor rather than silently serving page one', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(await asOwner('/api/projects/proj_1/sessions?cursor=garbage'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions?cursor=garbage'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'bad_request' });
   });
@@ -87,9 +87,9 @@ describe('sessions', () => {
     e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, created_at, updated_at, token_id, received_at)
                   VALUES ('proj_1','p1','s1','e1','user','first','h1',10,10,'tok_1',10),
                          ('proj_1','p2','s1','e2','user','second','h2',20,20,'tok_1',20)`);
-    const res = await worker.fetch(await asOwner('/api/projects/proj_1/sessions/s1/prompts'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions/s1/prompts'), { ...e.env, ...OWNER_ENV });
     expect((await res.json() as { rows: { text: string }[] }).rows.map((r) => r.text)).toEqual(['first', 'second']);
-    const outside = await worker.fetch(await asOwner('/api/projects/proj_1/sessions/absent/prompts'), { ...e.env, ...OWNER_ENV });
+    const outside = await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/sessions/absent/prompts'), { ...e.env, ...OWNER_ENV });
     expect(outside.status).toBe(404);
   });
 
@@ -100,7 +100,7 @@ describe('sessions', () => {
       ('proj_1', 's1', 'cortex', 10), ('proj_1', 's1', 'cortex-compact:1', 20),
       ('proj_1', 's1', 'cortex-compact:2', 20), ('proj_2', 's1', 'cortex-compact:99', 15)`);
     const base = '/api/projects/proj_1/sessions/s1/context-injections';
-    const read = async (url: string) => worker.fetch(await asOwner(url), { ...e.env, ...OWNER_ENV });
+    const read = async (url: string) => worker.fetch(await asOwner(e.db, url), { ...e.env, ...OWNER_ENV });
     const response = await read(`${base}?limit=2`);
     expect(response.status).toBe(200);
     const first = await response.json() as { rows: { kind: string }[]; cursor: string };
@@ -126,7 +126,7 @@ describe('session turns', () => {
     e.sqlite.run(`INSERT INTO tool_calls (project_id, session_id, tool_call_id, event_id, prompt_id, tool_name, success, created_at, token_id, received_at)
                   VALUES ('proj_1','s1','tc1','ev1',?,'Read',1,11,'tok_1',11), ('proj_1','s1','tc2','ev2',?,'Bash',1,21,'tok_1',21)`, [P1, P2]);
   };
-  const get = async (e: ReturnType<typeof sqliteEnv>, path: string) => worker.fetch(await asOwner(path), { ...e.env, ...OWNER_ENV });
+  const get = async (e: ReturnType<typeof sqliteEnv>, path: string) => worker.fetch(await asOwner(e.db, path), { ...e.env, ...OWNER_ENV });
 
   it('lists the session\'s turns with counts, defaulting to what a person typed, and every origin on request', async () => {
     const e = sqliteEnv();
@@ -163,7 +163,7 @@ describe('session turns', () => {
     const e = sqliteEnv();
     seed(e);
     const asked = Date.now();
-    const res = await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/sessions/s1/title'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     // A worker claims the run from the queue, so the ask needs no runtime bound: it answers the queued run by id and spends the session's claim.
     const answered = await res.json() as { outcome: string; runId: string };
@@ -172,8 +172,8 @@ describe('session turns', () => {
       .toEqual({ status: 'queued', task: 'title-summary', heldBy: 'worker', dispatchedBy: null });
     const stamped = e.sqlite.query(`SELECT titled_at AS titledAt FROM sessions WHERE project_id = 'proj_1' AND session_id = 's1'`).get() as { titledAt: number };
     expect(stamped.titledAt).toBeGreaterThanOrEqual(asked);
-    expect((await worker.fetch(await asOwnerPost('/api/projects/proj_2/sessions/s2/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
-    expect((await worker.fetch(await asOwnerPost('/api/projects/proj_1/sessions/absent/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
+    expect((await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_2/sessions/s2/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
+    expect((await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/sessions/absent/title'), { ...e.env, ...OWNER_ENV })).status).toBe(404);
   });
 
   it('sets a plan\'s status as the signed-in member, refuses a status outside the writable set, and finds nothing outside the session', async () => {
@@ -183,14 +183,14 @@ describe('session turns', () => {
     const key = '00000000-0000-5000-8000-000000000002';
     e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content, content_hash, status, created_at, updated_at, token_id, received_at)
                   VALUES ('proj_1',?,'s1','ep1','machine_1','- [ ] a','h','active',10,10,'tok_1',10)`, [key]);
-    const post = async (path: string, body: unknown) => worker.fetch(await asOwnerPost(path, body), { ...e.env, ...OWNER_ENV });
+    const post = async (path: string, body: unknown) => worker.fetch(await asOwnerPost(e.db, path, body), { ...e.env, ...OWNER_ENV });
     const res = await post(`/api/projects/proj_1/sessions/s1/plans/${key}/status`, { status: 'completed' });
     expect(res.status).toBe(200);
     const body = await res.json() as { plan: { status: string; updatedBy: string | null; progress: string; updatedAt: number } };
     expect([body.plan.status, body.plan.updatedBy, body.plan.progress, body.plan.updatedAt > 10]).toEqual(['completed', PRINCIPAL.id, '0/1', true]);
     const memberRes = await worker.fetch(new Request(`https://s/api/projects/proj_1/sessions/s1/plans/${key}/status`, {
       method: 'POST',
-      headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: await ownerCookie(e.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       body: JSON.stringify({ status: 'in_progress' }),
     }), { ...e.env, ...OWNER_ENV });
     expect(memberRes.status).toBe(200);
@@ -225,21 +225,21 @@ describe('credentials', () => {
     e.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
                   VALUES ('proj_1','ev1','s1',?,'prompt','cli','{}','h1',10,10), ('proj_2','ev2','s2',?,'prompt','cli','{}','h2',20,20)`, [first.tokenId, first.tokenId]);
 
-    const listed = await worker.fetch(await asOwner('/api/credentials?limit=1'), { ...e.env, ...OWNER_ENV });
+    const listed = await worker.fetch(await asOwner(e.db, '/api/credentials?limit=1'), { ...e.env, ...OWNER_ENV });
     const raw = await listed.text();
     expect(raw).not.toContain('token_hash');
     const page = JSON.parse(raw) as { rows: { id: string }[]; cursor: string | null };
     expect(page.rows.map((t) => t.id)).toEqual([second.tokenId]);
-    const next = await worker.fetch(await asOwner(`/api/credentials?limit=1&cursor=${encodeURIComponent(page.cursor!)}`), { ...e.env, ...OWNER_ENV });
+    const next = await worker.fetch(await asOwner(e.db, `/api/credentials?limit=1&cursor=${encodeURIComponent(page.cursor!)}`), { ...e.env, ...OWNER_ENV });
     expect((await next.json() as { rows: { id: string }[] }).rows.map((t) => t.id)).toEqual([first.tokenId]);
 
-    const activity = await worker.fetch(await asOwner(`/api/credentials/${first.tokenId}/activity`), { ...e.env, ...OWNER_ENV });
+    const activity = await worker.fetch(await asOwner(e.db, `/api/credentials/${first.tokenId}/activity`), { ...e.env, ...OWNER_ENV });
     expect((await activity.json() as { rows: { eventId: string; projectId: string }[] }).rows.map((r) => `${r.projectId}:${r.eventId}`)).toEqual(['proj_2:ev2', 'proj_1:ev1']);
 
-    const revoked = await worker.fetch(await asOwnerPost(`/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
+    const revoked = await worker.fetch(await asOwnerPost(e.db, `/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(revoked)).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT revoked_by FROM member_credentials WHERE id = ?`).get(first.tokenId)).toEqual({ revoked_by: PRINCIPAL.id });
-    const again = await worker.fetch(await asOwnerPost(`/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
+    const again = await worker.fetch(await asOwnerPost(e.db, `/api/credentials/${first.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(again)).toEqual({ revoked: false, revokedBy: PRINCIPAL.id });
   });
 
@@ -247,7 +247,7 @@ describe('credentials', () => {
     const e = sqliteEnv();
     const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
     const theirs = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 1_000);
-    const revoked = await worker.fetch(await asOwnerPost(`/api/credentials/${theirs.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
+    const revoked = await worker.fetch(await asOwnerPost(e.db, `/api/credentials/${theirs.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(revoked)).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT member_id, revoked_by FROM member_credentials WHERE id = ?`).get(theirs.tokenId))
       .toEqual({ member_id: 'mem_machine_2', revoked_by: PRINCIPAL.id });
@@ -261,10 +261,10 @@ describe('blob bytes', () => {
     const token = await issueMemberToken(e.db, { memberId: PRINCIPAL.id, machineId: 'machine_1' }, Date.now());
     e.bucket.seed(registerBlob(e.sqlite, { projectId: 'proj_2', key, size: 5, mediaType: 'text/plain; charset=utf-8', tokenId: token.tokenId }), { size: 5, contentType: 'text/plain; charset=utf-8' });
 
-    const wrong = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
+    const wrong = await worker.fetch(await asOwner(e.db, `/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(wrong.status).toBe(404);
 
-    const right = await worker.fetch(await asOwner(`/api/projects/proj_2/blobs/${key}`), { ...e.env, ...OWNER_ENV });
+    const right = await worker.fetch(await asOwner(e.db, `/api/projects/proj_2/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(right.status).toBe(200);
     expect(right.headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
@@ -273,7 +273,7 @@ describe('blob bytes', () => {
 describe('GET /api/status', () => {
   it('reports schema agreement and every capability present', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(await asOwner('/api/status'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/status'), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     const body = await res.json() as {
       schema: { matches: boolean; found: number };
@@ -292,7 +292,7 @@ describe('GET /api/status', () => {
   it('reports the capability a dropped binding took with it, and which name to fix', async () => {
     const e = sqliteEnv();
     const { BUCKET: _dropped, ...withoutBucket } = e.env as Record<string, unknown>;
-    const res = await worker.fetch(await asOwner('/api/status'), { ...withoutBucket, ...OWNER_ENV } as never);
+    const res = await worker.fetch(await asOwner(e.db, '/api/status'), { ...withoutBucket, ...OWNER_ENV } as never);
     const body = await res.json() as {
       capabilities: { capability: string; label: string; present: boolean; operatorNames: string[] }[];
     };
@@ -309,18 +309,18 @@ describe('project creation', () => {
   it('onboards a project, and the owner then mints an invitation for its runtime', async () => {
     const e = sqliteEnv();
     e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
-    const created = await worker.fetch(await asOwnerPost('/api/projects', { projectId: 'proj_new', name: 'New' }), { ...e.env, ...OWNER_ENV });
+    const created = await worker.fetch(await asOwnerPost(e.db, '/api/projects', { projectId: 'proj_new', name: 'New' }), { ...e.env, ...OWNER_ENV });
     expect(created.status).toBe(201);
-    const minted = await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: 'mem_machine_1' }), { ...e.env, ...OWNER_ENV });
+    const minted = await worker.fetch(await asOwnerPost(e.db, '/api/enrollment', { memberId: 'mem_machine_1' }), { ...e.env, ...OWNER_ENV });
     expect(minted.status).toBe(201);
   });
 
   it('refuses a duplicate and an out-of-grammar id', async () => {
     const e = sqliteEnv();
-    const dupe = await worker.fetch(await asOwnerPost('/api/projects', { projectId: 'proj_1', name: 'One' }), { ...e.env, ...OWNER_ENV });
+    const dupe = await worker.fetch(await asOwnerPost(e.db, '/api/projects', { projectId: 'proj_1', name: 'One' }), { ...e.env, ...OWNER_ENV });
     expect(dupe.status).toBe(400);
     for (const projectId of ['..', 'has space', 'x'.repeat(65), '']) {
-      const res = await worker.fetch(await asOwnerPost('/api/projects', { projectId, name: 'n' }), { ...e.env, ...OWNER_ENV });
+      const res = await worker.fetch(await asOwnerPost(e.db, '/api/projects', { projectId, name: 'n' }), { ...e.env, ...OWNER_ENV });
       expect({ projectId, status: res.status }).toEqual({ projectId, status: 400 });
     }
   });
@@ -336,7 +336,7 @@ describe('blob bytes are never executable on the owner origin', () => {
     const e = sqliteEnv();
     const key = 'c'.repeat(64);
     await store(e, key, 'text/html');
-    const res = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, `/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/octet-stream');
     expect(res.headers.get('content-disposition')).toContain('attachment');
@@ -346,7 +346,7 @@ describe('blob bytes are never executable on the owner origin', () => {
     const e = sqliteEnv();
     const key = 'd'.repeat(64);
     await store(e, key, 'image/png');
-    const res = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, `/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(res.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
     expect(res.headers.get('x-frame-options')).toBe('DENY');
@@ -356,7 +356,7 @@ describe('blob bytes are never executable on the owner origin', () => {
     const e = sqliteEnv();
     const key = 'e'.repeat(64);
     await store(e, key, 'image/png');
-    const res = await worker.fetch(await asOwner(`/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, `/api/projects/proj_1/blobs/${key}`), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('private, no-store');
     expect(res.headers.get('vary')).toBe('Cookie, Authorization');
@@ -364,7 +364,7 @@ describe('blob bytes are never executable on the owner origin', () => {
 
   it('leaves every other response no-store', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(await asOwner('/api/projects'), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, '/api/projects'), { ...e.env, ...OWNER_ENV });
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 });
@@ -376,7 +376,7 @@ describe('owner request bodies are bounded', () => {
     const res = await worker.fetch(
       new Request('https://s/api/enrollment', {
         method: 'POST',
-        headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+        headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
         body: JSON.stringify({ pad: huge }),
       }),
       { ...e.env, ...OWNER_ENV }
@@ -386,7 +386,7 @@ describe('owner request bodies are bounded', () => {
 
   it('refuses a member id outside the grammar the join path records', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(await asOwnerPost('/api/enrollment', { memberId: `mem_${'x'.repeat(65)}` }), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwnerPost(e.db, '/api/enrollment', { memberId: `mem_${'x'.repeat(65)}` }), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(400);
   });
 });
@@ -398,7 +398,7 @@ describe('finding 1 closed: an exotic session id opens', () => {
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
                   VALUES ('proj_1',?,'m','t',1,2)`, [weird] as never);
     const res = await worker.fetch(
-      new Request(`https://s/api/projects/proj_1/sessions/${encodeURIComponent(weird)}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }),
+      new Request(`https://s/api/projects/proj_1/sessions/${encodeURIComponent(weird)}`, { headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(200);

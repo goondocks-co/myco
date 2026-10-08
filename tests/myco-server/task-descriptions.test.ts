@@ -16,7 +16,7 @@ import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
 import type { TaskDescription } from '@myco-server-worker/read/task-descriptions.js';
 
 async function read(f: ReturnType<typeof sqliteEnv>): Promise<TaskDescription[]> {
-  const response = await worker.fetch(new Request('https://s/api/tasks', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
+  const response = await worker.fetch(new Request('https://s/api/tasks', { headers: { cookie: await ownerCookie(f.db), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
   expect(response.status).toBe(200);
   return (await response.json() as { tasks: TaskDescription[] }).tasks;
 }
@@ -87,7 +87,7 @@ describe('task description registry gates', () => {
     const f = sqliteEnv();
     try {
       const env = { ...f.env, ...OWNER_ENV };
-      const headers = { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' };
+      const headers = { cookie: await ownerCookie(f.db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' };
       const write = async (leaf: string, value: unknown) => {
         const response = await worker.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'PUT', headers, body: JSON.stringify({ value }) }), env);
         expect(response.status).toBe(200);
@@ -121,7 +121,7 @@ describe('task description registry gates', () => {
     try {
       seedMemberRoleAccount(f.sqlite);
       const env = { ...f.env, ...OWNER_ENV };
-      const headers = { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' };
+      const headers = { cookie: await ownerCookie(f.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' };
       for (const [path, status] of [['/api/tasks', 200], ['/api/tasks?project=missing', 404], ['/api/tasks?project=proj_1', 200], ['/api/tasks/names', 200], ['/api/tasks/names?project=missing', 404], ['/api/tasks/names?project=proj_1', 200]] as const) {
         const response = await worker.fetch(new Request(`https://s${path}`, { headers }), env);
         expect(response.status).toBe(status);

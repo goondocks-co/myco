@@ -14,6 +14,8 @@ export interface MemberRow {
   label: string | null;
   /** What this member may do. A worker's credential must belong to an admin, which is what makes a claim from it admissible. */
   role: 'admin' | 'member';
+  /** The server's current ownership reference, when one is recorded. */
+  effectiveRole: 'owner' | 'admin' | 'member';
   /** Revision to review before changing this member's role. */
   roleRevision: string;
   /** Whether a GitHub account is connected. */
@@ -92,6 +94,9 @@ export interface MachineRow {
   claimedAt: number;
   credentialCount: number;
   liveCredentialCount: number;
+  /** Whether this viewer may stop a live credential on this machine. */
+  canStop: boolean;
+  stopReason: string | null;
   bytesWritten: number;
   firstSeenAt: number;
   standing: 'allowed' | 'stopped' | 'replayed' | 'expired';

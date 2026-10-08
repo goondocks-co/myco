@@ -26,11 +26,11 @@ async function harness() {
   const spore = (project: string, id: string, at: number, status: string) =>
     sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) VALUES (?, ?, 'agent_1', 'gotcha', ?, ?, ?)`, [project, id, status, `body of ${id}`, at]);
   const get = async (path: string): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const res = await worker.fetch(await asOwner(path), env);
+    const res = await worker.fetch(await asOwner(fixture.db, path), env);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
   const patch = async (path: string, body: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const res = await worker.fetch(await asOwnerPatch(path, body), env);
+    const res = await worker.fetch(await asOwnerPatch(fixture.db, path, body), env);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
   return { ...fixture, sqlite, env, get, patch, session, run, spore };

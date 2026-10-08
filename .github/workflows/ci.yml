@@ -43,6 +43,14 @@ jobs:
           npm run build
       - name: Dev binary identifies the clean commit and generators preserve the checkout
         run: node scripts/check-clean-build.mjs packages/myco-linux-x64/bin/myco
+      - name: One machine routes each repository to its explicit Deployment
+        run: npm test -- tests/member/rbac-routing-smoke.test.ts
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rbac-routing-linux-x64
+          path: packages/myco-linux-x64/bin/myco
+          if-no-files-found: error
+          retention-days: 1
 
   # Gate G2 (#1561): a compiled binary answers a no-op hook within its ceiling on every release target a runner here
   # can run. Each target is built the way the release builds it (`--compile --splitting`, darwin signed in place)
@@ -118,6 +126,7 @@ jobs:
         run: bun packages/myco/scripts/measure-hook-work.ts hook-startup-bin/myco.exe
 
   tests:
+    needs: build
     name: tests (${{ matrix.kind }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -142,6 +151,13 @@ jobs:
         run: npm ci --prefix packages/myco-server/ui
       - if: matrix.kind == 'node'
         run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
+      - if: matrix.kind == 'node'
+        uses: actions/download-artifact@v8
+        with:
+          name: rbac-routing-linux-x64
+          path: packages/myco-linux-x64/bin
+      - if: matrix.kind == 'node'
+        run: chmod +x packages/myco-linux-x64/bin/myco
       - run: npm test
       - name: Test timing summary
         if: always()
@@ -166,6 +182,7 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6]
     env:
       MYCO_PARITY_SHARD: ${{ matrix.shard }}/6
+      MYCO_RUNNER_GROUP_BUDGET_MS: 780000
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup

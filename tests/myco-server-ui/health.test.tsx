@@ -5,6 +5,7 @@
  * that asks before it adds a foreign Deployment's members, and no raw id
  * anywhere a reader sees.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -53,14 +54,14 @@ const BACKUP = { id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: NOW -
 type Route = (init?: RequestInit) => Response;
 
 const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
-  '/auth/me': () => Response.json(ADMIN),
+  '/auth/me': () => Response.json(dashboardMe(ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/status': () => Response.json(STATUS),
   '/api/attention': () => Response.json({ items: [{ kind: 'backup_overdue', tone: 'warn', lastBackupAt: BACKUP.created_at, intervalHours: 24 }], unavailable: [] }),
   '/api/credentials': () => Response.json({ rows: [credential(STUDIO_CREDENTIAL, 'ada_5a2d54af', 'Ada’s studio Mac'), credential(BUSY_CREDENTIAL, 'lin_9e8f7a6b', 'Lin’s build box', 'mem_Hn5-pC0dJfA9sE_u')], cursor: null }),
   '/api/machines': () => Response.json({ machines: [
-    { machineId: 'ada_5a2d54af', name: 'Ada’s studio Mac', live: true, member: { id: ADMIN.member.id, label: 'Ada', revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
-    { machineId: 'lin_9e8f7a6b', name: 'Lin’s build box', live: true, member: { id: MEMBER.member.id, label: null, revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
+    { machineId: 'ada_5a2d54af', name: 'Ada’s studio Mac', live: true, canStop: true, stopReason: null, member: { id: ADMIN.member.id, label: 'Ada', revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
+    { machineId: 'lin_9e8f7a6b', name: 'Lin’s build box', live: true, canStop: true, stopReason: null, member: { id: MEMBER.member.id, label: null, revoked: false }, claimedAt: NOW - 86_400_000, credentialCount: 1, liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: NOW - 86_400_000, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null },
   ], cursor: null }),
   '/api/backups': () => Response.json({ backups: [BACKUP] }),
   '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { unreadable: 'not read' } }),
@@ -252,7 +253,8 @@ describe('Health', () => {
 
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
     const { posts } = server(routes({
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 0 } }, foreignLineage: true }),
+      '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null } }),
       '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: true, tables: { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } } }),
     }));
     mount();
@@ -273,16 +275,46 @@ describe('Health', () => {
 
   it('cancels a restore with nothing sent past the preview', async () => {
     const { posts } = server(routes({
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false }),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false, restore: { allowed: true, reason: null } }),
     }));
     mount();
     const list = await screen.findByRole('group', { name: 'Backups' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('switch')).toBeNull();
+    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
+  });
+
+  it('keeps authority-bearing backup preview readable but denies a non-owner restore', async () => {
+    const { posts } = server(routes({
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({
+        header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { members: 2, sessions: 4 } },
+        foreignLineage: false, restore: { allowed: false, reason: 'Only the owner can restore a backup that includes members or access authority.' },
+      }),
+    }));
+    mount();
+    const list = await screen.findByRole('group', { name: 'Backups' });
+    fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
+    expect(dialog.textContent).toContain('It holds members 2 · sessions 4');
+    expect(within(dialog).getByText('Only the owner can restore a backup that includes members or access authority.')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
+  });
+
+  it('fails closed when a restore preview has no decision', async () => {
+    server(routes({
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, counts: { sessions: 4 } }, foreignLineage: false }),
+    }));
+    mount();
+    const list = await screen.findByRole('group', { name: 'Backups' });
+    fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
+    const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
+    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByText('Restore permission is unavailable. Refresh the preview.')).toBeTruthy();
   });
 
   it('shows no raw id anywhere a reader sees', async () => {
@@ -298,7 +330,7 @@ describe('Health', () => {
   });
 
   it('shows a member who is not an admin that the page is an admin’s, and asks none of its reads', async () => {
-    const { asked } = server(routes({ '/auth/me': () => Response.json(MEMBER) }));
+    const { asked } = server(routes({ '/auth/me': () => Response.json(dashboardMe(MEMBER)) }));
     mount();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));

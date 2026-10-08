@@ -31,6 +31,29 @@ test('the canonical CI aggregate requires every verification job, including pari
   expect(ci.jobs.parity.steps.some((step: { run?: string }) => step.run === 'npm run test:parity')).toBe(true);
 });
 
+function assertRoutingSmoke(workflow: typeof ci): void {
+  const build = workflow.jobs.build.steps;
+  const smoke = build.findIndex((step: { run?: string }) => step.run === 'npm test -- tests/member/rbac-routing-smoke.test.ts');
+  const compile = build.findIndex((step: { run?: string }) => step.run?.includes('npm run build'));
+  expect(smoke).toBeGreaterThan(compile);
+  expect(compile).toBeGreaterThanOrEqual(0);
+  expect(build.some((step: { uses?: string; with?: { name?: string; 'if-no-files-found'?: string } }) =>
+    step.uses?.startsWith('actions/upload-artifact@') && step.with?.name === 'rbac-routing-linux-x64' && step.with['if-no-files-found'] === 'error')).toBe(true);
+  expect(workflow.jobs.tests.needs).toBe('build');
+  expect(workflow.jobs.tests.steps.some((step: { uses?: string; with?: { name?: string } }) =>
+    step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'rbac-routing-linux-x64')).toBe(true);
+}
+
+test('routing runs with the built binary, and full node shards receive that binary', () => {
+  assertRoutingSmoke(ci);
+  const omitted = structuredClone(ci);
+  omitted.jobs.build.steps = omitted.jobs.build.steps.filter((step: { run?: string }) => step.run !== 'npm test -- tests/member/rbac-routing-smoke.test.ts');
+  expect(() => assertRoutingSmoke(omitted)).toThrow();
+  const missing = structuredClone(ci);
+  missing.jobs.tests.steps = missing.jobs.tests.steps.filter((step: { uses?: string }) => !step.uses?.startsWith('actions/download-artifact@'));
+  expect(() => assertRoutingSmoke(missing)).toThrow();
+});
+
 test.skipIf(process.platform === 'win32')('the actual aggregate command refuses every unsuccessful dependency', () => {
   const execute = (results: Record<string, { result: string }>) => {
     const child = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', ci.jobs.check.steps[0].run], {

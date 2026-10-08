@@ -41,14 +41,14 @@ async function harness() {
   const put = async (leaf: string, value: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
     const res = await worker.fetch(new Request(`https://s/api/settings/${encodeURIComponent(leaf)}`, {
       method: 'PUT',
-      headers: { cookie: (await asOwner('/')).headers.get('cookie')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: (await asOwner(fixture.db, '/')).headers.get('cookie')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       body: JSON.stringify({ value }),
     }), env);
     return { status: res.status, body: await res.json() as Record<string, unknown> };
   };
   /** Every leaf the server holds a value for, by name. */
   const stored = async (): Promise<Map<string, unknown>> => {
-    const res = await worker.fetch(await asOwner('/api/settings'), env);
+    const res = await worker.fetch(await asOwner(fixture.db, '/api/settings'), env);
     const body = await res.json() as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> };
     return new Map(body.leaves.filter((l) => l.configured).map((l) => [l.leaf, l.value]));
   };
@@ -117,10 +117,10 @@ describe('obsolete settings contracts', () => {
   });
 
   it('omits obsolete rows even if one reaches the active table after migration', async () => {
-    const { sqlite, env } = await harness();
+    const { sqlite, env, db } = await harness();
     for (const leaf of V68_RETIRED_SETTINGS) sqlite.run(
       `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'historic')`, [leaf, JSON.stringify('historic')]);
-    const res = await worker.fetch(await asOwner('/api/settings'), env);
+    const res = await worker.fetch(await asOwner(db, '/api/settings'), env);
     const body = await res.json() as { leaves: Array<{ leaf: string }> };
     expect(body.leaves.filter((row) => V68_RETIRED_SETTINGS.includes(row.leaf as typeof V68_RETIRED_SETTINGS[number]))).toEqual([]);
   });
@@ -128,9 +128,9 @@ describe('obsolete settings contracts', () => {
 
 describe('derived Canopy metadata', () => {
   it('does not expose the retired writable patterns leaf', async () => {
-    const { sqlite, env } = await harness();
+    const { sqlite, env, db } = await harness();
     sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('cortex.canopy.exclude.default_patterns', '["stale"]', 1, 'historic')`);
-    const res = await worker.fetch(await asOwner('/api/settings'), env);
+    const res = await worker.fetch(await asOwner(db, '/api/settings'), env);
     const body = await res.json() as { leaves: Array<{ leaf: string }> };
     const row = body.leaves.find((row) => row.leaf === 'cortex.canopy.exclude.default_patterns');
     expect(row).toBeUndefined();

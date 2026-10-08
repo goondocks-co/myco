@@ -10,7 +10,8 @@
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/admin/health/wire.ts';
 import type { KpiReport } from '../../packages/myco-server/src/read/kpis.ts';
-import type { ListedBackup, RestoreOutcome, previewRestore } from '../../packages/myco-server/src/core/backup.ts';
+import type { ListedBackup, RestoreOutcome } from '../../packages/myco-server/src/core/backup.ts';
+import type { RestorePreviewAnswer } from '../../packages/myco-server/src/api/backups.ts';
 import type { MaintenanceCheckStatus, MaintenanceOutcome } from '../../packages/myco-server/src/core/store-maintenance.ts';
 import type { TickReport } from '../../packages/myco-server/src/core/tick.ts';
 import type { RecoverySchedule } from '../../packages/myco-server/src/core/recovery-schedule.ts';
@@ -22,8 +23,6 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 /** True when what the server sends carries every field the dashboard reads, typed as it reads it. */
 type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 
-/** `POST /api/backups/{id}/restore-preview`: the body `handleRestorePreview` answers. */
-type PreviewAnswer = NonNullable<Awaited<ReturnType<typeof previewRestore>>>;
 /** `POST /api/backups/{id}/restore`: the body `handleRestoreBackup` answers. */
 type RestoreAnswer = { applied: true } & RestoreOutcome;
 /** `GET /api/recovery/exports`: the producer's status with the schedule, or that it could not be read; or that the Deployment runs no producer. */
@@ -36,7 +35,7 @@ const SAME: [
 const READS: [
   Reads<ListedBackup, Ui.BackupRow>,
   Reads<{ backups: ListedBackup[] }, Ui.BackupsAnswer>,
-  Reads<PreviewAnswer, Ui.RestorePreview>,
+  Reads<RestorePreviewAnswer, Ui.RestorePreview>,
   Reads<RestoreAnswer, Ui.RestoreOutcome>,
   Reads<MaintenanceOutcome, Ui.MaintenanceOutcome>,
   Reads<MaintenanceCheckStatus, Ui.CheckStatus>,

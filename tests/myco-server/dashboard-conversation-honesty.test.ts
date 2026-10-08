@@ -19,7 +19,7 @@ function fixture() {
       VALUES (?,?,?,?,?,?,'hash',?,'tok_1',?)`, [project, session, uuid(id), `r-${id}`, parent, `Reply ${id}`, id, id]);
   };
   const read = async <T,>(path: string): Promise<T> => {
-    const res = await worker.fetch(await asOwner(path), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(e.db, path), { ...e.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     return await res.json() as T;
   };
@@ -63,9 +63,9 @@ describe('dashboard conversation honesty', () => {
     expect(nextReply.rows.map((r) => r.responseId)).toEqual([uuid(10050)]);
     expect(nextReply.cursor).toBeNull();
     for (const suffix of ['?collection=responses&cursor=bad', '?collection=invalid']) {
-      expect((await worker.fetch(await asOwner(`${e.base}/${uuid(1)}${suffix}`), { ...e.env, ...OWNER_ENV })).status).toBe(400);
+      expect((await worker.fetch(await asOwner(e.db, `${e.base}/${uuid(1)}${suffix}`), { ...e.env, ...OWNER_ENV })).status).toBe(400);
     }
-    expect((await worker.fetch(await asOwner(`${e.base}/${uuid(99)}?collection=responses`), { ...e.env, ...OWNER_ENV })).status).toBe(404);
+    expect((await worker.fetch(await asOwner(e.db, `${e.base}/${uuid(99)}?collection=responses`), { ...e.env, ...OWNER_ENV })).status).toBe(404);
   });
 
   it('gate 1643.1: plan edits and equal-time inserts cannot move displayed identities into a continuation', async () => {

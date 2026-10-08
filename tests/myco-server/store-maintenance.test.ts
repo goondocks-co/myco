@@ -299,17 +299,17 @@ it('D1\'s documented limit refusals are named apart from other storage errors', 
 it('an owner reads every check and runs one through the served routes, on the path the clock takes', async () => {
   const e = sqliteEnv();
   const env = { ...e.env, ...OWNER_ENV };
-  const listed = await (await worker.fetch(await asOwner('/api/maintenance'), env)).json() as { checks: Array<{ check: string; support: { supported: boolean }; cadence: { state: string }; latest: unknown }> };
+  const listed = await (await worker.fetch(await asOwner(e.db, '/api/maintenance'), env)).json() as { checks: Array<{ check: string; support: { supported: boolean }; cadence: { state: string }; latest: unknown }> };
   expect(listed.checks.map((c) => [c.check, c.support.supported, c.cadence.state, c.latest])).toEqual([
     ['optimize', true, 'not_configured', null],
     ['integrity', true, 'not_configured', null],
   ]);
-  const ran = await worker.fetch(await asOwnerPost('/api/maintenance/integrity/run'), env);
+  const ran = await worker.fetch(await asOwnerPost(e.db, '/api/maintenance/integrity/run'), env);
   expect(ran.status).toBe(200);
   expect(await ran.json()).toMatchObject({ check: 'integrity', trigger: 'owner', state: 'healthy', findings: [] });
-  const again = await (await worker.fetch(await asOwner('/api/maintenance'), env)).json() as { checks: Array<{ check: string; latest: { state: string } | null }> };
+  const again = await (await worker.fetch(await asOwner(e.db, '/api/maintenance'), env)).json() as { checks: Array<{ check: string; latest: { state: string } | null }> };
   expect(again.checks.find((c) => c.check === 'integrity')?.latest?.state).toBe('healthy');
-  expect((await worker.fetch(await asOwnerPost('/api/maintenance/vacuum/run'), env)).status).toBe(404);
+  expect((await worker.fetch(await asOwnerPost(e.db, '/api/maintenance/vacuum/run'), env)).status).toBe(404);
   const signedOut = new Request('https://s/api/maintenance/optimize/run', { method: 'POST', headers: { 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' } });
   expect((await worker.fetch(signedOut, env)).status).toBe(401);
 });
@@ -425,7 +425,7 @@ it('on the self-hosted target, an owner\'s run is answered at once with its runn
   const pending = pendingIntegrity();
   handler.env.storeMaintenance = pending.port;
   const owner = async (route: string, method = 'GET') => handler.fetch(new Request(`https://s${route}`, {
-    method, headers: { cookie: await ownerCookie(), 'x-forwarded-for': '1.2.3.4', origin: 'https://s' },
+    method, headers: { cookie: await ownerCookie(handler.env.db), 'x-forwarded-for': '1.2.3.4', origin: 'https://s' },
   }));
   const ran = await owner('/api/maintenance/integrity/run', 'POST');
   expect(ran.status).toBe(200);

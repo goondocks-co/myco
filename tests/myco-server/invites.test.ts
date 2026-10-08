@@ -32,7 +32,7 @@ function rig() {
   const asMember = async (path: string, body?: unknown) =>
     new Request(`https://s${path}`, {
       method: 'POST',
-      headers: { cookie: await ownerCookie(NOW, MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: await ownerCookie(e.db, NOW, MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   const join = (body: unknown) =>
@@ -156,7 +156,7 @@ describe('who administers membership', () => {
       expect({ what, status: refused.status, body: await json(refused) })
         .toEqual({ what, status: 403, body: { error: 'not_admin', reason: 'this action is for an admin' } });
 
-      const admitted = await r.call(await asOwnerPost(path, body));
+      const admitted = await r.call(await asOwnerPost(r.e.db, path, body));
       expect({ what, status: admitted.status, body: ADMITTED[what].body(await json(admitted)) })
         .toEqual({ what, status: ADMITTED[what].status, body: EXPECTED[what] });
     }
@@ -164,7 +164,7 @@ describe('who administers membership', () => {
 
   it('leaves the member list open to a member: the people who can revoke you are never hidden from you', async () => {
     const r = rig();
-    const seen = await r.call(new Request('https://s/api/members', { headers: { cookie: await ownerCookie(NOW, MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }));
+    const seen = await r.call(new Request('https://s/api/members', { headers: { cookie: await ownerCookie(r.e.db, NOW, MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }));
     expect(seen.status).toBe(200);
     const members = (await json(seen)).members as Array<{ id: string; role: string }>;
     expect(members.find((m) => m.id === 'mem_machine_1')?.role).toBe('admin');
@@ -182,25 +182,25 @@ describe('who administers membership', () => {
     expect(await json(await r.call(await r.asMember(`/api/credentials/${mine.tokenId}/revoke`)))).toMatchObject({ revoked: true });
     expect(live(mine.tokenId).revoked_at).not.toBe(null);
 
-    expect(await json(await r.call(await asOwnerPost(`/api/credentials/${theirs.tokenId}/revoke`)))).toMatchObject({ revoked: true });
+    expect(await json(await r.call(await asOwnerPost(r.e.db, `/api/credentials/${theirs.tokenId}/revoke`)))).toMatchObject({ revoked: true });
     expect(live(theirs.tokenId).revoked_at).not.toBe(null);
   });
 
   it('mints at member, reserves admin grants to the owner, and refuses any other role', async () => {
     const r = rig();
-    expect(await json(await r.call(await asOwnerPost('/api/enrollment', {})))).toMatchObject({ role: 'member', projectId: null });
-    expect((await r.call(await asOwnerPost('/api/enrollment', { role: 'admin' }))).status).toBe(403);
+    expect(await json(await r.call(await asOwnerPost(r.e.db, '/api/enrollment', {})))).toMatchObject({ role: 'member', projectId: null });
+    expect((await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { role: 'admin' }))).status).toBe(403);
     expect(r.authorities()).toHaveLength(1);
     r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
-    expect(await json(await r.call(await asOwnerPost('/api/enrollment', { role: 'admin' })))).toMatchObject({ role: 'admin' });
-    expect((await r.call(await asOwnerPost('/api/enrollment', { role: 'owner' }))).status).toBe(400);
+    expect(await json(await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { role: 'admin' })))).toMatchObject({ role: 'admin' });
+    expect((await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { role: 'owner' }))).status).toBe(400);
   });
 
   it('mints against a known Project only, and lists what each live invitation grants and binds', async () => {
     const r = rig();
     r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
-    expect((await r.call(await asOwnerPost('/api/enrollment', { projectId: 'no_such_project' }))).status).toBe(404);
-    expect(await json(await r.call(await asOwnerPost('/api/enrollment', { projectId: 'proj_1', role: 'admin' })))).toMatchObject({ role: 'admin', projectId: 'proj_1' });
+    expect((await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { projectId: 'no_such_project' }))).status).toBe(404);
+    expect(await json(await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { projectId: 'proj_1', role: 'admin' })))).toMatchObject({ role: 'admin', projectId: 'proj_1' });
 
     const live = await listInvitations(r.e.db, NOW);
     expect(live.map((i) => ({ role: i.role, projectId: i.projectId }))).toEqual([{ role: 'admin', projectId: 'proj_1' }]);

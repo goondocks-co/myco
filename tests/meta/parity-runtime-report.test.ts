@@ -5,6 +5,8 @@ import { runScenario, type ParityScenario, type ParityTarget } from '../parity/h
 const target = (runtime?: ParityTarget['runtime']): ParityTarget => ({
   name: 'cloudflare',
   url: 'http://127.0.0.1:1',
+  deploymentId: 'deployment-parity-report',
+  bindings: { database: 'db', blob: 'blob', secret: 'secret', vector: null },
   memberToken: 'mt_parity',
   projectId: 'proj_parity',
   ownerHeaders: () => ({}),

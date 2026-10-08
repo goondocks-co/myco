@@ -290,16 +290,27 @@ const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): 
   return { row, text: decoder.decode(stored.bytes) };
 };
 
-/** What a restore would touch, answered from the header of a verified artifact — the artifact's rows are never executed here. */
+/** Recognized row envelopes in an artifact, for both preview and apply. */
+function* restoreRows(lines: Iterable<string>): IterableIterator<{ t: string; r: Record<string, unknown> }> {
+  for (const line of lines) {
+    if (line.length === 0) continue;
+    const row = JSON.parse(line) as { t: string; r: Record<string, unknown> };
+    if (BACKUP_TABLES.includes(row.t)) yield row;
+  }
+}
+
+/** What a restore would touch, answered from a verified artifact without executing its rows. */
 export async function previewRestore(
   db: RelationalStore, blobs: BlobStore, id: string,
-): Promise<{ header: BackupHeader; foreignLineage: boolean } | null> {
+): Promise<{ header: BackupHeader; foreignLineage: boolean; tableKeys: string[] } | null> {
   const artifact = await readArtifact(db, blobs, id);
   if (artifact === null) return null;
   const newline = artifact.text.indexOf('\n');
   if (newline === -1) return null;
   const header = JSON.parse(artifact.text.slice(0, newline)) as BackupHeader;
-  return { header, foreignLineage: header.deploymentId !== (await deploymentId(db)) };
+  const tableKeys = new Set<string>();
+  for (const row of restoreRows(artifact.text.slice(newline + 1).split('\n'))) tableKeys.add(row.t);
+  return { header, foreignLineage: header.deploymentId !== (await deploymentId(db)), tableKeys: [...tableKeys] };
 }
 
 export interface RestoreOutcome {
@@ -438,9 +449,7 @@ export async function restoreArtifact(
   if (header.schemaVersion > stamped) throw new BackupSchemaError(header.schemaVersion, stamped);
 
   const byTable = new Map<string, Record<string, unknown>[]>();
-  for (const line of lines.slice(1)) {
-    const parsed = JSON.parse(line) as { t: string; r: Record<string, unknown> };
-    if (!BACKUP_TABLES.includes(parsed.t)) continue;
+  for (const parsed of restoreRows(lines.slice(1))) {
     const rows = byTable.get(parsed.t) ?? [];
     rows.push(portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);

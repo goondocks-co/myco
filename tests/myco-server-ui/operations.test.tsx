@@ -4,6 +4,7 @@
  * transcripts still waiting to be read, automatic recovery in every state it
  * can be in, and the store's routine checks.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -27,7 +28,7 @@ type Route = (init?: RequestInit) => Response;
 
 /** The answers every mount of Health needs; each test overrides what it is about. */
 const base: Record<string, Route> = {
-  '/auth/me': () => Response.json(ME),
+  '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/status': () => Response.json(STATUS),
   '/api/attention': () => Response.json({ items: [], unavailable: [] }),

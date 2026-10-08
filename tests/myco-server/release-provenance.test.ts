@@ -257,22 +257,22 @@ describe('release provenance routes', () => {
     const r = rig();
     const env = { ...r.env, ...OWNER_ENV };
     const path = `/api/projects/${P}/release-provenance`;
-    const refusedCheck = await worker.fetch(await asOwnerPost(`${path}/check`, {}), env);
+    const refusedCheck = await worker.fetch(await asOwnerPost(r.db, `${path}/check`, {}), env);
     expect(refusedCheck.status).toBe(409);
-    const saved = await worker.fetch(new Request(await asOwnerPost(path, settings()), { method: 'PUT' }), env);
+    const saved = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings()), { method: 'PUT' }), env);
     expect(saved.status).toBe(200);
     const text = await saved.text();
     expect(text).not.toContain(TOKEN);
-    const read = await (await worker.fetch(await asOwner(path), env)).json() as { releaseProvenance: { revision: string; credential: unknown } };
+    const read = await (await worker.fetch(await asOwner(r.db, path), env)).json() as { releaseProvenance: { revision: string; credential: unknown } };
     expect(read.releaseProvenance.credential).toEqual({ configured: true, purpose: RELEASE_CREDENTIAL_PURPOSE });
-    const stale = await worker.fetch(new Request(await asOwnerPost(path, settings()), { method: 'PUT' }), env);
+    const stale = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings()), { method: 'PUT' }), env);
     expect(stale.status).toBe(409);
-    const invalid = await worker.fetch(new Request(await asOwnerPost(path, settings({ revision: read.releaseProvenance.revision, githubRepo: 'x' })), { method: 'PUT' }), env);
+    const invalid = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings({ revision: read.releaseProvenance.revision, githubRepo: 'x' })), { method: 'PUT' }), env);
     expect(invalid.status).toBe(400);
-    const check = await worker.fetch(await asOwnerPost(`${path}/check`, {}), env);
+    const check = await worker.fetch(await asOwnerPost(r.db, `${path}/check`, {}), env);
     expect(await check.json()).toMatchObject({ requested: true, releaseProvenance: { check: { requestedAt: expect.any(Number) } } });
     expect((await worker.fetch(new Request('https://s' + path, { headers: { 'cf-connecting-ip': '1.2.3.4' } }), env)).status).toBe(401);
-    expect((await worker.fetch(await asOwner('/api/projects/missing/release-provenance'), env)).status).toBe(404);
+    expect((await worker.fetch(await asOwner(r.db, '/api/projects/missing/release-provenance'), env)).status).toBe(404);
   });
 });
 
@@ -294,7 +294,7 @@ describe('release state on every surface', () => {
       latestCheck: { status: 'unavailable', failure: 'rate_limited', finishedAt: 150 * MIN },
     };
     const env = { ...r.env, ...OWNER_ENV };
-    const http = await (await worker.fetch(await asOwner(`/api/projects/${P}/sessions/s_merged`), env)).json() as { release: unknown };
+    const http = await (await worker.fetch(await asOwner(r.db, `/api/projects/${P}/sessions/s_merged`), env)).json() as { release: unknown };
     expect(http.release).toMatchObject(expected);
 
     const { token } = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
@@ -307,7 +307,7 @@ describe('release state on every surface', () => {
 
     const found = await mcp('myco_search', { query: 'agreement probe', mode: 'fts', type: 'spore' });
     expect(found.results[0]).toMatchObject({ id: 'sp_1', release: { state: 'merged_unreleased', ref: 'main', checked_at: 100 * MIN } });
-    const httpSearch = await (await worker.fetch(await asOwner(`/api/projects/${P}/search?q=${encodeURIComponent('agreement probe')}&mode=fts&type=spore`), env)).json() as any;
+    const httpSearch = await (await worker.fetch(await asOwner(r.db, `/api/projects/${P}/search?q=${encodeURIComponent('agreement probe')}&mode=fts&type=spore`), env)).json() as any;
     expect(httpSearch.results?.[0]?.release ?? null).toEqual(found.results[0].release);
   });
 });

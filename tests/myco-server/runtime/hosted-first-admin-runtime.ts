@@ -55,10 +55,12 @@ const ENTRY = `
 import product, { DeploymentClock, RecoveryProducer } from '${path.join(ROOT, 'packages/myco-server/src/index.ts')}';
 import { setupFirstOwner } from '${path.join(ROOT, 'packages/myco-server/src/core/first-owner.ts')}';
 import { serverEnvFromBindings } from '${path.join(ROOT, 'packages/myco-server/src/platform/cloudflare/env.ts')}';
+import { deploymentIdentity } from '${path.join(ROOT, 'packages/myco-server/src/auth/authorization.ts')}';
 export { DeploymentClock, RecoveryProducer };
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === '/__identity') return Response.json({ deploymentId: await deploymentIdentity(serverEnvFromBindings(env).db) });
     if (url.pathname === '/__first-owner') {
       const db = serverEnvFromBindings(env).db;
       const store = { prepare: (sql) => db.prepare(sql), batch: async () => { throw new Error('the operator store runs no batch'); } };
@@ -116,7 +118,8 @@ async function startWorker(): Promise<void> {
 
 const session = async (): Promise<string> => {
   const now = Date.now();
-  return `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_ACCOUNT, login: 'octocat', iat: now, exp: now + 600_000 })}`;
+  const { deploymentId } = await (await fetch(`${origin}/__identity`)).json() as { deploymentId: string };
+  return `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_ACCOUNT, login: 'octocat', iat: now, exp: now + 600_000 })}`;
 };
 const asAccount = async (route: string, body?: unknown): Promise<{ status: number; body: any }> => {
   const response = await fetch(`${origin}${route}`, {

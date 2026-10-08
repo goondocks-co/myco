@@ -132,7 +132,7 @@ describe('create, list, preview', () => {
     sqlite.close();
   });
 
-  it('writes the artifact and its index row, lists it verified, and previews from the header without executing', async () => {
+  it('writes the artifact and its index row, lists it verified, and previews without executing rows', async () => {
     const { db, bucket, now } = seeded();
     const row = await createBackup(db, bucket, { producer: 'test', now });
     expect(row.key.startsWith('backups/')).toBe(true);

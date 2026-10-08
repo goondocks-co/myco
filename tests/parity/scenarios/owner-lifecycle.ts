@@ -31,7 +31,7 @@ async function fixtureActor(target: ParityTarget, fixture: typeof ACTORS[number]
   await target.sql(`INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES (${lit(machineId)},${lit(fixture.id)},${now})`);
   await target.sql(`INSERT INTO member_credentials (id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
     VALUES (${lit(tokenId)},${lit(fixture.id)},${lit(machineId)},${lit(await sha256Hex(token))},${now},${now + 3_600_000},0,${lit(tokenId)},${now})`);
-  const session = await signSession(SESSION_SECRET, { sub: fixture.sub, login: fixture.label, iat: now, exp: now + 3_600_000 });
+  const session = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: fixture.sub, login: fixture.label, iat: now, exp: now + 3_600_000 });
   return { id: fixture.id, token,
     headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } };
 }
@@ -257,7 +257,7 @@ export const freshOwnerLink: ParityScenario = {
     const link = await request(target, '/members/link-github', target.memberHeaders(), {});
     expect(link.status).toBe(200);
     const key = (await link.json() as { persisted: boolean; key: string }).key;
-    const session = await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 });
+    const session = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 });
     const owner = { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' };
     const confirmed = await request(target, '/auth/link', owner, { key, confirm: true });
     expect(confirmed.status).toBe(200);
@@ -309,7 +309,7 @@ export const interruptedRestoreOwner: ParityScenario = {
     const issued = await request(target, `/api/members/${restoredId}/link-github`, target.ownerHeaders(), {});
     expect(issued.status).toBe(201);
     const key = (await issued.json() as { key: string }).key;
-    const session = await signSession(SESSION_SECRET, { sub: restoredSub, login: 'restored', iat: now, exp: now + 3_600_000 });
+    const session = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: restoredSub, login: 'restored', iat: now, exp: now + 3_600_000 });
     const restoredHeaders = { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' };
     expect((await request(target, '/auth/link', restoredHeaders, { key, confirm: true })).status).toBe(200);
     const pending = await ownership(target, restoredHeaders);

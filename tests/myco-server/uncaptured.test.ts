@@ -32,7 +32,7 @@ async function rig() {
   const dashboard = async (method: string, path: string, sub: string | undefined, body?: unknown) => {
     const res = await worker.fetch(new Request(`https://s${path}`, {
       method,
-      headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };

@@ -4,6 +4,7 @@
  * kind, lead with what they say, name their project across projects, and are
  * reached by the keyboard.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, expect, it } from 'bun:test';
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -243,7 +244,7 @@ it('opens on ⌘K and Ctrl K from every page: under a project it searches that p
   const PROJECTS = { projects: ['one', 'two'].map((id) => ({ projectId: id, name: `Project ${id}`, createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null })) };
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
-    if (url.pathname === '/auth/me') return Response.json(ME);
+    if (url.pathname === '/auth/me') return Response.json(dashboardMe(ME));
     if (url.pathname === '/api/projects') return Response.json(PROJECTS);
     return Response.json({ error: 'not_found' }, { status: 404 });
   }) as typeof fetch;

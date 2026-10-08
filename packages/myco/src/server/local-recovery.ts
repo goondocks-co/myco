@@ -8,6 +8,7 @@ import { holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-s
 import { assignRestoreGeneration, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
+import { assertRecoveryTenantChoice, prepareRecoveredTenant, type RecoveryTenantMode } from '@myco-server-worker/core/recovered-tenant.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
 import { copyRecoveryBundle, preparedObjectKeys, restoredFleet } from './recovery-bundle.js';
@@ -24,12 +25,13 @@ import {
  * move to the keys the database now registers, so the volume published is the layout its rows name. Answers the schema
  * version the prepared volume holds.
  */
-async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined): Promise<number> {
+async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: NativeSqlite | undefined, tenantMode: RecoveryTenantMode): Promise<number> {
   migrateOnly(staging.databasePath, native);
   const db = new Database(staging.databasePath);
   let schemaVersion: number;
   try {
     const store = sqliteRelationalStore(db);
+    await prepareRecoveredTenant(store, tenantMode, Date.now());
     await resetRecoveryLedger(store);
     await assignRestoreGeneration(store, crypto.randomUUID());
     schemaVersion = await readSchemaVersion(store);
@@ -51,13 +53,15 @@ export async function restoreLocalDeployment(options: {
   source: string; secretsFile: string; port?: number; paths?: LocalDeploymentPaths; native?: NativeSqlite;
   /** Publish with a fresh sign-in secret and no sign-in credentials, for a Deployment that holds none. */
   newSignIn?: boolean; report?: (line: string) => void;
+  tenantMode?: RecoveryTenantMode; sourceRetired?: boolean;
 }): Promise<{ schemaVersion: number; rebuildEmbeddings: boolean }> {
+  assertRecoveryTenantChoice(options.tenantMode, options.sourceRetired);
   const paths = options.paths ?? resolveLocalPaths();
   const record = { ...DEFAULT_LOCAL_RECORD, port: options.port ?? DEFAULT_LOCAL_RECORD.port };
   assertRecordServable(record);
   return new LocalVolume(paths).exclusive(async () => {
     if (fs.existsSync(paths.root)) throw new Error('recovery requires a fresh local Deployment directory; existing data was not changed');
-    const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn === true);
+    const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn === true, options.tenantMode === 'fork');
     const stagingHome = fs.mkdtempSync(path.join(path.dirname(paths.root), '.local-restore-'));
     fs.chmodSync(stagingHome, 0o700);
     try {
@@ -82,7 +86,7 @@ export async function restoreLocalDeployment(options: {
           options.report?.('Embedding rebuild required before semantic search is ready');
         }
       } finally { db.close(); }
-      const schemaVersion = await prepareRestoredObjects(staging, options.native);
+      const schemaVersion = await prepareRestoredObjects(staging, options.native, options.tenantMode ?? 'replacement');
       writeLocalSecrets(secrets, staging);
       writeLocalRecord(published, staging);
       options.report?.(carried.report);

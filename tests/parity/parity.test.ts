@@ -55,6 +55,7 @@ import { embeddingRevisions } from './scenarios/embedding-revisions.ts';
 import { recallGold } from './scenarios/recall-gold.ts';
 import { embeddingSwitch } from './scenarios/embedding-switch.ts';
 import { modelCatalogs } from './scenarios/model-catalogs.ts';
+import { twoDeploymentIsolation } from './scenarios/two-deployment-isolation.ts';
 import { rawPrivacy } from './scenarios/raw-privacy.ts';
 import { rawBackfillParity } from './scenarios/raw-backfill.ts';
 import { rawClaimsParity } from './scenarios/raw-claims.ts';
@@ -63,7 +64,7 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, canopy, skillCandidates, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
@@ -108,18 +109,21 @@ if (!process.env.MYCO_PARITY) {
       for (const scenario of dedicated) {
         describe(`[${name}] ${scenario.name}`, () => {
           let target: ParityTarget | null = null;
+          let peer: ParityTarget | null = null;
           beforeAll(async () => {
             target = await boot(scenario);
-          }, 240_000);
+            if (scenario.paired === true) peer = await boot(scenario);
+          }, scenario.paired === true ? 360_000 : 240_000);
           afterAll(async () => {
-            await target?.stop();
+            try { await peer?.stop(); }
+            finally { await target?.stop(); }
           });
           it(scenario.name, async () => {
             if (name === 'selfhosted' && scenario.dedicated!.sqliteVec === true && sqliteVecRefusal !== null) {
               throw new Error(`this scenario needs sqlite-vec on the self-hosted target, which this host cannot load: ${sqliteVecRefusal}`);
             }
             if (target === null) throw new Error(`${name} target never booted`);
-            await runScenario(target, scenario);
+            await runScenario(target, scenario, peer ?? undefined);
           }, scenario.dedicated!.timeoutMs);
         });
       }

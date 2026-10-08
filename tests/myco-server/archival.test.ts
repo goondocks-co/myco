@@ -25,8 +25,8 @@ async function rig() {
   const token = (await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now)).token;
   const windowed = (await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2))).token;
   const fetch = (req: Request) => worker.fetch(req, env);
-  const owner = async (path: string) => json(await fetch(await asOwner(path)));
-  const ownerPost = async (path: string, body?: unknown) => fetch(await asOwnerPost(path, body));
+  const owner = async (path: string) => json(await fetch(await asOwner(fixture.db, path)));
+  const ownerPost = async (path: string, body?: unknown) => fetch(await asOwnerPost(fixture.db, path, body));
   const post = async (over: Record<string, unknown> = {}, project?: string) => json(await fetch(memberPost(token, envelope(over), '/events', project === undefined ? {} : { [PROJECT_HEADER]: project })));
   const count = (table: string) => (fixture.sqlite.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
   return { ...fixture, env, token, windowed, fetch, owner, ownerPost, post, count };
@@ -101,9 +101,9 @@ describe('an archived project', () => {
     const r = await rig();
     expect((await r.post({ eventId: uuid(15) })).persisted).toBe(true);
     await r.ownerPost('/api/projects/proj_1/archive');
-    const sessions = await r.fetch(await asOwner('/api/projects/proj_1/sessions'));
+    const sessions = await r.fetch(await asOwner(r.db, '/api/projects/proj_1/sessions'));
     expect(sessions.status).toBe(200);
     expect(((await json(sessions)).rows as unknown[]).length).toBe(1);
-    expect((await r.fetch(await asOwner('/api/projects/proj_1/activity'))).status).toBe(200);
+    expect((await r.fetch(await asOwner(r.db, '/api/projects/proj_1/activity'))).status).toBe(200);
   });
 });

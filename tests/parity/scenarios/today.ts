@@ -40,7 +40,7 @@ export const today: ParityScenario = {
       await target.sql(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, author, created_at)
                         VALUES (${lit(target.projectId)}, ${lit(sporeId)}, 'agent_parity_today', 'gotcha', 'active', 'parity today', ${lit(runId)}, ${at})`);
       await target.sql(`UPDATE members SET github_id = ${lit(MEMBER_ROLE_SUB)} WHERE id = ${lit(joined.memberId)}`);
-      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: MEMBER_ROLE_SUB, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: MEMBER_ROLE_SUB, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
       const member = { cookie, 'cf-connecting-ip': '1.2.3.4' };
       const read = async (headers: Record<string, string>, path: string) => {
         const res = await fetch(`${target.url}${path}`, { headers });

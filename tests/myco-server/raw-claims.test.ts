@@ -310,7 +310,7 @@ describe('explicit owner claim of missing raw uploader', () => {
   it('uses the same operation through dashboard and owner bearer API, without exposing a raw claim to an admin', async () => {
     const e = sqliteEnv();
     try {
-      const cookie = await ownerCookie();
+      const cookie = await ownerCookie(e.db);
       const headers = { cookie, origin: 'https://s', 'cf-connecting-ip': '1.2.3.4' };
       const request = async (path: string, body?: unknown) => worker.fetch(new Request(`https://s${path}`, { method: body === undefined ? 'GET' : 'POST', headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), { ...e.env, ...OWNER_ENV });

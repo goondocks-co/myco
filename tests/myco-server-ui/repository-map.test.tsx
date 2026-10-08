@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -54,7 +55,7 @@ describe('the code map page', () => {
   it('is Knowledge\'s code map tab at /p/:project/knowledge/map, with Knowledge current in the nav, and reads the project\'s map', async () => {
     const asked: string[] = [];
     const routes: Record<string, () => Response> = {
-      '/auth/me': () => Response.json({ sub: '1', login: 'ada', member: { id: 'mem_1', label: 'Ada', role: 'admin' } }),
+      '/auth/me': () => Response.json(dashboardMe({ sub: '1', login: 'ada', member: { id: 'mem_1', label: 'Ada', role: 'admin' } })),
       '/api/projects': () => Response.json({ projects: [{ projectId: 'proj_1', name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: null, archivedAt: null, archivedBy: null }] }),
       '/api/projects/proj_1/canopy-map': () => Response.json({ map: { revision: 'rev_1', content, repository, sourceRunId: 'run_map', generatedAt: Date.now() - 60_000 } }),
     };

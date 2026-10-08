@@ -37,7 +37,7 @@ async function harness() {
   const report = (project: string, runId: string, summary: string) =>
     sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at) VALUES (?, ?, 'agent_1', 'extract', ?, ?)`, [project, runId, summary, NOW]);
   const get = async (path: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
   const runAt = (project: string, id: string, task: string, status: string, at: { queuedAt?: number | null; startedAt?: number | null; completedAt?: number | null; cost?: number | null }) =>

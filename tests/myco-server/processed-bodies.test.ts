@@ -36,7 +36,7 @@ function fixture(spilled = true) {
     (project_id, tool_call_id, session_id, event_id, tool_name, input, input_blob_key, output_preview, output_blob_key, success, created_at, token_id, received_at)
     VALUES ('proj_1', ?, 's', 'event-tool', 'Read', ?, ?, ?, ?, 1, 1, ?, 1)`).run(ID, text, key, spilled ? 'preview only' : text, key, uploadToken);
   const env = { ...e.env, ...OWNER_ENV };
-  const get = async (kind: string, id = ID, project = 'proj_1') => worker.fetch(await asOwner(`/api/projects/${project}/processed/${kind}/${encodeURIComponent(id)}`), env);
+  const get = async (kind: string, id = ID, project = 'proj_1') => worker.fetch(await asOwner(e.db, `/api/projects/${project}/processed/${kind}/${encodeURIComponent(id)}`), env);
   return { ...e, env, object, get };
 }
 
@@ -137,7 +137,7 @@ describe('typed processed fields', () => {
         VALUES ('proj_1','claimed-body','s','claimed-event','machine_1',NULL,?,'hash','active',1,1,?,1)`, [HASH, token]);
       expect(await processedBody(e.serverEnv, { projectId: 'proj_1' }, 'plan', 'claimed-body')).toBe(BODY);
       seedMemberRoleAccount(e.sqlite);
-      const response = await worker.fetch(new Request('https://s/api/projects/proj_1/processed/plan/claimed-body', { headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
+      const response = await worker.fetch(new Request('https://s/api/projects/proj_1/processed/plan/claimed-body', { headers: { cookie: await ownerCookie(e.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
       expect(response.status).toBe(200); expect(await response.text()).toBe(BODY);
     } finally { e.sqlite.close(); }
   });
@@ -170,7 +170,7 @@ describe('typed processed fields', () => {
   it('serves classified attachment images and downloads to another live member through their logical ID', async () => {
     const e = fixture();
     seedMemberRoleAccount(e.sqlite);
-    const callerCookie = await ownerCookie(Date.now(), MEMBER_SUB);
+    const callerCookie = await ownerCookie(e.db, Date.now(), MEMBER_SUB);
     for (const [index, mediaType] of ['image/png', 'application/pdf', 'text/html'].entries()) {
       const bytes = new Uint8Array([0, 255, index, 128, 10]);
       const hash = String(index + 1).repeat(64);

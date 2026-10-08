@@ -40,7 +40,7 @@ export const uncaptured: ParityScenario = {
       expect(joined.joined).toBe(true);
       otherMember = joined.memberId;
       await target.sql(`UPDATE members SET github_id = '5150616' WHERE id = ${lit(joined.memberId)}`);
-      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: '5150616', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: '5150616', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
       const asOther = { cookie, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
       expect(await machine(memberHeadersFor(joined.token, target.projectId), '/members/uncaptured', { rootKey: keyOf(3), label: 'theirs', reason: 'outside_folders' })).toMatchObject({ persisted: true });
       expect(await machine(target.memberHeaders(), '/members/uncaptured', { rootKey: keyOf(4), label: 'mine', reason: 'outside_folders' })).toMatchObject({ persisted: true });

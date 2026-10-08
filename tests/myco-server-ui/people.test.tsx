@@ -4,6 +4,7 @@
  * "Myco", and each member's own machines on My machines, with no admin route
  * asked for a member.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -71,7 +72,7 @@ const me = (id: string, label: string, role: 'admin' | 'member') => ({ sub: '1',
 function deployment(viewer: ReturnType<typeof me>, credentials: CredentialRow[], extra: Record<string, (init?: RequestInit, url?: URL) => Response> = {}) {
   const machineAnswer = (rows: CredentialRow[]) => ({ machines: machineRows(rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id)), cursor: null });
   return server({
-    '/auth/me': () => Response.json(viewer),
+    '/auth/me': () => Response.json(dashboardMe(viewer)),
     '/api/projects': () => Response.json({ projects: [{ projectId: PROJECT, name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: NOW_MS, archivedAt: null, archivedBy: null }] }),
     '/api/members': () => Response.json(MEMBERS),
     '/api/enrollment': () => Response.json({ invitations: [{ id: 'en_Pq8sT3vW', memberId: LIN, createdBy: 'mem_harness', createdAt: NOW_MS, expiresAt: NOW_MS + 3_600_000, role: 'member', projectId: null }] }),
@@ -90,6 +91,19 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
 });
 
 describe('People & machines', () => {
+  it('shows the server-recorded Owner to administrators and members', async () => {
+    for (const viewer of [me(ADA, 'Ada', 'admin'), me(LIN, 'Lin', 'member')]) {
+      deployment(viewer, [], {
+        '/api/members': () => Response.json({ members: MEMBERS.members.map((row) => ({ ...row, effectiveRole: row.id === ADA ? 'owner' : row.role })) }),
+      });
+      mount('/people');
+      const people = await screen.findByRole('list', { name: 'Members' });
+      const ada = within(people).getAllByRole('listitem').find((item) => item.textContent?.includes('Ada'));
+      expect(ada?.textContent).toContain('Owner');
+      cleanup();
+    }
+  });
+
   it('leaves Myco\'s own account out of the people, names it "Myco", and shows no raw id anywhere', async () => {
     deployment(me(ADA, 'Ada', 'admin'), [
       credential(),
@@ -350,6 +364,7 @@ describe('Renaming a machine', () => {
       key: row.machineId, machineId: row.machineId,
       name: row.name ?? (unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.findIndex((item) => item.machineId === row.machineId) + 1}`),
       named: row.name !== null, memberId: row.member.id, standing: row.standing, stoppedBy: row.stoppedBy,
+      canStop: row.canStop === true, stopReason: row.stopReason ?? null,
       firstSeenAt: row.firstSeenAt, liveCredentialCount: row.liveCredentialCount,
       credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
     }));

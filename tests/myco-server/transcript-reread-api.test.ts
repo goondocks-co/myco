@@ -17,7 +17,7 @@ function seed(e: ReturnType<typeof sqliteEnv>): void {
 }
 
 const post = async (e: ReturnType<typeof sqliteEnv>, body: unknown) => {
-  const res = await worker.fetch(await asOwnerPost('/api/transcripts/reread', body), { ...e.env, ...OWNER_ENV });
+  const res = await worker.fetch(await asOwnerPost(e.db, '/api/transcripts/reread', body), { ...e.env, ...OWNER_ENV });
   return { status: res.status, body: await res.json() as Record<string, unknown> };
 };
 

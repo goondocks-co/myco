@@ -4,6 +4,7 @@
  * tracking. Every change that ends something is confirmed from a menu, a key
  * is shown once, and a refusal stays in view.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -60,7 +61,7 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { sen
 
 const api = `/api/projects/${P}`;
 const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
-  '/auth/me': () => Response.json(ADMIN),
+  '/auth/me': () => Response.json(dashboardMe(ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/status': () => Response.json({ target: 'bun' }),
@@ -138,7 +139,7 @@ describe('a project\'s settings', () => {
   });
 
   it('a member is told the page is for an admin, and nothing an admin reads is asked', async () => {
-    const { asked } = server(base({ '/auth/me': () => Response.json(MEMBER) }));
+    const { asked } = server(base({ '/auth/me': () => Response.json(dashboardMe(MEMBER)) }));
     mount(`/p/${P}/settings`);
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -13,6 +13,10 @@ import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-w
 export interface ParityTarget {
   name: 'selfhosted' | 'cloudflare';
   url: string;
+  /** Deployment identity read from this target's live database. */
+  deploymentId: string;
+  /** Physical local resources supplied to the front door; null means this target has no vector binding. */
+  bindings: { database: string; blob: string; secret: string; vector: string | null };
   memberToken: string;
   projectId: string;
   /**
@@ -37,9 +41,9 @@ export interface ParityTarget {
  * Runs one scenario against one target. A failure reports the runtime's exit status and last output when the runtime
  * is gone, and any failure writing that output, keeping the scenario's own failure as the cause.
  */
-export async function runScenario(target: ParityTarget, scenario: ParityScenario): Promise<void> {
+export async function runScenario(target: ParityTarget, scenario: ParityScenario, peer?: ParityTarget): Promise<void> {
   try {
-    await scenario.run(target);
+    await scenario.run(target, peer);
   } catch (error) {
     const runtime = target.runtime?.();
     if (runtime === undefined) throw error;
@@ -59,7 +63,9 @@ export async function runScenario(target: ParityTarget, scenario: ParityScenario
 
 export interface ParityScenario {
   name: string;
-  run(target: ParityTarget): Promise<void>;
+  run(target: ParityTarget, peer?: ParityTarget): Promise<void>;
+  /** The scenario needs two independently booted Deployments on this target runtime. */
+  paired?: true;
   /**
    * A scenario whose bindings or settings would change what the others observe runs against targets booted for it
    * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;

@@ -7,6 +7,7 @@ import type { DashboardMember } from './auth/identity-link.js';
 
 /** Context for a credential-free auth route: the owner configuration and outbound fetch, and deliberately no bindings. */
 export interface AuthContext {
+  deploymentId: string;
   config: OwnerConfig;
   fetchImpl: OutboundFetch;
   now: number;

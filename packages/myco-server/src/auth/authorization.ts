@@ -172,13 +172,21 @@ export function enrollmentAuthorityPredicate(alias: string): string {
               AND (recipient.role = 'admin' OR recipient.id = o.member_id))))))`;
 }
 
-/** A machine claim and the owner's current control credential boundary. */
+/** Machine claims and owner protection share one resource resolver across single and paged reads. */
+export async function machineResources(db: RelationalStore, kind: 'machine' | 'machine-settings' | 'credential', machineIds: string[]): Promise<AuthorizationResource[]> {
+  const deploymentId = await deploymentIdentity(db);
+  const { results } = await db.prepare('SELECT mc.machine_id, mc.member_id, o.member_id AS owner FROM machine_claims mc LEFT JOIN deployment_ownership o ON o.id = 1 WHERE mc.machine_id IN (SELECT value FROM json_each(?))')
+    .bind(JSON.stringify(machineIds)).all<{ machine_id: string; member_id: string; owner: string | null }>();
+  const claims = new Map(results.map((row) => [row.machine_id, row]));
+  return machineIds.map((id) => {
+    const row = claims.get(id);
+    return { kind, deploymentId, exists: row !== undefined, id, ownerMemberId: row?.member_id, claimantMemberId: row?.member_id,
+      protectedOwner: row !== undefined && row.member_id === row.owner };
+  });
+}
+
 export async function machineResource(db: RelationalStore, kind: 'machine' | 'machine-settings' | 'credential', machineId: string): Promise<AuthorizationResource> {
-  const row = await db.prepare('SELECT mc.member_id, o.member_id AS owner FROM machine_claims mc LEFT JOIN deployment_ownership o ON o.id = 1 WHERE mc.machine_id = ?')
-    .bind(machineId).first<{ member_id: string; owner: string | null }>();
-  return { kind, deploymentId: await deploymentIdentity(db), exists: row !== null, id: machineId,
-    ownerMemberId: row?.member_id, claimantMemberId: row?.member_id,
-    protectedOwner: row !== null && row.member_id === row.owner };
+  return (await machineResources(db, kind, [machineId]))[0]!;
 }
 
 /** A credential's recorded member and current owner protection. */

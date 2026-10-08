@@ -19,7 +19,7 @@ const NOW = Date.now() - 600_000;
 async function rig() {
   const e = sqliteEnv();
   const issued = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW);
-  const cookie = await ownerCookie();
+  const cookie = await ownerCookie(e.db);
   const session = (id: string, over: { endedAt?: number | null } = {}) =>
     e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at)
                   VALUES ('proj_1', ?, 'machine_1', ?, ?, ?, 'claude-code', ?, ?)`, [id, issued.tokenId, NOW - 10_000, NOW - 5_000, NOW - 10_000, over.endedAt ?? null]);

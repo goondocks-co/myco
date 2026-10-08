@@ -755,6 +755,7 @@
     "tests/vault/worktree-detection.test.ts": 96
   },
   "parity": {
+    "two Deployments: every HTTP route and served MCP operation refuses foreign authority before writes": 270000,
     "titling backfill: imported sessions off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent; what live capture owes converges regardless, bounded by worker-claimed attempts; at the ceiling the owner reads the wait and when it lifts": 51095,
     "the clock: extraction queued once, held by its interval, capped by its ceiling, withheld from a cold Project": 48000,
     "a replaced run: the row says a deploy ended it, a successor stands in for it once, and the day is not spent": 41000,

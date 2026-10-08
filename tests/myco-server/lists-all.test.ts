@@ -28,7 +28,7 @@ async function harness() {
     sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, title, content, created_at, updated_at, token_id, received_at)
                 VALUES (?, ?, 's', ?, 'm1', 'h', ?, ?, '- [ ] a', ?, ?, 'tok_1', ?)`, [project, key, `ev_${key}`, status, `plan ${key}`, at, at, at]);
   const get = async (path: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
   return { sqlite, session, spore, plan, get };

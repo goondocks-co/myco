@@ -24,9 +24,9 @@ async function ready(container) {
   throw new Error(`${container} did not become ready:\n${docker('logs', container)}`);
 }
 
-function cookie(secret, sub) {
+function cookie(secret, sub, aud) {
   const now = Date.now();
-  const body = Buffer.from(JSON.stringify({ sub, login: 'container-smoke', iat: now, exp: now + 3_600_000, typ: 'session' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ aud, sub, login: 'container-smoke', iat: now, exp: now + 3_600_000, typ: 'session' })).toString('base64url');
   const signature = createHmac('sha256', secret).update(body).digest('base64url');
   return `__Host-myco_session=${body}.${signature}`;
 }
@@ -58,7 +58,7 @@ async function main() {
   const sub = String(Date.now());
   const body = `container persistence fixture ${suffix}\n`;
   const key = createHash('sha256').update(body).digest('hex');
-  const owner = { cookie: cookie(secret, sub) };
+  let owner;
   const member = { authorization: `Bearer ${token}`, 'x-myco-project': projectId, 'x-myco-protocol': '1' };
   const start = (name, selectedImage) => docker('run', '-d', '--name', name, '-v', `${mount}:/data`,
     '-p', `127.0.0.1:${PORT}:${PORT}`, '-e', `MYCO_PORT=${PORT}`, '-e', 'MYCO_BIND=all',
@@ -100,8 +100,13 @@ async function main() {
       db.query('INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, lineage_root, lineage_started_at, rotates) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)')
         .run(${JSON.stringify(memberId)}, ${JSON.stringify(memberId)}, ${JSON.stringify(machineId)}, ${JSON.stringify(createHash('sha256').update(token).digest('hex'))},
           now, now + 3_600_000, ${JSON.stringify(memberId)}, now);
+      const identity = db.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get();
+      if (typeof identity?.value !== 'string' || !identity.value) throw new Error('Deployment identity is unavailable');
+      process.stdout.write(identity.value);
       db.close();`;
-    docker('exec', first, 'bun', '-e', bootstrap);
+    const deploymentId = docker('exec', first, 'bun', '-e', bootstrap);
+    if (!deploymentId) throw new Error('Bootstrap returned no Deployment identity');
+    owner = { cookie: cookie(secret, sub, deploymentId) };
 
     await request(`/api/projects`, { method: 'POST', headers: { ...owner, origin: BASE, 'content-type': 'application/json' },
       body: JSON.stringify({ projectId, name: 'Container persistence smoke' }) }, 201);

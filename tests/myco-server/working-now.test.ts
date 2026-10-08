@@ -54,7 +54,7 @@ async function rig() {
   const workingSince = (sessionId: string): number | null | undefined =>
     (e.sqlite.query(`SELECT working_since FROM sessions WHERE project_id = 'proj_1' AND session_id = ?`).get(sessionId) as { working_since: number | null } | null)?.working_since;
   const get = async (path: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now()), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(e.db, Date.now()), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
     return (await res.json()) as Record<string, any>;
   };
   // A session the member registered, and a prompt of it a response can answer.

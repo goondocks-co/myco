@@ -235,7 +235,7 @@ describe('what Status answers about workers', () => {
     const worker1 = await r.admin('mem_w1', 'sirkirby-mbp');
     await r.json(post(worker1.token, '/worker/claim', { harnesses: OFFER, capabilities: ['repository-checkout'] }));
 
-    const res = await worker.fetch(await asOwner('/api/status'), { ...r.e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(r.e.db, '/api/status'), { ...r.e.env, ...OWNER_ENV });
     const body = await res.json() as { workers: { available: boolean; workersBusy: number; runsQueued: number; recentWithinMs: number; fleet: Record<string, unknown>[] } };
     expect(body.workers.available).toBe(true);
     expect(body.workers.recentWithinMs).toBe(CONTACT_RECENT_MS);
@@ -248,10 +248,10 @@ describe('what Status answers about workers', () => {
   it('omits a retired setting inserted after migration and refuses its writes', async () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.harness','"claude-sdk"',1,'historic')`);
-    const written = await worker.fetch(await asOwnerPut('/api/settings/agent.harness', { value: 'replacement' }), { ...r.e.env, ...OWNER_ENV });
+    const written = await worker.fetch(await asOwnerPut(r.e.db, '/api/settings/agent.harness', { value: 'replacement' }), { ...r.e.env, ...OWNER_ENV });
     expect(written.status).toBe(400);
 
-    const res = await worker.fetch(await asOwner('/api/settings'), { ...r.e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(r.e.db, '/api/settings'), { ...r.e.env, ...OWNER_ENV });
     const body = await res.json() as { leaves: { leaf: string; value: unknown; configured: boolean }[] };
     expect(body.leaves.find((l) => l.leaf === 'agent.harness')).toBeUndefined();
     expect(r.e.sqlite.query("SELECT value FROM deployment_settings WHERE leaf = 'agent.harness'").get()).toEqual({ value: '"claude-sdk"' });
@@ -260,7 +260,7 @@ describe('what Status answers about workers', () => {
   it('answers unavailable rather than zero workers when the store cannot be read', async () => {
     const r = await rig();
     r.e.sqlite.run(`DROP TABLE worker_contacts`);
-    const res = await worker.fetch(await asOwner('/api/status'), { ...r.e.env, ...OWNER_ENV });
+    const res = await worker.fetch(await asOwner(r.e.db, '/api/status'), { ...r.e.env, ...OWNER_ENV });
     const body = await res.json() as { workers: { available: boolean; fleet: unknown[] } };
     expect(body.workers.available).toBe(false);
     expect(body.workers.fleet).toEqual([]);

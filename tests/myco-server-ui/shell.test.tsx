@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -15,7 +16,7 @@ import {
 
 const ME = { sub: '583231', login: 'octocat', member: { id: 'mem_1', label: 'machine_1', role: 'admin' as const } };
 const MEMBER = { sub: '770001', login: 'lin', member: { id: 'mem_2', label: 'Lin', role: 'member' as const } };
-const me = (body: unknown = ME, status = 200) => () => Response.json(body, { status });
+const me = (body: unknown = ME, status = 200) => () => Response.json(dashboardMe(body), { status });
 const NOW = Date.now();
 const project = (projectId: string, name: string, sessionCount: number, lastActivityAt: number | null) =>
   ({ projectId, name, createdAt: 0, sessionCount, lastActivityAt, archivedAt: null, archivedBy: null });
@@ -93,7 +94,7 @@ const scopeOptions = (menu: HTMLElement) => [...menu.querySelectorAll<HTMLElemen
 
 describe('the dashboard shell', () => {
   it('hands a member with no projects to myco setup', async () => {
-    server({ '/auth/me': me(), '/api/projects': () => Response.json({ projects: [] }) });
+    server({ '/auth/me': me(), '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
     mount('/projects');
     expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
     expect(await screen.findByText('myco setup')).toBeTruthy();
@@ -159,7 +160,7 @@ describe('the dashboard shell', () => {
   });
 
   it('says so when a project address names nothing', async () => {
-    server({ '/auth/me': me(), '/api/projects': () => Response.json({ projects: [] }) });
+    server({ '/auth/me': me(), '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
     mount('/p/nope');
     expect(await screen.findByText('Not found')).toBeTruthy();
   });

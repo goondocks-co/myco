@@ -5,6 +5,7 @@
  * answering 503, in a tab out of view: there a retry waits for the tab to return, so a page that shows only its
  * loading state until the last retry would show nothing else for as long as the tab stays hidden.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -32,7 +33,7 @@ function failing(projects = true): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, 'https://s');
-    if (url.pathname === '/auth/me') return Response.json(ME);
+    if (url.pathname === '/auth/me') return Response.json(dashboardMe(ME));
     if (url.pathname === '/api/projects' && projects) return Response.json(PROJECTS);
     return Response.json({ error: 'unavailable' }, { status: 503 });
   }) as typeof fetch;

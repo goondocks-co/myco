@@ -24,7 +24,7 @@ function harness() {
     fixture.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, origin_path)
                         VALUES ('proj_1', ?, 'm1', 'tok_1', 1, 1, ?, ?)`, [id, agent, originPath]);
   const resume = async (id: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s/api/projects/proj_1/sessions/${encodeURIComponent(id)}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s/api/projects/proj_1/sessions/${encodeURIComponent(id)}`, { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     expect(res.status).toBe(200);
     return (await res.json() as { resume: { command: string; line: string } | null }).resume;
   };

@@ -17,9 +17,9 @@ function post(target: ParityTarget, path: string, headers: Record<string, string
   });
 }
 
-async function session(sub: string): Promise<Record<string, string>> {
+async function session(target: ParityTarget, sub: string): Promise<Record<string, string>> {
   const now = Date.now();
-  const cookie = await signSession(SESSION_SECRET, { sub, login: `review-${sub}`, iat: now, exp: now + 3_600_000 });
+  const cookie = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: `review-${sub}`, iat: now, exp: now + 3_600_000 });
   return { cookie: `${SESSION_COOKIE}=${cookie}`, 'cf-connecting-ip': '1.2.3.4' };
 }
 
@@ -62,8 +62,8 @@ export const restoreAuthorityAdmission: ParityScenario = {
   dedicated: { timeoutMs: 240_000 },
   async run(target) {
     await selectOwner(target);
-    const adminHeaders = await session('720711');
-    const memberHeaders = await session('720712');
+    const adminHeaders = await session(target, '720711');
+    const memberHeaders = await session(target, '720712');
     const now = Date.now();
     await target.sql(`INSERT INTO members (id,label,role,github_id,created_at) VALUES (${lit(ADMIN)},'review admin','admin','720711',${now})`);
     await target.sql(`INSERT INTO members (id,label,role,github_id,created_at) VALUES (${lit(MEMBER)},'review member','member','720712',${now})`);
@@ -137,8 +137,8 @@ export const stopAfterDemotion: ParityScenario = {
     const now = Date.now();
     await target.sql(`INSERT INTO members (id,label,role,github_id,created_at) VALUES (${lit(ADMIN)},'review admin','admin','720711',${now})`);
     await target.sql(`INSERT INTO members (id,label,role,github_id,created_at) VALUES (${lit(MEMBER)},'review member','member','720712',${now})`);
-    const adminHeaders = await session('720711');
-    const memberHeaders = await session('720712');
+    const adminHeaders = await session(target, '720711');
+    const memberHeaders = await session(target, '720712');
     const credential = async (name: string, memberId = MEMBER): Promise<{ id: string; machineId: string }> => {
       const id = `mt_review_${name}`;
       const machineId = `machine_review_${name}`;

@@ -5,6 +5,7 @@
  * The code-map fixture is shaped like the owner's example that started #1592: a map update that read no sessions,
  * called Myco four times with one failure it corrected, and whose panel said nothing of the files it read.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -43,7 +44,7 @@ type Endpoint = (url: URL) => Response;
 function serve(detail: unknown, extra: Record<string, Endpoint> = {}): URL[] {
   const asked: URL[] = [];
   const routes: Record<string, Endpoint> = {
-    '/auth/me': () => Response.json(ADMIN),
+    '/auth/me': () => Response.json(dashboardMe(ADMIN)),
     '/api/projects': () => Response.json(PROJECTS),
     '/api/members': () => Response.json(MEMBERS),
     '/api/attention': () => Response.json({ items: [], unavailable: [] }),

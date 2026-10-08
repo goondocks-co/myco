@@ -115,10 +115,10 @@ function seedWorld(r: Rig): void {
 }
 
 const json = async (response: Response): Promise<Record<string, unknown>> => response.json() as Promise<Record<string, unknown>>;
-const put = async (r: Rig, leaf: string, value: unknown) => r.fetch(await asOwnerPut(`/api/settings/${leaf}`, { value }));
-const reset = async (r: Rig, leaf: string) => r.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(`/api/settings/${leaf}`)).headers) }));
+const put = async (r: Rig, leaf: string, value: unknown) => r.fetch(await asOwnerPut(r.env.db, `/api/settings/${leaf}`, { value }));
+const reset = async (r: Rig, leaf: string) => r.fetch(new Request(`https://s/api/settings/${leaf}`, { method: 'DELETE', headers: Object.fromEntries((await asOwnerPost(r.env.db, `/api/settings/${leaf}`)).headers) }));
 async function row(r: Rig, leaf: string): Promise<Record<string, unknown>> {
-  const answer = await json(await r.fetch(await asOwner('/api/settings')));
+  const answer = await json(await r.fetch(await asOwner(r.env.db, '/api/settings')));
   return (answer.leaves as Array<Record<string, unknown>>).find((entry) => entry.leaf === leaf)!;
 }
 const storedRaw = (r: Rig, leaf: string, text: string) => r.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'historic')`).run(leaf, text);
@@ -647,7 +647,7 @@ describe('stored settings that do not apply', () => {
       };
       storedRaw(r, 'agent.tasks', JSON.stringify(stored));
       expect(await row(r, 'agent.tasks')).toMatchObject({ stored, storedApplies: false, repair: 'clean-document' });
-      expect(await json(await r.fetch(await asOwnerPost('/api/settings/agent.tasks/repair', {})))).toEqual({ applied: true });
+      expect(await json(await r.fetch(await asOwnerPost(r.env.db, '/api/settings/agent.tasks/repair', {})))).toEqual({ applied: true });
       expect(await row(r, 'agent.tasks')).toMatchObject({ stored: { 'title-summary': { schedule: { enabled: true } } },
         effective: { 'title-summary': { schedule: { enabled: true } } }, storedApplies: true });
       expect((await row(r, 'agent.tasks')).repair).toBeUndefined();
@@ -676,7 +676,7 @@ describe('machine leaves', () => {
       const home = scratch();
       const { token } = await issueMemberToken(r.env.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
       const sync = async () => cacheMachineSettings(ORIGIN, (await json(await r.fetch(memberPost(token, {}, '/members/settings')))).machine, home);
-      const set = async (leaf: string, value: unknown) => r.fetch(await asOwnerPut(`/api/machines/machine_1/settings/${leaf}`, { value }));
+      const set = async (leaf: string, value: unknown) => r.fetch(await asOwnerPut(r.env.db, `/api/machines/machine_1/settings/${leaf}`, { value }));
       await sync();
       const before = { plans: machinePlanDirs(ORIGIN, home), roots: machineAutoJoinLeaves(ORIGIN, home).autoJoinRoots };
       expect((await set('capture.plan_dirs', ['docs/plans'])).status).toBe(200);

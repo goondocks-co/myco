@@ -113,7 +113,7 @@ describe('POST /members/status', () => {
     const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
     expect(await jsonBody(await worker.fetch(status(harness.token), env))).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
 
-    const minted = await worker.fetch(await asOwnerPost('/api/projects/proj_1/grants', { label: 'status reader' }), env);
+    const minted = await worker.fetch(await asOwnerPost(e.db, '/api/projects/proj_1/grants', { label: 'status reader' }), env);
     const { key } = await minted.json() as { key: string };
     const asGrant = await worker.fetch(new Request('https://s/members/status', { method: 'POST', headers: { authorization: `Bearer ${key}`, 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' }, body: '{}' }), env);
     expect(asGrant.status).toBe(401);

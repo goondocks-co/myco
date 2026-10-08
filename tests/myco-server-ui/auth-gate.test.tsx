@@ -6,6 +6,7 @@
  * holds a blank surface and no data request has left the browser; then exactly
  * one of the sign-in page, the not-a-member page, or the application.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -54,7 +55,7 @@ function mount(path: string) {
 describe('the auth gate', () => {
   for (const path of ['/', '/projects', '/p/proj_1/sessions']) {
     it(`paints only the splash on ${path} while the session is unknown, and asks for nothing but /auth/me`, async () => {
-      const { asked } = server({ '/auth/me': never, '/api/projects': () => Response.json({ projects: [] }) });
+      const { asked } = server({ '/auth/me': never, '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
       mount(path);
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(screen.getByLabelText('Loading')).toBeTruthy();
@@ -67,7 +68,7 @@ describe('the auth gate', () => {
   }
 
   it('signed out, shows the sign-in page and nothing else, and asks /auth/me exactly once', async () => {
-    const { asked } = server({ '/auth/me': () => new Response(null, { status: 401 }), '/api/projects': () => Response.json({ projects: [] }) });
+    const { asked } = server({ '/auth/me': () => new Response(null, { status: 401 }), '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
     mount('/projects');
     const link = await screen.findByText('Sign in with GitHub');
     expect(link.getAttribute('href')).toBe('/auth/login');
@@ -87,7 +88,7 @@ describe('the auth gate', () => {
   it('a session that ends while the dashboard is open hands the view back to the gate, asking /auth/me once more and no more', async () => {
     let signedIn = true;
     const { asked } = server({
-      '/auth/me': () => (signedIn ? Response.json(ME) : new Response(null, { status: 401 })),
+      '/auth/me': () => (signedIn ? Response.json(dashboardMe(ME)) : new Response(null, { status: 401 })),
       '/api/projects': () => { signedIn = false; return new Response(null, { status: 401 }); },
     });
     mount('/projects');
@@ -97,17 +98,25 @@ describe('the auth gate', () => {
   });
 
   it('a member reaches the application', async () => {
-    server({ '/auth/me': () => Response.json(ME), '/api/projects': () => Response.json({ projects: [] }) });
+    server({ '/auth/me': () => Response.json(dashboardMe(ME)), '/api/projects': () => Response.json({ projects: [] }) });
     mount('/projects');
     expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
   });
 
   it('a signed-in account that is not a member reaches the not-a-member page', async () => {
-    server({ '/auth/me': () => Response.json({ ...ME, member: null }) });
+    server({ '/auth/me': () => Response.json(dashboardMe({ ...ME, member: null })) });
     mount('/projects');
     await waitFor(() => expect(screen.queryByLabelText('Loading')).toBeNull());
     expect(screen.queryByRole('navigation')).toBeNull();
     expect(screen.getByRole('heading', { name: /octocat/ })).toBeTruthy();
+  });
+
+  it('tells a linked account its membership is inactive without offering a new-member link path', async () => {
+    server({ '/auth/me': () => Response.json(dashboardMe({ ...ME, member: null, membership: { state: 'inactive' as const, reason: 'Your membership in this Deployment is inactive. Ask an administrator to restore your access.' } })) });
+    mount('/projects');
+    expect(await screen.findByRole('heading', { name: 'Your membership is inactive' })).toBeTruthy();
+    expect(screen.getByText('Your membership in this Deployment is inactive. Ask an administrator to restore your access.')).toBeTruthy();
+    expect(screen.queryByText(/connect your GitHub account/i)).toBeNull();
   });
 
   it('/link renders signed out, so the identity-link key survives the sign-in ahead', async () => {

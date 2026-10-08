@@ -6,6 +6,7 @@
  * The clock is held at a fixed afternoon so every instant below sits on the day
  * it names, whatever the machine's own time.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -72,7 +73,7 @@ function server(routes: Routes): { requested: string[] } {
 }
 
 const base = (extra: Routes = {}): Routes => ({
-  '/auth/me': () => Response.json(ADMIN),
+  '/auth/me': () => Response.json(dashboardMe(ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   ...extra,

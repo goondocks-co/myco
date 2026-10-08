@@ -55,7 +55,10 @@ it('routes backup and restore flags to the selected retained target without invo
     const restore = await invoke(['restore', '--target', 'local', '--from', destination, '--yes']);
     expect(restore.code).toBe(1);
     expect(restore.text).toContain('native recovery needs --secrets-from');
-    const existing = await invoke(['restore', '--target', 'local', '--from', destination, '--secrets-from', paths.secretsFile, '--yes']);
+    const unacknowledged = await invoke(['restore', '--target', 'local', '--from', destination, '--secrets-from', paths.secretsFile, '--yes']);
+    expect(unacknowledged.code).toBe(1);
+    expect(unacknowledged.text).toContain('--source-retired');
+    const existing = await invoke(['restore', '--target', 'local', '--from', destination, '--secrets-from', paths.secretsFile, '--source-retired', '--yes']);
     expect(existing.code).toBe(1);
     expect(existing.text).toContain('fresh local Deployment directory');
     const bare = await invoke(['backup', '--target', 'local', '--to']);

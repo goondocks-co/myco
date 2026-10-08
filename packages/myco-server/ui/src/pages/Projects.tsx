@@ -6,7 +6,7 @@ import {
 import { AdminPage, RowCard } from '../features/admin/AdminFrame';
 import { useMemberNames } from '../features/admin/members';
 import { refusalText } from '../hooks/use-access';
-import { useIsAdmin } from '../hooks/use-me';
+import { permissionOf, useMe } from '../hooks/use-me';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
 import { isArchived, type ProjectSummary } from '../lib/api';
 import { cn } from '../lib/cn';
@@ -27,7 +27,8 @@ function byRecency(a: ProjectSummary, b: ProjectSummary): number {
 export function Projects() {
   const projects = useProjects();
   const actions = useProjectActions();
-  const admin = useIsAdmin();
+  const projectPermission = permissionOf(useMe().data, 'projects');
+  const admin = projectPermission.allowed;
   const nameOf = useMemberNames();
   const navigate = useNavigate();
   const [showArchived, setShowArchived] = useState(false);
@@ -56,6 +57,7 @@ export function Projects() {
         </Button>
       ) : undefined}
     >
+      {!admin && <p className="t-small text-muted">{projectPermission.reason ?? 'An admin can change project settings.'}</p>}
       {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
       {projects.isPending ? <LoadingState label="Loading projects" count={3} />
         : projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} />

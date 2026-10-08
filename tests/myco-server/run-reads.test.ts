@@ -63,7 +63,7 @@ async function setup() {
   };
   const reads = () => e.sqlite.query(`SELECT project_id AS projectId, run_id AS runId, session_id AS sessionId, token_id AS tokenId, received_at AS receivedAt FROM run_reads ORDER BY run_id, session_id`).all();
   const get = async (path: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env as never);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(e.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env as never);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
   return { ...e, env, member, dispatch, call, reads, get, session, prompt, spore };

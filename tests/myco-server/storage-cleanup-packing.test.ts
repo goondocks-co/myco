@@ -130,7 +130,7 @@ it('bounds admin status by examined omission identities even when every source i
     let after:unknown=null,total=0;
     do{
       const path='/api/storage-cleanup'+(after?'?retainedAfter='+encodeURIComponent(JSON.stringify(after)):'');
-      const response=await worker.fetch(await asOwner(path),{...rig.env,...OWNER_ENV});
+      const response=await worker.fetch(await asOwner(rig.db, path),{...rig.env,...OWNER_ENV});
       expect(response.status).toBe(200);
       const body=await response.json() as {retainedInline:unknown[];retainedInlinePage:{examined:number;next:unknown}};
       expect(body.retainedInline).toEqual([]);expect(body.retainedInlinePage.examined).toBeLessThanOrEqual(100);
@@ -138,7 +138,7 @@ it('bounds admin status by examined omission identities even when every source i
     }while(after);
     expect(total).toBe(250);
     expect(readSizes).toEqual([101,101,50]);
-    expect((await worker.fetch(await asOwner('/api/storage-cleanup?retainedAfter=bad'),{...rig.env,...OWNER_ENV})).status).toBe(400);
+    expect((await worker.fetch(await asOwner(rig.db, '/api/storage-cleanup?retainedAfter=bad'),{...rig.env,...OWNER_ENV})).status).toBe(400);
   }finally{rig.sqlite.close();}
 });
 
@@ -156,11 +156,11 @@ it('removes retained-inline omissions through archival and session deletion, and
     await rig.db.batch(eventArchiveStatements(rig.db,row!,await prepareArchive(rig.serverEnv,'event',row!,now)));
     expect(rig.sqlite.query('SELECT resource_id FROM storage_cleanup_omissions').all()).toEqual([{resource_id:id}]);
     rig.sqlite.query(`INSERT INTO storage_cleanup_omissions VALUES('proj_1','event','missing','retained-inline:net-gain',0)`).run();
-    const status=await worker.fetch(await asOwner('/api/storage-cleanup'),{...rig.env,...OWNER_ENV});
+    const status=await worker.fetch(await asOwner(rig.db, '/api/storage-cleanup'),{...rig.env,...OWNER_ENV});
     expect(await status.json()).toMatchObject({retainedInline:[{resource_kind:'tool-input',rows:1}]});
     await tombstoneSession(rig.serverEnv,{projectId:'proj_1'},'packing','mem_machine_1',now);
     expect(rig.sqlite.query('SELECT resource_id FROM storage_cleanup_omissions').all()).toEqual([{resource_id:'missing'}]);
-    const after=await worker.fetch(await asOwner('/api/storage-cleanup'),{...rig.env,...OWNER_ENV});
+    const after=await worker.fetch(await asOwner(rig.db, '/api/storage-cleanup'),{...rig.env,...OWNER_ENV});
     expect(await after.json()).toMatchObject({retainedInline:[]});
   }finally{rig.sqlite.close();}
 });
@@ -176,7 +176,7 @@ it('retains unprofitable inputs and events inline, records the reason, and publi
     expect(rig.sqlite.query('SELECT input FROM tool_calls').get()).toEqual({input:'x'.repeat(2500)});
     expect(rig.sqlite.query('SELECT reason FROM storage_cleanup_omissions').all()).toEqual([
       {reason:'retained-inline:net-gain'},{reason:'retained-inline:net-gain'}]);
-    const response=await worker.fetch(await asOwner('/api/storage-cleanup'),{...rig.env,...OWNER_ENV});
+    const response=await worker.fetch(await asOwner(rig.db, '/api/storage-cleanup'),{...rig.env,...OWNER_ENV});
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({retainedInline:[{resource_kind:'event',rows:1},{resource_kind:'tool-input',rows:1}]});
   }finally{rig.sqlite.close();}
@@ -235,23 +235,23 @@ it('declares admin control, refuses other actors, validates the body and recheck
     const before=rig.sqlite.query('SELECT * FROM storage_cleanup_state').get();
     for(const method of ['GET','PATCH']){
       const response=await worker.fetch(new Request('https://s/api/storage-cleanup',{method,
-        headers:{cookie:await ownerCookie(now,MEMBER_SUB),origin:'https://s','cf-connecting-ip':'1.2.3.4'},
+        headers:{cookie:await ownerCookie(rig.db, now,MEMBER_SUB),origin:'https://s','cf-connecting-ip':'1.2.3.4'},
         ...(method==='PATCH'?{body:'{"paused":true}'}:{})}),env);
       expect(response.status).toBe(403);
     }
     const unauth=await worker.fetch(new Request('https://s/api/storage-cleanup',{headers:{'cf-connecting-ip':'1.2.3.4'}}),env);
     expect(unauth.status).toBe(401);
-    for(const body of [{paused:'yes'},{paused:true,phase:0},{}])expect((await worker.fetch(await asOwnerPatch('/api/storage-cleanup',body),env)).status).toBe(400);
+    for(const body of [{paused:'yes'},{paused:true,phase:0},{}])expect((await worker.fetch(await asOwnerPatch(rig.db, '/api/storage-cleanup',body),env)).status).toBe(400);
     expect(rig.sqlite.query('SELECT * FROM storage_cleanup_state').get()).toEqual(before);
-    expect((await worker.fetch(await asOwnerPatch('/api/storage-cleanup',{paused:true}),env)).status).toBe(200);
+    expect((await worker.fetch(await asOwnerPatch(rig.db, '/api/storage-cleanup',{paused:true}),env)).status).toBe(200);
     expect(await storageCleanupPending(rig.db)).toBe(false);
-    expect((await worker.fetch(await asOwnerPatch('/api/storage-cleanup',{paused:false}),env)).status).toBe(200);
+    expect((await worker.fetch(await asOwnerPatch(rig.db, '/api/storage-cleanup',{paused:false}),env)).status).toBe(200);
     let intercepted=false;
     const raced=sqliteEnv({onSql(sql,sqlite){if(sql.startsWith('UPDATE storage_cleanup_state SET paused=')&&!intercepted){
       intercepted=true;sqlite.exec("UPDATE members SET role='member' WHERE id='mem_machine_1'");
     }}});
     try{
-      expect((await worker.fetch(await asOwnerPatch('/api/storage-cleanup',{paused:true}),{...raced.env,...OWNER_ENV})).status).toBe(403);
+      expect((await worker.fetch(await asOwnerPatch(raced.db, '/api/storage-cleanup',{paused:true}),{...raced.env,...OWNER_ENV})).status).toBe(403);
       expect(raced.sqlite.query('SELECT paused FROM storage_cleanup_state').get()).toEqual({paused:0});
     }finally{raced.sqlite.close();}
   }finally{rig.sqlite.close();}

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ArrowDown, ArrowUp, X } from 'lucide-react';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { Button, IconButton, Input, Select, Switch, Textarea } from '../../../design';
-import { useIsAdmin } from '../../../hooks/use-me';
+import { permissionOf, useMe } from '../../../hooks/use-me';
 import { settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
 import { ago } from '../../today/words';
@@ -94,7 +94,8 @@ export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | u
 /** A setting whose value is written on its own. */
 function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   const actions = useSettingsActions();
-  const admin = useIsAdmin();
+  const settingPermission = permissionOf(useMe().data, 'settings');
+  const admin = settingPermission.allowed;
   const retired = isRetired(field, row);
   const locked = field.readOnly === true || retired || !admin || row === undefined || row.state === 'unknown';
   const nameOf = useMemberNames();
@@ -238,7 +239,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       label={field.label}
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
-      status={error ?? (retired ? 'Nothing on this server reads it any more.' : effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null))}
+      status={error ?? [retired ? 'Nothing on this server reads it any more.' : effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null), !admin && !field.readOnly ? settingPermission.reason : null].filter(Boolean).join(' ')}
       details={row?.configured ? <>
         <StoredValue value={row.stored} />
         {field.kind === 'json' && JSON.stringify(row.stored) !== JSON.stringify(row.effective) && <StoredValue summary="Effective value" value={row.effective} />}

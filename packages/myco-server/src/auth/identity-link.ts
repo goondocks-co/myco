@@ -251,6 +251,13 @@ export async function previewIdentityLinkAuthority(db: RelationalStore, presente
   return { ok: true, member: { id: row.id, label: row.label, role } };
 }
 
+/** The signed-in account's own membership state, including inactive access. */
+export async function accountMembership(db: RelationalStore, githubId: string) {
+  const row = await db.prepare('SELECT revoked_at FROM members WHERE github_id = ?').bind(githubId).first<{ revoked_at: number | null }>();
+  const state = row === null ? 'unlinked' as const : row.revoked_at === null ? 'active' as const : 'inactive' as const;
+  return { state, reason: state === 'inactive' ? 'Your access to this server is inactive. Ask an administrator to restore your access.' : null };
+}
+
 /** The unrevoked member this GitHub account is linked to, or null. Read on every dashboard request. */
 export async function memberByGithubId(db: RelationalStore, githubId: string): Promise<DashboardMember | null> {
   if (!GITHUB_ACCOUNT_ID.test(githubId)) return null;

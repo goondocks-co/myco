@@ -89,6 +89,8 @@ export interface RunPage {
 
 /** The fields the run panel reads of a run's detail. */
 export interface RunDetailFields extends RunFields {
+  canCancel: boolean;
+  cancelReason: string | null;
   instruction: string | null;
   instructions: string | null;
   estimatedCostUsd: number | null;

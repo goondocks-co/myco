@@ -19,6 +19,10 @@ export interface ErrorWords {
  */
 export function errorWords(error: unknown): ErrorWords {
   if (error instanceof ApiError) {
+    if (error.code === 'owner_pending') return { title: 'This server needs an owner before this action is available.', retry: false };
+    if (error.code === 'not_owner') return { title: 'Only this server’s owner can do that.', retry: false };
+    if (error.code === 'member_revoked') return { title: 'This membership is no longer active.', retry: false };
+    if (error.code === 'not_admin') return { title: 'Only an admin can do that.', retry: false };
     if (error.status === 403) return { title: 'This page is for an admin.', retry: false };
     if (error.status === 404) return { title: 'Not found', retry: false };
     if (error.status >= 500) return { title: 'The server had a problem', retry: true };

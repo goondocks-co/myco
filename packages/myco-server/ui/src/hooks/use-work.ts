@@ -76,6 +76,19 @@ export function useRunDetail(projectId: string, runId: string, options: { enable
   });
 }
 
+/** Cancel one live run; every view of that run is refreshed from the server afterward. */
+export function useCancelRun(projectId: string, runId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => postJson<{ cancelled: true; runId: string }>(`/api/projects/${seg(projectId)}/runs/${seg(runId)}/cancel`),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['run', projectId, runId] });
+      void client.invalidateQueries({ queryKey: ['runs', projectId] });
+      void client.invalidateQueries({ queryKey: ['work'] });
+    },
+  });
+}
+
 /** What a dispatch asks for: the task, and for an admin, whether to run it even over input that has not moved. */
 export interface DispatchAsk {
   task: string;

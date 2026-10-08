@@ -7,6 +7,7 @@
  * filters, a run's id, a measures window), on a page that exists. Every table
  * entry needs an example, so an address added to the table is walked too.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -49,7 +50,7 @@ function serve(who: typeof ADMIN | typeof MEMBER): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const { pathname } = new URL(href, 'https://s');
-    if (pathname === '/auth/me') return Response.json(who);
+    if (pathname === '/auth/me') return Response.json(dashboardMe(who));
     if (pathname === '/api/projects') {
       return Response.json({ projects: [{ projectId: PROJECT, name: 'Myco', createdAt: 0, sessionCount: 0, lastActivityAt: null, archivedAt: null, archivedBy: null }] });
     }

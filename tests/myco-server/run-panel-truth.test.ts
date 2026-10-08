@@ -23,7 +23,7 @@ async function fixture() {
       VALUES ('proj_1', ?, ?, ?, ?, 12, ?, ?)`, [id, type, tool, outcome, JSON.stringify(payload), at]);
   };
   const get = async (path: string): Promise<Answer> => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now()), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(f.db, Date.now()), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
     expect(res.status).toBe(200);
     return await res.json() as Answer;
   };

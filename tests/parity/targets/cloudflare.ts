@@ -68,10 +68,11 @@ export interface CloudflareBootOptions {
 /** The shipped Worker under wrangler dev: real workerd, real migrations, local D1/R2, a throwaway state dir. */
 export async function bootCloudflare(options: CloudflareBootOptions = {}): Promise<ParityTarget> {
   const tag = Math.random().toString(36).slice(2, 8);
+  const storeId = `parity-store-${tag}`;
   const configName = `wrangler.parity-${tag}.toml`;
   const configPath = path.join(SERVER_DIR, configName);
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
-  fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), options.main) + '\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "parity-store"\nsecret_name = "parity-wrap-key"\n');
+  fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), options.main) + `\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`);
 
   let completedSqlCommands = 0;
   let lastSqlProgress = performance.now();
@@ -102,8 +103,12 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
 
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   try {
-    await wrangler(['secrets-store', 'secret', 'create', 'parity-store', '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa('p'.repeat(32)), '-c', configName, '--persist-to', persistDir]);
+    await wrangler(['secrets-store', 'secret', 'create', storeId, '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))), '-c', configName, '--persist-to', persistDir]);
     await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
+    const d1Files = fs.readdirSync(path.join(persistDir, 'v3', 'd1', 'miniflare-D1DatabaseObject'))
+      .filter((name) => name.endsWith('.sqlite') && name !== 'metadata.sqlite');
+    if (d1Files.length !== 1) throw new Error(`Cloudflare parity target has ${d1Files.length} local D1 database files`);
+    const databaseFile = path.join(persistDir, 'v3', 'd1', 'miniflare-D1DatabaseObject', d1Files[0]!);
 
     const mint = Bun.spawn(['bun', 'scripts/mint-local.ts', MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe' });
     const [mintCode, mintSql, mintEnv] = await Promise.all([mint.exited, new Response(mint.stdout).text(), new Response(mint.stderr).text()]);
@@ -115,6 +120,9 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     // The Project every scenario works in exists from boot, as capture would have created it, so no scenario depends on
     // another having captured into it first.
     await d1(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('${PROJECT_ID}', '${PROJECT_ID}', ${Date.now()})`);
+    const deploymentRows = JSON.parse(await d1("SELECT value FROM schema_meta WHERE key = 'deployment_id'")) as Array<{ results: Array<{ value: string }> }>;
+    const deploymentId = deploymentRows[0]?.results[0]?.value;
+    if (!deploymentId) throw new Error('Cloudflare parity target has no Deployment identity');
 
     const probe = Bun.serve({ port: 0, fetch: () => new Response('') });
     const port = probe.port;
@@ -184,11 +192,13 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       );
     }
 
-    const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+    const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
     const devProc = proc;
     return {
       name: 'cloudflare',
       url,
+      deploymentId,
+      bindings: { database: databaseFile, blob: path.join(persistDir, 'v3', 'r2'), secret: path.join(persistDir, 'v3', 'secrets-store', storeId), vector: null },
       memberToken: token,
       projectId: PROJECT_ID,
       ownerHeaders: () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' }),

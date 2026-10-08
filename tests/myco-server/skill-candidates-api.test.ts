@@ -19,21 +19,21 @@ async function rig() {
 describe('member skill candidate review', () => {
   it('pages deterministically and distinguishes invalid filters from empty results', async () => {
     const r = await rig();
-    const first = await r.ask(await asOwner(`${PATH}?limit=1`));
+    const first = await r.ask(await asOwner(r.db, `${PATH}?limit=1`));
     expect(await first.json()).toMatchObject({ candidates: [{ id: 'one', revision: 0 }], hasMore: true });
-    const second = await r.ask(await asOwner(`${PATH}?limit=1&offset=1`));
+    const second = await r.ask(await asOwner(r.db, `${PATH}?limit=1&offset=1`));
     expect(await second.json()).toMatchObject({ candidates: [{ id: 'two' }], hasMore: false });
-    const empty = await r.ask(await asOwner(`${PATH}?status=approved`));
+    const empty = await r.ask(await asOwner(r.db, `${PATH}?status=approved`));
     expect(await empty.json()).toMatchObject({ candidates: [], hasMore: false });
-    for (const query of ['status=unknown', 'limit=0', 'offset=-1']) expect((await r.ask(await asOwner(`${PATH}?${query}`))).status).toBe(400);
+    for (const query of ['status=unknown', 'limit=0', 'offset=-1']) expect((await r.ask(await asOwner(r.db, `${PATH}?${query}`))).status).toBe(400);
   });
 
   it('attributes approval to the signed-in member and refuses a stale review', async () => {
     const r = await rig();
-    const approved = await r.ask(await asOwnerPatch(`${PATH}/one`, { revision: 0, status: 'approved', memberId: 'forged' }));
+    const approved = await r.ask(await asOwnerPatch(r.db, `${PATH}/one`, { revision: 0, status: 'approved', memberId: 'forged' }));
     expect(approved.status).toBe(200);
     expect(await approved.json()).toMatchObject({ reviewed: true, warnings: ['This candidate has no recorded quality assessment.'], candidate: { status: 'approved', revision: 1, approvedBy: PRINCIPAL.id, reviewedBy: PRINCIPAL.id } });
-    const stale = await r.ask(await asOwnerPatch(`${PATH}/one`, { revision: 0, status: 'dismissed' }));
+    const stale = await r.ask(await asOwnerPatch(r.db, `${PATH}/one`, { revision: 0, status: 'dismissed' }));
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ error: 'conflict', candidate: { status: 'approved', revision: 1 } });
     expect((await getCandidate(r.db, { projectId: 'proj_1' }, 'one'))?.status).toBe('approved');
@@ -43,7 +43,7 @@ describe('member skill candidate review', () => {
     const r = await rig();
     await updateCandidate(r.db, { projectId: 'proj_1' }, 'one', { evidence_bundle_id: 'bundle_one', quality_score: 0.9,
       quality_failures: '["missing-project-anchor"]', source_ids: '["spore-a","spore-b","spore-c"]' }, 2);
-    const ask = async (revision: number) => r.ask(await asOwnerPatch(`${PATH}/one`, { revision, status: 'approved' }));
+    const ask = async (revision: number) => r.ask(await asOwnerPatch(r.db, `${PATH}/one`, { revision, status: 'approved' }));
     expect(await (await ask(1)).json()).toMatchObject({ error: 'candidate_quality', issues: ['quality_failures must be an empty array'] });
     await updateCandidate(r.db, { projectId: 'proj_1' }, 'one', { quality_failures: '[]' }, 3);
     for (const [project, id] of [['proj_1', 'spore-a-long'], ['proj_1', 'spore-b-long'], ['proj_2', 'spore-c-long']]) {
@@ -60,11 +60,11 @@ describe('member skill candidate review', () => {
   it('requires a member session and same-origin review and cannot invent approval state', async () => {
     const r = await rig();
     expect((await r.ask(new Request(`https://s${PATH}`, { headers: { 'cf-connecting-ip': '1.2.3.4' } }))).status).toBe(401);
-    const crossOrigin = await asOwnerPatch(`${PATH}/one`, { revision: 0, status: 'approved' });
+    const crossOrigin = await asOwnerPatch(r.db, `${PATH}/one`, { revision: 0, status: 'approved' });
     crossOrigin.headers.set('origin', 'https://elsewhere.example');
     expect((await r.ask(crossOrigin)).status).toBe(403);
-    expect((await r.ask(await asOwnerPatch(`${PATH}/one`, { revision: 0, status: 'generated' }))).status).toBe(400);
-    expect((await r.ask(await asOwnerPatch(`${PATH}/missing`, { revision: 0, status: 'approved' }))).status).toBe(404);
-    expect((await r.ask(await asOwner('/api/projects/absent/skill-candidates'))).status).toBe(404);
+    expect((await r.ask(await asOwnerPatch(r.db, `${PATH}/one`, { revision: 0, status: 'generated' }))).status).toBe(400);
+    expect((await r.ask(await asOwnerPatch(r.db, `${PATH}/missing`, { revision: 0, status: 'approved' }))).status).toBe(404);
+    expect((await r.ask(await asOwner(r.db, '/api/projects/absent/skill-candidates'))).status).toBe(404);
   });
 });

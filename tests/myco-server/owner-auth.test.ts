@@ -4,8 +4,10 @@ import { clearCookie, readCookie, SESSION_COOKIE, setCookie, signSession, verify
 
 import { ownerConfig } from '@myco-server-worker/auth/owner/config.js';
 import { OWNER_ENV, SESSION_SECRET } from './helpers/owner.js';
+import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 
 const SECRET = 'test-secret-value-not-a-real-one';
+const COOKIE_TEST_AUD = 'deployment-cookie-contract';
 
 const FULL = { GITHUB_CLIENT_ID: 'cid', GITHUB_CLIENT_SECRET: 'csecret', SESSION_SECRET };
 
@@ -79,8 +81,8 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 
-async function ownerCookie(now = Date.now()): Promise<string> {
-  const value = await signSession(SESSION_SECRET, { sub: '583231', login: 'octocat', iat: now, exp: now + 60_000 });
+async function ownerCookie(db: ReturnType<typeof sqliteEnv>['db'], now = Date.now()): Promise<string> {
+  const value = await signSession(SESSION_SECRET, { aud: await deploymentIdentity(db), sub: '583231', login: 'octocat', iat: now, exp: now + 60_000 });
   return setCookie(value, 60).split(';')[0];
 }
 
@@ -88,7 +90,7 @@ describe('owner route dispatch', () => {
   it('accepts the owner session on an owner route', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(
-      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' } }),
+      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' } }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(204);
@@ -110,7 +112,7 @@ describe('owner route dispatch', () => {
   it('refuses an owner session on a member route WITHOUT verifying it', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(
-      new Request('https://s/events', { method: 'POST', headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' }, body: '{}' }),
+      new Request('https://s/events', { method: 'POST', headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' }, body: '{}' }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(401);
@@ -120,7 +122,7 @@ describe('owner route dispatch', () => {
   it('serves no owner route at all when the owner is unconfigured', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(
-      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }),
+      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       e.env
     );
     expect(res.status).toBe(401);
@@ -129,7 +131,7 @@ describe('owner route dispatch', () => {
   it('discloses no protocol number to an owner', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(
-      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }),
+      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.headers.get('x-myco-protocol')).toBeNull();
@@ -177,7 +179,7 @@ describe('sign-in', () => {
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('/');
     const session = cookieValue(res.headers.get('set-cookie')!, SESSION_COOKIE)!;
-    expect(await verifySession(SESSION_SECRET, session, Date.now())).toMatchObject({ sub: '583231', login: 'octocat' });
+    expect(await verifySession(SESSION_SECRET, session, Date.now(), await deploymentIdentity(e.db))).toMatchObject({ sub: '583231', login: 'octocat' });
   });
 
   it('signs in an account no member is linked to, and that session reaches no member route: membership is decided per request, not at the door', async () => {
@@ -193,11 +195,11 @@ describe('sign-in', () => {
     );
     expect(res.status).toBe(302);
     const session = cookieValue(res.headers.get('set-cookie')!, SESSION_COOKIE)!;
-    expect((await verifySession(SESSION_SECRET, session, Date.now()))?.sub).toBe('999999');
+    expect((await verifySession(SESSION_SECRET, session, Date.now(), await deploymentIdentity(e.db)))?.sub).toBe('999999');
     const projects = await worker.fetch(new Request('https://s/api/projects', { headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } }), env);
     expect(projects.status).toBe(401);
     const me = await worker.fetch(new Request('https://s/auth/me', { headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } }), env);
-    expect({ status: me.status, body: await me.json() }).toEqual({ status: 200, body: { sub: '999999', login: 'octocat', owner: false, member: null } });
+    expect({ status: me.status, body: await me.json() }).toMatchObject({ status: 200, body: { sub: '999999', login: 'octocat', owner: false, member: null } });
   });
 
   it('refuses a callback whose state does not match the planted cookie', async () => {
@@ -223,32 +225,32 @@ describe('owner session cookie', () => {
   it('refuses a payload signed for another purpose with the same key', async () => {
     const { signPayload } = await import('@myco-server-worker/auth/owner/cookie.js');
     const foreign = await signPayload(SECRET, 'oauth_state', { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 } as never);
-    expect(await verifySession(SECRET, foreign, 5_000)).toBeNull();
+    expect(await verifySession(SECRET, foreign, 5_000, COOKIE_TEST_AUD)).toBeNull();
   });
 
   it('round-trips a session', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
-    expect(await verifySession(SECRET, signed, 5_000)).toMatchObject({ sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    const signed = await signSession(SECRET, { aud: COOKIE_TEST_AUD, sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    expect(await verifySession(SECRET, signed, 5_000, COOKIE_TEST_AUD)).toMatchObject({ sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
   });
 
   it('refuses a session signed with another secret', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
-    expect(await verifySession('a-different-secret-entirely', signed, 5_000)).toBeNull();
+    const signed = await signSession(SECRET, { aud: COOKIE_TEST_AUD, sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    expect(await verifySession('a-different-secret-entirely', signed, 5_000, COOKIE_TEST_AUD)).toBeNull();
   });
 
   it('refuses a tampered payload', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    const signed = await signSession(SECRET, { aud: COOKIE_TEST_AUD, sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
     const forged = `${btoa(JSON.stringify({ sub: '9999999', login: 'octocat', iat: 1_000, exp: 9_000 })).replace(/=+$/, '')}.${signed.split('.')[1]}`;
-    expect(await verifySession(SECRET, forged, 5_000)).toBeNull();
+    expect(await verifySession(SECRET, forged, 5_000, COOKIE_TEST_AUD)).toBeNull();
   });
 
   it('refuses an expired session', async () => {
-    const signed = await signSession(SECRET, { sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
-    expect(await verifySession(SECRET, signed, 9_001)).toBeNull();
+    const signed = await signSession(SECRET, { aud: COOKIE_TEST_AUD, sub: '1234567', login: 'octocat', iat: 1_000, exp: 9_000 });
+    expect(await verifySession(SECRET, signed, 9_001, COOKIE_TEST_AUD)).toBeNull();
   });
 
   it('refuses malformed values without throwing', async () => {
-    for (const bad of ['', '.', 'nodot', 'a.b', '..']) expect(await verifySession(SECRET, bad, 1)).toBeNull();
+    for (const bad of ['', '.', 'nodot', 'a.b', '..']) expect(await verifySession(SECRET, bad, 1, COOKIE_TEST_AUD)).toBeNull();
   });
 
   it('serializes with every required flag', () => {
@@ -273,7 +275,7 @@ describe('same-origin on state-changing owner routes', () => {
     const res = await worker.fetch(
       new Request('https://s/auth/logout', {
         method: 'POST',
-        headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', origin: 'https://evil.example' },
+        headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://evil.example' },
       }),
       { ...e.env, ...OWNER_ENV }
     );
@@ -283,7 +285,7 @@ describe('same-origin on state-changing owner routes', () => {
   it('refuses a POST that offers no origin evidence at all', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(
-      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }),
+      new Request('https://s/auth/logout', { method: 'POST', headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(403);
@@ -294,7 +296,7 @@ describe('same-origin on state-changing owner routes', () => {
     const res = await worker.fetch(
       new Request('https://s/auth/logout', {
         method: 'POST',
-        headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4', 'sec-fetch-site': 'same-origin' },
+        headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4', 'sec-fetch-site': 'same-origin' },
       }),
       { ...e.env, ...OWNER_ENV }
     );
@@ -304,7 +306,7 @@ describe('same-origin on state-changing owner routes', () => {
   it('never blocks a safe method', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(
-      new Request('https://s/api/projects', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }),
+      new Request('https://s/api/projects', { headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(200);
@@ -332,7 +334,7 @@ describe('no owner configured means no human surface at all', () => {
   it('refuses every /api route', async () => {
     const e = sqliteEnv();
     for (const path of paths) {
-      const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), e.env);
+      const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(e.db), 'cf-connecting-ip': '1.2.3.4' } }), e.env);
       expect({ path, status: res.status }).toEqual({ path, status: 401 });
     }
   });
@@ -356,7 +358,7 @@ describe('an account no member is linked to reaches nothing', () => {
     const e = sqliteEnv();
     const now = Date.now();
     // Correctly signed by this server, but for a different GitHub account.
-    const stranger = await signSession(SESSION_SECRET, { sub: '999999', login: 'nobody', iat: now, exp: now + 60_000 });
+    const stranger = await signSession(SESSION_SECRET, { aud: await deploymentIdentity(e.db), sub: '999999', login: 'nobody', iat: now, exp: now + 60_000 });
     for (const path of ['/api/projects', '/api/status', '/api/credentials']) {
       const res = await worker.fetch(
         new Request(`https://s${path}`, { headers: { cookie: `${SESSION_COOKIE}=${stranger}`, 'cf-connecting-ip': '1.2.3.4' } }),

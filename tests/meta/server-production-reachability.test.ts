@@ -13,6 +13,7 @@ const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
   'core/cost/types.ts': 'type declarations consumed by cost resolution',
   'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',
   'core/first-owner.ts': 'operator bootstrap: packages/myco/src/server/local-owner.ts and cloudflare-owner.ts',
+  'core/recovered-tenant.ts': 'operator recovery: packages/myco/src/server/local-recovery.ts and cloudflare-recovery.ts',
   'core/cost/index.ts': 'fixture-only barrel: tests/myco-server/cost.test.ts; serving code imports cost modules directly',
   'core/deferred-adapters.ts': 'retirement candidate: notConfigured has no production or fixture consumers',
 };

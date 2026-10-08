@@ -361,7 +361,7 @@ describe('the imported-session backfill', () => {
     const r = rig();
     r.setting('agent.scheduled_tasks_enabled', true);
     r.session('a');
-    const cookie = await ownerCookie();
+    const cookie = await ownerCookie(r.env.db);
     const request = (method: string, body?: unknown) => worker.fetch(new Request('https://s/api/titling-backfill', {
       method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -567,7 +567,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: 2.5, intervalSeconds: 0 } } });
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
 
-    const cookie = await ownerCookie();
+    const cookie = await ownerCookie(r.env.db);
     const request = (method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://s${path}`, {
       method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
