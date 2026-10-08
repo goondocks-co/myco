@@ -54,7 +54,7 @@ function inspectShell(script, check, expansionsOnly = false) {
       if (['sudo', 'env', 'command', 'exec'].includes(word)) wrapper = word;
       else if (wrapper && word.startsWith('-')) {
         if (wrapper === 'command' && ['-v', '-V'].includes(word)) command = false;
-        if ((wrapper === 'sudo' && ['-u', '-g', '-h', '-p', '-C', '-T'].includes(word)) || (wrapper === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(word))) wrapperArgument = true;
+        if ((wrapper === 'sudo' && ['-u', '-g', '-h', '-p', '-C', '-T', '-D', '-R', '-r', '-t', '-U', '--user', '--group', '--host', '--prompt', '--close-from', '--command-timeout', '--chdir', '--chroot', '--role', '--type', '--other-user'].includes(word)) || (wrapper === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(word)) || (wrapper === 'exec' && word === '-a')) wrapperArgument = true;
       } else if (!['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!', '{', '}'].includes(word) && !/^[A-Za-z_][A-Za-z_0-9]*=/.test(word)) {
         check(word);
         command = false;

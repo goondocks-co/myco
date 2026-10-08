@@ -44,7 +44,7 @@ describe('service-manager process containment', () => {
 
   it('shell executable words and substitutions are refused before execution', () => {
     const root = fresh(), env = environment(root);
-    for (const script of ["'/bin/launchctl' version", 'if :; then "systemctl" start example; fi', '( launchctl version )', 'printf "%s" "$(/bin/launchctl version)"', 'printf "%s" `systemctl status`', '! /bin/launchctl version', 'sudo -u user /bin/launchctl version', 'cat <<EOF\n$(/bin/launchctl version)\nEOF']) {
+    for (const script of ["'/bin/launchctl' version", 'if :; then "systemctl" start example; fi', '( launchctl version )', 'printf "%s" "$(/bin/launchctl version)"', 'printf "%s" `systemctl status`', '! /bin/launchctl version', 'sudo -u user /bin/launchctl version', 'sudo --user root /bin/launchctl version', 'sudo --group staff /usr/bin/systemctl status', 'cat <<EOF\n$(/bin/launchctl version)\nEOF']) {
       expect(() => assertServiceCommand(['/bin/sh', '-c', script], env)).toThrow('TEST SAFETY');
       expect(consumeServiceExecDenials(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toMatch(/launchctl|systemctl/);
     }
