@@ -14,9 +14,10 @@ it.skipIf(!enabled)('contains module-load fixtures and subprocesses with replace
   const root = process.env.MYCO_TEST_RUN_ROOT!;
   const contained = (candidate: string) => expect(path.relative(root, candidate)).not.toMatch(/^\.\.(?:[/\\]|$)/);
   contained(moduleFixture!);
-  const env = { BOUNDARY_VALUE: 'preserved', TMPDIR: process.env.MYCO_TEST_RUN_PARENT_TMPDIR!, TEMP: process.env.MYCO_TEST_RUN_PARENT_TMPDIR!, TMP: process.env.MYCO_TEST_RUN_PARENT_TMPDIR! };
+  expect(() => Bun.spawnSync([process.execPath, '-e', childScript], { env: { TMPDIR: path.dirname(root) } })).toThrow('TEST SAFETY');
+  const env = { BOUNDARY_VALUE: 'preserved', TMPDIR: root, TEMP: root, TMP: root };
   const home = JSON.stringify(process.env.HOME);
-  const script = `if(process.env.BOUNDARY_VALUE!=="preserved"||process.env.HOME!==${home}||!process.env.CODEX_HOME||!process.env.CLAUDE_CONFIG_DIR||!process.env.MYCO_HOME)process.exit(42);` + childScript;
+  const script = `if(process.env.BOUNDARY_VALUE!=="preserved"||process.env.HOME!==${home}||!process.env.CODEX_HOME||!process.env.CLAUDE_CONFIG_DIR||!process.env.XDG_CONFIG_HOME||!process.env.MYCO_HOME)process.exit(42);` + childScript;
   for (const binary of [Bun.which('node')!, Bun.which('bun')!]) {
     const child = spawnSync(binary, ['-e', script], { env, encoding: 'utf8' });
     expect({ status: child.status, error: child.stderr }).toEqual({ status: 0, error: '' });
