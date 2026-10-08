@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { fixtureRun } from '../helpers/execution-harness.ts';
@@ -33,7 +34,7 @@ async function rig(harness = 'claude-code') {
     [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 })]);
   await settingsWriter(e.db).setLeaf('agent.reasoning_map.codex.default', 'gpt-5.4-mini', 'mem_worker', NOW);
   await settingsWriter(e.db).setLeaf('agent.reasoning_map.opencode.default', 'openai/gpt-5.4-mini', 'mem_worker', NOW);
-  const claim = () => claimNextRun(e.serverEnv, { tokenId: token.tokenId, machineId: 'm1', harnesses: [offeredHarness(harness)], now });
+  const claim = () => claimNextRun(e.serverEnv, { principal: legacyWorker(token.tokenId, 'm1'), harnesses: [offeredHarness(harness)], now });
   const claimed = await claim();
   if (!claimed.claimed) throw new Error('run was not claimed');
   const end = async (extra: Record<string, unknown>) => {
@@ -115,7 +116,7 @@ describe('worker accounting on the Deployment', () => {
     try {
       let reads = 0;
       const clock = () => ++reads === 1 ? NOW : NOW + WORKER_LEASE_MS;
-      expect(await endLeasedRun(r.e.serverEnv, { tokenId: r.token.tokenId, now: NOW, clock }, {
+      expect(await endLeasedRun(r.e.serverEnv, { principal: legacyWorker(r.token.tokenId, 'm1'), now: NOW, clock }, {
         ...scope, runId: 'run_usage', status: 'failed', usage, attemptId: r.claimed.run.attemptId,
       })).toMatchObject({ ended: false });
       expect((await r.detail())?.run).toMatchObject({ status: 'running', usageData: null });
@@ -130,7 +131,7 @@ describe('worker accounting on the Deployment', () => {
       await expireLeases(r.e.serverEnv, NOW + WORKER_LEASE_MS);
       await r.claim();
       expect(await applyRunUpdate(r.e.db, scope, 'run_usage', { status: 'failed', cost_usd: 1 }, {
-        tokenId: r.token.tokenId, dispatchedBy: old!.dispatchedBy!, now: NOW + WORKER_LEASE_MS,
+        worker: legacyWorker(r.token.tokenId, 'm1'), dispatchedBy: old!.dispatchedBy!, now: NOW + WORKER_LEASE_MS,
       })).toBe(0);
       expect((await r.detail())?.run).toMatchObject({ status: 'running', costUsd: null });
     } finally { r.e.sqlite.close(); }

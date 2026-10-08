@@ -7,7 +7,9 @@ export async function runAuthorityWait(db: RelationalStore): Promise<{ bound: st
   await db.batch([
     db.prepare('CREATE TABLE members(id TEXT PRIMARY KEY, revoked_at INTEGER)'),
     db.prepare('CREATE TABLE member_credentials(id TEXT PRIMARY KEY, member_id TEXT, revoked_at INTEGER, expires_at INTEGER)'),
-    db.prepare('CREATE TABLE agent_runs(project_id TEXT, id TEXT, dispatched_by TEXT, status TEXT, lease_expires_at INTEGER, started_at INTEGER, resumed_at INTEGER, run_context TEXT, tokens_used INTEGER)'),
+    db.prepare('CREATE TABLE agent_runs(project_id TEXT, id TEXT, dispatched_by TEXT, status TEXT, lease_expires_at INTEGER, started_at INTEGER, resumed_at INTEGER, run_context TEXT, tokens_used INTEGER, leased_runner_id TEXT, leased_runner_credential_id TEXT)'),
+    db.prepare('CREATE TABLE runners(id TEXT PRIMARY KEY, state TEXT, credential_epoch INTEGER)'),
+    db.prepare('CREATE TABLE runner_credentials(id TEXT PRIMARY KEY, runner_id TEXT, epoch INTEGER)'),
     db.prepare('CREATE TABLE wait_rows(id TEXT PRIMARY KEY)'),
     db.prepare("INSERT INTO members VALUES('m', NULL)"),
   ]);
@@ -17,7 +19,7 @@ export async function runAuthorityWait(db: RelationalStore): Promise<{ bound: st
     await db.batch([
       db.prepare('DELETE FROM agent_runs'), db.prepare('DELETE FROM member_credentials'),
       db.prepare("INSERT INTO member_credentials VALUES('credential','m',NULL,?)").bind(bound === 'credential' ? expiry : now + 600_000),
-      db.prepare("INSERT INTO agent_runs VALUES('p','r','credential','running',?,?,NULL,'{\"timeoutSeconds\":300}',NULL)")
+      db.prepare("INSERT INTO agent_runs VALUES('p','r','credential','running',?,?,NULL,'{\"timeoutSeconds\":300}',NULL,NULL,NULL)")
         .bind(bound === 'lease' ? expiry : null, bound === 'attempt' ? expiry - 420_000 : now),
     ]);
     const delayed = { prepare: db.prepare.bind(db), batch: async (statements: Parameters<RelationalStore['batch']>[0]) => {

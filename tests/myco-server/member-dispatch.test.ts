@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * A member starting a task by hand (`POST /api/harness/dispatch`), and reading which tasks a Project has turned on.
@@ -238,7 +239,7 @@ describe('a task a capability gates', () => {
     const tokenId = (await issueMemberToken(h.fixture.db, { memberId: 'mem_worker', machineId: 'm1' }, now)).tokenId;
     h.fixture.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, now]);
     const minted = () => (h.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?`).get(HARNESS_MEMBER_ID) as { n: number }).n;
-    const claimed = await claimNextRun(h.fixture.serverEnv, { tokenId, machineId: 'm1', harnesses: [offeredHarness('claude-code')], now: now + 1 });
+    const claimed = await claimNextRun(h.fixture.serverEnv, { principal: legacyWorker(tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], now: now + 1 });
     expect(claimed).toMatchObject({ claimed: true });
     // The skipped run had no credential minted for it: the one minted is the claimed run's.
     expect(minted()).toBe(1);
@@ -260,7 +261,7 @@ describe('a task a capability gates', () => {
       if (/SET status = 'running', started_at = \?/.test(sql)) h.turnOff('proj_1', 'vault_evolution');
       return inner.db.prepare(sql);
     } };
-    const claimed = await claimNextRun({ ...inner, db }, { tokenId, machineId: 'm1', harnesses: [offeredHarness('claude-code')], now: now + 1 });
+    const claimed = await claimNextRun({ ...inner, db }, { principal: legacyWorker(tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], now: now + 1 });
     expect(claimed).toMatchObject({ claimed: false });
     expect(h.fixture.sqlite.query(`SELECT status, json_extract(run_context, '$.reason') AS reason FROM agent_runs WHERE id = ?`).get(run)).toEqual({ status: 'skipped', reason: CAPABILITY_OFF });
   });

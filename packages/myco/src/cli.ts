@@ -34,6 +34,7 @@ Commands:
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
   worker [options]         Attach this machine's harnesses to a Deployment
+  runner <verb>            Register this machine as a runner and drive a Deployment's runs (register|run|rotate|status)
   task <subcommand>        Manage agent task definitions
   tool <list|call>         List or call Myco tools as JSON
   doctor [--fix]          Check vault health and repair issues
@@ -129,6 +130,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
   server: async () => (await import('./cli/server.js')).SERVER_HELP,
   worker: async () => (await import('./cli/worker.js')).WORKER_HELP,
+  runner: async () => (await import('./cli/runner.js')).RUNNER_HELP,
 };
 
 async function helpForCommand(command: string, args: readonly string[] = []): Promise<string> {
@@ -270,6 +272,14 @@ async function main(): Promise<void> {
   if (cmd === 'worker') {
     // The verb reports its outcome; the exit status is the dispatcher's to set.
     if (!await (await import('./cli/worker.js')).run(args)) process.exitCode = 2;
+    return;
+  }
+
+  // A runner holds its own credential under MYCO_HOME/runner and nothing of the
+  // member registry or a project vault, so it sits above the myco.yaml gate.
+  if (cmd === 'runner') {
+    // The verb reports its outcome; the exit status is the dispatcher's to set.
+    if (!await (await import('./cli/runner.js')).run(args)) process.exitCode = 2;
     return;
   }
 

@@ -1,4 +1,5 @@
-import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny } from './auth/device.js';
+import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
+import { handleControlRunner, handleListRunners, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
@@ -14,7 +15,7 @@ import { handleMachineActivity, handleMachines, handleRenameMachine, handleStopM
 import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
 import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
-import type { CredentialContext, UnboundMemberContext } from './context.js';
+import type { CredentialContext, RunnerContext, UnboundMemberContext } from './context.js';
 import type { AuthContext, DeploymentContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
 import { handleLink, handleMe } from './api/identity.js';
 import { handleLinkGithub } from './auth/members.js';
@@ -87,7 +88,7 @@ export type CredentialHandler = (env: ServerEnv, ctx: CredentialContext) => Prom
 export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
 /** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; the retained runtime channel declares `legacyRunRoute` and resolves its dispatch principal at the pipeline. */
 export type RunHandler = (env: ServerEnv, ctx: RunContext) => Promise<Response>;
-/** Deployment handlers answer a route scoped to the whole Deployment rather than to one Project: a worker's claim, lease and end. A route declares one to be reached at all, and the pipeline admits only an admin member to it. */
+/** Deployment handlers answer a route scoped to the whole Deployment rather than to one Project: a worker's claim, lease and end. A route declares one to be reached at all, and the pipeline admits the subjects its declaration names: an administrator's legacy worker, and a runner where the declaration names one. */
 export type DeploymentHandler = (env: ServerEnv, ctx: DeploymentContext) => Promise<Response>;
 /** Member handlers on stream routes receive the unread request; the handler alone consumes the body. */
 export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
@@ -97,6 +98,8 @@ export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Respon
 export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
 /** Session handlers run after a valid session whether or not its account is a member; exactly the routes that serve a signed-in non-member carry them. */
 export type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
+/** Runner handlers answer a route only a runner credential reaches: its own contact and rotation. */
+export type RunnerHandler = (env: ServerEnv, ctx: RunnerContext) => Promise<Response>;
 /** Enroll handlers present an enrollment authority rather than a credential, so they reach storage without an authenticated member. They receive the unread request and consume its body themselves, within the bound the pipeline enforces. */
 export type EnrollHandler = (env: ServerEnv, request: Request, now: number, source: string) => Promise<Response>;
 
@@ -112,7 +115,8 @@ export type Route = { authorization: AuthorizationDeclaration } & (
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
   | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
-  | { method: string; path: string; auth: 'enroll'; handler: EnrollHandler }
+  | { method: string; path: string; auth: 'enroll'; subject?: 'enrollment' | 'runner-registration'; handler: EnrollHandler }
+  | { method: string; path: string; auth: 'runner'; bodyMode: 'json'; shape: 'persisted'; admitsLapsed?: true; runner: RunnerHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'admin' | 'member'; raw?: { resource: RawResource['kind']; action: RawAction }; maxBodyBytes?: number; handler: OwnerHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'account'; handler: SessionHandler });
 
@@ -139,6 +143,16 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('directory', 'read', 'deployment'), method: 'POST', path: '/api/device/preview', auth: 'session', authority: 'member', handler: handleDevicePreview },
   { authorization: httpPolicy('enrollment', 'enroll.self', 'self-enrollment'), method: 'POST', path: '/api/device/approve', auth: 'session', authority: 'member', handler: handleDeviceApprove },
   { authorization: httpPolicy('directory', 'read', 'deployment'), method: 'POST', path: '/api/device/deny', auth: 'session', authority: 'member', handler: handleDeviceDeny },
+  { authorization: httpPolicy('runner', 'admin', 'deployment'), method: 'POST', path: '/api/device/approve-runner', auth: 'session', authority: 'admin', handler: handleRunnerDeviceApprove },
+  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['runner-registration']), method: 'POST', path: '/auth/runner/start', auth: 'enroll', subject: 'runner-registration', handler: handleRunnerDeviceStart },
+  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['runner-registration']), method: 'POST', path: '/auth/runner/poll', auth: 'enroll', subject: 'runner-registration', handler: handleRunnerDevicePoll },
+  { authorization: httpPolicy('runner', 'read', 'runner', ['runner']), method: 'POST', path: '/runners/contact', auth: 'runner', bodyMode: 'json', shape: 'persisted', runner: handleRunnerContact },
+  { authorization: httpPolicy('runner', 'edit', 'runner', ['runner']), method: 'POST', path: '/runners/rotate', auth: 'runner', bodyMode: 'json', shape: 'persisted', admitsLapsed: true, runner: handleRunnerRotate },
+  { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners', auth: 'session', authority: 'member', handler: handleListRunners },
+  ...(['pause', 'resume', 'remove'] as const).map((control): Route => ({
+    authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: `/api/runners/{runnerId}/${control}`,
+    pattern: new RegExp(`^/api/runners/(?<runnerId>[A-Za-z0-9._-]{1,64})/${control}$`), auth: 'session', authority: 'admin', handler: handleControlRunner(control),
+  })),
   { authorization: RUN_CANCEL_POLICY, method: 'POST', path: '/api/projects/{projectId}/runs/{runId}/cancel', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/cancel$/, auth: 'session', authority: 'member', handler: handleCancelRun },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'session', authority: 'member', handler: handleProjectMap },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'session', authority: 'member', handler: handleProjectSearch },
@@ -188,12 +202,12 @@ export const ROUTES: readonly Route[] = [
   // across every Project, so it names none and the pipeline resolves none. Only
   // an administrator is admitted: a claim answers with a minted run credential
   // and the Deployment's own harness credential.
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerClaim },
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerLease },
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerEnd },
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/worker/steps', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerSteps },
-  { authorization: httpPolicy('secret', 'admin', 'deployment', ['member']), method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerRepository },
-  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/worker/models', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerModels },
+  { authorization: httpPolicy('queue', 'claim', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/claim', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerClaim },
+  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/lease', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerLease },
+  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/end', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerEnd },
+  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/steps', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerSteps },
+  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/repository', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', mintsAuthority: true, deployment: handleWorkerRepository },
+  { authorization: httpPolicy('queue', 'lease', 'deployment', ['member', 'runner']), method: 'POST', path: '/worker/models', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'deployment', deployment: handleWorkerModels },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/mcp', auth: 'member', bodyMode: 'json', shape: 'answered', capture: false, handler: handleMcp, grant: handleGrantMcp, run: handleRunMcp, unbound: handleUnboundMcp },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/members/join', auth: 'enroll', handler: handleJoin },
   { authorization: httpPolicy('member', 'bootstrap', 'member', ['member']), method: 'POST', path: '/members/link-github', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, mintsAuthority: true, handler: handleLinkGithub },

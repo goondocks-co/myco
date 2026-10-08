@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * The claim queue and the lease a worker holds on what it took.
@@ -52,7 +53,7 @@ describe('the claim queue', () => {
     const f = fixture();
     f.queue('run_new', NOW + 10);
     f.queue('run_old', NOW);
-    const claimed = await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 100 });
+    const claimed = await claimNextRun(f.e.serverEnv, { principal: legacyWorker(await f.worker('mem_w'), 'm1'), harnesses: OFFERED, now: NOW + 100 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     // The oldest waits longest, so it goes first.
@@ -73,8 +74,8 @@ describe('the claim queue', () => {
     f.queue('run_1', NOW);
     const [ta, tb] = [await f.worker('mem_a'), await f.worker('mem_b')];
     const [a, b] = await Promise.all([
-      claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW + 1 }),
-      claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + 1 }),
+      claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW + 1 }),
+      claimNextRun(f.e.serverEnv, { principal: legacyWorker(tb, 'm2'), harnesses: OFFERED, now: NOW + 1 }),
     ]);
     expect([a.claimed, b.claimed].filter(Boolean)).toHaveLength(1);
     const loser = a.claimed ? b : a;
@@ -92,9 +93,9 @@ describe('the claim queue', () => {
     // One run at a time: the first worker takes one, the second is held by the
     // limit rather than taking the other, and the limit is on the row an
     // operator reads.
-    const first = await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW + 2 });
+    const first = await claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW + 2 });
     expect(first.claimed).toBe(true);
-    expect(await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + 3 }))
+    expect(await claimNextRun(f.e.serverEnv, { principal: legacyWorker(tb, 'm2'), harnesses: OFFERED, now: NOW + 3 }))
       .toEqual({ claimed: false, reason: 'at_limit' });
     expect(f.row('run_2')).toMatchObject({ status: 'queued' });
     expect(f.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = 'run_2'`).get()).toEqual({ heldBy: 'concurrent_runs' });
@@ -105,7 +106,7 @@ describe('the claim queue', () => {
 
     // The first ending frees the place, and the second run is taken.
     f.e.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'run_1'`, [NOW + 4]);
-    expect((await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + 5 })).claimed).toBe(true);
+    expect((await claimNextRun(f.e.serverEnv, { principal: legacyWorker(tb, 'm2'), harnesses: OFFERED, now: NOW + 5 })).claimed).toBe(true);
   });
 
   it('leaves a queued run that still names a launch credential to the launch that holds it', async () => {
@@ -115,7 +116,7 @@ describe('the claim queue', () => {
     f.e.sqlite.run(`UPDATE agent_runs SET dispatched_by = ? WHERE id = 'run_held'`, [launch.tokenId]);
     // A row the queue took back from a launch is that launch's to reclaim; a
     // worker taking it would run the same work twice.
-    expect(await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 1 })).toEqual({ claimed: false, reason: 'no_work' });
+    expect(await claimNextRun(f.e.serverEnv, { principal: legacyWorker(await f.worker('mem_w'), 'm1'), harnesses: OFFERED, now: NOW + 1 })).toEqual({ claimed: false, reason: 'no_work' });
   });
 
   it('leaves the two tasks the launch seam serves out of the queue a worker reads', async () => {
@@ -125,7 +126,7 @@ describe('the claim queue', () => {
     for (const task of ['container-smoke', 'embedding-reconcile']) {
       const f = fixture(task);
       f.queue(`run_${task}`, NOW);
-      expect({ task, outcome: await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 1 }) })
+      expect({ task, outcome: await claimNextRun(f.e.serverEnv, { principal: legacyWorker(await f.worker('mem_w'), 'm1'), harnesses: OFFERED, now: NOW + 1 }) })
         .toEqual({ task, outcome: { claimed: false, reason: 'no_work' } });
     }
   });
@@ -135,7 +136,7 @@ describe('the claim queue', () => {
     f.queue('run_1', NOW);
     const token = await f.worker('mem_w');
     const before = (f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get() as { n: number }).n;
-    expect(await claimNextRun(f.e.serverEnv, { tokenId: token, machineId: 'm1', harnesses: [{ id: 'claude-code', authenticated: false }], now: NOW + 1 }))
+    expect(await claimNextRun(f.e.serverEnv, { principal: legacyWorker(token, 'm1'), harnesses: [{ id: 'claude-code', authenticated: false }], now: NOW + 1 }))
       .toEqual({ claimed: false, reason: 'no_harness' });
     // No harness match is decided before anything is minted, so this one mints nothing at all.
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get()).toEqual({ n: before });
@@ -146,7 +147,7 @@ describe('the claim queue', () => {
     const f = fixture();
     const token = await f.worker('mem_w');
     const before = (f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get() as { n: number }).n;
-    expect(await claimNextRun(f.e.serverEnv, { tokenId: token, machineId: 'm1', harnesses: OFFERED, now: NOW })).toEqual({ claimed: false, reason: 'no_work' });
+    expect(await claimNextRun(f.e.serverEnv, { principal: legacyWorker(token, 'm1'), harnesses: OFFERED, now: NOW })).toEqual({ claimed: false, reason: 'no_work' });
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials`).get()).toEqual({ n: before });
   });
 });
@@ -159,7 +160,7 @@ describe('the prompt a claim hands a worker', () => {
     // The dispatch left a prompt on the row; the claim replaces it with one
     // built now, and files the hash the server recorded for it.
     f.e.sqlite.run(`UPDATE agent_runs SET instruction = 'a prompt from the dispatch' WHERE id = 'run_1'`);
-    const claimed = await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_w'), machineId: 'm1', harnesses: OFFERED, now: NOW + 1 });
+    const claimed = await claimNextRun(f.e.serverEnv, { principal: legacyWorker(await f.worker('mem_w'), 'm1'), harnesses: OFFERED, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     expect(claimed.run.instruction).not.toBe('a prompt from the dispatch');
@@ -190,14 +191,14 @@ describe('the lease', () => {
     const f = fixture();
     f.queue('run_1', NOW);
     const [ta, tb] = [await f.worker('mem_a'), await f.worker('mem_b')];
-    const claimed = await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
+    const claimed = await claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW });
     expect(claimed.claimed).toBe(true);
     const credential = f.row('run_1').dispatchedBy as string;
 
     // Before expiry the run is held: the sweep leaves it and a second worker gets nothing.
     expect(await expireLeases(f.e.serverEnv, NOW + WORKER_LEASE_MS - 1)).toBe(0);
     expect(f.row('run_1').status).toBe('running');
-    expect(await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + WORKER_LEASE_MS - 1 }))
+    expect(await claimNextRun(f.e.serverEnv, { principal: legacyWorker(tb, 'm2'), harnesses: OFFERED, now: NOW + WORKER_LEASE_MS - 1 }))
       .toEqual({ claimed: false, reason: 'no_work' });
 
     // At expiry it returns to the queue, its credential retired with it.
@@ -208,7 +209,7 @@ describe('the lease', () => {
     expect(f.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = 'run_1'`).get()).toEqual({ heldBy: 'worker' });
 
     // And another worker takes it.
-    const again = await claimNextRun(f.e.serverEnv, { tokenId: tb, machineId: 'm2', harnesses: OFFERED, now: NOW + WORKER_LEASE_MS + 1 });
+    const again = await claimNextRun(f.e.serverEnv, { principal: legacyWorker(tb, 'm2'), harnesses: OFFERED, now: NOW + WORKER_LEASE_MS + 1 });
     expect(again.claimed).toBe(true);
     expect(f.row('run_1').leasedBy).toBe(tb);
   });
@@ -217,11 +218,11 @@ describe('the lease', () => {
     const f = fixture();
     f.queue('run_1', NOW);
     const ta = await f.worker('mem_a');
-    await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
-    expect(await renewLease(f.e.serverEnv, { tokenId: ta, now: NOW + 1 }, { projectId: 'proj_1', runId: 'run_1' }))
+    await claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW });
+    expect(await renewLease(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), now: NOW + 1 }, { projectId: 'proj_1', runId: 'run_1' }))
       .toEqual({ held: true, expiresAt: NOW + 1 + WORKER_LEASE_MS });
     await expireLeases(f.e.serverEnv, NOW + 1 + WORKER_LEASE_MS);
-    expect(await renewLease(f.e.serverEnv, { tokenId: ta, now: NOW + 1 + WORKER_LEASE_MS }, { projectId: 'proj_1', runId: 'run_1' }))
+    expect(await renewLease(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), now: NOW + 1 + WORKER_LEASE_MS }, { projectId: 'proj_1', runId: 'run_1' }))
       .toMatchObject({ held: false });
   });
 
@@ -230,26 +231,26 @@ describe('the lease', () => {
     f.queue('run_1', NOW);
     const ta = await f.worker('mem_a');
     const other = await f.worker('mem_other');
-    await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
+    await claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW });
     const credential = f.row('run_1').dispatchedBy as string;
-    expect(await endLeasedRun(f.e.serverEnv, { tokenId: other, now: NOW + 5 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
+    expect(await endLeasedRun(f.e.serverEnv, { principal: legacyWorker(other, 'm1'), now: NOW + 5 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
       .toEqual({ ended: false, reason: 'the lease is no longer held' });
     expect(f.row('run_1').status).toBe('running');
     // The lease is what admits the write; the task's own close rule decides what
     // the row records, and this run left none of the evidence a titling run owes.
-    expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 5 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
+    expect(await endLeasedRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), now: NOW + 5 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
       .toEqual({ ended: true, status: 'failed' });
     expect((await getRun(f.e.db, SCOPE, 'run_1'))?.status).toBe('failed');
     expect(f.live(credential)?.revoked_at).not.toBeNull();
     // A second ending finds the run already over.
-    expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 6 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed' }))
+    expect(await endLeasedRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), now: NOW + 6 }, { projectId: 'proj_1', runId: 'run_1', status: 'failed' }))
       .toMatchObject({ ended: false });
   });
 
   it('heals a restored lease whose worker is long gone', async () => {
     const f = fixture();
     f.queue('run_1', NOW);
-    await claimNextRun(f.e.serverEnv, { tokenId: await f.worker('mem_a'), machineId: 'm1', harnesses: OFFERED, now: NOW });
+    await claimNextRun(f.e.serverEnv, { principal: legacyWorker(await f.worker('mem_a'), 'm1'), harnesses: OFFERED, now: NOW });
     // A backup carries both lease columns, so a restore can land a lease no
     // worker holds. The next sweep returns the run rather than stranding it.
     expect(await expireLeases(f.e.serverEnv, NOW + WORKER_LEASE_MS * 10)).toBe(1);
@@ -274,7 +275,7 @@ describe('what an operator reads', () => {
     f.queue('run_2', NOW + 1);
     const ta = await f.worker('mem_a');
     expect(await workerLiveness(f.e.db, NOW)).toEqual({ workersBusy: 0, runsQueued: 2 });
-    await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
+    await claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW });
     expect(await workerLiveness(f.e.db, NOW + 1)).toEqual({ workersBusy: 1, runsQueued: 1 });
     // A lease nobody renews stops counting.
     expect(await workerLiveness(f.e.db, NOW + WORKER_LEASE_MS + 1)).toEqual({ workersBusy: 0, runsQueued: 1 });
@@ -284,9 +285,9 @@ describe('what an operator reads', () => {
     const f = fixture();
     f.queue('run_1', NOW);
     const ta = await f.worker('mem_a');
-    await claimNextRun(f.e.serverEnv, { tokenId: ta, machineId: 'm1', harnesses: OFFERED, now: NOW });
+    await claimNextRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), harnesses: OFFERED, now: NOW });
     expect(await workerLiveness(f.e.db, NOW + 1)).toEqual({ workersBusy: 1, runsQueued: 0 });
-    expect(await endLeasedRun(f.e.serverEnv, { tokenId: ta, now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
+    expect(await endLeasedRun(f.e.serverEnv, { principal: legacyWorker(ta, 'm1'), now: NOW + 2 }, { projectId: 'proj_1', runId: 'run_1', status: 'completed' }))
       .toMatchObject({ ended: true });
     expect(await workerLiveness(f.e.db, NOW + 3)).toEqual({ workersBusy: 0, runsQueued: 0 });
     // The lease is over; the row still names the worker that ran it.

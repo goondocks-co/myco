@@ -1,4 +1,5 @@
 /** Current worker leases and credential purpose through canonical reads. */
+import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { applyRunUpdate, claimQueuedRun, lapsedLeases, NO_LIMITS, requeueLapsedLease } from '@myco-server-worker/core/runs.js';
@@ -29,7 +30,7 @@ async function rig() {
   const workerCredential = await issueMemberToken(fixture.db, { memberId: 'mem_worker', machineId: 'sirkirby-mbp' }, NOW);
   const runCredential = await issueMemberToken(fixture.db, { memberId: 'mem_harness', machineId: 'harness' }, NOW);
   const claim = () => claimQueuedRun(fixture.db, CANDIDATE, {
-    dispatchedBy: runCredential.tokenId, leasedBy: workerCredential.tokenId, machineId: 'sirkirby-mbp', leaseExpiresAt: LEASE_UNTIL, harness: 'codex', now: NOW,
+    dispatchedBy: runCredential.tokenId, worker: legacyWorker(workerCredential.tokenId, 'sirkirby-mbp'), leaseExpiresAt: LEASE_UNTIL, harness: 'codex', now: NOW,
     profile: { tier: 'low', model: 'gpt-fixture', effort: 'low', sources: { tier: 'task', model: 'configured' } },
   }, { limits: NO_LIMITS, now: NOW });
   const get = async (path: string): Promise<Record<string, unknown>> => {
@@ -58,7 +59,7 @@ describe('a run names the worker holding it', () => {
     const r = await rig();
     await r.claim();
     const changed = await applyRunUpdate(r.db, SCOPE, 'run_1', { status: 'completed', completed_at: NOW + 1_000 },
-      { tokenId: r.workerCredential.tokenId, dispatchedBy: r.runCredential.tokenId, now: NOW });
+      { worker: legacyWorker(r.workerCredential.tokenId, 'sirkirby-mbp'), dispatchedBy: r.runCredential.tokenId, now: NOW });
     expect(changed).toBe(1);
 
     const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
@@ -98,7 +99,7 @@ describe('a run names the worker holding it', () => {
   it('stops naming a holder when a lapsed lease returns the run to the queue', async () => {
     const r = await rig();
     await r.claim();
-    expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', r.workerCredential.tokenId, LEASE_UNTIL + 1)).toBe(true);
+    expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', { kind: 'member', leasedBy: r.workerCredential.tokenId }, LEASE_UNTIL + 1)).toBe(true);
 
     const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({ status: 'queued', leasedBy: null, leaseExpiresAt: null, dispatchedBy: null, worker: null });
@@ -158,7 +159,7 @@ describe('a credential says what it was minted for', () => {
   it('keeps a run credential a run credential once the run stops naming it', async () => {
     const r = await rig();
     await r.claim();
-    expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', r.workerCredential.tokenId, LEASE_UNTIL + 1)).toBe(true);
+    expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', { kind: 'member', leasedBy: r.workerCredential.tokenId }, LEASE_UNTIL + 1)).toBe(true);
     const page = await listCredentials(r.db, NOW);
     expect(page.rows.find((row) => row.id === r.runCredential.tokenId)?.purpose).toBe('run');
   });

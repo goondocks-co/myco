@@ -64,9 +64,9 @@ describe('the fields a run carries beyond its status', () => {
     h.run('proj_1', 'run_myco', { leasedBy: 'mt_harness' });
     const rows = await h.listed();
     // Another member's machine: that member, and no name.
-    expect(rows.run_other.worker).toEqual({ credentialId: 'mt_lease', machineId: 'machine_a', machineName: null, member: { id: 'mem_worker', label: 'worker' } });
+    expect(rows.run_other.worker).toEqual({ credentialId: 'mt_lease', machineId: 'machine_a', machineName: null, member: { id: 'mem_worker', label: 'worker' }, runner: null });
     // The viewer's own machine, named by its newest live credential while its claim holds no name.
-    expect(rows.run_own.worker).toEqual({ credentialId: 'mt_own', machineId: 'machine_own', machineName: 'studio', member: { id: 'mem_machine_1', label: 'machine_1' } });
+    expect(rows.run_own.worker).toEqual({ credentialId: 'mt_own', machineId: 'machine_own', machineName: 'studio', member: { id: 'mem_machine_1', label: 'machine_1' }, runner: null });
     expect(rows.run_unnamed.worker).toMatchObject({ machineName: null, member: { id: 'mem_worker', label: 'worker' } });
     // A run Myco's own runtime ran names Myco.
     expect(rows.run_myco.worker).toMatchObject({ machineName: null, member: { id: 'mem_harness', label: 'Myco' } });
@@ -77,9 +77,9 @@ describe('the fields a run carries beyond its status', () => {
     expect((await h.get('/api/projects/proj_1/runs/run_own')).body.run.worker.machineName).toBe('Studio Mac');
     // Another member reads the viewer's machine as the viewer, never by its name.
     const asMember = await h.listed('proj_1', MEMBER_SUB);
-    expect(asMember.run_own.worker).toMatchObject({ machineName: null, member: { id: 'mem_machine_1', label: 'machine_1' } });
+    expect(asMember.run_own.worker).toMatchObject({ machineName: null, member: { id: 'mem_machine_1', label: 'machine_1' }, runner: null });
     const detail = await h.get('/api/projects/proj_1/runs/run_own', MEMBER_SUB);
-    expect(detail.body.run.worker).toMatchObject({ machineName: null, member: { id: 'mem_machine_1', label: 'machine_1' } });
+    expect(detail.body.run.worker).toMatchObject({ machineName: null, member: { id: 'mem_machine_1', label: 'machine_1' }, runner: null });
     for (const body of [asMember, detail.body]) expect(JSON.stringify(body)).not.toMatch(/Studio Mac|studio|laptop/);
   });
 

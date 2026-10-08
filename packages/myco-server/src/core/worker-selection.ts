@@ -161,8 +161,11 @@ export async function selectExecution<L>(env: Pick<ServerEnv, 'harnessCredential
   }
 }
 
-/** One worker's latest report: the agents it offers and the capabilities it carries. */
-export interface FleetReport { offers: readonly OfferedHarness[]; capabilities: readonly string[] }
+/** One worker's latest report: the agents it offers and the capabilities it carries, and whether a runner made it. */
+export interface FleetReport { offers: readonly OfferedHarness[]; capabilities: readonly string[]; runner?: boolean }
+
+/** The login step each report resolves its selection through: a runner's report never opens a stored login. */
+export type ReportLogin<L> = (report: FleetReport) => LoginStep<L>;
 
 /**
  * What `reports` would run `task` under at a claim now: the execution the first
@@ -170,14 +173,14 @@ export interface FleetReport { offers: readonly OfferedHarness[]; capabilities: 
  * waits under, the alphabetically first refusal among the reports that carry
  * the task's capabilities, or the ordinary wait for a worker when none refused.
  */
-export async function fleetSelection<L>(env: Pick<ServerEnv, 'harnessCredentialSource'>, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>, login: LoginStep<L>): Promise<{ selected: Selected<L> | null; holder: string }> {
+export async function fleetSelection<L>(env: Pick<ServerEnv, 'harnessCredentialSource'>, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>, login: ReportLogin<L>): Promise<{ selected: Selected<L> | null; holder: string }> {
   const tierRefusal = taskTierRefusal(task, settings);
   if (tierRefusal !== null) return { selected: null, holder: tierRefusal };
   const required = capabilitiesRequiredBy(task);
   const reasons: string[] = [];
   for (const report of reports) {
     if (!required.every((capability) => report.capabilities.includes(capability))) continue;
-    const result = await selectExecution(env, task, report.offers, settings, login);
+    const result = await selectExecution(env, task, report.offers, settings, login(report));
     if (result.selected !== null) return { selected: result.selected, holder: 'worker' };
     if (result.reason !== null) reasons.push(result.reason);
   }
@@ -197,7 +200,7 @@ export interface PreviewExecution { harness: string; profile: ExecutionProfile; 
  * it. Empty, with what a queued run would wait under, when none could take it
  * now.
  */
-export async function previewSelection(env: Pick<ServerEnv, 'harnessCredentialSource'>, task: string, reports: readonly PreviewReport[], settings: ReadonlyMap<string, string>, login: LoginStep<true>): Promise<{ executions: PreviewExecution[]; heldBy: string | null }> {
+export async function previewSelection(env: Pick<ServerEnv, 'harnessCredentialSource'>, task: string, reports: readonly PreviewReport[], settings: ReadonlyMap<string, string>, login: ReportLogin<true>): Promise<{ executions: PreviewExecution[]; heldBy: string | null }> {
   const tierRefusal = taskTierRefusal(task, settings);
   if (tierRefusal !== null) return { executions: [], heldBy: tierRefusal };
   if (reports.length === 0) return { executions: [], heldBy: 'worker' };
@@ -210,7 +213,7 @@ export async function previewSelection(env: Pick<ServerEnv, 'harnessCredentialSo
   const executions = new Map<string, PreviewExecution>();
   const reasons: string[] = [];
   for (const report of able) {
-    const { selected, reason } = await selectExecution(env, task, report.offers, settings, login);
+    const { selected, reason } = await selectExecution(env, task, report.offers, settings, login(report));
     if (selected === null) { if (reason !== null) reasons.push(reason); continue; }
     const { tier, model, effort } = selected.profile;
     const key = JSON.stringify([selected.harness, tier, model, effort]);

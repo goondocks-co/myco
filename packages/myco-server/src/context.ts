@@ -1,3 +1,5 @@
+import type { WorkerPrincipal } from './core/worker-lease.js';
+import type { RunnerAuth } from './auth/runners.js';
 import type { OutboundFetch } from './core/adapters.js';
 import type { RuntimeClaims } from './auth/tokens.js';
 import type { HeldRun } from './core/runs.js';
@@ -78,14 +80,20 @@ export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 't
  * nothing is counted as a member's capture.
  */
 export interface DeploymentContext {
-  /** The member holding the presented credential; the pipeline has already admitted it as an admin. */
-  memberId: string;
-  machineId: string;
-  tokenId: string;
+  /** The executor the pipeline admitted: a legacy worker's administrator credential, or a runner's own. */
+  worker: WorkerPrincipal;
   body: string;
   now: number;
   /** The server clock for lease checks after asynchronous work. */
   clock: () => number;
+}
+
+/** Context for a route only a runner reaches: the authenticated runner credential and the consumed body. */
+export interface RunnerContext {
+  auth: RunnerAuth;
+  body: string;
+  now: number;
+  origin: string;
 }
 
 /** Context for a json route reached over a run's credential: the live run the credential dispatched, the run's own Project — the request's, whatever the header named — and the body the pipeline read. Nothing of a person travels here. */

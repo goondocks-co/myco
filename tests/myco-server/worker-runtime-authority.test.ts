@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -16,7 +17,7 @@ async function fixture() {
   f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at,leased_by,lease_expires_at,dispatched_by)
     VALUES('proj_1','dual-authority','myco-agent','vault-seed','running',?,?,?,?,?)`,
   [now, now, worker.tokenId, now + 10_000, harness.tokenId]);
-  const lease = { tokenId: worker.tokenId, dispatchedBy: harness.tokenId, now };
+  const lease = { worker: legacyWorker(worker.tokenId, 'm1'), dispatchedBy: harness.tokenId, now };
   const caller = { tokenId: harness.tokenId, now, deadline: now + 5_000 };
   const update = () => applyRunUpdate(f.db, { projectId: 'proj_1' }, 'dual-authority', { tokens_used: 42 }, lease, 'run_failed', undefined, caller);
   return { ...f, now, worker, harness, lease, caller, update };
@@ -36,7 +37,7 @@ describe('worker lease and dispatched runtime authority', () => {
     it(`keeps both guards when refusing ${refusal}`, async () => {
       const f = await fixture();
       try {
-        if (refusal === 'worker-lineage') f.lease.tokenId = f.harness.tokenId;
+        if (refusal === 'worker-lineage') f.lease.worker = legacyWorker(f.harness.tokenId, 'm1');
         if (refusal === 'worker-expiry') f.sqlite.run('UPDATE member_credentials SET expires_at=? WHERE id=?', [f.now, f.worker.tokenId]);
         if (refusal === 'dispatch') f.caller.tokenId = f.worker.tokenId;
         if (refusal === 'dispatch-revocation') f.sqlite.run('UPDATE member_credentials SET revoked_at=? WHERE id=?', [f.now, f.harness.tokenId]);

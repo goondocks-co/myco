@@ -184,7 +184,8 @@ export function ActivitySection({ projectId, answer, calls, latest, live }: { pr
           {answer.attemptCount > attempts.length && <li className="t-small text-muted">Showing the latest {attempts.length.toLocaleString()} of {count(answer.attemptCount, 'attempt')}.</li>}
           {attempts.map((attempt, index) => {
             const last = index === attempts.length - 1;
-            const heading = `Attempt ${(answer.attemptCount - attempts.length + index + 1).toLocaleString()} of ${answer.attemptCount.toLocaleString()} · started ${timeWords(attempt.claimedAt)}`;
+            const runner = attempt.executor.kind === 'runner' && attempt.executor.name !== null ? ` · on ${attempt.executor.name}` : '';
+            const heading = `Attempt ${(answer.attemptCount - attempts.length + index + 1).toLocaleString()} of ${answer.attemptCount.toLocaleString()} · started ${timeWords(attempt.claimedAt)}${runner}`;
             return (
               <li key={attempt.attemptId} className="flex flex-col gap-s2" data-attempt={last ? 'latest' : 'replaced'}>
                 {last ? <>

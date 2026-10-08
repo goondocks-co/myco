@@ -86,7 +86,7 @@ export const BUILDBOX_ID = 'lin_8b02d6aa';
  * name only to the member it belongs to, and to everyone the member it belongs to.
  */
 const machine = (viewer: string, owner: { id: string; label: string }, credentialId: string, machineId: string, name: string) => ({
-  credentialId, machineId, machineName: viewer === owner.id ? name : null, member: { id: owner.id, label: owner.label },
+  credentialId, machineId, machineName: viewer === owner.id ? name : null, member: { id: owner.id, label: owner.label }, runner: null,
 });
 
 /** A run on a page of the project's list; it started five minutes before it ended unless it says otherwise. */

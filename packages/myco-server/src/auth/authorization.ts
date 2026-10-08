@@ -1,11 +1,11 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { MEMBER_ROLES_SQL } from './roles.js';
 
-export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'internal'] as const;
+export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'runner', 'runner-registration', 'internal'] as const;
 export type SubjectKind = typeof SUBJECT_KINDS[number];
-export const ACTIONS = ['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'] as const;
+export const ACTIONS = ['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'claim', 'lease', 'never'] as const;
 export type Action = typeof ACTIONS[number];
-export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup'] as const;
+export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner'] as const;
 export type ResourceKind = typeof RESOURCE_KINDS[number];
 export type Transport = 'http' | 'mcp';
 
@@ -32,6 +32,8 @@ export interface AuthorizationSubject {
   runId?: string;
   tokenId?: string;
   attempt?: number;
+  /** The runner a runner credential belongs to, resolved by the serving store. */
+  runnerId?: string;
 }
 
 export interface AuthorizationResource {
@@ -58,7 +60,7 @@ export interface AuthorizationDeclaration {
   subjects: readonly SubjectKind[];
   transport: Transport;
   resource: ResourceKind;
-  resolver: 'deployment' | 'project' | 'machine' | 'credential' | 'member' | 'run' | 'raw' | 'protocol' | 'enrollment' | 'self-enrollment';
+  resolver: 'deployment' | 'project' | 'machine' | 'credential' | 'member' | 'run' | 'raw' | 'protocol' | 'enrollment' | 'self-enrollment' | 'runner';
   action: Action | { actions: readonly Action[]; resolve(input: Record<string, unknown>, resource?: AuthorizationResource): Action | null };
 }
 
@@ -68,6 +70,7 @@ export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly Authoriz
   machine: ['machine', 'deployment'], 'machine-settings': ['machine'], project: ['project', 'deployment'],
   processed: ['project', 'deployment'], plan: ['project', 'deployment'], spore: ['project', 'deployment'],
   raw: ['raw', 'project', 'deployment'], 'raw-index': ['raw'], run: ['run', 'project', 'deployment'], grant: ['project'], enrollment: ['deployment', 'enrollment', 'self-enrollment'], backup: ['deployment'],
+  queue: ['deployment'], runner: ['runner', 'deployment'],
 };
 
 export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>> = {
@@ -77,6 +80,7 @@ export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>>
   project: ['read', 'create', 'admin'], processed: ['read', 'admin', 'capture'],
   plan: ['read', 'edit', 'status', 'capture'], spore: ['read', 'edit'], raw: ['read', 'enumerate', 'append', 'owner'], 'raw-index': ['enumerate'],
   run: ['read', 'dispatch', 'admin', 'cancel', 'execute'], grant: ['admin'], enrollment: ['protocol', 'admin', 'owner', 'enroll.self'], backup: ['admin'],
+  queue: ['claim', 'lease'], runner: ['read', 'edit', 'admin'],
 };
 
 /** The policy receives only identities and resource evidence resolved by the serving store. */
@@ -86,8 +90,13 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   if (subject.transport !== 'http' && subject.transport !== 'mcp') return false;
   if (action === 'never') return false;
   if (resource.kind === 'protocol') return action === 'protocol' && subject.kind !== 'internal';
-  if (subject.kind === 'public' || subject.kind === 'account' || subject.kind === 'enrollment') return false;
+  if (subject.kind === 'public' || subject.kind === 'account' || subject.kind === 'enrollment' || subject.kind === 'runner-registration') return false;
   if (subject.kind === 'internal') return false;
+  if (subject.kind === 'runner') {
+    if (subject.transport !== 'http' || !subject.runnerId) return false;
+    if (resource.kind === 'queue') return action === 'claim' || action === 'lease';
+    return resource.kind === 'runner' && (action === 'read' || action === 'edit') && resource.id === subject.runnerId;
+  }
   if (subject.kind === 'run' || subject.kind === 'grant') {
     if (!subject.projectId || subject.projectId !== resource.projectId || resource.kind === 'raw') return false;
     if (subject.kind === 'run') {
@@ -101,6 +110,8 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (!subject.memberId || !subject.role || !['owner', 'admin', 'member'].includes(subject.role)) return false;
   const admin = subject.role === 'owner' || subject.role === 'admin';
+  if (resource.kind === 'queue') return subject.transport === 'http' && admin;
+  if (resource.kind === 'runner') return subject.transport === 'http' && (action === 'read' || (action === 'admin' && admin));
   if (action === 'enroll.self') return subject.transport === 'http' && resource.kind === 'enrollment'
     && resource.ownerMemberId === subject.memberId && resource.grantedRole !== undefined
     && (subject.role === 'owner' || resource.grantedRole === 'member' || resource.grantedRole === subject.role);

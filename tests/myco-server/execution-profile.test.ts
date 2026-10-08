@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import * as catalogue from '@myco-server-worker/core/task-catalogue.js';
 import { claimNextRun, endLeasedRun, type OfferedHarness } from '@myco-server-worker/core/harness.js';
@@ -30,7 +31,7 @@ async function rig(workerLogin = true) {
   const queue = (id: string, task = 'extract-curate') => f.sqlite.run(`INSERT INTO agent_runs
     (project_id,id,agent_id,task,status,queued_at,held_by,instruction,run_context)
     VALUES ('proj_1',?,'myco-agent',?,'queued',?,'worker','read the project','{}')`, [id, task, NOW]);
-  const claim = (harnesses: readonly OfferedHarness[] = [OFFER], capabilities: readonly string[] = []) => claimNextRun(f.serverEnv, { tokenId: token.tokenId, machineId: 'fixture', harnesses, capabilities, now: NOW });
+  const claim = (harnesses: readonly OfferedHarness[] = [OFFER], capabilities: readonly string[] = []) => claimNextRun(f.serverEnv, { principal: legacyWorker(token.tokenId, 'fixture'), harnesses, capabilities, now: NOW });
   const writer = settingsWriter(f.db);
   return { ...f, queue, claim, writer, token };
 }
@@ -116,7 +117,7 @@ describe('task execution profiles', () => {
     r.queue('mismatch');
     const claim = await r.claim();
     if (!claim.claimed) throw new Error('claim refused');
-    await endLeasedRun(r.serverEnv, { tokenId: r.token.tokenId, now: NOW + 1 }, {
+    await endLeasedRun(r.serverEnv, { principal: legacyWorker(r.token.tokenId, 'm1'), now: NOW + 1 }, {
       projectId: 'proj_1', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', accountingVersion: 1,
       identity: { status: 'reported', source: 'fixture', primary: { model: 'claude-opus-fixture', provider: 'anthropic' }, models: [{ model: 'claude-opus-fixture', provider: 'anthropic', source: 'fixture', usage: null }] },
     });
@@ -133,7 +134,7 @@ describe('task execution profiles', () => {
       r.queue('opencode_run');
       const claim = await r.claim([{ id: 'opencode', authenticated: true, profile: { model: 'config', efforts: ['medium'] } }]);
       if (!claim.claimed) throw new Error('claim refused');
-      await endLeasedRun(r.serverEnv, { tokenId: r.token.tokenId, now: NOW + 1 }, {
+      await endLeasedRun(r.serverEnv, { principal: legacyWorker(r.token.tokenId, 'm1'), now: NOW + 1 }, {
         projectId: 'proj_1', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', accountingVersion: 1,
         identity: { status: 'reported', source: 'session.configOptions', primary: reported, models: [{ ...reported, source: 'session.configOptions', usage: null }] },
       });
@@ -156,7 +157,7 @@ describe('task execution profiles', () => {
       const r = await rig();
       await r.writer.setLeaf('agent.reasoning_map.opencode.default', alias, 'mem_worker', NOW);
       if (listed !== null) {
-        await recordModelCatalog(r.db, { machineId: 'fixture', now: NOW, catalog: {
+        await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'fixture' }, now: NOW, catalog: {
           harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt: NOW,
           models: [{ id: alias, label: alias, provider: 'openrouter', resolvesTo: listed }],
         } });
@@ -165,7 +166,7 @@ describe('task execution profiles', () => {
       const claim = await r.claim([{ id: 'opencode', authenticated: true, profile: { model: 'config', efforts: ['medium'] } }]);
       if (!claim.claimed) throw new Error('claim refused');
       expect(claim.run.profile.resolvesTo).toBe(listed ?? undefined);
-      await endLeasedRun(r.serverEnv, { tokenId: r.token.tokenId, now: NOW + 1 }, {
+      await endLeasedRun(r.serverEnv, { principal: legacyWorker(r.token.tokenId, 'm1'), now: NOW + 1 }, {
         projectId: 'proj_1', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', accountingVersion: 1,
         identity: { status: 'reported', source: 'session.configOptions', primary: reported, models: [{ ...reported, source: 'session.configOptions', usage: null }] },
       });
@@ -178,7 +179,7 @@ describe('task execution profiles', () => {
   it('records what a fresh list of the claiming machine resolves, and nothing from a stale list or another machine\'s', async () => {
     for (const [machineId, receivedAt, expected] of [['fixture', NOW, 'claude-sonnet-5-5'], ['fixture', NOW - MODEL_CATALOG_FRESH_MS - 1, undefined], ['another', NOW, undefined]] as const) {
       const r = await rig();
-      await recordModelCatalog(r.db, { machineId, now: receivedAt, catalog: {
+      await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId }, now: receivedAt, catalog: {
         harness: 'claude-code', source: { kind: 'exchange', command: 'claude' }, signIn: 'worker-login', fetchedAt: receivedAt,
         models: [{ id: 'sonnet', label: 'Sonnet 5.5', resolvesTo: 'claude-sonnet-5-5' }],
       } });
@@ -330,7 +331,7 @@ describe('task execution profiles', () => {
     r.queue('run_accounted');
     const result = await r.claim();
     if (!result.claimed) throw new Error('claim refused');
-    expect(await endLeasedRun(r.serverEnv, { tokenId: r.token.tokenId, now: NOW + 1 }, {
+    expect(await endLeasedRun(r.serverEnv, { principal: legacyWorker(r.token.tokenId, 'm1'), now: NOW + 1 }, {
       projectId: 'proj_1', runId: result.run.id, attemptId: result.run.attemptId, status: 'failed',
       accountingVersion: 1, identity: { status: 'reported', source: 'fixture', primary: { model: 'claude-sonnet-fixture', provider: 'anthropic' }, models: [{ model: 'claude-sonnet-fixture', provider: 'anthropic', source: 'fixture', usage: null }] },
     })).toMatchObject({ ended: true });

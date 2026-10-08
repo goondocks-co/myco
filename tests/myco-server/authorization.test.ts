@@ -23,13 +23,15 @@ const SUBJECTS: Readonly<Record<string, AuthorizationSubject>> = {
   public: { kind: 'public', deploymentId: DEPLOYMENT, transport: 'http', live: true },
   account: { kind: 'account', deploymentId: DEPLOYMENT, transport: 'http', live: true },
   enrollment: { kind: 'enrollment', deploymentId: DEPLOYMENT, transport: 'http', live: true },
+  runner: { kind: 'runner', deploymentId: DEPLOYMENT, transport: 'http', live: true, runnerId: 'runner-a', tokenId: 'runner-credential-a' },
+  'runner-registration': { kind: 'runner-registration', deploymentId: DEPLOYMENT, transport: 'http', live: true },
   internal: { kind: 'internal', deploymentId: DEPLOYMENT, transport: 'http', live: true },
 };
 
 const resource = (kind: ResourceKind): AuthorizationResource => ({
   kind, deploymentId: DEPLOYMENT, exists: true, projectId: 'project-a', ownerMemberId: MEMBER,
   claimantMemberId: MEMBER, requestedBy: MEMBER, uploader: true, bootstrapAllowed: true,
-  runId: 'run-a', tokenId: 'credential-a', attempt: 2,
+  runId: 'run-a', tokenId: 'credential-a', attempt: 2, id: 'runner-a',
 });
 
 // Each cell lists the approved actions; an omitted cell refuses every action.
@@ -43,6 +45,11 @@ const MEMBER_ACTIONS: Readonly<Partial<Record<ResourceKind, readonly Action[]>>>
 const PRIVILEGED_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
   settings: ['admin'], secret: ['admin'], credential: ['admin'],
   project: ['admin'], processed: ['admin'], grant: ['admin'], enrollment: ['admin'], backup: ['admin'], run: ['admin'], member: ['admin', 'bootstrap'],
+  queue: ['claim', 'lease'], runner: ['admin'],
+};
+/** A runner reaches the run queue and its own runner record over HTTP, and nothing else but the protocol. */
+const RUNNER_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
+  protocol: ['protocol'], queue: ['claim', 'lease'], runner: ['read', 'edit'],
 };
 const OWNER_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
   member: ['owner'], raw: ['owner'], enrollment: ['owner'],
@@ -59,7 +66,8 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
   if (actor === 'internal') return [];
   if (actor === 'run') return RUN_ACTIONS[kind] ?? [];
   if (actor === 'grant') return GRANT_ACTIONS[kind] ?? [];
-  if (['public', 'account', 'enrollment'].includes(actor)) return kind === 'protocol' ? ['protocol'] : [];
+  if (['public', 'account', 'enrollment', 'runner-registration'].includes(actor)) return kind === 'protocol' ? ['protocol'] : [];
+  if (actor === 'runner') return transport === 'http' ? RUNNER_HTTP[kind] ?? [] : kind === 'protocol' ? ['protocol'] : [];
   const base = MEMBER_ACTIONS[kind] ?? [];
   if (transport === 'mcp') return base;
   return [
@@ -67,6 +75,7 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
     ...(kind === 'project' ? ['create' as const] : []),
     ...(kind === 'raw' ? ['append' as const] : []),
     ...(kind === 'run' ? ['dispatch' as const, 'cancel' as const] : []),
+    ...(kind === 'runner' ? ['read' as const] : []),
     ...(actor === 'owner' || actor === 'admin' ? PRIVILEGED_HTTP[kind] ?? [] : []),
     ...(actor === 'owner' ? OWNER_HTTP[kind] ?? [] : []),
   ];
@@ -92,6 +101,39 @@ describe('Deployment authorization policy', () => {
         expect(authorizeDeclaration({ ...subject, deploymentId: 'deployment-b' }, declaration, {}, resolved)).toBe(false);
         expect(authorizeDeclaration({ ...subject, transport: 'mcp' }, declaration, {}, resolved)).toBe(false);
         expect(authorizeDeclaration(subject, undefined, {}, resolved)).toBe(false);
+      }
+    }
+  });
+
+  it('declares each runner route for its one subject class and refuses every other actor, an inactive one, another Deployment and MCP', () => {
+    const rows: ReadonlyArray<readonly [string, string, ResourceKind, Action, AuthorizationDeclaration['resolver'], AuthorizationDeclaration['subjects'], readonly string[]]> = [
+      ['POST', '/auth/runner/start', 'protocol', 'protocol', 'protocol', ['runner-registration'], ['runner-registration']],
+      ['POST', '/auth/runner/poll', 'protocol', 'protocol', 'protocol', ['runner-registration'], ['runner-registration']],
+      ['POST', '/api/device/approve-runner', 'runner', 'admin', 'deployment', ['member'], ['owner', 'admin']],
+      ['GET', '/api/runners', 'runner', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
+      ['POST', '/api/runners/{runnerId}/pause', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
+      ['POST', '/api/runners/{runnerId}/resume', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
+      ['POST', '/api/runners/{runnerId}/remove', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
+      ['POST', '/runners/contact', 'runner', 'read', 'runner', ['runner'], ['runner']],
+      ['POST', '/runners/rotate', 'runner', 'edit', 'runner', ['runner'], ['runner']],
+      ['POST', '/worker/claim', 'queue', 'claim', 'deployment', ['member', 'runner'], ['owner', 'admin', 'runner']],
+      ...(['/worker/lease', '/worker/end', '/worker/steps', '/worker/models', '/worker/repository'] as const)
+        .map((path) => ['POST', path, 'queue', 'lease', 'deployment', ['member', 'runner'], ['owner', 'admin', 'runner']] as const satisfies readonly [string, string, ResourceKind, Action, AuthorizationDeclaration['resolver'], AuthorizationDeclaration['subjects'], readonly string[]]),
+    ];
+    for (const [method, path, kind, action, resolver, subjects, admitted] of rows) {
+      const declaration = ROUTES.find(route => route.method === method && route.path === path)?.authorization;
+      expect({ path, declaration }).toEqual({ path, declaration: { resource: kind, action, resolver, subjects: [...subjects], transport: 'http' } });
+      for (const [actor, subject] of Object.entries(SUBJECTS)) {
+        const resolved = resource(kind);
+        expect({ path, actor, allowed: authorizeDeclaration(subject, declaration, {}, resolved) }).toEqual({ path, actor, allowed: admitted.includes(actor) });
+        expect(authorizeDeclaration({ ...subject, live: false }, declaration, {}, resolved)).toBe(false);
+        expect(authorizeDeclaration({ ...subject, deploymentId: 'deployment-b' }, declaration, {}, resolved)).toBe(false);
+        expect(authorizeDeclaration(subject, declaration, {}, { ...resolved, deploymentId: 'deployment-b' })).toBe(false);
+        expect(authorizeDeclaration({ ...subject, transport: 'mcp' }, declaration, {}, resolved)).toBe(false);
+        if (kind === 'runner' && actor === 'runner') {
+          expect(authorizeDeclaration(subject, declaration, {}, { ...resolved, id: 'runner-b' })).toBe(false);
+          expect(authorizeDeclaration({ ...subject, runnerId: undefined }, declaration, {}, resolved)).toBe(false);
+        }
       }
     }
   });
@@ -160,8 +202,8 @@ describe('Deployment authorization policy', () => {
   });
 
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {
-    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup'].sort());
-    expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'never'].sort());
+    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner'].sort());
+    expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'claim', 'lease', 'never'].sort());
     expect(new Set(Object.values(SUBJECTS).map((s) => s.kind))).toEqual(new Set(SUBJECT_KINDS));
     for (const [actor, initial] of Object.entries(SUBJECTS)) {
       for (const transport of ['http', 'mcp'] as const) {

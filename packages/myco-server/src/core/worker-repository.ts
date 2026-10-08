@@ -16,7 +16,7 @@ const prepare = async (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRu
   if (row.task === null || !REPOSITORY_TASKS.includes(row.task) || expected === null) {
     return { persisted: true, held: false, reason: 'the run holds no repository checkout' };
   }
-  const lease = { tokenId: worker.tokenId, now: worker.clock() };
+  const lease = { worker: worker.worker, now: worker.clock() };
   const hadRepositoryPin = row.task === MAP_TASK && repositoryPinOfRun(row) !== null;
   const answer = await prepareRunRepository(env, input.projectId, row, input.body, expected, lease,
     row.task === MAP_TASK

@@ -5,6 +5,7 @@
  * queued run waits under; and a member reads their own day of runs of it as
  * the dispatch counts it.
  */
+import { legacyWorker } from './helpers/worker-principal.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
@@ -53,7 +54,7 @@ async function rig(settings: Record<string, unknown> = {}) {
   const heard = (harnesses: string[], capabilities: string[] = [], credential = token) => recordWorkerContact(f.db, {
     credentialId: credential.tokenId, machineId: credential === token ? 'fixture' : 'fixture-2', offers: harnesses.map(offeredHarness), capabilities, reason: 'no_work', now: Date.now(),
   });
-  const claim = (harnesses: string[], capabilities: string[] = []) => claimNextRun(f.serverEnv, { tokenId: token.tokenId, machineId: 'fixture', harnesses: harnesses.map(offeredHarness), capabilities, now: Date.now() });
+  const claim = (harnesses: string[], capabilities: string[] = []) => claimNextRun(f.serverEnv, { principal: legacyWorker(token.tokenId, 'fixture'), harnesses: harnesses.map(offeredHarness), capabilities, now: Date.now() });
   return { f, env, send, preview, heard, claim, second };
 }
 

@@ -1,3 +1,4 @@
+import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { REPOSITORY_CHECKOUT_CAPABILITY, MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
@@ -36,9 +37,9 @@ async function rig() {
   e.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
     VALUES ('proj_1','run_seed','myco-agent','vault-seed','queued',?,'worker',?,'{}')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: 'mem_worker' })]);
   const claim = (tokenId = owner.tokenId, at = now, capabilities: readonly string[] = CAPABILITIES) =>
-    claimNextRun(e.serverEnv, { tokenId, machineId: 'm1', now: at, harnesses: OFFERED, capabilities });
+    claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, 'm1'), now: at, harnesses: OFFERED, capabilities });
   const prepare = (body: Record<string, unknown> = {}, tokenId = owner.tokenId, at = now) =>
-    prepareWorkerRepository(e.serverEnv, { tokenId, clock: () => at }, { projectId: 'proj_1', runId: 'run_seed', body });
+    prepareWorkerRepository(e.serverEnv, { worker: legacyWorker(tokenId, 'm1'), clock: () => at }, { projectId: 'proj_1', runId: 'run_seed', body });
   return { e, now, owner, other, repositories, claim, prepare };
 }
 
@@ -53,7 +54,7 @@ describe('a worker preparing its claimed source', () => {
         else r.e.sqlite.run(`UPDATE agent_runs SET dispatched_by=? WHERE id='run_seed'`, [r.other.tokenId]);
         return { credential: CREDENTIAL };
       });
-      expect(await prepare(r.e.serverEnv, { tokenId: r.owner.tokenId, clock: () => now }, { projectId: 'proj_1', runId: 'run_seed' }))
+      expect(await prepare(r.e.serverEnv, { worker: legacyWorker(r.owner.tokenId, 'm1'), clock: () => now }, { projectId: 'proj_1', runId: 'run_seed' }))
         .toEqual({ held: false, reason: 'the lease is no longer held' });
     }
   });
@@ -100,7 +101,7 @@ describe('a worker preparing its claimed source', () => {
     const r = await rig();
     await r.claim();
     expect(await r.prepare({}, r.other.tokenId)).toEqual({ held: false, reason: 'the lease is no longer held' });
-    expect(await prepareWorkerRepository(r.e.serverEnv, { tokenId: r.owner.tokenId, clock: () => r.now }, { projectId: 'proj_other', runId: 'run_seed', body: {} }))
+    expect(await prepareWorkerRepository(r.e.serverEnv, { worker: legacyWorker(r.owner.tokenId, 'm1'), clock: () => r.now }, { projectId: 'proj_other', runId: 'run_seed', body: {} }))
       .toEqual({ held: false, reason: 'no run of that id' });
     r.e.sqlite.run(`UPDATE agent_runs SET lease_expires_at=? WHERE id='run_seed'`, [r.now - 1]);
     expect(await r.prepare()).toEqual({ held: false, reason: 'the lease is no longer held' });

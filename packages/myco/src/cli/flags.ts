@@ -32,3 +32,10 @@ export function printHelpIfRequested(args: readonly string[], usage: string): bo
   process.stdout.write(usage);
   return true;
 }
+
+/** Every `--harness` given, in order. */
+export function harnessesNamed(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i += 1) if (args[i] === '--harness' && typeof args[i + 1] === 'string') out.push(args[i + 1]!);
+  return out;
+}

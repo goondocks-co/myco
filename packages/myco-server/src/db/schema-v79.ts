@@ -1,0 +1,126 @@
+/**
+ * Schema v79: runners, the Deployment's own execution identities.
+ *
+ * - `runners` holds one registered machine per row. A runner is tombstoned, never deleted: `state` moves between
+ *   `enabled` and `paused` and ends at `removed`, and `credential_epoch` only grows. Every credential of an older
+ *   epoch, and every run token minted under it, stops carrying authority the moment the epoch moves.
+ * - `runner_credentials` holds each runner bearer's digest with its rotation lineage, separate from member
+ *   credentials so no member role, enrollment or capture rule ever reads one.
+ * - `runner_audit` is the immutable record of each registration and owner control: one receipt per runner revision,
+ *   written by the batch that moved the runner to it.
+ * - `runner_contacts` and `runner_model_catalogs` are transient reports keyed by the stable runner, so a rotation
+ *   never duplicates a runner.
+ * - `agent_runs.leased_runner_id` and `leased_runner_credential_id` name a runner lease; `leased_by` keeps naming a
+ *   member worker's lease, and the triggers admit at most one owner class on a row. An attempt records its owner
+ *   class and runner, fixed when it is recorded.
+ * - `device_requests.subject` separates a runner registration from a member sign-in: a runner request carries the
+ *   runner's name and the digest of the bearer its client generated, and no member request carries either.
+ */
+export const V79_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS runners (
+    id TEXT PRIMARY KEY CHECK (id GLOB 'rn_*'),
+    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
+    state TEXT NOT NULL DEFAULT 'enabled' CHECK (state IN ('enabled', 'paused', 'removed')),
+    credential_epoch INTEGER NOT NULL DEFAULT 1 CHECK (credential_epoch >= 1),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    labels TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(labels) AND json_type(labels) = 'array'),
+    created_at INTEGER NOT NULL,
+    created_by_member TEXT REFERENCES members(id),
+    registration_id TEXT UNIQUE,
+    removed_at INTEGER,
+    last_assigned_at INTEGER,
+    CHECK ((state = 'removed') = (removed_at IS NOT NULL))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runners_created_by ON runners(created_by_member)`,
+  `CREATE TRIGGER IF NOT EXISTS runners_tombstone_final BEFORE UPDATE ON runners
+    WHEN (OLD.state = 'removed' AND NEW.state <> 'removed') OR NEW.credential_epoch < OLD.credential_epoch OR NEW.revision < OLD.revision BEGIN
+    SELECT RAISE(ABORT, 'a removed runner stays removed and its epoch and revision never decrease'); END`,
+  `CREATE TRIGGER IF NOT EXISTS runners_never_deleted BEFORE DELETE ON runners BEGIN
+    SELECT RAISE(ABORT, 'runners are tombstoned, never deleted'); END`,
+  `CREATE TABLE IF NOT EXISTS runner_credentials (
+    id TEXT PRIMARY KEY CHECK (id GLOB 'rc_*'),
+    runner_id TEXT NOT NULL REFERENCES runners(id),
+    token_hash TEXT NOT NULL UNIQUE,
+    epoch INTEGER NOT NULL CHECK (epoch >= 1),
+    issued_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    predecessor_id TEXT REFERENCES runner_credentials(id),
+    lineage_root TEXT NOT NULL,
+    first_used_at INTEGER,
+    revoked_at INTEGER,
+    revoked_by TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_credentials_runner ON runner_credentials(runner_id, epoch)`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_credentials_predecessor ON runner_credentials(predecessor_id)`,
+  `CREATE TABLE IF NOT EXISTS runner_audit (
+    id TEXT PRIMARY KEY,
+    runner_id TEXT NOT NULL REFERENCES runners(id),
+    actor_member TEXT REFERENCES members(id),
+    action TEXT NOT NULL CHECK (action IN ('registered', 'paused', 'resumed', 'removed', 'lineage_replayed')),
+    revision INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_audit_revision ON runner_audit(runner_id, revision)`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_audit_actor ON runner_audit(actor_member)`,
+  `CREATE TRIGGER IF NOT EXISTS runner_audit_immutable BEFORE UPDATE ON runner_audit BEGIN
+    SELECT RAISE(ABORT, 'runner audit is immutable'); END`,
+  `CREATE TABLE IF NOT EXISTS runner_contacts (
+    runner_id TEXT PRIMARY KEY REFERENCES runners(id),
+    machine_id TEXT,
+    os TEXT,
+    version TEXT,
+    offers TEXT,
+    capabilities TEXT,
+    last_reason TEXT,
+    last_seen_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_contacts_seen ON runner_contacts(last_seen_at)`,
+  `CREATE TABLE IF NOT EXISTS runner_model_catalogs (
+    runner_id TEXT NOT NULL REFERENCES runners(id),
+    harness TEXT NOT NULL,
+    catalog TEXT NOT NULL,
+    resolutions TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (runner_id, harness)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_model_catalogs_received ON runner_model_catalogs(received_at)`,
+  `ALTER TABLE agent_runs ADD COLUMN leased_runner_id TEXT REFERENCES runners(id)`,
+  `ALTER TABLE agent_runs ADD COLUMN leased_runner_credential_id TEXT REFERENCES runner_credentials(id)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_runs_runner_lease ON agent_runs(leased_runner_id, lease_expires_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_runs_runner_credential ON agent_runs(leased_runner_credential_id)`,
+  `CREATE TRIGGER IF NOT EXISTS agent_runs_lease_owner_insert BEFORE INSERT ON agent_runs
+    WHEN (NEW.leased_by IS NOT NULL AND NEW.leased_runner_id IS NOT NULL)
+      OR ((NEW.leased_runner_id IS NULL) <> (NEW.leased_runner_credential_id IS NULL))
+      OR (NEW.leased_runner_credential_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM runner_credentials c
+        WHERE c.id = NEW.leased_runner_credential_id AND c.runner_id = NEW.leased_runner_id)) BEGIN
+    SELECT RAISE(ABORT, 'a run names one lease owner class, and a runner lease names that runner''s credential'); END`,
+  `CREATE TRIGGER IF NOT EXISTS agent_runs_lease_owner_update BEFORE UPDATE OF leased_by, leased_runner_id, leased_runner_credential_id ON agent_runs
+    WHEN (NEW.leased_by IS NOT NULL AND NEW.leased_runner_id IS NOT NULL)
+      OR ((NEW.leased_runner_id IS NULL) <> (NEW.leased_runner_credential_id IS NULL))
+      OR (NEW.leased_runner_credential_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM runner_credentials c
+        WHERE c.id = NEW.leased_runner_credential_id AND c.runner_id = NEW.leased_runner_id)) BEGIN
+    SELECT RAISE(ABORT, 'a run names one lease owner class, and a runner lease names that runner''s credential'); END`,
+  `ALTER TABLE agent_run_attempts ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'member' CHECK (owner_kind IN ('member', 'runner'))`,
+  `ALTER TABLE agent_run_attempts ADD COLUMN runner_id TEXT REFERENCES runners(id)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_run_attempts_runner ON agent_run_attempts(runner_id)`,
+  `CREATE TRIGGER IF NOT EXISTS agent_run_attempts_owner_insert BEFORE INSERT ON agent_run_attempts
+    WHEN (NEW.owner_kind = 'runner') <> (NEW.runner_id IS NOT NULL) BEGIN
+    SELECT RAISE(ABORT, 'a runner attempt names its runner and a member attempt names none'); END`,
+  `CREATE TRIGGER IF NOT EXISTS agent_run_attempts_owner_fixed BEFORE UPDATE OF owner_kind, runner_id, leased_by ON agent_run_attempts
+    WHEN NEW.owner_kind IS NOT OLD.owner_kind OR NEW.runner_id IS NOT OLD.runner_id OR NEW.leased_by IS NOT OLD.leased_by BEGIN
+    SELECT RAISE(ABORT, 'an attempt keeps the owner that claimed it'); END`,
+  `ALTER TABLE device_requests ADD COLUMN subject TEXT NOT NULL DEFAULT 'member' CHECK (subject IN ('member', 'runner'))`,
+  `ALTER TABLE device_requests ADD COLUMN runner_name TEXT`,
+  `ALTER TABLE device_requests ADD COLUMN candidate_hash TEXT`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_device_requests_candidate ON device_requests(candidate_hash) WHERE candidate_hash IS NOT NULL`,
+  `CREATE TRIGGER IF NOT EXISTS device_requests_subject_insert BEFORE INSERT ON device_requests
+    WHEN (NEW.subject = 'runner' AND (NEW.runner_name IS NULL OR NEW.candidate_hash IS NULL))
+      OR (NEW.subject = 'member' AND (NEW.runner_name IS NOT NULL OR NEW.candidate_hash IS NOT NULL)) BEGIN
+    SELECT RAISE(ABORT, 'a runner request names its runner and candidate, and a member request names neither'); END`,
+  `CREATE TRIGGER IF NOT EXISTS device_requests_subject_fixed BEFORE UPDATE OF subject, runner_name, candidate_hash ON device_requests
+    WHEN NEW.subject IS NOT OLD.subject OR NEW.runner_name IS NOT OLD.runner_name OR NEW.candidate_hash IS NOT OLD.candidate_hash BEGIN
+    SELECT RAISE(ABORT, 'a device request keeps its subject'); END`,
+  `ALTER TABLE device_decision_audit ADD COLUMN subject TEXT NOT NULL DEFAULT 'member' CHECK (subject IN ('member', 'runner'))`,
+];

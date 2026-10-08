@@ -41,7 +41,7 @@ describe('route table', () => {
 
   it('declares an auth kind and a body mode for every route, a shape for every member route, and marks every member route capture but the named exceptions', () => {
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'session', 'enroll']).toContain(r.auth);
+      expect(['public', 'member', 'auth', 'session', 'enroll', 'runner']).toContain(r.auth);
       if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') expect(r.bodyMode).toBe('none');
@@ -62,10 +62,10 @@ describe('route table', () => {
     }
   });
 
-  it('answers on the credential alone on the refresh, member-projects, repository, member-settings and member-status routes, and admits a credential past its expiry on the refresh route alone', () => {
+  it('answers on the credential alone on the refresh, member-projects, repository, member-settings and member-status routes, and admits a credential past its expiry on the refresh and runner rotation routes alone', () => {
     const scoped = ROUTES.filter((r) => 'scope' in r && r.scope === 'credential').map((r) => `${r.method} ${r.path}`);
     const lapsed = ROUTES.filter((r) => 'admitsLapsed' in r && r.admitsLapsed === true).map((r) => `${r.method} ${r.path}`);
-    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh', 'POST /members/projects', 'POST /members/projects/resolve', 'POST /members/uncaptured', 'POST /members/uncaptured/state', 'POST /members/harnesses/report', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status', 'GET /members/raw-claims', 'POST /members/raw-claims', 'GET /members/ownership', 'POST /members/ownership', 'POST /members/ownership/transfer', 'GET /members/roles', 'POST /members/roles'], lapsed: ['POST /tokens/refresh'] });
+    expect({ scoped, lapsed }).toEqual({ scoped: ['POST /tokens/refresh', 'POST /members/projects', 'POST /members/projects/resolve', 'POST /members/uncaptured', 'POST /members/uncaptured/state', 'POST /members/harnesses/report', 'POST /members/projects/list', 'POST /members/settings', 'POST /members/status', 'GET /members/raw-claims', 'POST /members/raw-claims', 'GET /members/ownership', 'POST /members/ownership', 'POST /members/ownership/transfer', 'GET /members/roles', 'POST /members/roles'], lapsed: ['POST /runners/rotate', 'POST /tokens/refresh'] });
   });
 
   it('routes exactly the child segments the handler serves', async () => {

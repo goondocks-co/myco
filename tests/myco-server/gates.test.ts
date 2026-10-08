@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 159;
+const EMIT_CALLS = 165;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -216,7 +216,7 @@ describe('gates', () => {
     }
     // Enrollment accepts protocol evidence in place of a member credential.
     const enroll = ROUTES.filter((x) => x.auth === 'enroll');
-    expect(enroll.map((r) => `${r.method} ${r.path}`)).toEqual(['POST /auth/device/start', 'POST /auth/device/poll', 'POST /members/join']);
+    expect(enroll.map((r) => `${r.method} ${r.path}`)).toEqual(['POST /auth/device/start', 'POST /auth/device/poll', 'POST /auth/runner/start', 'POST /auth/runner/poll', 'POST /members/join']);
     const e = sqliteEnv({ workerLogin: true });
     for (const key of ['x'.repeat(43), 'not-a-key', '']) {
       const res = await worker.fetch(withSource('/members/join', { method: 'POST', body: JSON.stringify({ key, machineId: 'machine_9' }) }), e.env);
@@ -233,6 +233,20 @@ describe('gates', () => {
     const unknown = await worker.fetch(withSource('/auth/device/poll', { method: 'POST', body: JSON.stringify({ device_code: 'x'.repeat(43) }) }), e.env);
     expect(await unknown.json() as Record<string, unknown>).toEqual({ error: 'invalid_grant' });
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as any).c).toBe(0);
+    // A runner registration grants nothing until an owner or administrator approves it, and never answers a member poll.
+    const runnerStart = await worker.fetch(withSource('/auth/runner/start', { method: 'POST',
+      body: JSON.stringify({ name: 'mini', machineId: 'unapproved_runner', machineName: 'Mini', os: 'darwin', candidate: `mycorun_${'r'.repeat(43)}` }),
+    }), e.env);
+    expect(runnerStart.status).toBe(200);
+    const registration = await runnerStart.json() as { device_code: string };
+    const runnerPending = await worker.fetch(withSource('/auth/runner/poll', { method: 'POST', body: JSON.stringify({ device_code: registration.device_code }) }), e.env);
+    expect(await runnerPending.json() as Record<string, unknown>).toEqual({ error: 'authorization_pending' });
+    const crossed = await worker.fetch(withSource('/auth/device/poll', { method: 'POST', body: JSON.stringify({ device_code: registration.device_code }) }), e.env);
+    expect(await crossed.json() as Record<string, unknown>).toEqual({ error: 'invalid_grant' });
+    const memberAsRunner = await worker.fetch(withSource('/auth/runner/poll', { method: 'POST', body: JSON.stringify({ device_code: device.device_code }) }), e.env);
+    expect(await memberAsRunner.json() as Record<string, unknown>).toEqual({ error: 'invalid_grant' });
+    expect((e.sqlite.query(`SELECT COUNT(*) c FROM runner_credentials`).get() as any).c).toBe(0);
+    expect((e.sqlite.query(`SELECT COUNT(*) c FROM runners`).get() as any).c).toBe(0);
   });
 
   it('keeps every entry point to wiring: the pipeline and its own platform, and nothing that decides', () => {
@@ -323,7 +337,7 @@ describe('gates', () => {
         seen.push(credential);
       }
     }
-    expect(seen.sort()).toEqual(["'grant'", "'member'"]);
+    expect(seen.sort()).toEqual(["'grant'", "'member'", "'runner'"]);
   });
 
   it('tells an authenticated principal a served path\'s methods only among the routes it could reach: a member is told 405 on a member path and 401 on an owner, auth or enrollment path; a grant is told 405 on the grant route alone', async () => {
@@ -828,8 +842,8 @@ describe('gates', () => {
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'session', 'enroll']).toContain(r.auth);
-      if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll') continue;
+      expect(['public', 'member', 'auth', 'session', 'enroll', 'runner']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll' || r.auth === 'runner') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
@@ -1497,6 +1511,15 @@ describe('gates', () => {
       'session:member POST /api/device/approve',
       'session:member POST /api/device/deny',
       'session:member POST /api/device/preview',
+      'session:admin POST /api/device/approve-runner',
+      'enroll POST /auth/runner/start',
+      'enroll POST /auth/runner/poll',
+      'runner POST /runners/contact',
+      'runner POST /runners/rotate',
+      'session:member GET /api/runners',
+      'session:admin POST /api/runners/{runnerId}/pause',
+      'session:admin POST /api/runners/{runnerId}/resume',
+      'session:admin POST /api/runners/{runnerId}/remove',
       'session:member POST /api/harness/dispatch',
       'session:member POST /api/projects/{projectId}/runs/{runId}/cancel',
       'session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',
