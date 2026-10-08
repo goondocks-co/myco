@@ -8,6 +8,7 @@ import { HARNESSES, offerable } from '@myco/runner/harnesses.js';
 import { startHarness } from '@myco/runner/drivers/stream.js';
 import { spawnOwnedGroup, STOP_GRACE_MS } from '@myco/runner/process-group.js';
 import type { RunEvent } from '@myco/runner/events.js';
+import { processAlive } from '../support/process-alive.js';
 
 const BOUND_MS = STOP_GRACE_MS * 3;
 
@@ -18,14 +19,7 @@ async function bounded<T>(work: Promise<T>): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-  // An exited orphan can await the platform's reaper after its pipes have closed.
-  return !execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
-}
+const alive = (pid: number): boolean => processAlive(pid);
 
 function fixture(id: string, leaveLeader: boolean, detachedHelper = false): { dir: string; bin: string; pids: () => number[]; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'myco-process-owner-'));
