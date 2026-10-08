@@ -2,6 +2,7 @@ import type { ExchangeResult, JoinAnswer } from '../member/join-code.js';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const SLOW_DOWN_SECONDS = 5;
+const MAX_TRANSIENT_POLL_FAILURES = 1;
 const MAX_DEVICE_LIFETIME_SECONDS = 15 * 60;
 
 class DeviceLoginFailure extends Error {
@@ -24,6 +25,7 @@ export async function deviceLogin(serverUrl: string, machine: { machineId: strin
     } catch {
       throw new DeviceLoginFailure('unreachable', 'could not complete sign-in with the Deployment');
     }
+    if (response.status >= 500) throw new DeviceLoginFailure('unreachable', 'could not complete sign-in with the Deployment');
     let answer: unknown;
     try { answer = await response.json(); }
     catch { throw new DeviceLoginFailure('unreadable', 'the Deployment answered with an unreadable sign-in reply'); }
@@ -43,15 +45,24 @@ export async function deviceLogin(serverUrl: string, machine: { machineId: strin
       return failure('unreadable', 'the Deployment answered with an unreadable sign-in request');
     }
     // Verification always stays on the Deployment the user named.
-    deps.stdout(`Open ${serverUrl}/device?code=${userCode} on a machine signed in to the dashboard.`);
+    deps.stdout(`Open ${serverUrl}/device on a machine signed in to the dashboard.`);
     deps.stdout(`Code: ${userCode}`);
     deps.stdout('Check the machine details and approve it there. Waiting for approval…');
     const deadline = clock() + expiresIn * 1000;
     let interval = initialInterval;
+    let transientFailures = 0;
     while (clock() < deadline) {
       await sleep(interval * 1000);
       if (clock() >= deadline) break;
-      const { response, answer } = await post('/auth/device/poll', { device_code: deviceCode });
+      let reply: Awaited<ReturnType<typeof post>>;
+      try { reply = await post('/auth/device/poll', { device_code: deviceCode }); }
+      catch (error) {
+        if (!(error instanceof DeviceLoginFailure) || error.code !== 'unreachable' || transientFailures >= MAX_TRANSIENT_POLL_FAILURES) throw error;
+        transientFailures++;
+        interval += SLOW_DOWN_SECONDS;
+        continue;
+      }
+      const { response, answer } = reply;
       if (response.status === 429) { interval += SLOW_DOWN_SECONDS; continue; }
       if (answer.error === 'authorization_pending') continue;
       if (answer.error === 'slow_down') {
@@ -65,6 +76,7 @@ export async function deviceLogin(serverUrl: string, machine: { machineId: strin
       }
       const reason = answer.error === 'access_denied' ? 'sign-in was denied in the dashboard'
         : answer.error === 'expired_token' ? 'sign-in expired; run myco login again'
+        : answer.error === 'invalid_grant' ? 'sign-in has expired or was already used; run myco login again'
         : answer.error === 'identity_claimed' ? 'this machine belongs to another member'
         : 'the Deployment refused this sign-in; run myco login again';
       const code = ['access_denied', 'expired_token', 'identity_claimed', 'invalid_grant'].includes(String(answer.error)) ? String(answer.error) : 'refused';

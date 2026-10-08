@@ -8,6 +8,10 @@
  * declared once and judged the same way by both.
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
+  ['idx_device_requests_pending_expiry', 'the enrollment sweep seeks expired undecided requests across the Deployment'],
+  ['idx_device_requests_decided_expiry', 'the enrollment sweep seeks decided requests past retention across the Deployment'],
+  ['idx_device_requests_source_pending', 'device admission counts live pending requests per trusted source across the Deployment'],
+  ['idx_device_requests_source_created', 'device admission bounds starts in a minute per trusted source across the Deployment'],
   ['idx_device_requests_expiry', 'the enrollment sweep reclaims expired device requests across the Deployment, oldest expiry first'],
   ['idx_blob_reservations_credential', 'a credential spans every Project in its Deployment; the quota admission looks reservations up by credential'],
   ['idx_agent_runs_credential', 'the foreign key on a run\'s dispatching credential is checked by credential alone'],

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
@@ -9,11 +10,11 @@ import { pendingDeviceCode } from '../../packages/myco-server/ui/src/lib/pending
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; pendingDeviceCode(null); window.history.replaceState(null, '', '/'); });
 const ME = { sub: '168901', login: 'test', owner: false, member: { id: 'mem_test', label: 'Test', role: 'member' } };
-const PREVIEW = { machineName: 'SSH laptop', os: 'linux', ip: '192.0.2.10', scope: 'membership', expiresAt: Date.now() + 600000 };
+const PREVIEW = { machineName: 'SSH laptop', os: 'linux', ip: '192.0.2.10', approverIp: '192.0.2.20', ageSeconds: 42, alreadyYours: true, scope: 'membership', expiresAt: Date.now() + 600000 };
 
 function mount(path = '/device') {
   window.history.replaceState(null, '', '/device?code=BCDF-2345');
-  return render(<QueryClientProvider client={createQueryClient({ retryDelay: 0 })}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider>);
+  return render(<StrictMode><QueryClientProvider client={createQueryClient({ retryDelay: 0 })}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></StrictMode>);
 }
 
 describe('device approval page', () => {
@@ -30,9 +31,16 @@ describe('device approval page', () => {
       mount();
       const check = await screen.findByText('Check machine');
       expect(screen.queryByText('Approve this machine')).toBeNull();
+      expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('');
+      fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
       fireEvent.click(check);
       expect(await screen.findByText('SSH laptop')).toBeTruthy();
       expect(screen.getByText('linux')).toBeTruthy();
+      expect(screen.getByText('192.0.2.20')).toBeTruthy();
+      expect(screen.getByText('42 seconds ago')).toBeTruthy();
+      expect(screen.getByText(/reported by the requesting machine/)).toBeTruthy();
+      expect(screen.getByText(/request IP differs/)).toBeTruthy();
+      expect(screen.getByText(/already one of your machines/)).toBeTruthy();
       expect(screen.getByText('192.0.2.10')).toBeTruthy();
       expect(screen.getByText('BCDF-2345')).toBeTruthy();
       fireEvent.click(screen.getByText(decision === 'approve' ? 'Approve this machine' : 'Deny'));
@@ -49,21 +57,48 @@ describe('device approval page', () => {
     mount();
     const link = await screen.findByText('Sign in with GitHub');
     fireEvent.click(link);
-    expect(pendingDeviceCode()).toBe('BCDF-2345');
+    expect(pendingDeviceCode()).toBe('');
     cleanup();
     globalThis.fetch = (async () => Response.json(ME)) as typeof fetch;
     mount('/');
     expect(await screen.findByText('Check machine')).toBeTruthy();
-    expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('BCDF-2345');
+    expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('');
+    expect(pendingDeviceCode()).toBeNull();
   });
 
-  it('a non-owner admin sees the authority restriction before approval', async () => {
+  it('resumes a previously typed code once without leaving a callback redirect', async () => {
+    pendingDeviceCode('BCDF-2345');
+    globalThis.fetch = (async () => Response.json(ME)) as typeof fetch;
+    mount('/');
+    await screen.findByText('Check machine');
+    expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('BCDF-2345');
+    expect(pendingDeviceCode()).toBeNull();
+  });
+
+  it('clears pending storage when an approval fails', async () => {
+    globalThis.fetch = (async input => String(input) === '/auth/me' ? Response.json(ME)
+      : String(input) === '/api/device/preview' ? Response.json(PREVIEW)
+        : Response.json({ error: 'approval_refused' }, { status: 409 })) as typeof fetch;
+    mount();
+    await screen.findByText('Check machine');
+    fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
+    fireEvent.click(screen.getByText('Check machine'));
+    await screen.findByText('Approve this machine');
+    pendingDeviceCode('BCDF-2345');
+    fireEvent.click(screen.getByText('Approve this machine'));
+    await screen.findByText(/This code has expired/);
+    expect(pendingDeviceCode()).toBeNull();
+  });
+
+  it('a non-owner admin can approve their own machine at their own role', async () => {
     globalThis.fetch = (async input => String(input) === '/auth/me'
       ? Response.json({ ...ME, member: { ...ME.member, role: 'admin' } }) : Response.json(PREVIEW)) as typeof fetch;
     mount();
-    fireEvent.click(await screen.findByText('Check machine'));
-    expect(await screen.findByText(/Only the owner can approve an admin machine/)).toBeTruthy();
-    expect((screen.getByText('Approve this machine') as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByText('Check machine');
+    fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
+    fireEvent.click(screen.getByText('Check machine'));
+    expect(await screen.findByText('SSH laptop')).toBeTruthy();
+    expect((screen.getByText('Approve this machine') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByText('Deny') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -81,7 +116,9 @@ describe('device approval page', () => {
       return Response.json({ approved: true });
     }) as typeof fetch;
     mount();
-    fireEvent.click(await screen.findByText('Check machine'));
+    await screen.findByText('Check machine');
+    fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
+    fireEvent.click(screen.getByText('Check machine'));
     fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'GHJK-6789' } });
     deliver(Response.json(PREVIEW));
     await waitFor(() => expect((screen.getByText('Check machine') as HTMLButtonElement).disabled).toBe(false));
@@ -101,9 +138,13 @@ describe('device approval page', () => {
       return url === '/auth/me' ? Response.json(ME) : Response.json({ error: 'expired_token' }, { status: 400 });
     }) as typeof fetch;
     mount();
-    fireEvent.click(await screen.findByText('Check machine'));
+    await screen.findByText('Check machine');
+    fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
+    pendingDeviceCode('BCDF-2345');
+    fireEvent.click(screen.getByText('Check machine'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('expired'));
     expect(screen.queryByText('Approve this machine')).toBeNull();
     expect(calls).not.toContain('/api/device/approve');
+    expect(pendingDeviceCode()).toBeNull();
   });
 });

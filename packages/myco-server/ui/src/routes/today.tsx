@@ -41,7 +41,7 @@ export function ResumePendingLink() {
   const { pathname } = useLocation();
   if (pathname === '/' && readPendingLink() !== null) return <Navigate to="/link" replace />;
   const deviceCode = pendingDeviceCode();
-  if (pathname === '/' && deviceCode) return <Navigate to={`/device?code=${encodeURIComponent(deviceCode)}`} replace />;
+  if (pathname === '/' && deviceCode !== null) return <Navigate to="/device" replace />;
   return <Outlet />;
 }
 

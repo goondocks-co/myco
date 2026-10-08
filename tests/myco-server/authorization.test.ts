@@ -96,7 +96,7 @@ describe('Deployment authorization policy', () => {
   it('enumerates resulting enrollment authority across every actor, action and transport', () => {
     const expected: Record<string, Partial<Record<'owner' | 'admin' | 'member', readonly Action[]>>> = {
       owner: { member: ['admin', 'owner', 'enroll.self'], admin: ['admin', 'owner', 'enroll.self'], owner: ['admin', 'owner', 'enroll.self'] },
-      admin: { member: ['admin', 'enroll.self'] },
+      admin: { member: ['admin', 'enroll.self'], admin: ['enroll.self'] },
       member: { member: ['enroll.self'] },
     };
     for (const [actor, subject] of Object.entries(SUBJECTS)) {
@@ -109,6 +109,14 @@ describe('Deployment authorization policy', () => {
         }
       }
     }
+  });
+
+  it('self enrollment cannot target another member or exceed the live role', () => {
+    for (const actor of ['owner', 'admin', 'member']) {
+      expect(authorize(SUBJECTS[actor]!, 'enroll.self', { ...resource('enrollment'), ownerMemberId: 'someone-else', grantedRole: 'member' })).toBe(false);
+    }
+    expect(authorize(SUBJECTS.admin!, 'enroll.self', { ...resource('enrollment'), grantedRole: 'owner' })).toBe(false);
+    expect(authorize(SUBJECTS.member!, 'enroll.self', { ...resource('enrollment'), grantedRole: 'admin' })).toBe(false);
   });
 
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {

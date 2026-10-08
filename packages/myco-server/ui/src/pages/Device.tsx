@@ -1,14 +1,14 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, buttonVariants, Card, FactRow, FactsPanel, Input } from '../design';
 import { useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
 import { pendingDeviceCode } from '../lib/pending-device';
 
-interface Preview { machineName: string; os: string; ip: string; scope: string; expiresAt: number }
+interface Preview { machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; alreadyYours: boolean; scope: string; expiresAt: number }
 
 function refusal(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 403 || error.status === 404 && error.code === 'not_found') return 'You cannot approve this sign-in. Only the owner can add an admin machine.';
+    if (error.status === 403 || error.status === 404 && error.code === 'not_found') return 'You cannot approve this sign-in with your current membership.';
     if (error.code === 'expired_token' || error.code === 'request_finished' || error.code === 'invalid_user_code' || error.code === 'approval_refused') return 'This code has expired, was already used, or does not match. Run myco login again for a new code.';
     if (error.status === 429) return 'Too many attempts. Wait a moment and try again.';
   }
@@ -18,10 +18,8 @@ function refusal(error: unknown): string {
 /** A human approves the machine they requested only after comparing its code and connection details. */
 export function Device() {
   const me = useMe();
-  const [code, setCode] = useState(() => {
-    const named = new URLSearchParams(window.location.search).get('code');
-    return named ?? pendingDeviceCode() ?? '';
-  });
+  const [code, setCode] = useState(() => pendingDeviceCode() ?? '');
+  useEffect(() => { pendingDeviceCode(null); }, []);
   const [preview, setPreview] = useState<(Preview & { code: string }) | null>(null);
   const revision = useRef(0);
   const [pending, setPending] = useState(false);
@@ -35,7 +33,7 @@ export function Device() {
       const details = await postJson<Preview>('/api/device/preview', { user_code: checkedCode });
       if (version === revision.current) setPreview({ ...details, code: checkedCode });
     }
-    catch (e) { if (version === revision.current) setError(refusal(e)); }
+    catch (e) { pendingDeviceCode(null); if (version === revision.current) setError(refusal(e)); }
     finally { if (version === revision.current) setPending(false); }
   };
   const decide = async (decision: 'approve' | 'deny') => {
@@ -45,7 +43,7 @@ export function Device() {
       await postJson(`/api/device/${decision}`, { user_code: preview.code });
       setFinished(decision === 'approve' ? 'approved' : 'denied');
       pendingDeviceCode(null);
-    } catch (e) { setError(refusal(e)); }
+    } catch (e) { pendingDeviceCode(null); setError(refusal(e)); }
     finally { setPending(false); }
   };
   return <main className="flex min-h-screen items-center justify-center bg-bg p-gutter">
@@ -69,14 +67,18 @@ export function Device() {
                   <FactsPanel>
                     <FactRow term="Machine">{preview.machineName}</FactRow>
                     <FactRow term="Operating system">{preview.os}</FactRow>
-                    <FactRow term="IP address">{preview.ip}</FactRow>
+                    <FactRow term="Request IP address">{preview.ip}</FactRow>
+                    <FactRow term="Your IP address">{preview.approverIp}</FactRow>
+                    <FactRow term="Requested">{preview.ageSeconds} seconds ago</FactRow>
                     <FactRow term="Code">{preview.code}</FactRow>
                     <FactRow term="Access">Your membership: capture sessions and use project memory.{me.data.member.role === 'admin' ? ' This machine can also run Myco’s work and administer the server.' : ''}</FactRow>
                   </FactsPanel>
+                  <p className="t-body text-muted">Machine name and operating system are reported by the requesting machine.</p>
+                  {preview.ip !== preview.approverIp && <p role="alert" className="t-body text-muted">The request IP differs from yours. Check that this is the machine you are signing in, especially over SSH.</p>}
+                  {preview.alreadyYours && <p className="t-body text-muted">This machine is already one of your machines.</p>}
                   <p className="t-body text-muted">Approve only if you started this sign-in and the code matches your terminal. Someone else asking you to approve their code can gain access as you.</p>
-                  {me.data.member.role === 'admin' && !me.data.owner && <p role="alert" className="t-body text-muted">Only the owner can approve an admin machine. Ask the owner for an invite link for your membership, then run myco login with that link.</p>}
                   <div className="flex gap-s3">
-                    <Button variant="primary" disabled={me.data.member.role === 'admin' && !me.data.owner} pending={pending} onClick={() => void decide('approve')}>Approve this machine</Button>
+                    <Button variant="primary" pending={pending} onClick={() => void decide('approve')}>Approve this machine</Button>
                     <Button pending={pending} onClick={() => void decide('deny')}>Deny</Button>
                   </div>
                 </>}

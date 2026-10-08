@@ -63,6 +63,7 @@ export const deviceLoginFlow: ParityScenario = {
     expect(await poll(device)).toEqual({ error: 'invalid_grant' });
     expect((await decide(device)).status).toBe(409);
     expect((await decide(device, 'deny')).status).toBe(409);
+    expect((await decide(device, 'preview')).status).toBe(409);
     const stored = await target.sql("SELECT * FROM device_requests WHERE machine_id = 'parity_login_machine'");
     expect(stored[0]).toMatchObject({ decision: 'approved', decided_by: MEMBER });
     expect(typeof stored[0]!.decided_at).toBe('number');
@@ -85,8 +86,9 @@ export const deviceLoginFlow: ParityScenario = {
     expect(await poll(slow)).toEqual({ error: 'slow_down', interval: 15 });
 
     const capped = await start();
-    expect((await decide(capped, 'approve', adminHeaders)).status).toBe(404);
-    expect(await poll(capped)).toEqual({ error: 'authorization_pending' });
+    expect((await decide(capped, 'approve', adminHeaders)).status).toBe(200);
+    expect(await poll(capped)).toMatchObject({ joined: true, memberId: ADMIN, role: 'admin' });
+    expect((await post(target, '/api/device/approve', { user_code: capped.user_code, memberId: MEMBER }, adminHeaders)).status).toBe(400);
     const owner = await start();
     expect((await decide(owner, 'approve', target.ownerHeaders())).status).toBe(200);
     expect(await poll(owner)).toMatchObject({ joined: true, memberId: MEMBER_ID, role: 'admin' });
@@ -94,6 +96,7 @@ export const deviceLoginFlow: ParityScenario = {
     const ownerVoided = await start();
     expect((await decide(ownerVoided, 'approve', target.ownerHeaders())).status).toBe(200);
     await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(ADMIN)}, revision = revision + 1 WHERE id = 1`);
+    await target.sql(`UPDATE members SET role = 'member' WHERE id = ${lit(MEMBER_ID)}`);
     expect(await poll(ownerVoided)).toEqual({ error: 'invalid_grant' });
 
     const output: string[] = [];
@@ -112,7 +115,8 @@ export const deviceLoginFlow: ParityScenario = {
       }, { preconnect: fetch.preconnect }),
     });
     expect(terminal.ok).toBe(true);
-    expect(output.join('\n')).toContain(`${target.url}/device?code=`);
+    expect(output.join('\n')).toContain(`${target.url}/device on a machine`)
+    expect(output.join('\n')).not.toContain('?code=');
     expect(output.join('\n')).not.toContain(terminalSecret);
     if (terminal.ok) expect(output.join('\n')).not.toContain(terminal.answer.token);
 
@@ -125,5 +129,49 @@ export const deviceLoginFlow: ParityScenario = {
       expect(runtime.tail).not.toContain(device.device_code);
       expect(runtime.tail).not.toContain(joined.token as string);
     }
+  },
+};
+
+/** Admission and TTL reclamation run through each target's public routes and registered wake job. */
+export const deviceAdmission: ParityScenario = {
+  name: 'device login: bounded source admission, printable metadata, TTL reclaim and durable audit',
+  dedicated: { timeoutMs: 240000 },
+  async run(target) {
+    const request = { machineId: 'admission', machineName: 'Laptop', os: 'linux' };
+    expect((await post(target, '/auth/device/start', request)).status).toBe(200);
+    await target.sql("UPDATE device_requests SET expires_at = 0; DELETE FROM schema_meta WHERE key = 'last_request_at'");
+    await target.clockWake();
+    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests')).toEqual([{ n: 0 }]);
+    for (const field of ['machineName', 'os']) {
+      expect((await post(target, '/auth/device/start', { ...request, [field]: 'bidi\u202e' })).status).toBe(400);
+    }
+    const starts = await Promise.all(Array.from({ length: 6 }, (_, i) => post(target, '/auth/device/start', { ...request, machineId: `admission_${i}` })));
+    expect(starts.filter(response => response.status === 200)).toHaveLength(5);
+    expect(starts.filter(response => response.status === 429)).toHaveLength(1);
+    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests')).toEqual([{ n: 5 }]);
+    const started = await starts.find(response => response.status === 200)!.json() as Started;
+    expect((await post(target, '/api/device/deny', { user_code: started.user_code }, target.ownerHeaders())).status).toBe(200);
+    const audit = await target.sql('SELECT * FROM device_decision_audit');
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ member_id: MEMBER_ID, decision: 'denied' });
+    expect(JSON.stringify(audit)).not.toContain(started.user_code);
+    expect(JSON.stringify(audit)).not.toContain(started.device_code);
+    await target.sql('UPDATE device_requests SET expires_at = 0 WHERE decision IS NULL');
+    const wake = () => fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+    expect((await wake()).status).toBe(200);
+    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests WHERE decision IS NULL')).toEqual([{ n: 0 }]);
+    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests WHERE decision IS NOT NULL')).toEqual([{ n: 1 }]);
+    await target.sql('UPDATE device_requests SET expires_at = 0 WHERE decision IS NOT NULL');
+    await target.sql("DELETE FROM schema_meta WHERE key = 'last_request_at'");
+    await target.clockWake();
+    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests')).toEqual([{ n: 0 }]);
+    expect(await target.sql('SELECT * FROM device_decision_audit')).toEqual(audit);
+    for (let i = 0; i < 10; i++) {
+      const response = await post(target, '/auth/device/start', { ...request, machineId: `rate_${i}` });
+      expect(response.status).toBe(200);
+      const next = await response.json() as Started;
+      expect((await post(target, '/api/device/deny', { user_code: next.user_code }, target.ownerHeaders())).status).toBe(200);
+    }
+    expect((await post(target, '/auth/device/start', request)).status).toBe(429);
   },
 };

@@ -101,8 +101,10 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (!subject.memberId || !subject.role || !['owner', 'admin', 'member'].includes(subject.role)) return false;
   const admin = subject.role === 'owner' || subject.role === 'admin';
+  if (action === 'enroll.self') return subject.transport === 'http' && resource.kind === 'enrollment'
+    && resource.ownerMemberId === subject.memberId && resource.grantedRole !== undefined
+    && (subject.role === 'owner' || resource.grantedRole === 'member' || resource.grantedRole === subject.role);
   if (resource.kind === 'enrollment' && (resource.grantedRole === 'owner' || resource.grantedRole === 'admin') && subject.role !== 'owner') return false;
-  if (action === 'enroll.self') return subject.transport === 'http' && resource.kind === 'enrollment' && resource.grantedRole !== undefined && resource.ownerMemberId === subject.memberId;
   if (action === 'owner') return subject.transport === 'http' && subject.role === 'owner';
   if (action === 'bootstrap') return subject.transport === 'http' && admin && resource.bootstrapAllowed === true && resource.ownerMemberId === subject.memberId;
   if (action === 'admin') return subject.transport === 'http' && admin && (resource.protectedOwner !== true || subject.role === 'owner');
@@ -166,8 +168,11 @@ export function enrollmentAuthorityPredicate(alias: string): string {
       WHERE recipient.id = ${alias}.member_id AND recipient.revoked_at IS NULL AND recipient.role IN (${MEMBER_ROLES_SQL})))
     AND (${alias}.created_by_member IS NULL OR EXISTS (SELECT 1 FROM members issuer
       WHERE issuer.id = ${alias}.created_by_member AND issuer.revoked_at IS NULL AND issuer.role IN (${MEMBER_ROLES_SQL})
-        AND (issuer.role = 'admin' OR ${alias}.member_id = issuer.id OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id))
+        AND (issuer.role = 'admin' OR (${alias}.member_id = issuer.id AND EXISTS (SELECT 1 FROM device_requests device WHERE device.id = ${alias}.id))
+          OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id))
         AND (EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = issuer.id)
+          OR (${alias}.member_id = issuer.id AND (${alias}.role = 'member' OR ${alias}.role = issuer.role)
+            AND EXISTS (SELECT 1 FROM device_requests device WHERE device.id = ${alias}.id))
           OR (${alias}.role = 'member' AND NOT EXISTS (SELECT 1 FROM members recipient
             LEFT JOIN deployment_ownership o ON o.id = 1 WHERE recipient.id = ${alias}.member_id
               AND (recipient.role = 'admin' OR recipient.id = o.member_id))))))`;

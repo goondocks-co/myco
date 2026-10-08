@@ -84,9 +84,9 @@ export function enrollmentInsert(
   const createdByMember = enrollmentIssuerMember(issuer);
   const expiresAt = nowMs + ttlMs;
   const statement = db
-    .prepare(`WITH candidate AS (SELECT ? AS created_by_member, ? AS member_id, ? AS role)
+    .prepare(`WITH candidate AS (SELECT ? AS created_by_member, ? AS member_id, ? AS role, ? AS id)
               INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member, member_id, role, project_id)
-              SELECT ?, ?, ?, ?, NULL, NULL, NULL, candidate.created_by_member, candidate.member_id, candidate.role, ?
+              SELECT candidate.id, ?, ?, ?, NULL, NULL, NULL, candidate.created_by_member, candidate.member_id, candidate.role, ?
                 FROM candidate WHERE ${enrollmentAuthorityPredicate('candidate')}${gate === undefined ? '' : ` AND (${gate.sql})`}`)
     .bind(createdByMember, memberId, role, id, keyHash, nowMs, expiresAt, projectId, ...(gate?.params ?? []));
   return { statement, expiresAt };
@@ -348,7 +348,8 @@ export async function ensureMember(db: RelationalStore, id: string, nowMs: numbe
 
 /**
  * Reclaims authorities that are finished — spent, revoked, or expired — and older
- * than `ENROLLMENT_RETENTION_MS`. `changes` says how many were reclaimed.
+ * than `ENROLLMENT_RETENTION_MS`. Undecided device requests expire at their TTL;
+ * decided requests retain this window and their independent audit receipts stay.
  *
  * The `invite-expiry` tick job is the one caller. Bounding the delete keeps a
  * Deployment that accumulated a large backlog to a fixed slice per tick; the
@@ -369,10 +370,20 @@ export async function reclaimEnrollmentAuthorities(db: RelationalStore, nowMs: n
                   LIMIT ?)`)
     .bind(cutoff, cutoff, cutoff, limit)
     .run();
-  const devices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
-    SELECT id FROM device_requests WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)`)
+  const pendingDevices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
+    SELECT id FROM device_requests WHERE decision IS NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?)`)
+    .bind(nowMs, limit).run();
+  const decidedDevices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
+    SELECT id FROM device_requests WHERE decision IS NOT NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?)`)
     .bind(cutoff, limit).run();
-  return { reclaimed: result.meta.changes + devices.meta.changes };
+  return { reclaimed: result.meta.changes + pendingDevices.meta.changes + decidedDevices.meta.changes };
+}
+
+/** Undecided requests and decided requests past retention hold housekeeping depth until reclaimed. */
+export async function deviceReclamationPending(db: RelationalStore, nowMs: number): Promise<boolean> {
+  if (await db.prepare('SELECT 1 AS pending FROM device_requests WHERE decision IS NULL LIMIT 1').first() !== null) return true;
+  return await db.prepare('SELECT 1 AS pending FROM device_requests WHERE decision IS NOT NULL AND expires_at <= ? LIMIT 1')
+    .bind(nowMs - ENROLLMENT_RETENTION_MS).first() !== null;
 }
 
 /**

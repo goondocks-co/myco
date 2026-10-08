@@ -1,4 +1,5 @@
 import { storageCleanupPending } from './storage-cleanup.js';
+import { deviceReclamationPending } from '../auth/enrollment.js';
 import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
 import { rawBackfillPending } from './raw-backfill.js';
 /**
@@ -151,6 +152,7 @@ async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): P
 export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
   const [inside, queued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db)]);
   const assertions: PowerAssertion[] = [];
+  if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
   if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });

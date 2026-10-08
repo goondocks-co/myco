@@ -19,7 +19,7 @@ describe('terminal device sign-in', () => {
   it('normalizes bare domain and IP:port to HTTPS, preserves loopback HTTP, and refuses public HTTP', () => {
     for (const [input, expected] of [
       ['myco.goondocks.co', 'https://myco.goondocks.co'], ['10.0.0.5:8080', 'https://10.0.0.5:8080'],
-      ['localhost:8080', 'https://localhost:8080'], ['http://127.0.0.1:8080', 'http://127.0.0.1:8080'],
+      ['localhost:8080', 'http://localhost:8080'], ['127.0.0.1:8080', 'http://127.0.0.1:8080'], ['[::1]:8080', 'http://[::1]:8080'], ['https://localhost:8080', 'https://localhost:8080'], ['http://127.0.0.1:8080', 'http://127.0.0.1:8080'],
       ['http://[::1]:8080', 'http://[::1]:8080'], ['https://myco.goondocks.co', 'https://myco.goondocks.co'],
     ]) expect(normalizeMemberServerAddress(input)?.origin).toBe(expected);
     for (const input of ['http://myco.goondocks.co', 'http://10.0.0.5:8080', 'ftp://s', 'https://user:password@s', '', 'two hosts']) expect(normalizeMemberServerAddress(input)).toBeNull();
@@ -35,7 +35,8 @@ describe('terminal device sign-in', () => {
       fetch: fetchImpl, stdout: line => out.push(line), sleep: async ms => { sleeps.push(ms); },
     })).toMatchObject({ ok: true, answer: ANSWER });
     expect(sleeps).toEqual([5000, 5000, 10000]);
-    expect(out.join('\n')).toContain('https://s/device?code=BCDF-2345');
+    expect(out.join('\n')).toContain('https://s/device on a machine')
+    expect(out.join('\n')).not.toContain('?code=');
     expect(out.join('\n')).not.toContain(SECRET);
     expect(out.join('\n')).not.toContain(ANSWER.token);
     for (const request of requests) {
@@ -46,11 +47,51 @@ describe('terminal device sign-in', () => {
     expect(await requests[1]!.json()).toEqual({ device_code: SECRET });
   });
 
+  it('backs off on 429 and on slow_down without a server interval', async () => {
+    for (const reply of [Response.json({ error: 'limited' }, { status: 429 }), Response.json({ error: 'slow_down' }, { status: 400 })]) {
+      const sleeps: number[] = [];
+      const replies = [Response.json(START), reply, Response.json({ error: 'authorization_pending' }, { status: 400 }), Response.json(ANSWER)];
+      expect(await deviceLogin('https://s', { machineId: 'device', machineName: 'Laptop', os: 'linux' }, {
+        stdout: () => {}, sleep: async ms => { sleeps.push(ms); }, fetch: async () => replies.shift()!,
+      })).toMatchObject({ ok: true });
+      expect(sleeps).toEqual([5000, 10000, 10000]);
+    }
+  });
+
+  it('retries one transient polling transport or 5xx failure with backoff and stops after a second', async () => {
+    for (const network of [true, false]) {
+      for (const recover of [true, false]) {
+        let calls = 0;
+        let now = 0;
+        const sleeps: number[] = [];
+        expect(await deviceLogin('https://s', { machineId: 'device', machineName: 'Laptop', os: 'linux' }, {
+          stdout: () => {}, clock: () => now, sleep: async ms => { sleeps.push(ms); now += ms; }, fetch: async () => {
+            calls++;
+            if (calls === 1) return Response.json(START);
+            if (calls === 3 && recover) return Response.json(ANSWER);
+            if (network) throw new Error(SECRET);
+            return new Response(SECRET, { status: 503 });
+          },
+        })).toMatchObject(recover ? { ok: true } : { ok: false, code: 'unreachable' });
+        expect(calls).toBe(3);
+        expect(sleeps).toEqual([5000, 10000]);
+      }
+    }
+  });
+
+  it('explains expiry or prior use when a swept request returns invalid_grant', async () => {
+    const replies = [Response.json(START), Response.json({ error: 'invalid_grant' }, { status: 400 })];
+    expect(await deviceLogin('https://s', { machineId: 'device', machineName: 'Laptop', os: 'linux' }, {
+      stdout: () => {}, sleep: async () => {}, fetch: async () => replies.shift()!,
+    })).toEqual({ ok: false, code: 'invalid_grant', reason: 'sign-in has expired or was already used; run myco login again' });
+  });
+
   it('reports denied, expired, malformed and network answers without reflecting server secrets', async () => {
     for (const response of [Response.json({ error: 'access_denied' }, { status: 400 }), Response.json({ error: 'expired_token' }, { status: 400 }), Response.json({ joined: true, token: SECRET }), new Response(SECRET, { status: 503 })]) {
       let started = false;
+      let pollNow = 0;
       const result = await deviceLogin('https://s', { machineId: 'device', machineName: 'Laptop', os: 'linux' }, {
-        stdout: () => {}, sleep: async () => {}, fetch: async () => { if (!started) { started = true; return Response.json(START); } return response; },
+        stdout: () => {}, clock: () => pollNow, sleep: async ms => { pollNow += ms; }, fetch: async () => { if (!started) { started = true; return Response.json(START); } return response; },
       });
       expect(result.ok).toBe(false);
       expect(JSON.stringify(result)).not.toContain(SECRET);
@@ -70,7 +111,7 @@ describe('terminal device sign-in', () => {
   });
 
   it('myco login bare hosts and loopback URL complete the real server path with --no-agents and --root', async () => {
-    for (const address of ['myco.goondocks.co', '10.0.0.5:8080', 'http://127.0.0.1:8080', 'https://s']) {
+    for (const address of ['myco.goondocks.co', '10.0.0.5:8080', 'http://127.0.0.1:8080', 'localhost:8080', 'https://s']) {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-device-cli-'));
       const e = sqliteEnv();
       let now = Date.now();

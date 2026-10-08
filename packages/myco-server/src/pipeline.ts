@@ -368,7 +368,7 @@ export function createServer(deps: ServerDeps) {
         const bodyBound = (matched.route as { maxBodyBytes?: number }).maxBodyBytes ?? MAX_BODY_BYTES;
         const bounded = await boundedRequest(request, bodyBound);
         if (bounded === null) return refuseOversized(bodyBound);
-        const context = { request: bounded, session, config, params: matched.params, url, now };
+        const context = { request: bounded, session, config, params: matched.params, url, now, source };
         const subject: AuthorizationSubject = member === null ? { kind: 'account', deploymentId: await deploymentIdentity(env.db), transport: 'http', live: true } : await memberSubject(env.db, member.id, 'http');
         const body = await bounded.clone().text();
         freshDispatch = matched.route.path === '/api/harness/dispatch' && parseJsonObject(body)?.fresh === true;

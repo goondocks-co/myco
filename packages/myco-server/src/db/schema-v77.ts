@@ -19,4 +19,21 @@ export const V77_STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_device_requests_expiry ON device_requests(expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_device_requests_decider ON device_requests(decided_by)`,
+  `CREATE INDEX IF NOT EXISTS idx_device_requests_pending_expiry ON device_requests(expires_at) WHERE decision IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_device_requests_decided_expiry ON device_requests(expires_at) WHERE decision IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_device_requests_source_pending ON device_requests(source_ip, expires_at) WHERE decision IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_device_requests_source_created ON device_requests(source_ip, created_at)`,
+  `CREATE TABLE IF NOT EXISTS device_decision_audit (
+    request_id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL REFERENCES members(id),
+    machine_id TEXT NOT NULL,
+    machine_name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
+    decided_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_device_decision_audit_member ON device_decision_audit(member_id)`,
+  `CREATE TRIGGER IF NOT EXISTS device_decision_audit_immutable BEFORE UPDATE ON device_decision_audit BEGIN
+    SELECT RAISE(ABORT, 'device decision audit is immutable'); END`,
 ];
