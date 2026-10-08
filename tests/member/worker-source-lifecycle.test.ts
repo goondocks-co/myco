@@ -1,5 +1,4 @@
 import { describe, expect, it, spyOn } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +10,7 @@ import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
 import { RUN_DIRECTORY_MANIFEST } from '@myco/runner/run-directory.js';
 import { STOP_GRACE_MS } from '@myco/runner/process-group.js';
 import { stubClaudeSource } from '../helpers/stub-claude-source.js';
+import { processAlive } from '../support/process-alive.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 const BOUND_MS = STOP_GRACE_MS * 3;
@@ -19,13 +19,7 @@ async function bounded<T>(work: Promise<T>): Promise<T> {
   try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('source cleanup exceeded its bound')), BOUND_MS); })]); }
   finally { clearTimeout(timer); }
 }
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-  return !execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
-}
+const alive = (pid: number): boolean => processAlive(pid);
 
 function fixture(id: 'claude-code' | 'opencode' | 'codex') {
   const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-source-lifecycle-')));
@@ -52,7 +46,8 @@ const helper = spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdi
 const ready = setInterval(() => {
   if (!fs.existsSync(${JSON.stringify(helperReady)})) return;
   clearInterval(ready);
-  fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, helper.pid]));
+  fs.writeFileSync(${JSON.stringify(`${pidFile}.part`)}, JSON.stringify([process.pid, helper.pid]));
+  fs.renameSync(${JSON.stringify(`${pidFile}.part`)}, ${JSON.stringify(pidFile)});
 }, 10);
 setInterval(() => {}, 1000);
 `;
