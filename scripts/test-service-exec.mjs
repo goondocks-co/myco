@@ -183,7 +183,10 @@ function builtHelper(dir, name, source, libraries, env) {
     const staging = `${binary}.${process.pid}.${Math.random().toString(36).slice(2)}`;
     const command = ['cc', path.join(HERE, source), '-O2', '-o', staging, ...libraries];
     const result = globalThis.Bun ? nativeSpawnSync(command, { env }) : nativeSpawnSync(command[0], command.slice(1), { env });
-    if ((result.exitCode ?? result.status) !== 0) { fs.rmSync(staging, { force: true }); throw new Error('TEST SAFETY: could not build the service-exec sandbox'); }
+    if ((result.exitCode ?? result.status) !== 0) {
+      fs.rmSync(staging, { force: true });
+      throw new Error(`TEST SAFETY: could not build the service-exec sandbox: ${result.error?.message ?? ''} ${result.stderr?.toString() ?? ''}`);
+    }
     fs.renameSync(staging, binary);
   }
   return binary;
@@ -231,7 +234,7 @@ export function sandboxServiceChild(cmd, env, cwd = process.cwd(), extraDenied =
   if (process.platform === 'linux') {
     const dir = env[GUARD_ENV];
     const binary = builtHelper(dir, 'exec-sandbox', 'test-exec-sandbox.c', [], env);
-    const directories = [env.MYCO_TEST_RUN_ROOT, REPO, '/usr/lib/git-core', '/usr/lib/gcc'];
+    const directories = [env.MYCO_TEST_RUN_ROOT, REPO, '/usr/lib/git-core', '/usr/lib/gcc', '/usr/libexec/gcc'];
     const tools = [env.MYCO_TEST_SERVICE_TOOL_DIR, ...(env.PATH ?? '').split(path.delimiter)].filter(Boolean).flatMap(dir => {
       try {
         if (!inside(env.MYCO_TEST_RUN_ROOT, dir)) return [];
