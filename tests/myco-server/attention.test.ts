@@ -40,10 +40,10 @@ function harness() {
 
 describe('Needs you', () => {
   it('answers an administrator and refuses a member who is not one', async () => {
-    const { env, sqlite } = harness();
+    const { env, sqlite, fixture } = harness();
     seedMemberRoleAccount(sqlite);
     const get = async (sub?: string) => {
-      const res = await worker.fetch(new Request('https://s/api/attention', { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+      const res = await worker.fetch(new Request('https://s/api/attention', { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
       return { status: res.status, body: await res.json() as Record<string, unknown> };
     };
     expect(await get()).toEqual({ status: 200, body: { items: [], unavailable: [] } });

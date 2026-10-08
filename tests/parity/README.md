@@ -13,7 +13,8 @@ skips — the gate is `MYCO_PARITY=1`).
 
 Write `scenarios/<feature>.ts` exporting a `ParityScenario` (`harness.ts`),
 add it to the `scenarios` list in `parity.test.ts`. A scenario receives a
-`ParityTarget` and nothing else: drive the three surfaces over HTTP
+`ParityTarget`; a paired scenario receives two separately booted targets.
+Drive the three surfaces over HTTP
 (`/events` with `memberHeaders()`, `/mcp`, `/api/*` with `ownerHeaders()`)
 and seed or assert store state through `target.sql` — every value a scenario
 interpolates into SQL goes through `lit()` from `harness.ts`.
@@ -37,6 +38,17 @@ interpolates into SQL goes through `lit()` from `harness.ts`.
 A scenario whose bindings or settings would change what the others observe
 sets `dedicated` and runs against targets booted for it alone. On Cloudflare it
 may name another Worker `main`.
+
+The two-Deployment isolation scenario boots two independent front doors on
+each runtime. It asserts distinct database, blob and secret bindings, sweeps
+the current HTTP route and MCP operation registries in both directions with
+valid foreign authority, and compares exact application-table rows and local
+blob-store bytes before and after. It also transplants each Deployment's sealed
+secret row into the other store and checks unreadability under the other key,
+then restores both rows. Native Bun writes and queries vectors in both physical SQLite
+files. Local workerd/D1 has no local Vectorize runtime binding, so the
+Cloudflare scenario checks generated Vectorize binding selection separately
+without claiming a Vectorize read/write proof.
 
 The recall gold set (`scenarios/recall-gold.ts`, #1154) is the one today. It:
 - configures a self-hosted embedding provider and adds `AI` and `VECTORIZE`

@@ -39,7 +39,7 @@ function harness() {
     await fixture.bucket.put(registerBlob(sqlite, { projectId: project, key, size: bytes.length, tokenId: 't', receivedAt: 1000 }), new Response(bytes).body);
   };
   const get = async (path: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
   const hits = async (path: string) => {

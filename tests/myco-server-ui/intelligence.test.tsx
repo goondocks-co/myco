@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
  * One run of Myco's work in its panel, and starting a task by hand.
@@ -78,7 +79,7 @@ const preview = (url: URL, over: Partial<TaskStartPreview> = {}): TaskStartPrevi
 });
 
 const routes = (over: { who?: unknown; detail?: Record<string, () => Response>; work?: WorkAnswer; capabilities?: Record<string, boolean>; dispatch?: Endpoint; start?: Partial<TaskStartPreview> } = {}): Record<string, Endpoint> => ({
-  '/auth/me': () => Response.json(over.who ?? ADMIN),
+  '/auth/me': () => Response.json(dashboardMe(over.who ?? ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/attention': () => Response.json({ items: [], unavailable: [] }),
@@ -861,6 +862,29 @@ it('links the registry task name in a run panel to its task card', async () => {
   expect(link.getAttribute('href')).toBe(`/p/${P}/work/tasks#extract-curate`);
   expect(asked.some((url) => url.pathname === '/api/tasks/names' && url.searchParams.get('project') === P)).toBe(true);
   expect(asked.some((url) => url.pathname === '/api/tasks')).toBe(false);
+});
+
+it('uses the per-run server cancellation decision even when account scope and displayed requester disagree', async () => {
+  const live = runDetail(learning[2]!, { run: { status: 'queued', completedAt: null, startedBy: MEMBER.member.id, canCancel: false, cancelReason: 'Run cancellation is unavailable for this account.' } });
+  const me = { ...ADMIN, permissions: { runsCancel: { scope: 'all', reason: null } } };
+  const { sent } = server(routes({ who: me, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json(live) } }));
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  const open = await panel();
+  expect(await within(open).findByText('Run cancellation is unavailable for this account.')).toBeTruthy();
+  expect(within(open).queryByRole('button', { name: 'Cancel run' })).toBeNull();
+  expect(sent).toEqual([]);
+
+  cleanup(); client.clear();
+  const accepted = server({ ...routes({ who: { ...MEMBER, permissions: { runsCancel: { scope: 'none', reason: 'Unavailable' } } }, detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => Response.json({ ...live, run: { ...live.run, startedBy: 'a-different-member', canCancel: true, cancelReason: null } }) } }), [`/api/projects/${P}/runs/run_a2c4e6f801/cancel`]: () => Response.json({ cancelled: true, runId: live.run.id }) });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  const allowed = await panel();
+  fireEvent.click(await within(allowed).findByRole('button', { name: 'Cancel run' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel run' }));
+  await waitFor(() => expect(accepted.sent).toEqual([{ path: `/api/projects/${P}/runs/run_a2c4e6f801/cancel`, body: undefined }]));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
 });
 
 it('uses the registry description when confirming a task', async () => {

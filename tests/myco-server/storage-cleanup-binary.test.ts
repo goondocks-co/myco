@@ -61,10 +61,12 @@ const binary = process.env.MYCO_STORAGE_CLEANUP_BINARY;
     sqlite.query(`INSERT INTO members(id,label,created_at,github_id) VALUES(?,?,?,?)`).run(MEMBER_ID, 'fixture', Date.now(), GITHUB_SUB);
     sqlite.query(`INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)`).run(PROJECT_ID, PROJECT_ID, Date.now());
     const issued = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());
+    const deploymentId = (sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value: string }).value;
     sqlite.close();
-    const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'fixture', iat: Date.now(), exp: Date.now()+3_600_000 })}`;
+    const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'fixture', iat: Date.now(), exp: Date.now()+3_600_000 })}`;
     const url = await start(sourceEnv, selectedPort);
-    const target: ParityTarget = { name: 'selfhosted', url, projectId: PROJECT_ID, memberToken: issued.token,
+    const target: ParityTarget = { name: 'selfhosted', url, projectId: PROJECT_ID, deploymentId,
+      bindings: { database: sourcePaths.databasePath, blob: sourcePaths.blobDir, secret: sourcePaths.secretsFile, vector: null }, memberToken: issued.token,
       ownerHeaders: () => ({ cookie }), memberHeaders: extra => memberHeadersFor(issued.token, PROJECT_ID, extra),
       grantHeaders: grantHeadersFor, sql: volumeSql(sourcePaths.databasePath), clockWake: async () => {
         const response=await fetch(`${url}/api/wake`,{method:'POST',headers:{cookie,origin:url}});
@@ -106,24 +108,26 @@ const binary = process.env.MYCO_STORAGE_CLEANUP_BINARY;
     await invoke(['restore', '--target', 'local', '--from', artifact, '--secrets-from', sourcePaths.secretsFile,
       '--yes', '--port', String(restorePort)], restoredEnv);
     const restoredUrl = await start(restoredEnv, restorePort);
-    const recovered = await fetch(`${restoredUrl}${fullPath}`, { headers: { cookie } });
-    expect(recovered.status).toBe(200);
-    expect(await recovered.text()).toBe(full);
     const restoredPaths = resolveLocalPaths(restoredEnv.MYCO_HOME);
     const recoveredDb = new Database(restoredPaths.databasePath);
     try {
+      const restoredDeploymentId = (recoveredDb.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value: string }).value;
+      const restoredCookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: restoredDeploymentId, sub: GITHUB_SUB, login: 'fixture', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+      const recovered = await fetch(`${restoredUrl}${fullPath}`, { headers: { cookie: restoredCookie } });
+      expect(recovered.status).toBe(200);
+      expect(await recovered.text()).toBe(full);
       expect((recoveredDb.query(`SELECT COUNT(*) AS n FROM events WHERE payload_format='archived'`).get() as {n:number}).n).toBeGreaterThan(0);
       const ref=recoveredDb.query(`SELECT a.archive_key,a.digest,m.github_id FROM archive_bundles a
         JOIN events e ON e.project_id=a.project_id AND e.bundle_id=a.id
         JOIN raw_credentials c ON c.token_id=e.token_id JOIN members m ON m.id=c.owner_member_id
         WHERE e.kind='response' LIMIT 1`).get() as {archive_key:string;digest:string;github_id:string};
       const rawPath=`${restoredUrl}/api/projects/${PROJECT_ID}/blobs/${ref.archive_key}`;
-      const uploaderCookie=`${SESSION_COOKIE}=${await signSession(SESSION_SECRET,{sub:ref.github_id,login:'fixture',iat:Date.now(),exp:Date.now()+60_000})}`;
+      const uploaderCookie=`${SESSION_COOKIE}=${await signSession(SESSION_SECRET,{aud:restoredDeploymentId,sub:ref.github_id,login:'fixture',iat:Date.now(),exp:Date.now()+60_000})}`;
       const raw=await fetch(rawPath,{headers:{cookie:uploaderCookie}});
       expect(raw.status).toBe(404);
       expect(fs.existsSync(path.join(artifact,'blobs',PROJECT_ID,ref.archive_key))).toBe(true);
       expect(await sha256Hex(fs.readFileSync(path.join(artifact,'blobs',PROJECT_ID,ref.archive_key),'utf8'))).toBe(ref.digest);
-      expect((await fetch(rawPath,{headers:{cookie}})).status).toBe(404);
+      expect((await fetch(rawPath,{headers:{cookie:restoredCookie}})).status).toBe(404);
     } finally { recoveredDb.close(); }
   } finally { await stop();fs.rmSync(root, { recursive: true, force: true }); }
 }, 180_000);

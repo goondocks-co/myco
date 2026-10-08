@@ -25,7 +25,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
     await target.sql(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (${lit(machine)}, ${lit(id)}, ${now})`);
     await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, bytes_written, lineage_root, lineage_started_at)
       VALUES (${lit(tokenId)}, ${lit(id)}, ${lit(machine)}, ${lit(await sha256Hex(token))}, ${now}, ${now + TOKEN_TTL_MS}, 0, ${lit(tokenId)}, ${now})`);
-    const cookie = await signSession(secret, { sub, login: label, iat: now, exp: now + TOKEN_TTL_MS });
+    const cookie = await signSession(secret, { aud: target.deploymentId, sub, login: label, iat: now, exp: now + TOKEN_TTL_MS });
     viewers.push({ id, sub, machine, token, tokenId, headers: { cookie: `${SESSION_COOKIE}=${cookie}`, 'cf-connecting-ip': '1.2.3.4' } });
   }
   const [uploader, other, admin] = viewers;

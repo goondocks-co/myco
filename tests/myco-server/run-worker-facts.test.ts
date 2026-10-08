@@ -33,7 +33,7 @@ async function rig() {
     profile: { tier: 'low', model: 'gpt-fixture', effort: 'low', sources: { tier: 'task', model: 'configured' } },
   }, { limits: NO_LIMITS, now: NOW });
   const get = async (path: string): Promise<Record<string, unknown>> => {
-    const res = await worker.fetch(await asOwner(path), env);
+    const res = await worker.fetch(await asOwner(fixture.db, path), env);
     return await res.json() as Record<string, unknown>;
   };
   return { ...fixture, env, claim, get, workerCredential, runCredential };
@@ -187,7 +187,7 @@ describe('a credential says what it was minted for', () => {
     expect(rows.some((row) => row.id === r.runCredential.tokenId)).toBe(false);
     expect(rows.some((row) => row.id === r.workerCredential.tokenId)).toBe(true);
 
-    const res = await worker.fetch(await asOwner('/api/credentials?purpose=elsewhere'), r.env);
+    const res = await worker.fetch(await asOwner(r.db, '/api/credentials?purpose=elsewhere'), r.env);
     expect(res.status).toBe(400);
   });
 });

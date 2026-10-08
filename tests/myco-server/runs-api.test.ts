@@ -151,10 +151,10 @@ describe('POST /runs/claim', () => {
 
 describe('agent registration', () => {
   it('is idempotent and keeps the identity across a re-declaration', async () => {
-    const { env, sqlite } = await harness();
+    const { env, sqlite, db } = await harness();
     const put = async (body: unknown) => new Request('https://s/api/agents/agent_2', {
       method: 'PUT',
-      headers: { cookie: (await asOwner('/')).headers.get('cookie')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: (await asOwner(db, '/')).headers.get('cookie')!, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     expect((await worker.fetch(await put({ name: 'first', model: 'm1' }), env)).status).toBe(200);

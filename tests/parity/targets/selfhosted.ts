@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
@@ -27,6 +28,8 @@ export async function bootSelfhosted(options: { stopRace?: boolean } = {}): Prom
   const db = sqliteRelationalStore(sqlite);
   await linkStatement(db, MEMBER_ID, GITHUB_SUB).run();
   const { token } = await issueMemberToken(db, { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());
+  const deploymentId = String((sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value?: string } | null)?.value);
+  if (!deploymentId || deploymentId === 'undefined') throw new Error('native parity target has no Deployment identity');
   sqlite.close();
 
   const wrapKey = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
@@ -59,11 +62,13 @@ export async function bootSelfhosted(options: { stopRace?: boolean } = {}): Prom
     return { port: server.port, env: handler.env, stop: async () => { server.stop(); await handler.close(); } };
   })() : await serve(serverOptions);
   const url = `http://127.0.0.1:${started.port}`;
-  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
 
   return {
     name: 'selfhosted',
     url,
+    deploymentId,
+    bindings: { database: databasePath, blob: path.join(root, 'blobs'), secret: await sha256Hex(wrapKey), vector: databasePath },
     memberToken: token,
     projectId: PROJECT_ID,
     ownerHeaders: () => ({ cookie }),

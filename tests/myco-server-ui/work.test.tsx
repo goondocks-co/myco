@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
  * Myco's work: what Myco's own runs came to, grouped by outcome, each failure
@@ -57,7 +58,7 @@ function server(routes: Routes): URL[] {
 }
 
 const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_RUNS } = {}): Routes => ({
-  '/auth/me': () => Response.json(over.who ?? ADMIN),
+  '/auth/me': () => Response.json(dashboardMe(over.who ?? ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),

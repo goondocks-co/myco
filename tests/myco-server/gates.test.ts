@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 158;
+const EMIT_CALLS = 159;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -1169,16 +1169,15 @@ describe('gates', () => {
   it('refuses a member who is not an admin on every admin route, before its handler, and on no other session route (#1491)', async () => {
     const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
     const now = Date.now();
-    const asMember = await ownerCookie(now, MEMBER_SUB);
-    const asAdmin = await ownerCookie(now);
     const refused: string[] = [];
     const admitted: string[] = [];
     for (const r of ROUTES) {
       if (r.auth !== 'session' || r.authority === 'account') continue;
       const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{planKey}', '00000000-0000-5000-8000-000000000002').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64)).replace(/\{[A-Za-z]+\}/g, 'x');
-      for (const [who, cookie] of [['member', asMember], ['admin', asAdmin]] as const) {
+      for (const who of ['member', 'admin'] as const) {
         const e = sqliteEnv({ workerLogin: true });
         seedMemberRoleAccount(e.sqlite);
+        const cookie = await ownerCookie(e.db, now, who === 'member' ? MEMBER_SUB : undefined);
         const res = await worker.fetch(
           new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'GET' ? undefined : '{}' }),
           { ...e.env, ...OWNER_ENV },
@@ -1201,7 +1200,7 @@ describe('gates', () => {
     const secretUrl = 'https://user:hunter2@embed.example/v1?api-key=sk-live';
     e.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.base_url', ?, 1, 'mem_machine_1')`, [JSON.stringify(secretUrl)]);
     const read = async (sub?: string) => {
-      const res = await worker.fetch(new Request('https://s/api/settings', { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
+      const res = await worker.fetch(new Request('https://s/api/settings', { headers: { cookie: await ownerCookie(e.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), { ...e.env, ...OWNER_ENV });
       return ((await res.json()) as { leaves: { leaf: string; value: unknown }[] }).leaves.find((l) => l.leaf === 'embedding.base_url')?.value;
     };
     expect({ member: await read(MEMBER_SUB), admin: await read() }).toEqual({ member: 'https://embed.example/v1', admin: secretUrl });
@@ -1218,7 +1217,7 @@ describe('gates', () => {
       pull(controller) { pulled += 1; if (pulled > 4) controller.close(); else controller.enqueue(new Uint8Array(64 * 1024)); },
     }, { highWaterMark: 0 });
     const res = await worker.fetch(new Request('https://s/api/backups/restore-upload', {
-      method: 'POST', body, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+      method: 'POST', body, duplex: 'half', headers: { cookie: await ownerCookie(e.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
     expect({ status: res.status, pulled, body: await res.json() }).toEqual({ status: 403, pulled: 5, body: { error: 'not_admin', reason: 'this action is for an admin' } });
     expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
@@ -1234,7 +1233,7 @@ describe('gates', () => {
       },
     }, { highWaterMark: 0 });
     const bounded = await worker.fetch(new Request('https://s/api/settings/agent.power', {
-      method: 'PUT', body: oversized, duplex: 'half', headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+      method: 'PUT', body: oversized, duplex: 'half', headers: { cookie: await ownerCookie(e.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
     expect({ status: bounded.status, pulled: oversizedPulls, body: await bounded.json() })
       .toEqual({ status: 400, pulled: chunks + 1, body: { error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
@@ -1246,7 +1245,7 @@ describe('gates', () => {
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
     const e = sqliteEnv({ workerLogin: true });
     const res = await worker.fetch(new Request('https://s/auth/logout', {
-      method: 'POST', headers: { cookie: await ownerCookie(Date.now(), '999999'), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+      method: 'POST', headers: { cookie: await ownerCookie(e.db, Date.now(), '999999'), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     }), { ...e.env, ...OWNER_ENV });
     expect({ status: res.status, clears: /Max-Age=0/i.test(res.headers.get('set-cookie') ?? '') }).toEqual({ status: 204, clears: true });
   });
@@ -1277,10 +1276,10 @@ describe('gates', () => {
     const owner = ROUTES.filter((r) => r.auth === 'session');
     expect(owner.length).toBeGreaterThan(0);
     const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
-    const cookie = await ownerCookie();
     for (const r of owner) {
       const path = r.path.replace('{projectId}', 'proj_1').replace('{sessionId}', 's1').replace('{promptId}', '00000000-0000-7000-8000-000000000001').replace('{planKey}', '00000000-0000-5000-8000-000000000002').replace('{runId}', 'r1').replace('{memberId}', 'mem_machine_2').replace('{grantId}', 'eg_x').replace('{id}', 'x').replace('{child}', 'prompts').replace('{key}', 'a'.repeat(64));
       const e = sqliteEnv({ workerLogin: true });
+      const cookie = await ownerCookie(e.db);
       const res = await worker.fetch(
         new Request(`https://s${path}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'POST' ? '{}' : undefined }),
         { ...e.env, ...OWNER_ENV }
@@ -1592,7 +1591,7 @@ describe('gates', () => {
     const e = sqliteEnv({ workerLogin: true });
     const before = count(e.sqlite, 'events');
     const res = await worker.fetch(
-      new Request('https://s/api/projects', { headers: { cookie: await ownerCookie2(), 'cf-connecting-ip': '1.2.3.4' } }),
+      new Request('https://s/api/projects', { headers: { cookie: await ownerCookie2(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV2 }
     );
     expect(res.status).toBe(200);

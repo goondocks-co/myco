@@ -6,6 +6,7 @@
  * The clock is held at a fixed afternoon so every instant below sits on the day
  * it names, whatever the machine's own time.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -91,7 +92,7 @@ function server(routes: Routes): { requested: string[] } {
 }
 
 const base = (extra: Routes = {}, me: unknown = ADMIN): Routes => ({
-  '/auth/me': () => Response.json(me),
+  '/auth/me': () => Response.json(dashboardMe(me)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   ...extra,
@@ -1009,6 +1010,20 @@ describe('the session reading page', () => {
     server(routes({ '/api/projects/x/sessions/s1/transcript': () => Response.json({ transcript: { transcriptId: 'tx1', sessionId: 's1', size: 1, segmentCount: 0 }, segments: [] }) }));
     mount('/p/x/sessions/s1?raw=transcript');
     expect(await screen.findByText('No transcript captured.')).toBeTruthy();
+  });
+
+  it('explains raw transcript privacy and does not request raw bytes when permission is absent', async () => {
+    const viewer = dashboardMe(ADMIN);
+    const denied = { ...viewer, permissions: { ...viewer.permissions, raw: { scope: 'none', reason: 'Raw uploads are private to their uploader.' } } };
+    const { requested } = server(routes({}, denied));
+    mount('/p/x/sessions/s1?raw=transcript');
+    expect(await screen.findByText('Raw uploads are private to their uploader.')).toBeTruthy();
+    expect(requested.some((path) => path.endsWith('/transcript'))).toBe(false);
+
+    cleanup();
+    server(routes({ '/api/projects/x/sessions/s1/transcript': () => Response.json({ error: 'forbidden' }, { status: 403 }) }));
+    mount('/p/x/sessions/s1?raw=transcript');
+    expect(await screen.findByText('Raw transcripts are private to the member whose machine uploaded them.')).toBeTruthy();
   });
 
   it('answers a session the server does not hold with not found, never forbidden', async () => {

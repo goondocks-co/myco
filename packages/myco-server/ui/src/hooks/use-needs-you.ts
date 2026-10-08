@@ -1,7 +1,7 @@
 import type { NeedsYouProps } from '../features/today/NeedsYou';
 import { isArchived } from '../lib/api';
 import { useAttention } from './use-attention';
-import { useMe } from './use-me';
+import { permissionOf, useMe } from './use-me';
 import { useProjects } from './use-projects';
 import { useUncaptured } from './use-uncaptured';
 
@@ -12,7 +12,7 @@ import { useUncaptured } from './use-uncaptured';
 export function useNeedsYou({ now, projectName }: { now: number; projectName: (projectId: string) => string | null }): NeedsYouProps {
   const me = useMe();
   const signedIn = me.data?.member != null;
-  const admin = me.data?.member?.role === 'admin';
+  const admin = permissionOf(me.data, 'settings').allowed;
   const attention = useAttention({ enabled: admin });
   const repositories = useUncaptured({ enabled: signedIn });
   const projects = useProjects();

@@ -35,7 +35,7 @@ export const storageCleanupParity: ParityScenario = {
       VALUES(${lit(uploaderTokenId)},${lit(uploaderId)},${lit(uploaderMachine)},${lit(await sha256Hex(uploaderToken))},
       ${stamp},${stamp + 3_600_000},0,${lit(uploaderTokenId)},${stamp})`);
     const uploaderCookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET,
-      { sub: uploaderSub, login: 'cleanup-uploader', iat: stamp, exp: stamp + 3_600_000 })}`;
+      { aud: target.deploymentId, sub: uploaderSub, login: 'cleanup-uploader', iat: stamp, exp: stamp + 3_600_000 })}`;
     const uploaderHeaders = { cookie: uploaderCookie, 'cf-connecting-ip': '1.2.3.4' };
     const captureHeaders = (extra: Record<string, string> = {}) => memberHeadersFor(uploaderToken, target.projectId, extra);
     const post = async (kind: string, payload: Record<string, unknown>, channel = 'cli') => {

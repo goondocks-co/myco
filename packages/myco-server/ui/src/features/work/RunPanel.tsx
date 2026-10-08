@@ -1,7 +1,8 @@
-import { CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
+import { Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
+import { useState } from 'react';
 import { useTaskNames } from '../../hooks/use-tasks';
 import { useStarterNames } from './names';
-import { runIsLive, useRunDetail } from '../../hooks/use-work';
+import { runIsLive, useCancelRun, useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { CODE_MAP_SUFFIX, projectPath, TASKS_SUFFIX } from '../../routes/nav';
@@ -55,6 +56,10 @@ function capitalize(text: string): string {
 
 function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectId: string; now: number }) {
   const { run, read, produced } = answer;
+  const cancel = useCancelRun(projectId, run.id);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const canCancel = run.canCancel === true;
   const kind = kindOf(run.task);
   const name = useStarterNames();
   const failed = run.status === 'failed';
@@ -87,7 +92,24 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
+        {live && (canCancel
+          ? <Button size="sm" onClick={() => { setCancelError(null); setConfirmCancel(true); }}>Cancel run</Button>
+          : <p className="t-small text-muted">{run.cancelReason ?? 'Run cancellation permission is unavailable. Refresh this run.'}</p>)}
+        {cancelError !== null && <p role="alert" className="t-small text-bad">{cancelError}</p>}
       </header>
+      <ConfirmDialog
+        open={confirmCancel}
+        onOpenChange={setConfirmCancel}
+        title="Cancel this run?"
+        description="The run stops. What it already saved stays."
+        confirmLabel="Cancel run"
+        confirmDisabled={!canCancel}
+        pending={cancel.isPending}
+        error={cancel.error instanceof ApiError ? cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.' : 'The server refused to cancel this run.' : cancel.error ? 'Could not reach the server.' : null}
+        onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, { onSuccess: () => setConfirmCancel(false), onError: (error) => {
+          if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
+        } }); }}
+      />
 
       {cause !== null && (
         <div className="flex flex-col gap-s1 rounded-control border border-line bg-bad-bg px-s3 py-s2 t-small text-ink-2" data-run-failure="">

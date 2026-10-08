@@ -36,7 +36,7 @@ async function rig(settings: Record<string, unknown> = {}) {
   const send = async (method: string, path: string, sub?: string, body?: unknown) => {
     const response = await worker.fetch(new Request(`https://s${path}`, {
       method,
-      headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: await ownerCookie(f.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), env);
     return { status: response.status, body: await response.json() as Record<string, unknown> };
@@ -108,7 +108,7 @@ describe('previewing a task started by hand', () => {
     r.f.sqlite.query(`INSERT INTO deployment_secrets (name, ciphertext, iv, key_version, updated_at, updated_by) VALUES ('codex', 'not-a-ciphertext', 'not-an-iv', 1, 1, 'test')`).run();
     const broken = { ...r.env, SECRET_WRAP_KEY: { get: async () => { throw new Error('the wrapping key is unavailable'); } } };
     const response = await worker.fetch(new Request(`https://s/api/tasks/start?${new URLSearchParams({ project: 'proj_1', task: 'extract-curate' })}`, {
-      headers: { cookie: await ownerCookie(Date.now()), 'cf-connecting-ip': '1.2.3.4' },
+      headers: { cookie: await ownerCookie(r.f.db, Date.now()), 'cf-connecting-ip': '1.2.3.4' },
     }), broken);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ heldBy: null, executions: [{ harness: 'codex', model: 'gpt-6-sol' }] });

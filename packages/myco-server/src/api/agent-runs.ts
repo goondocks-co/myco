@@ -12,7 +12,13 @@ import { listReports } from '../core/runs.js';
 import { getRunCalls, getRunDetail, getRunSteps, listRuns } from '../read/runs.js';
 import { runReads } from '../read/run-reads.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
+import { memberSubject } from '../auth/authorization.js';
+import { RUN_CANCEL_POLICY, authorizeHttp } from '../auth/http-authorization.js';
+import type { RunDetail } from '../read/runs.js';
 import { paging } from './sessions.js';
+
+/** The run detail with the caller's cancellation decision. */
+export type DashboardRunDetail = Omit<RunDetail, 'run'> & { run: RunDetail['run'] & { canCancel: boolean; cancelReason: string | null } };
 
 /** The longest run id or filter value admitted, matching the identifier bound the run routes apply. */
 const MAX_ID_CHARS = 192;
@@ -74,7 +80,11 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (calls instanceof Response) return calls;
   const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id, calls);
   if (detail === null) return notFound();
-  return ok({ ...detail, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
+  const subject = await memberSubject(env.db, ctx.member.id, 'http');
+  const canCancel = await authorizeHttp(env, RUN_CANCEL_POLICY, subject, { params: { projectId: scope.projectId, runId } });
+  const answer: DashboardRunDetail = { ...detail, run: { ...detail.run, canCancel,
+    cancelReason: canCancel ? null : 'Only the member who requested this run or an administrator can cancel it.' } };
+  return ok({ ...answer, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
 }
 
 /** One page of admitted calls, without the run's instructions, reports or current artifacts. */

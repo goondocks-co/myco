@@ -1,3 +1,4 @@
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 /**
  * `myco server <create|status|destroy>` — argv and human output over
@@ -158,6 +159,12 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Require only the original wrapping key in --secrets-from.
                                           Create a fresh session secret and configure GitHub sign-in
                                           afterward with server github-app. Keeps source sign-in intact.
+  restore --target local|cloudflare ... --source-retired
+                                          Confirm that the original serving instance is retired.
+  restore --target local|cloudflare ... --fork
+                                          Create a new tenant, preserving history and ending copied
+                                          credentials, invitations, access keys and active runs.
+                                          Replacement retains the tenant and requires --source-retired.
   rotate [--yes]                           Replace generated secrets. Ends every signed-in session.
   adopt                                   Write a bundle for a stack this machine did not provision.
   destroy [--data] [--yes]                Stop and remove the stack, at once — it does not wait for
@@ -670,6 +677,8 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'restore') {
       const selected = target();
+      if (flags.has('source-retired') && selected !== 'cloudflare' && selected !== 'local') fail('--source-retired requires --target cloudflare or --target local.');
+      if (flags.has('fork') && selected !== 'cloudflare' && selected !== 'local') fail('--fork requires --target cloudflare or --target local.');
       if (flags.has('new-signin') && selected !== 'cloudflare' && selected !== 'local') fail('--new-signin requires --target cloudflare or --target local.');
       const from = flags.get('from');
       if (from === undefined || from === '') fail('restore needs --from <dir>.');
@@ -678,8 +687,9 @@ export async function run(args: string[]): Promise<void> {
         const secretsFile = flags.get('secrets-from');
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('hosted recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('hosted recovery provisions a new Deployment; re-run with --yes to confirm.');
-        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'), native: carriedNative() });
-        console.log(`Replacement deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
+        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'), tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'), native: carriedNative() });
+        console.log(`${flags.has('fork') ? 'Fork' : 'Replacement'} deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
+        console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
         if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
         return;
@@ -692,8 +702,10 @@ export async function run(args: string[]): Promise<void> {
         const port = flags.get('port');
         const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!, native: carriedNative(),
           newSignIn: flags.has('new-signin'),
+          tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'),
           ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
         console.log(`Native recovery volume ready at schema ${restored.schemaVersion}. Source data was preserved.`);
+        console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
         console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
         return;

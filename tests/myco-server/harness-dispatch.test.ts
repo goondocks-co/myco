@@ -29,15 +29,15 @@ describe('POST /api/harness/dispatch', () => {
   };
 
   it('refuses without a bound runtime or for an unknown task or project', async () => {
-    const { env, sqlite } = setup();
-    const unbound = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), env);
+    const { env, sqlite, db } = setup();
+    const unbound = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), env);
     expect(unbound.status).toBe(409);
 
     const bound = { ...env, HARNESS_LAUNCH_MODE: 'record' };
-    const ghost = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_ghost' }), bound);
+    const ghost = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_ghost' }), bound);
     expect({ status: ghost.status, reason: ((await ghost.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the project is not on this server' });
 
-    const unknown = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
+    const unknown = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
     expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'this server cannot run that task' });
   });
 
@@ -49,7 +49,7 @@ describe('POST /api/harness/dispatch', () => {
       'agent.limits.concurrent_runs': 1,
     });
     await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
-    const dispatch = async () => worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), { ...env, HARNESS_LAUNCH_MODE: 'record' });
+    const dispatch = async () => worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), { ...env, HARNESS_LAUNCH_MODE: 'record' });
     expect(await jsonBody(await dispatch())).toMatchObject({ queued: false });
     const response = await dispatch();
     expect(response.status).toBe(200);
@@ -112,13 +112,13 @@ describe('POST /api/harness/dispatch', () => {
     await deploymentSecretStore(db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'sk-ant-oat-test-token', 'test', 1);
     const bound = { ...env, HARNESS_LAUNCH_MODE: 'record' };
 
-    const first = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
+    const first = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
     expect(first.status).toBe(200);
     const ensured = sqlite.query(`SELECT name, provider, model, enabled FROM agents WHERE id = 'myco-agent'`).get() as Record<string, unknown>;
     expect(ensured).toEqual({ name: 'myco-agent', provider: 'anthropic', model: 'claude-opus-5', enabled: 1 });
 
     sqlite.query(`UPDATE agents SET name = 'Custom Name', model = 'claude-sonnet-5' WHERE id = 'myco-agent'`).run();
-    const second = await worker.fetch(await asOwnerPost('/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
+    const second = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'container-smoke', projectId: 'proj_1' }), bound);
     expect(second.status).toBe(200);
     const kept = sqlite.query(`SELECT name, model FROM agents WHERE id = 'myco-agent'`).get() as Record<string, unknown>;
     expect(kept).toEqual({ name: 'Custom Name', model: 'claude-sonnet-5' });

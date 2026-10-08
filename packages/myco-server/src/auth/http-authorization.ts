@@ -10,6 +10,8 @@ export function httpPolicy(resource: AuthorizationDeclaration['resource'], actio
   return { resource, action, resolver, subjects, transport: 'http' };
 }
 
+export const RUN_CANCEL_POLICY = httpPolicy('run', 'cancel', 'run');
+
 export const invitationAction: AuthorizationDeclaration['action'] = {
   actions: ['admin', 'owner'],
   resolve: (input, resource) => {

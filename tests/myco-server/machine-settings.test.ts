@@ -62,7 +62,7 @@ describe('a machine\'s settings', () => {
     const e = rig();
     const env = { ...e.env, ...OWNER_ENV };
     const as = async (sub: string, method: string, path: string, body?: unknown) => worker.fetch(new Request(`https://s${path}`, {
-      method, headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      method, headers: { cookie: await ownerCookie(e.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     }), env);
     expect((await as('9100', 'GET', '/api/machines/m_a/settings')).status).toBe(403);

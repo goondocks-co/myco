@@ -17,7 +17,7 @@ export function machineRows(credentials: readonly CredentialRow[]): MachineRow[]
     const bytesByLineage = new Map<string, number>();
     for (const row of held) bytesByLineage.set(row.lineageRoot, Math.max(bytesByLineage.get(row.lineageRoot) ?? 0, row.bytesWritten));
     return {
-      machineId, name: label, live: live.length > 0,
+      machineId, name: label, live: live.length > 0, canStop: true, stopReason: null,
       member: { id: newest.memberId, label: null, revoked: false }, claimedAt: Math.min(...held.map((row) => row.lineageStartedAt)),
       credentialCount: held.length, liveCredentialCount: live.length,
       bytesWritten: [...bytesByLineage.values()].reduce((sum, bytes) => sum + bytes, 0), firstSeenAt: Math.min(...held.map((row) => row.lineageStartedAt)),

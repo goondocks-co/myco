@@ -198,7 +198,7 @@ describe('a worker on the real claim wire', () => {
     const r = await rig();
     const admin = await r.member('mem_admin', 'admin');
     const change = async (leaf: string, value: unknown) => {
-      const owner = await asOwnerPost(`/api/settings/${leaf}`);
+      const owner = await asOwnerPost(r.e.db, `/api/settings/${leaf}`);
       const response = await workerServer.fetch(new Request(owner.url, {
         method: 'PUT', headers: owner.headers, body: JSON.stringify({ value }),
       }), { ...r.e.env, ...OWNER_ENV });

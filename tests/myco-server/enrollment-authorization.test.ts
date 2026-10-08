@@ -31,7 +31,7 @@ function rig(onSql?: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sqlite'
   const invite = async (issuer: Issuer, target: Target, requestedRole: RequestedRole) => call('/api/enrollment', {
     ...(target === 'new' ? {} : { memberId: MEMBERS[target].id }),
     ...(requestedRole === 'omitted' ? {} : { role: requestedRole }),
-  }, await ownerCookie(NOW, MEMBERS[issuer].github));
+  }, await ownerCookie(e.db, NOW, MEMBERS[issuer].github));
   const join = (key: string, machineId: string) => call('/members/join', { key, machineId });
   const count = (table: 'enrollment_authorities' | 'member_credentials' | 'machine_claims') =>
     (e.sqlite.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;

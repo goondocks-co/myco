@@ -41,7 +41,7 @@ describe('capture recency', () => {
     // A session no machine is recorded for names no machine to report.
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', 's_nomachine', NULL, 'tok_1', ?, ?, 'codex')`, [now, now]);
 
-    const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(fixture.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } }), env);
     expect(res.status).toBe(200);
     const body = await res.json() as { capture: unknown[] };
     expect(body.capture).toEqual([
@@ -51,7 +51,7 @@ describe('capture recency', () => {
     ]);
     // The admin reads every machine's capture, another member's included, named only where the machine is the admin's.
     sqlite.run(`UPDATE machine_claims SET label = 'Admin box' WHERE machine_id = 'admin-box'`);
-    const all = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const all = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(fixture.db), 'cf-connecting-ip': '1.2.3.4' } }), env);
     const seen = ((await all.json()) as { capture: Array<{ machineId: string; machineName: string | null; member: unknown }> }).capture;
     expect(seen.map((row) => [row.machineId, row.machineName, row.member])).toEqual([
       ['admin-box', 'Admin box', { id: 'mem_machine_1', label: 'machine_1' }],
@@ -64,7 +64,7 @@ describe('capture recency', () => {
     const fixture = sqliteEnv();
     const inner = fixture.env.MYCO_DB;
     const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (/MAX\(last_received_at\)/.test(sql)) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
-    const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(fixture.db), 'cf-connecting-ip': '1.2.3.4' } }), env);
     const body = await res.json() as { schema: { matches: boolean }; projects: unknown[]; workers: { available: boolean }; capture: unknown[]; unavailable: string[] };
     expect({ status: res.status, matches: body.schema.matches, projects: body.projects.length, workers: body.workers.available, capture: body.capture, unavailable: body.unavailable })
       .toEqual({ status: 200, matches: true, projects: 2, workers: true, capture: [], unavailable: ['capture'] });

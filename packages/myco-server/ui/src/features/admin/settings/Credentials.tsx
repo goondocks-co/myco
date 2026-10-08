@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { permissionOf, useMe } from '../../../hooks/use-me';
 import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { Button, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, ErrorState, Input, LoadingState, MoreMenu } from '../../../design';
 import { settingsRefusalText, useSecrets, useSettingsActions } from '../../../hooks/use-settings';
@@ -30,6 +31,7 @@ function keyStatus(secret: SecretRow, name: string | null, now: number): string 
  * removed from its menu behind a confirm.
  */
 export function Credentials() {
+  const keyPermission = permissionOf(useMe().data, 'keys');
   const secrets = useSecrets();
   const actions = useSettingsActions();
   const nameOf = useMemberNames();
@@ -49,6 +51,7 @@ export function Credentials() {
       title="Keys"
       description="Stored once, shown masked, never sent back. Each key is used only for what its row says, and work bills to whichever account the key belongs to."
     >
+      {!keyPermission.allowed && <p className="t-small text-muted">{keyPermission.reason ?? 'Only an admin can manage keys.'}</p>}
       {secrets.isPending ? <LoadingState label="Loading keys" count={3} />
         : secrets.isError ? <ErrorState error={secrets.error} onRetry={() => void secrets.refetch()} />
         : (
@@ -63,13 +66,13 @@ export function Credentials() {
                 status={keyStatus(secret, nameOf(secret.updatedBy), now)}
                 control={(
                   <>
-                    <Button size="sm" onClick={() => { setDraft(''); setError(null); setEditing(secret); }}>
+                    <Button size="sm" disabled={!keyPermission.allowed} onClick={() => { setDraft(''); setError(null); setEditing(secret); }}>
                       {secret.configured ? 'Replace' : 'Set'}
                     </Button>
                     {secret.configured && (
                       <MoreMenu
                         label={`More for the ${labelOf(secret.name)} key`}
-                        items={[{ label: 'Remove key', tone: 'danger', onSelect: () => setRemoving(secret) }]}
+                        items={[{ label: 'Remove key', tone: 'danger', disabled: !keyPermission.allowed, onSelect: () => setRemoving(secret) }]}
                       />
                     )}
                   </>

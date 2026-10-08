@@ -27,7 +27,7 @@ describe('the settings answer', () => {
     const e = sqliteEnv();
     const bindings = { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP } };
     e.executed.length = 0;
-    expect((await worker.fetch(await asOwner('/api/settings'), bindings)).status).toBe(200);
+    expect((await worker.fetch(await asOwner(e.db, '/api/settings'), bindings)).status).toBe(200);
     expect(e.executed.filter((sql) => /\bFROM deployment_settings\b/.test(sql))).toHaveLength(1);
   });
 

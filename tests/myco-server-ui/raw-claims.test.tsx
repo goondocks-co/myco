@@ -1,3 +1,4 @@
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -27,7 +28,7 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewe
     const body = init?.body === undefined ? null : JSON.parse(String(init.body));
     requests.push({ method, path: url.pathname, body });
     switch (url.pathname) {
-      case '/auth/me': return Response.json({ sub: '1', login: options.login ?? 'Ada', owner: options.owner ?? true, member: { id: OWNER, label: options.viewerLabel === undefined ? 'Ada' : options.viewerLabel, role: options.role ?? 'admin' } });
+      case '/auth/me': return Response.json(dashboardMe({ sub: '1', login: options.login ?? 'Ada', owner: options.owner ?? true, member: { id: OWNER, label: options.viewerLabel === undefined ? 'Ada' : options.viewerLabel, role: options.role ?? 'admin' } }));
       case '/api/projects': return Response.json({ projects: [] });
       case '/api/members': return Response.json({ members: [
         { id: OWNER, label: options.viewerLabel === undefined ? 'Ada' : options.viewerLabel, role: 'admin', roleRevision: 'ada-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },

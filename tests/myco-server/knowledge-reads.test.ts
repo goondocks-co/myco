@@ -27,7 +27,7 @@ function harness() {
     sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, author, agent_line, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [project, id, opts.agentId ?? 'agent_1', opts.type ?? 'gotcha', opts.status ?? 'active', opts.content ?? `body of ${id}`, opts.author ?? null, opts.line ?? null, opts.at ?? NOW]);
   const get = async (path: string, sub?: string) => {
-    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
+    const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), env);
     return { status: res.status, body: await res.json() as Record<string, any> };
   };
   const save = async (body: Record<string, unknown>) => {

@@ -5,7 +5,7 @@ import {
   ShowMore, StatusChip, type MoreMenuItem,
 } from '../../../design';
 import { refusalText, useAccessActions, useInvitations, useMembers } from '../../../hooks/use-access';
-import { useMe } from '../../../hooks/use-me';
+import { permissionOf, useMe } from '../../../hooks/use-me';
 import { usePaged } from '../../../hooks/use-paged';
 import { ApiError } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
@@ -50,8 +50,9 @@ export function usePersonName(): (member: Pick<MemberRow, 'id' | 'label' | 'syst
 export function PeoplePage() {
   const me = useMe();
   const viewerId = me.data?.member?.id ?? null;
-  const isAdmin = me.data?.member?.role === 'admin';
-  const isOwner = isAdmin && me.data?.owner === true;
+  const peoplePermission = permissionOf(me.data, 'people');
+  const isAdmin = peoplePermission.allowed;
+  const isOwner = permissionOf(me.data, 'roles').allowed;
   const members = useMembers();
   const invitations = useInvitations({ enabled: isAdmin });
   const machines = useMachines({ enabled: isAdmin });
@@ -83,6 +84,7 @@ export function PeoplePage() {
         </>
       )}
     >
+      {!isAdmin && <p className="t-small text-muted">{peoplePermission.reason ?? 'An admin can manage people and invitations.'}</p>}
       <AdminSection id={PEOPLE_ANCHORS.people} title="People" description="Everyone who can sign in here. Myco’s own work signs in as Myco, which is not listed.">
         {members.isPending ? <LoadingState label="Reading the members" count={3} />
           : members.isError ? <ErrorState error={members.error} onRetry={() => void members.refetch()} />
@@ -93,7 +95,7 @@ export function PeoplePage() {
               viewerId={viewerId}
               isAdmin={isAdmin}
               isOwner={isOwner}
-              ownerMemberId={isOwner ? viewerId : null}
+              ownerMemberId={people.find((member) => member.effectiveRole === 'owner')?.id ?? null}
               nameOf={nameOf}
               machineCount={machineCount}
               machinesComplete={!machines.hasMore}
@@ -255,8 +257,8 @@ function PersonItem({ member, viewerId, machines, machinesComplete, showMachineC
       <div className="flex min-w-0 flex-1 flex-col gap-s1">
         <span className="flex flex-wrap items-center gap-s2">
           <span className="t-body font-medium text-ink">{name}</span>
-          {member.role === 'admin' && <StatusChip>Admin</StatusChip>}
-          {member.role === 'member' && <StatusChip>Member</StatusChip>}
+          {member.effectiveRole === 'owner' ? <StatusChip>Owner</StatusChip>
+            : member.role === 'admin' ? <StatusChip>Admin</StatusChip> : <StatusChip>Member</StatusChip>}
           {member.id === viewerId && name !== 'You' && <StatusChip>You</StatusChip>}
         </span>
         <span className="t-small text-muted">

@@ -58,7 +58,7 @@ export const runReads: ParityScenario = {
       expect(recorded).toEqual([{ sessionId, tokenId }]);
 
       await target.sql(`UPDATE members SET github_id = ${lit(MEMBER_ROLE_SUB)} WHERE id = ${lit(joined.memberId)}`);
-      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { sub: MEMBER_ROLE_SUB, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: MEMBER_ROLE_SUB, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
       const read = async (path: string) => {
         const res = await fetch(`${target.url}${path}`, { headers: { cookie, 'cf-connecting-ip': '1.2.3.4' } });
         return { status: res.status, body: await res.json() as Record<string, any> };

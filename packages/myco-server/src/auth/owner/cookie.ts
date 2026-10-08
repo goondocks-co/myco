@@ -8,6 +8,7 @@ export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** `sub` is the numeric GitHub account id as text — never the login, which is display only and may be stale after a rename. */
 export interface OwnerSession {
+  aud: string;
   sub: string;
   login: string;
   iat: number;
@@ -72,10 +73,10 @@ export async function signSession(secret: string, session: OwnerSession): Promis
 }
 
 /** The session carried by a well-signed, unexpired value, or null. */
-export async function verifySession(secret: string, value: string, now: number): Promise<OwnerSession | null> {
+export async function verifySession(secret: string, value: string, now: number, deploymentId: string): Promise<OwnerSession | null> {
   const session = await verifyPayload<OwnerSession>(secret, SESSION_TYP, value, now);
   if (session === null) return null;
-  if (typeof session.sub !== 'string' || typeof session.iat !== 'number') return null;
+  if (!deploymentId || session.aud !== deploymentId || typeof session.sub !== 'string' || typeof session.iat !== 'number') return null;
   return { ...session, login: typeof session.login === 'string' ? session.login : '' };
 }
 

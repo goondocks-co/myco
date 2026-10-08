@@ -29,7 +29,7 @@ async function rig() {
     expect(response.status).toBe(200);
     return await response.json() as { models?: ModelCatalog[]; recorded?: boolean; claimed?: boolean; run?: { profile: { resolvesTo?: string } } };
   };
-  const models = async () => (await json(await asOwner('/api/settings'))).models ?? [];
+  const models = async () => (await json(await asOwner(e.db, '/api/settings'))).models ?? [];
   return { ...e, now, token, json, models };
 }
 
@@ -147,7 +147,7 @@ describe('catalog availability from current machine offers', () => {
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
     await recordModelCatalog(r.db, { machineId: 'machine-1', catalog: catalog(r.now), now: r.now });
     const machine = async () => {
-      const response = await worker.fetch(await asOwner('/api/machines'), r.env);
+      const response = await worker.fetch(await asOwner(r.db, '/api/machines'), r.env);
       expect(response.status).toBe(200);
       const body = await response.json() as { machines: Array<{ machineId: string; offers: unknown; lastContactAt: number }> };
       return body.machines.find((row) => row.machineId === 'machine-1');

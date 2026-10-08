@@ -1,6 +1,6 @@
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
-import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction } from './auth/http-authorization.js';
+import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
 import type { AuthorizationDeclaration } from './auth/authorization.js';
 import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, handleMemberRawClaim, handleOwnershipPreview, handleOwnership, handleMemberOwnershipPreview, handleMemberOwnership } from './api/raw-claims.js';
 import type { RawAction, RawResource } from './core/raw-resources.js';
@@ -133,7 +133,7 @@ async function health(): Promise<Response> {
 }
 
 export const ROUTES: readonly Route[] = [
-  { authorization: httpPolicy('run', 'cancel', 'run'), method: 'POST', path: '/api/projects/{projectId}/runs/{runId}/cancel', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/cancel$/, auth: 'session', authority: 'member', handler: handleCancelRun },
+  { authorization: RUN_CANCEL_POLICY, method: 'POST', path: '/api/projects/{projectId}/runs/{runId}/cancel', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/cancel$/, auth: 'session', authority: 'member', handler: handleCancelRun },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/canopy-map', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/canopy-map$/, auth: 'session', authority: 'member', handler: handleProjectMap },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/search', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/search$/, auth: 'session', authority: 'member', handler: handleProjectSearch },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['public']), method: 'GET', path: '/health', auth: 'public', bodyMode: 'none', handler: health },

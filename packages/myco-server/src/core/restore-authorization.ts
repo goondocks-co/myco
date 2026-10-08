@@ -18,29 +18,40 @@ export class RestoreAuthorizationError extends Error {
   }
 }
 
+export type RestoreAdmission = { allowed: true; requiresOwner: boolean; code: null } | {
+  allowed: false; requiresOwner: boolean; code: RestoreAuthorizationError['code'];
+};
+
+/** Resolve the same actor and table authority used by preview and restore writes. */
+export async function restoreAdmission(db: RelationalStore, actor: RestoreAuthorization, tables: Iterable<string>): Promise<RestoreAdmission> {
+  const requiresOwner = [...tables].some(table => RESTORE_AUTHORITY_TABLES.has(table));
+  if (actor?.kind === 'recovery') return { allowed: true, requiresOwner, code: null };
+  if (actor?.kind !== 'member') return { allowed: false, requiresOwner, code: 'not_admin' };
+  const allowed = authorize(await memberSubject(db, actor.memberId, 'http'), requiresOwner ? 'owner' : 'admin', {
+    kind: requiresOwner ? 'member' : 'backup', deploymentId: await deploymentIdentity(db), exists: true,
+  });
+  if (allowed) return { allowed: true, requiresOwner, code: null };
+  if (!requiresOwner) return { allowed: false, requiresOwner, code: 'not_admin' };
+  const owner = await db.prepare('SELECT member_id FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null }>();
+  return { allowed: false, requiresOwner, code: owner?.member_id == null ? 'owner_pending' : 'not_owner' };
+}
+
 /** Admission precedes every restore write; each transaction retains the actor's current authority. */
 export async function authorizeRestore(db: RelationalStore, actor: RestoreAuthorization, tables: Iterable<string>): Promise<RelationalStore> {
   if (actor?.kind === 'recovery') return db;
-  if (actor?.kind !== 'member') throw new RestoreAuthorizationError('not_admin');
-  const requiresOwner = [...tables].some(table => RESTORE_AUTHORITY_TABLES.has(table));
-  const admitted = async (): Promise<boolean> => authorize(await memberSubject(db, actor.memberId, 'http'), requiresOwner ? 'owner' : 'admin', {
-    kind: requiresOwner ? 'member' : 'backup', deploymentId: await deploymentIdentity(db), exists: true,
-  });
-  const refusal = async (): Promise<RestoreAuthorizationError> => {
-    if (!requiresOwner) return new RestoreAuthorizationError('not_admin');
-    const owner = await db.prepare('SELECT member_id FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null }>();
-    return new RestoreAuthorizationError(owner?.member_id == null ? 'owner_pending' : 'not_owner');
-  };
-  if (!await admitted()) throw await refusal();
+  const tableNames = [...tables];
+  const admission = await restoreAdmission(db, actor, tableNames);
+  if (!admission.allowed) throw new RestoreAuthorizationError(admission.code);
   const originals = new WeakMap<PreparedStatement, PreparedStatement>();
-  const predicate = requiresOwner ? deploymentOwnerSql('?') : memberWritePredicate('?', 'NULL');
+  const predicate = admission.requiresOwner ? deploymentOwnerSql('?') : memberWritePredicate('?', 'NULL');
   const batch = async (statements: PreparedStatement[]): Promise<RunResult[]> => {
     const guard = db.prepare(`INSERT INTO restore_reference_guard (missing)
       SELECT 'restore authority changed' WHERE NOT (${predicate})`).bind(actor.memberId);
     try {
       return (await db.batch([guard, ...statements.map(statement => originals.get(statement) ?? statement)])).slice(1);
     } catch (error) {
-      if (!await admitted()) throw await refusal();
+      const current = await restoreAdmission(db, actor, tableNames);
+      if (!current.allowed) throw new RestoreAuthorizationError(current.code);
       throw error;
     }
   };

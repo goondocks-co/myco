@@ -4,9 +4,10 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
+import { authorize, machineResources, memberSubject } from '../auth/authorization.js';
 import { isAdmin } from '../auth/roles.js';
 import { renameMachine } from '../auth/enrollment.js';
-import { listMachines, machineActivity, machineInScope, type MachineScope } from '../read/machines.js';
+import { listMachines, machineActivity, machineInScope, type MachineRow, type MachineScope } from '../read/machines.js';
 import { revokeMachineCredentialsAsMember } from '../auth/tokens.js';
 import { paging } from './sessions.js';
 import { emit } from '../telemetry.js';
@@ -14,6 +15,10 @@ import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 
 /** The longest name a machine takes, in characters. */
 export const MACHINE_NAME_MAX = 64;
+
+/** A machine summary with the caller's credential Stop decision. */
+export type DashboardMachineRow = MachineRow & { canStop: boolean; stopReason: string | null };
+export type DashboardMachinesAnswer = Omit<Awaited<ReturnType<typeof listMachines>>, 'machines'> & { machines: DashboardMachineRow[] };
 
 /** Control, format, surrogate, private-use and unassigned code points, and line and paragraph separators. */
 const UNPRINTABLE = /[\p{C}\p{Zl}\p{Zp}]/u;
@@ -32,7 +37,14 @@ export function machineName(value: unknown): string | null {
 export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
-  return ok(await listMachines(env.db, ctx.now, machineScope(ctx), page));
+  const result = await listMachines(env.db, ctx.now, machineScope(ctx), page);
+  const subject = await memberSubject(env.db, ctx.member.id, 'http');
+  const resources = await machineResources(env.db, 'credential', result.machines.map((machine) => machine.machineId));
+  const machines: DashboardMachineRow[] = result.machines.map((machine, index) => {
+    const canStop = authorize(subject, 'edit', resources[index]!);
+    return { ...machine, canStop, stopReason: canStop ? null : "Only the owner can stop the owner's machines. You can stop your own." };
+  });
+  return ok({ ...result, machines } satisfies DashboardMachinesAnswer);
 }
 
 function machineScope(ctx: OwnerContext): MachineScope {

@@ -7,6 +7,7 @@
  * no sample would let a share drawn from eight sessions read like a share drawn
  * from eight thousand, which is the exact mistake the page exists to prevent.
  */
+import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -47,7 +48,7 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
 }
 
 const base = (extra: Record<string, () => Response> = {}) => ({
-  '/auth/me': () => Response.json(ME),
+  '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/attention': () => Response.json({ items: [], unavailable: [] }),
   '/api/backups': () => Response.json({ backups: [] }),

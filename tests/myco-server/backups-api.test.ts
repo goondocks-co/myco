@@ -18,9 +18,9 @@ const setup = () => {
 
 describe('the backup routes', () => {
   it('refuses oversized in-app exports with the operator backup command', async () => {
-    const { env, sqlite, bucket } = setup();
+    const { env, sqlite, bucket, db } = setup();
     sqlite.query('UPDATE projects SET name = ?').run('x'.repeat(2 * 1024 * 1024));
-    const response = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const response = await worker.fetch(await asOwnerPost(db, '/api/backups', {}), env);
     const answer = await response.json() as { reason: string };
     expect(response.status).toBe(400);
     expect(answer.reason).toContain('myco server backup --to <directory> --target <deployment-target>');
@@ -30,9 +30,9 @@ describe('the backup routes', () => {
   });
 
   it('refuses an uploaded multibyte artifact past the byte limit before restore', async () => {
-    const { env, sqlite } = setup();
+    const { env, sqlite, db } = setup();
     const artifact = '界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3));
-    const res = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact }), env);
+    const res = await worker.fetch(await asOwnerPost(db, '/api/backups/restore-upload', { artifact }), env);
     expect({ status: res.status, body: await res.json() }).toEqual({
       status: 400, body: { error: 'bad_request', reasonCode: 'invalid_request', reason: 'the artifact is past the byte bound this path serves' },
     });
@@ -40,7 +40,7 @@ describe('the backup routes', () => {
   });
 
   it('refuses an anonymous caller on every route', async () => {
-    const { env } = setup();
+    const { env, db } = setup();
     for (const [method, path] of [['POST', '/api/backups'], ['GET', '/api/backups'], ['POST', '/api/backups/bk_x/restore']] as const) {
       const res = await worker.fetch(new Request(`https://s${path}`, { method, headers: { 'cf-connecting-ip': '1.2.3.4' } }), env);
       expect({ path, status: res.status }).toEqual({ path, status: 401 });
@@ -50,64 +50,64 @@ describe('the backup routes', () => {
   it('creates, lists verified, previews, pins, and restores through the envelopes', async () => {
     const { env, db } = setup();
     await bootstrapOwnership(db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
-    const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const created = await worker.fetch(await asOwnerPost(db, '/api/backups', {}), env);
     const createdBody = await created.json() as { backup: { id: string }; pruned: number };
     expect({ status: created.status, pruned: createdBody.pruned }).toEqual({ status: 200, pruned: 0 });
     const id = createdBody.backup.id;
 
-    const listed = await worker.fetch(await asOwner('/api/backups'), env);
+    const listed = await worker.fetch(await asOwner(db, '/api/backups'), env);
     const listedBody = await listed.json() as { backups: Array<{ id: string; present: boolean; pinned: number }> };
     expect(listedBody.backups.map((b) => ({ id: b.id, present: b.present }))).toEqual([{ id, present: true }]);
 
-    const preview = await worker.fetch(await asOwnerPost(`/api/backups/${id}/restore-preview`, {}), env);
+    const preview = await worker.fetch(await asOwnerPost(db, `/api/backups/${id}/restore-preview`, {}), env);
     const previewBody = await preview.json() as { foreignLineage: boolean; header: { counts: Record<string, number> } };
     expect({ status: preview.status, foreign: previewBody.foreignLineage }).toEqual({ status: 200, foreign: false });
 
-    const pinned = await worker.fetch(await asOwnerPost(`/api/backups/${id}/pin`, { pinned: true }), env);
+    const pinned = await worker.fetch(await asOwnerPost(db, `/api/backups/${id}/pin`, { pinned: true }), env);
     expect({ status: pinned.status, body: await pinned.json() }).toEqual({ status: 200, body: { pinned: true } });
 
-    const restored = await worker.fetch(await asOwnerPost(`/api/backups/${id}/restore`, {}), env);
+    const restored = await worker.fetch(await asOwnerPost(db, `/api/backups/${id}/restore`, {}), env);
     const restoredBody = await restored.json() as { applied: boolean; tables: Record<string, { inserted: number }> };
     expect({ status: restored.status, applied: restoredBody.applied }).toEqual({ status: 200, applied: true });
     expect(Object.values(restoredBody.tables).every((t) => t.inserted === 0)).toBe(true);
   });
 
   it('answers 404 for an unknown id and refuses a malformed pin body', async () => {
-    const { env } = setup();
-    const missing = await worker.fetch(await asOwnerPost('/api/backups/bk_ghost/restore-preview', {}), env);
+    const { env, db } = setup();
+    const missing = await worker.fetch(await asOwnerPost(db, '/api/backups/bk_ghost/restore-preview', {}), env);
     expect(missing.status).toBe(404);
-    const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const created = await worker.fetch(await asOwnerPost(db, '/api/backups', {}), env);
     const id = ((await created.json()) as { backup: { id: string } }).backup.id;
-    const bad = await worker.fetch(await asOwnerPost(`/api/backups/${id}/pin`, { pinned: 'yes' }), env);
+    const bad = await worker.fetch(await asOwnerPost(db, `/api/backups/${id}/pin`, { pinned: 'yes' }), env);
     expect(bad.status).toBe(400);
   });
 
   it('serves the artifact for download, and restores an uploaded artifact through the same gates', async () => {
     const { env, db } = setup();
     await bootstrapOwnership(db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
-    const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const created = await worker.fetch(await asOwnerPost(db, '/api/backups', {}), env);
     const id = ((await created.json()) as { backup: { id: string } }).backup.id;
 
-    const artifact = await worker.fetch(await asOwner(`/api/backups/${id}/artifact`), env);
+    const artifact = await worker.fetch(await asOwner(db, `/api/backups/${id}/artifact`), env);
     const text = await artifact.text();
     expect({ status: artifact.status, jsonl: artifact.headers.get('content-type') }).toEqual({ status: 200, jsonl: 'application/jsonl' });
     expect(text.slice(0, text.indexOf('\n'))).toContain('"format":"myco-backup/1"');
 
     const other = setup();
     await bootstrapOwnership(other.db, 'mem_machine_1', 'mem_machine_1', '0', Date.now());
-    const refused = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: text }), other.env);
+    const refused = await worker.fetch(await asOwnerPost(other.db, '/api/backups/restore-upload', { artifact: text }), other.env);
     expect({ status: refused.status, error: ((await refused.json()) as { error: string }).error }).toEqual({ status: 409, error: 'foreign_lineage' });
 
-    const adopted = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: text, allowForeignLineage: true }), other.env);
+    const adopted = await worker.fetch(await asOwnerPost(other.db, '/api/backups/restore-upload', { artifact: text, allowForeignLineage: true }), other.env);
     expect({ status: adopted.status, applied: ((await adopted.json()) as { applied: boolean }).applied }).toEqual({ status: 200, applied: true });
 
-    const garbage = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: 'not a backup' }), other.env);
+    const garbage = await worker.fetch(await asOwnerPost(other.db, '/api/backups/restore-upload', { artifact: 'not a backup' }), other.env);
     expect(garbage.status).toBe(400);
   });
 
   it('answers 409 artifact_integrity on preview, restore and download for a stored artifact changed after creation, and serves its exact bytes once intact', async () => {
-    const { env, bucket, sqlite } = setup();
-    const created = await worker.fetch(await asOwnerPost('/api/backups', {}), env);
+    const { env, bucket, sqlite, db } = setup();
+    const created = await worker.fetch(await asOwnerPost(db, '/api/backups', {}), env);
     const backup = ((await created.json()) as { backup: { id: string; key: string; sha256: string } }).backup;
     const original = bucket.objects.get(backup.key)!;
     const changed = original.bytes.slice();
@@ -116,9 +116,9 @@ describe('the backup routes', () => {
 
     const message = `the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created; it was not previewed, restored or downloaded`;
     for (const request of [
-      await asOwnerPost(`/api/backups/${backup.id}/restore-preview`, {}),
-      await asOwnerPost(`/api/backups/${backup.id}/restore`, {}),
-      await asOwner(`/api/backups/${backup.id}/artifact`),
+      await asOwnerPost(db, `/api/backups/${backup.id}/restore-preview`, {}),
+      await asOwnerPost(db, `/api/backups/${backup.id}/restore`, {}),
+      await asOwner(db, `/api/backups/${backup.id}/artifact`),
     ]) {
       const res = await worker.fetch(request, env);
       expect({ path: new URL(request.url).pathname, status: res.status, body: await res.json() })
@@ -127,15 +127,15 @@ describe('the backup routes', () => {
     expect(sqlite.query('SELECT id, sha256 FROM backups').all()).toEqual([{ id: backup.id, sha256: backup.sha256 }]);
 
     bucket.objects.set(backup.key, original);
-    const artifact = await worker.fetch(await asOwner(`/api/backups/${backup.id}/artifact`), env);
+    const artifact = await worker.fetch(await asOwner(db, `/api/backups/${backup.id}/artifact`), env);
     const bytes = new Uint8Array(await artifact.arrayBuffer());
     expect({ status: artifact.status, sha256: createHash('sha256').update(bytes).digest('hex') }).toEqual({ status: 200, sha256: backup.sha256 });
   });
 
   it('admits an upload past the default owner body bound, refusing it only by what it is', async () => {
-    const { env } = setup();
+    const { env, db } = setup();
     const oversized = 'x'.repeat(400 * 1024);
-    const res = await worker.fetch(await asOwnerPost('/api/backups/restore-upload', { artifact: oversized }), env);
+    const res = await worker.fetch(await asOwnerPost(db, '/api/backups/restore-upload', { artifact: oversized }), env);
     expect({ status: res.status, reason: ((await res.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the artifact is not a backup this server can read' });
   });
 });

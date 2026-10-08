@@ -1,9 +1,11 @@
 import { isDeploymentOwner } from '../core/raw-claims.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { SessionContext } from '../context.js';
-import { IDENTITY_LINK_KEY_PATTERN, previewIdentityLinkAuthority, spendIdentityLinkAuthority, type IdentityLinkRefusal } from '../auth/identity-link.js';
+import { accountMembership, IDENTITY_LINK_KEY_PATTERN, previewIdentityLinkAuthority, spendIdentityLinkAuthority, type IdentityLinkRefusal } from '../auth/identity-link.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 import { nameMemberFromLogin } from '../auth/members-admin.js';
+import { deploymentIdentity, memberSubject } from '../auth/authorization.js';
+import { dashboardPermissions } from '../auth/dashboard-permissions.js';
 
 /**
  * `GET /auth/me`: the signed-in account, and the member it is linked to, or null. The one read that tells "signed in"
@@ -21,7 +23,11 @@ export async function handleMe(env: ServerEnv, ctx: SessionContext): Promise<Res
       member = ctx.member;
     }
   }
-  return ok({ sub: ctx.session.sub, login: ctx.session.login, member, owner: member !== null && await isDeploymentOwner(env.db, member.id) });
+  const subject = member === null
+    ? { kind: 'account' as const, deploymentId: await deploymentIdentity(env.db), transport: 'http' as const, live: true }
+    : await memberSubject(env.db, member.id, 'http');
+  const membership = await accountMembership(env.db, ctx.session.sub);
+  return ok({ sub: ctx.session.sub, login: ctx.session.login, member, membership, owner: member !== null && await isDeploymentOwner(env.db, member.id), permissions: dashboardPermissions(subject) });
 }
 
 const STATUS: Record<IdentityLinkRefusal, number> = { denied: 400, identity_taken: 409, member_linked: 409, member_revoked: 403, link_requires_admin: 403 };

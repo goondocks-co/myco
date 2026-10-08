@@ -3,6 +3,7 @@ import { ActionLink, Button, Dialog, DialogContent, DialogFooter, Disclosure, He
 import { useConnectUncaptured } from '../../hooks/use-uncaptured';
 import { ApiError } from '../../lib/api';
 import { memberLabel } from '../../lib/member-name';
+import { scopeOf, useMe } from '../../hooks/use-me';
 import { PROJECTS_PATH } from '../../routes/nav';
 import type { ConnectRefusalCode, UncapturedRootItem } from './wire';
 import { count, listed, repositoryMachine, repositoryWords } from './words';
@@ -43,6 +44,7 @@ const isRefusalCode = (code: string | undefined): code is ConnectRefusalCode => 
 export function refusalWords(error: unknown, item: UncapturedRootItem, viewerId: string | null): string {
   if (error instanceof ApiError) {
     if (isRefusalCode(error.code)) return REFUSAL_WORDS[error.code](item, viewerId);
+    if (error.status === 403) return 'Only the member this machine belongs to can connect its repositories.';
     if (error.status === 404) return 'It’s no longer waiting: it was connected already, or its machine left.';
     if (error.status === 400) return 'Myco couldn’t connect it to that project. Choose another.';
   }
@@ -56,6 +58,8 @@ export function RepositoryItem({ item, now, viewerId, admin, onConnect }: {
   const words = repositoryWords(item, now, viewerId);
   // An archived project holds it: nothing connects it until an admin restores that project.
   const archived = item.reason === 'archived';
+  const connectPermission = scopeOf(useMe().data, 'machineSettings');
+  const ownMachine = connectPermission.scope !== 'none' && item.member.id === viewerId;
   return (
     <li className="flex gap-s3 border-t border-line pt-s3 first:border-t-0 first:pt-0" data-needs-you-item={words.tone} data-repository="">
       <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone={words.tone} label={TONE_LABEL[words.tone]} /></span>
@@ -65,7 +69,8 @@ export function RepositoryItem({ item, now, viewerId, admin, onConnect }: {
         <p className="t-meta text-faint">{words.seen}</p>
         {archived
           ? admin && <ActionLink to={PROJECTS_PATH}>Open Projects →</ActionLink>
-          : <div><Button size="sm" onClick={() => onConnect(item)}>Connect {item.label}</Button></div>}
+          : ownMachine ? <div><Button size="sm" onClick={() => onConnect(item)}>Connect {item.label}</Button></div>
+            : <p className="t-small text-muted">{connectPermission.reason ?? 'Only the member this machine belongs to can connect it.'}</p>}
       </div>
     </li>
   );

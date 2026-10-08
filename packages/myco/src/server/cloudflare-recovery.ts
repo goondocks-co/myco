@@ -15,6 +15,7 @@ import { cloudflareOperation } from './cloudflare-operation.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { copyRecoveryBundle, copyRecoveryObjects, preparedObjectKeys, restoredFleet, verifyRecoveryBundle } from './recovery-bundle.js';
 import { prepareRecoveryCredentials } from './recovery-credentials.js';
+import { assertRecoveryTenantChoice, prepareRecoveredTenant, type RecoveryTenantMode } from '@myco-server-worker/core/recovered-tenant.js';
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
 import { stageCloudflareDeploy, stageCloudflareRecoveryBootstrap } from './cloudflare-stage.js';
 import {
@@ -37,6 +38,7 @@ const journalSchema = z.object({
   versionId: z.string().optional(), deployedAt: z.string().datetime().optional(),
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   newSignIn: z.boolean().default(false),
+  tenantMode: z.enum(['replacement', 'fork']).default('replacement'),
   vectorProvisioned: z.boolean().default(false),
   schemaUpdates: z.array(cloudflareSchemaUpdateSchema).optional(),
 });
@@ -51,18 +53,20 @@ async function databaseFingerprint(file: string): Promise<string> {
 
 /** Restore a fresh hosted Deployment; resource receipts survive interruption and no source resources are adopted. */
 export const restoreCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & {
-  source: string; secretsFile: string; newSignIn?: boolean; native?: NativeSqlite; fetch?: CloudflareFetch;
+  source: string; secretsFile: string; newSignIn?: boolean; tenantMode?: RecoveryTenantMode; sourceRetired?: boolean; native?: NativeSqlite; fetch?: CloudflareFetch;
 }): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true }> => {
+  assertRecoveryTenantChoice(options.tenantMode, options.sourceRetired);
   if (readDeploymentRecord(options.mycoHome) !== null) throw new Error('hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record');
   const root = ensureCommandDir(options.mycoHome);
   const journalFile = path.join(root, 'recovery.json');
   const journalEntry = fs.lstatSync(journalFile, { throwIfNoEntry: false });
   if (journalEntry !== undefined && !journalEntry.isFile()) throw new Error('hosted recovery journal must be a regular file');
   if (journalEntry === undefined && fs.readdirSync(root).length > 0) throw new Error('hosted recovery destination holds unrelated files; choose a fresh MYCO_HOME');
-  const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn);
+  const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn, options.tenantMode === 'fork');
   let journal = journalEntry === undefined ? undefined : journalSchema.parse(JSON.parse(fs.readFileSync(journalFile, 'utf8')));
   if (journal !== undefined && journal.accountId !== options.accountId) throw new Error('hosted recovery journal belongs to another Cloudflare account');
   if (journal !== undefined && journal.newSignIn !== (options.newSignIn ?? false)) throw new Error('resume hosted recovery with the same sign-in choice');
+  if (journal !== undefined && journal.tenantMode !== (options.tenantMode ?? 'replacement')) throw new Error('resume hosted recovery with the same tenant mode');
   if (journal?.pending !== undefined) throw new Error(`hosted recovery has an unconfirmed ${journal.pending} operation; reconcile the named replacement resource before retrying`);
 
   const artifact = path.join(root, 'recovery-source');
@@ -74,7 +78,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     journal = next;
   };
   if (journal === undefined) write({ format: 'myco-hosted-recovery/1', accountId: options.accountId, fingerprint,
-    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, recoveryBucketCreated: false, vectorCreated: false, vectorProvisioned: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false });
+    name: `myco-recovery-${randomBytes(12).toString('hex')}`, bucketCreated: false, recoveryBucketCreated: false, vectorCreated: false, vectorProvisioned: false, wrapKeyInstalled: false, newSignIn: options.newSignIn ?? false, tenantMode: options.tenantMode ?? 'replacement' });
   const held = () => journal!;
   const confirmed = (fields: Partial<Journal>) => {
     const { pending: _pending, ...prior } = held();
@@ -142,6 +146,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       const lifecycle = new Database(prepared);
       try {
         const store = sqliteRelationalStore(lifecycle);
+        await prepareRecoveredTenant(store, options.tenantMode ?? 'replacement', Date.now());
         await resetRecoveryLedger(store);
         await assignRestoreGeneration(store, crypto.randomUUID());
       } finally { lifecycle.close(); }

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
 import { useBackups, type BackupRow, type RestoreOutcome, type RestorePreview } from '../../../hooks/use-backups';
 import { useForgetUnsettledExport, useRecovery } from '../../../hooks/use-recovery';
@@ -23,6 +24,7 @@ const failure = (error: unknown): string => errorWords(error).title;
  * complete-recovery path the Deployment runs on its own clock.
  */
 export function BackupsSection() {
+  const backupPermission = permissionOf(useMe().data, 'backups');
   const backups = useBackups();
   const [confirming, setConfirming] = useState<{ row: BackupRow; preview: RestorePreview } | null>(null);
   const [adopt, setAdopt] = useState(false);
@@ -43,8 +45,9 @@ export function BackupsSection() {
       id={HEALTH_ANCHORS.backups}
       title="Backups"
       description="A backup made here holds up to 64 MiB of records for an additive restore. It reads records while the server runs, so it is not a consistent snapshot, and it leaves out attachment and transcript files, settings and secrets."
-      actions={<Button variant="primary" pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
+      actions={<Button variant="primary" disabled={!backupPermission.allowed} pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
     >
+      {!backupPermission.allowed && <p className="t-small text-muted">{backupPermission.reason ?? 'Only an admin can manage backups.'}</p>}
       <p className="max-w-measure t-small text-muted">
         For larger backups or a complete replacement, follow the{' '}
         <ExternalLink href={RECOVERY_PROCEDURE}>operator backup and recovery procedure</ExternalLink>.
@@ -67,13 +70,13 @@ export function BackupsSection() {
                 </div>
                 <span className="flex shrink-0 items-center gap-s1">
                   {row.present && (
-                    <a className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))} href={`/api/backups/${encodeURIComponent(row.id)}/artifact`} download>Download</a>
+                    backupPermission.allowed && <a className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))} href={`/api/backups/${encodeURIComponent(row.id)}/artifact`} download>Download</a>
                   )}
                   <MoreMenu
                     label={`More for the backup of ${backupDate(row.created_at)}`}
                     items={[
-                      { label: row.pinned === 1 ? 'Unpin' : 'Pin', disabled: backups.pin.isPending, onSelect: () => backups.pin.mutate({ id: row.id, pinned: row.pinned !== 1 }) },
-                      { label: 'Restore…', tone: 'danger', disabled: !row.present || backups.preview.isPending || backups.restore.isPending, onSelect: () => openRestore(row) },
+                      { label: row.pinned === 1 ? 'Unpin' : 'Pin', disabled: !backupPermission.allowed || backups.pin.isPending, onSelect: () => backups.pin.mutate({ id: row.id, pinned: row.pinned !== 1 }) },
+                      { label: 'Restore…', tone: 'danger', disabled: !backupPermission.allowed || !row.present || backups.preview.isPending || backups.restore.isPending, onSelect: () => openRestore(row) },
                     ]}
                   />
                 </span>
@@ -95,10 +98,12 @@ export function BackupsSection() {
         confirmLabel="Restore"
         tone="primary"
         pending={backups.restore.isPending}
+        confirmDisabled={confirming?.preview.restore?.allowed !== true}
         error={backups.restore.error !== null ? failure(backups.restore.error)
           : adoptAsked && !adopt ? 'Turn on the switch above to restore a backup from another server.' : null}
         onConfirm={() => {
           if (confirming === null) return;
+          if (confirming.preview.restore?.allowed !== true) return;
           if (confirming.preview.foreignLineage && !adopt) { setAdoptAsked(true); return; }
           backups.restore.mutate({ id: confirming.row.id, allowForeignLineage: adopt }, { onSuccess: (result) => { setOutcome(result); setConfirming(null); } });
         }}
@@ -106,6 +111,9 @@ export function BackupsSection() {
         {confirming !== null && (
           <>
             <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(confirming.preview.header.counts)}</p>
+            {confirming.preview.restore?.allowed !== true && (
+              <p className="t-small text-muted" data-restore-reason="">{confirming.preview.restore?.reason ?? 'Restore permission is unavailable. Refresh the preview.'}</p>
+            )}
             {confirming.preview.foreignLineage && (
               <div className="flex items-start gap-s3 rounded-control bg-warn-bg p-s3">
                 <Switch id="restore-adopt" checked={adopt} onCheckedChange={setAdopt} />
