@@ -19,8 +19,6 @@ jobs:
       - uses: ./.github/actions/ci-setup
       - run: npm run lint
       - run: node scripts/run-test-command.mjs node scripts/check-test-shards.mjs
-      # The docs site (myco.sh, including install.sh) deploys only from main;
-      # building it here keeps a broken page from silently blocking that deploy.
       - name: Build docs site
         working-directory: docs
         run: |
