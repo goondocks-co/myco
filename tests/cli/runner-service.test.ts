@@ -45,6 +45,40 @@ const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
 });
 
 describe('explicit runner service opt-in', () => {
+  it('status inventories legacy workers across homes without registration or a matching local unit', async () => {
+    const otherHome = path.join(root, 'other home');
+    installWorkerService({ ...deps(), mycoHome: otherHome, serverUrl: SERVER }, [], { runner: platform.runner });
+    for (const command of [run, worker]) {
+      for (const verb of ['status', 'doctor']) {
+        output.length = 0;
+        await command([verb], deps());
+        expect(output.join('\n')).toContain(`owning MYCO_HOME='${otherHome}'`);
+        expect(output.join('\n')).toContain(`MYCO_HOME='${otherHome}' myco worker uninstall --server '${SERVER}'`);
+      }
+    }
+    await enroll();
+    output.length = 0;
+    await run(['status'], deps());
+    expect(output.join('\n')).toContain(`owning MYCO_HOME='${otherHome}'`);
+  });
+
+  it('unnamed compatibility install inventories stopped legacy units without restarting them', async () => {
+    for (const url of [SERVER, 'https://second.example']) {
+      installWorkerService({ ...deps(), serverUrl: url }, [], { runner: platform.runner });
+    }
+    platform.loaded.clear(); platform.running.clear(); platform.commands.length = 0;
+    expect(await worker(['install'], deps())).toBe(true);
+    expect(platform.running.size).toBe(0);
+    expect(platform.commands).toEqual([]);
+    expect(output.join('\n')).toContain('No service changed');
+    expect(await worker(['install', '--server', SERVER], deps())).toBe(true);
+    expect(platform.running.size).toBe(1);
+    output.length = 0;
+    expect(await worker(['uninstall', '--server', SERVER], deps())).toBe(true);
+    expect(output.join('\n')).toContain('Membership and capture are unchanged; nothing else to remove.');
+    expect(output.join('\n')).not.toContain('dashboard');
+  });
+
   for (const mode of ['member only', 'runner only', 'both']) {
     for (const os_ of ['darwin', 'linux'] as const) {
       it(`${mode} installs only an enrolled runner on ${os_}`, async () => {

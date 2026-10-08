@@ -94,6 +94,8 @@ describe('the machine-wide worker lock', () => {
   it('equates loopback names, default ports and URL origin spellings', () => {
     expect(workerLockPath(lockDir, 'http://localhost:8787/')).toBe(workerLockPath(lockDir, LOOPBACK));
     expect(workerLockPath(lockDir, 'http://[::1]:8787')).toBe(workerLockPath(lockDir, LOOPBACK));
+    expect(workerLockPath(lockDir, 'http://0.0.0.0:8787')).toBe(workerLockPath(lockDir, LOOPBACK));
+    expect(workerLockPath(lockDir, `${URL_}/a`)).toBe(workerLockPath(lockDir, `${URL_}/b`));
     expect(workerLockPath(lockDir, 'https://MYCO.example:443/')).toBe(workerLockPath(lockDir, URL_));
   });
 
@@ -134,6 +136,19 @@ describe('the machine-wide worker lock', () => {
 });
 
 describe('a second worker for the same Deployment', () => {
+  it('refuses runner contact without Deployment identity before claiming', async () => {
+    let claims = 0;
+    const stopping = new AbortController();
+    const result = await runWorker(options({
+      signal: stopping.signal, deploymentId: 'dep-expected', compatibilityPath: '/runners/contact',
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'runner' } }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+        claims += 1; stopping.abort(); return idle();
+      }) as typeof fetch,
+    }));
+    expect(result.refused).toBe('unauthorized');
+    expect(claims).toBe(0);
+  });
   it('claims nothing while the first holds the Deployment, and takes over when it stops', async () => {
     const first = holdWorkerInstance(lockDir, [URL_]);
     if (!first.held) throw new Error('the lock should be free');

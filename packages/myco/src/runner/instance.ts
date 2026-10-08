@@ -25,10 +25,10 @@ export function workerLockDir(homeDir?: string): string {
   return path.join(defaultMycoHome(homeDir), 'worker', 'locks');
 }
 
-/** The lock a worker for the Deployment at `serverUrl` holds. */
+/** Origins share one lock, including path-prefixed addresses; wildcard and loopback hosts are equivalent. */
 export function workerLockPath(lockDir: string, serverUrl: string): string {
   const url = new URL(serverUrl);
-  if (['localhost', '[::1]', '127.0.0.1'].includes(url.hostname)) url.hostname = '127.0.0.1';
+  if (['localhost', '[::1]', '127.0.0.1', '0.0.0.0'].includes(url.hostname)) url.hostname = '127.0.0.1';
   return path.join(lockDir, `${deploymentKeyFor(url.origin)}.lock`);
 }
 

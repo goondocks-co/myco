@@ -169,4 +169,11 @@ A server started this way is verified end to end in the test suite: it comes up 
 
 Each release also runs its compiled Linux binary before publishing. The binary creates a server on a fresh directory and answers its health check.
 
-Turning captured sessions into knowledge (titles and summaries, extracted observations, the Canopy map and the seeded vault) is done by agent runs. `myco server run` starts a worker beside the server that claims those runs and drives a coding agent you are signed in to on that machine. No automated test runs that path against a real agent subscription yet, so expect rough edges there.
+Turning captured sessions into knowledge (titles and summaries, extracted observations, the Canopy map and the seeded vault) is done by agent runs. The owner explicitly enrolls a separate runner with `myco runner register <host>`, then starts it with `myco runner install --server <url>`. That runner claims the runs and drives supported coding agents already signed in on its machine. No automated test runs that path against a real agent subscription yet, so expect rough edges there.
+
+
+## Behavior change: explicit runner opt-in
+
+`myco server run` serves the Deployment without starting an agent executor, including after an upgrade. A native Deployment that relied on an in-process worker needs an explicitly enrolled runner to serve its queued agent work. On this machine or another, register against the Deployment's reachable address, then install its runner service. Developer laptops run no agent work by default.
+
+Startup and doctor name this next step. The dashboard reports queued work when no executor has checked in. Existing standalone legacy worker services keep running until the owner explicitly retires them; retiring one preserves membership and capture.

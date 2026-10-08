@@ -42,14 +42,13 @@ export interface DoctorCheck {
 /**
  * The worker login service for each Deployment the member home holds a
  * membership of: installed or not, held by the platform or not, and which
- * process on this machine serves the Deployment. A Deployment with no worker
- * attached anywhere leaves its runs queued, so a missing one warns.
+ * process on this machine serves the Deployment. Member-only machines need no executor.
  */
 export async function checkWorkerServices(vaultDir: string, deps: import('./worker-service.js').WorkerServiceDeps = {}): Promise<DoctorCheck[]> {
   const { resolveProjectRoot } = await import('../project-root.js');
   const { resolveMycoHome } = await import('../paths/home.js');
   const { deploymentUrl, listDeploymentMemberships } = await import('../member/registry.js');
-  const { describeWorkerService, workerServiceWords } = await import('./worker-service.js');
+  const { describeWorkerService, workerServiceWords, nativeDeploymentUrls } = await import('./worker-service.js');
   const { listWorkerUnits } = await import('../runner/service.js');
   const { resolveHomeDir } = await import('../paths/home.js');
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: resolveProjectRoot(vaultDir) });
@@ -57,12 +56,18 @@ export async function checkWorkerServices(vaultDir: string, deps: import('./work
     ...listDeploymentMemberships(mycoHome).map((membership) => deploymentUrl(membership.serverUrl)),
     ...listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform).filter((unit) => unit.mycoHome === mycoHome).flatMap((unit) => unit.serverUrl === null ? [] : [unit.serverUrl]),
   ]);
-  return [...urls].map((url) => {
+  const checks: DoctorCheck[] = [...urls].map((url) => {
     const service = describeWorkerService(url, { ...deps, mycoHome });
     const words = workerServiceWords(service);
     if (service?.installed === true) words.line = `legacy worker — uses member credential; ${words.line}`;
     return { name: 'Worker service', status: words.status, detail: `${url}: ${words.line}`, fixable: false };
   });
+  const nativeUrls = await (deps.ownDeploymentUrls ?? nativeDeploymentUrls)(mycoHome);
+  if (nativeUrls.length > 0) checks.push({
+    name: 'Agent execution', status: 'ok', fixable: false,
+    detail: `This native Deployment serves its queue without running agent work. To opt in this machine or another, run \`myco runner register ${nativeUrls[0]}\`, then \`myco runner install\`; use the Deployment's reachable address on another machine.`,
+  });
+  return checks;
 }
 
 /**

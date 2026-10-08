@@ -48,6 +48,9 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
         <span className="flex h-lh shrink-0 items-center"><HealthDot tone={headline.tone} label={headline.attached > 0 ? 'Running' : 'None running'} /></span>
         <span>{headline.line}</span>
       </p>
+      {workers.runsQueued > 0 && !workers.fleet.some((worker) => worker.lastSeenAt > 0 || worker.busy !== null) && (
+        <Card><p className="t-body text-ink-2">Work is waiting, but no machine has checked in to run it. Running this server does not run agent work. Its owner must explicitly enroll a runner on this machine or another.</p></Card>
+      )}
       {headline.attached === 0 && (
         <CommandBlock caption={`${ATTACH_WORDS.before} this command ${ATTACH_WORDS.after}`} command={ATTACH_WORDS.command} />
       )}

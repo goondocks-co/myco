@@ -338,7 +338,7 @@ export async function run(args: string[]): Promise<void> {
       if (command === 'run') {
         const started = await runLocalDeployment(paths);
         console.log(`Deployment serving on http://127.0.0.1:${started.port}`);
-        console.log('Agent execution is a separate opt-in: myco runner register <host>, then myco runner install.');
+        console.log(`Agent work requires an explicitly opted-in machine: on this machine or another, run \`myco runner register http://127.0.0.1:${started.port}\` (use this Deployment's reachable address remotely), then \`myco runner install\`.`);
         // The process stays up until the platform signals it; `startDeployment`
         // owns the drain.
         await new Promise<never>(() => {});

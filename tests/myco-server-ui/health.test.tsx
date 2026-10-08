@@ -251,6 +251,15 @@ describe('Health', () => {
     expect(workers.textContent).toContain('No machine is running Myco’s work.');
   });
 
+  it('makes queued work with no executor contact an explicit owner opt-in', async () => {
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 2, recentWithinMs: 90_000, fleet: [] } }) }));
+    mount();
+    const workers = await screen.findByRole('region', { name: 'Workers' });
+    expect(await within(workers).findByText(/Work is waiting, but no machine has checked in to run it/)).toBeTruthy();
+    expect(workers.textContent).toContain('Running this server does not run agent work.');
+    expect(workers.textContent).toContain('on this machine or another');
+  });
+
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
     const { posts } = server(routes({
       '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),

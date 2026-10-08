@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
-import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership } from '../member/registry.js';
+import { readDeploymentMembership } from '../member/registry.js';
 import { unboundedBudget } from '../member/budget.js';
 import { refreshMembership } from '../member/refresh.js';
 import { offerOf, WITHHELD_REASON } from '../runner/detect.js';
@@ -17,11 +17,11 @@ import { listRunnerRecords, readRunnerRecord } from '../runner/runner-registry.j
 import { workerLockPath, workerLockDir } from '../runner/instance.js';
 import { workerServiceSpec, workerServiceUnit } from '../runner/service.js';
 import { reloadServiceDetached, startService, type ServiceSpec } from '../server/service.js';
-import { describeWorkerService, ensuredWorkerWords, ensureWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
+import { describeWorkerService, removeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 import { harnessesNamed, parseFlags } from './flags.js';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { run as runRunnerCli } from './runner.js';
-import { LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from './runner-service.js';
+import { LEGACY_WORKER_WORDS, legacyWorkerInventory } from './runner-service.js';
 import { executionDeploymentUrls } from './worker-service.js';
 import { listWorkerUnits } from '../runner/service.js';
 import { resolveHomeDir } from '../paths/home.js';
@@ -37,41 +37,6 @@ stopped with myco worker uninstall --server <url>. Its credential never switches
 when runner authentication fails. --detect lists local harnesses.
 `;
 
-/** The Deployments a service verb acts on: the one named, else every one this home holds a membership of. */
-function serversFor(flags: Map<string, string>, mycoHome: string): string[] | { error: string } {
-  const named = flags.get('server');
-  if (named === 'true') return { error: '--server needs the Deployment\'s address' };
-  if (named !== undefined) return [deploymentUrl(named)];
-  const held = listDeploymentMemberships(mycoHome).map((m) => deploymentUrl(m.serverUrl));
-  return held.length > 0 ? held : { error: `this machine holds no Deployment membership in ${mycoHome}. Run \`myco login\` first.` };
-}
-
-async function runServiceVerb(verb: 'install' | 'uninstall' | 'status', args: string[], deps: WorkerServiceDeps): Promise<boolean> {
-  const { flags } = parseFlags(args);
-  const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: process.cwd() });
-  const scoped = { ...deps, mycoHome };
-  const servers = serversFor(flags, mycoHome);
-  if ('error' in servers) { console.error(`myco worker ${verb}: ${servers.error}`); return false; }
-  let ok = true;
-  for (const url of servers) {
-    if (verb === 'install') {
-      const words = ensuredWorkerWords(await ensureWorkerService(url, { ...scoped, force: flags.get('force') === 'true' }));
-      console.log(`${url}: ${words.line}`);
-      ok = words.ok && ok;
-    } else if (verb === 'uninstall') {
-      const removed = removeWorkerService(url, scoped);
-      console.log('unsupported' in removed
-        ? `${url}: ${removed.unsupported}`
-        : removed.removed ? `${url}: worker service removed.` : `${url}: no worker service was installed.`);
-    } else {
-      const words = workerServiceWords(describeWorkerService(url, scoped));
-      console.log(`${url}: ${words.line}`);
-      ok = words.status === 'ok' && ok;
-    }
-  }
-  return ok;
-}
-
 const SERVICE_VERBS = new Set(['install', 'uninstall', 'status', 'doctor']);
 
 export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDeps = {}): Promise<boolean> {
@@ -80,19 +45,27 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
   const { flags } = parseFlags(args);
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const named = flags.get('server');
-  const legacyUnits = listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform ?? process.platform).filter((unit) => unit.mycoHome === mycoHome);
+  const machineLegacyUnits = listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform ?? process.platform);
+  const legacyUnits = machineLegacyUnits.filter((unit) => unit.mycoHome === mycoHome);
   const legacyUrls = legacyUnits.flatMap((unit) => unit.serverUrl === null ? [] : [unit.serverUrl]);
   const legacyUrl = named === undefined || named === 'true' ? undefined : legacyUrls.find((url) => workerLockPath('', url) === workerLockPath('', named));
   const legacy = legacyUrl !== undefined;
   const verb = args[0];
+  if (verb === 'install' && named === undefined && machineLegacyUnits.length > 0) {
+    legacyWorkerInventory(deps).forEach(line => (deps.stdout ?? console.log)(line));
+    (deps.stdout ?? console.log)('No service changed. Restart a legacy unit only with --server <url>; new execution requires `myco runner register <host>`, then `myco runner install`.');
+    return true;
+  }
   if (verb !== undefined && SERVICE_VERBS.has(verb)) {
     if (legacy || (named === undefined && legacyUrls.length > 0)) {
+      if (verb === 'status' || verb === 'doctor') legacyWorkerInventory(deps).forEach(line => (deps.stdout ?? console.log)(line));
       let ok = true;
       for (const url of named === undefined ? legacyUrls : [legacyUrl!]) {
         (deps.stdout ?? console.log)(`${url}: ${LEGACY_WORKER_WORDS}`);
         if (verb === 'uninstall') {
-          ok = await runServiceVerb('uninstall', ['--server', url], deps) && ok;
-          console.log(RUNNER_IDENTITY_REMAINS);
+          const removed = removeWorkerService(url, { ...deps, mycoHome });
+          (deps.stdout ?? console.log)('unsupported' in removed ? `${url}: ${removed.unsupported}` : `${url}: ${removed.removed ? 'legacy worker service stopped and removed' : 'no legacy worker service was installed'}. Membership and capture are unchanged; nothing else to remove.`);
+          ok = !('unsupported' in removed) && ok;
         } else {
           if (verb === 'install') {
             const found = legacyUnits.find((unit) => unit.serverUrl === url);
@@ -163,8 +136,8 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
 /** What a terminal refusal means for a person. */
 const TERMINAL_WORDS: Readonly<Record<TerminalRefusal, string>> = {
   not_admin: 'this membership is not an administrator\'s, so it cannot run work for the Deployment. No worker runs here until an administrator\'s machine installs one.',
-  unauthorized: `the Deployment does not accept this machine's credential: ${REJOIN_HINT}, then run \`myco worker install\`.`,
-  no_membership: 'this home holds no membership of the Deployment. Run `myco login`, then `myco worker install`.',
+  unauthorized: `the Deployment does not accept this machine's credential: ${REJOIN_HINT}.`,
+  no_membership: 'this home holds no membership of the Deployment. Run `myco login`.',
 };
 
 /**

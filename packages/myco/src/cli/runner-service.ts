@@ -14,15 +14,20 @@ export type RunnerServiceDeps = RunnerCliDeps & WorkerServiceDeps;
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
 export const RUNNER_IDENTITY_REMAINS = 'The Deployment identity remains; remove it on the dashboard.';
 
+/** Every legacy unit names its owning home and its explicit retirement command. */
+export function legacyWorkerInventory(deps: RunnerServiceDeps): string[] {
+  const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+  return listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform).map((unit) =>
+    unit.mycoHome === null || unit.serverUrl === null
+      ? `${LEGACY_WORKER_WORDS}: unit ${unit.unitFile} has unreadable ownership; inspect its owning home before retiring it`
+      : `${unit.serverUrl}: ${LEGACY_WORKER_WORDS}; owning MYCO_HOME=${quote(unit.mycoHome)}; retire with \`MYCO_HOME=${quote(unit.mycoHome)} myco worker uninstall --server ${quote(unit.serverUrl)}\``);
+}
+
 /** Legacy units cannot prove their Deployment identity across origins; explicit retirement precedes runner execution. */
 export function runnerExecutionRefusal(deps: RunnerServiceDeps): string | null {
-  const legacy = listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform);
+  const commands = legacyWorkerInventory(deps);
   const unclassified = unclassifiedWorkerHolders(deps.lockDir ?? workerLockDir(deps.home));
-  if (legacy.length === 0 && unclassified.length === 0) return null;
-  const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-  const commands = legacy.map((unit) => unit.mycoHome === null || unit.serverUrl === null
-    ? `unit ${unit.unitFile} has unreadable ownership; inspect its owning home before retiring it`
-    : `\`MYCO_HOME=${quote(unit.mycoHome)} myco worker uninstall --server ${quote(unit.serverUrl)}\``);
+  if (commands.length === 0 && unclassified.length === 0) return null;
   if (unclassified.length > 0) commands.push(`stop the foreground executor in its owning terminal (process ${unclassified.map((holder) => holder.pid > 0 ? holder.pid : 'unknown').join(', ')}); its Deployment identity is unverified`);
   return `${LEGACY_WORKER_WORDS} or unclassified executor remains on this machine. Its identity across origin aliases is unverified; let active work finish, then explicitly stop and remove it in its owning home: ${commands.join('; ')}. No service changed.`;
 }
@@ -38,6 +43,7 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
   const server = named === undefined ? undefined : runnerServerUrl(named);
   if (named !== undefined && (named === 'true' || server === null)) return fail(RUNNER_ADDRESS_RULE);
   const records = listRunnerRecords(mycoHome);
+  if (verb === 'status' || verb === 'doctor') legacyWorkerInventory(deps).forEach(line => out(line));
   const urls = server === undefined ? records.map((record) => record.serverUrl) : [server!];
   if (urls.length === 0) return fail('no runner registration in this home; run `myco runner register <host>` first');
   if (verb === 'install' && urls.length > 1) return fail('registered with multiple Deployments; name one with --server <url>');
