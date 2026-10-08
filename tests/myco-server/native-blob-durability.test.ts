@@ -9,6 +9,27 @@ import { sqliteEnv } from './helpers/fixtures.js';
 
 const body = () => new Blob(['durable body']).stream();
 
+describe('native blob range reads', () => {
+  it('preserves the requested suffix when a response consumes the stream', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myco-blob-range-'));
+    try {
+      const store = diskBlobStore(root);
+      const prefix = 'prefix\n'.repeat(459);
+      const suffix = 'suffix\n'.repeat(404);
+      const content = prefix + suffix;
+      await store.put('project/content', new Blob([content]).stream());
+      for (const offset of [0, prefix.length, content.length]) {
+        const object = await store.get('project/content', { range: { offset } });
+        expect(object?.size).toBe(content.length);
+        const received = await new Response(object!.body).arrayBuffer();
+        expect(new TextDecoder().decode(received)).toBe(content.slice(offset));
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('blob publication durability', () => {
   it('acknowledges native publication after syncing the file and its directory entry', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'myco-blob-durable-'));

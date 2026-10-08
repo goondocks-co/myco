@@ -17,7 +17,7 @@
 # Cloudflare Containers run amd64; the platform builds/pulls accordingly.
 # Build first:
 #   npm run harness:bundle   (in packages/myco-server)
-ARG BUN_VERSION=1.4.0
+ARG BUN_VERSION=1.4.2
 FROM oven/bun:${BUN_VERSION}-slim
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates util-linux git ripgrep \
   && rm -rf /var/lib/apt/lists/*
