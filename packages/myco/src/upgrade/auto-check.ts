@@ -46,7 +46,7 @@ import { isDefaultMycoHome } from '../grove/paths.js';
 import type { Logger } from '../daemon/logger.js';
 import type { JobRunContext, JobOutcome } from '../daemon/job-runner.js';
 import type { ReleaseChannel } from '../constants/update.js';
-import { selectChannelRelease } from '../../scripts/release-policy.mjs';
+import { selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import type { AssetRefs } from './release-assets.js';
 
 // ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ export async function checkAndStage(
 
   const { targetVersion } = refs;
 
-  const isV2 = (semver.parse(currentVersion)?.major ?? 0) >= 2;
+  const isV2 = isV2Version(currentVersion);
   const eligible = isV2
     ? selectChannelRelease([{ tag_name: `myco/v${targetVersion}`, prerelease: semver.prerelease(targetVersion) !== null, assets: [] }], channel) !== null
     : (semver.parse(targetVersion)?.major ?? 0) < 2;
@@ -312,7 +312,7 @@ export function resolveNewestStagedVersion(
   const candidates = entries
     .filter((entry) => semver.valid(entry) !== null)
     .filter((entry) => semver.gt(entry, currentVersion))
-    .filter((entry) => (semver.parse(currentVersion)?.major ?? 0) < 2
+    .filter((entry) => !isV2Version(currentVersion)
       ? (semver.parse(entry)?.major ?? 0) < 2
       : selectChannelRelease([{ tag_name: `myco/v${entry}`, prerelease: semver.prerelease(entry) !== null, assets: [] }], channel, { currentVersion }) !== null)
     // Skip versions whose adopt already failed (marker in the slot) — otherwise a

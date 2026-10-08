@@ -2,6 +2,7 @@ import type { ReleaseChannel } from '../src/constants/update.js';
 import type { GitHubRelease } from '../src/upgrade/release-assets.js';
 export const RELEASE_POLICY: {
   versionPattern: string;
+  developmentPattern: string;
   phases: Record<string, number>;
   channels: Record<ReleaseChannel, readonly string[]>;
   order: readonly string[];
@@ -21,3 +22,6 @@ export function selectChannelRelease<T extends GitHubRelease>(releases: T[], cha
   maximumMajor?: number;
 }): T | null;
 export function renderReleaseSelector(): string;
+
+export function isDevelopmentVersion(version: string): boolean;
+export function isV2Version(version: string): boolean;

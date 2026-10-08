@@ -82,7 +82,7 @@ let artifacts: string;
  * does not run, and two builds that record every other command they are given in `$MYCO_HOME/commands.log`, one
  * answering it and one failing it.
  */
-const sources = { tampered: '', unlisted: '', broken: '', recording: '', refusing: '', slow: '', stalling: '' };
+const sources = { tampered: '', unlisted: '', broken: '', recording: '', refusing: '', slow: '', stalling: '', legacyRecording: '' };
 beforeAll(() => {
   artifacts = tmp('myco-install-artifacts-');
   if (!HAS_CC) return;
@@ -109,14 +109,14 @@ beforeAll(() => {
   sums(build(sources.unlisted, 'puts("2.0.0-beta.1"); return 0;'), 'myco-plan9-x64');
   sources.broken = path.join(artifacts, 'broken');
   sums(build(sources.broken, 'return 1;'));
-  const recorder = (dir: string, exit: number): string => {
+  const recorder = (dir: string, exit: number, version = '2.0.0-beta.2'): string => {
     fs.mkdirSync(dir, { recursive: true });
     const source = path.join(dir, 'recorder.c');
     fs.writeFileSync(source, `#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 int main(int argc, char **argv) {
-  if (argc > 1 && strcmp(argv[1], "--version") == 0) { puts("2.0.0-beta.2"); return 0; }
+  if (argc > 1 && strcmp(argv[1], "--version") == 0) { puts("${version}"); return 0; }
   const char *home = getenv("MYCO_HOME");
   char file[4096];
   snprintf(file, sizeof file, "%s/commands.log", home ? home : "/nonexistent");
@@ -136,6 +136,8 @@ int main(int argc, char **argv) {
   sums(recorder(sources.recording, 0));
   sources.refusing = path.join(artifacts, 'refusing');
   sums(recorder(sources.refusing, 3));
+  sources.legacyRecording = path.join(artifacts, 'legacy-recording');
+  sums(recorder(sources.legacyRecording, 0, '1.4.8'));
   const compiled = (dir: string, program: string): string => {
     fs.mkdirSync(dir, { recursive: true });
     const source = path.join(dir, 'program.c');
@@ -206,6 +208,66 @@ describe('the Myco 2.0 installer', () => {
     const marker = JSON.parse(fs.readFileSync(path.join(home, '.myco/install.json'), 'utf8'));
     expect(path.isAbsolute(marker.bin)).toBe(true);
     expect(fs.realpathSync(marker.bin)).toBe(path.join(home, 'tools/myco'));
+  });
+
+  it.skipIf(!HAS_CC)('preserves a recorded channel unless the environment or flag explicitly changes it', () => {
+    const home = freshHome();
+    const marker = path.join(home, '.myco/install.json');
+    expect(install(home, { ...FROM(), MYCO_CHANNEL: 'alpha' }).status).toBe(0);
+    expect(install(home, FROM()).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(marker, 'utf8')).channel).toBe('alpha');
+    expect(install(home, { ...FROM(), MYCO_CHANNEL: 'beta' }).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(marker, 'utf8')).channel).toBe('beta');
+    expect(install(home, FROM(), ['--channel', 'stable']).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(marker, 'utf8')).channel).toBe('stable');
+    fs.writeFileSync(marker, '{broken');
+    expect(install(home, FROM()).status).toBe(1);
+    expect(fs.readFileSync(marker, 'utf8')).toBe('{broken');
+  });
+
+  it.skipIf(!HAS_CC)('keeps the old complete marker when atomic publication fails', () => {
+    const home = freshHome();
+    expect(install(home, { ...FROM(), MYCO_CHANNEL: 'alpha' }).status).toBe(0);
+    const marker = path.join(home, '.myco/install.json');
+    const before = fs.readFileSync(marker, 'utf8');
+    const bin = toolbox(tmp('myco-marker-tools-'), { jq: false });
+    const mv = fs.readlinkSync(path.join(bin, 'mv'));
+    fs.unlinkSync(path.join(bin, 'mv'));
+    fs.writeFileSync(path.join(bin, 'mv'), `#!/bin/sh
+last=''; for arg do last="$arg"; done
+if [ "$last" = '${marker}' ]; then cat '${marker}' > '${home}/observed-marker'; exit 72; fi
+exec '${mv}' "$@"
+`, { mode: 0o755 });
+    expect(install(home, { ...FROM(), MYCO_CHANNEL: 'beta' }, [], bin).status).toBe(72);
+    expect(fs.readFileSync(path.join(home, 'observed-marker'), 'utf8')).toBe(before);
+    expect(fs.readFileSync(marker, 'utf8')).toBe(before);
+    expect(fs.readdirSync(path.dirname(marker)).filter(name => name.startsWith('.install.json-'))).toEqual([]);
+  });
+
+  it.skipIf(!HAS_CC)('keeps the 1.4 service, Team Host, beta and login hand-off paths', () => {
+    for (const hostname of [['--hostname', 'fixture-host'], ['--hostname=fixture-host']]) {
+      const home = freshHome();
+      const mycoHome = path.join(home, '.myco');
+      const run = install(home, { MYCO_HOME: mycoHome, MYCO_CHANNEL: 'beta',
+        MYCO_INSTALL_FROM: sources.legacyRecording, MYCO_INSTALL_VERSION: '1.4.8' }, ['--serve', ...hostname]);
+      expect(run.status).toBe(0);
+      expect(fs.readFileSync(path.join(mycoHome, 'commands.log'), 'utf8')).toBe('service install\nhost enable --hostname fixture-host --designate-default --emit-join\n');
+      expect(run.out).toContain('myco login <link>');
+      expect(run.out).toContain('myco server create');
+    }
+    const home = freshHome();
+    const bin = toolbox(tmp('myco-legacy-platform-'), { jq: false });
+    fs.unlinkSync(path.join(bin, 'uname'));
+    fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/sh\nif [ "$1" = -s ]; then echo Linux; else echo x86_64; fi\n', { mode: 0o755 });
+    const local = tmp('myco-legacy-linux-');
+    const file = path.join(local, 'myco-linux-x64');
+    fs.copyFileSync(path.join(sources.legacyRecording, `myco-${TARGET}`), file);
+    fs.writeFileSync(path.join(local, 'SHA256SUMS'), `${crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  myco-linux-x64\n`);
+    const run = install(home, { MYCO_HOME: path.join(home, '.myco'), MYCO_INSTALL_FROM: local, MYCO_INSTALL_VERSION: '1.4.8' }, [], bin);
+    expect(run.status).toBe(0);
+    expect(run.out).toContain('Linux support is beta.');
+    fs.writeFileSync(path.join(bin, 'uname'), '#!/bin/sh\necho MSYS_NT-10.0\n');
+    expect(install(freshHome(), {}, [], bin).out).toContain('irm https://myco.sh/install.ps1 | iex');
   });
 
   describe('on a machine already joined to a Deployment', () => {
@@ -402,7 +464,7 @@ describe('the Myco 2.0 installer', () => {
   });
 
   it('refuses the Myco 1.4 Team Host option and points at self-hosting', () => {
-    const run = install(freshHome(), {}, ['--serve']);
+    const run = install(freshHome(), FROM(), ['--serve']);
     expect(run.status).toBe(1);
     expect(run.out).toContain('docs/self-hosting.md');
   });
@@ -486,11 +548,14 @@ describe('the Myco 2.0 installer', () => {
           const run = pick([...afterGa, ...malformed.map((t) => release(t))], 'beta');
           expect(run.out).toContain('Found: myco/v2.1.0-beta.1');
         });
-        it('says Myco 2.0 is not released yet, and exits non-zero, when no 2.x exists', () => {
+        it('alpha refuses absent 2.x; beta keeps its 1.x install path', () => {
           const onlyOld = pick([release('myco/v1.4.8'), release('myco/v1.5.0-beta.1', true), release('myco/v2.0.0', false, true)], 'beta');
-          expect(onlyOld.status).toBe(1);
-          expect(onlyOld.out).toContain('No Myco 2.x release found: Myco 2.0 has not been released yet, so there is nothing to install.');
-          expect(onlyOld.out).toContain('https://github.com/goondocks-co/myco/releases');
+          expect(onlyOld.status).toBe(0);
+          expect(onlyOld.out).toContain('myco/v1.5.0-beta.1');
+          const alpha = pick([release('myco/v1.4.8')], 'alpha');
+          expect(alpha.status).toBe(1);
+          expect(alpha.out).toContain('No Myco 2.x release found: Myco 2.0 has not been released yet, so there is nothing to install.');
+          expect(alpha.out).toContain('https://github.com/goondocks-co/myco/releases');
         });
         it('reaches GitHub over HTTPS and TLS 1.2 or newer only', () => {
           const log = path.join(tmp('myco-install-curl-'), 'calls');

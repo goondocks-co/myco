@@ -2,12 +2,9 @@
  * Install-marker helpers, plus a re-export of the canonical managed-binary path
  * layout.
  *
- * The PATH layout itself lives in ONE plain-ESM module — `scripts/managed-paths.mjs`
- * — which is imported BOTH here (compiled into the bun binary) AND by the npm
- * postinstall (`scripts/select-binary.mjs`). Sharing one module is what keeps
- * the JS and TS copies from drifting; the historical duplication is what let
- * the doubled-path (`~/.myco/.myco/bin`) bug ship. See that module for the
- * `home` → `mycoHome` convention (callers pass the resolved myco-home).
+ * Path layout and marker publication live in shared plain-ESM modules under
+ * scripts/, used by both the compiled binary and npm postinstall. Callers
+ * pass the resolved myco-home to the path helpers.
  *
  * Note: the *running* binary is resolved elsewhere via the existing
  * `resolveManagedBinaryPath()` in `symbionts/installer.ts`; this module only
@@ -18,6 +15,7 @@ import { RELEASE_CHANNELS, type ReleaseChannel } from '@myco/constants/update';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { writeInstallMarker as publishInstallMarker } from '../../scripts/install-marker.mjs';
 
 export {
   managedBinDir,
@@ -43,8 +41,7 @@ export interface InstallMarker {
  * `dir` is the `.myco` home directory (e.g. `~/.myco`).
  */
 export function writeInstallMarker(dir: string, marker: InstallMarker): void {
-  fs.mkdirSync(dir, { recursive: true });
-  atomicWriteFileSync(path.join(dir, 'install.json'), JSON.stringify(marker, null, 2), 'utf8');
+  publishInstallMarker(dir, marker, (file, text) => atomicWriteFileSync(file, text, 'utf8'));
 }
 
 /** Read the install marker; strict callers refuse damaged or inaccessible authority. */

@@ -59,6 +59,36 @@ describe('select-binary convergeNpmInstall', () => {
     expect(typeof convergeNpmInstall).toBe('function');
   });
 
+  it('refuses 2.0 over unmoved 1.4 vaults before copying or publishing any marker', () => {
+    const fixture = makeFixture(); fixtures.push(fixture);
+    const { mycoHome, resolvedBinary } = fixture;
+    const vault = path.join(mycoHome, 'groves', 'fixture', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'legacy vault');
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
+    const versionedDest = versionBinaryPath(mycoHome, PLATFORM, '2.0.0-alpha.1');
+    const args = { mycoHome, platform: PLATFORM, resolvedBinary, dest, channel: 'alpha', version: '2.0.0-alpha.1', versionedDest };
+    expect(() => convergeNpmInstall(args)).toThrow('MYCO_REPLACE_LEGACY=1');
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(fs.existsSync(versionedDest)).toBe(false);
+    expect(fs.existsSync(path.join(mycoHome, 'install.json'))).toBe(false);
+    expect(convergeNpmInstall({ ...args, replaceLegacy: true }).copied).toBe(true);
+    expect(fs.existsSync(path.join(path.dirname(versionedDest), '.adopt-failed'))).toBe(true);
+    expect(fs.readFileSync(vault, 'utf8')).toBe('legacy vault');
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses an installed 1.x binary even in a member home', () => {
+    const fixture = makeFixture(); fixtures.push(fixture);
+    const { mycoHome, resolvedBinary } = fixture;
+    const dest = managedBinaryPath(mycoHome, PLATFORM);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const previous = '#!/bin/sh\necho 1.4.8\n';
+    fs.writeFileSync(dest, previous, { mode: 0o755 });
+    fs.mkdirSync(path.join(mycoHome, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(mycoHome, 'member/cutover.json'), '{}');
+    expect(() => convergeNpmInstall({ mycoHome, platform: PLATFORM, resolvedBinary, dest, channel: 'alpha', version: '2.0.0-alpha.1' })).toThrow('Nothing was replaced');
+    expect(fs.readFileSync(dest, 'utf8')).toBe(previous);
+  });
+
   it('places the binary in the versioned slot then copies to stable dest (a, a2, b)', () => {
     const fixture = makeFixture();
     fixtures.push(fixture);
@@ -178,6 +208,31 @@ describe('select-binary convergeNpmInstall', () => {
     expect(marker.source).toBe('npm');
     expect(marker.bin).toBe(dest);
     expect(marker.channel).toBe('beta');
+  });
+
+  it('propagates marker publication failure after placement', () => {
+    const fixture = makeFixture();
+    fixtures.push(fixture);
+    const dest = managedBinaryPath(fixture.mycoHome, PLATFORM);
+    expect(() => convergeNpmInstall({ mycoHome: fixture.mycoHome, platform: PLATFORM,
+      resolvedBinary: fixture.resolvedBinary, dest, channel: 'beta',
+      writeMarker: () => { throw new Error('marker publication failed'); },
+    })).toThrow('marker publication failed');
+  });
+
+  it('preserves the recorded channel when binary placement fails', () => {
+    const fixture = makeFixture();
+    fixtures.push(fixture);
+    fs.mkdirSync(fixture.mycoHome, { recursive: true });
+    const marker = path.join(fixture.mycoHome, 'install.json');
+    const before = JSON.stringify({ channel: 'alpha', source: 'curl', bin: '/old/myco' });
+    fs.writeFileSync(marker, before);
+    const result = convergeNpmInstall({ mycoHome: fixture.mycoHome, platform: PLATFORM,
+      resolvedBinary: path.join(fixture.mycoHome, 'missing'),
+      dest: managedBinaryPath(fixture.mycoHome, PLATFORM), channel: 'beta',
+    });
+    expect(result.copied).toBe(false);
+    expect(fs.readFileSync(marker, 'utf8')).toBe(before);
   });
 
   it('preserves a pre-existing managed-runtime pin (e)', () => {

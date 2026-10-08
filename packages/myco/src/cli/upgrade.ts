@@ -1,7 +1,7 @@
 /** `myco upgrade` resolves, verifies and adopts a binary within the selected channel. */
 
 import semver from 'semver';
-import { selectChannelRelease } from '../../scripts/release-policy.mjs';
+import { selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import { parseStrictFlags } from './args.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import {
@@ -209,7 +209,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     }
   }
 
-  const isV2 = (semver.parse(currentVersion)?.major ?? 0) >= 2;
+  const isV2 = isV2Version(currentVersion);
   if (isV2 && !selectChannelRelease([{ tag_name: `myco/v${refs.targetVersion}`, prerelease: semver.prerelease(refs.targetVersion) !== null, assets: [] }], channel, { currentVersion })) {
     console.log(`Channel target ${refs.targetVersion} is older or outside '${channel}'; staying put at ${currentVersion}.`);
     return;

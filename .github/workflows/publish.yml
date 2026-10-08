@@ -643,6 +643,7 @@ jobs:
       # below, once every asset is attached: an installer reading the releases
       # list never sees a release whose binaries or SHA256SUMS are still missing.
       - name: Create or update GitHub Release
+        id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
@@ -653,8 +654,13 @@ jobs:
 
           mapfile -t assets < release-assets.txt
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release edit "$TAG_NAME" --draft=true --title "$RELEASE_TITLE" --notes-file release-notes.md
+          if existing_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            case "$existing_draft" in
+              false) echo "published=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              true) ;;
+              *) echo "Invalid release draft status" >&2; exit 1 ;;
+            esac
+            gh release edit "$TAG_NAME" --title "$RELEASE_TITLE" --notes-file release-notes.md
             gh release upload "$TAG_NAME" "${assets[@]}" --clobber
           else
             create_args=(
@@ -675,7 +681,7 @@ jobs:
       # tags) and attach them to the GitHub Release under canonical asset names.
       # Additive: the .tgz upload above is untouched.
       - name: Download raw binaries artifact (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        if: needs.validate-tag.outputs.tag_prefix == 'myco' && steps.release.outputs.published != 'true'
         uses: actions/download-artifact@v8
         with:
           name: myco-raw-binaries
@@ -686,8 +692,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+          RELEASE_PUBLISHED: ${{ steps.release.outputs.published }}
         run: |
           set -euo pipefail
+          if [ "${RELEASE_PUBLISHED:-false}" = "true" ]; then exit 0; fi
 
           # The artifact was uploaded as a flat release-binaries/ dir in the build
           # job, so download-artifact roots extraction at raw-binaries-staging/ and
@@ -709,9 +717,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
+          RELEASE_PUBLISHED: ${{ steps.release.outputs.published }}
           IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
         run: |
           set -euo pipefail
+          if [ "${RELEASE_PUBLISHED:-false}" = "true" ]; then exit 0; fi
           publish_args=("$TAG_NAME" --draft=false)
           if [ "$IS_PRERELEASE" = "true" ]; then
             publish_args+=(--prerelease --latest=false)

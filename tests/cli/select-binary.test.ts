@@ -47,7 +47,7 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
   const scriptPath = path.join(scriptsDir, 'select-binary.mjs');
   fs.copyFileSync(SCRIPT_SOURCE, scriptPath);
   // The npm tarball carries the shared path and release-policy modules.
-  for (const file of ['managed-paths.mjs', 'release-policy.mjs']) {
+  for (const file of ['managed-paths.mjs', 'release-policy.mjs', 'home-role.mjs', 'install-marker.mjs']) {
     fs.copyFileSync(path.resolve('packages/myco/scripts', file), path.join(scriptsDir, file));
   }
 
@@ -94,6 +94,37 @@ describe('select-binary postinstall', () => {
       fs.rmSync(fixture.tmpDir, { recursive: true, force: true });
     }
     fixtures = [];
+  });
+
+  it('refuses a packaged 2.0 npm install into an unmoved legacy home before publishing a dispatch target', () => {
+    const fixture = makeFixture({ includeBinary: true });
+    fixtures.push(fixture);
+    fs.writeFileSync(path.join(fixture.pkgRoot, 'package.json'), JSON.stringify({ version: '2.0.0-alpha.1' }));
+    const vault = path.join(fixture.mycoHome, 'groves', 'legacy', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    fs.writeFileSync(vault, 'vault bytes');
+    const result = spawnSync(process.execPath, [fixture.scriptPath], {
+      cwd: fixture.pkgRoot, encoding: 'utf8', env: { ...fixture.scriptEnv, MYCO_REPLACE_LEGACY: '0' },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Myco 1.4 is on this machine');
+    expect(fs.readFileSync(vault, 'utf8')).toBe('vault bytes');
+    expect(fs.existsSync(path.join(fixture.pkgRoot, 'vendor', 'resolved.json'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.mycoHome, 'install.json'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.mycoHome, 'bin'))).toBe(false);
+  });
+
+  it('rejects invalid packaged version metadata before publishing a dispatch target', () => {
+    const fixture = makeFixture({ includeBinary: true });
+    fixtures.push(fixture);
+    fs.writeFileSync(path.join(fixture.pkgRoot, 'package.json'), JSON.stringify({ version: 'unknown' }));
+    const result = spawnSync(process.execPath, [fixture.scriptPath], {
+      cwd: fixture.pkgRoot, encoding: 'utf8', env: fixture.scriptEnv,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('not a valid release version');
+    expect(fs.existsSync(path.join(fixture.pkgRoot, 'vendor', 'resolved.json'))).toBe(false);
+    expect(fs.existsSync(path.join(fixture.mycoHome, 'install.json'))).toBe(false);
   });
 
   it('soft-skips missing binaries in a source checkout', () => {

@@ -4,31 +4,19 @@ For Myco 2.0, the installer records `alpha`, `beta`, or `stable` in `install.jso
 
 Release operators must publish the stable or next tag **first**, then delete old prerelease tags. Removing a prerelease before its replacement exists must not force installed machines onto an older stable release. Repoint npm prerelease dist-tags when retiring the corresponding releases. Releases require green main-push CI on the exact tagged SHA; alpha tags may be cut from main only after that gate passes.
 
-Myco keeps itself up to date. It's a self-contained native binary, and the local service self-updates from your release channel in the background while it's idle — no command to run, no Node required. The binary carries the CLI, local service, dashboard, agent connections, and built-in intelligence features.
+Myco 2.0 updates on demand. It runs no member update timer or local service. Check the recorded channel and adopt an eligible build with:
 
-## TL;DR
-
-Nothing to do — Myco upgrades itself automatically. When you want to take an update now rather than wait for the idle self-update, open the **Upgrade** section of the dashboard's **Settings** page and click **Upgrade & Restart**.
-
-For advanced or scripted use, a CLI is available:
-
-```bash
-myco upgrade                  # upgrade on the current channel
-myco upgrade --channel beta   # switch to and upgrade on the beta channel
+```sh
+myco upgrade --check
+myco upgrade
+myco upgrade --channel beta   # choose beta for this run only
 ```
 
-The dashboard is Myco's primary interface; the CLI is for bootstrap and advanced use.
+The updater verifies SHA256SUMS, atomically replaces the recorded binary destination, and refreshes the agents on a joined machine. It keeps the running build when no newer eligible release exists. Repeat installs preserve the recorded channel unless `MYCO_CHANNEL` or `--channel` explicitly changes it. A fresh install defaults to stable.
 
-## What the upgrade does
+## Myco 1.4 updates
 
-When Myco self-updates (automatically, from the Settings page's Upgrade section, or via `myco upgrade`):
-
-1. **Updates Myco's local service and dashboard** to the new version.
-2. **Refreshes supported agent connections** while preserving settings you already had in those agents.
-3. **Archives Myco-owned files from older per-project installs** instead of deleting them.
-4. **Keeps registered Groves and projects intact** and reports anything that needs attention through the dashboard and `myco doctor`.
-
-Project registration continues automatically as you use supported agents from git projects.
+Myco 1.4 retains its local service and background updater. Its dashboard Settings page offers **Upgrade & Restart**; `myco upgrade` is also available for explicit updates. The following migration and local-service guidance applies to 1.4 installations.
 
 ## v1.0: agent and embedding settings now live in the Grove
 

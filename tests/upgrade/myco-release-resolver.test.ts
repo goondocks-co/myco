@@ -6,10 +6,6 @@
  *   - by channel: fetch → pickRelease → resolveAssetRefs for this triple
  *   - returns null when no release matches / no asset for this platform
  *
- * Note: `resolveMycoBinaryUpdateRefsForVersion` (exact-version lookup for the
- * old `myco update --target-version` / self-reconcile intent path) was deleted
- * in the Task 9 refactor. Binary upgrades now use `resolveMycoBinaryUpdateRefs`
- * (channel-based) via the `initiateAdopt` / `myco upgrade` paths.
  */
 
 import { describe, it, expect } from 'bun:test';
@@ -37,11 +33,12 @@ function deps(releases: GitHubRelease[]): MycoReleaseResolverDeps {
   };
 }
 
-describe('resolveMycoBinaryUpdateRefs (by channel)', () => {
+describe('resolveMycoBinaryUpdateRefs (legacy channels)', () => {
   it('stable: resolves the highest non-prerelease release', async () => {
     const refs = await resolveMycoBinaryUpdateRefs(
       'stable',
       deps([release('myco/v1.4.0', false), release('myco/v1.5.0-beta.1', true)]),
+      '1.0.0',
     );
     expect(refs).toEqual({
       assetUrl: 'https://dl.test/myco/v1.4.0/myco-darwin-arm64',
@@ -55,13 +52,14 @@ describe('resolveMycoBinaryUpdateRefs (by channel)', () => {
     const refs = await resolveMycoBinaryUpdateRefs(
       'beta',
       deps([release('myco/v1.4.0', false), release('myco/v1.5.0-beta.1', true)]),
+      '1.0.0',
     );
     expect(refs?.targetVersion).toBe('1.5.0-beta.1');
     expect(refs?.sha256sumsUrl).toContain('SHA256SUMS');
   });
 
   it('returns null when no release matches the channel', async () => {
-    const refs = await resolveMycoBinaryUpdateRefs('stable', deps([release('myco/v1.0.0-beta.1', true)]));
+    const refs = await resolveMycoBinaryUpdateRefs('stable', deps([release('myco/v1.0.0-beta.1', true)]), '1.0.0');
     expect(refs).toBeNull();
   });
 
@@ -69,6 +67,7 @@ describe('resolveMycoBinaryUpdateRefs (by channel)', () => {
     const refs = await resolveMycoBinaryUpdateRefs(
       'stable',
       deps([release('myco-team/v9.9.9', false), release('myco/v1.2.0', false)]),
+      '1.0.0',
     );
     expect(refs?.targetVersion).toBe('1.2.0');
   });

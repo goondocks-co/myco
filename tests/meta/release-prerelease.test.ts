@@ -87,13 +87,14 @@ describe('a Myco 2.0 prerelease', () => {
   it('stays a draft until its binaries and SHA256SUMS are attached, and is made public last', () => {
     // The three release steps, run in order with a `gh` that records each call: the release is created as a draft, every
     // asset is uploaded to it, and only the last call makes it public.
-    for (const existing of [false, true]) {
+    for (const state of ['absent', 'draft', 'published']) {
+      const existing = state !== 'absent';
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-order-'));
       try {
         const bin = path.join(dir, 'bin');
         fs.mkdirSync(bin);
         const log = path.join(dir, 'gh.log');
-        fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "release view" ]; then exit ${existing ? 0 : 1}; fi\necho "$*" >> '${log}'\n`);
+        fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nif [ "$1 $2" = "release view" ]; then echo ${state === 'draft' ? 'true' : 'false'}; exit ${existing ? 0 : 1}; fi\necho "$*" >> '${log}'\n`);
         fs.chmodSync(path.join(bin, 'gh'), 0o755);
         if (spawnSync('sh', ['-c', 'command -v sha256sum']).status !== 0) {
           fs.writeFileSync(path.join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n');
@@ -105,14 +106,20 @@ describe('a Myco 2.0 prerelease', () => {
         }
         fs.writeFileSync(path.join(dir, 'release-assets.txt'), 'myco.tgz\n');
         fs.writeFileSync(path.join(dir, 'release-notes.md'), 'notes\n');
-        const env = { PATH: `${bin}:${process.env.PATH}`, TAG_NAME: 'myco/v2.0.0-beta.1', IS_PRERELEASE: 'true', RELEASE_TITLE: 'Myco 2.0.0-beta.1', GH_TOKEN: 'x' };
+        const env = { PATH: `${bin}:${process.env.PATH}`, TAG_NAME: 'myco/v2.0.0-beta.1', IS_PRERELEASE: 'true', RELEASE_TITLE: 'Myco 2.0.0-beta.1', GH_TOKEN: 'x', GITHUB_OUTPUT: path.join(dir, 'outputs'), RELEASE_PUBLISHED: state === 'published' ? 'true' : 'false' };
         for (const name of ['Create or update GitHub Release', 'Stage and upload raw binaries + SHA256SUMS (myco)', 'Publish the GitHub Release']) {
           const ran = spawnSync('bash', ['-c', step('create-release', name)], { cwd: dir, env, encoding: 'utf8' });
           expect({ name, status: ran.status, stderr: ran.stderr }).toEqual({ name, status: 0, stderr: '' });
         }
-        const calls = fs.readFileSync(log, 'utf8').trim().split('\n');
+        const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
+        if (state === 'published') {
+          expect(fs.readFileSync(env.GITHUB_OUTPUT, 'utf8')).toContain('published=true');
+          expect(calls).toEqual([]);
+          continue;
+        }
         if (existing) {
-          expect(calls[0]).toContain('release edit myco/v2.0.0-beta.1 --draft=true');
+          expect(calls[0]).toContain('release edit myco/v2.0.0-beta.1 --title');
+          expect(calls[0]).not.toContain('--draft=true');
           expect(calls[1]).toBe('release upload myco/v2.0.0-beta.1 myco.tgz --clobber');
         } else expect(calls[0]).toMatch(/^release create myco\/v2\.0\.0-beta\.1 myco\.tgz --verify-tag --draft /);
         const uploadIndex = existing ? 2 : 1;
@@ -134,5 +141,19 @@ describe('a Myco 2.0 prerelease', () => {
     for (const line of publishes) expect(line).toContain('--tag "$NPM_TAG"');
     const env = (workflow.jobs.publish.steps.find((s) => s.name === 'Publish package') as { env?: Record<string, string> }).env;
     expect(env?.NPM_TAG).toBe('${{ needs.validate-tag.outputs.npm_tag }}');
+  });
+});
+
+
+describe('Myco 2.0 update guidance', () => {
+  it('describes on-demand commands and scopes background-service guidance to 1.4', () => {
+    const docs = fs.readFileSync(path.resolve('docs/upgrade.md'), 'utf8');
+    const memberGuide = docs.split('## Myco 1.4 updates')[0];
+    expect(memberGuide).toContain('Myco 2.0 updates on demand');
+    expect(memberGuide).toContain('runs no member update timer or local service');
+    expect(memberGuide).toContain('myco upgrade --check');
+    expect(memberGuide).toContain('myco upgrade --channel beta');
+    expect(memberGuide).not.toMatch(/updates itself|automatically stages|idle window|self-updat/i);
+    expect(docs).toContain('Myco 1.4 retains its local service and background updater');
   });
 });

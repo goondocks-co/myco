@@ -10,6 +10,7 @@ export function convergeNpmInstall(args: {
   channel: string;
   version?: string;
   versionedDest?: string;
+  replaceLegacy?: boolean;
   /** Injection seam for the install marker; production callers omit it and the inline fallback writes the same JSON. */
   writeMarker?: (mycoHome: string, marker: { channel: string; source: string; bin: string }) => void;
 }): { dest: string; copied: boolean; pinAction: string };

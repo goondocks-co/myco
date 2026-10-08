@@ -11,8 +11,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-update-'));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe('2.0 member binary update through the CLI', () => {
-  for (const custom of [false, true]) it.skipIf(process.platform === 'win32')('places a verified binary, refreshes the membership, and starts no daemon', async () => {
-    const home = path.join(root, custom ? 'custom-home' : 'home');
+  for (const [custom, current] of [[false, '2.0.0-alpha.1'], [true, '2.0.0-alpha.1'], [false, '0.0.0-dev'], [false, '0.0.0-dev+fixture']] as const) it.skipIf(process.platform === 'win32')('places a verified binary, refreshes the membership, and starts no daemon', async () => {
+    const home = path.join(root, `${custom ? 'custom-home' : 'home'}-${current}`);
     const binary = custom ? path.join(root, 'custom-bin/myco') : path.join(home, 'bin/myco');
     const source = path.join(root, 'binary');
     const c = path.join(root, 'binary.c');
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
     const sum = crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
     writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: binary });
     await run(['--channel', 'alpha'], {
-      currentVersion: '2.0.0-alpha.1', home, platform: process.platform, isMemberHome: () => true,
+      currentVersion: current, home, platform: process.platform, isMemberHome: () => true,
       resolveRefs: async channel => { expect(channel).toBe('alpha'); return {
         assetName: asset, assetUrl: 'binary', sha256sumsUrl: 'sums', targetVersion: '2.1.0-alpha.1',
       }; },

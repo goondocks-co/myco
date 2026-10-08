@@ -25,7 +25,7 @@ function shellPick(releases: GitHubRelease[], channel: ReleaseChannel, current =
   const file = path.join(root, 'releases.json');
   fs.writeFileSync(file, JSON.stringify(releases, null, 2));
   const result = spawnSync('/bin/sh', [], {
-    input: `${source.slice(0, source.lastIndexOf('main "$@"'))}\nRELEASES_FILE='${file}'\nASSET=${asset}\npick_tag ${channel} '${current}'\n`,
+    input: `${source.slice(0, source.lastIndexOf('main "$@"'))}\nPAGE_FILE='${file}'\nRELEASES_FILE='${file}.rows'\nASSET=${asset}\nrelease_rows > \"$RELEASES_FILE\"\npick_tag ${channel} '${current}'\n`,
     encoding: 'utf8', env: { ...process.env, HOME: root, CODEX_HOME: path.join(root, 'codex'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), MYCO_HOME: path.join(root, 'myco') },
   });
   expect(result.status).toBe(0);
@@ -102,6 +102,19 @@ describe('one channel policy for install and update', () => {
     const check = await resolveMycoPackageCheck('1.4.8', 'beta', '1.4.8', async () => Response.json(releases));
     expect(check.update_available).toBe(false);
     expect(check.latest_version).toBe('1.4.8');
+  });
+  it('development builds resolve only 2.x, including stamped versions and the version fallback', async () => {
+    for (const current of ['0.0.0-dev', '0.0.0-dev+1.4.8-412-gb173d920', '0.0.0']) {
+      const deps = { fetchReleases: async () => [release('1.4.8'), release('2.0.0-beta.1')], targetTriple: () => triple };
+      expect(shellPick(await deps.fetchReleases(), 'beta', current)).toBe('myco/v2.0.0-beta.1');
+      expect(shellPick(await deps.fetchReleases(), 'stable', current)).toBe('');
+      expect((await resolveMycoBinaryUpdateRefs('beta', deps, current))?.targetVersion).toBe('2.0.0-beta.1');
+      expect(await resolveMycoBinaryUpdateRefs('stable', deps, current)).toBeNull();
+      const check = await resolveMycoPackageCheck(current, 'stable', current, async () => Response.json(await deps.fetchReleases()));
+      expect(check).toMatchObject({ latest_version: current, update_available: false, revert_available: false });
+      expect(resolveNewestStagedVersion(root, 'darwin', current, undefined, p => !p.endsWith('.adopt-failed'),
+        () => ['1.4.8', '2.0.0-beta.1'], 'beta')).toBe('2.0.0-beta.1');
+    }
   });
   it('staged adoption obeys the selected channel even after switching it', () => {
     const entries = ['2.0.0', '2.0.1-beta.10', '2.1.0-alpha.10', '9.0.0-rc.1'];

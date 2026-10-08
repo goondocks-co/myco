@@ -3,12 +3,14 @@
 # Usage: curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
 #        curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh -s -- --dry-run
 #
-# Installs the Myco binary and nothing else: no service is started. On a
+# Myco 2.0 installs the binary without starting a service. On a
 # first-time machine no agent is changed, and the next step it prints is
 # `myco login <invite link>` to join your team's Deployment, or the
 # self-hosting guide to run your own. On a machine already joined to a
 # Deployment it is the upgrade: it then runs `myco member provision --refresh`
 # so the agents' hooks and MCP entries run the build it installed.
+# Stable and beta retain the 1.4 installer when no eligible 2.x release exists,
+# including its service install, login handoff and --serve/--hostname options.
 #
 # On a machine with Myco 1.4 it installs nothing unless asked to: 2.0 takes
 # 1.4's place, and 1.4 stops capturing until the machine is moved over with
@@ -18,10 +20,14 @@
 # Options:
 #   --dry-run          Say what it would install and where, and change nothing
 #   --replace-1.4      Install over Myco 1.4, to move this machine to 2.0 next
+#   --channel NAME     Explicitly choose alpha, beta or stable
+#   --serve            Enable a Myco 1.4 team host (legacy installs only)
+#   --hostname NAME    Set the legacy team host hostname
 #   --help             Show this message
 #
 # Env overrides:
-#   MYCO_CHANNEL        "stable" (default), "beta" or "alpha". Stable installs
+#   MYCO_CHANNEL        "stable", "beta" or "alpha"; keeps the recorded channel
+#                       unless explicit (stable on a fresh install). Stable installs
 #                       releases only (1.4 until 2.x is released); beta admits
 #                       beta and stable; alpha admits alpha, beta and stable.
 #   MYCO_HOME           Myco's home (default: ~/.myco)
@@ -62,10 +68,13 @@ usage() {
   cat <<'USAGE'
 Usage: curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh [-s -- <options>]
 
-Installs the Myco 2.0 binary to $MYCO_HOME/bin (default ~/.myco/bin) and
-prints the next step.
+Installs the selected Myco binary to $MYCO_HOME/bin (default ~/.myco/bin).
+Stable and beta retain Myco 1.4 until an eligible 2.x release exists.
   --dry-run       say what it would install and change nothing
   --replace-1.4   install over Myco 1.4 (then run `myco cutover`)
+  --channel NAME  select alpha, beta or stable
+  --serve         enable a team host on a legacy 1.4 install
+  --hostname NAME set the legacy team host hostname
 Env: MYCO_CHANNEL=alpha|beta|stable, MYCO_HOME, MYCO_BIN_DIR, MYCO_REPLACE_LEGACY=1,
 GITHUB_TOKEN, MYCO_INSTALL_FROM=<dir with myco-<os>-<arch> and SHA256SUMS>.
 USAGE
@@ -198,62 +207,174 @@ login_hand_off() {
 
 RELEASES_FILE=""
 PAGE_FILE=""
+PAGE_ROWS_FILE=""
+MARKER_FILE=""
 TMP_DIR=""
 cleanup() {
   if [ -n "$RELEASES_FILE" ]; then rm -f "$RELEASES_FILE"; fi
   if [ -n "$PAGE_FILE" ]; then rm -f "$PAGE_FILE"; fi
+  if [ -n "$PAGE_ROWS_FILE" ]; then rm -f "$PAGE_ROWS_FILE"; fi
+  if [ -n "$MARKER_FILE" ]; then rm -f "$MARKER_FILE"; fi
   if [ -n "$TMP_DIR" ]; then rm -rf "$TMP_DIR"; fi
 }
 
-# Decode release fields independently of JSON object field order.
-release_rows() {
-  tr '\r\n' '  ' < "$RELEASES_FILE" | awk -v asset="$ASSET" '
-    function emit() { printf "%s\t%s\t%s\t%d\t%d\n",tag,pre,draft,binary,sums }
-    {
-      text=$0; depth=0; key=""; assets_depth=0
-      while (length(text)) {
-        sub(/^[ \t]+/,"",text)
-        ch=substr(text,1,1)
-        if (ch=="\"") {
-          value=""; j=2
-          while (j<=length(text)) {
-            ch=substr(text,j,1)
-            if (ch=="\\") { value=value ch substr(text,j+1,1); j+=2; continue }
-            if (ch=="\"") break
-            value=value ch; j++
-          }
-          text=substr(text,j+1); sub(/^[ \t]+/,"",text)
-          if (substr(text,1,1)==":") { key=value; text=substr(text,2); continue }
-          if (depth==2 && key=="tag_name") tag=value
-          if (assets_depth && depth==4 && key=="name") {
-            if (value==asset) binary=1
-            if (value=="SHA256SUMS") sums=1
-          }
-          key=""; continue
-        }
-        if (ch=="{" || ch=="[") {
-          depth++
-          if (ch=="{" && depth==2) { tag=""; pre="false"; draft="false"; binary=0; sums=0 }
-          if (depth==3 && key=="assets") assets_depth=depth
-        } else if (ch=="}" || ch=="]") {
-          if (ch=="}" && depth==2) emit()
-          if (depth==assets_depth) assets_depth=0
-          depth--
-        } else if (text ~ /^(true|false|null)/) {
-          value=substr(text,1,index(text,"true")==1 ? 4 : (index(text,"false")==1 ? 5 : 4))
-          if (depth==2 && key=="prerelease") pre=value
-          if (depth==2 && key=="draft") draft=value
-          text=substr(text,length(value)+1); key=""; continue
-        }
-        text=substr(text,2)
+# Decode a page once; ignored strings never accumulate in the tokenizer.
+decode_json() {
+  if command -v jq >/dev/null 2>&1; then
+    if [ "$2" = marker ]; then
+      jq -esr 'if length == 1 and (.[0] | type) == "object" then .[0].channel | select(type == "string") else error("Invalid install marker") end' "$1"
+    else
+      jq -sr --arg asset "$ASSET" '
+        def truth: . != null and . != false and . != 0 and . != "";
+        if length != 1 or (.[0] | type) != "array" then error("Invalid release list") else .[0][] end |
+        if type != "object" then error("Invalid release entry") else . end |
+        [.tag_name, (.prerelease | truth), (.draft | truth),
+         (if any(.assets[]?; .name == $asset) then 1 else 0 end),
+         (if any(.assets[]?; .name == "SHA256SUMS") then 1 else 0 end)] | @tsv' "$1"
+    fi
+    return
+  fi
+  LC_ALL=C awk -v asset="${ASSET:-}" -v mode="$2" '
+    function fail() { bad=1; exit 1 }
+    function take() {
+      if (state[depth]!="value" && state[depth]!="empty-array") fail()
+      if (mode=="releases" && depth==1 && ch!="{") fail()
+      if (mode=="releases" && depth==2 && key[depth]=="assets") { binary=0; sums=0 }
+      if (mode=="releases" && depth==2 && key[depth]=="tag_name") tag=""
+      state[depth]="comma"
+    }
+    function field(value, truth) {
+      if (depth==2 && mode=="releases") {
+        if (key[depth]=="prerelease") pre=truth ? "true" : "false"
+        if (key[depth]=="draft") draft=truth ? "true" : "false"
       }
-    }'
+    }
+    function append(c) {
+      if (capture) {
+        if (length(token)<128) token=token c
+        else overflow=1
+      }
+    }
+    function literal() {
+      if (bare=="") return
+      if (bare!="true" && bare!="false" && bare!="null" && bare!~/^-?(0|[1-9][0-9]*)([.][0-9]+)?([eE][+-]?[0-9]+)?$/) fail()
+      take(); field(bare,bare=="true" || (bare!="false" && bare!="null" && bare+0!=0)); bare=""
+    }
+    function start_string() {
+      is_key=kind[depth]=="{" && (state[depth]=="key" || state[depth]=="empty-object")
+      if (!is_key) take()
+      capture=is_key || (mode=="marker" && depth==1 && key[depth]=="channel") ||
+        (depth==2 && key[depth]~/^(tag_name|prerelease|draft)$/) || (asset_depth && depth==4 && key[depth]=="name")
+      token=""; overflow=0; quoted=1
+    }
+    function finish_string() {
+      quoted=0
+      if (is_key) { key[depth]=overflow ? "" : token; state[depth]="colon" }
+      else {
+        if (mode=="marker" && depth==1 && key[depth]=="channel") channel=overflow ? "" : token
+        if (mode=="releases" && depth==2 && key[depth]=="tag_name") tag=overflow ? "" : token
+        if (asset_depth && depth==4 && key[depth]=="name" && !overflow) {
+          if (token==asset) binary=1
+          if (token=="SHA256SUMS") sums=1
+        }
+        field(token,overflow || token!="")
+      }
+    }
+    function record(piece, has_quote, n, i, tail, escaped_quote, check, c, digits, code, j, digit) {
+      n=length(piece)
+      if (quoted) {
+        tail=0
+        for (i=n;i>0 && substr(piece,i,1)=="\\";i--) tail++
+        escaped_quote=has_quote && tail%2
+        if (escaped_quote) { piece=substr(piece,1,n-1); n-- }
+        check=piece
+        gsub(/\\(u[[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]]|[\\\/bfnrt])/ ,"",check)
+        if (check~/\\/ || piece~/[[:cntrl:]]/) fail()
+        if (capture && !overflow) {
+          if (length(token)+n>128) overflow=1
+          else for (i=1;i<=n;i++) {
+            c=substr(piece,i,1)
+            if (c=="\\") {
+              c=substr(piece,++i,1)
+              if (c=="u") {
+                code=0
+                for (j=0;j<4;j++) { digit=index("0123456789abcdef",tolower(substr(piece,++i,1)))-1; code=code*16+digit }
+                c=code>=32 && code<128 ? sprintf("%c",code) : "?"
+              } else if (c~/^[bfnrt]$/) c="?"
+            }
+            append(c)
+          }
+        }
+        if (escaped_quote) append("\"")
+        else if (has_quote) finish_string()
+        return
+      }
+      for (i=1;i<=n;i++) {
+        ch=substr(piece,i,1)
+        if (ch~/[[:space:]]/) { literal(); continue }
+        if (ch~/[0-9A-Za-z.+-]/) { if (length(bare)>128) fail(); bare=bare ch; continue }
+        literal()
+        if (ch=="{" || ch=="[") {
+          if (!depth) {
+            if (seen || (mode=="marker" ? ch!="{" : ch!="[")) fail()
+            seen=1
+          } else { take(); field("",1) }
+          if (depth==2 && key[depth]=="assets") { asset_depth=ch=="[" ? 3 : 0; binary=0; sums=0 }
+          depth++; kind[depth]=ch; key[depth]=""; state[depth]=ch=="{" ? "empty-object" : "empty-array"
+          if (mode=="releases" && depth==2) { tag=""; pre="false"; draft="false"; binary=0; sums=0 }
+        } else if (ch=="}" || ch=="]") {
+          if (!depth || (ch=="}" ? kind[depth]!="{" : kind[depth]!="[")) fail()
+          if (state[depth]!="comma" && state[depth]!="empty-object" && state[depth]!="empty-array") fail()
+          if (mode=="releases" && depth==2) printf "%s\t%s\t%s\t%d\t%d\n",tag,pre,draft,binary,sums
+          if (depth==asset_depth) asset_depth=0
+          depth--
+        } else if (ch==":") {
+          if (state[depth]!="colon") fail(); state[depth]="value"
+        } else if (ch==",") {
+          if (state[depth]!="comma") fail(); state[depth]=kind[depth]=="{" ? "key" : "value"
+        } else fail()
+
+      }
+      literal()
+      if (has_quote) start_string()
+    }
+    BEGIN { RS="\""; depth=0; seen=0; bad=0; asset_depth=0 }
+    { if (have_piece) record(previous,1); previous=$0; have_piece=1 }
+    END {
+      if (bad) exit 1
+      if (have_piece) record(previous,0)
+      if (!seen || depth || quoted) exit 1
+      if (mode=="marker") print channel
+    }
+  ' "$1"
 }
+
+json_string() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN { printf "\"" }
+    {
+      if (NR>1) printf "\\n"
+      n=length($0)
+      for (i=1;i<=n;i++) {
+        c=substr($0,i,1)
+        if (c=="\\" || c=="\"") printf "\\%s",c
+        else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else printf "%s",c
+      }
+    }
+    END { printf "\"" }'
+}
+
+release_rows() { decode_json "$PAGE_FILE" releases; }
 
 # release-selector:start
 # Generated by packages/myco/scripts/gen-release-selector.mjs from release-policy.mjs.
+is_development_version() {
+  awk -v version="$1" 'BEGIN { exit !(version ~ /^0[.]0[.]0(-dev)?([+][0-9A-Za-z.-]+)?$/) }'
+}
 pick_tag() {
-  release_rows | awk -F '\t' -v channel="$1" -v current="$2" -v min="${3:-2}" -v max="${4:-0}" '
+  awk -F '\t' -v channel="$1" -v current="$2" -v min="${3:-2}" -v max="${4:-0}" '
     function parse(v, key, c, parts, phase, iteration, core, dash, i) {
       if (v !~ /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(alpha|beta|rc)[.](0|[1-9][0-9]*))?$/) return 0
       dash=index(v,"-"); core=dash ? substr(v,1,dash-1) : v
@@ -278,9 +399,9 @@ pick_tag() {
       }
     }
     END {
-      if (best!="" && current!="" && (!parse(current,currentkey) || compare(bestkey,currentkey)<0)) print "stay-put"
+      if (best!="" && current!="" && current !~ /^0[.]0[.]0(-dev)?([+][0-9A-Za-z.-]+)?$/ && (!parse(current,currentkey) || compare(bestkey,currentkey)<0)) print "stay-put"
       else if (best!="") print best
-    }'
+    }' "$RELEASES_FILE"
 }
 # release-selector:end
 
@@ -288,7 +409,9 @@ pick_tag() {
 # Main
 # ---------------------------------------------------------------------------
 main() {
-  CHANNEL="${MYCO_CHANNEL:-stable}"
+  CHANNEL="${MYCO_CHANNEL:-}"
+  CHANNEL_EXPLICIT=0
+  if [ "${MYCO_CHANNEL+x}" = x ]; then CHANNEL_EXPLICIT=1; fi
   MYCO_HOME_DIR="${MYCO_HOME:-$HOME/.myco}"
   BIN_DIR="${MYCO_BIN_DIR:-$MYCO_HOME_DIR/bin}"
   case "$BIN_DIR" in /*) ;; *) BIN_DIR="$(pwd -P)/$BIN_DIR" ;; esac
@@ -300,18 +423,19 @@ main() {
   LEGACY_INSTALL=0
   CURRENT_VERSION=""
 
+  SERVE=0
+  SERVE_OPTION=0
+  SERVE_HOSTNAME=""
   DRY_RUN=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --channel) [ $# -ge 2 ] || { error "--channel needs a value"; exit 1; }; CHANNEL="$2"; shift 2 ;;
+      --channel) [ $# -ge 2 ] || { error "--channel needs a value"; exit 1; }; CHANNEL="$2"; CHANNEL_EXPLICIT=1; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
       --replace-1.4) REPLACE_LEGACY=1; shift ;;
       --help|-h) usage; exit 0 ;;
-      --serve|--hostname|--hostname=*)
-        error "$1 was the Myco 1.4 Team Host option. To run your own Myco 2.0 server, install and then follow"
-        printf "  %s\n" "$SELF_HOSTING_GUIDE" >&2
-        exit 1
-        ;;
+      --serve) SERVE=1; SERVE_OPTION=1; shift ;;
+      --hostname) [ $# -ge 2 ] || { error "--hostname needs a value"; exit 1; }; SERVE_HOSTNAME="$2"; SERVE_OPTION=1; shift 2 ;;
+      --hostname=*) SERVE_HOSTNAME="${1#--hostname=}"; SERVE_OPTION=1; shift ;;
       *)
         error "Unknown option: $1"
         exit 1
@@ -319,6 +443,12 @@ main() {
     esac
   done
 
+  if [ "$CHANNEL_EXPLICIT" = 0 ]; then
+    if [ -e "$MYCO_HOME_DIR/install.json" ] || [ -L "$MYCO_HOME_DIR/install.json" ]; then
+      CHANNEL="$(decode_json "$MYCO_HOME_DIR/install.json" marker)" || { error "Cannot read the installed release channel."; exit 1; }
+    else CHANNEL=stable
+    fi
+  fi
   case "$CHANNEL" in
     alpha|beta|stable) ;;
     *) error "MYCO_CHANNEL must be alpha, beta or stable, and is ${CHANNEL}."; exit 1 ;;
@@ -341,7 +471,8 @@ main() {
     Darwin) os=darwin ;;
     Linux)  os=linux  ;;
     MINGW*|MSYS*|CYGWIN*)
-      error "Windows is not supported by this installer yet."
+      error "Windows detected. Use the PowerShell installer instead:"
+      printf "  irm https://myco.sh/install.ps1 | iex\n"
       exit 1
       ;;
     *)
@@ -382,6 +513,7 @@ main() {
   if [ -x "${BIN_DIR}/myco" ] && probe "${BIN_DIR}/myco" --version; then
     CURRENT_VERSION="$(printf '%s\n' "$PROBE_OUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -n 1 || true)"
     CURRENT_MAJOR="${CURRENT_VERSION%%.*}"
+    if is_development_version "$CURRENT_VERSION"; then CURRENT_MAJOR="$MIN_MAJOR"; fi
     if [ "$CURRENT_MAJOR" = "1" ]; then
       LEGACY="its binary ${BIN_DIR}/myco, ${CURRENT_VERSION}"
       BLOCKS_INSTALL=1
@@ -408,12 +540,13 @@ main() {
   if [ -n "$INSTALL_FROM" ]; then
     VERSION="${MYCO_INSTALL_VERSION:-local}"
     SOURCE="${INSTALL_FROM}"
+    case "$VERSION" in 1.*) LEGACY_INSTALL=1; BLOCKS_INSTALL=0 ;; esac
   else
     info "Resolving the ${CHANNEL} release..."
     RELEASES_FILE="$(mktemp)"
     PAGE_FILE="$(mktemp)"
+    PAGE_ROWS_FILE="$(mktemp)"
     PAGE=1
-    TOTAL_RELEASES=0
     MAX_RELEASE_PAGES=100
     while :; do
       HTTP_STATUS=""
@@ -425,11 +558,11 @@ main() {
         403|429) error "GitHub API rate limit hit (HTTP ${HTTP_STATUS}). Set GITHUB_TOKEN or GH_TOKEN and retry."; exit 1 ;;
         *) error "GitHub Releases API returned HTTP ${HTTP_STATUS}."; exit 1 ;;
       esac
-      cat "$PAGE_FILE" >> "$RELEASES_FILE"
-      NEW_TOTAL="$(release_rows | awk 'END { print NR }')"
-      if [ "$((NEW_TOTAL - TOTAL_RELEASES))" -lt 100 ]; then break; fi
+      if ! release_rows > "$PAGE_ROWS_FILE"; then error "Invalid GitHub release list."; exit 1; fi
+      cat "$PAGE_ROWS_FILE" >> "$RELEASES_FILE"
+      PAGE_COUNT="$(awk 'END { print NR }' "$PAGE_ROWS_FILE")"
+      if [ "$PAGE_COUNT" -lt 100 ]; then break; fi
       if [ "$PAGE" -ge "$MAX_RELEASE_PAGES" ]; then error "GitHub release discovery exceeded ${MAX_RELEASE_PAGES} pages."; exit 1; fi
-      TOTAL_RELEASES="$NEW_TOTAL"
       PAGE=$((PAGE + 1))
     done
 
@@ -438,8 +571,8 @@ main() {
       warn "The newest eligible ${CHANNEL} release is older than installed ${CURRENT_VERSION}; staying put."
       exit 0
     fi
-    if [ -z "$TAG" ] && [ "$CHANNEL" = "stable" ] && [ "${CURRENT_MAJOR:-0}" -lt 2 ]; then
-      TAG="$(pick_tag stable "${CURRENT_VERSION}" 1 1)"
+    if [ -z "$TAG" ] && [ "$CHANNEL" != "alpha" ] && [ "${CURRENT_MAJOR:-0}" -lt 2 ]; then
+      TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}" 1 1)"
       if [ "$TAG" = "stay-put" ]; then
         warn "The newest eligible stable release is older than installed ${CURRENT_VERSION}; staying put."
         exit 0
@@ -459,6 +592,14 @@ main() {
     SOURCE="https://github.com/${REPO}/releases/download/$(printf '%s' "$TAG" | sed 's|/|%2F|g')"
   fi
   VERSION_DIR="${BIN_DIR}/versions/${VERSION}"
+  if [ "$LEGACY_INSTALL" = 0 ] && [ "$SERVE_OPTION" = 1 ]; then
+    error "--serve/--hostname are Myco 1.4 Team Host options. To run your own Myco 2.0 server, follow"
+    printf "  %s\n" "$SELF_HOSTING_GUIDE" >&2
+    exit 1
+  fi
+  if [ "$LEGACY_INSTALL" = 1 ] && [ "$os" = linux ]; then
+    warn "Linux support is beta. Report issues at https://github.com/${REPO}/issues"
+  fi
 
   if [ "$DRY_RUN" = "1" ]; then
     echo ""
@@ -578,8 +719,11 @@ main() {
   PRERELEASE=false
   case "$VERSION" in *-*) PRERELEASE=true ;; esac
   if [ "$PICKED_PRERELEASE" = "1" ]; then PRERELEASE=true; fi
-  printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": "%s/myco",\n  "prerelease": %s\n}\n' \
-    "$CHANNEL" "$BIN_DIR" "$PRERELEASE" > "$MYCO_HOME_DIR/install.json"
+  MARKER_FILE="$(mktemp "${MYCO_HOME_DIR}/.install.json-XXXXXX")"
+  printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": %s,\n  "prerelease": %s\n}\n' \
+    "$CHANNEL" "$(json_string "${BIN_DIR}/myco")" "$PRERELEASE" > "$MARKER_FILE"
+  mv -f "$MARKER_FILE" "$MYCO_HOME_DIR/install.json"
+  MARKER_FILE=""
 
   # -------------------------------------------------------------------------
   # PATH — idempotent rc edits. zsh reads .zshenv for every shell, so it is
@@ -613,10 +757,26 @@ main() {
   if [ "$LEGACY_INSTALL" = "1" ]; then
     if "${BIN_DIR}/myco" service install >/dev/null 2>&1; then
       success "The Myco 1.4 managed service is installed."
+      echo "  Next, sign this machine in with the invite link an admin gave you:"
+      echo ""
+      echo "    myco login <link>"
+      echo ""
+      echo "  Or run your own Deployment with: myco server create"
     else
-      warn "Could not start the Myco service automatically. Run: myco service install"
+      warn "Could not start the Myco service automatically. Bring it up with:"
+      echo "    myco service install"
+      echo "    myco open"
     fi
-    echo "  Open Myco with: myco open"
+    if [ "$SERVE" = 1 ]; then
+      info "Setting up Team Host serving (--serve)..."
+      if [ -n "$SERVE_HOSTNAME" ]; then
+        if ! "${BIN_DIR}/myco" host enable --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
+          warn "Team Host enable did not complete. Re-run manually: myco host enable --hostname ${SERVE_HOSTNAME} --designate-default --emit-join"
+        fi
+      elif ! "${BIN_DIR}/myco" host enable --designate-default --emit-join; then
+        warn "Team Host enable did not complete. Re-run manually: myco host enable --designate-default --emit-join"
+      fi
+    fi
   elif [ -n "$LEGACY" ]; then
     warn "Myco 1.4 is on this machine (${LEGACY})."
     if [ "$BLOCKS_INSTALL" = "1" ]; then

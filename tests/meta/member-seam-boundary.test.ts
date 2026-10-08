@@ -94,6 +94,7 @@ const ALLOWLIST: readonly string[] = [
   'runtime/self-exec.ts',
   'install/managed-binary.ts',
   'packages/myco/scripts/managed-paths.mjs',
+  'packages/myco/scripts/home-role.mjs',
   // The member helper's detached start: `node:child_process` on POSIX, `CreateProcessW` through
   // `bun:ffi` on Windows; it reaches nothing else.
   'runtime/spawn-detached.ts',

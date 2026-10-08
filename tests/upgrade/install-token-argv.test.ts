@@ -25,7 +25,6 @@ function install(shell: string, os: string, tokens: Record<string, string>, fail
   const tool = (name: string, body: string) => writeFileSync(join(bin, name), body, { mode: 0o755 });
   tool('uname', `#!/bin/sh\ncase "$1" in -s) echo ${os};; -m) echo x86_64;; esac\n`);
   tool('mktemp', '#!/bin/sh\nif [ $# -eq 0 ]; then exec /usr/bin/mktemp "$TMPDIR/myco-installer-XXXXXX"; fi\nexec /usr/bin/mktemp "$@"\n');
-  tool('jq', '#!/bin/sh\necho myco/v2.0.0\n');
   tool('codesign', '#!/bin/sh\nexit 0\n');
   tool('xattr', '#!/bin/sh\nexit 0\n');
   tool('sha256sum', `#!/usr/bin/env node

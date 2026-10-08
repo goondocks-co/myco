@@ -17,6 +17,8 @@
  * `release-assets` stays pure; the single `fetch` lives here.
  */
 
+import { isV2Version } from '../../scripts/release-policy.mjs';
+
 import {
   mycoReleasesApiUrl,
   githubHeaders,
@@ -28,7 +30,6 @@ import {
   type GitHubRelease,
 } from './release-assets.js';
 import { getPluginVersion } from '../version.js';
-import semver from 'semver';
 import type { FetchLike } from '../utils/instrumented-fetch.js';
 import type { ReleaseChannel } from '../constants/update.js';
 
@@ -80,7 +81,7 @@ export async function resolveMycoBinaryUpdateRefs(
 ): Promise<AssetRefs | null> {
   const releases = await deps.fetchReleases();
   const triple = deps.targetTriple();
-  const isV2 = (semver.parse(currentVersion)?.major ?? 0) >= 2;
+  const isV2 = isV2Version(currentVersion);
   const release = pickRelease(releases, channel, {
     asset: isV2 ? assetName(triple) : undefined, currentVersion: isV2 ? currentVersion : undefined,
     minimumMajor: isV2 ? 2 : 1, maximumMajor: isV2 ? undefined : 1,

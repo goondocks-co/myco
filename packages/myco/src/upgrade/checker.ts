@@ -9,6 +9,8 @@
  *   resolveMycoPackageCheck(...)  — fetch GitHub Releases + derive PackageCheckResult for myco
  */
 
+import { isV2Version } from '../../scripts/release-policy.mjs';
+
 import type { FetchLike } from '../utils/instrumented-fetch.js';
 import {
   resolveMycoVersions,
@@ -94,7 +96,7 @@ export async function resolveMycoPackageCheck(
   fetchFn: FetchLike = globalThis.fetch,
 ): Promise<PackageCheckResult> {
   const releases = await fetchMycoReleases(fetchFn);
-  const isV2 = (semver.parse(currentVersion)?.major ?? 0) >= 2;
+  const isV2 = isV2Version(currentVersion);
   const lineReleases = isV2 ? releases : releases.filter(r => (semver.parse(r.tag_name.replace(/^myco\/v/, ''))?.major ?? 0) < 2);
   if (isV2) {
     const asset = assetName(resolveTargetTriple());
