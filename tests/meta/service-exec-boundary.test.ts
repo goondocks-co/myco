@@ -20,6 +20,21 @@ afterEach(() => { for (const root of roots.splice(0)) {
 const environment = (root: string) => sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root });
 
 describe('service-manager process containment', () => {
+  it.skipIf(process.platform !== 'linux')('the execution boundary preserves fixture renames and hard links', () => {
+    const root = fresh();
+    const script = `const fs = require('node:fs'), path = require('node:path');
+const root = ${JSON.stringify(root)};
+const first = path.join(root, 'first'), second = path.join(root, 'second');
+fs.mkdirSync(first); fs.mkdirSync(second);
+fs.writeFileSync(path.join(first, 'file'), 'owned');
+fs.renameSync(path.join(first, 'file'), path.join(second, 'file'));
+fs.linkSync(path.join(second, 'file'), path.join(first, 'link'));
+fs.renameSync(second, path.join(root, 'renamed'));
+process.stdout.write(fs.readFileSync(path.join(first, 'link'), 'utf8'));`;
+    const child = spawnSync('node', ['-e', script], { env: environment(root), encoding: 'utf8' });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(child.stdout).toBe('owned');
+  });
   for (const command of ['launchctl', '/bin/launchctl', 'systemctl', '/usr/bin/systemctl']) {
     it(`fails a test phase that swallows ${command}`, () => {
       const root = fresh();
