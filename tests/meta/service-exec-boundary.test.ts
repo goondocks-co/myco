@@ -21,6 +21,22 @@ const environment = (root: string) => sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT
 const sqliteExecutable = resolveTestTool('sqlite3') ?? (fs.existsSync('/usr/bin/sqlite3') ? '/usr/bin/sqlite3' : null);
 
 describe('service-manager process containment', () => {
+  for (const stub of [true, false]) {
+    it(`runner service installation ${stub ? 'uses its stub' : 'fails before real service execution without its stub'}`, () => {
+      const root = fresh();
+      const env: NodeJS.ProcessEnv = { ...environment(root), ...(stub ? { MYCO_RUNNER_SERVICE_STUB: '1' } : {}) };
+      const child = spawnSync(process.execPath, ['test', './tests/fixtures/runner/runner_service_boundary_test.ts'], { env, cwd: process.cwd(), encoding: 'utf8', timeout: 30000 });
+      if (stub) {
+        expect({ status: child.status, stderr: child.stderr.includes('TEST SAFETY') }).toEqual({ status: 0, stderr: false });
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).not.toThrow();
+      } else {
+        expect(child.status).not.toBe(0);
+        expect(child.stderr).toContain('TEST SAFETY');
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toThrow('TEST SAFETY');
+      }
+    });
+  }
+
   it.skipIf(!sqliteExecutable)('nested native SQLite probes remain admitted', () => {
     const root = fresh(), env = environment(root);
     const sqlite = sqliteExecutable!;

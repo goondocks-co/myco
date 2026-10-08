@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { runJoin, runLeave, runStatus } from '@myco/cli/member.js';
+import { runJoin, runLeave, runStatus, runProvision } from '@myco/cli/member.js';
 import { run as runSettings } from '@myco/cli/settings.js';
 import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, hookNameInCommand } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
@@ -291,33 +291,31 @@ describe('myco member join / leave', () => {
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(true);
   });
 
-  it('installs a worker to run at login on join, reports it in status, and removes it with the last project', async () => {
+  it('join and provision install no executor, and leave preserves existing services', async () => {
     const platform = recordingPlatform();
     const worker = {
       home, platform: 'darwin' as const, binaryPath: path.join(home, '.myco', 'bin', 'myco'),
-      detect: () => [{ id: 'codex', installed: true, authenticated: true }], harnessDirs: () => [],
-      ownDeploymentUrls: async () => [], admission: async () => 'admitted' as const, lockDir: path.join(home, 'locks'),
       runner: platform.runner,
     };
     const out: string[] = [];
     await join(['https://server.example', '--project', PROJECT, '--token-env', 'JOIN_TOKEN', '--root', projectRoot], {
       env: { JOIN_TOKEN: rig.token }, stdout: (l: string) => out.push(l), worker,
     });
-    const agents = path.join(home, 'Library', 'LaunchAgents');
-    const [unit] = fs.readdirSync(agents);
-    expect(unit).toMatch(/^co\.goondocks\.myco-worker\.[0-9a-f]{16}\.plist$/);
-    expect(fs.readFileSync(path.join(agents, unit!), 'utf8')).toContain(`<key>MYCO_HOME</key><string>${mycoHome}</string>`);
-    expect(out.join('\n')).toContain('https://server.example: a worker now runs whenever you are logged in');
-
-    const status: string[] = [];
-    runStatus([], { mycoHome, cwd: projectRoot, stdout: (l: string) => status.push(l), stderr: () => {}, worker });
-    expect(status.find((l) => l.startsWith('worker:'))).toMatch(/running at login/);
-
-    out.length = 0;
+    expect(platform.commands).toEqual([]);
+    expect(out.join('\n')).not.toContain('a worker now runs');
+    expect(runProvision(['claude-code', '--root', projectRoot], { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: () => {}, stderr: () => {}, worker })).toBe(true);
+    expect(platform.commands).toEqual([]);
+    const { installWorkerService, workerServiceSpec } = await import('@myco/runner/service.js');
+    for (const executor of ['runner', 'legacy-member'] as const) {
+      const spec = workerServiceSpec({ ...worker, mycoHome, serverUrl: 'https://server.example', executor }, []);
+      installWorkerService({ ...worker, mycoHome, serverUrl: 'https://server.example', executor }, [], { runner: platform.runner });
+      expect(platform.running.has(spec.unit.label)).toBe(true);
+    }
+    const before = [...platform.running];
+    platform.commands.length = 0;
     expect(runLeave([], { mycoHome, cwd: projectRoot, packageRoot: PKG_ROOT, stdout: (l: string) => out.push(l), stderr: () => {}, worker })).toBe(true);
-    expect(fs.readdirSync(agents)).toEqual([]);
-    expect(out.join('\n')).toContain('removed the worker service for https://server.example');
-    expect(platform.loaded.size).toBe(0);
+    expect(platform.commands).toEqual([]);
+    expect([...platform.running]).toEqual(before);
   });
 
   it('installs no worker when asked not to', async () => {

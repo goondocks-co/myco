@@ -226,11 +226,11 @@ describe('Health', () => {
       expect(found[0]).toContain('Ada’s studio Mac');
       return found;
     });
-    expect(rows[0]).toMatch(/^Ada’s studio Mac · Waiting for work · last checked in \d+s ago/);
+    expect(rows[0]).toMatch(/^Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work · last checked in \d+s ago/);
     expect(rows[0]).toContain('Reports Claude Code signed in');
     expect(rows[0]).toContain('Last check for work: nothing it could take.');
-    expect(rows[1]).toMatch(/^Lin’s build box · Running learning in Myco · due to check in within /);
-    expect(rows[2]).toMatch(/^A machine · Not checking in now/);
+    expect(rows[1]).toMatch(/^Lin’s build box · Legacy worker — uses member credential · Running learning in Myco · due to check in within /);
+    expect(rows[2]).toMatch(/^A machine · Legacy worker — uses member credential · Not checking in now/);
     expect(within(workers).getByText(/^2 machines are running Myco’s work, 1 busy now\. 2 tasks are waiting\.$/)).toBeTruthy();
     for (const id of [STUDIO_CREDENTIAL, BUSY_CREDENTIAL, STRAY_CREDENTIAL, 'ada_5a2d54af', MYCO]) expect(workers.textContent).not.toContain(id);
   });
@@ -247,7 +247,7 @@ describe('Health', () => {
     server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] } }) }));
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
-    expect(await within(workers).findByText('myco worker install')).toBeTruthy();
+    expect(await within(workers).findByText('myco runner install')).toBeTruthy();
     expect(workers.textContent).toContain('No machine is running Myco’s work.');
   });
 

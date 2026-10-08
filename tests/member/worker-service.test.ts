@@ -121,14 +121,14 @@ describe('the worker unit', () => {
 
 describe('installing and removing the worker service', () => {
   for (const platform of ['darwin', 'linux'] as const) {
-    it(`worker install uses the recorded service manager on ${platform}`, async () => {
+    it(`worker install requires runner enrollment on ${platform}`, async () => {
       member();
       const rec = recordingPlatform();
       expect(await runWorkerCli(['install', '--server', URL_], {
         mycoHome, home, platform, binaryPath: path.join(home, 'bin', 'myco'),
         detect: () => LOGGED_IN, runner: rec.runner,
-      })).toBe(true);
-      expect(rec.commands.some(command => command.startsWith(platform === 'darwin' ? 'launchctl ' : 'systemctl '))).toBe(true);
+      })).toBe(false);
+      expect(rec.commands).toEqual([]);
     });
   }
 

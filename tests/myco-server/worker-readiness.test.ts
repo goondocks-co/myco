@@ -139,13 +139,14 @@ describe('what a worker last said about itself', () => {
     expect(fleet[0]).toMatchObject({ lastReason: 'no_harness', busy: null, offers: OFFER });
   });
 
-  it('bounds one sweep to its batch, taking the oldest observations first', async () => {
+  it('bounds revoked-contact cleanup to its batch, taking oldest observations first', async () => {
     const r = await rig();
     const long = NOW - WORKER_CONTACT_RETENTION_MS - 10_000;
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
       const w = await r.admin(`mem_b${i}`, `box-${i}`);
       ids.push(w.tokenId);
+      r.e.sqlite.run('UPDATE member_credentials SET revoked_at = ? WHERE id = ?', [long, w.tokenId]);
       await recordWorkerContact(r.e.db, { credentialId: w.tokenId, machineId: `box-${i}`, offers: OFFER, capabilities: [], reason: 'no_work', now: long + i });
     }
     expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 2)).toBe(2);
@@ -210,7 +211,7 @@ describe('what a worker last said about itself', () => {
     expect((await readWorkerFleet(r.e.db, NOW + 2))[0]).toMatchObject({ eligible: false });
   });
 
-  it('forgets a worker unheard from past the horizon and keeps one still holding a lease', async () => {
+  it('retains offline legacy inventory until revocation and keeps valid leases', async () => {
     const r = await rig();
     const gone = await r.admin('mem_gone', 'old-laptop');
     const holding = await r.admin('mem_hold', 'vm-1');
@@ -223,6 +224,9 @@ describe('what a worker last said about itself', () => {
       [long, long, holding.tokenId, NOW + 90_000],
     );
 
+    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 200)).toBe(0);
+    expect((await readWorkerFleet(r.e.db, NOW)).map((w) => w.credentialId).sort()).toEqual([gone.tokenId, holding.tokenId].sort());
+    r.e.sqlite.run('UPDATE member_credentials SET revoked_at = ? WHERE id = ?', [NOW, gone.tokenId]);
     expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 200)).toBe(1);
     const left = await readWorkerFleet(r.e.db, NOW);
     expect(left.map((w) => w.credentialId)).toEqual([holding.tokenId]);

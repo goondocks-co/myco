@@ -50,10 +50,17 @@ export async function checkWorkerServices(vaultDir: string, deps: import('./work
   const { resolveMycoHome } = await import('../paths/home.js');
   const { deploymentUrl, listDeploymentMemberships } = await import('../member/registry.js');
   const { describeWorkerService, workerServiceWords } = await import('./worker-service.js');
+  const { listWorkerUnits } = await import('../runner/service.js');
+  const { resolveHomeDir } = await import('../paths/home.js');
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: resolveProjectRoot(vaultDir) });
-  return listDeploymentMemberships(mycoHome).map((membership) => {
-    const url = deploymentUrl(membership.serverUrl);
-    const words = workerServiceWords(describeWorkerService(url, { ...deps, mycoHome }));
+  const urls = new Set([
+    ...listDeploymentMemberships(mycoHome).map((membership) => deploymentUrl(membership.serverUrl)),
+    ...listWorkerUnits(deps.home ?? resolveHomeDir(), deps.platform).filter((unit) => unit.mycoHome === mycoHome).flatMap((unit) => unit.serverUrl === null ? [] : [unit.serverUrl]),
+  ]);
+  return [...urls].map((url) => {
+    const service = describeWorkerService(url, { ...deps, mycoHome });
+    const words = workerServiceWords(service);
+    if (service?.installed === true) words.line = `legacy worker — uses member credential; ${words.line}`;
     return { name: 'Worker service', status: words.status, detail: `${url}: ${words.line}`, fixable: false };
   });
 }

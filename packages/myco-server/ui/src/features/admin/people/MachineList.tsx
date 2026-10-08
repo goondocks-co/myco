@@ -7,7 +7,7 @@ import { useProjects } from '../../../hooks/use-projects';
 import { useWorkerFleet } from '../../../hooks/use-status';
 import type { WorkerRow, WorkerStatus } from '../../../lib/api';
 import { machineOfWorker, type Machine } from '../machines';
-import { agentsWords, lastClaimWords, workerState } from '../workers';
+import { agentsWords, lastClaimWords, workerState, workerKindWords } from '../workers';
 import { ActivityDialog, type ActivityTarget } from './ActivityDialog';
 import { MachineSettingsDialog } from './MachineSettingsDialog';
 import { canRename } from './rename';
@@ -142,7 +142,7 @@ function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }:
         <span className="t-small text-muted">{meta}</span>
         {lines.map(({ worker, line }) => (
           <div key={worker.credentialId} className="flex flex-col" data-worker-line="">
-            <span className="t-small text-ink-2">{line}</span>
+            <span className="t-small text-ink-2">{workerKindWords(worker)} · {line}</span>
             <span className="t-small text-muted">{agentsWords(worker)}</span>
             {lastClaimWords(worker) !== null && <span className="t-small text-muted">{lastClaimWords(worker)}</span>}
           </div>

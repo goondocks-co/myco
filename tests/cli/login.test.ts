@@ -136,14 +136,15 @@ describe('myco login', () => {
     expect(labelOf(unnamed)).toBe(null);
   });
 
-  it('keeps a worker running at login for an administrator who signs in, and installs none for a member', async () => {
+  it('installs no executor for an administrator or member who signs in', async () => {
     const admin = unjoinedRig();
     const platform = recordingPlatform();
     const adminKey = (await issueEnrollmentAuthority(admin.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'admin' })).key;
     expect(await run([`https://s/join#${adminKey}`, '--root', root], deps(admin, workerDeps(platform)))).toBe(true);
-    expect(workerUnits()).toHaveLength(1);
-    expect(platform.running.size).toBe(1);
-    expect(out.join('\n')).toContain('a worker now runs whenever you are logged in');
+    expect(workerUnits()).toHaveLength(0);
+    expect(platform.running.size).toBe(0);
+    expect(platform.commands).toEqual([]);
+    expect(out.join('\n')).not.toContain('a worker now runs whenever you are logged in');
 
     fs.rmSync(path.join(home, 'Library'), { recursive: true, force: true });
     out.length = 0;

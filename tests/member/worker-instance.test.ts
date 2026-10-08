@@ -1,3 +1,5 @@
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
+import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
  * One worker per Deployment per machine, and a worker that outlives its credential's rotation.
@@ -12,13 +14,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { holdWorkerInstance, workerHolder, workerLockDir, workerLockPath } from '@myco/runner/instance.js';
+import { holdWorkerInstance, unclassifiedWorkerHolders, workerHolder, workerLockDir, workerLockPath } from '@myco/runner/instance.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 import { readWorkerRefusal } from '@myco/runner/refusal.js';
 import { attachOptions, endReplacedWorker, executableIdentity, sameProgram } from '@myco/cli/worker.js';
 import { programRuns } from '@myco/install/place-binary.js';
 import { workerServiceUnit } from '@myco/runner/service.js';
-import { localWorkerTarget } from '@myco/cli/server.js';
+import { executionDeploymentUrls } from '@myco/cli/worker-service.js';
 import { runWorker, type WorkerOptions } from '@myco/runner/loop.js';
 
 const URL_ = 'https://myco.example';
@@ -55,6 +57,44 @@ describe('the machine-wide worker lock', () => {
     expect(holdWorkerInstance(lockDir, ['https://other.example']).held).toBe(true);
     if (first.held) first.release();
     expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(true);
+  });
+
+  it('serializes origin aliases and credential classes by acknowledged Deployment identity', () => {
+    const first = holdWorkerInstance(lockDir, [URL_], 'dep-shared');
+    try {
+      expect(first.held).toBe(true);
+      expect(holdWorkerInstance(lockDir, ['https://alias.example'], 'dep-shared').held).toBe(false);
+      const different = holdWorkerInstance(lockDir, ['https://other.example'], 'dep-other');
+      expect(different.held).toBe(true);
+      if (different.held) different.release();
+    } finally { if (first.held) first.release(); }
+    const after = holdWorkerInstance(lockDir, ['https://alias.example'], 'dep-shared');
+    expect(after.held).toBe(true);
+    if (after.held) after.release();
+  });
+
+  it('retains the old URL lock beside canonical aliases for a running older worker', async () => {
+    const { LifecycleLock } = await import('@myco/utils/lifecycle-lock.js');
+    const oldUrl = 'http://localhost:8787';
+    const held = LifecycleLock.acquire(path.join(lockDir, `${deploymentKeyFor(oldUrl)}.lock`));
+    try { expect(holdWorkerInstance(lockDir, [oldUrl, LOOPBACK]).held).toBe(false); }
+    finally { if (held.acquired) held.lock.release(); }
+  });
+
+  it('classifies a live executor only after its authenticated Deployment lock is held', () => {
+    const old = holdWorkerInstance(lockDir, [URL_]);
+    try { expect(unclassifiedWorkerHolders(lockDir)).toMatchObject([{ pid: process.pid }]); }
+    finally { if (old.held) old.release(); }
+    expect(unclassifiedWorkerHolders(lockDir)).toEqual([]);
+    const identified = holdWorkerInstance(lockDir, [URL_], 'dep-identified');
+    try { expect(unclassifiedWorkerHolders(lockDir)).toEqual([]); }
+    finally { if (identified.held) identified.release(); }
+  });
+
+  it('equates loopback names, default ports and URL origin spellings', () => {
+    expect(workerLockPath(lockDir, 'http://localhost:8787/')).toBe(workerLockPath(lockDir, LOOPBACK));
+    expect(workerLockPath(lockDir, 'http://[::1]:8787')).toBe(workerLockPath(lockDir, LOOPBACK));
+    expect(workerLockPath(lockDir, 'https://MYCO.example:443/')).toBe(workerLockPath(lockDir, URL_));
   });
 
   it('excludes a worker for the public address while the native server holds its loopback and origin', () => {
@@ -120,6 +160,42 @@ describe('a second worker for the same Deployment', () => {
     expect(await second).toEqual({ driven: 0, refused: null });
     // Stopping releases the Deployment for whoever comes next.
     expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(true);
+  });
+
+  it('an updated legacy worker and runner through different origins never claim together', async () => {
+    const a = new AbortController(), b = new AbortController();
+    const claims = [0, 0];
+    const logs: string[] = [];
+    const send = (index: number): typeof fetch => (async (input: RequestInfo | URL) => {
+      if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, deploymentId: 'dep-shared' }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+      claims[index]! += 1;
+      return idle();
+    }) as typeof fetch;
+    const first = runWorker(options({ signal: a.signal, compatibilityPath: '/runners/contact', fetchImpl: send(0) }));
+    let second: Promise<unknown> | undefined;
+    try {
+      await until(() => claims[0]! > 0);
+      second = runWorker(options({ signal: b.signal, serverUrl: 'https://alias.example', deploymentId: 'dep-shared', compatibilityPath: '/runners/contact', fetchImpl: send(1), log: (line) => logs.push(line) }));
+      await until(() => logs.some((line) => line.includes('another worker on this machine')) || claims[1]! > 0);
+      expect(claims[1]).toBe(0);
+      a.abort(); await first;
+      await until(() => claims[1]! > 0);
+      b.abort(); await second;
+    } finally { a.abort(); b.abort(); await first; await second; }
+  });
+
+  it('refuses a contact that changes the enrolled Deployment before any claim', async () => {
+    let claims = 0;
+    const stopping = new AbortController();
+    const result = await runWorker(options({
+      signal: stopping.signal, deploymentId: 'dep-expected', compatibilityPath: '/runners/contact',
+      fetchImpl: (async (input: RequestInfo | URL) => {
+        if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, deploymentId: 'dep-other' }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+        claims += 1; return idle();
+      }) as typeof fetch,
+    }));
+    expect(result.refused).toBe('unauthorized');
+    expect(claims).toBe(0);
   });
 
   it('stops waiting when it is stopped', async () => {
@@ -297,14 +373,16 @@ describe('a replaced worker running as its macOS login service', () => {
 });
 
 describe('where each worker takes its locks', () => {
-  it('the native server\'s worker locks its loopback and the origin members reach it at', () => {
-    const target = localWorkerTarget({ port: 8787, origin: URL_ }, path.join(scratch, 'home'), lockDir);
-    expect(target.serverUrl).toBe(LOOPBACK);
-    expect(target.deploymentUrls).toEqual([LOOPBACK, URL_]);
-    const native = holdWorkerInstance(target.lockDir!, target.deploymentUrls!);
-    expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(false);
-    if (native.held) native.release();
-    expect(localWorkerTarget({ port: 8787 }, scratch).lockDir).toBe(workerLockDir());
+  it('an explicitly attached executor locks every recorded native alias', async () => {
+    const mycoHome = path.join(scratch, 'home');
+    const file = path.join(mycoHome, 'server', 'local', 'server.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ port: 8787, origin: URL_, sourceFrom: 'socket' }), { mode: 0o600 });
+    const urls = await executionDeploymentUrls(LOOPBACK, { mycoHome });
+    expect(urls).toEqual([LOOPBACK, URL_]);
+    const native = holdWorkerInstance(lockDir, urls);
+    try { expect(holdWorkerInstance(lockDir, [URL_]).held).toBe(false); }
+    finally { if (native.held) native.release(); }
   });
 
   it('a worker started from the CLI or a login service locks in this machine\'s lock directory', () => {
@@ -315,14 +393,14 @@ describe('where each worker takes its locks', () => {
 });
 
 describe('a worker the Deployment will not have', () => {
-  it('ends successfully with the refusal recorded, so its service does not restart it into the same answer', async () => {
+  it('requires explicit enrollment when no legacy service is installed', async () => {
     const saved = process.env.MYCO_HOME;
     const mycoHome = path.join(scratch, 'member');
     process.env.MYCO_HOME = mycoHome;
     try {
       const { run } = await import('@myco/cli/worker.js');
-      expect(await run(['--server', URL_])).toBe(true);
-      expect(readWorkerRefusal(mycoHome, URL_)?.code).toBe('no_membership');
+      expect(await run(['--server', URL_])).toBe(false);
+      expect(readWorkerRefusal(mycoHome, URL_)).toBeNull();
     } finally {
       if (saved === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = saved;
     }

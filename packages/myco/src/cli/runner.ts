@@ -3,8 +3,8 @@
  * the Deployment's queued runs on its harnesses.
  *
  * A runner has its own bearer and nothing else of Myco: no membership, no
- * vault, no capture. This verb touches only `<MYCO_HOME>/runner/`; it reads no
- * member registry or login state and writes no agent settings or service unit.
+ * vault, no capture. Runner services use this home’s runner record; capture and agent settings
+ * remain independent.
  */
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
@@ -12,12 +12,14 @@ import { keepMachineAwake } from '../runner/keep-awake.js';
 import { CLAIM_IDLE_POLL_MS, runWorker } from '../runner/loop.js';
 import { workerLogLine } from '../runner/log.js';
 import { workerLockDir } from '../runner/instance.js';
-import { isLiveRunner, listRunnerRecords, readRunnerRecord, runnerDir, type RunnerRecord } from '../runner/runner-registry.js';
+import { isLiveRunner, listRunnerRecords, readRunnerRecord, recordRunnerContact, runnerDir } from '../runner/runner-registry.js';
 import { rotateRunnerCredential, runnerRenewer } from '../runner/runner-rotation.js';
 import { RUNNER_CONTACT_PATH } from '../runner/runner-routes.js';
 import { harnessesNamed, parseFlags } from './flags.js';
-import { RUNNER_ADDRESS_RULE, runnerServerUrl, type RunnerCliDeps } from './runner-deps.js';
+import { RUNNER_ADDRESS_RULE, runnerServerUrl } from './runner-deps.js';
 import { registerRunner } from './runner-register.js';
+import { runRunnerService, runnerExecutionRefusal, type RunnerServiceDeps } from './runner-service.js';
+import { executionDeploymentUrls } from './worker-service.js';
 
 export const RUNNER_HELP = `myco runner — run a Deployment's queued tasks on this machine's harnesses
 
@@ -29,7 +31,13 @@ Usage:
   myco runner rotate [--server <url>]
                                   Rotate this runner's credential now.
   myco runner status [--server <url>]
-                                  Show the runner records this machine holds.
+                                  Show registration, service, contact and harnesses.
+  myco runner doctor [--server <url>]
+                                  Diagnose registration and service refusals.
+  myco runner install [--server <url>]
+                                  Start this enrolled runner as a per-user service.
+  myco runner uninstall [--server <url>]
+                                  Remove the local service; retain Deployment identity.
 
 register prints a link and a code. Open the link on a machine signed in to the
 dashboard, check the code and the runner's name, and approve. This terminal
@@ -49,7 +57,7 @@ const STEPS_DIRNAME = 'steps';
 const DIAGNOSTICS_DIRNAME = 'diagnostics';
 const SERVER_NEEDED = '--server needs the Deployment\'s address';
 
-interface RunnerRunDeps extends RunnerCliDeps {
+interface RunnerRunDeps extends RunnerServiceDeps {
   /** Stops a running runner; defaults to SIGINT and SIGTERM. */
   signal?: AbortSignal;
 }
@@ -90,7 +98,11 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const target = resolveServer(flags, mycoHome);
   if ('error' in target) return fail(target.error);
   const { serverUrl } = target;
-  if (!isLiveRunner(readRunnerRecord(serverUrl, mycoHome))) return fail(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\``);
+  const record = readRunnerRecord(serverUrl, mycoHome);
+  if (!isLiveRunner(record)) return fail(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\``);
+
+  const legacyRefusal = runnerExecutionRefusal(deps);
+  if (legacyRefusal !== null) return fail(legacyRefusal);
 
   const log = (line: string): void => { (deps.stdout ?? console.log)(workerLogLine(line)); };
   const dir = runnerDir(serverUrl, mycoHome);
@@ -104,7 +116,13 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
     renew: runnerRenewer(serverUrl, { mycoHome, fetch: deps.fetch, now: deps.now, notify: log }),
     compatibilityPath: RUNNER_CONTACT_PATH,
     detection: { credentialBytes: false },
-    lockDir: workerLockDir(),
+    lockDir: deps.lockDir ?? workerLockDir(deps.home),
+    deploymentId: record.deploymentId,
+    deploymentUrls: await executionDeploymentUrls(serverUrl, { ...deps, mycoHome }),
+    onContact: async (body) => {
+      const runner = body.runner as { id: string; deploymentId: string };
+      if (!await recordRunnerContact(serverUrl, { runnerId: runner.id, deploymentId: runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) log('runner record busy; contact timestamp was not saved');
+    },
     runRoot: path.join(dir, RUNS_DIRNAME),
     stepRoot: path.join(dir, STEPS_DIRNAME),
     diagnosticRoot: path.join(dir, DIAGNOSTICS_DIRNAME),
@@ -159,31 +177,6 @@ async function rotateVerb(args: readonly string[], deps: RunnerRunDeps): Promise
   }
 }
 
-function describe(record: RunnerRecord): string {
-  const state = record.token === undefined ? 'registration pending' : `runner ${record.name} (${record.runnerId ?? 'unknown'})`;
-  const window = record.token === undefined ? '' : `, credential expires ${instant(record.tokenExpiresAt)}, rotation opens ${instant(record.refreshAfter)}`;
-  const pending = record.pending === undefined || record.token === undefined ? '' : `, ${record.pending.kind} pending`;
-  return `${record.serverUrl}: ${state}${window}${pending}`;
-}
-
-function statusVerb(args: readonly string[], deps: RunnerRunDeps): boolean {
-  const out = deps.stdout ?? ((line) => process.stdout.write(`${line}\n`));
-  const err = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
-  const { flags } = parseFlags([...args]);
-  const mycoHome = deps.mycoHome ?? resolveMycoHome();
-  if (flags.has('server')) {
-    const target = resolveServer(flags, mycoHome);
-    if ('error' in target) { err(`myco runner status: ${target.error}`); return false; }
-    const record = readRunnerRecord(target.serverUrl, mycoHome);
-    out(record === null ? `${target.serverUrl}: no runner record` : describe(record));
-    return true;
-  }
-  const records = listRunnerRecords(mycoHome);
-  if (records.length === 0) out('This machine holds no runner record.');
-  for (const record of records) out(describe(record));
-  return true;
-}
-
 /** Run a `myco runner` verb, and report whether it succeeded. */
 export async function run(args: readonly string[], deps: RunnerRunDeps = {}): Promise<boolean> {
   const [verb, ...rest] = args;
@@ -192,7 +185,10 @@ export async function run(args: readonly string[], deps: RunnerRunDeps = {}): Pr
     case 'register': return registerRunner(rest, deps);
     case 'run': return runVerb(rest, deps);
     case 'rotate': return rotateVerb(rest, deps);
-    case 'status': return statusVerb(rest, deps);
+    case 'status':
+    case 'doctor':
+    case 'install':
+    case 'uninstall': return runRunnerService(verb, rest, deps);
     case undefined:
     case '--help':
     case '-h':

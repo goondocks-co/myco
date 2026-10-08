@@ -1,12 +1,8 @@
-/**
- * The worker login service, as the CLI asks for it: install it where one
- * belongs, remove it, and say what state it is in.
- *
- * `myco worker install|uninstall|status`, `member join`, `member leave`,
- * `member status`, `myco remove` and `myco doctor` all go through here, so each
- * says the same thing about the same unit.
- */
+/** Shared executor service targets, lifecycle operations and diagnostics. */
+import { listRunnerRecords } from '../runner/runner-registry.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import { isDefaultMycoHome } from '../grove/paths.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership, readDeploymentMembershipResult } from '../member/registry.js';
@@ -57,10 +53,18 @@ export interface WorkerServiceDeps {
 }
 
 /** The addresses this machine's native Deployment answers at, or none when it runs none from this home. */
-async function nativeDeploymentUrls(mycoHome: string): Promise<readonly string[]> {
+export async function nativeDeploymentUrls(mycoHome: string): Promise<readonly string[]> {
+  if (!fs.existsSync(path.join(mycoHome, 'server', 'local', 'server.json'))) return [];
   const { localDeploymentPresent, localDeploymentUrls, readLocalRecord, resolveLocalPaths } = await import('../server/local.js');
   const paths = resolveLocalPaths(mycoHome);
   return localDeploymentPresent(paths) ? localDeploymentUrls(readLocalRecord(paths)) : [];
+}
+
+/** Every recorded native alias is locked when the target names that Deployment. */
+export async function executionDeploymentUrls(serverUrl: string, deps: WorkerServiceDeps = {}): Promise<readonly string[]> {
+  const urls = await (deps.ownDeploymentUrls ?? nativeDeploymentUrls)(deps.mycoHome ?? resolveMycoHome());
+  const { workerLockPath } = await import('../runner/instance.js');
+  return urls.some((url) => workerLockPath('', url) === workerLockPath('', serverUrl)) ? [...new Set([serverUrl, ...urls])] : [serverUrl];
 }
 
 /** How long the admission question may take before install goes ahead on what it knows. */
@@ -69,10 +73,10 @@ const ADMISSION_TIMEOUT_MS = 10_000;
 const askDeployment = (serverUrl: string, token: string): Promise<WorkerAdmission> =>
   probeWorkerAdmission({ serverUrl, token, signal: AbortSignal.timeout(ADMISSION_TIMEOUT_MS) });
 
-function targetOf(serverUrl: string, deps: WorkerServiceDeps): WorkerServiceTarget {
+export function executorServiceTarget(serverUrl: string, deps: WorkerServiceDeps, executor: 'runner' | 'legacy-member' = 'legacy-member'): WorkerServiceTarget {
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: process.cwd() });
   return {
-    serverUrl: deploymentUrl(serverUrl),
+    executor, serverUrl: deploymentUrl(serverUrl),
     mycoHome,
     // The service-unit policy: the managed binary for the default home, and the
     // running binary for a home of its own.
@@ -83,7 +87,7 @@ function targetOf(serverUrl: string, deps: WorkerServiceDeps): WorkerServiceTarg
 }
 
 /** Why a unit may not be written from this binary for this home, or null. */
-function binaryRefusal(target: WorkerServiceTarget): string | null {
+export function binaryRefusal(target: WorkerServiceTarget): string | null {
   try {
     assertInstalledBinary(target.binaryPath);
   } catch (error) {
@@ -117,7 +121,7 @@ const ROLE_REFUSALS: Readonly<Record<'not_admin' | 'unauthorized', string>> = {
  * refusal recorded earlier stands. `force` skips both.
  */
 export async function ensureWorkerService(serverUrl: string, deps: WorkerServiceDeps & { force?: boolean } = {}): Promise<EnsureWorkerOutcome> {
-  const target = targetOf(serverUrl, deps);
+  const target = executorServiceTarget(serverUrl, deps);
   const unusable = binaryRefusal(target);
   if (unusable !== null) return { kind: 'unsupported', detail: unusable };
   const membership = readDeploymentMembership(target.serverUrl, target.mycoHome);
@@ -156,13 +160,12 @@ export async function ensureWorkerService(serverUrl: string, deps: WorkerService
 }
 
 /**
- * One line saying what a worker install came to, for every command that
- * installs one — `worker install`, `member join`, and a sign-in.
+ * The result of explicit legacy-worker service installation.
  */
 export function ensuredWorkerWords(ensured: EnsureWorkerOutcome): { ok: boolean; line: string } {
   switch (ensured.kind) {
     case 'installed':
-      if (!ensured.outcome.loaded) {
+      if (!ensured.outcome.loaded || !ensured.outcome.running) {
         return { ok: false, line: `the worker service is written, and the platform is not running it (${ensured.outcome.detail ?? 'no detail'}); run \`myco worker status\`` };
       }
       return {
@@ -183,7 +186,7 @@ export function ensuredWorkerWords(ensured: EnsureWorkerOutcome): { ok: boolean;
 
 export function removeWorkerService(serverUrl: string, deps: WorkerServiceDeps = {}): { unitFile: string; removed: boolean } | { unsupported: string } {
   try {
-    return uninstallWorkerService(targetOf(serverUrl, deps), deps.runner === undefined ? {} : { runner: deps.runner });
+    return uninstallWorkerService(executorServiceTarget(serverUrl, deps), deps.runner === undefined ? {} : { runner: deps.runner });
   } catch (error) {
     if (error instanceof ServicePlatformUnsupported) return { unsupported: error.message };
     throw error;
@@ -214,8 +217,16 @@ export function sweepWorkerServices(deps: WorkerServiceDeps = {}): WorkerSweep {
     const outcome = removeWorkerService(membership.serverUrl, { ...deps, mycoHome, home, platform });
     if ('removed' in outcome && outcome.removed) sweep.removed.push(outcome.unitFile);
   }
-  for (const found of listWorkerUnits(home, platform)) {
+  for (const record of listRunnerRecords(mycoHome)) {
+    const outcome = uninstallWorkerService(executorServiceTarget(record.serverUrl, { ...deps, mycoHome, home, platform }, 'runner'), options);
+    if (outcome.removed) sweep.removed.push(outcome.unitFile);
+  }
+  for (const found of listWorkerUnits(home, platform, true)) {
     if (found.mycoHome !== mycoHome) {
+      if (found.executor === 'runner') {
+        sweep.kept.push({ unitFile: found.unitFile, reason: 'the runner belongs to another home' });
+        continue;
+      }
       if (found.mycoHome === null || found.serverUrl === null) {
         sweep.kept.push({ unitFile: found.unitFile, reason: 'the unit does not say which home and Deployment it serves' });
         continue;
@@ -242,7 +253,7 @@ function serviceOptions(deps: WorkerServiceDeps): { runner?: ServiceRunner; lock
 /** The worker service for one Deployment, or null on a platform that defines no service. */
 export function describeWorkerService(serverUrl: string, deps: WorkerServiceDeps = {}): WorkerServiceStatus | null {
   try {
-    return workerServiceStatus(targetOf(serverUrl, deps), serviceOptions(deps));
+    return workerServiceStatus(executorServiceTarget(serverUrl, deps), serviceOptions(deps));
   } catch (error) {
     if (error instanceof ServicePlatformUnsupported) return null;
     throw error;
@@ -262,7 +273,7 @@ export function workerServiceWords(status: WorkerServiceStatus | null): { status
   const serving = status.serving === null ? null : status.serving.pid > 0 ? `process ${status.serving.pid} is serving this Deployment` : 'a worker process is serving this Deployment';
   if (serving !== null) {
     return status.installed
-      ? { status: 'ok', line: `running at login; ${serving}. Logs: ${status.outLog}` }
+      ? { status: 'ok', line: `${status.loaded && status.running ? 'running at login' : 'service installed'}; ${serving}. Logs: ${status.outLog}` }
       : { status: 'ok', line: `not installed; ${serving} (started outside the login service)` };
   }
   if (status.refusal !== null) return REFUSAL_WORDS[status.refusal.code];

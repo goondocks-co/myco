@@ -94,6 +94,7 @@ export interface ReportedHarness {
 
 /** One worker, as the Deployment last heard from it and as its leases stand now. */
 export interface WorkerRow {
+  runner?: { id: string; name: string; state: 'enabled' | 'paused' | 'removed' } | null;
   credentialId: string;
   machineId: string | null;
   /** Null when the stored report could not be read; an empty list is a worker reporting none. */

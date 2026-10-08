@@ -52,8 +52,9 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
         <CommandBlock caption={`${ATTACH_WORDS.before} this command ${ATTACH_WORDS.after}`} command={ATTACH_WORDS.command} />
       )}
       {workers.fleet.length > 0 && (
-        <RowCard label="Workers">
-          {workers.fleet.map((worker) => {
+        <>
+        {([{ label: 'Registered runners', rows: workers.fleet.filter((w) => w.runner != null) }, { label: 'Legacy workers', rows: workers.fleet.filter((w) => w.runner == null) }]).filter((group) => group.rows.length > 0).map((group) => <RowCard key={group.label} label={group.label}>
+          {group.rows.map((worker) => {
             const machine = machineOfWorker(machines, worker)?.name ?? 'A machine';
             const state = workerLine(worker, now, { machine, project: projectName });
             const claim = lastClaimWords(worker);
@@ -68,7 +69,8 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
               </div>
             );
           })}
-        </RowCard>
+        </RowCard>)}
+        </>
       )}
     </div>
   );
