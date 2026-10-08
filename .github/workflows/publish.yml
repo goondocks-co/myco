@@ -237,16 +237,44 @@ jobs:
           path: packages/myco-${{ matrix.target }}/bin/
           if-no-files-found: error
 
+  sign-darwin:
+    name: Sign macOS binary (${{ matrix.target }})
+    needs: [validate-tag, cross-compile]
+    if: needs.validate-tag.outputs.tag_prefix == 'myco'
+    runs-on: macos-14
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin-arm64, darwin-x64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: myco-binary-${{ matrix.target }}
+          path: binary/
+      - name: Sign macOS executable
+        run: bash scripts/sign-darwin-binary.sh binary/myco
+      - name: Replace binary artifact with signed bytes
+        uses: actions/upload-artifact@v7
+        with:
+          name: myco-binary-${{ matrix.target }}
+          path: binary/
+          overwrite: true
+          if-no-files-found: error
+
   build:
     name: Build and Test
     runs-on: ubuntu-latest
-    needs: [validate-tag, cross-compile]
+    needs: [validate-tag, cross-compile, sign-darwin]
     # cross-compile is skipped for myco-shared tags, which would
     # normally cascade-skip this job. Force it to run in that case.
     if: |
       always() &&
       needs.validate-tag.result == 'success' &&
-      (needs.cross-compile.result == 'success' || needs.cross-compile.result == 'skipped')
+      (needs.cross-compile.result == 'success' || needs.cross-compile.result == 'skipped') &&
+      (needs.sign-darwin.result == 'success' ||
+       (needs.validate-tag.outputs.tag_prefix != 'myco' && needs.sign-darwin.result == 'skipped'))
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -321,6 +349,7 @@ jobs:
               echo "missing binary: $binary" >&2
               exit 1
             fi
+            chmod +x "$binary"
           done
 
       # Stage raw binaries into a flat directory with canonical asset names so
@@ -468,10 +497,45 @@ jobs:
             packages/myco-windows-x64/goondocks-myco-windows-x64-*.tgz
           if-no-files-found: error
 
+  verify-darwin:
+    name: Verify staged macOS distributions
+    needs: [validate-tag, build]
+    if: needs.validate-tag.outputs.tag_prefix == 'myco'
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: myco-raw-binaries
+          path: raw-binaries/
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: npm-packages/
+      - name: Verify exact release assets and npm binaries
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          for target in darwin-arm64 darwin-x64; do
+            tarballs=("npm-packages/myco-${target}/goondocks-myco-${target}-"*.tgz)
+            if [ "${#tarballs[@]}" -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
+              echo "Expected one packed npm tarball for $target" >&2
+              exit 1
+            fi
+            mode=native
+            if [ "$target" = darwin-x64 ]; then
+              mode=signature-only
+              echo "darwin-x64 execution skipped: Bun x64 raises SIGILL under macos-14 Rosetta; both signatures and byte identity are required."
+            fi
+            bash scripts/verify-darwin-distribution.sh "$VERSION" "raw-binaries/myco-${target}" "${tarballs[0]}" "$mode"
+          done
+
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [validate-tag, build, require-ci]
+    needs: [validate-tag, build, require-ci, verify-darwin]
     # build runs for all tag prefixes via its always() gate; this gate
     # carries that override forward. myco-shared is internal — we skip
     # the GitHub Release UI for it but still let publish run.
@@ -480,6 +544,8 @@ jobs:
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
       needs.require-ci.result == 'success' &&
+      (needs.verify-darwin.result == 'success' ||
+       (needs.validate-tag.outputs.tag_prefix != 'myco' && needs.verify-darwin.result == 'skipped')) &&
       needs.validate-tag.outputs.tag_prefix != 'myco-shared'
     steps:
       - uses: actions/checkout@v7
@@ -731,7 +797,7 @@ jobs:
   publish:
     name: Publish to npmjs.org
     runs-on: ubuntu-latest
-    needs: [validate-tag, build, create-release, require-ci]
+    needs: [validate-tag, build, create-release, require-ci, verify-darwin]
     environment: npm-publish
     # Build supplies the npm tarballs. Internal packages skip the GitHub Release.
     if: |
@@ -739,6 +805,8 @@ jobs:
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
       needs.require-ci.result == 'success' &&
+      (needs.verify-darwin.result == 'success' ||
+       (needs.validate-tag.outputs.tag_prefix != 'myco' && needs.verify-darwin.result == 'skipped')) &&
       (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     steps:
       - uses: actions/setup-node@v7
