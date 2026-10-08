@@ -115,6 +115,15 @@ describe('service-manager process containment', () => {
     expect(child.stdout).toContain('TEST SAFETY');
   });
 
+  it('a Node replacement environment keeps deliberate omissions', () => {
+    const root = fresh();
+    const env: NodeJS.ProcessEnv = { ...environment(root), MYCO_BOUNDARY_SENTINEL: 'parent-only' };
+    const script = `process.stdout.write(require('node:child_process').execFileSync(process.execPath, ['-e', 'process.stdout.write(process.env.MYCO_BOUNDARY_SENTINEL ?? "omitted")'], {env: {HOME: process.env.HOME}, encoding: 'utf8'}));`;
+    const child = spawnSync('node', ['-e', script], { env, encoding: 'utf8' });
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe('omitted');
+  });
+
 
 
   it.skipIf(process.platform === 'win32')('Node shell modes retain the OS execution boundary', () => {

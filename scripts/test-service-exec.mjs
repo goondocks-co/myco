@@ -263,7 +263,7 @@ if (!globalThis.Bun) {
       const object = options !== null && typeof options === 'object' ? options : {};
       const root = process.env.MYCO_TEST_CHILD_ROOT ?? process.env.MYCO_TEST_RUN_ROOT;
       const overrides = object.env ?? process.env;
-      const env = sandboxChildEnv(root, { ...overrides, HOME: overrides.HOME ?? process.env.HOME });
+      const env = sandboxChildEnv(root, { ...overrides, HOME: overrides.HOME ?? process.env.HOME, PATH: overrides.PATH ?? process.env.PATH }, {});
       for (const name of ['TMPDIR', 'TEMP', 'TMP']) assertTestPath(root, env[name], name);
       env[GUARD_ENV] = process.env[GUARD_ENV];
       env.MYCO_TEST_RUN_ROOT = process.env.MYCO_TEST_RUN_ROOT;
