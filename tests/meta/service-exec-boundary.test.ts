@@ -178,6 +178,15 @@ child.on('close', () => process.stdout.write(JSON.stringify(codes)));`;
     expect(child.stderr.toString()).toMatch(/not permitted|Permission denied/);
   });
 
+  it.skipIf(process.platform === 'win32')('the OS execution boundary denies a symlinked harmless descendant', () => {
+    const root = fresh();
+    const alias = path.join(root, 'benign-alias');
+    fs.symlinkSync('/usr/bin/true', alias);
+    const child = Bun.spawnSync(['/bin/sh', '-c', '"$1"', '--', alias], { env: environment(root) });
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stderr.toString()).toMatch(/not permitted|Permission denied/);
+  });
+
   it.skipIf(process.platform === 'win32')('the OS execution boundary denies a harmless absolute descendant', () => {
     const root = fresh();
     const env: NodeJS.ProcessEnv = environment(root);

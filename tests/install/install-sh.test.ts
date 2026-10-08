@@ -18,8 +18,8 @@
  * well-formed, non-draft Myco 2.x tag is chosen, in semver order, a
  * prerelease only on its eligible preview channel, and stable keeps the public
  * 1.4 flow until a 2.x release exists; every request is
- * HTTPS-only; a script cut short runs nothing; the 1.4 `--serve` option is
- * refused.
+ * HTTPS-only; a script cut short runs nothing; `--serve` remains available
+ * for 1.4 installs and is refused for 2.0 installs.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
