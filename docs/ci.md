@@ -51,3 +51,7 @@ phase durations in their summaries and upload JUnit reports and logs.
 Aim for PR feedback within five minutes. Compare completed workflow elapsed time,
 including runner queues and the aggregate gate, rather than summing parallel job
 durations. Splitting jobs adds setup work and may increase billed runner minutes.
+
+macOS distribution builds also verify the staged executable and the binary
+inside the packed npm platform package. Tagged releases require this gate
+before GitHub or npm publication; see [macOS release signing](development/macos-release-signing.md).

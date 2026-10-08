@@ -7,6 +7,102 @@ import { latestExactCiRun, releaseCiDecision } from '../../scripts/require-relea
 const ci = YAML.parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
 const release = YAML.parse(readFileSync('.github/workflows/publish.yml', 'utf8'));
 
+function assertDarwinDistribution(workflow: typeof release): void {
+  const signing = workflow.jobs['sign-darwin'];
+  expect(signing['runs-on']).toBe('macos-14');
+  expect(signing.needs).toContain('cross-compile');
+  expect(signing.strategy.matrix.target).toEqual(['darwin-arm64', 'darwin-x64']);
+  const download = signing.steps.findIndex((step: { uses?: string }) => step.uses?.startsWith('actions/download-artifact@'));
+  const sign = signing.steps.findIndex((step: { run?: string }) => step.run?.includes('codesign --force --sign - --preserve-metadata=entitlements,identifier binary/myco'));
+  const upload = signing.steps.findIndex((step: { uses?: string }) => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(sign).toBeGreaterThan(download);
+  expect(download).toBeGreaterThanOrEqual(0);
+  expect(upload).toBeGreaterThan(sign);
+  expect(signing.steps[upload].with).toMatchObject({
+    name: 'myco-binary-${{ matrix.target }}', path: 'binary/', overwrite: true, 'if-no-files-found': 'error',
+  });
+  expect(signing.steps[download].with).toMatchObject({ name: 'myco-binary-${{ matrix.target }}', path: 'binary/' });
+  expect(workflow.jobs.build.needs).toContain('sign-darwin');
+  expect(workflow.jobs.build.if).toContain("needs.sign-darwin.result == 'success'");
+  expect(workflow.jobs.build.if).toContain("needs.validate-tag.outputs.tag_prefix != 'myco' && needs.sign-darwin.result == 'skipped'");
+  expect(workflow.jobs.build.steps.some((step: { uses?: string; with?: { pattern?: string } }) =>
+    step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern === 'myco-binary-*')).toBe(true);
+  expect(workflow.jobs.build.steps.find((step: { name?: string }) => step.name === 'Verify platform binaries').run).toContain('chmod +x "$binary"');
+  const gate = workflow.jobs['verify-darwin'];
+  expect(gate['runs-on']).toBe('macos-14');
+  expect(gate.needs).toContain('build');
+  expect(gate.if).toBe("needs.validate-tag.outputs.tag_prefix == 'myco'");
+  for (const artifact of ['myco-raw-binaries', 'npm-package']) {
+    expect(gate.steps.some((step: { uses?: string; with?: { name?: string } }) =>
+      step.uses?.startsWith('actions/download-artifact@') && step.with?.name === artifact)).toBe(true);
+  }
+  const verify = gate.steps.find((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));
+  expect(verify.env.VERSION).toBe('${{ needs.validate-tag.outputs.version }}');
+  expect(verify.run).toContain('for target in darwin-arm64 darwin-x64');
+  expect(verify.run).toContain('"npm-packages/myco-${target}/goondocks-myco-${target}-"*.tgz');
+  expect(verify.run).toContain('"raw-binaries/myco-${target}" "${tarballs[0]}" "$mode"');
+  expect(verify.run).toContain('mode=native');
+  for (const job of ['create-release', 'publish']) {
+    expect(workflow.jobs[job].needs).toContain('verify-darwin');
+    expect(workflow.jobs[job].if).toContain("needs.verify-darwin.result == 'success'");
+    expect(workflow.jobs[job].if).toContain("needs.validate-tag.outputs.tag_prefix != 'myco' && needs.verify-darwin.result == 'skipped'");
+  }
+}
+
+test('macOS signing precedes staging, npm packing and checksums; exact distributions gate all publication', () => {
+  assertDarwinDistribution(release);
+  const script = readFileSync('scripts/verify-darwin-distribution.sh', 'utf8');
+  expect(script).toContain('tar -xzf "$tarball" -C "$scratch" package/bin/myco');
+  expect(script).toContain('cmp "$asset" "$packed"');
+  expect(script).toContain('for binary in "$asset" "$packed"');
+  expect(script).toContain('codesign --verify --strict "$binary"');
+  expect(script).toContain('actual="$("$binary" --version)"');
+  expect(script).toContain('[ "$actual" != "$version" ]');
+});
+
+test('removing signing, signing after pack or checksum, and removing the macOS gate fail the release contract', () => {
+  for (const destination of ['omit', 'pack', 'checksum']) {
+    const mutant = structuredClone(release);
+    const steps = mutant.jobs['sign-darwin'].steps;
+    const index = steps.findIndex((step: { run?: string }) => step.run?.includes('codesign --force --sign -'));
+    const [sign] = steps.splice(index, 1);
+    if (destination === 'pack') mutant.jobs.build.steps.push(sign);
+    if (destination === 'checksum') mutant.jobs['create-release'].steps.push(sign);
+    expect(() => assertDarwinDistribution(mutant)).toThrow();
+  }
+  const noGate = structuredClone(release);
+  delete noGate.jobs['verify-darwin'];
+  expect(() => assertDarwinDistribution(noGate)).toThrow();
+  for (const job of ['create-release', 'publish']) {
+    const bypass = structuredClone(release);
+    bypass.jobs[job].needs = bypass.jobs[job].needs.filter((name: string) => name !== 'verify-darwin');
+    expect(() => assertDarwinDistribution(bypass)).toThrow();
+  }
+  const unsignedInput = structuredClone(release);
+  unsignedInput.jobs.build.needs = unsignedInput.jobs.build.needs.filter((name: string) => name !== 'sign-darwin');
+  expect(() => assertDarwinDistribution(unsignedInput)).toThrow();
+});
+
+test('main and PR darwin builds sign and verify both raw and npm-packed binaries', () => {
+  expect(ci.on.push.branches).toContain('main');
+  expect(ci.on.pull_request.branches).toContain('main');
+  const hook = ci.jobs['hook-startup'];
+  expect(hook.strategy.matrix.include).toContainEqual({ target: 'darwin-arm64', os: 'macos-14', rg: 'darwin-arm64', ceiling: 150 });
+  const steps = hook.steps;
+  const compile = steps.findIndex((step: { run?: string }) => step.run?.includes('npm run build:binary'));
+  const gate = steps.findIndex((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));
+  const version = steps.findIndex((step: { run?: string }) => step.run === 'node scripts/sync-package-versions.mjs --target myco --version 0.0.0-ci');
+  expect(version).toBeGreaterThanOrEqual(0);
+  expect(version).toBeLessThan(compile);
+  expect(steps[version].if).toBe("matrix.target == 'darwin-arm64'");
+  expect(gate).toBeGreaterThan(compile);
+  expect(compile).toBeGreaterThanOrEqual(0);
+  expect(steps[gate].if).toBe("matrix.target == 'darwin-arm64'");
+  expect(readFileSync('packages/myco/scripts/build-single-target.mjs', 'utf8')).toContain('signExecutable({ target, outfile })');
+  expect(readFileSync('packages/myco/scripts/sign-executable.mjs', 'utf8')).toContain("'--preserve-metadata=entitlements,identifier'");
+  expect(steps[gate].run).toContain('"${tarballs[0]}" native');
+});
+
 function assertAggregate(workflow: typeof ci): void {
   const jobs = Object.keys(workflow.jobs).filter((job) => job !== 'check');
   expect(new Set(workflow.jobs.check.needs)).toEqual(new Set(jobs));
