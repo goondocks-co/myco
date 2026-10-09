@@ -8,7 +8,7 @@
  * and a claim reads the claiming machine's resolutions from it. The lease sweep forgets the rest. A catalog is the
  * worker's own listing of its machine, made with the machine's own login, never evidence that a provider accepts a request.
  */
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { MODEL_CATALOG_FRESH_MS, parseModelCatalog, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { readMachineOffers } from './worker-contacts.js';
 
@@ -18,6 +18,11 @@ export type CatalogOwner = { kind: 'machine'; machineId: string } | { kind: 'run
 /** A stored catalog, with when the Deployment received it. */
 export interface StoredModelCatalog extends ModelCatalog {
   receivedAt: number;
+}
+
+/** Replacement credentials establish their own model observations. */
+export function invalidateRunnerCatalogs(db: RelationalStore, runnerId: string): PreparedStatement {
+  return db.prepare('DELETE FROM runner_model_catalogs WHERE runner_id = ?').bind(runnerId);
 }
 
 /** The oldest instant a catalog may have been received at and still count, at `now`. */

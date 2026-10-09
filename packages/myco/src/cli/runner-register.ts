@@ -23,22 +23,22 @@ export interface RegisteredRunner {
   deploymentId: string;
 }
 
-const runnerRegistration = (serverUrl: string, name: string): DeviceFlowSpec<RegisteredRunner> => ({
+const runnerRegistration = (serverUrl: string, name: string, replace: boolean): DeviceFlowSpec<RegisteredRunner> => ({
   noun: 'registration',
   startPath: '/auth/runner/start',
   pollPath: '/auth/runner/poll',
   announce: (userCode) => [
     `Open ${serverUrl}/device on a machine signed in to the dashboard.`,
     `Code: ${userCode}`,
-    `The approver is asked to "Register a runner named ${name}". Check the details and approve it there. Waiting for approval…`,
+    replace ? `Review the request to replace registration for ${name}. Approval keeps the same machine and history, and ends its previous access. Waiting for approval…` : `The approver is asked to "Register a runner named ${name}". Check the details and approve it there. Waiting for approval…`,
   ],
   accept: (response, answer) => response.ok && answer.registered === true && typeof answer.runnerId === 'string'
     && typeof answer.name === 'string' && typeof answer.deploymentId === 'string'
     ? { runnerId: answer.runnerId, name: answer.name, deploymentId: answer.deploymentId } : null,
   refusals: {
     access_denied: 'registration was denied in the dashboard',
-    expired_token: 'registration expired; run myco runner register again',
-    invalid_grant: 'registration has expired or was already used; run myco runner register again',
+    expired_token: `registration expired; run myco runner register ${serverUrl} --name ${name}${replace ? ' --replace' : ''} again`,
+    invalid_grant: `registration has expired or was already used; run myco runner register ${serverUrl} --name ${name}${replace ? ' --replace' : ''} again`,
   },
   otherRefusal: 'the Deployment refused this registration; run myco runner register again',
 });
@@ -87,12 +87,15 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
   if (serverUrl === null) return fail(RUNNER_ADDRESS_RULE);
   const named = flags.get('name');
   if (named === 'true') return fail('--name needs a value');
-  const name = named ?? defaultRunnerName((deps.hostname ?? osHostname)());
+  let name = named ?? defaultRunnerName((deps.hostname ?? osHostname)());
   if (!RUNNER_NAME_PATTERN.test(name)) return fail('a runner name is 1 to 64 letters, digits, dots, underscores or dashes');
 
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const replace = flags.get('replace') === 'true';
   const existing = readRunnerRecord(serverUrl, mycoHome);
+  if (replace && isLiveRunner(existing)) {
+    name = named ?? existing.name;
+  }
   if (isLiveRunner(existing) && !replace) return fail(`this machine is already registered with ${serverUrl} as ${existing.name}; start it with \`myco runner run --server ${serverUrl}\`, or register it afresh with --replace`);
 
   const machine = { machineId: deps.machineId ?? getMachineId(), machineName: (deps.hostname ?? osHostname)(), os: (deps.os ?? platform)() };
@@ -122,8 +125,8 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
       displayName = pending.name ?? held!.name;
       const settled = await committedWith(serverUrl, pending.candidate, metadata, deps.fetch);
       if (settled.kind === 'committed') return commitContact(lock, pending.candidate, settled.contact);
-      if (settled.kind === 'unknown') return fail(`could not tell whether the earlier registration completed (${settled.detail}); run it again to settle it`);
-      grant = resumableGrant(pending, now());
+      if (settled.kind === 'unknown') return fail(`could not tell whether the earlier registration completed (${settled.detail}); run myco runner register ${serverUrl} --name ${named ?? displayName}${replace ? ' --replace' : ''} again to settle it`);
+      grant = (replace && pending.replace !== true) || (named !== undefined && named !== displayName) ? null : resumableGrant(pending, now());
       if (grant === null) {
         clearPending(lock);
         pending = null;
@@ -131,13 +134,15 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
       }
     }
     if (pending === null) {
-      pending = { kind: 'register', candidate: newRunnerBearer(), name: displayName, startedAt: now() };
+      pending = { kind: 'register', candidate: newRunnerBearer(), name: displayName, ...(replace ? { replace: true } : {}), startedAt: now() };
       stagePending(lock, pending, displayName);
     }
     const candidate = pending.candidate;
     const registration = pending;
 
-    const flow = await runDeviceFlow(serverUrl, runnerRegistration(serverUrl, displayName), { name: displayName, ...machine, candidate },
+    const retry = `myco runner register ${serverUrl} --name ${displayName}${replace ? ' --replace' : ''}`;
+    const flow = await runDeviceFlow(serverUrl, runnerRegistration(serverUrl, displayName, replace), { name: displayName, ...machine, candidate,
+      ...(replace ? { replace: true, ...(isLiveRunner(held) ? { runnerId: held.runnerId } : {}) } : {}) },
       { fetch: deps.fetch, stdout: out, sleep: deps.sleep, clock: now },
       {
         onStarted: (started) => {
@@ -152,9 +157,9 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
     if (MAYBE_COMMITTED_CODES.includes(flow.code)) {
       const settled = await committedWith(serverUrl, candidate, metadata, deps.fetch);
       if (settled.kind === 'committed') return commitContact(lock, candidate, settled.contact);
-      if (settled.kind === 'unknown') return fail(`${flow.reason} (${flow.code}); the registration may still have completed — run \`myco runner register ${positionals[0]}\` again to settle it`);
+      if (settled.kind === 'unknown') return fail(`${flow.reason} (${flow.code}); the registration may still have completed — run \`${retry}\` again to settle it`);
     }
-    if (TRANSIENT_CODES.includes(flow.code)) return fail(`${flow.reason} (${flow.code}); run \`myco runner register ${positionals[0]}\` again to pick it up`);
+    if (TRANSIENT_CODES.includes(flow.code)) return fail(`${flow.reason} (${flow.code}); run \`${retry}\` again to pick it up`);
     clearPending(lock);
     return fail(`${flow.reason} (${flow.code})`);
   }, mycoHome);

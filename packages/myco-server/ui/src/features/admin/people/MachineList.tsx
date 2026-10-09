@@ -130,7 +130,7 @@ interface MachineItemProps {
 
 function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }: MachineItemProps) {
   const now = Date.now();
-  const workers: WorkerRow[] = fleet === undefined ? [] : fleet.fleet.filter((worker) => machineOfWorker([machine], worker) !== undefined);
+  const workers: WorkerRow[] = fleet === undefined ? [] : (fleet.fleet ?? []).filter((worker) => machineOfWorker([machine], worker) !== undefined);
   const lines = workers.map((worker) => ({ worker, ...workerState(worker, now, projectName) }));
   const tone = lines[0]?.tone ?? STANDING_TONE[machine.standing];
   const meta = [owner, standingWords(machine, stoppedBy), `first signed in ${shortDate(machine.firstSeenAt, now)}`].filter((part) => part !== null).join(' · ');

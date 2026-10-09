@@ -241,7 +241,7 @@ describe('a run’s panel', () => {
     mount(`/p/${P}/work/runs/run_q0000000001`);
     open = await panel();
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Waiting to start');
-    expect(open.querySelector('[data-queued]')!.textContent).toBe('2 ahead of it. Waiting for a free slot: this server is already running as many tasks at once as it allows.');
+    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^2 ahead of it\. Waiting for a free slot: this server is already running as many tasks at once as it allows\. Waiting since \d+m ago\.$/);
     expect(interval('run_q0000000001')).toEqual({ interval: LIVE_REFRESH_MS, background: false });
   });
 

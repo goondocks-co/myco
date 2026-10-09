@@ -45,6 +45,10 @@ const SHARED_SRC = path.join(REPO_ROOT, 'packages', 'myco-shared', 'src');
 const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
   'features/admin/workers.ts:Legacy worker — uses member credential':
     'The migration inventory must name the credential class so the owner can distinguish legacy execution from runner enrollment',
+  'features/admin/workers.ts:Run assigned; lease valid until …':
+    'An assignment deadline distinguishes authoritative Busy from a recent contact',
+  'features/admin/runners/LegacyWorker.tsx:This removes its remembered contact from the inventory. It never revokes the member credential or changes membership or capture. If the worker contacts again, it reappears.':
+    'The confirmation explicitly promises that forgetting cannot revoke capture access',
   'features/admin/settings/catalogue.ts:agent.harnesses. … .credential':
     'A setting key assembled for the API, never shown as page copy',
   'myco-shared/member-protocol.ts:ask a Deployment admin for an invitation for your existing member':

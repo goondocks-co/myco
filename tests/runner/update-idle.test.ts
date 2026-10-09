@@ -105,4 +105,28 @@ describe('runner update idle admission', () => {
       expect(claims).toBe(0);
     } finally { stopping.abort(); fs.rmSync(root, { recursive: true, force: true }); }
   });
+  it('keeps a paused runner in contact without asking for work', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-paused-contact-'));
+    const stopping = new AbortController();
+    let contacts = 0, claims = 0;
+    try {
+      const outcome = await runWorker({
+        serverUrl: 'https://paused.invalid', token: 'fixture', lockDir: null,
+        deploymentId: 'dep_fixture', compatibilityPath: RUNNER_CONTACT_PATH,
+        runRoot: path.join(root, 'runs'), only: [], signal: stopping.signal, pollIdleMs: 1, log: () => {},
+        contactBody: () => ({}),
+        fetchImpl: (async (input, init) => {
+          if (new URL(String(input)).pathname === '/worker/claim') claims++;
+          else {
+            expect(JSON.parse(String(init?.body))).toMatchObject({ availability: 'ready', arch: process.arch });
+            if (++contacts === 3) stopping.abort();
+          }
+          return answer({ persisted: true, runner: { deploymentId: 'dep_fixture', state: 'paused' } });
+        }) as typeof fetch,
+      });
+      expect(outcome).toEqual({ driven: 0, refused: null });
+      expect({ contacts, claims }).toEqual({ contacts: 3, claims: 0 });
+    } finally { stopping.abort(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
 });

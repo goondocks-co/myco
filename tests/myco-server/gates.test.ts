@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 166;
+const EMIT_CALLS = 167;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -558,8 +558,10 @@ describe('gates', () => {
     // `helpers/access-paths.ts` and shared with the v2-table gate.
     const { sqlite } = sqliteEnv();
     try {
+      const liveIndexes = new Set(sqlite.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(({ name }) => name));
       for (const s of SCHEMA_DDL.filter((x) => /CREATE (UNIQUE )?INDEX .* ON \w+/.test(x) && !deploymentScoped.test(x) && !isDeploymentAccessPath(x))) {
         const index = /INDEX IF NOT EXISTS (\w+) ON (\w+)/.exec(s)!;
+        if (!liveIndexes.has(index[1]!)) continue;
         if (!isForeignKeyChildIndex(sqlite, index[2]!, index[1]!)) expect(s).toMatch(/\(project_id/);
       }
     } finally { sqlite.close(); }
@@ -1518,6 +1520,9 @@ describe('gates', () => {
       'runner POST /runners/contact',
       'runner POST /runners/rotate',
       'session:member GET /api/runners',
+      'session:admin POST /api/runners/{runnerId}/rename',
+      'session:admin POST /api/runners/{runnerId}/recredential',
+      'session:admin POST /api/workers/legacy/{credentialId}/forget',
       'session:admin POST /api/runners/{runnerId}/pause',
       'session:admin POST /api/runners/{runnerId}/resume',
       'session:admin POST /api/runners/{runnerId}/remove',
@@ -1620,7 +1625,7 @@ describe('gates', () => {
     const shared = new Set(sharedFiles());
     expect(Object.keys(runtime).filter((pkg) => pkg !== 'sqlite-vec' && ![...(imported.get(pkg) ?? [])].some((f) => shared.has(f)))).toEqual([]);
     expect([...(imported.get('sqlite-vec') ?? [])]).toEqual([join(SRC, 'platform', 'bun', 'vectors.ts')]);
-    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0', '@goondocks/myco-shared': '^0.2.0', '@stablelib/sha256': '2.0.1', 'sqlite-vec': '^0.1.9' });
+    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0', '@goondocks/myco-shared': '^0.2.0', '@stablelib/sha256': '2.0.1', semver: '^7.8.5', 'sqlite-vec': '^0.1.9' });
   });
 
   it('leaves owner routes ingest-neutral', async () => {

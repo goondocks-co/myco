@@ -1,3 +1,4 @@
+import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { Fragment, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -358,7 +359,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     key: row.id,
     time: shortTime(at, now),
     at,
-    words: runLineWords(kind, row, row.outcome),
+    words: row.status === 'queued' && row.fleetWait !== undefined ? `${QUEUE_REASON_WORDS[row.fleetWait.reason]} ${row.queuedAt === null ? 'Queue age unavailable.' : `Waiting since ${atWords(row.queuedAt, now)}.`}` : runLineWords(kind, row, row.outcome),
     model: <ModelSummary run={row} variant="list" />,
     where: ranOn(row.worker, name)?.list ?? null,
     by: startedByChip(row.startedBy, name),

@@ -888,14 +888,22 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         const awake = wake.awakeFor();
         const settleMs = wake.settleMs();
         if (!settling) { settling = true; options.log(`this machine woke ${Math.max(0, Math.round(awake / 1000))}s ago; claiming once it has been awake ${Math.round(settleMs / 1000)}s`); }
+        const contactBody = options.contactBody;
+        if (contactBody !== undefined) {
+          const contact = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, {
+            ...contactBody(), arch: process.arch, availability: 'settling', readinessReason: 'Waiting to settle after waking.',
+          }));
+          if (contact.kind === 'refused') return { driven, refused: contact.code };
+        }
         await pause(Math.min(settleMs - awake, Math.max(options.pollIdleMs, 1)));
         continue;
       }
       settling = false;
       // Compatibility is checked on a read before the queue can be claimed.
       let advertisesCatalog = false;
+      let paused = false;
       {
-        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, options.contactBody?.() ?? {}));
+        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, options.contactBody === undefined ? {} : { ...options.contactBody(), arch: process.arch, availability: 'ready', readinessReason: 'Awake and checking for work.' }));
         if (compatibility.kind === 'refused') {
           options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
           return { driven, refused: compatibility.code };
@@ -915,6 +923,8 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           options.log('the contact names another Deployment or carries no enrolled Deployment identity; no work is claimed');
           return { driven, refused: 'unauthorized' };
         }
+        const runner = compatibility.body.runner;
+        paused = runner !== null && typeof runner === 'object' && 'state' in runner && runner.state === 'paused';
         advertisesCatalog = compatibility.modelCatalog;
         await deliverStepLogs(options, compatibility.steps, requestMs);
         if (!wake.settled()) continue;
@@ -925,7 +935,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         options.log('runner update ready; stopping between runs so the service starts the new program');
         return { driven, refused: null, replaced: true };
       }
-      if (idle === 'hold') { await pause(options.pollIdleMs); continue; }
+      if (idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
       const { offered: harnesses, withheld } = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read()));
       if (options.signal.aborted) break;
       if (!wake.settled()) continue;

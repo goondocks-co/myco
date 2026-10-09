@@ -80,7 +80,7 @@ export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>>
   project: ['read', 'create', 'admin'], processed: ['read', 'admin', 'capture'],
   plan: ['read', 'edit', 'status', 'capture'], spore: ['read', 'edit'], raw: ['read', 'enumerate', 'append', 'owner'], 'raw-index': ['enumerate'],
   run: ['read', 'dispatch', 'admin', 'cancel', 'execute'], grant: ['admin'], enrollment: ['protocol', 'admin', 'owner', 'enroll.self'], backup: ['admin'],
-  queue: ['claim', 'lease'], runner: ['read', 'edit', 'admin'], 'legacy-worker': ['read'],
+  queue: ['claim', 'lease'], runner: ['read', 'edit', 'admin'], 'legacy-worker': ['read', 'admin'],
 };
 
 /** The policy receives only identities and resource evidence resolved by the serving store. */
@@ -110,7 +110,7 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   }
   if (!subject.memberId || !subject.role || !['owner', 'admin', 'member'].includes(subject.role)) return false;
   const admin = subject.role === 'owner' || subject.role === 'admin';
-  if (resource.kind === 'legacy-worker') return subject.transport === 'http' && admin && action === 'read';
+  if (resource.kind === 'legacy-worker') return subject.transport === 'http' && admin && (action === 'read' || action === 'admin');
   if (resource.kind === 'queue') return subject.transport === 'http' && admin;
   if (resource.kind === 'runner') return subject.transport === 'http' && (action === 'read' || (action === 'admin' && admin));
   if (action === 'enroll.self') return subject.transport === 'http' && resource.kind === 'enrollment'

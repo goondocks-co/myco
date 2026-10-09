@@ -21,6 +21,7 @@ export async function prepareRecoveredTenant(db: RelationalStore, mode: Recovery
   const stale = [
     expireCarriedDeviceRequests(db, now),
     db.prepare('DELETE FROM runner_contacts'),
+    db.prepare('DELETE FROM runner_observations'),
     db.prepare('DELETE FROM runner_model_catalogs'),
     db.prepare('DELETE FROM runner_update_requests'),
     db.prepare('DELETE FROM runner_update_reports'),

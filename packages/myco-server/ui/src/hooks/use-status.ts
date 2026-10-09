@@ -13,5 +13,5 @@ export function useStatus(options: { refetchInterval?: number | false; refetchIn
 /** The worker record, or nothing. A refresh that failed answers nothing: the last answer it gave is not current. */
 export function useWorkerFleet(): WorkerStatus | undefined {
   const status = useStatus();
-  return status.error === null ? status.data?.workers : undefined;
+  return status.error === null && status.data?.workers.available === true ? status.data.workers : undefined;
 }

@@ -32,6 +32,7 @@ const STATUS = {
   capabilities: [{ capability: 'blobs', label: 'Stored attachments and transcripts', present: true, operatorNames: ['MYCO_BLOBS'] }],
   workers: {
     available: true, workersBusy: 1, runsQueued: 2, recentWithinMs: 90_000,
+    queue: { observedAt: NOW, count: 2, oldestAt: NOW - 18 * 60000, reasons: [{ reason: 'capacity', count: 2 }], nativeNeedsRunner: false },
     fleet: [
       { credentialId: STUDIO_CREDENTIAL, machineId: 'ada_5a2d54af', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], lastReason: 'no_work', lastSeenAt: NOW - 3_000, busy: null, eligible: true, recent: true },
       { credentialId: BUSY_CREDENTIAL, machineId: 'lin_9e8f7a6b', offers: [{ id: 'codex', authenticated: true }], capabilities: [], lastReason: 'claimed', lastSeenAt: NOW - 1_000, busy: { runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', leaseExpiresAt: NOW + 60_000 }, eligible: true, recent: true },
@@ -222,21 +223,28 @@ describe('Health', () => {
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
     const rows = await waitFor(() => {
-      const found = [...workers.querySelectorAll('[data-health-worker]')].map((row) => row.textContent ?? '');
+      const found = [...workers.querySelectorAll('[data-legacy-worker]')].map((row) => row.textContent ?? '');
       expect(found[0]).toContain('Ada’s studio Mac');
+      expect(found[1]).toContain('learning in Myco');
       return found;
     });
-    expect(rows[0]).toMatch(/^Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work · last checked in \d+s ago/);
+    expect(rows[0]).toContain('Online');
+    expect(rows[0]).toContain('Legacy worker — uses member credential');
+    expect(rows[0]).toContain('Seen');
     expect(rows[0]).toContain('Reports Claude Code signed in');
     expect(rows[0]).toContain('Last check for work: nothing it could take.');
-    expect(rows[1]).toMatch(/^Lin’s build box · Legacy worker — uses member credential · Running learning in Myco · due to check in within /);
-    expect(rows[2]).toMatch(/^A machine · Legacy worker — uses member credential · Not checking in now/);
+    expect(rows[1]).toContain('Lin’s build box');
+    expect(rows[1]).toContain('Busy');
+    expect(rows[1]).toContain('Assignment valid until');
+    expect(rows[2]).toContain('A machine');
+    expect(rows[2]).toContain('Offline');
+    expect(rows[2]).toContain('Not seen recently; last seen');
     expect(within(workers).getByText(/^2 machines are running Myco’s work, 1 busy now\. 2 tasks are waiting\.$/)).toBeTruthy();
     for (const id of [STUDIO_CREDENTIAL, BUSY_CREDENTIAL, STRAY_CREDENTIAL, 'ada_5a2d54af', MYCO]) expect(workers.textContent).not.toContain(id);
   });
 
   it('says worker status is unknown when the server could not read it, never that there are none', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] } }) }));
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, observedAt: NOW, workersBusy: null, runsQueued: null, recentWithinMs: 90_000, fleet: null } }) }));
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
     expect(await within(workers).findByText(/Whether machines are running Myco’s work is unknown/)).toBeTruthy();
@@ -253,12 +261,12 @@ describe('Health', () => {
   });
 
   it('makes queued work with no executor contact an explicit owner opt-in', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 2, recentWithinMs: 90_000, fleet: [] } }) }));
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 2, recentWithinMs: 90_000, fleet: [], queue: { observedAt: NOW, count: 2, oldestAt: NOW - 18 * 60000, reasons: [{ reason: 'no_runner', count: 2 }], nativeNeedsRunner: true } } }) }));
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
-    expect(await within(workers).findByText(/Work is waiting, but no machine has checked in to run it/)).toBeTruthy();
-    expect(workers.textContent).toContain('Running this server does not run agent work.');
-    expect(workers.textContent).toContain('on this machine or another');
+    expect(await screen.findByText(/No recently seen runner can currently take this work/)).toBeTruthy();
+    expect(screen.getByText(/2 runs waiting; oldest/).textContent).toContain('18m ago');
+    expect(screen.getByText(/This native server no longer runs agent work by itself/).textContent).toContain('on this machine or another');
   });
 
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {

@@ -1,3 +1,4 @@
+import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { Fragment, useRef, useState } from 'react';
 import { Play } from 'lucide-react';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
@@ -268,7 +269,11 @@ function StartPreview({ preview, pending, failed, took }: { preview: TaskStartPr
   );
   return (
     <div className="flex flex-col gap-s2 t-small text-ink-2">
-      {executions.length === 1 ? (
+      {preview.fleetWait !== undefined && preview.fleetWait.reason !== 'ready' ? (
+        <p className="rounded-control border border-line bg-warn-bg px-s3 py-s2" data-run-on="" data-run-held={preview.fleetWait.reason}>
+          {QUEUE_REASON_WORDS[preview.fleetWait.reason]} Starting now queues this run.{took === null ? '' : ` ${took}`}
+        </p>
+      ) : executions.length === 1 ? (
         <p data-run-on="">It will run on {model(executions[0]!, true)}.{took === null ? '' : ` ${took}`}</p>
       ) : executions.length > 1 ? (
         <p data-run-on="" data-run-choice="">
@@ -282,7 +287,7 @@ function StartPreview({ preview, pending, failed, took }: { preview: TaskStartPr
         </p>
       ) : (
         <p className="rounded-control border border-line bg-warn-bg px-s3 py-s2" data-run-on="" data-run-held={preview.heldBy ?? ''}>
-          {waitWords(preview.heldBy ?? 'worker', preview.workers)}{took === null ? '' : ` ${took}`}
+          {preview.fleetWait === undefined ? waitWords(preview.heldBy ?? 'worker', preview.workers) : QUEUE_REASON_WORDS[preview.fleetWait.reason]}{took === null ? '' : ` ${took}`}
         </p>
       )}
       {readiness !== null && <p data-readiness={preview.readiness!.met ? 'met' : 'unmet'}>{readiness}</p>}

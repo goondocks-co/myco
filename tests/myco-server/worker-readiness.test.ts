@@ -265,8 +265,10 @@ describe('what Status answers about workers', () => {
     const r = await rig();
     r.e.sqlite.run(`DROP TABLE worker_contacts`);
     const res = await worker.fetch(await asOwner(r.e.db, '/api/status'), { ...r.e.env, ...OWNER_ENV });
-    const body = await res.json() as { workers: { available: boolean; fleet: unknown[] } };
+    const body = await res.json() as { workers: { available: boolean; fleet: unknown[] | null; runsQueued: number | null; workersBusy: number | null } };
     expect(body.workers.available).toBe(false);
-    expect(body.workers.fleet).toEqual([]);
+    expect(body.workers.fleet).toBeNull();
+    expect(body.workers.runsQueued).toBeNull();
+    expect(body.workers.workersBusy).toBeNull();
   });
 });

@@ -8,7 +8,7 @@ export function dashboardPermissions(subject: AuthorizationSubject) {
   const permission = (allowed: boolean, reason: string) => ({ allowed, reason: allowed ? null : reason });
   const scoped = (all: boolean, own: boolean, reason: string) => ({ scope: all ? 'all' as const : own ? 'own' as const : 'none' as const, reason: all ? null : reason });
   return {
-    runners: permission(can('runner', 'admin'), 'An owner or administrator can update runners.'),
+    runners: permission(can('runner', 'admin'), 'An owner or administrator can manage machines running Myco’s work.'),
     settings: permission(can('settings', 'admin'), 'An administrator can change server settings.'),
     keys: permission(can('secret', 'admin'), 'An administrator can manage keys.'),
     people: permission(can('member', 'admin'), 'An administrator can invite and manage members. Only the owner can manage another administrator.'),

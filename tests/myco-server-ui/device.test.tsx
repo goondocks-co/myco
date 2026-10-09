@@ -162,4 +162,27 @@ describe('device approval page', () => {
     expect(calls).not.toContain('/api/device/approve');
     expect(pendingDeviceCode()).toBeNull();
   });
+
+  it('shows the replacement target and loss of current authority before approving the same runner', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async input => {
+      const url = String(input); calls.push(url);
+      if (url === '/auth/me') return Response.json({ ...ME, member: { ...ME.member, role: 'admin' } });
+      if (url === '/api/device/preview') return Response.json({ ...PREVIEW, subject: 'runner', runnerName: 'homelab-mini', replacingRunnerId: 'rn_mini', scope: 'runner' });
+      return Response.json({ approved: true });
+    }) as typeof fetch;
+    mount();
+    await screen.findByText('Check machine');
+    fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
+    fireEvent.click(screen.getByText('Check machine'));
+    expect(await screen.findByRole('heading', { name: 'Replace registration for homelab-mini' })).toBeTruthy();
+    expect(screen.getByText(/keeps the runner’s history and ID/)).toBeTruthy();
+    expect(screen.getByText(/ends its current registration and authority/)).toBeTruthy();
+    expect(screen.getByText('SSH laptop')).toBeTruthy();
+    expect(screen.getByText('linux')).toBeTruthy();
+    expect(screen.getByText('192.0.2.10')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Replace this runner' }));
+    expect(await screen.findByText(/Replacement approved/)).toBeTruthy();
+    expect(calls).toContain('/api/device/approve-runner');
+  });
 });

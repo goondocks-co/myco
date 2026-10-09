@@ -62,9 +62,14 @@ try {
   const shardPhases = sharded.filter((phase) => !phase.label.endsWith('.tsx'));
   assert.deepEqual(shardPhases.sort((a, b) => a.label.localeCompare(b.label)), fullPhases.sort((a, b) => a.label.localeCompare(b.label)), 'Node phase isolation changed');
   const parityShards = workflow.jobs.parity.strategy.matrix.shard;
+  const parityScenarios = parityPlan();
+  const parityWeights = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8')).parity;
+  for (const name of parityScenarios) {
+    assert.ok(Number.isFinite(parityWeights[name]) && parityWeights[name] > 0, `Parity scenario needs an explicit duration weight: ${name}`);
+  }
   exactlyOnce(parityShards.flatMap((index) => parityPlan({
     MYCO_PARITY_SHARD: workflow.jobs.parity.env.MYCO_PARITY_SHARD.replace('${{ matrix.shard }}', String(index)),
-  })), parityPlan(), 'CI parity shards');
+  })), parityScenarios, 'CI parity shards');
   exactlyOnce(workflow.jobs.check.needs, Object.keys(workflow.jobs).filter((job) => job !== 'check'), 'Required jobs');
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });

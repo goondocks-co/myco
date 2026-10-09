@@ -2,7 +2,7 @@
  * Indexes read by a Deployment-wide access path rather than by Project.
  *
  * Every index on a Project-scoped table leads with `project_id`, and two gates
- * hold that (`gates.test.ts` over every CREATE INDEX, `schema.test.ts` over the
+ * hold that (`gates.test.ts` over the live schema indexes, `schema.test.ts` over the
  * v2 tables). The indexes named here are the exceptions both gates admit, each
  * with the Deployment-wide read it serves; one set, so a new exception is
  * declared once and judged the same way by both.
@@ -24,6 +24,10 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_transcripts_backlog', 'the transcript parse backlog is ordered across the Deployment, live before imported'],
   ['idx_transcripts_parser_version', 'the bounded parser upgrade sweep walks older versions across the Deployment'],
   ['idx_transcripts_terminal', 'terminal transcript outcomes are ordered across the Deployment by lane and receipt'],
+  ['idx_fleet_queue', 'fleet readiness aggregates the Deployment queue by task and hold over a covering index'],
+  ['idx_fleet_legacy_leases', 'legacy fleet inventory starts from currently running member-held leases across the Deployment'],
+  ['idx_runner_attempt_history', 'each runner reads its newest persistent attempt across Projects'],
+  ['idx_runner_run_terminal', 'each runner reads its newest terminal result across Projects'],
   ['idx_agent_runs_claimable', 'a worker claims the next queued run across the Deployment, in queue order'],
   ['idx_agent_runs_lease', 'the lease foreign key is checked by credential alone, and worker liveness reads leases by the credential that holds them'],
   ['idx_blob_reservations_expiry', 'the object-release drain consumes expired upload authorities across the Deployment, oldest expiry first'],

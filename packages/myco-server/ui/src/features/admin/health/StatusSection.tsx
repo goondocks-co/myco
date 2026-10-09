@@ -1,3 +1,4 @@
+import { QueueWarning } from '../runners/QueueWarning';
 import { Card, HealthDot, StatusChip, ReadState, ReadUnavailable } from '../../../design';
 import type { useStatus } from '../../../hooks/use-status';
 import type { StatusResponse } from '../../../lib/api';
@@ -81,11 +82,12 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
 
+      <QueueWarning queue={data.workers.available ? data.workers.queue : undefined} />
       <SearchByMeaning now={now} />
 
       <div className="flex flex-col gap-s2">
         <h3 className="t-h3 text-ink">What this server runs itself</h3>
-        <p className="max-w-measure t-small text-muted">Machines running Myco’s work attach on their own and are listed under Workers.</p>
+        <p className="max-w-measure t-small text-muted">Machines running Myco’s work attach on their own and are listed on the Runners page.</p>
         {data.capabilities.length === 0 ? (
           <p className="t-small text-muted">This server reports nothing it runs itself.</p>
         ) : (

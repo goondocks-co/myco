@@ -2,10 +2,16 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LIVE_RUNNER_ADMIN } from '../auth/runners.js';
 import { CONTACT_RECENT_MS } from './worker-contacts.js';
 import { writeGuardBatch } from './write-guard-store.js';
+
 import { sha256Hex } from '../hash.js';
 
 export type { RunnerUpdateResult, RunnerUpdateReport, RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
 import { RUNNER_UPDATE_RESULTS, isRunnerUpdateText, sanitizeRunnerUpdateReason, type RunnerUpdateResult, type RunnerUpdateReport, type RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
+
+/** Update commands and machine reports belong to the credential epoch that received them. */
+export function invalidateRunnerUpdates(db: RelationalStore, runnerId: string) {
+  return ['runner_update_reports', 'runner_update_requests'].map(table => db.prepare(`DELETE FROM ${table} WHERE runner_id = ?`).bind(runnerId));
+}
 
 const MAX_VERSION = 64;
 const MAX_ID = 64;
