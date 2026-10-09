@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "myco",
-  "version": "2.0.0-alpha.2",
+  "version": "2.0.0-alpha.3",
   "description": "Your project's memory: the sessions that happened, the durable observations drawn from them, and the plans. Skills and tools for reading why the code is the way it is, and for recording what you learn.",
   "author": {
     "name": "Goondocks"
