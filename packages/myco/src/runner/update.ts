@@ -12,6 +12,7 @@ import { assetName, githubHeaders, mycoReleasesApiUrl, pickRelease, resolveAsset
 import { installService, servicePathEnv, servicePaths, uninstallService, type ServiceOutcome, type ServiceSpec } from '../server/service.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
+import { recordUpdateCheck } from '../upgrade/check-cache.js';
 import { sanitizeRunnerUpdateReason, type RunnerUpdateResult as UpdateReceipt, type RunnerUpdateReport } from '@goondocks/myco-shared/runner-update';
 
 const UPDATE_FILE = 'update.json';
@@ -498,14 +499,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     const releaseChannel = selection.channel ?? channel();
     if (releaseChannel === null) return contactPayload();
     const checked = await releases(releaseChannel, currentVersion, undefined, deps, selection.targetVersion);
-    withState(home, state => {
-      state.lastCheckAt = now(); schedule(state, now() + jitter()); state.failures = 0; state.releaseChannel = releaseChannel;
-      if (!checked.unchanged) {
-        state.latestVersion = checked.refs?.targetVersion ?? null; state.etag = checked.etag;
-        if (checked.refs) state.candidate = { channel: releaseChannel, refs: checked.refs }; else delete state.candidate;
-      }
-    });
-    return contactPayload();
+    return { ...contactPayload(), channel: releaseChannel, latestVersion: checked.refs?.targetVersion ?? null, lastCheckAt: now() };
   };
   const abandon = (tx: RunnerUpdateTransaction, reason: string, retainedVersion = tx.fromVersion): void => {
     withState(home, state => {
@@ -553,7 +547,9 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     if (!cleanupGuardian()) return 'continue';
     const request = state.requests?.[serverUrl];
     if (now() < state.nextCheckAt) return 'continue';
-    const releaseChannel = request?.channel ?? channel();
+    const recordedChannel = channel();
+    const releaseChannel = request?.channel ?? recordedChannel;
+    const recordsAutomaticCandidate = request?.targetVersion === undefined && releaseChannel === recordedChannel;
     const installed = releaseChannel !== null && (deps.serviceInstalled ?? ((spec, targetPlatform) => fs.existsSync(servicePaths(spec, targetPlatform).unitFile)))(options.serviceSpec, platform);
     if (releaseChannel === null || !installed) {
       withState(home, next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
@@ -569,17 +565,22 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       let refs: AssetRefs | null = null;
       try {
         const cached = state.candidate?.channel === releaseChannel ? state.candidate.refs : null;
-        const etag = state.releaseChannel === releaseChannel && !request?.clearBlock && !request?.targetVersion ? state.etag : undefined;
+        const etag = recordsAutomaticCandidate && state.releaseChannel === releaseChannel && !request?.clearBlock ? state.etag : undefined;
         const found = await releases(releaseChannel, currentVersion, etag, deps, request?.targetVersion);
         refs = found.unchanged ? cached : found.refs;
         withState(home, next => {
-          next.lastCheckAt = now(); schedule(next, now() + jitter(), request); next.failures = 0; next.releaseChannel = releaseChannel;
-          if (!found.unchanged) {
+          next.lastCheckAt = now(); schedule(next, now() + jitter(), request); next.failures = 0;
+          if (recordsAutomaticCandidate) next.releaseChannel = releaseChannel;
+          if (recordsAutomaticCandidate && !found.unchanged) {
             next.latestVersion = refs?.targetVersion ?? null; next.etag = found.etag;
             if (refs) next.candidate = { channel: releaseChannel, refs }; else delete next.candidate;
           }
           if (refs === null && request) report(next, 'no_update', currentVersion, undefined, request);
         });
+        if (recordsAutomaticCandidate) {
+          try { recordUpdateCheck(home, releaseChannel, currentVersion, refs?.targetVersion ?? currentVersion); }
+          catch (error) { log(`runner update notice cache could not be saved: ${sanitizeRunnerUpdateReason(String(error))}`); }
+        }
       } catch (error) {
         withState(home, next => { next.failures++; schedule(next, now() + backoff(next.failures), request); report(next, 'failed', currentVersion, String(error), request); });
         return 'continue';

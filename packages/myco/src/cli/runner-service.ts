@@ -98,7 +98,6 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
         : `  harnesses offered: ${offer.offered.join(', ') || 'none'}; withheld: ${offer.withheld.join(', ') || 'none'}; observed: ${new Date(offer.observedAt).toISOString()}`);
       out(`  last contact: ${record?.lastContactAt === undefined ? 'never recorded by the service' : new Date(record.lastContactAt).toISOString()}`);
       if (!isLiveRunner(record)) { ok = false; continue; }
-      if (verb === 'status') continue;
       const renew = runnerRenewer(url, { ...deps, mycoHome, notify: (line) => out(`  ${line}`) });
       await renew(false);
       const contact = () => contactRunner(url, readRunnerRecord(url, mycoHome)?.token ?? record.token, { update: updateStatus }, deps.fetch);

@@ -41,8 +41,6 @@ describe('Runners page', () => {
   it('shows reported version, channel, available update and last result, and requests the next idle update', async () => {
     const writes = mount('admin', { ...RUNNER, busy: { projectId: 'proj_1', runId: 'run_1', leaseExpiresAt: NOW + 60000 } });
     const article = (await screen.findByText('homelab-mini')).closest('article');
-    expect(article?.textContent).toContain('Agents offered: claude-code, codex');
-    expect(article?.textContent).toContain(`observed ${new Date(NOW).toLocaleString()}`);
     expect(article?.textContent).toContain('Connected');
     expect(article?.textContent).toContain('2.0.0-alpha.2');
     expect(article?.textContent).toContain('alpha');

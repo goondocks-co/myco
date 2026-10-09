@@ -26,11 +26,9 @@ import { initiateAdopt, type InitiateAdoptOpts } from '../upgrade/adopt.js';
 import {
   readMaxStampedSchemaVersion,
   readSupportedSchemaVersion,
-  rollbackWouldCrossSchemaGap,
   SchemaGapDowngradeError,
 } from '../upgrade/schema-gap.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
-import { readProjectReleaseChannel } from '../daemon/update-checker.js';
 import { resolveMycoHome } from '../grove/paths.js';
 import { readInstallMarker } from '../install/managed-binary.js';
 import { refreshMemberSetup } from '../member/refresh-setup.js';
@@ -39,7 +37,9 @@ import { isMemberHome } from '../member/home-role.js';
 import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
 import { getPluginVersion } from '../version.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
-import { recordUpdateCheck } from '../upgrade/check-cache.js';
+import { recordUpdateCheck, effectiveUpdateChannel } from '../upgrade/check-cache.js';
+import { workerServiceInstalled } from '../runner/service.js';
+import { executorServiceTarget } from './worker-service.js';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 
 export const UPDATE_HELP = `Usage: myco update [options] [<version>]
@@ -60,9 +60,7 @@ Options:
   -h, --help                   Show this help
 `;
 
-export function effectiveUpdateChannel(home: string = resolveMycoHome()): ReleaseChannel {
-  return readInstallMarker(home, true)?.channel ?? readProjectReleaseChannel();
-}
+export { effectiveUpdateChannel } from '../upgrade/check-cache.js';
 
 function admitsUpdate(target: string, current: string, channel: ReleaseChannel): boolean {
   if (!semver.valid(target) || !semver.valid(current) || !semver.gt(target, current)) return false;
@@ -116,6 +114,7 @@ export interface UpgradeDeps {
   refreshMember?: (binary: string, home: string) => Promise<void>;
   runnerRecords?: typeof listRunnerRecords;
   runRunner?: typeof import('./runner.js').run;
+  runnerServiceInstalled?: (serverUrl: string, home: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +214,8 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     await refresh();
   };
 
-  const runners = (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner);
+  const runners = (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner).filter(record =>
+    (deps.runnerServiceInstalled ?? ((serverUrl, mycoHome) => workerServiceInstalled(executorServiceTarget(serverUrl, { mycoHome, binaryPath: deps.mycoBinary, platform: deps.platform }, 'runner'))))(record.serverUrl, home));
   if (runners.length > 0) {
     const summaries = new Set<string>();
     const runner = deps.runRunner ?? (await import('./runner.js')).run;
@@ -247,7 +247,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   // Resolve the selected release assets.
   const refs = await resolveAssetRefsForTarget(targetVersionArg, channel, deps);
-  recordUpdateCheck(home, channel, currentVersion, refs?.targetVersion ?? currentVersion);
+  if (!targetVersionArg) recordUpdateCheck(home, channel, currentVersion, refs?.targetVersion ?? currentVersion);
   if (!refs) {
     if (targetVersionArg) {
       console.error(`myco update: no release found for version ${targetVersionArg}`);
@@ -271,20 +271,13 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   // A known target storage format must support every local Grove's stamped format.
   {
-    const semver = await import('semver');
     const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
     const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
-    const versionLower = semver.valid(refs.targetVersion)
-      && semver.valid(currentVersion)
-      && semver.lt(refs.targetVersion, currentVersion);
     const targetSchema = readTargetSchema(home, platform, refs.targetVersion, localAppData);
-    if (versionLower || targetSchema !== null) {
+    if (targetSchema !== null) {
       const vaultSchema = readVaultSchema(home);
-      const crossesGap = versionLower
-        ? rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)
-        : vaultSchema !== null && targetSchema !== null && targetSchema < vaultSchema;
-      if (crossesGap) {
-        const refusal = new SchemaGapDowngradeError(refs.targetVersion, vaultSchema!, targetSchema);
+      if (vaultSchema !== null && targetSchema < vaultSchema) {
+        const refusal = new SchemaGapDowngradeError(refs.targetVersion, vaultSchema, targetSchema);
         console.error(`myco update: ${refusal.message}`);
         process.exit(1);
       }
@@ -352,16 +345,16 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
 async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: string | null): Promise<void> {
   const currentVersion = deps.currentVersion ?? getPluginVersion();
+  const channelFlag = channel === effectiveUpdateChannel(deps.home ?? resolveMycoHome()) ? '' : ` --channel ${channel}`;
   console.log(`Checking for updates on the '${channel}' channel…`);
 
   if (target !== null) {
     const refs = await resolveAssetRefsForTarget(target, channel, deps);
     if (refs === null) throw new Error(`myco update --check: no release found for version ${target}`);
     const eligible = admitsUpdate(refs.targetVersion, currentVersion, channel);
-    recordUpdateCheck(deps.home ?? resolveMycoHome(), channel, currentVersion, eligible ? refs.targetVersion : currentVersion);
     console.log(`Myco: from ${currentVersion} to ${eligible ? refs.targetVersion : currentVersion} on channel ${channel} (check only${eligible ? '' : '; target is older or outside the channel; staying put'}).`);
     console.log('Agents refreshed: no (check only).');
-    if (eligible) console.log(`Run \`myco update --target-version ${target}\` to apply.`);
+    if (eligible) console.log(`Run \`myco update --target-version ${target}${channelFlag}\` to apply.`);
     return;
   }
 
@@ -387,14 +380,9 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: stri
   console.log('Agents refreshed: no (check only).');
   if (checkResult.update_available) {
     console.log(`Update available: ${currentVersion} → ${checkResult.latest_version}`);
-    console.log(`Run \`myco update\` to apply.`);
+    console.log(`Run \`myco update${channelFlag}\` to apply.`);
   } else if (checkResult.staying_put) {
     console.log(`The newest eligible '${channel}' release is older than installed ${currentVersion}; staying put.`);
-  } else if (checkResult.revert_available) {
-    console.log(
-      `Stable revert available: ${currentVersion} → ${checkResult.latest_stable} (switch from beta to stable)`,
-    );
-    console.log(`Run \`myco update --channel stable\` to revert.`);
   } else {
     console.log(`myco ${currentVersion} is up to date on the '${channel}' channel.`);
     if (checkResult.latest_version) {

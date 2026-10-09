@@ -74,6 +74,7 @@ it('a runner home delegates all selection flags to the idle-only runner path and
   for (const flags of [[], ['--check'], ['--channel', 'beta', '--target-version', '2.1.0-beta.1']]) {
     await run(flags, { home, currentVersion: '2.0.0-alpha.3',
       runnerRecords: () => [{ version: 1, serverUrl: 'https://fixture.invalid', runnerId: 'runner', name: 'fixture', token: 'fixture' }],
+      runnerServiceInstalled: () => true,
       runRunner: async args => { collected.push([...args]); return true; },
       resolveRefs: async () => { throw new Error('runner bypassed its update owner'); },
       adoptStaged: async () => { throw new Error('runner adopted outside idle boundary'); },
@@ -95,5 +96,45 @@ it('checks the exact requested version rather than a newer channel release, with
   });
   expect(output.join('\n')).toContain('from 2.0.0-alpha.3 to 2.0.0-alpha.4 on channel alpha');
   expect(output.join('\n')).not.toContain('2.0.0-alpha.5');
-  expect(readUpdateNotice(home, '2.0.0-alpha.3')).toContain('2.0.0-alpha.4');
+  expect(readUpdateNotice(home, '2.0.0-alpha.3')).toBeNull();
+});
+
+for (const mode of ['registered-but-uninstalled member', 'foreground-only runner']) it(`updates the binary on a ${mode} without delegating to a missing service`, async () => {
+  const events: string[] = [];
+  await run([], {
+    home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => mode.includes('member'),
+    runnerRecords: () => [{ version: 1, serverUrl: 'https://fixture.invalid', runnerId: 'runner', name: 'fixture', token: 'fixture' }],
+    runRunner: async () => { throw new Error('uninstalled service delegated'); },
+    resolveRefs: async () => refs('2.0.0-alpha.3'),
+    stageBinary: async () => { events.push('verify'); return { version: '2.0.0-alpha.3', versionDir: home }; },
+    adoptStaged: async () => { events.push('adopt'); },
+    refreshMember: async () => { events.push('refresh'); },
+  });
+  expect(events).toEqual(mode.includes('member') ? ['verify', 'adopt', 'refresh'] : ['verify', 'adopt']);
+  expect(output.join('\n')).toContain('from 2.0.0-alpha.2 to 2.0.0-alpha.3 on channel alpha');
+  expect(output.join('\n')).toContain(mode.includes('member') ? 'Agents refreshed: yes.' : 'Agents refreshed: no (this home is not a member machine).');
+});
+it('targeted and other-channel checks preserve the recorded-channel doctor notice', async () => {
+  const { recordUpdateCheck, CACHE_FILENAME } = await import('@myco/upgrade/check-cache.js');
+  recordUpdateCheck(home, 'alpha', '2.0.0-alpha.1', '2.0.0-alpha.3');
+  const before = fs.readFileSync(path.join(home, CACHE_FILENAME), 'utf8');
+  await run(['--check', '--target-version', '2.0.0-alpha.2'], {
+    home, currentVersion: '2.0.0-alpha.1', targetTriple: () => 'darwin-arm64',
+    fetchReleases: async () => [{ tag_name: 'myco/v2.0.0-alpha.2', prerelease: true, assets: [] }],
+  });
+  recordUpdateCheck(home, 'beta', '2.0.0-alpha.1', '2.0.0-beta.1');
+  expect(fs.readFileSync(path.join(home, CACHE_FILENAME), 'utf8')).toBe(before);
+  expect(readUpdateNotice(home, '2.0.0-alpha.1')).toContain('2.0.0-alpha.3');
+});
+
+it('resolves an unmarked home channel from that home and preserves it in override check instructions', async () => {
+  const { effectiveUpdateChannel } = await import('@myco/upgrade/check-cache.js');
+  const unmarked = path.join(home, 'unmarked'); fs.mkdirSync(unmarked);
+  fs.writeFileSync(path.join(unmarked, 'config.yaml'), 'daemon:\n  update_channel: beta\n');
+  expect(effectiveUpdateChannel(unmarked)).toBe('beta');
+  await run(['--check', '--channel', 'beta', '--target-version', '2.0.0-beta.1'], {
+    home, currentVersion: '2.0.0-alpha.1', targetTriple: () => 'darwin-arm64',
+    fetchReleases: async () => [{ tag_name: 'myco/v2.0.0-beta.1', prerelease: true, assets: [] }],
+  });
+  expect(output.join('\n')).toContain('myco update --target-version 2.0.0-beta.1 --channel beta');
 });

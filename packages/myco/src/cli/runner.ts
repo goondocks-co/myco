@@ -113,6 +113,8 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   if (legacyRefusal !== null) return fail(legacyRefusal);
 
   const log = (line: string): void => { (deps.stdout ?? console.log)(workerLogLine(line)); };
+  let contactBusyLogged = false;
+  let offerBusyLogged = false;
   const dir = runnerDir(serverUrl, mycoHome);
   const updater = runnerUpdater(serverUrl, { ...deps, mycoHome, binaryPath: deps.binaryPath ?? process.execPath }, log, true);
   updater.startup();
@@ -134,12 +136,18 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
     onContact: async (body) => {
       const runner = body.runner as { id: string; deploymentId: string };
       if (runner.id !== record.runnerId) throw new Error('authenticated contact names a different runner');
-      if (!await recordRunnerContact(serverUrl, { runnerId: runner.id, deploymentId: runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) log('runner record busy; contact timestamp was not saved');
+      if (!await recordRunnerContact(serverUrl, { runnerId: runner.id, deploymentId: runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) {
+        if (!contactBusyLogged) log('runner record busy; contact timestamp was not saved');
+        contactBusyLogged = true;
+      } else contactBusyLogged = false;
       updater.onContact(body);
       updater.acknowledgeHealthy();
     },
     onOfferAcknowledged: async (offer, at) => {
-      if (!await recordRunnerContact(serverUrl, { runnerId: record.runnerId, deploymentId: record.deploymentId! }, at, mycoHome, offer)) log('runner record busy; acknowledged harness offer was not saved');
+      if (!await recordRunnerContact(serverUrl, { runnerId: record.runnerId, deploymentId: record.deploymentId! }, at, mycoHome, offer)) {
+        if (!offerBusyLogged) log('runner record busy; acknowledged harness offer was not saved');
+        offerBusyLogged = true;
+      } else offerBusyLogged = false;
     },
     onIdle: async () => { const outcome = await updater.idle(); return outcome === 'continue' ? undefined : outcome; },
     onClaim: () => updater.recordClaim(),

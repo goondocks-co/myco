@@ -14,7 +14,7 @@ import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { publishRunnerRecord, withRunnerLock } from '@myco/runner/runner-registry.js';
-import { installWorkerService } from '@myco/runner/service.js';
+import { workerServiceInstalled, installWorkerService } from '@myco/runner/service.js';
 import { recordingPlatform } from '../../helpers/fake-service-manager.js';
 import { runRunnerUpdateHelper } from '@myco/runner/update-helper.js';
 import { withRunnerUpdateState, runnerUpdateStatePath, readRunnerUpdateState, strictRunnerReleaseProbe } from '@myco/runner/update.js';
@@ -87,6 +87,7 @@ if (args[0] === 'prepare') {
       resolveRefs: channel => resolveMycoBinaryUpdateRefs(channel, { fetchReleases: async () => releases(), targetTriple: resolveTargetTriple }, FIXTURE_VERSION),
       checkFn: (current, channel, installed) => resolveMycoPackageCheck(current, channel, installed, releaseFetch),
       stageDeps,
+      runnerServiceInstalled: () => workerServiceInstalled({ ...runnerDeps, serverUrl, executor: 'runner' }),
       runRunner: (rest, deps) => runner(rest, { ...runnerDeps, ...deps }),
     });
   } finally { if (held?.held) held.release(); }

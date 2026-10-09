@@ -159,7 +159,7 @@ export interface RunnerRow {
   id: string; name: string; state: 'enabled' | 'paused' | 'removed'; connected: boolean;
   version: string | null; channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null;
   lastSeenAt: number | null; lastCheckAt: number | null;
-  offers: { id: string; authenticated: boolean }[] | null; offersObservedAt: number | null;
+  offers: ReportedHarness[] | null; offersObservedAt: number | null;
   lastResult: RunnerUpdateResult | null;
   blockedVersion: RunnerBlockedVersion | null;
   updateState: RunnerUpdateState | null;

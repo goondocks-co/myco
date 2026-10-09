@@ -84,7 +84,7 @@ This machine:
   logs [--tail N]          Show the worker's logs and the events the Deployment refused
   config get [<leaf>]      Show Deployment Settings (written in the dashboard)
   settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
-  update                   Update Myco within its recorded channel; refresh member agents
+  update (alias: upgrade)  Update Myco within its recorded channel; refresh member agents
   remove                   Remove Myco from this machine
   version                  Show the installed version
 

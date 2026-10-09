@@ -306,10 +306,9 @@ describe('runner update helper', () => {
   });
 });
 
-it('retains a failed member refresh and its recovery command after a healthy runner update', async () => {
+it('leaves member refresh pending after a healthy runner update without running interactive setup', async () => {
   const f = fixture('member-refresh-failed');
   writeDeploymentMembership({ serverUrl, token: 'fixture', machineId: 'member', joinedAt: 1, updatedAt: 1 }, { mycoHome: f.home });
-  f.deps.refreshMember = async () => { throw new Error('refresh timed out'); };
   f.deps.start = () => {
     f.setRunning(true);
     withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
@@ -317,7 +316,7 @@ it('retains a failed member refresh and its recovery command after a healthy run
   };
   await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
   expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({
-    result: 'updated', reason: 'Agents refreshed: no (Error: refresh timed out). Next: myco member provision --refresh',
+    result: 'updated', reason: 'agents_refresh_pending',
   });
   expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(to);
 });

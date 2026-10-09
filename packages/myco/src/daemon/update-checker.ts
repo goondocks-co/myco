@@ -9,11 +9,10 @@
  */
 
 import fs from 'node:fs';
-import { CACHE_FILENAME } from '../upgrade/check-cache.js';
+import { CACHE_FILENAME, effectiveUpdateChannel } from '../upgrade/check-cache.js';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import semver from 'semver';
-import { readExplicitMachineUpdateChannel } from '../config/loader.js';
 import { readInstallMarker, writeInstallMarker } from '../install/managed-binary.js';
 import { loadMachineConfig, updateTierConfigRaw } from '../config/loader.js';
 import { setAtPath } from '../utils/dot-path.js';
@@ -110,9 +109,7 @@ export function projectRuntimeIsForeign(
 
 /** The install marker owns installed channels; unmarked machines use machine config. */
 export function readProjectReleaseChannel(_vaultDir?: string): ReleaseChannel {
-  const explicit = readExplicitMachineUpdateChannel();
-  const channel = readInstallMarker(resolveMycoHome(), true)?.channel ?? explicit;
-  return RELEASE_CHANNELS.includes(channel as ReleaseChannel) ? (channel as ReleaseChannel) : DEFAULT_RELEASE_CHANNEL;
+  return effectiveUpdateChannel();
 }
 
 /** Persist a machine's channel through the authority used by its reader. */

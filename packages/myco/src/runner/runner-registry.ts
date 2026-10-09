@@ -32,6 +32,7 @@ const RUNNER_DIR_MODE = 0o700;
 const RUNNER_FILE_MODE = 0o600;
 const LOCK_COMMAND = 'myco runner';
 const TEMP_SUFFIX_CHARS = 6;
+const CONTACT_RECORD_INTERVAL_MS = 5 * 60 * 1000;
 
 /** A registration in flight: the candidate sent to start it and, once the Deployment answers, the device grant it is polled on. */
 export interface PendingRegister {
@@ -288,16 +289,37 @@ export function clearPending(lock: RunnerLock): RunnerRecord | null {
   return kept;
 }
 
-/** Keep an acknowledged contact only for the runner and Deployment this record names. */
+function sameOffer(left: RunnerRecord['lastOffer'], right: Omit<NonNullable<RunnerRecord['lastOffer']>, 'observedAt'> | undefined): boolean {
+  return right === undefined || (left !== undefined
+    && left.offered.length === right.offered.length && left.offered.every((id, index) => id === right.offered[index])
+    && left.withheld.length === right.withheld.length && left.withheld.every((id, index) => id === right.withheld[index]));
+}
+
+function contactRecordChange(record: RunnerRecord, at: number, offer?: Omit<NonNullable<RunnerRecord['lastOffer']>, 'observedAt'>): RunnerRecord | null {
+  const contactDue = record.lastContactAt === undefined || at - record.lastContactAt >= CONTACT_RECORD_INTERVAL_MS;
+  const offerDue = offer !== undefined && at >= (record.lastOffer?.observedAt ?? 0)
+    && (!sameOffer(record.lastOffer, offer) || at - (record.lastOffer?.observedAt ?? 0) >= CONTACT_RECORD_INTERVAL_MS);
+  if (!contactDue && !offerDue) return null;
+  return { ...record,
+    lastContactAt: Math.max(record.lastContactAt ?? 0, at),
+    ...(offerDue ? { lastOffer: { ...offer!, observedAt: at } } : {}),
+  };
+}
+
+/** Keep a bounded contact and changed acknowledged offer for the runner and Deployment this record names. */
 export async function recordRunnerContact(serverUrl: string, identity: { runnerId: string; deploymentId: string }, at: number, mycoHome?: string, offer?: Omit<NonNullable<RunnerRecord['lastOffer']>, 'observedAt'>): Promise<boolean> {
+  const current = readRunnerRecord(serverUrl, mycoHome);
+  if (!isLiveRunner(current) || current.runnerId !== identity.runnerId || current.deploymentId !== identity.deploymentId) {
+    throw new RunnerRecordError(runnerRecordPath(serverUrl, mycoHome), 'contact names another runner or Deployment');
+  }
+  if (contactRecordChange(current, at, offer) === null) return true;
   const result = await withRunnerLock(serverUrl, (lock) => {
     const record = readRunnerRecord(serverUrl, lock.mycoHome);
     if (!isLiveRunner(record) || record.runnerId !== identity.runnerId || record.deploymentId !== identity.deploymentId) {
       throw new RunnerRecordError(runnerRecordPath(serverUrl, lock.mycoHome), 'contact names another runner or Deployment');
     }
-    publishRunnerRecord(lock, { ...record, lastContactAt: Math.max(record.lastContactAt ?? 0, at),
-      ...(offer === undefined || at < (record.lastOffer?.observedAt ?? 0) ? {} : { lastOffer: { ...offer, observedAt: at } }),
-    });
+    const next = contactRecordChange(record, at, offer);
+    if (next !== null) publishRunnerRecord(lock, next);
   }, mycoHome);
   return result.held;
 }

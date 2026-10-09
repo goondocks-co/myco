@@ -23,6 +23,7 @@ import { MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { readTomlSectionKey } from '../symbionts/toml-helpers.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { expandHome, resolveHomeDir, resolveMycoHome } from '../grove/paths.js';
+import { isMemberHome } from '../member/home-role.js';
 import type { ServiceStatus } from '../service/types.js';
 import { DOCTOR_FIXERS, type DoctorFixContext, type DoctorFixerId } from './doctor-fixes.js';
 import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
@@ -717,11 +718,7 @@ async function checkAgents(vaultDir: string, config: import('../config/schema.js
           fixable: false,
         });
       } else if (enabled && !registered && isSymbiontRegisteredGlobally(d)) {
-        // Opted IN via the `symbionts:` block but no project-scope config:
-        // the global-install migration strips project config and capture
-        // runs through the global agent install. Reporting "not registered"
-        // here is a false alarm whose `myco update` remedy just re-runs the
-        // strip — so when the global install is present, this is healthy.
+        // Enabled agents with global registration remain healthy without project-scope config.
         checks.push({
           name: checks.length === 0 ? 'Agents' : '',
           status: 'ok',
@@ -729,12 +726,10 @@ async function checkAgents(vaultDir: string, config: import('../config/schema.js
           fixable: false,
         });
       } else if (enabled && !registered) {
-        checks.push({
-          name: checks.length === 0 ? 'Agents' : '',
-          status: 'warn',
-          detail: `${d.manifest.displayName} (enabled but not registered — run \`myco update\`)`,
-          fixable: false,
-        });
+        const name = checks.length === 0 ? 'Agents' : '';
+        checks.push(isMemberHome(resolveMycoHome())
+          ? { name, status: 'warn', detail: `${d.manifest.displayName} (enabled but not registered — run \`myco member provision --refresh\`)`, fixable: false }
+          : fixableCheck({ name, status: 'warn', detail: `${d.manifest.displayName} (enabled but not registered — run \`myco doctor --fix\`)` }, 'symbiont-global-refresh'));
       } else if (!enabled && registered) {
         checks.push({
           name: checks.length === 0 ? 'Agents' : '',
@@ -783,15 +778,7 @@ export function isSymbiontRegistered(
   return false;
 }
 
-/**
- * Check if Myco is wired into a symbiont's GLOBAL agent config
- * (`~/.claude/...`, etc.). Under the global-install model this is where
- * capture is actually configured — project-scope config is stripped by the
- * migration. Used to suppress the false "enabled but not registered" warning
- * for projects that opted a symbiont IN via the `symbionts:` block: they are
- * still captured through the global install, and the warning's suggested
- * `myco update` would only re-run the strip.
- */
+/** Check whether the symbiont's global hook or MCP config registers Myco. */
 export function isSymbiontRegisteredGlobally(
   d: import('../symbionts/detect.js').DetectedSymbiont,
 ): boolean {
@@ -1641,6 +1628,7 @@ export async function runChecks(
   if (pathBinary) checks.push(pathBinary);
   const runtimePin = await checkRuntimePin();
   if (runtimePin) checks.push(runtimePin);
+  checks.push(await checkGlobalLaunchers());
   checks.push(...await checkMemberMcpResolution(vaultDir));
   checks.push(...await checkWorkerServices(vaultDir));
   // Leftover per-host networking state lives under the machine's home and team
@@ -1681,7 +1669,6 @@ export async function runChecks(
   const updateResidue = await checkUpdateResidue();
   if (updateResidue) checks.push(updateResidue);
   checks.push(await checkInstallSource());
-  checks.push(await checkGlobalLaunchers());
   checks.push(...await checkDetectedSymbionts());
   checks.push(...await checkSymbiontEdgeCases());
   checks.push(...await checkMigrationStatus(vaultDir));
@@ -1689,15 +1676,7 @@ export async function runChecks(
   return checks;
 }
 
-/**
- * Retired launcher health: the global launcher trampolines
- * (`~/.myco/launcher.cjs` and `~/.myco/mcp-launcher.cjs`) were the node
- * shims every symbiont's hook + MCP command used to invoke. The launcher
- * unification flipped all agent-facing commands to invoke the binary
- * directly, so these files should be ABSENT — bootstrap / `myco update`
- * delete any that linger. A lingering file is inert (nothing executes it),
- * so its presence is a non-fatal advisory, not a failure.
- */
+/** Retired global launcher files are an advisory with an explicit cleanup fixer. */
 async function checkGlobalLaunchers(): Promise<DoctorCheck> {
   const {
     GLOBAL_HOOK_LAUNCHER_FILENAME,
@@ -1715,12 +1694,11 @@ async function checkGlobalLaunchers(): Promise<DoctorCheck> {
       fixable: false,
     };
   }
-  return {
+  return fixableCheck({
     name: 'Launchers',
     status: 'warn',
-    detail: `Retired launcher file(s) still present: ${present.join(', ')}. Run \`myco update\` to remove.`,
-    fixable: false,
-  };
+    detail: `Retired launcher file(s) still present: ${present.join(', ')}. Run \`myco doctor --fix\` to remove.`,
+  }, 'retired-launcher-cleanup');
 }
 
 /**
@@ -1797,7 +1775,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
       // but current installs write ~/.cursor/hooks.json — the global
       // symbiont refresh leaves settings.json untouched, so advertising
       // --fix here would report "Fixed:" against a still-failing recheck.
-      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Remove the Myco hook groups from ~/.cursor/settings.json by hand (legacy file — current installs use hooks.json), then run \`myco update\`.`);
+      emit('fail', `Cursor hooks contain a shell-cd prefix at ${cursorHooks} — drops stdin and breaks capture. Remove the Myco hook groups from ~/.cursor/settings.json by hand (legacy file — current installs use hooks.json), then run \`myco doctor --fix\`.`);
     }
   } catch { /* file absent or malformed */ }
 
@@ -1832,7 +1810,7 @@ export async function checkSymbiontEdgeCases(): Promise<DoctorCheck[]> {
   try {
     const raw = fs.readFileSync(codexConfig, 'utf-8').trim();
     if (raw.startsWith('{')) {
-      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Restore valid TOML by hand (the installer never converts JSON to TOML), then run \`myco update\`.`);
+      emit('fail', `${codexConfig} starts with JSON, not TOML. Codex silently disables hooks. Restore valid TOML by hand (the installer never converts JSON to TOML), then run \`myco doctor --fix\`.`);
     }
   } catch { /* absent — fine */ }
 

@@ -15,7 +15,7 @@ const USAGE = `Usage: myco <command> [args]
 Commands:
   grove <subcommand>       Manage local Groves
   subsystem <subcommand>   Claim/release machine-global subsystem ownership (claim|release|list)
-  update                   Update Myco within its recorded channel; refresh member agents
+  update (alias: upgrade)  Update Myco within its recorded channel; refresh member agents
   remove [--purge] [--yes]   Remove Myco's machine-wide install (prompts unless --yes;
                              captured data preserved unless --purge)
   remove --project [<path>] | --symbiont <name> | --remove-vault
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
   }
 
   // Commands below can open and MIGRATE a Grove DB in-process (grove
-  // activation, `myco update` project fan-out, provisioning via
+  // activation, provisioning via
   // ensureGroveDatabase) — so the pre-migration checkpoint must be
   // registered in THIS process too, not only in the daemon, or a CLI-run
   // migration is exactly the unprotected schema jump the checkpoint
@@ -310,8 +310,7 @@ async function main(): Promise<void> {
     const { readUpdateNotice } = await import('./upgrade/check-cache.js');
     const { resolveMycoHome } = await import('./paths/home.js');
     const { getPluginVersion } = await import('./version.js');
-    const { effectiveUpdateChannel } = await import('./cli/update.js');
-    const notice = readUpdateNotice(resolveMycoHome(), getPluginVersion(), Date.now(), effectiveUpdateChannel());
+    const notice = readUpdateNotice(resolveMycoHome(), getPluginVersion());
     if (notice !== null) console.log(notice);
   }
 

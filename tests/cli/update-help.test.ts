@@ -13,13 +13,13 @@ function help(...args: string[]): string {
   expect({ status: ran.status, stderr: ran.stderr }).toEqual({ status: 0, stderr: '' });
   return ran.stdout;
 }
-it('lists the one update command with its channel and names its alias only in command help', () => {
+it('lists the one update command with its channel and names its alias once in each help', () => {
   for (const legacy of [false, true]) {
     if (legacy) fs.mkdirSync(path.join(root, '.myco', 'groves'), { recursive: true });
     const list = help();
-    expect(list).toMatch(/update\s+Update Myco within its recorded channel/);
+    expect(list).toMatch(/update \(alias: upgrade\)\s+Update Myco within its recorded channel/);
     expect(list).not.toContain('Update vault files');
-    expect(list).not.toContain('upgrade');
+    expect(list.match(/alias: upgrade/g)).toHaveLength(1);
   }
   const update = help('update');
   expect(update).toBe(help('upgrade'));

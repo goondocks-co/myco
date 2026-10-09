@@ -1,5 +1,3 @@
-import { resolveMycoHome } from '../../paths/home.js';
-import { writeReleaseCheckCache } from '../../upgrade/check-cache.js';
 /**
  * Upgrade API handlers — status, manual check, apply, and channel switch.
  *
@@ -16,6 +14,8 @@ import { writeReleaseCheckCache } from '../../upgrade/check-cache.js';
  * restarting/reason) is retained.
  */
 
+import { resolveMycoHome } from '../../paths/home.js';
+import { writeReleaseCheckCache } from '../../upgrade/check-cache.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';

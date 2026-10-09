@@ -199,8 +199,9 @@ dev-link: dev-build
 	@# the claim lands under the dev home regardless of cwd.
 	@if command -v myco >/dev/null 2>&1; then \
 		MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" myco subsystem claim symbiont-config --force >/dev/null 2>&1 \
+			&& "$(HOME)/.local/bin/myco-dev" member provision --refresh \
 			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config while you dogfood (use 'make dev-claim-prod' to hand back)" \
-			|| echo "⚠ could not claim symbiont-config for dev — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force"; \
+			|| echo "⚠ dev setup did not finish — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force, then myco-dev member provision --refresh"; \
 	else \
 		echo "⚠ myco not on PATH — run 'MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force'"; \
 	fi
@@ -304,8 +305,9 @@ dev-link-worktree: dev-build
 	@# MYCO_TRAMPOLINED=1 bypass the repo's runtime.command/runtime.home redirect.
 	@if command -v myco >/dev/null 2>&1; then \
 		MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" myco subsystem claim symbiont-config --force >/dev/null 2>&1 \
+			&& "$(HOME)/.local/bin/myco-dev" member provision --refresh \
 			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — worktree dev daemon manages global agent config while dogfooding (use 'make dev-claim-prod' to hand back)" \
-			|| echo "⚠ could not claim symbiont-config for dev — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force"; \
+			|| echo "⚠ dev setup did not finish — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force, then myco-dev member provision --refresh"; \
 	else \
 		echo "⚠ myco not on PATH — run 'MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force'"; \
 	fi
@@ -331,7 +333,8 @@ dev-claim-prod:
 
 dev-claim-dev:
 	@MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" myco subsystem claim symbiont-config --force \
-		&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config; prod defers" \
+		&& "$(HOME)/.local/bin/myco-dev" member provision --refresh \
+			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config; prod defers" \
 		|| echo "⚠ claim failed — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force"
 
 # Retire worktrees and branches whose pull request already merged. Cleanup done

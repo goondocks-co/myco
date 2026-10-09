@@ -8,7 +8,7 @@ import { holdWorkerInstance, workerLockDir } from '../runner/instance.js';
 import { isLiveRunner, readRunnerRecord } from '../runner/runner-registry.js';
 import { workerServiceSpec, installedRunnerTarget } from '../runner/service.js';
 import { runnerProgramVersion } from '../runner/program.js';
-import { createRunnerUpdateController, type RunnerUpdateController, type RunnerUpdateDeps, type RunnerUpdateSelection } from '../runner/update.js';
+import { createRunnerUpdateController, readRunnerUpdateState, type RunnerUpdateController, type RunnerUpdateDeps, type RunnerUpdateSelection } from '../runner/update.js';
 import type { RunnerUpdateHelperDeps } from '../runner/update-helper.js';
 import { executorServiceTarget, executionDeploymentUrls } from './worker-service.js';
 import type { RunnerServiceDeps } from './runner-service.js';
@@ -54,15 +54,23 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   const record = readRunnerRecord(serverUrl, home);
   if (!isLiveRunner(record)) throw new Error(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\` first`);
   const update = runnerUpdater(serverUrl, deps, out);
-  const summary = (suffix: string): void => {
-    const status = update.contactPayload();
-    out(`Myco: from ${status.currentVersion} to ${status.latestVersion ?? status.currentVersion} on channel ${selection.channel ?? status.channel ?? 'unavailable'} (${suffix}).`);
+  const summary = (suffix: string, checked?: ReturnType<RunnerUpdateController['contactPayload']>): void => {
+    const status = checked ?? update.contactPayload();
+    const transaction = readRunnerUpdateState(home).transaction;
+    const target = checked ? checked.latestVersion ?? checked.currentVersion
+      : transaction?.toVersion ?? status.currentVersion;
+    const channel = checked?.channel ?? selection.channel ?? transaction?.installMarker.channel ?? status.channel ?? 'unavailable';
+    out(`Myco: from ${status.currentVersion} to ${target} on channel ${channel} (${suffix}).`);
   };
   if (checkOnly) {
     const status = await update.check(selection);
-    if (status.channel) recordUpdateCheck(home, selection.channel ?? status.channel, status.currentVersion, status.latestVersion);
+    const recordedChannel = update.contactPayload().channel;
+    if (recordedChannel !== null && selection.targetVersion === undefined
+      && (selection.channel === undefined || selection.channel === recordedChannel)) {
+      recordUpdateCheck(home, recordedChannel, status.currentVersion, status.latestVersion);
+    }
     out(`${status.currentVersion} (${status.channel ?? 'channel unavailable'}): ${status.latestVersion === null || status.latestVersion === status.currentVersion ? 'no newer release' : `update available: ${status.latestVersion}`}`);
-    summary('check only');
+    summary('check only', status);
     return status.channel !== null;
   }
   update.queueManual(selection);

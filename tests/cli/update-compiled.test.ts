@@ -52,7 +52,11 @@ for (const mode of ['member', 'runner', 'both']) it(`compiled myco update --chec
   if (mode !== 'member') {
     expect(updated).toContain('awaiting idle service handoff');
     expect(hash(installed)).toBe(before);
-    invoke(installed, 'finish-handoff');
+    const handoff = invoke(installed, 'finish-handoff');
+    if (mode === 'both') {
+      expect(handoff).toContain('interactive refresh pending');
+      expect(invoke(installed, 'update')).toContain('Agents refreshed: yes');
+    }
   } else expect(updated).toContain('Agents refreshed: yes');
   expect(invoke(installed, '--version').trim()).toBe(to);
   expect(hash(installed)).toBe(hash(release));
@@ -66,8 +70,10 @@ it('a busy compiled runner queues the update without staging, restarting or repl
   expect(invoke('prepare', 'runner').status).toBe(0);
   const installed = path.join(env.MYCO_HOME!, 'bin', 'myco');
   const before = hash(installed);
-  const ran = spawnSync(installed, ['update'], { cwd, env: { ...env, MYCO_FIXTURE_BUSY: '1' }, encoding: 'utf8', timeout: 30_000 });
+  const ran = spawnSync(installed, ['update', '--channel', 'beta', '--target-version', '2.0.0-beta.1'], { cwd, env: { ...env, MYCO_FIXTURE_BUSY: '1' }, encoding: 'utf8', timeout: 30_000 });
   expect({ status: ran.status, stderr: ran.stderr }).toEqual({ status: 0, stderr: '' });
+  expect(ran.stdout).toContain(`from ${from} to ${from} on channel beta`);
+  expect(ran.stdout).not.toContain('to 2.0.0-beta.1');
   expect(ran.stdout).toContain('Runner is busy; the update is queued for between runs. Next: myco runner status');
   expect(hash(installed)).toBe(before);
   const state = JSON.parse(fs.readFileSync(path.join(env.MYCO_HOME!, 'fixture-service-state.json'), 'utf8'));

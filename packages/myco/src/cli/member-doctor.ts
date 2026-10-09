@@ -126,7 +126,7 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
     try {
       const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
         .withoutProjectRoot().forDeployment(record.serverUrl);
-      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco update\` to repair them now.`)];
+      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco member provision --refresh\` to repair them now.`)];
     } catch (error) {
       return [row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`)];
     }

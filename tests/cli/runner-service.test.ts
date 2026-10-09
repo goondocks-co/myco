@@ -34,11 +34,11 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 const enroll = () => withRunnerLock(SERVER, (lock) => publishRunnerRecord(lock, { version: RUNNER_RECORD_VERSION, serverUrl: SERVER, deploymentId: 'dep-one', runnerId: 'runner-one', name: 'mini', token: TOKEN, refreshAfter: 8888888 }), mycoHome);
 const member = () => writeDeploymentMembership({ serverUrl: SERVER, token: MEMBER_TOKEN, machineId: 'machine-one', joinedAt: 1, updatedAt: 1 }, { mycoHome });
-const contact = (refuse = false): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
+const contact = (refuse = false, state: 'enabled' | 'paused' | 'removed' = 'enabled'): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
   const request = new Request(input, init);
   expect(['/runners/contact', '/runners/rotate']).toContain(new URL(request.url).pathname);
   authorizations.push(request.headers.get('authorization')!);
-  return refuse ? Response.json({ error: 'unauthorized' }, { status: 401 }) : Response.json({ persisted: true, runner: { id: 'runner-one', name: 'mini', deploymentId: 'dep-one', state: 'enabled' }, credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } });
+  return refuse ? Response.json({ error: 'unauthorized' }, { status: 401 }) : Response.json({ persisted: true, runner: { id: 'runner-one', name: 'mini', deploymentId: 'dep-one', state }, credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } });
 }) as typeof fetch;
 const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
   mycoHome, home, binaryPath: path.join(root, 'bin', 'myco'), platform: os_, runner: platform.runner,
@@ -313,18 +313,25 @@ describe('explicit runner service opt-in', () => {
   });
 });
 
-it('status shows the acknowledged service offer and one service contact time, regardless of CLI detection', async () => {
+it('status shows the service offer and one service contact time while reporting the Deployment state without CLI detection', async () => {
   await enroll();
   await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 500, mycoHome, { offered: ['claude-code', 'codex'], withheld: [] });
-  const different = { ...deps(), detect: () => { throw new Error('status must not detect in the CLI environment'); },
-    fetch: async () => { throw new Error('status must not contact the Deployment'); } };
-  expect(await run(['status'], different)).toBe(true);
-  const text = output.join('\n');
-  expect(text).toContain('harnesses offered: claude-code, codex');
-  expect(text).toContain('observed: 1970-01-01T00:00:00.500Z');
-  expect(text.match(/last contact:/g)).toHaveLength(1);
-  expect(text).toContain('last contact: 1970-01-01T00:00:00.500Z');
-  expect(text).not.toContain('contact acknowledged:');
+  for (const state of ['enabled', 'paused', 'removed'] as const) {
+    output.length = 0;
+    const different = { ...deps(), detect: () => { throw new Error('status must not detect in the CLI environment'); }, fetch: contact(false, state) };
+    expect(await run(['status'], different)).toBe(true);
+    const text = output.join('\n');
+    expect(text).toContain(`Deployment state: ${state}`);
+    expect(text).toContain('harnesses offered: claude-code, codex');
+    expect(text).toContain('observed: 1970-01-01T00:00:00.500Z');
+    expect(text.match(/last contact:/g)).toHaveLength(1);
+    expect(text).toContain('last contact: 1970-01-01T00:00:00.500Z');
+    expect(text).not.toContain('contact acknowledged:');
+  }
+  output.length = 0;
+  expect(await run(['status'], { ...deps(), detect: () => { throw new Error('status must not detect in the CLI environment'); }, fetch: contact(true) })).toBe(false);
+  expect(output.join('\n')).toContain('contact refused or unavailable: unauthorized');
+  expect(output.join('\n').match(/last contact:/g)).toHaveLength(1);
 });
 
 it('legacy uninstall prints only its removal even when this Deployment also has a runner record', async () => {
