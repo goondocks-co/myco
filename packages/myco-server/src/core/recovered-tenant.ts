@@ -22,6 +22,8 @@ export async function prepareRecoveredTenant(db: RelationalStore, mode: Recovery
     expireCarriedDeviceRequests(db, now),
     db.prepare('DELETE FROM runner_contacts'),
     db.prepare('DELETE FROM runner_model_catalogs'),
+    db.prepare('DELETE FROM runner_update_requests'),
+    db.prepare('DELETE FROM runner_update_reports'),
   ];
   if (mode === 'replacement') {
     await db.batch(stale);

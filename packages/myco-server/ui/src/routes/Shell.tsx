@@ -14,7 +14,7 @@ import { memberDisplayName } from '../lib/member-name';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, HEALTH_PATH, MY_MACHINES_PATH, PEOPLE_PAGE, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, projectOf, titleOf,
+  ADMIN_PAGES, HEALTH_PATH, MY_MACHINES_PATH, PEOPLE_PAGE, RUNNERS_PAGE, pageHref, pageIsOpen, PHONE_PAGES, PROJECT_PAGES, projectOf, titleOf,
 } from './nav';
 import { scopeProjects } from './scope';
 
@@ -145,6 +145,7 @@ function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
       ) : (
         <NavSection label="People">
           <NavItem to={PEOPLE_PAGE.to} label={PEOPLE_PAGE.label} icon={PEOPLE_PAGE.icon} onNavigate={closeMenu} />
+          <NavItem to={RUNNERS_PAGE.to} label={RUNNERS_PAGE.label} icon={RUNNERS_PAGE.icon} onNavigate={closeMenu} />
         </NavSection>
       )}
       account={account}

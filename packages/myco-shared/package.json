@@ -137,6 +137,10 @@
     "./settings-contract": {
       "import": "./dist/settings-contract.js",
       "types": "./dist/settings-contract.d.ts"
+    },
+    "./runner-update": {
+      "import": "./dist/runner-update.js",
+      "types": "./dist/runner-update.d.ts"
     }
   },
   "files": [

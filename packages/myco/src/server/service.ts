@@ -42,6 +42,8 @@ export interface ServiceUnit {
   logName: string;
   /** Seconds the platform waits before starting a unit that exited again. */
   restartDelaySeconds: number;
+  /** A one-shot unit has no platform-managed restart. */
+  restart?: 'never';
 }
 
 /** The native Deployment. */
@@ -180,10 +182,10 @@ ${spec.unit.args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
-  <dict>
+  ${spec.unit.restart === 'never' ? '<false/>' : `<dict>
     <key>SuccessfulExit</key><false/>
     <key>NetworkState</key><true/>
-  </dict>
+  </dict>`}
   <key>ThrottleInterval</key><integer>${spec.unit.restartDelaySeconds}</integer>
   <key>EnvironmentVariables</key>
   <dict>
@@ -209,7 +211,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${spec.binaryPath} ${spec.unit.args.join(' ')}
 ${environmentOf(spec).map(([key, value]) => `Environment=${key}=${value}`).join('\n')}
-Restart=on-failure
+Restart=${spec.unit.restart === 'never' ? 'no' : 'on-failure'}
 RestartSec=${spec.unit.restartDelaySeconds}
 StandardOutput=append:${paths.outLog}
 StandardError=append:${paths.errLog}
@@ -246,10 +248,10 @@ export function renderWindowsTask(spec: ServiceSpec, paths: ServicePaths): strin
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <RestartOnFailure>
+    ${spec.unit.restart === 'never' ? '' : `<RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>3</Count>
-    </RestartOnFailure>
+    </RestartOnFailure>`}
     <NetworkSettings><Id></Id></NetworkSettings>
   </Settings>
   <Actions Context="Author">

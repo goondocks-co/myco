@@ -10,7 +10,7 @@
  * - a runner credential reaches the worker control plane and its own two routes, and is refused everywhere else;
  * - capacity, pause, removal, rotation and replay, each at the write that decides it.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
@@ -713,5 +713,173 @@ describe('the review corrections', () => {
         { kind: 'member', memberId: ADMIN },
       ]);
     } finally { r.e.sqlite.close(); }
+  });
+});
+
+describe('runner update commands', () => {
+  const report = (at: number, lastResult?: Record<string, unknown>) => ({ channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: at, ...(lastResult === undefined ? {} : { lastResult }) });
+
+  it('declares administration, refuses a member, audits each acceptance and delivers one command until its matching outcome', async () => {
+    const route = ROUTES.find((entry) => entry.path === '/api/runners/{runnerId}/update');
+    expect(route).toMatchObject({ auth: 'session', authority: 'admin', authorization: { resource: 'runner', action: 'admin' } });
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      const path = `/api/runners/${runnerId}/update`;
+      expect((await r.asSession(path, {})).status).toBe(409);
+      expect(await r.json(r.asRunner(token, '/runners/contact', { version: '2.0.0-alpha.2', update: report(r.now()) }))).toMatchObject({ persisted: true, updateRequest: null });
+      expect((await r.asSession(path, {}, MEMBER_SUB)).status).toBe(403);
+      expect(r.row('SELECT COUNT(*) AS n FROM runner_update_requests')).toEqual({ n: 0 });
+      const asked = await r.json(r.asSession(path, {}, ADMIN_SUB));
+      expect(asked).toMatchObject({ requested: true, updateRequest: { requestedAt: r.now() } });
+      expect(await r.json(r.asSession(path, {}))).toEqual(asked);
+      expect(r.row("SELECT COUNT(*) AS n FROM runner_update_audit WHERE action = 'requested'")).toEqual({ n: 2 });
+      expect(r.row("SELECT actor_member FROM runner_update_audit WHERE action = 'requested'")).toEqual({ actor_member: ADMIN });
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: report(r.now()) }))).toMatchObject({ updateRequest: asked.updateRequest });
+      const stale = { requestId: 'old-request', fromVersion: '2.0.0-alpha.2', toVersion: '2.0.0-alpha.3', result: 'refused', reason: 'launch probe failed', at: r.now() };
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: report(r.now(), stale) }))).toMatchObject({ updateRequest: asked.updateRequest });
+      const completed = { ...stale, requestId: asked.updateRequest.id, result: 'updated' };
+      const contact = { update: { ...report(r.now(), completed), currentVersion: '2.0.0-alpha.3' } };
+      expect(await r.json(r.asRunner(token, '/runners/contact', contact))).toMatchObject({ persisted: true, updateRequest: null });
+      expect(await r.json(r.asRunner(token, '/runners/contact', contact))).toMatchObject({ persisted: true, updateRequest: null });
+      expect(r.row("SELECT COUNT(*) AS n FROM runner_update_audit WHERE action = 'reported' AND request_id = ?", asked.updateRequest.id)).toEqual({ n: 1 });
+      const listed = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
+      expect(listed.runners[0]).toMatchObject({ connected: true, version: '2.0.0-alpha.3', channel: 'alpha', latestVersion: '2.0.0-alpha.3', lastCheckAt: r.now(), lastResult: completed, updateRequest: null });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('audits both concurrent administrators against one pending command and preserves each acceptance time', async () => {
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      await r.asRunner(token, '/runners/contact', { update: report(r.now()) });
+      const path = `/api/runners/${runnerId}/update`;
+      const accepted = await Promise.all([OWNER_SUB, ADMIN_SUB].map(async (actor) => r.json(r.asSession(path, {}, actor))));
+      expect(accepted.every((reply) => reply.requested === true)).toBe(true);
+      expect(accepted[0]!.updateRequest).toEqual(accepted[1]!.updateRequest);
+      expect(r.row('SELECT COUNT(*) AS n FROM runner_update_requests')).toEqual({ n: 1 });
+      const commandId = accepted[0]!.updateRequest.id;
+      const receipts = r.e.sqlite.query("SELECT id, actor_member, request_id, at FROM runner_update_audit WHERE action = 'requested' ORDER BY actor_member").all() as Array<{ id: string; actor_member: string; request_id: string; at: number }>;
+      expect(receipts.map(({ actor_member, request_id, at }) => ({ actor_member, request_id, at })))
+        .toEqual([OWNER, ADMIN].sort().map(actor_member => ({ actor_member, request_id: commandId, at: r.now() })));
+      expect(new Set(receipts.map(({ id }) => id)).size).toBe(2);
+      r.advance(1000);
+      const later = await r.json(r.asSession(path, {}, ADMIN_SUB));
+      expect(later).toEqual(accepted[0]);
+      expect(r.row("SELECT COUNT(*) AS n FROM runner_update_audit WHERE action = 'requested'")).toEqual({ n: 3 });
+      expect(r.row("SELECT actor_member, request_id, at FROM runner_update_audit WHERE action = 'requested' AND at = ?", r.now()))
+        .toEqual({ actor_member: ADMIN, request_id: commandId, at: r.now() });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('keeps a mid-run request pending while recording contact and a live lease', async () => {
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      await r.asRunner(token, '/runners/contact', { update: report(r.now()) });
+      await r.queueTitling();
+      const claimed = await r.claim(token);
+      expect(claimed.claimed).toBe(true);
+      const asked = await r.json(r.asSession(`/api/runners/${runnerId}/update`, {}));
+      expect(asked.requested).toBe(true);
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: report(r.now()) }))).toMatchObject({ updateRequest: asked.updateRequest });
+      const fleet = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(fleet.runners[0]).toMatchObject({ busy: { runId: claimed.run.id }, updateRequest: asked.updateRequest });
+      expect(r.row('SELECT status FROM agent_runs WHERE id = ?', claimed.run.id)).toEqual({ status: 'running' });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('drops malformed update metadata without refusing contact, and refuses a demotion at commit', async () => {
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      const bad = await r.json(r.asRunner(token, '/runners/contact', { update: { ...report(r.now()), channel: 'dev' } }));
+      expect(bad).toMatchObject({ persisted: true });
+      expect(r.row('SELECT COUNT(*) AS n FROM runner_update_reports')).toEqual({ n: 0 });
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: { ...report(r.now()), channel: { toString: {} } } }))).toMatchObject({ persisted: true });
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: { ...report(r.now()), updateState: { phase: { toString: {} }, since: r.now() } } }))).toMatchObject({ persisted: true });
+      r.e.sqlite.run('DELETE FROM runner_update_reports');
+      await r.asRunner(token, '/runners/contact', {});
+      expect(await r.json(r.asSession(`/api/runners/${runnerId}/update`, {}))).toEqual({ error: 'unsupported_channel' });
+      await r.asRunner(token, '/runners/contact', { update: { ...report(r.now()), channel: null, lastResult: { fromVersion: '2.0.0-alpha.2', toVersion: '2.0.0-alpha.2', result: 'refused', reason: 'Missing install marker', at: r.now() } } });
+      expect(await r.json(r.asSession(`/api/runners/${runnerId}/update`, {}))).toEqual({ error: 'unsupported_channel' });
+      await r.asRunner(token, '/runners/contact', { update: report(r.now()) });
+      r.arm((sql) => { if (/INSERT OR IGNORE INTO runner_update_requests/.test(sql)) r.e.sqlite.run(`UPDATE members SET role = 'member' WHERE id = ?`, [ADMIN]); });
+      expect((await r.asSession(`/api/runners/${runnerId}/update`, {}, ADMIN_SUB)).status).toBe(403);
+      expect(r.row('SELECT COUNT(*) AS n FROM runner_update_requests')).toEqual({ n: 0 });
+      expect(r.row("SELECT COUNT(*) AS n FROM runner_update_audit WHERE action = 'requested'")).toEqual({ n: 0 });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('sanitizes Unicode and code-point bounded reasons, dropping invalid results without blocking execution', async () => {
+    const r = rig();
+    const logs = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { token } = await r.register();
+      const lastResult = { attemptId: 'attempt_1', fromVersion: '2.0.0-alpha.2', toVersion: '2.0.0-alpha.3', result: 'failed', reason: 'probe\u0085failed\u200bto\u2028launch ' + '😀'.repeat(512), at: r.now() };
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: report(r.now(), lastResult) }))).toMatchObject({ persisted: true });
+      const listed = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
+      const reason = listed.runners[0].lastResult.reason;
+      expect(reason).toStartWith('probe failed to launch ');
+      expect(Array.from(reason)).toHaveLength(512);
+      expect(reason).not.toMatch(/[\p{C}\p{Zl}\p{Zp}]/u);
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: report(r.now(), { ...lastResult, at: 'invalid' }) }))).toMatchObject({ persisted: true });
+      const retained = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
+      expect(retained.runners[0].lastResult).toEqual(listed.runners[0].lastResult);
+      expect(logs.mock.calls.some(([line]) => String(line).includes('runner_update_metadata') && String(line).includes('lastResult'))).toBe(true);
+      await r.queueTitling();
+      expect(await r.claim(token)).toMatchObject({ claimed: true });
+    } finally { logs.mockRestore(); r.e.sqlite.close(); }
+  });
+
+  it('deduplicates one attempted result across delivery timestamps and projects holds separately from legacy receipts', async () => {
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      const lastResult = { attemptId: 'attempt_stable', fromVersion: '2.0.0-alpha.2', toVersion: '2.0.0-alpha.3', result: 'rolled_back', reason: 'Health check failed', at: r.now() };
+      const blockedVersion = { version: '2.0.0-alpha.3', until: r.now() + 3600000, reason: 'Health check failed' };
+      const updateState = { phase: 'cleanup_pending', since: r.now(), reason: 'Guardian cleanup failed' };
+      for (let retry = 0; retry < 2; retry++) {
+        expect(await r.json(r.asRunner(token, '/runners/contact', { update: { ...report(r.now(), { ...lastResult, at: r.now() }), blockedVersion, updateState } }))).toMatchObject({ persisted: true });
+        r.advance(1000);
+      }
+      expect(r.row("SELECT COUNT(*) AS n FROM runner_update_audit WHERE action = 'reported'")).toEqual({ n: 1 });
+      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult: { attemptId: 'attempt_stable' }, blockedVersion, updateState });
+      expect(await r.json(r.asSession(`/api/runners/${runnerId}/update`, {}))).toMatchObject({ requested: true, updateRequest: { clearBlock: true } });
+      await r.asRunner(token, '/runners/contact', { update: report(r.now()) });
+      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult: { attemptId: 'attempt_stable' }, blockedVersion: null, updateState: null });
+      r.e.sqlite.run('UPDATE runner_update_reports SET last_result = ? WHERE runner_id = ?', [JSON.stringify(lastResult), runnerId]);
+      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult, blockedVersion: null, updateState: null });
+      await r.asRunner(token, '/runners/contact', { update: report(r.now(), { ...lastResult, at: lastResult.at - 1, reason: 'Stale receipt' }) });
+      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult, blockedVersion: null, updateState: null });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('portable backups omit pending commands and replacement/fork recovery clear them while preserving receipts', async () => {
+    for (const mode of ['replacement', 'fork'] as const) {
+      const r = rig();
+      try {
+        const { token, runnerId } = await r.register();
+        await r.asRunner(token, '/runners/contact', { update: report(r.now()) });
+        await r.asSession(`/api/runners/${runnerId}/update`, {});
+        r.e.sqlite.run('UPDATE deployment_ownership SET member_id = NULL, revision = 0 WHERE id = 1');
+        const saved = await createBackup(r.e.db, r.e.bucket, { now: r.now(), producer: 'runner-update-test' });
+        const artifact = (await backupArtifact(r.e.db, r.e.bucket, saved.id))!.text;
+        expect(artifact).not.toContain('"t":"runner_update_requests"');
+        expect(artifact).not.toContain('"t":"runner_update_reports"');
+        expect(artifact).toContain('"t":"runner_update_audit"');
+        const restored = rig({ deploymentId: `restore-${mode}` });
+        try {
+          await restoreArtifact(restored.e.db, { text: artifact, authorization: { kind: 'recovery' }, allowForeignLineage: true, now: r.now() });
+          expect(restored.row('SELECT COUNT(*) AS n FROM runner_update_requests')).toEqual({ n: 0 });
+          expect(restored.row('SELECT COUNT(*) AS n FROM runner_update_audit')).toEqual({ n: 1 });
+        } finally { restored.e.sqlite.close(); }
+
+        await prepareRecoveredTenant(r.e.db, mode, r.now());
+        expect(r.row('SELECT COUNT(*) AS n FROM runner_update_requests')).toEqual({ n: 0 });
+        expect(r.row('SELECT COUNT(*) AS n FROM runner_update_reports')).toEqual({ n: 0 });
+        expect(r.row('SELECT COUNT(*) AS n FROM runner_update_audit')).toEqual({ n: 1 });
+      } finally { r.e.sqlite.close(); }
+    }
   });
 });
