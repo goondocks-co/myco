@@ -7,6 +7,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import durations from '../../scripts/test-durations.json';
 import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
+import completeParityWorkload from '../fixtures/runner/parity-ci-f2c7ecc5.json';
 
 describe('test shard selection', () => {
   test('fits the recorded parity workload with startup allowance and headroom on every CI shard', () => {
@@ -14,11 +15,13 @@ describe('test shard selection', () => {
     const count = workflow.jobs.parity.strategy.matrix.shard.length;
     const budget = Number(workflow.jobs.parity.env.MYCO_RUNNER_GROUP_BUDGET_MS);
     const weights: Record<string, number> = durations.parity;
-    for (const scenario of parityWorkload.scenarios) expect(weights[scenario.name]).toBeGreaterThan(0);
-    for (let index = 1; index <= count; index += 1) {
-      const shard = selectShard(parityWorkload.scenarios, { index, count }, (scenario) => weights[scenario.name]);
-      const measured = shard.reduce((total, scenario) => total + scenario.milliseconds, parityWorkload.sharedTargetAllowanceMs);
-      expect(measured).toBeLessThanOrEqual(budget - parityWorkload.requiredHeadroomMs);
+    for (const workload of [parityWorkload, completeParityWorkload]) {
+      for (const scenario of workload.scenarios) expect(weights[scenario.name]).toBeGreaterThan(0);
+      const projected = Array.from({ length: count }, (_, index) => {
+        const shard = selectShard(workload.scenarios, { index: index + 1, count }, (scenario) => weights[scenario.name]);
+        return shard.reduce((total, scenario) => total + scenario.milliseconds, workload.sharedTargetAllowanceMs);
+      });
+      expect(Math.max(...projected), workload.source).toBeLessThanOrEqual(budget - workload.requiredHeadroomMs);
     }
   });
   test('applies the group selector only to the runner that receives it', () => {

@@ -93,6 +93,7 @@ try {
     await page.locator('[data-runner="rn_idle"]').screenshot({path:path.join(output,mode+'-details.png')});
     await page.locator('[data-runner="rn_idle"] summary').click();
     await page.setViewportSize({width:390,height:844});
+    await expect(page.getByRole('navigation',{name:'Main pages'})).toBeVisible();
     await page.evaluate(() => window.scrollTo(0,0));
     await expect(page.getByRole('heading',{name:'homelab-mini'})).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
