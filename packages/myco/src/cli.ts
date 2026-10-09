@@ -34,7 +34,7 @@ Commands:
   setup-digest [options]   Configure digest and capture settings
   agent [options]          Run the intelligence agent
   worker [options]         Attach this machine's harnesses to a Deployment
-  runner <verb>            Register this machine as a runner and drive a Deployment's runs (register|run|rotate|status)
+  runner <verb>            Register, run or update an execution machine (register|run|update|status)
   task <subcommand>        Manage agent task definitions
   tool <list|call>         List or call Myco tools as JSON
   doctor [--fix]          Check vault health and repair issues

@@ -12,6 +12,8 @@ import { deploymentKeyFor } from '@myco/member/registry.js';
 import { sweepWorkerServices } from '@myco/cli/worker-service.js';
 import { installWorkerService, listWorkerUnits, workerServiceSpec } from '@myco/runner/service.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
+import { runnerUpdater } from '@myco/cli/runner-update.js';
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
 
 const SERVER = 'https://runner.example';
 const TOKEN = `mycorun_${'r'.repeat(43)}`;
@@ -45,6 +47,20 @@ const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
 });
 
 describe('explicit runner service opt-in', () => {
+  for (const os_ of ['darwin', 'linux'] as const) it(`updates and reports the installed service program from a sibling CLI on ${os_}`, async () => {
+    const serviceBinary = path.join(root, 'service-bin', 'myco');
+    fs.mkdirSync(path.dirname(serviceBinary), { recursive: true });
+    fs.writeFileSync(serviceBinary, '#!/bin/sh\nprintf "2.0.0-alpha.2\\n"\n', { mode: 0o755 });
+    installWorkerService({ ...deps(os_), binaryPath: serviceBinary, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: deps(os_).binaryPath });
+    const updater = runnerUpdater(SERVER, deps(os_), line => output.push(line));
+    expect(updater.contactPayload()).toMatchObject({ currentVersion: '2.0.0-alpha.2', channel: 'alpha' });
+    const foreground = runnerUpdater(SERVER, { ...deps(os_), version: '2.0.0-alpha.3' }, line => output.push(line), true);
+    foreground.onContact({ updateRequest: { id: 'foreground-request', requestedAt: 1000 } });
+    expect(await foreground.idle()).toBe('continue');
+    expect(foreground.contactPayload().lastResult).toMatchObject({ result: 'refused', reason: 'runner service is not installed' });
+    expect(fs.readFileSync(serviceBinary, 'utf8')).toContain('2.0.0-alpha.2');
+  });
   it('retirement names the exact legacy unit when path-prefixed addresses share a lock', async () => {
     const a = `${SERVER}/a`, b = `${SERVER}/b`;
     const units = [a, b].map(serverUrl => installWorkerService({ ...deps(), serverUrl }, [], { runner: platform.runner }));

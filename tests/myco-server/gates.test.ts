@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 165;
+const EMIT_CALLS = 166;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -1521,6 +1521,7 @@ describe('gates', () => {
       'session:admin POST /api/runners/{runnerId}/pause',
       'session:admin POST /api/runners/{runnerId}/resume',
       'session:admin POST /api/runners/{runnerId}/remove',
+      'session:admin POST /api/runners/{runnerId}/update',
       'session:member POST /api/harness/dispatch',
       'session:member POST /api/projects/{projectId}/runs/{runId}/cancel',
       'session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',

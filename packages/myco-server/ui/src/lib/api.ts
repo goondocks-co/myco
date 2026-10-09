@@ -1,3 +1,4 @@
+import type { RunnerUpdateResult, RunnerBlockedVersion, RunnerUpdateState, RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
 import type { CaptureRow } from '../features/today/wire';
 
 /**
@@ -151,4 +152,16 @@ export const isArchived = (p: Pick<ProjectSummary, 'archivedAt'>): boolean => p.
 
 export interface ProjectsResponse {
   projects: ProjectSummary[];
+}
+
+/** One registered runner, its reported update state, and its pending command. */
+export interface RunnerRow {
+  id: string; name: string; state: 'enabled' | 'paused' | 'removed'; connected: boolean;
+  version: string | null; channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null;
+  lastSeenAt: number | null; lastCheckAt: number | null;
+  lastResult: RunnerUpdateResult | null;
+  blockedVersion: RunnerBlockedVersion | null;
+  updateState: RunnerUpdateState | null;
+  updateRequest: RunnerUpdateRequest | null;
+  busy: { projectId: string; runId: string; leaseExpiresAt: number } | null;
 }

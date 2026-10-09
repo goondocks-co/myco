@@ -183,7 +183,7 @@ describe('the nav', () => {
     expect(nav.textContent).not.toContain('All projects');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
     expect(within(admin).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      [INVITE_CONTROLS.page, '/people'], ['Settings', '/settings'], ['Health', '/status/health'],
+      [INVITE_CONTROLS.page, '/people'], ['Runners', '/runners'], ['Settings', '/settings'], ['Health', '/status/health'],
     ]);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1' })).toBeTruthy();

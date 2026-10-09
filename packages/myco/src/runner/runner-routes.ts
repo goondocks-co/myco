@@ -5,6 +5,7 @@
  */
 import { unboundedBudget } from '../member/budget.js';
 import { classifyEventAnswer, ServerClient, type FetchLike, type Outcome } from '../member/transport.js';
+import type { RunnerUpdateContact } from './update.js';
 
 export const RUNNER_CONTACT_PATH = '/runners/contact';
 export const RUNNER_ROTATE_PATH = '/runners/rotate';
@@ -15,6 +16,7 @@ export interface RunnerMetadata {
   machineId?: string;
   os?: string;
   version?: string;
+  update?: RunnerUpdateContact;
 }
 
 /** The runner and credential a contact answer names. */

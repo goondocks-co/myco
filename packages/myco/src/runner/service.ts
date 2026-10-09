@@ -79,6 +79,35 @@ const UNIT_FILE = {
 const unescapeXml = (value: string): string =>
   value.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
+/** Read the installed runner unit's program, refusing an unreadable or foreign unit. */
+export function installedRunnerTarget(target: WorkerServiceTarget): WorkerServiceTarget {
+  const platform = target.platform ?? process.platform;
+  const spec = workerServiceSpec({ ...target, executor: 'runner' }, []);
+  const file = servicePaths(spec, platform).unitFile;
+  let text: string;
+  try { text = unescapeXml(fs.readFileSync(file, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return target; throw error; }
+  let binaryPath: string | undefined, serverUrl: string | undefined, home: string | undefined;
+  if (platform === 'darwin') {
+    const argumentsText = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1];
+    const args = [...(argumentsText ?? '').matchAll(/<string>([\s\S]*?)<\/string>/g)].map(match => match[1]);
+    if (args[1] === 'runner' && args[2] === 'run' && args[3] === '--server') { binaryPath = args[0]; serverUrl = args[4]; }
+    home = /<key>MYCO_HOME<\/key>\s*<string>([\s\S]*?)<\/string>/.exec(text)?.[1];
+  } else if (platform === 'linux') {
+    const command = /^ExecStart=(\S+) runner run --server (\S+)\s*$/m.exec(text);
+    binaryPath = command?.[1]; serverUrl = command?.[2];
+    home = /^Environment=MYCO_HOME=(.+)$/m.exec(text)?.[1];
+  } else if (platform === 'win32') {
+    const command = /(?:^| && )(\S+) runner run --server (\S+) >> /.exec(text);
+    binaryPath = command?.[1]; serverUrl = command?.[2];
+    home = /set "MYCO_HOME=([^"]+)"/.exec(text)?.[1];
+  }
+  if (binaryPath === undefined || !path.isAbsolute(binaryPath) || home !== target.mycoHome || serverUrl !== target.serverUrl) {
+    throw new Error(`runner unit ${file} does not name this Deployment and home with an absolute runner program`);
+  }
+  return { ...target, binaryPath };
+}
+
 /**
  * Every worker unit written for this user, whichever home wrote it. The
  * Deployment and home are read back from the unit's own arguments and

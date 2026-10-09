@@ -46,7 +46,9 @@ let bakedVersion;
 const probeDir = fs.mkdtempSync(path.join(tmpdir(), 'myco-build-verify-'));
 try {
   try {
-    bakedVersion = execFileSync(binaryPath, ['--version'], { cwd: probeDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const probeBinary = path.join(probeDir, binaryName);
+    fs.copyFileSync(binaryPath, probeBinary);
+    bakedVersion = execFileSync(probeBinary, ['--version'], { cwd: probeDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   } finally {
     fs.rmSync(probeDir, { recursive: true, force: true });
   }

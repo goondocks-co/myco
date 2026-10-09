@@ -13,6 +13,7 @@ export interface Me {
 }
 
 export interface DashboardPermissions {
+  runners: Permission;
   settings: Permission;
   keys: Permission;
   people: Permission;
@@ -29,7 +30,7 @@ interface Permission { allowed: boolean; reason: string | null }
 interface ScopedPermission<Scope extends string> { scope: Scope; reason: string | null }
 
 /** The Deployment's permission projection decides whether an action is offered. */
-export function permissionOf(me: Me | undefined, key: 'settings' | 'keys' | 'people' | 'roles' | 'projects' | 'backups'): Permission {
+export function permissionOf(me: Me | undefined, key: 'runners' | 'settings' | 'keys' | 'people' | 'roles' | 'projects' | 'backups'): Permission {
   const projected = me?.permissions?.[key];
   if (projected !== undefined) return projected;
   return { allowed: false, reason: 'This permission is unavailable. Refresh the page.' };

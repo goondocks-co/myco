@@ -9,6 +9,7 @@ import { ServicePathUnsupported, ServicePlatformUnsupported, ServiceStopFailed }
 import { binaryRefusal, executorServiceTarget, describeWorkerService, executionDeploymentUrls, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 import { RUNNER_ADDRESS_RULE, runnerServerUrl, type RunnerCliDeps } from './runner-deps.js';
 import { parseFlags } from './flags.js';
+import { runnerUpdater, type RunnerUpdateCliDeps } from './runner-update.js';
 
 export type RunnerServiceDeps = RunnerCliDeps & WorkerServiceDeps;
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
@@ -33,7 +34,7 @@ export function runnerExecutionRefusal(deps: RunnerServiceDeps): string | null {
 }
 
 /** A local service operation always names a runner record, never a membership or a project. */
-export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | 'uninstall', args: readonly string[], deps: RunnerServiceDeps = {}): Promise<boolean> {
+export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | 'uninstall', args: readonly string[], deps: RunnerUpdateCliDeps = {}): Promise<boolean> {
   const out = deps.stdout ?? console.log;
   const err = deps.stderr ?? console.error;
   const fail = (line: string): false => { err(`myco runner ${verb}: ${line}`); return false; };
@@ -79,6 +80,12 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
         continue;
       }
       out(`${url}: ${isLiveRunner(record) ? `registered runner ${record.name} (${record.runnerId})` : record === null ? `not registered; run \`myco runner register ${url}\`` : 'registration pending'}`);
+      const update = runnerUpdater(url, scoped, line => out(`  ${line}`));
+      const updateStatus = update.contactPayload();
+      out(`  version: ${updateStatus.currentVersion}; channel: ${updateStatus.channel ?? 'unavailable'}`);
+      out(`  last update check: ${updateStatus.lastCheckAt === null ? 'never' : new Date(updateStatus.lastCheckAt).toISOString()}`);
+      const lastUpdate = updateStatus.lastResult;
+      out(`  last update result: ${lastUpdate === undefined ? 'none' : `${lastUpdate.result}: ${lastUpdate.fromVersion} → ${lastUpdate.toVersion}${lastUpdate.reason === undefined ? '' : ` (${lastUpdate.reason})`}`}`);
       const state = workerServiceStatus(target, options);
       const service = !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, not running' : 'running at login';
       out(`  runner service: ${service}${state.detail === undefined ? '' : ` (${state.detail})`}`);
@@ -92,7 +99,7 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
       out(`  last contact: ${record.lastContactAt === undefined ? 'never recorded locally' : new Date(record.lastContactAt).toISOString()}`);
       const renew = runnerRenewer(url, { ...deps, mycoHome, notify: (line) => out(`  ${line}`) });
       await renew(false);
-      const contact = () => contactRunner(url, readRunnerRecord(url, mycoHome)?.token ?? record.token, {}, deps.fetch);
+      const contact = () => contactRunner(url, readRunnerRecord(url, mycoHome)?.token ?? record.token, { update: updateStatus }, deps.fetch);
       let answer = await contact();
       if (answer.class === 'unauthorized' && await renew(true) === 'refreshed') answer = await contact();
       if (answer.class === 'acked') {

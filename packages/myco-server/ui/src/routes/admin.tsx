@@ -1,13 +1,14 @@
 import type { RouteObject } from 'react-router-dom';
 import { AdminOnly } from '../features/admin/AdminFrame';
 import { HealthPage } from '../features/admin/health/HealthPage';
+import { RunnersPage } from '../features/admin/runners/RunnersPage';
 import { MyMachinesPage } from '../features/admin/people/MyMachinesPage';
 import { PeoplePage } from '../features/admin/people/PeoplePage';
 import { ProjectSettingsPage } from '../features/admin/project/ProjectSettingsPage';
 import { SettingsPage } from '../features/admin/settings/SettingsPage';
 import { NotFound } from '../pages/NotFound';
 import {
-  HEALTH_PATH, MY_MACHINES_PATH, PEOPLE_PATH, PROJECT_SETTINGS_SUFFIX, SETTINGS_SECTIONS,
+  HEALTH_PATH, RUNNERS_PATH, MY_MACHINES_PATH, PEOPLE_PATH, PROJECT_SETTINGS_SUFFIX, SETTINGS_SECTIONS,
   type SettingsSectionId,
 } from './nav';
 import { useRouteProject } from './route-project';
@@ -18,6 +19,7 @@ import { useRouteProject } from './route-project';
  * available to every member.
  */
 export const adminRoutes: RouteObject[] = [
+  { path: RUNNERS_PATH, element: <RunnersPage /> },
   { path: PEOPLE_PATH, element: <PeoplePage /> },
   { path: MY_MACHINES_PATH, element: <MyMachinesPage /> },
   ...SETTINGS_SECTIONS.map((section): RouteObject => ({ path: section.to, element: <SettingsRoute section={section.id} /> })),

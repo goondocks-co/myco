@@ -113,8 +113,6 @@ const UNREACHED_2_0: Readonly<Record<string, string>> = {
   'symbionts/templates/cline/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
   'symbionts/templates/opencode/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
   'symbionts/templates/pi/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
-  'upgrade/apply-binary.ts': "reached only through the 1.4 upgrade verb until #1170 P6a's myco update reads it",
-  'upgrade/release-assets.ts': "reached only through the 1.4 upgrade verb until #1170 P6a's myco update reads it",
   'upgrade/release-resolver.ts': "reached only through the 1.4 upgrade verb until #1170 P6a's myco update reads it",
 };
 

@@ -1,6 +1,5 @@
 /** Compatibility commands preserve installed member workers and otherwise invoke runner commands. */
 import { REJOIN_HINT } from '../member/delivery-notice.js';
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
@@ -12,7 +11,9 @@ import { CLAIM_IDLE_POLL_MS, runWorker, sleep, type WorkerOptions } from '../run
 import { workerLogLine } from '../runner/log.js';
 import { keepMachineAwake } from '../runner/keep-awake.js';
 import { clearWorkerRefusal, isTerminalRefusal, recordWorkerRefusal, type TerminalRefusal } from '../runner/refusal.js';
-import { programRuns, type ProgramProbe } from '../install/place-binary.js';
+import { programRuns } from '../install/place-binary.js';
+import { executableIdentity, sameProgram } from '../runner/program.js';
+export { executableIdentity, sameProgram } from '../runner/program.js';
 import { listRunnerRecords, readRunnerRecord } from '../runner/runner-registry.js';
 import { workerLockPath, workerLockDir } from '../runner/instance.js';
 import { workerServiceSpec, workerServiceUnit } from '../runner/service.js';
@@ -156,42 +157,6 @@ function endRefused(serverUrl: string, mycoHome: string, code: TerminalRefusal):
   recordWorkerRefusal(mycoHome, serverUrl, code, Date.now());
   console.error(`myco worker: ${serverUrl}: ${TERMINAL_WORDS[code]}`);
   return true;
-}
-
-/** The identity of a file on disk, which a replacement by rename or copy changes. */
-export function executableIdentity(file: string): string | null {
-  try {
-    const stat = fs.statSync(file);
-    return `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Whether the program at `file` is still the one this process started from.
- *
- * A program replaced on disk ends the worker only once the new one runs; one
- * that does not is said once, and the worker keeps running on the program it
- * started from until the file changes again.
- */
-export function sameProgram(
-  file: string,
-  identity = executableIdentity,
-  runs: (file: string) => ProgramProbe = programRuns,
-  log: (line: string) => void = () => {},
-): () => boolean {
-  const started = identity(file);
-  let judged = started;
-  return () => {
-    const now = identity(file);
-    if (started === null || now === null || now === started || now === judged) return true;
-    judged = now;
-    const probe = runs(file);
-    if (probe.runs) return false;
-    log(`the myco program on disk changed, and the new one does not run (${probe.detail}); staying on this one`);
-    return true;
-  };
 }
 
 /** Longest a replaced worker waits for its service to stop it before ending on its own. */

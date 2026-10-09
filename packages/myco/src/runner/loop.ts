@@ -126,6 +126,14 @@ export interface WorkerOptions {
   /** The enrolled Deployment; a different authenticated contact refuses execution. */
   deploymentId?: string;
   onContact?: (body: Record<string, unknown>) => Promise<void>;
+  /** Metadata published with the runner's next authenticated contact. */
+  contactBody?: () => Record<string, unknown>;
+  /** Runs under the instance lock between attempts, before another claim. */
+  onIdle?: () => Promise<'restart' | 'hold' | void>;
+  /** The run is admitted under this executor's lease. */
+  onClaim?: () => void;
+  /** A driven attempt's terminal outcome was accepted by the Deployment. */
+  onClaimCompleted?: () => void;
   /** What a harness probe reads of a credential file. Defaults to reading it. */
   detection?: DetectionMode;
 }
@@ -885,7 +893,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       // Compatibility is checked on a read before the queue can be claimed.
       let advertisesCatalog = false;
       {
-        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, {}));
+        const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, options.contactBody?.() ?? {}));
         if (compatibility.kind === 'refused') {
           options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
           return { driven, refused: compatibility.code };
@@ -909,6 +917,13 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         await deliverStepLogs(options, compatibility.steps, requestMs);
         if (!wake.settled()) continue;
       }
+      if (options.signal.aborted) break;
+      const idle = await options.onIdle?.();
+      if (idle === 'restart') {
+        options.log('runner update ready; stopping between runs so the service starts the new program');
+        return { driven, refused: null, replaced: true };
+      }
+      if (idle === 'hold') { await pause(options.pollIdleMs); continue; }
       const { offered: harnesses, withheld } = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read()));
       if (options.signal.aborted) break;
       if (!wake.settled()) continue;
@@ -965,6 +980,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       try {
         let outcome: Awaited<ReturnType<typeof drive>>;
         try {
+          options.onClaim?.();
           outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps);
         } catch (error) {
           const coded = workerFailedError('worker_error');
@@ -993,6 +1009,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
             options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
           }
           if (ended.kind === 'answered') {
+            if (ended.body.ended !== false) options.onClaimCompleted?.();
             const recorded = ended.body.status;
             if (typeof recorded === 'string' && recorded !== outcome.status) {
               options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);

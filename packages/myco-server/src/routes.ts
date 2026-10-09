@@ -1,5 +1,5 @@
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
-import { handleControlRunner, handleListRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
+import { handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
@@ -150,6 +150,8 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('runner', 'edit', 'runner', ['runner']), method: 'POST', path: '/runners/rotate', auth: 'runner', bodyMode: 'json', shape: 'persisted', admitsLapsed: true, runner: handleRunnerRotate },
   { authorization: httpPolicy('legacy-worker', 'read', 'deployment', ['member']), method: 'GET', path: '/api/workers/legacy', auth: 'session', authority: 'member', handler: handleLegacyWorkers },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners', auth: 'session', authority: 'member', handler: handleListRunners },
+  { authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: '/api/runners/{runnerId}/update',
+    pattern: /^\/api\/runners\/(?<runnerId>[A-Za-z0-9._-]{1,64})\/update$/, auth: 'session', authority: 'admin', handler: handleRequestRunnerUpdate },
   ...(['pause', 'resume', 'remove'] as const).map((control): Route => ({
     authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: `/api/runners/{runnerId}/${control}`,
     pattern: new RegExp(`^/api/runners/(?<runnerId>[A-Za-z0-9._-]{1,64})/${control}$`), auth: 'session', authority: 'admin', handler: handleControlRunner(control),

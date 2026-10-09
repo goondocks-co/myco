@@ -14,6 +14,7 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
+      "@goondocks/myco-shared/runner-update": ["../myco-shared/src/runner-update.ts"],
       "@goondocks/myco-shared/raw-claims": ["../myco-shared/src/raw-claims.ts"],
       "@myco/*": ["./src/*"],
       "@myco-server-worker/*": ["../myco-server/src/*"],
