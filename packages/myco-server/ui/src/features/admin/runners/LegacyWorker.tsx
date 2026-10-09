@@ -28,7 +28,7 @@ export function LegacyWorker({ worker, name, stale = false }: { worker: WorkerRo
       {allowed && !stale && offline && <Button size="sm" variant="ghost" onClick={() => setConfirm(true)}>Forget this worker</Button>}
     </div>
     <p className="mt-s1 t-small text-ink-2">Register a runner here; once current work finishes, uninstall the legacy worker before installing the runner service.</p>
-    <details className="mt-s2 t-small text-muted"><summary className="cursor-pointer text-ink-2">Details</summary>
+    <details className="mt-s2 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
       <div className="mt-s2 flex flex-col gap-s2 break-words">
         <p>{LEGACY_WORKER_LABEL}</p>
         {worker.lastSeenAt > 0 && <p>{worker.recent ? 'Seen' : 'Not seen recently; last seen'} {formatRelative(worker.lastSeenAt)}.</p>}

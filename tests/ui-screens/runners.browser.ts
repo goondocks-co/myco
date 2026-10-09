@@ -10,6 +10,7 @@ import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cook
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { seedIdentities, OWNER, READER, MACHINES } from './fixture.ts';
 import { offeredHarness } from '../myco-server/helpers/offered-harness.ts';
+import { smallTapTargets } from './checks.ts';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-screens-'));
 const output = process.env.RUNNER_SHOTS_DIR;
@@ -69,7 +70,7 @@ const browser = await chromium.launch();
 const cookieFor = (member: typeof OWNER) => signSession(secret,{aud:deploymentId,sub:member.githubSub,login:member.login,iat:now,exp:now+3600000});
 try {
   for (const mode of ['light','dark'] as const) {
-    const context = await browser.newContext({viewport:{width:1440,height:1100},colorScheme:mode});
+    const context = await browser.newContext({viewport:{width:1440,height:1100},colorScheme:mode,reducedMotion:'reduce'});
     await context.addCookies([{name:SESSION_COOKIE,value:await cookieFor(OWNER),domain:'127.0.0.1',path:'/',secure:true}]);
     await context.addInitScript(mode=>localStorage.setItem('myco-appearance',JSON.stringify({theme:'sage',mode,font:'default',density:'normal'})),mode);
     const page = await context.newPage();
@@ -96,6 +97,7 @@ try {
     await expect(page.getByRole('heading',{name:'homelab-mini'})).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     if (overflow > 0) throw new Error(`Runners page overflowed narrow viewport by ${overflow}px`);
+    expect(await smallTapTargets(page), 'Runners tap targets under 44px').toEqual([]);
     await page.screenshot({path:path.join(output,mode+'-narrow.png')});
     await page.evaluate(() => window.scrollTo(0,document.documentElement.scrollHeight));
     await page.screenshot({path:path.join(output,mode+'-narrow-legacy.png')});

@@ -127,7 +127,7 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
         </div>}
       </div>
       {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
-      <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="cursor-pointer text-ink-2">Details</summary>
+      <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
         <div className="mt-s3 flex flex-col gap-s2 break-words">
           {runner.busy === null && runner.lastAttempted === null && runner.lastCompleted === null && runner.lastFailed === null ? <p>No runs yet.</p> : <>
             <RunFact label="Last completed" run={runner.lastCompleted} />

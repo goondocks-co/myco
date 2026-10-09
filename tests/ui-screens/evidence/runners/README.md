@@ -6,6 +6,8 @@ These are local, persisted synthetic fixtures served through the native front do
 
 [Narrow light page](light-narrow.png) · [Narrow dark page](dark-narrow.png) · [Narrow light legacy](light-narrow-legacy.png) · [Narrow dark legacy](dark-narrow-legacy.png)
 
+Health touch-size checks: [tablet light](admin-health-tablet-light.png) · [tablet dark](admin-health-tablet-dark.png) · [phone light](admin-health-phone-light.png) · [phone dark](admin-health-phone-dark.png) · [desktop light](admin-health-desktop-light.png) · [desktop dark](admin-health-desktop-dark.png).
+
 | State | Light | Dark |
 | --- | --- | --- |
 | Busy without contact | [Screenshot](light-busy.png) | [Screenshot](dark-busy.png) |
@@ -33,6 +35,6 @@ Regenerate after building the dashboard, from an isolated scratch working direct
 RUNNER_SHOTS_DIR=/your/scratch/screenshots bun run /path/to/myco/tests/ui-screens/runners.browser.ts
 ```
 
-The browser checks every state, collapsed details, replacement previews, 390 px overflow, member control absence, revoked-session refusal, unavailable reads, and forgetting in Health followed by disappearance from Runners. It closes its browser and native server.
+The browser checks every state, collapsed details, replacement previews, 390 px overflow and 44 px tap targets, member control absence, revoked-session refusal, unavailable reads, and forgetting in Health followed by disappearance from Runners. It closes its browser and native server.
 
 [Mutation results](mutations.json): thirteen caught mutants, including the six correction mutants for contact history, replacement name and identity, malformed update metadata, member recredentialing, and the D1 read budget. Each source mutation was restored and followed by a passing baseline. The original successful-empty-fleet mutant ran in an isolated scratch copy.

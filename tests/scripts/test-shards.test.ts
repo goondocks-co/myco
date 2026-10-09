@@ -4,8 +4,23 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parse as parseYaml } from 'yaml';
+import durations from '../../scripts/test-durations.json';
+import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
 
 describe('test shard selection', () => {
+  test('fits the recorded parity workload with startup allowance and headroom on every CI shard', () => {
+    const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+    const count = workflow.jobs.parity.strategy.matrix.shard.length;
+    const budget = Number(workflow.jobs.parity.env.MYCO_RUNNER_GROUP_BUDGET_MS);
+    const weights: Record<string, number> = durations.parity;
+    for (const scenario of parityWorkload.scenarios) expect(weights[scenario.name]).toBeGreaterThan(0);
+    for (let index = 1; index <= count; index += 1) {
+      const shard = selectShard(parityWorkload.scenarios, { index, count }, (scenario) => weights[scenario.name]);
+      const measured = shard.reduce((total, scenario) => total + scenario.milliseconds, parityWorkload.sharedTargetAllowanceMs);
+      expect(measured).toBeLessThanOrEqual(budget - parityWorkload.requiredHeadroomMs);
+    }
+  });
   test('applies the group selector only to the runner that receives it', () => {
     const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-group-selection-'));
     try {
