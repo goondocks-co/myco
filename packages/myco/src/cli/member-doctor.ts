@@ -13,6 +13,7 @@
  * A `fail` row sets a non-zero exit. Nothing here repairs: each row names the
  * command that does.
  */
+import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
@@ -125,7 +126,7 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
     try {
       const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
         .withoutProjectRoot().forDeployment(record.serverUrl);
-      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco update\` to repair them now.`)];
+      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco member provision --refresh\` to repair them now.`)];
     } catch (error) {
       return [row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`)];
     }
@@ -148,6 +149,8 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   const root = rootOf(deps);
   const mycoHome = homeOf(deps);
+  const notice = readUpdateNotice(mycoHome, getPluginVersion());
+  if (notice !== null) console.log(notice);
   const now = (deps.now ?? Date.now)();
   const checks: DoctorCheck[] = [];
 

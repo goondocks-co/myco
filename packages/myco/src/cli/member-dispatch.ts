@@ -57,6 +57,7 @@ export function helpText(legacyUsage: string, deps: MemberVerbDeps = {}): string
 export const MEMBER_SECTION = `2.0 member (a project joined with \`myco login\`; run \`myco --help\` from it for the full list):
   login <invite-link>      Redeem an invite link and sign this machine in
   member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
+  runner <verb>            Register, run or update this machine’s runner (register|run|update|status)
   worker [options]         Run this machine's harnesses for a Deployment (install|uninstall|status)
   In a joined project, search, vectors, session, stats, doctor, logs and config answer as the member.
 `;
@@ -67,6 +68,7 @@ Membership:
   login <invite-link>      Redeem an invite link and sign this machine in
   member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
   import                   Bring this machine's existing agent history to its Deployment
+  runner <verb>            Register, run or update this machine’s runner (register|run|update|status)
   worker [options]         Run this machine's harnesses for a Deployment (install|uninstall|status)
 
 Project intelligence (answered by the Deployment for this project):
@@ -82,7 +84,7 @@ This machine:
   logs [--tail N]          Show the worker's logs and the events the Deployment refused
   config get [<leaf>]      Show Deployment Settings (written in the dashboard)
   settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
-  update                   Update Myco's managed files and agent registration
+  update (alias: upgrade)  Update Myco within its recorded channel; refresh member agents
   remove                   Remove Myco from this machine
   version                  Show the installed version
 

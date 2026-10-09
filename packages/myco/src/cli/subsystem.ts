@@ -8,7 +8,7 @@ import {
 } from '../grove/subsystem-claim.js';
 import { resolveMycoHome, daemonIdentity } from '@myco/grove/paths.js';
 
-const USAGE = `Usage: myco subsystem <command>
+export const USAGE = `Usage: myco subsystem <command>
 
 Declare which daemon owns a machine-global subsystem so a peer daemon defers.
 Operator-driven and durable: run claim/release under the build whose daemon

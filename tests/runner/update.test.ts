@@ -179,6 +179,66 @@ describe('runner release handoff', () => {
     expect(result?.reason?.length).toBeLessThanOrEqual(512);
   });
 
+  it('keeps a targeted alpha.2 check and update out of the automatic alpha.3 cache', async () => {
+    const f = fixture('targeted-selection');
+    const newest = '2.0.0-alpha.3';
+    const offered = [newest, to].map(version => ({ tag_name: `myco/v${version}`, prerelease: true, assets: releases[0]!.assets }));
+    const headers: Array<string | null> = [];
+    const staged: string[] = [];
+    let now = 1000;
+    const controller = createRunnerUpdateController({ home: f.home, serverUrl: 'https://deployment.invalid', binaryPath: f.binaryPath,
+      currentVersion: from, serviceSpec: serviceSpec(f.binaryPath, f.home), log: () => {}, deps: {
+        now: () => now, random: () => 0, serviceInstalled: () => true,
+        targetTriple: () => `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}` as ReturnType<typeof import('../../packages/myco/src/upgrade/release-assets.js').resolveTargetTriple>,
+        fetch: (async (_url: unknown, init: RequestInit) => {
+          const conditional = new Headers(init.headers).get('if-none-match');
+          headers.push(conditional);
+          return conditional === null
+            ? new Response(JSON.stringify(offered), { status: 200, headers: { etag: 'same-release-list' } })
+            : new Response(null, { status: 304 });
+        }) as unknown as typeof fetch,
+        stage: async ({ refs }) => { staged.push(refs.targetVersion); return { error: 'test stops before binary staging' }; },
+      } });
+    expect((await controller.check({ targetVersion: to })).latestVersion).toBe(to);
+    expect(readRunnerUpdateState(f.home)).toMatchObject({ lastCheckAt: null, latestVersion: null });
+    expect(fs.existsSync(path.join(f.home, 'last-update-check.json'))).toBe(false);
+
+    controller.queueManual({ targetVersion: to });
+    expect(await controller.idle()).toBe('continue');
+    expect(staged).toEqual([to]);
+    expect(readRunnerUpdateState(f.home)).toMatchObject({ latestVersion: null });
+    expect(readRunnerUpdateState(f.home).etag).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).candidate).toBeUndefined();
+    expect(fs.existsSync(path.join(f.home, 'last-update-check.json'))).toBe(false);
+
+    now += 6 * 60 * 60 * 1000 + 1;
+    expect(await controller.idle()).toBe('continue');
+    expect(headers).toEqual([null, null, null]);
+    expect(staged).toEqual([to, newest]);
+    expect(readRunnerUpdateState(f.home)).toMatchObject({ latestVersion: newest, releaseChannel: 'alpha', candidate: { refs: { targetVersion: newest } } });
+    expect(JSON.parse(fs.readFileSync(path.join(f.home, 'last-update-check.json'), 'utf8'))).toMatchObject({
+      channel: 'alpha', packages: { myco: { latest_version: newest } },
+    });
+  });
+
+  it('does not replace automatic metadata or the recorded-channel notice with another channel', async () => {
+    const f = fixture('other-channel');
+    const controller = createRunnerUpdateController({ home: f.home, serverUrl: 'https://deployment.invalid', binaryPath: f.binaryPath,
+      currentVersion: from, serviceSpec: serviceSpec(f.binaryPath, f.home), log: () => {}, deps: {
+        now: () => 1000, random: () => 0, serviceInstalled: () => true,
+        targetTriple: () => `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}` as ReturnType<typeof import('../../packages/myco/src/upgrade/release-assets.js').resolveTargetTriple>,
+        fetch: f.fetch,
+      } });
+    expect((await controller.check({ channel: 'stable' })).channel).toBe('stable');
+    expect(readRunnerUpdateState(f.home)).toMatchObject({ lastCheckAt: null, latestVersion: null });
+    controller.queueManual({ channel: 'stable' });
+    expect(await controller.idle()).toBe('continue');
+    expect(readRunnerUpdateState(f.home).releaseChannel).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).etag).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).candidate).toBeUndefined();
+    expect(fs.existsSync(path.join(f.home, 'last-update-check.json'))).toBe(false);
+  });
+
   it('keeps the old runner alive if the guardian unit is not running', async () => {
     const f = fixture('guardian-refusal');
     let removed = 0;

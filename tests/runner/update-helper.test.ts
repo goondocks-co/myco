@@ -5,6 +5,7 @@ import path from 'node:path';
 import { runRunnerUpdateHelper, type RunnerUpdateHelperDeps } from '../../packages/myco/src/runner/update-helper.js';
 import { readRunnerUpdateState, runnerUpdateStatePath, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateTransaction } from '../../packages/myco/src/runner/update.js';
 import { versionBinaryPath, writeInstallMarker } from '../../packages/myco/src/install/managed-binary.js';
+import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { placeExecutable } from '../../packages/myco/src/install/place-binary.js';
 import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
 
@@ -303,4 +304,19 @@ describe('runner update helper', () => {
     expect(tick).toBeGreaterThanOrEqual(1000 + 5 * 60_000);
     expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('updated');
   });
+});
+
+it('leaves member refresh pending after a healthy runner update without running interactive setup', async () => {
+  const f = fixture('member-refresh-failed');
+  writeDeploymentMembership({ serverUrl, token: 'fixture', machineId: 'member', joinedAt: 1, updatedAt: 1 }, { mycoHome: f.home });
+  f.deps.start = () => {
+    f.setRunning(true);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({
+    result: 'updated', reason: 'agents_refresh_pending',
+  });
+  expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(to);
 });

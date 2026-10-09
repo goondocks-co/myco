@@ -74,7 +74,7 @@ for (const mode of ['member-only', 'runner-only', 'both']) {
       expect(run('runner', 'status').stdout).toContain('runner service: running at login');
       const doctor = run('worker', 'doctor');
       expect(doctor.status).toBe(0);
-      expect(doctor.stdout).toContain('harnesses offered: codex');
+      expect(doctor.stdout).toContain('harnesses offered: unknown');
       expect(doctor.stdout).not.toContain('mycorun_');
       expect(run('runner', 'uninstall').stdout).toContain('The Deployment identity remains');
       expect(run('runner', 'status').stdout).toContain('runner service: not installed');

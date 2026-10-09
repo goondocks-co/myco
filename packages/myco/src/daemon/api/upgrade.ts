@@ -14,6 +14,8 @@
  * restarting/reason) is retained.
  */
 
+import { resolveMycoHome } from '../../paths/home.js';
+import { writeReleaseCheckCache } from '../../upgrade/check-cache.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,7 +56,6 @@ import {
   RELEASE_CHANNELS,
   NPM_PACKAGE_NAME,
   UPDATE_PACKAGES,
-  UPDATE_CHECK_CACHE_PATH,
 } from '../../constants/update.js';
 import type { ReleaseChannel, UpdatePackageId } from '../../constants/update.js';
 import { resolveLastUpdateVersionPath, isDefaultMycoHome } from '../../grove/paths.js';
@@ -308,8 +309,7 @@ function writeFreshCache(
     };
   }
   try {
-    fs.mkdirSync(path.dirname(UPDATE_CHECK_CACHE_PATH), { recursive: true });
-    fs.writeFileSync(UPDATE_CHECK_CACHE_PATH, JSON.stringify(freshCache, null, 2), 'utf-8');
+    writeReleaseCheckCache(resolveMycoHome(), freshCache);
   } catch {
     /* cache write failure is non-fatal */
   }

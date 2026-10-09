@@ -7,12 +7,18 @@ Release operators must publish the stable or next tag **first**, then delete old
 Myco 2.0 updates on demand. It runs no member update timer or local service. Check the recorded channel and adopt an eligible build with:
 
 ```sh
-myco upgrade --check
-myco upgrade
-myco upgrade --channel beta   # choose beta for this run only
+myco update --check
+myco update
+myco update --channel beta   # choose beta for this run only
 ```
 
 The updater verifies SHA256SUMS, atomically replaces the recorded binary destination, and refreshes the agents on a joined machine. It keeps the running build when no newer eligible release exists. Repeat installs preserve the recorded channel unless `MYCO_CHANNEL` or `--channel` explicitly changes it. A fresh install defaults to stable.
+
+Use the dashboard to manage runner machines, or run `myco update` on the machine. A runner with an installed service delegates to `myco runner update`, queues a busy service's update, and restarts only between runs. `myco upgrade` is a compatibility alias for `myco update`.
+
+After a runner handoff on a combined member and runner home, agent refresh remains pending until an interactive `myco update` or `myco member provision --refresh`. The guardian reports `agents_refresh_pending` and does not detect agents in its service environment.
+
+Member agent refresh has a two-minute limit and also runs when the binary is already current. The result says whether agents were refreshed and names any next step. `--check` changes no binary or agent setup. `myco doctor` reports a newer release from the last cached channel check, without fetching releases on each invocation.
 
 ## Myco 1.4 updates
 

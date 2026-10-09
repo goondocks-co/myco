@@ -226,6 +226,11 @@ export interface WorkerServiceStatus {
   errLog: string;
 }
 
+/** Installed service ownership is established by its unit file, without contacting the manager. */
+export function workerServiceInstalled(target: WorkerServiceTarget): boolean {
+  return fs.existsSync(servicePaths(workerServiceSpec(target, []), target.platform ?? process.platform).unitFile);
+}
+
 export function workerServiceStatus(
   target: WorkerServiceTarget, options: ServiceOptions & { lockDir?: string } = {},
 ): WorkerServiceStatus {

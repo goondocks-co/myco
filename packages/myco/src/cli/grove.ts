@@ -58,7 +58,7 @@ export function findProjectByRef(
   return nameMatch;
 }
 
-const USAGE = `Usage: myco grove <command>
+export const USAGE = `Usage: myco grove <command>
 
 Commands:
   list                                       List local Groves

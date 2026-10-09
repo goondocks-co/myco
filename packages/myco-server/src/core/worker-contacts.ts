@@ -100,7 +100,7 @@ function boundedCapabilities(capabilities: readonly string[]): string[] {
 }
 
 /** Stored evidence that cannot be read answers null: a reader states that it does not know, and never an empty report. */
-function parseOffers(raw: unknown): ReportedHarness[] | null {
+export function parseOffers(raw: unknown): ReportedHarness[] | null {
   if (typeof raw !== 'string') return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -252,7 +252,7 @@ export function runnerContactStatement(
        capabilities = CASE WHEN ${explicitCapabilities} = 1 THEN excluded.capabilities ELSE runner_contacts.capabilities END,
        last_reason = COALESCE(excluded.last_reason, runner_contacts.last_reason),
        last_seen_at = MAX(runner_contacts.last_seen_at, excluded.last_seen_at),
-       updated_at = CASE WHEN ${explicitOffers} = 1 AND excluded.offers IS NOT runner_contacts.offers THEN MAX(excluded.updated_at, runner_contacts.updated_at + 1) ELSE runner_contacts.updated_at END
+       updated_at = CASE WHEN ${explicitOffers} = 1 THEN MAX(excluded.updated_at, runner_contacts.updated_at + 1) ELSE runner_contacts.updated_at END
      WHERE excluded.last_seen_at - runner_contacts.last_seen_at >= ?
        OR (${explicitOffers} = 1 AND excluded.offers IS NOT runner_contacts.offers)
        OR (${explicitCapabilities} = 1 AND excluded.capabilities IS NOT runner_contacts.capabilities)

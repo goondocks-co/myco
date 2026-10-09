@@ -71,7 +71,7 @@ it('backfills an empty record from surviving owned MCP registration and repairs 
   const original = fs.readFileSync(hooks(), 'utf8');
   recordProvision(home, { version: 'old', serverUrl: SERVER, agents: [] }, { replace: true });
   fs.unlinkSync(hooks());
-  await update([]);
+  await update([], { resolveRefs: async () => null, refreshMember: async () => { if (!runProvision(['--refresh'], { mycoHome: home, cwd: agentHome })) throw new Error('refresh failed'); } });
   expect(readProvisionRecord(home)?.agents).toEqual(['codex']);
   expect(fs.readFileSync(hooks(), 'utf8')).toBe(original);
 });
@@ -85,7 +85,7 @@ it('update runs the same repair and leaves a healthy setup byte for byte unchang
   expect(fs.statSync(hooks()).mtimeMs).toBe(healthyMtime);
   expect(fs.readFileSync(path.join(home, 'member', 'provisioned.json'), 'utf8')).toBe(healthyRecord);
   fs.unlinkSync(hooks());
-  await update([]);
+  await update([], { resolveRefs: async () => null, refreshMember: async () => { if (!runProvision(['--refresh'], { mycoHome: home, cwd: agentHome })) throw new Error('refresh failed'); } });
   expect(fs.readFileSync(hooks(), 'utf8')).toBe(original);
   const record = fs.readFileSync(path.join(home, 'member', 'provisioned.json'), 'utf8');
   const modified = fs.statSync(hooks()).mtimeMs;
@@ -361,7 +361,7 @@ it('remove opts out through the installer and keeps unrelated settings across he
   expect(runProvision(['--remove', 'codex'], { mycoHome: home, cwd: agentHome, stdout: () => {} })).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual([]);
   keepCurrent(home, { binaryFound: () => true });
-  await update([]);
+  await update([], { resolveRefs: async () => null, refreshMember: async () => { if (!runProvision(['--refresh'], { mycoHome: home, cwd: agentHome })) throw new Error('refresh failed'); } });
   expect(fs.existsSync(hooks())).toBe(false);
   expect(parseToml(fs.readFileSync(config(), 'utf8')).mcp_servers).toBeUndefined();
   expect(parseToml(fs.readFileSync(config(), 'utf8')).projects).toMatchObject({ personal: { trust_level: 'trusted' } });

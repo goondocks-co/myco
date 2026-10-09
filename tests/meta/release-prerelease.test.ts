@@ -151,8 +151,8 @@ describe('Myco 2.0 update guidance', () => {
     const memberGuide = docs.split('## Myco 1.4 updates')[0];
     expect(memberGuide).toContain('Myco 2.0 updates on demand');
     expect(memberGuide).toContain('runs no member update timer or local service');
-    expect(memberGuide).toContain('myco upgrade --check');
-    expect(memberGuide).toContain('myco upgrade --channel beta');
+    expect(memberGuide).toContain('myco update --check');
+    expect(memberGuide).toContain('myco update --channel beta');
     expect(memberGuide).not.toMatch(/updates itself|automatically stages|idle window|self-updat/i);
     expect(docs).toContain('Myco 1.4 retains its local service and background updater');
   });

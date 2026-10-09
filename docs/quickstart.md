@@ -31,6 +31,8 @@ myco login <invite link>
 
 The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. The default stable channel selects releases only and keeps the 1.4 managed-service behavior until a 2.x release exists. `MYCO_CHANNEL=alpha` admits alpha, beta and stable builds; `MYCO_CHANNEL=beta` admits beta and stable builds. The channel is recorded for updates, which never downgrade; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).
 
+For an existing Myco 2.0 install, use `myco update --check` to see the newest eligible release, then `myco update` to update the binary and refresh your agents. The recorded channel stays in effect; `--channel beta` chooses a channel for that run only. Runner updates wait for active work to finish. See [Upgrading Myco](upgrade.md).
+
 On Windows x64 (PowerShell, beta):
 ```powershell
 irm https://myco.sh/install.ps1 | iex
@@ -46,9 +48,11 @@ The access key reaches one project, is minted by a deployment administrator, and
 
 ## Upgrade Existing Installs
 
-Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page. There is nothing to run by hand and no `npm update` step.
+Use `myco update` to update this machine's Myco within its recorded channel and refresh member agent setup. `myco update --check` reports the available release; `--channel alpha|beta|stable` chooses a channel for one run.
 
-For advanced or scripted use, the `myco upgrade` CLI (with `--channel alpha|beta|stable`) is available, but the automatic and dashboard paths are the normal way to stay current.
+Manage runner machines from the dashboard's **Runners** page. The same `myco update` command is available on a runner machine and waits until active work finishes before restarting its service.
+
+Myco 1.4 retains its local service and background updater on the separate maintenance line. See [Upgrading Myco](upgrade.md).
 
 ## That's it — ready by default
 

@@ -7,6 +7,8 @@
  * remain independent.
  */
 import path from 'node:path';
+import semver from 'semver';
+import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { keepMachineAwake } from '../runner/keep-awake.js';
 import { CLAIM_IDLE_POLL_MS, runWorker } from '../runner/loop.js';
@@ -34,7 +36,7 @@ Usage:
                                   Claim and drive the Deployment's runs in this terminal.
   myco runner rotate [--server <url>]
                                   Rotate this runner's credential now.
-  myco runner update [--check] [--server <url>]
+  myco runner update [--check] [--server <url>] [--channel <alpha|beta|stable>] [--target-version <version>]
                                   Update within the installed channel between runs.
   myco runner status [--server <url>]
                                   Show registration, service, contact and harnesses.
@@ -111,6 +113,8 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   if (legacyRefusal !== null) return fail(legacyRefusal);
 
   const log = (line: string): void => { (deps.stdout ?? console.log)(workerLogLine(line)); };
+  let contactBusyLogged = false;
+  let offerBusyLogged = false;
   const dir = runnerDir(serverUrl, mycoHome);
   const updater = runnerUpdater(serverUrl, { ...deps, mycoHome, binaryPath: deps.binaryPath ?? process.execPath }, log, true);
   updater.startup();
@@ -132,9 +136,18 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
     onContact: async (body) => {
       const runner = body.runner as { id: string; deploymentId: string };
       if (runner.id !== record.runnerId) throw new Error('authenticated contact names a different runner');
-      if (!await recordRunnerContact(serverUrl, { runnerId: runner.id, deploymentId: runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) log('runner record busy; contact timestamp was not saved');
+      if (!await recordRunnerContact(serverUrl, { runnerId: runner.id, deploymentId: runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) {
+        if (!contactBusyLogged) log('runner record busy; contact timestamp was not saved');
+        contactBusyLogged = true;
+      } else contactBusyLogged = false;
       updater.onContact(body);
       updater.acknowledgeHealthy();
+    },
+    onOfferAcknowledged: async (offer, at) => {
+      if (!await recordRunnerContact(serverUrl, { runnerId: record.runnerId, deploymentId: record.deploymentId! }, at, mycoHome, offer)) {
+        if (!offerBusyLogged) log('runner record busy; acknowledged harness offer was not saved');
+        offerBusyLogged = true;
+      } else offerBusyLogged = false;
     },
     onIdle: async () => { const outcome = await updater.idle(); return outcome === 'continue' ? undefined : outcome; },
     onClaim: () => updater.recordClaim(),
@@ -212,7 +225,13 @@ export async function run(args: readonly string[], deps: RunnerRunDeps = {}): Pr
       const mycoHome = deps.mycoHome ?? resolveMycoHome();
       const target = resolveServer(flags, mycoHome);
       if ('error' in target) { err(`myco runner update: ${target.error}`); return false; }
-      try { return await updateRunner(target.serverUrl, flags.get('check') === 'true', { ...deps, mycoHome }); }
+      const channel = flags.get('channel');
+      const targetVersion = flags.get('target-version');
+      if (channel !== undefined && !RELEASE_CHANNELS.includes(channel as ReleaseChannel)) { err('myco runner update: invalid channel'); return false; }
+      if (targetVersion !== undefined && !semver.valid(targetVersion)) { err('myco runner update: invalid target version'); return false; }
+      try { return await updateRunner(target.serverUrl, flags.get('check') === 'true', { ...deps, mycoHome }, {
+        ...(channel === undefined ? {} : { channel: channel as ReleaseChannel }), ...(targetVersion === undefined ? {} : { targetVersion }),
+      }); }
       catch (error) { err(`myco runner update: ${error instanceof Error ? error.message : String(error)}`); return false; }
     }
     case 'status':
