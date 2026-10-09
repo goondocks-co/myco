@@ -68,6 +68,7 @@ export interface RunnerRecord {
   tokenExpiresAt?: number;
   refreshAfter?: number;
   lastContactAt?: number;
+  lastOffer?: { offered: string[]; withheld: string[]; observedAt: number };
   pending?: RunnerPending;
 }
 
@@ -138,6 +139,12 @@ function parseRecord(file: string, value: unknown, serverUrl?: string): RunnerRe
   }
   for (const field of ['tokenExpiresAt', 'refreshAfter', 'lastContactAt'] as const) {
     if (record[field] !== undefined && !isTime(record[field])) throw new RunnerRecordError(file, `${field} is not a time`);
+  }
+  if (record.lastOffer !== undefined) {
+    const offer = record.lastOffer as Record<string, unknown>;
+    if (offer === null || typeof offer !== 'object' || !isTime(offer.observedAt)
+      || !Array.isArray(offer.offered) || !offer.offered.every(isString)
+      || !Array.isArray(offer.withheld) || !offer.withheld.every(isString)) throw new RunnerRecordError(file, 'lastOffer is not an acknowledged harness offer');
   }
   if (record.token !== undefined && !isRunnerBearer(record.token)) throw new RunnerRecordError(file, 'token is not a runner bearer');
   return { ...(record as unknown as RunnerRecord), ...(record.pending === undefined ? {} : { pending: parsePending(file, record.pending) }) };
@@ -282,13 +289,15 @@ export function clearPending(lock: RunnerLock): RunnerRecord | null {
 }
 
 /** Keep an acknowledged contact only for the runner and Deployment this record names. */
-export async function recordRunnerContact(serverUrl: string, identity: { runnerId: string; deploymentId: string }, at: number, mycoHome?: string): Promise<boolean> {
+export async function recordRunnerContact(serverUrl: string, identity: { runnerId: string; deploymentId: string }, at: number, mycoHome?: string, offer?: Omit<NonNullable<RunnerRecord['lastOffer']>, 'observedAt'>): Promise<boolean> {
   const result = await withRunnerLock(serverUrl, (lock) => {
     const record = readRunnerRecord(serverUrl, lock.mycoHome);
     if (!isLiveRunner(record) || record.runnerId !== identity.runnerId || record.deploymentId !== identity.deploymentId) {
       throw new RunnerRecordError(runnerRecordPath(serverUrl, lock.mycoHome), 'contact names another runner or Deployment');
     }
-    publishRunnerRecord(lock, { ...record, lastContactAt: Math.max(record.lastContactAt ?? 0, at) });
+    publishRunnerRecord(lock, { ...record, lastContactAt: Math.max(record.lastContactAt ?? 0, at),
+      ...(offer === undefined || at < (record.lastOffer?.observedAt ?? 0) ? {} : { lastOffer: { ...offer, observedAt: at } }),
+    });
   }, mycoHome);
   return result.held;
 }

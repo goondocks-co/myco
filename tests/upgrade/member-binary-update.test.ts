@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
     expect(spawnSync(binary, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('2.1.0-alpha.1');
     expect(fs.readFileSync(path.join(home, 'refresh.log'), 'utf8')).toBe('member provision --refresh\n');
     expect(JSON.parse(fs.readFileSync(path.join(home, 'install.json'), 'utf8')).channel).toBe('alpha');
-    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', 'refresh.log']);
+    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', 'last-update-check.json', 'refresh.log']);
     if (custom) expect(fs.existsSync(path.join(home, 'bin/myco'))).toBe(false);
   });
   it('does not stage an older or out-of-channel explicit version', async () => {

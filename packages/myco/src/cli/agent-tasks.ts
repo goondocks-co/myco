@@ -236,7 +236,7 @@ async function runTask(args: string[], vaultDir: string): Promise<void> {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const TASK_USAGE = `Usage: myco task <subcommand> [args]
+export const TASK_USAGE = `Usage: myco task <subcommand> [args]
 
 Subcommands:
   list [--source built-in|user]   List all tasks
@@ -246,7 +246,7 @@ Subcommands:
   run <name> [--instruction TEXT] [--dry-run] Run a task via the agent
 `;
 
-const TASK_RUN_USAGE = `Usage: myco task run <name> [--instruction TEXT] [--dry-run]
+export const TASK_RUN_USAGE = `Usage: myco task run <name> [--instruction TEXT] [--dry-run]
 
 Options:
   --instruction TEXT  Additional instruction to pass to the agent run.

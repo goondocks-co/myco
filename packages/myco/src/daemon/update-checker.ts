@@ -9,6 +9,7 @@
  */
 
 import fs from 'node:fs';
+import { CACHE_FILENAME } from '../upgrade/check-cache.js';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import semver from 'semver';
@@ -19,7 +20,6 @@ import { setAtPath } from '../utils/dot-path.js';
 
 import {
   NPM_PACKAGE_NAME,
-  UPDATE_CHECK_CACHE_PATH,
   MS_PER_HOUR,
   DEFAULT_RELEASE_CHANNEL,
   RELEASE_CHANNELS,
@@ -184,7 +184,7 @@ export function readUpdateConfig(): UpdateConfig {
  */
 export function readCachedCheck(): CachedCheck | null {
   try {
-    const raw = fs.readFileSync(UPDATE_CHECK_CACHE_PATH, 'utf-8');
+    const raw = fs.readFileSync(path.join(resolveMycoHome(), CACHE_FILENAME), 'utf-8');
     const parsed = JSON.parse(raw) as CachedCheck | Record<string, unknown>;
 
     if (parsed && typeof parsed === 'object' && 'packages' in parsed && parsed.packages) {
@@ -229,7 +229,7 @@ export function readCachedCheck(): CachedCheck | null {
  */
 export function clearCachedCheck(): void {
   try {
-    fs.unlinkSync(UPDATE_CHECK_CACHE_PATH);
+    fs.unlinkSync(path.join(resolveMycoHome(), CACHE_FILENAME));
   } catch {
     // File not present — that's fine.
   }

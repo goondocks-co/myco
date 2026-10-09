@@ -15,7 +15,7 @@ const USAGE = `Usage: myco <command> [args]
 Commands:
   grove <subcommand>       Manage local Groves
   subsystem <subcommand>   Claim/release machine-global subsystem ownership (claim|release|list)
-  update                   Update vault files and agent registration
+  update                   Update Myco within its recorded channel; refresh member agents
   remove [--purge] [--yes]   Remove Myco's machine-wide install (prompts unless --yes;
                              captured data preserved unless --purge)
   remove --project [<path>] | --symbiont <name> | --remove-vault
@@ -63,30 +63,24 @@ dogfood binary pinning) use the dashboard's Symbionts page.
 `;
 
 const COMMAND_HELP: Record<string, string> = {
-  agent: `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
+  config: "Usage: myco config get [<dot.path.key>] | set <dot.path.key> <value>\n\nJoined projects read Deployment Settings; use the dashboard to change them.\n",
+  'detect-providers': "Usage: myco detect-providers\n\nPrint available LLM and embedding providers as JSON.\n",
+  verify: "Usage: myco verify\n\nTest configured LLM and embedding connectivity.\n",
+  stats: "Usage: myco stats [--credential registry|env]\n\nShow project sessions, activity and agent runs.\n",
+  search: "Usage: myco search <query> [--credential registry|env]\n\nSearch project intelligence.\n",
+  vectors: "Usage: myco vectors <query> [--credential registry|env]\n\nSearch project intelligence by similarity.\n",
+  session: "Usage: myco session [<id>|latest] [--credential registry|env]\n\nShow a project session and its batches.\n",
+  'setup-digest': "Usage: myco setup-digest\n\nDigest configuration is retired; use the Deployment dashboard.\n",
+  tool: "Usage: myco tool list | call <tool-name> --json --input <json|@file> [--credential registry|env]\n\nList or call Myco tools as JSON.\n",
+  logs: "Usage: myco logs [--tail N] [--follow] [--level <level>] [--component <name>] [--since <time>] [--until <time>]\n\nShow member or local daemon diagnostics.\n",
+  open: "Usage: myco open\n\nOpen the Deployment dashboard in your browser.\n",
+  restart: "Usage: myco restart [--force]\n\nRestart the retained local daemon; member machines use no daemon.\n",
+  service: "Usage: myco service <install|uninstall|start|stop|restart|status|reconcile>\n\nManage the retained local daemon service.\n",
+  version: "Usage: myco version\n\nShow the installed Myco version.\n",
+  mcp: "Usage: myco mcp\n\nServe the configured MCP stdio surface.\n",
+  hook: "Usage: myco hook <name>\n\nRun a harness hook using its JSON input on stdin.\n",
+  daemon: "Usage: myco daemon [kill]\n\nRun or stop the retained local daemon.\n",
 
-Options:
-  --task NAME          Run a specific agent task. Defaults to the configured default task.
-  --instruction TEXT  Additional instruction to pass to the agent run.
-  --dry-run           Record intended writes without mutating vault state.
-  -h, --help          Show this help
-`,
-  task: `Usage: myco task <subcommand> [args]
-
-Subcommands:
-  list [--source built-in|user]   List all tasks
-  show <name>                     Show task details and phases
-  create <name> --from <template> Copy a task template to your user dir
-  delete <name>                   Delete a user task
-  run <name> [--instruction TEXT] [--dry-run] Run a task via the agent
-`,
-  'task run': `Usage: myco task run <name> [--instruction TEXT] [--dry-run]
-
-Options:
-  --instruction TEXT  Additional instruction to pass to the agent run.
-  --dry-run           Record intended writes without mutating vault state.
-  -h, --help          Show this help
-`,
   attach: `Usage: myco attach <project> --host <hostId>
 
 Records a project's residency mapping so future requests route to the host that
@@ -121,6 +115,18 @@ Idempotent — detaching a project that is not attached is a clean no-op.
  * parse it in one file. Any command that owns a help constant belongs here.
  */
 const DELEGATED_HELP: Record<string, () => Promise<string>> = {
+  agent: async () => (await import('./cli/agent-run.js')).AGENT_USAGE,
+  task: async () => (await import('./cli/agent-tasks.js')).TASK_USAGE,
+  'task run': async () => (await import('./cli/agent-tasks.js')).TASK_RUN_USAGE,
+  update: async () => (await import('./cli/update.js')).UPDATE_HELP,
+  upgrade: async () => (await import('./cli/update.js')).UPDATE_HELP,
+  cutover: async () => (await import('./cli/cutover.js')).CUTOVER_HELP,
+  grove: async () => (await import('./cli/grove.js')).USAGE,
+  subsystem: async () => (await import('./cli/subsystem.js')).USAGE,
+  remove: async () => (await import('./cli/remove.js')).USAGE,
+  doctor: async () => (await import('./cli/doctor.js')).USAGE,
+  'setup-llm': async () => (await import('./cli/setup-llm.js')).USAGE,
+
   join: async () => (await import('./cli/join.js')).JOIN_HELP,
   leave: async () => (await import('./cli/join.js')).LEAVE_HELP,
   host: async () => (await import('./cli/host.js')).HOST_HELP,
@@ -298,6 +304,15 @@ async function main(): Promise<void> {
       if (!answered) process.exitCode = 1;
       return;
     }
+  }
+
+  if (cmd === 'doctor') {
+    const { readUpdateNotice } = await import('./upgrade/check-cache.js');
+    const { resolveMycoHome } = await import('./paths/home.js');
+    const { getPluginVersion } = await import('./version.js');
+    const { effectiveUpdateChannel } = await import('./cli/update.js');
+    const notice = readUpdateNotice(resolveMycoHome(), getPluginVersion(), Date.now(), effectiveUpdateChannel());
+    if (notice !== null) console.log(notice);
   }
 
   if (cmd === 'doctor') {

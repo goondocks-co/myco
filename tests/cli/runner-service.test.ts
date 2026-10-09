@@ -5,7 +5,7 @@ import path from 'node:path';
 import { run } from '@myco/cli/runner.js';
 import { run as worker } from '@myco/cli/worker.js';
 import { LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
-import { publishRunnerRecord, readRunnerRecord, withRunnerLock, RUNNER_RECORD_VERSION } from '@myco/runner/runner-registry.js';
+import { publishRunnerRecord, readRunnerRecord, recordRunnerContact, withRunnerLock, RUNNER_RECORD_VERSION } from '@myco/runner/runner-registry.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
@@ -125,8 +125,8 @@ describe('explicit runner service opt-in', () => {
           expect(bytes).not.toContain(TOKEN);
           expect(await run(['install', '--server', SERVER], deps(os_))).toBe(true);
           expect(await run(['doctor', '--server', SERVER], deps(os_))).toBe(true);
-          expect(output.join('\n')).toContain('harnesses offered: codex');
-          expect(readRunnerRecord(SERVER, mycoHome)?.lastContactAt).toBe(1000);
+          expect(output.join('\n')).toContain('harnesses offered: unknown');
+          expect(readRunnerRecord(SERVER, mycoHome)?.lastContactAt).toBeUndefined();
         }
       });
     }
@@ -311,4 +311,28 @@ describe('explicit runner service opt-in', () => {
     expect(await run(['install', '--server', SERVER], { ...deps(), mycoHome: foreign })).toBe(false);
     expect(platform.commands).toEqual([]);
   });
+});
+
+it('status shows the acknowledged service offer and one service contact time, regardless of CLI detection', async () => {
+  await enroll();
+  await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 500, mycoHome, { offered: ['claude-code', 'codex'], withheld: [] });
+  const different = { ...deps(), detect: () => { throw new Error('status must not detect in the CLI environment'); },
+    fetch: async () => { throw new Error('status must not contact the Deployment'); } };
+  expect(await run(['status'], different)).toBe(true);
+  const text = output.join('\n');
+  expect(text).toContain('harnesses offered: claude-code, codex');
+  expect(text).toContain('observed: 1970-01-01T00:00:00.500Z');
+  expect(text.match(/last contact:/g)).toHaveLength(1);
+  expect(text).toContain('last contact: 1970-01-01T00:00:00.500Z');
+  expect(text).not.toContain('contact acknowledged:');
+});
+
+it('legacy uninstall prints only its removal even when this Deployment also has a runner record', async () => {
+  await enroll();
+  installWorkerService({ ...deps(), serverUrl: SERVER }, [], { runner: platform.runner });
+  output.length = 0;
+  expect(await worker(['uninstall', '--server', SERVER], deps())).toBe(true);
+  expect(output.join('\n')).toContain('legacy worker service stopped and removed');
+  expect(output.join('\n')).not.toContain('no runner service');
+  expect(output.join('\n')).not.toContain(RUNNER_IDENTITY_REMAINS);
 });

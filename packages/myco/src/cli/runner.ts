@@ -7,6 +7,8 @@
  * remain independent.
  */
 import path from 'node:path';
+import semver from 'semver';
+import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { keepMachineAwake } from '../runner/keep-awake.js';
 import { CLAIM_IDLE_POLL_MS, runWorker } from '../runner/loop.js';
@@ -34,7 +36,7 @@ Usage:
                                   Claim and drive the Deployment's runs in this terminal.
   myco runner rotate [--server <url>]
                                   Rotate this runner's credential now.
-  myco runner update [--check] [--server <url>]
+  myco runner update [--check] [--server <url>] [--channel <alpha|beta|stable>] [--target-version <version>]
                                   Update within the installed channel between runs.
   myco runner status [--server <url>]
                                   Show registration, service, contact and harnesses.
@@ -136,6 +138,9 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
       updater.onContact(body);
       updater.acknowledgeHealthy();
     },
+    onOfferAcknowledged: async (offer, at) => {
+      if (!await recordRunnerContact(serverUrl, { runnerId: record.runnerId, deploymentId: record.deploymentId! }, at, mycoHome, offer)) log('runner record busy; acknowledged harness offer was not saved');
+    },
     onIdle: async () => { const outcome = await updater.idle(); return outcome === 'continue' ? undefined : outcome; },
     onClaim: () => updater.recordClaim(),
     onClaimCompleted: () => updater.recordClaim(true),
@@ -212,7 +217,13 @@ export async function run(args: readonly string[], deps: RunnerRunDeps = {}): Pr
       const mycoHome = deps.mycoHome ?? resolveMycoHome();
       const target = resolveServer(flags, mycoHome);
       if ('error' in target) { err(`myco runner update: ${target.error}`); return false; }
-      try { return await updateRunner(target.serverUrl, flags.get('check') === 'true', { ...deps, mycoHome }); }
+      const channel = flags.get('channel');
+      const targetVersion = flags.get('target-version');
+      if (channel !== undefined && !RELEASE_CHANNELS.includes(channel as ReleaseChannel)) { err('myco runner update: invalid channel'); return false; }
+      if (targetVersion !== undefined && !semver.valid(targetVersion)) { err('myco runner update: invalid target version'); return false; }
+      try { return await updateRunner(target.serverUrl, flags.get('check') === 'true', { ...deps, mycoHome }, {
+        ...(channel === undefined ? {} : { channel: channel as ReleaseChannel }), ...(targetVersion === undefined ? {} : { targetVersion }),
+      }); }
       catch (error) { err(`myco runner update: ${error instanceof Error ? error.message : String(error)}`); return false; }
     }
     case 'status':

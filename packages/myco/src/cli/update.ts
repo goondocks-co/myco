@@ -1,561 +1,431 @@
-import { resolveVaultDir, resolveProjectRoot } from '../vault/resolve.js';
+/** `myco update` resolves, verifies and adopts a binary within the selected channel. */
+
+import semver from 'semver';
+import { selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import { parseStrictFlags } from './args.js';
-import { ProjectVault } from '@myco/vault/project-vault.js';
-import { resolveProjectDashboardUrl } from './dashboard-url.js';
-import { loadManifests } from '../symbionts/detect.js';
-import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
-import { loadConfig, updateConfig } from '../config/loader.js';
-import { withInferredReleaseProvenanceDefaults } from '../release-provenance/defaults.js';
-import { getPluginVersion } from '../version.js';
-import { DAEMON_CLIENT_TIMEOUT_MS } from '../constants.js';
-import { readDaemonPort } from '../daemon/service-state.js';
-import { listGroves, listRegisteredProjects } from '../grove/registry.js';
-import { resolveLastUpdateVersionPath } from '../grove/paths.js';
-import { loadProjectManifest } from '../config/project-manifest.js';
+import { resolveBinary } from '../runtime/binary-resolution.js';
 import {
-  activateProjectMigration,
-  activationMarkerPath,
-  completeLegacyArchive,
-  summarizeImportedRowCount,
-} from '../grove/activation.js';
-import fs from 'node:fs';
+  resolveMycoBinaryUpdateRefs,
+  fetchMycoReleases,
+  type MycoReleaseResolverDeps,
+} from '../upgrade/release-resolver.js';
+import {
+  resolveAssetRefs,
+  resolveTargetTriple,
+  type GitHubRelease,
+  type AssetRefs,
+  type TargetTriple,
+} from '../upgrade/release-assets.js';
+import {
+  stageBinary,
+  adoptStaged,
+  DEFAULT_BINARY_UPDATE_DEPS,
+  type StageBinaryDeps,
+} from '../upgrade/apply-binary.js';
+import { initiateAdopt, type InitiateAdoptOpts } from '../upgrade/adopt.js';
+import {
+  readMaxStampedSchemaVersion,
+  readSupportedSchemaVersion,
+  rollbackWouldCrossSchemaGap,
+  SchemaGapDowngradeError,
+} from '../upgrade/schema-gap.js';
+import { resolveMycoPackageCheck } from '../upgrade/checker.js';
+import { readProjectReleaseChannel } from '../daemon/update-checker.js';
+import { resolveMycoHome } from '../grove/paths.js';
+import { readInstallMarker } from '../install/managed-binary.js';
+import { refreshMemberSetup } from '../member/refresh-setup.js';
+import { readRunnerUpdateState } from '../runner/update.js';
 import { isMemberHome } from '../member/home-role.js';
-import { memberHomeFor } from '../member/home-for-folder.js';
-import path from 'node:path';
+import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
+import { getPluginVersion } from '../version.js';
+import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
+import { recordUpdateCheck } from '../upgrade/check-cache.js';
+import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 
-// `myco update` regenerates managed config — .gitignore, symbiont hooks,
-// MCP entries, skills, settings. It does NOT trigger data migrations:
-// runtime migrations (vector reindex, etc.) are owned by the daemon and
-// gated by the `migration_tasks` ledger so they run exactly once per
-// vault regardless of update invocations.
-//
-// Binary upgrades have moved to `myco upgrade [<version>]`.
-// The old `--target-version` / `--cancel-update` flags are no longer
-// accepted and will produce a redirect error.
+export const UPDATE_HELP = `Usage: myco update [options] [<version>]
 
-const USAGE = `Usage: myco update [options]
+Update this machine's Myco within its recorded release channel, then refresh
+member agent setup. Runners update only between runs. Never downgrades.
 
-Regenerate managed Myco project files and migrate legacy config to the
-current Machine/Grove/Project config tiers.
+Alias: myco upgrade
+
+Arguments:
+  <version>                    Update to this exact version (e.g. 2.0.0-alpha.3)
 
 Options:
-  --project <path>   Update only this project (default: every registered project)
-  --all-projects     Deprecated alias; update is global by default
-  -h, --help         Show this help
-
-Binary upgrades have moved to a dedicated command:
-  myco upgrade               Upgrade to the latest stable release
-  myco upgrade <version>     Upgrade to a specific version
+  --now                        Update immediately (identical to bare \`myco update\`)
+  --check                      Report available updates only — never adopt
+  --target-version <version>   Update to this exact version (flag form)
+  --channel <alpha|beta|stable>      Update on this channel, this run only
+  -h, --help                   Show this help
 `;
 
-export async function run(args: string[]): Promise<void> {
+export function effectiveUpdateChannel(home: string = resolveMycoHome()): ReleaseChannel {
+  return readInstallMarker(home, true)?.channel ?? readProjectReleaseChannel();
+}
+
+function admitsUpdate(target: string, current: string, channel: ReleaseChannel): boolean {
+  if (!semver.valid(target) || !semver.valid(current) || !semver.gt(target, current)) return false;
+  return !isV2Version(current) || selectChannelRelease([{
+    tag_name: `myco/v${target}`, prerelease: semver.prerelease(target) !== null, assets: [],
+  }], channel, { currentVersion: current }) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Injectable deps (for testing — the real impls are the defaults)
+// ---------------------------------------------------------------------------
+
+export interface UpgradeDeps {
+  /** Inject the channel-latest resolver so tests can avoid network calls. */
+  resolveRefs?: (channel: ReleaseChannel, deps?: MycoReleaseResolverDeps) => Promise<AssetRefs | null>;
+  /** Inject the fetch-all-releases call for the exact-version path. */
+  fetchReleases?: () => Promise<GitHubRelease[]>;
+  /** Inject the stage function. */
+  stageBinary?: typeof stageBinary;
+  /** Inject stage-level deps (download/hash). */
+  stageDeps?: StageBinaryDeps;
+  /** Inject initiateAdopt (for testing the adopt path). */
+  initiateAdopt?: typeof initiateAdopt;
+  /** Place a verified member binary without a local daemon. */
+  adoptStaged?: typeof adoptStaged;
+  /** Override the current version. */
+  currentVersion?: string;
+  /** Override myco home dir. */
+  home?: string;
+  /** Override the running platform. */
+  platform?: NodeJS.Platform;
+  /** Override %LOCALAPPDATA% (win32 only). */
+  localAppData?: string;
+  /** Override the daemon port. */
+  daemonPort?: number;
+  /** Override the myco binary path (for adopt's restart fallback). */
+  mycoBinary?: string;
+  /** Override the project root (for adopt's restart cwd). */
+  projectRoot?: string;
+  /** Inject the update-check function (for positive --check tests). */
+  checkFn?: typeof resolveMycoPackageCheck;
+  /** Resolve this machine's target triple (process.platform/arch by default). */
+  targetTriple?: () => TargetTriple;
+  /** Inject the vault-side schema scan (downgrade schema-gap guard). */
+  readMaxStampedSchemaVersion?: typeof readMaxStampedSchemaVersion;
+  /** Inject the target-binary supported-schema read (downgrade schema-gap guard). */
+  readSupportedSchemaVersion?: typeof readSupportedSchemaVersion;
+  /** Whether the home is a member's (`member/home-role.ts`). */
+  isMemberHome?: (home: string) => boolean;
+  /** Refresh a member home's agent setup with the adopted binary. */
+  refreshMember?: (binary: string, home: string) => Promise<void>;
+  runnerRecords?: typeof listRunnerRecords;
+  runRunner?: typeof import('./runner.js').run;
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
-    process.stdout.write(USAGE);
+    process.stdout.write(UPDATE_HELP);
     return;
   }
 
-  // These flags belong to a retired binary-upgrade path; `myco upgrade
-  // [<version>]` owns upgrades. Reject them with a clear redirect so anyone
-  // still passing them knows where to go.
-  if (args.some((a) => a === '--target-version' || a === '--cancel-update')) {
+  // `parseStrictFlags` rejects non-flag tokens, so strip out the positional
+  // <version> argument first. We use a simple scan:
+  //   - Value-taking flags (--target-version, --channel) consume the next token
+  //     as their value (so `['--target-version', '1.1.0']` → value is '1.1.0').
+  //   - Any remaining token that doesn't start with '-' is a positional.
+  //
+  // We rebuild the flag-only token list and collect the first positional.
+  const VALUE_FLAGS = new Set(['--target-version', '--channel']);
+  const flagOnlyArgs: string[] = [];
+  let positionalVersion: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]!;
+    if (token.startsWith('-')) {
+      flagOnlyArgs.push(token);
+      if (VALUE_FLAGS.has(token)) {
+        // Include the value token in flagOnlyArgs so the strict parser sees it.
+        const next = args[i + 1];
+        if (next !== undefined && !next.startsWith('-')) {
+          flagOnlyArgs.push(next);
+          i++;
+        }
+      }
+    } else if (positionalVersion === null) {
+      positionalVersion = token;
+    }
+    else {
+      console.error('myco update: name at most one version');
+      process.exit(1);
+    }
+  }
+
+  const parsed = parseStrictFlags('myco update', flagOnlyArgs, [
+    { name: '--now' },
+    { name: '--check' },
+    { name: '--target-version', value: 'required' },
+    { name: '--channel', value: 'required' },
+    { name: '--help', aliases: ['-h'] },
+  ], UPDATE_HELP);
+
+  // --target-version wins over positional.
+  const targetVersionArg = parsed.value('--target-version') ?? positionalVersion;
+
+  // Semver gate for explicit version requests.
+  const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+  if (targetVersionArg && !SEMVER_RE.test(targetVersionArg)) {
     console.error(
-      'Binary upgrades have moved to `myco upgrade`.\n'
-      + '  myco upgrade               — upgrade to the latest stable release\n'
-      + '  myco upgrade <version>     — upgrade to a specific version\n'
-      + '\n'
-      + '`myco update` now only refreshes project config, hooks, and MCP entries.',
+      `myco update: version must be a strict semver (e.g. 1.2.3); got '${targetVersionArg}'`,
     );
     process.exit(1);
   }
 
-  // A member home's agents are the member's: this build refreshes the hooks, MCP entries and skill links its
-  // provisioning set up, and none of 1.4's machine-wide passes runs over them (#1478, #1499).
-  if (isMemberHome(memberHomeFor(process.cwd()).home)) {
-    const { run: runMember } = await import('./member.js');
-    await runMember(['provision', '--refresh']);
-    return;
+  // Validate channel arg.
+  const channelArg = parsed.value('--channel');
+  if (channelArg !== undefined && !RELEASE_CHANNELS.includes(channelArg as ReleaseChannel)) {
+    console.error(`myco update: --channel must be 'alpha', 'beta' or 'stable'; got '${channelArg}'`);
+    process.exit(1);
   }
 
-  const parsed = parseStrictFlags('myco update', args, [
-    { name: '--project', value: 'required' },
-    { name: '--all-projects' },
-    { name: '--help', aliases: ['-h'] },
-  ], USAGE);
+  const isCheck = parsed.has('--check');
+  const home = deps.home ?? resolveMycoHome();
+  const currentVersion = deps.currentVersion ?? getPluginVersion();
 
-  // Explicit single-project targeting — update only this project. The
-  // strict parser guarantees a value: a bare `--project` is a usage
-  // error, not a silent fan-out to every registered project.
-  if (parsed.has('--project')) {
-    let machineWideErrors: string[] = [];
+  // The install marker owns the default release channel.
+  const channel: ReleaseChannel = (channelArg as ReleaseChannel | undefined) ?? effectiveUpdateChannel(home);
+
+  const refresh = async (): Promise<void> => {
+    if (!(deps.isMemberHome ?? isMemberHome)(home)) {
+      console.log('Agents refreshed: no (this home is not a member machine).');
+      return;
+    }
+    const binary = deps.mycoBinary ?? readInstallMarker(home, true)?.bin
+      ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform: deps.platform }).path;
     try {
-      machineWideErrors = await runForProject(parsed.value('--project')!);
+      await (deps.refreshMember ?? refreshMemberSetup)(binary, home);
+      console.log('Agents refreshed: yes.');
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      console.error(`Agents refreshed: no (${error instanceof Error ? error.message : String(error)}). Next: myco member provision --refresh`);
+      process.exitCode = 1;
     }
-    if (machineWideErrors.length > 0) {
-      reportMachineWideErrors(machineWideErrors);
-      process.exit(1);
+  };
+
+  const finish = async (version: string, reason?: string): Promise<void> => {
+    console.log(`Myco: from ${currentVersion} to ${version} on channel ${channel}${reason ? ` (${reason})` : ''}.`);
+    await refresh();
+  };
+
+  const runners = (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner);
+  if (runners.length > 0) {
+    const summaries = new Set<string>();
+    const runner = deps.runRunner ?? (await import('./runner.js')).run;
+    for (const record of runners) {
+      const selection = [...(channelArg ? ['--channel', channelArg] : []), ...(targetVersionArg ? ['--target-version', targetVersionArg] : [])];
+      const ok = await runner(['update', '--server', record.serverUrl, ...(isCheck ? ['--check'] : []), ...selection], { mycoHome: home, stdout: line => {
+        if (line.startsWith('Myco: ')) summaries.add(line.slice('Myco: '.length));
+        else console.log(line);
+      } });
+      if (!ok) process.exitCode = 1;
     }
+    if (summaries.size > 0) console.log(`Myco: ${[...summaries].join('; ')}`);
+    const state = readRunnerUpdateState(home);
+    if (isCheck) console.log('Agents refreshed: no (check only).');
+    else if (state.transaction || Object.keys(state.requests ?? {}).length > 0) {
+      console.log('Agents refreshed: no (runner update pending). Next: myco runner status; once idle, run myco update again to finish member setup if no binary handoff was needed.');
+    } else await refresh();
     return;
   }
 
-  // Global by default: one machine binary and one daemon serve every
-  // Grove/project, so `myco update` updates them all. `--all-projects`
-  // is a deprecated, tolerated alias for this default.
-  await runAllProjects();
+  // --check reports release availability and changes no binary or agent configuration.
+  if (isCheck) {
+    await runCheck(channel, deps, targetVersionArg);
+    return;
+  }
+
+  // A channel override applies only to this invocation.
+  if (channelArg) console.log(`Updating on the '${channelArg}' channel for this run; it is not saved.`);
+
+  // Resolve the selected release assets.
+  const refs = await resolveAssetRefsForTarget(targetVersionArg, channel, deps);
+  recordUpdateCheck(home, channel, currentVersion, refs?.targetVersion ?? currentVersion);
+  if (!refs) {
+    if (targetVersionArg) {
+      console.error(`myco update: no release found for version ${targetVersionArg}`);
+      process.exit(1);
+    } else {
+      await finish(currentVersion, 'no newer eligible release');
+      return;
+    }
+  }
+
+  if (!admitsUpdate(refs.targetVersion, currentVersion, channel)) {
+    await finish(currentVersion, `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put`);
+    return;
+  }
+  const isV2 = isV2Version(currentVersion);
+
+  console.log(`Updating Myco ${currentVersion} → ${refs.targetVersion}…`);
+
+  const platform = deps.platform ?? (process.platform as NodeJS.Platform);
+  const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
+
+  // A known target storage format must support every local Grove's stamped format.
+  {
+    const semver = await import('semver');
+    const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
+    const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
+    const versionLower = semver.valid(refs.targetVersion)
+      && semver.valid(currentVersion)
+      && semver.lt(refs.targetVersion, currentVersion);
+    const targetSchema = readTargetSchema(home, platform, refs.targetVersion, localAppData);
+    if (versionLower || targetSchema !== null) {
+      const vaultSchema = readVaultSchema(home);
+      const crossesGap = versionLower
+        ? rollbackWouldCrossSchemaGap(vaultSchema, targetSchema)
+        : vaultSchema !== null && targetSchema !== null && targetSchema < vaultSchema;
+      if (crossesGap) {
+        const refusal = new SchemaGapDowngradeError(refs.targetVersion, vaultSchema!, targetSchema);
+        console.error(`myco update: ${refusal.message}`);
+        process.exit(1);
+      }
+    }
+  }
+
+  // Stage the binary (download → verify → stage under versions/<v>/).
+  console.log('  Downloading and verifying…');
+  const stageFn = deps.stageBinary ?? stageBinary;
+  const stageDeps = deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS;
+  const stageResult = await stageFn({ refs, home, platform, localAppData }, stageDeps);
+
+  if ('error' in stageResult) {
+    console.error(`myco update: stage failed — ${stageResult.error}`);
+    process.exit(1);
+  }
+
+  console.log(`  Staged ${stageResult.version} to ${stageResult.versionDir}`);
+
+  // Adopt the verified staged binary.
+  console.log('  Adopting…');
+
+  // Installed member binaries retain the destination recorded by their installer.
+  const mycoBinary = deps.mycoBinary
+    ?? (isV2 ? readInstallMarker(home, true)?.bin : undefined)
+    ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform, localAppData }).path;
+  if (isV2) {
+    if (platform === 'win32') throw new Error('Myco 2.0 member binary updates on Windows are not supported yet; the installed binary is unchanged.');
+    await (deps.adoptStaged ?? adoptStaged)({ home, platform, localAppData, version: stageResult.version, destination: mycoBinary });
+    await finish(stageResult.version);
+    return;
+  }
+
+  // Retained local runtimes restart through their installed service.
+  const projectRoot = deps.projectRoot ?? process.cwd();
+  const daemonPort = deps.daemonPort ?? resolveGlobalDaemonPort();
+  const { getServiceManager } = await import('../service/manager.js');
+  const { resolveRestartServiceLabel } = await import('../daemon/api/restart.js');
+  const serviceManagedLabel = await resolveRestartServiceLabel(getServiceManager());
+
+  const adoptOpts: InitiateAdoptOpts = {
+    source: 'cli',
+    targetVersion: stageResult.version,
+    prevVersion: currentVersion,
+    home,
+    platform,
+    localAppData,
+    daemonPort,
+    serviceManagedLabel,
+    mycoBinary,
+    projectRoot,
+    maxHealthAttempts: 30,
+    healthIntervalMs: 2000,
+  };
+
+  const adoptFn = deps.initiateAdopt ?? initiateAdopt;
+  await adoptFn(adoptOpts);
+
+  await finish(stageResult.version);
 }
 
-function reportMachineWideErrors(errors: string[]): void {
-  console.error(`⚠ ${errors.length} machine-wide update step${errors.length === 1 ? '' : 's'} failed:`);
-  for (const error of errors) {
-    console.error(`  - ${error}`);
-  }
-}
+// ---------------------------------------------------------------------------
+// --check path
+// ---------------------------------------------------------------------------
 
-/**
- * Machine-wide side effects of `myco update`: re-render every global
- * symbiont config (~/.claude/, ~/.cursor/, etc.), scrub stale global
- * hook entries, run the per-project global-install migration pass
- * across every registered project, and stamp the version file.
- *
- * Called ONCE per `myco update` invocation regardless of single-project
- * vs --all-projects mode. Hoisted out of runForProject so a
- * `myco update --all-projects` with N registered projects doesn't
- * re-run these N times. /code-review finding C7.
- */
-async function runMachineWideUpdate(
-  allManifests: SymbiontManifest[],
-  currentVersion: string,
-  stampPath: string,
-): Promise<{ updatedCount: number; errors: string[] }> {
-  let updatedCount = 0;
-  const errors: string[] = [];
+async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: string | null): Promise<void> {
+  const currentVersion = deps.currentVersion ?? getPluginVersion();
+  console.log(`Checking for updates on the '${channel}' channel…`);
 
-  // --- Refresh GLOBAL symbiont configs ---
-  //
-  // Post-global-install (plan 38cff0752c919ffd §4), `myco update` writes
-  // only at user-home (`~/.claude/`, `~/.codeium/windsurf/`, etc.) — not
-  // into the project's `.<symbiont>/` directory. `runSymbiontDetection`
-  // walks the manifest registry and installs at global scope for every
-  // agent whose `detectionDir` exists, idempotently.
-  const { runSymbiontDetection } = await import('./bootstrap.js');
-  const detection = runSymbiontDetection();
-  const installedCount = detection.filter((d) => d.status === 'installed').length;
-  for (const d of detection) {
-    if (d.status === 'installed' && d.install) {
-      const installed = [
-        d.install.hooks && 'hooks',
-        d.install.mcp && 'MCP server',
-        d.install.skills && 'skills',
-        d.install.settings && 'settings',
-        d.install.instructions && 'instructions',
-      ].filter(Boolean);
-      const manifest = allManifests.find((m) => m.name === d.symbiont);
-      const label = manifest?.displayName ?? d.symbiont;
-      console.log(`  ✓ Updated ${label}: ${installed.join(', ')}`);
-    } else if (d.status === 'error') {
-      console.log(`  ✗ Failed to update ${d.symbiont}: ${d.error ?? 'unknown error'}`);
-      errors.push(`${d.symbiont}: ${d.error ?? 'unknown error'}`);
-    }
-  }
-  updatedCount += installedCount;
-  if (installedCount === 0 && detection.every((d) => d.status === 'not-detected' || d.status === 'already-configured')) {
-    console.log('  – No detected agents on this machine');
+  if (target !== null) {
+    const refs = await resolveAssetRefsForTarget(target, channel, deps);
+    if (refs === null) throw new Error(`myco update --check: no release found for version ${target}`);
+    const eligible = admitsUpdate(refs.targetVersion, currentVersion, channel);
+    recordUpdateCheck(deps.home ?? resolveMycoHome(), channel, currentVersion, eligible ? refs.targetVersion : currentVersion);
+    console.log(`Myco: from ${currentVersion} to ${eligible ? refs.targetVersion : currentVersion} on channel ${channel} (check only${eligible ? '' : '; target is older or outside the channel; staying put'}).`);
+    console.log('Agents refreshed: no (check only).');
+    if (eligible) console.log(`Run \`myco update --target-version ${target}\` to apply.`);
+    return;
   }
 
-  // --- Heal known escaped global config artifacts ---
-  // Historical smoke runs could write temp `/tmp/myco-*-smoke-*/home/launcher.cjs`
-  // commands into real global agent config files when HOME wasn't sandboxed.
-  // Installer ownership detection intentionally preserves non-canonical paths,
-  // so update runs the one-shot global scrub explicitly after symbiont install.
+  const checkFn = deps.checkFn ?? resolveMycoPackageCheck;
+  let checkResult: Awaited<ReturnType<typeof resolveMycoPackageCheck>>;
   try {
-    const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
-    const globalConfigMigration = runGlobalConfigMigration();
-    const repaired = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && !outcome.error);
-    const failed = globalConfigMigration.outcomes.filter((outcome) => outcome.entriesRemoved > 0 && outcome.error);
-    for (const outcome of repaired) {
-      console.log(`  ✓ Scrubbed ${outcome.entriesRemoved} stale global hook group${outcome.entriesRemoved === 1 ? '' : 's'}: ${outcome.filePath}`);
-      updatedCount++;
-    }
-    for (const outcome of failed) {
-      console.log(`  !! Failed to scrub stale global hook groups from ${outcome.filePath}: ${outcome.error}`);
-    }
-  } catch (err) {
-    console.log(`  !! Global config scrub failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // --- Delete retired launcher trampolines LAST ---
-  // Only after detection rewrote every detected agent's hook/MCP config onto the
-  // binary and the scrub healed escaped references. Deleting earlier would orphan
-  // a config not yet rewritten in this pass (capture-loss window); by here no
-  // config references `~/.myco/launcher.cjs`, so removal is safe.
-  try {
-    const { removeRetiredGlobalLaunchers } = await import('../grove/launcher-cleanup.js');
-    const removed = removeRetiredGlobalLaunchers().removed;
-    if (removed.length > 0) {
-      console.log(`  ✓ Removed ${removed.length} retired launcher trampoline${removed.length === 1 ? '' : 's'}`);
-      updatedCount += removed.length;
-    }
-  } catch (err) {
-    console.log(`  !! Retired launcher cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // --- Per-project one-shot global-install migration ---
-  try {
-    const { runGlobalInstallMigrationPass } = await import('../grove/global-install-migration.js');
-    const { recordMigrationPass } = await import('../db/queries/migration-log.js');
-    const { getDatabase } = await import('../db/client.js');
-    const pass = runGlobalInstallMigrationPass();
-    if (pass.projectsCleaned > 0) {
-      console.log(`  ✓ Migrated ${pass.projectsCleaned} project${pass.projectsCleaned > 1 ? 's' : ''} to global install`);
-      updatedCount += pass.projectsCleaned;
-    }
-    if (pass.projectsErrored > 0) {
-      console.log(`  !! ${pass.projectsErrored} project${pass.projectsErrored > 1 ? 's' : ''} errored during migration — run \`myco doctor\` for details`);
-    }
-    try { recordMigrationPass(getDatabase(), pass); } catch { /* audit log is best-effort */ }
-  } catch (err) {
-    console.log(`  !! Migration pass failed: ${(err as Error).message}`);
-  }
-
-  // --- Registered-project managed files ---
-  //
-  // Global install still owns some local repository files: rules guidance and
-  // repo-level ignore entries today, future project-managed surfaces later.
-  // Reconcile them by registered Grove ownership, not by the caller's cwd, so
-  // Each MYCO_HOME update only touches Groves under that home.
-  try {
-    const { reconcileRegisteredManagedProjectFiles } = await import('../symbionts/reconcile.js');
-    const outcomes = reconcileRegisteredManagedProjectFiles({ manifests: allManifests });
-    const agentsUpdated = outcomes.filter((o) => o.result?.agentsMd).length;
-    const gitignoreUpdated = outcomes.filter((o) => o.result?.gitignore).length;
-    const errored = outcomes.filter((o) => o.error);
-    if (agentsUpdated > 0 || gitignoreUpdated > 0) {
-      const parts = [
-        agentsUpdated > 0 && `AGENTS.md for ${agentsUpdated} project${agentsUpdated === 1 ? '' : 's'}`,
-        gitignoreUpdated > 0 && `.gitignore for ${gitignoreUpdated} project${gitignoreUpdated === 1 ? '' : 's'}`,
-      ].filter(Boolean);
-      console.log(`  ✓ Updated managed project files: ${parts.join(', ')}`);
-      updatedCount += agentsUpdated + gitignoreUpdated;
-    }
-    if (errored.length > 0) {
-      console.log(`  !! Managed project-file reconciliation failed for ${errored.length} project${errored.length === 1 ? '' : 's'}`);
-    }
-  } catch (err) {
-    console.log(`  !! Managed project-file reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // --- Write version stamp ---
-  try {
-    fs.mkdirSync(path.dirname(stampPath), { recursive: true });
-    fs.writeFileSync(stampPath, currentVersion, 'utf-8');
-  } catch {
-    // Non-fatal — stamp write failure shouldn't break the update
-  }
-
-  return { updatedCount, errors };
-}
-
-interface RunForProjectOptions {
-  /**
-   * Skip the machine-wide side effects (global symbiont install, config
-   * scrub, migration pass, version stamp). Set when the caller has
-   * already invoked `runMachineWideUpdate` exactly once for the whole
-   * batch — `runAllProjects` is the canonical use site.
-   */
-  skipMachineWide?: boolean;
-}
-
-/**
- * Sync one project's managed files. Returns the machine-wide step errors
- * (per-symbiont global-install failures) so the CLI entry point can fold
- * them into its exit-code rollup; empty when `skipMachineWide` is set.
- */
-async function runForProject(projectRoot: string | undefined, options: RunForProjectOptions = {}): Promise<string[]> {
-  const vaultDir = projectRoot
-    ? path.join(projectRoot, '.myco')
-    : resolveVaultDir();
-  if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    // Surface as an error rather than process.exit so --all-projects can
-    // continue past a broken project and aggregate failures at the end.
-    throw new Error(
-      `No myco.yaml found in ${vaultDir}. Open the project in a supported agent so Myco auto-registers it, or commit Myco config to the repo via the dashboard's Symbionts page first.`,
+    checkResult = await checkFn(
+      currentVersion,
+      channel,
+      // installed_version: use current as proxy (CLI doesn't track the npm install path
+      // separately from the running binary)
+      currentVersion,
     );
-  }
-
-  console.log(`Updating Myco vault at ${vaultDir}\n`);
-
-  const resolvedProjectRoot = projectRoot ?? resolveProjectRoot(vaultDir);
-
-  // One-time Grove migration: a legacy (pre-0.25) project has a populated
-  // .myco/myco.db but no project.toml Grove binding. Lift it into the
-  // machine's default Grove before the rest of update operates on it.
-  ensureGroveActivation(vaultDir, resolvedProjectRoot);
-  const groveId = loadProjectManifest(vaultDir)?.grove?.id ?? null;
-
-  const stampPath = resolveLastUpdateVersionPath();
-  const currentVersion = getPluginVersion();
-
-  let updatedCount = 0;
-
-  // --- Update .gitignore to match current template ---
-  // Routes through ProjectVault so the helper's contract (atomic write,
-  // schema, idempotency) stays the single source of truth. A direct
-  // `fs.writeFileSync` against `<vaultDir>/.gitignore` is the historical
-  // bug class we're closing \u2014 every shared vault path has one writer.
-
-  if (new ProjectVault(path.dirname(vaultDir)).ensureGitignore()) {
-    console.log('  \u2713 Updated .gitignore');
-    updatedCount++;
-  } else {
-    console.log('  \u2013 .gitignore is current');
-  }
-
-  // --- Update symbiont registration ---
-
-  const allManifests = loadManifests();
-
-  const config = loadConfig(vaultDir, { groveId, migrateTiers: true });
-  const withReleaseDefaults = withInferredReleaseProvenanceDefaults(config, resolvedProjectRoot);
-  if (withReleaseDefaults !== config) {
-    updateConfig(vaultDir, () => withReleaseDefaults);
-    console.log('  ✓ Updated release provenance defaults');
-    updatedCount++;
-  }
-  // Machine-wide refresh (global symbiont install, config scrub,
-  // per-project migration pass, version stamp). Skipped by --all-projects
-  // which hoists this work out of its per-project loop. /code-review C7.
-  let machineWideErrors: string[] = [];
-  if (!options.skipMachineWide) {
-    const machineWide = await runMachineWideUpdate(allManifests, currentVersion, stampPath);
-    updatedCount += machineWide.updatedCount;
-    machineWideErrors = machineWide.errors;
-  }
-
-  // HTTP MCP entries depend on the local daemon being reachable at the
-  // configured project port. `myco update` is the real reconciliation path for
-  // generated agent config, so bring the daemon up after the config rewrite.
-  // In git worktrees, daemon startup intentionally resolves through git-common
-  // to the shared project vault; using the literal --project/.myco path here
-  // makes the child daemon start against the shared vault while this health
-  // check waits on the worktree vault and falsely reports failure.
-  let daemonHealthy = false;
-  let daemonError: string | null = null;
-  try {
-    const { DaemonClient } = await import('../daemon/client.js');
-    const daemonVaultDir = resolveVaultDir(resolvedProjectRoot);
-    const client = new DaemonClient(daemonVaultDir);
-    daemonHealthy = await client.ensureRunning();
-    if (daemonHealthy && await httpMcpEndpointMissing(daemonVaultDir)) {
-      daemonHealthy = await client.restart({ checkStale: false });
-    }
   } catch (err) {
-    daemonHealthy = false;
-    daemonError = err instanceof Error ? err.message : String(err);
+    console.error(
+      `myco update --check: failed to fetch releases — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exit(1);
   }
 
-  // --- Summary ---
-
-  console.log('');
-  if (updatedCount > 0) {
-    console.log(`Updated ${updatedCount} item${updatedCount > 1 ? 's' : ''}.`);
+  recordUpdateCheck(deps.home ?? resolveMycoHome(), channel, currentVersion, checkResult.latest_version);
+  console.log(`Myco: from ${currentVersion} to ${checkResult.latest_version ?? currentVersion} on channel ${channel} (check only).`);
+  console.log('Agents refreshed: no (check only).');
+  if (checkResult.update_available) {
+    console.log(`Update available: ${currentVersion} → ${checkResult.latest_version}`);
+    console.log(`Run \`myco update\` to apply.`);
+  } else if (checkResult.staying_put) {
+    console.log(`The newest eligible '${channel}' release is older than installed ${currentVersion}; staying put.`);
+  } else if (checkResult.revert_available) {
+    console.log(
+      `Stable revert available: ${currentVersion} → ${checkResult.latest_stable} (switch from beta to stable)`,
+    );
+    console.log(`Run \`myco update --channel stable\` to revert.`);
   } else {
-    console.log('Everything is up to date.');
-  }
-  if (daemonHealthy) {
-    console.log('Daemon is running for HTTP MCP.');
-  } else if (daemonError) {
-    console.log(`Daemon could not be verified (${daemonError}); run \`myco restart\` before using HTTP MCP.`);
-  } else {
-    console.log('Daemon could not be verified; run `myco restart` before using HTTP MCP.');
-  }
-
-  const dashboardUrl = dashboardUrlForVault(vaultDir);
-  if (dashboardUrl) {
-    console.log(`Dashboard: ${dashboardUrl}`);
-  }
-  console.log('Run `myco doctor` to verify setup health.');
-
-  return machineWideErrors;
-}
-
-/**
- * Lift a legacy (pre-0.25) project into the machine's default Grove on
- * its first `myco update`, AND repair partial-state vaults whose
- * `project.toml` or registry row went missing post-activation.
- *
- * Three states it handles:
- *   1. Pre-Grove (no manifest, no marker): run full activation.
- *   2. Already-activated and consistent (manifest binding present):
- *      no-op return; steady-state mtime-cached read.
- *   3. Marker present but manifest missing or mismatched: run
- *      `activateProjectMigration` which detects the marker and rewrites
- *      the missing leg from authoritative state.
- *
- * Tolerates fresh vaults: a `myco.yaml` without a `myco.db` AND no
- * marker is a just-initialized project with nothing to migrate.
- */
-function ensureGroveActivation(vaultDir: string, projectRoot: string): void {
-  const manifest = loadProjectManifest(vaultDir);
-  const markerExists = fs.existsSync(activationMarkerPath(vaultDir));
-
-  // Steady state: manifest binding present. activateProjectMigration would
-  // also detect this via marker, but skipping the function call keeps the
-  // hot path (every `myco update`) free of registry I/O.
-  if (manifest?.grove?.binding_id && markerExists) return;
-
-  // Fresh vault with nothing to migrate or repair.
-  if (!markerExists && !fs.existsSync(path.join(vaultDir, 'myco.db'))) return;
-
-  if (markerExists && !manifest?.grove?.binding_id) {
-    console.log('  → Activation marker present but project.toml binding missing; repairing…');
-  } else {
-    console.log('  → Legacy project detected; running one-time Grove migration…');
-  }
-  const result = activateProjectMigration({ projectRoot });
-  if (result.already_activated) {
-    console.log(`  ✓ Project already activated in Grove ${result.grove.name} (${result.grove.slug})`);
-    // Sweep up legacy data from an older activation that ran before
-    // archiving was inline — bounded existsSync sweep, no-op on a
-    // freshly-archived vault.
-    const archive = completeLegacyArchive(vaultDir);
-    if (archive.archived_dir) {
-      console.log(`  ✓ Archived legacy data to ${archive.archived_dir}`);
-    }
-  } else {
-    const total = summarizeImportedRowCount(result.import_result);
-    console.log(`  ✓ Migrated to Grove ${result.grove.name} (${result.grove.slug}) — ${total} rows imported`);
-    // activateProjectMigration archives legacy data inline; no second call.
-  }
-  console.log('');
-}
-
-/**
- * Dashboard URL for this project, or null when the daemon isn't reachable
- * or the project isn't fully bound. We deliberately do NOT fall back to
- * the global dashboard root — landing there post-migration would mislead
- * about where the project moved to.
- */
-function dashboardUrlForVault(vaultDir: string): string | null {
-  const manifest = loadProjectManifest(vaultDir);
-  const groveSlug = manifest?.grove?.slug;
-  const projectId = manifest?.project?.id;
-  if (!groveSlug || !projectId) return null;
-
-  const grove = listGroves().find((g) => g.slug === groveSlug);
-  if (!grove) return null;
-  const project = listRegisteredProjects(grove.id).find((p) => p.project_id === projectId);
-  if (!project) return null;
-
-  return resolveProjectDashboardUrl({
-    vaultDir,
-    groveSlug,
-    groveId: grove.id,
-    projectId,
-    projectName: project.name,
-  });
-}
-
-/**
- * Iterate every (Grove, project) pair in the registry and run the
- * per-project sync for each. Used by the post-binary-install update
- * script (machine-level binary install kicks one of these per Grove
- * project) and by `make dev-link` to refresh symbiont configs across
- * the whole machine.
- *
- * Per-project failures don't abort the loop — log and continue, then
- * exit non-zero if any project failed so callers can see the rollup.
- */
-async function runAllProjects(): Promise<void> {
-  // Home-scoped: every Grove under this MYCO_HOME belongs to this daemon (the
-  // home is the ownership boundary now, not a prod/dev variant).
-  const groves = listGroves(undefined);
-  const targets: { groveSlug: string; projectName: string; root: string }[] = [];
-  for (const grove of groves) {
-    for (const project of listRegisteredProjects(grove.id)) {
-      targets.push({ groveSlug: grove.slug, projectName: project.name, root: project.root });
+    console.log(`myco ${currentVersion} is up to date on the '${channel}' channel.`);
+    if (checkResult.latest_version) {
+      console.log(`  Latest: ${checkResult.latest_version}`);
     }
   }
-
-  if (targets.length === 0) {
-    console.log('No registered projects across any Grove. Nothing to update.');
-    return;
-  }
-
-  console.log(`Updating ${targets.length} project${targets.length === 1 ? '' : 's'} across ${groves.length} Grove${groves.length === 1 ? '' : 's'}.\n`);
-
-  // Hoist machine-wide work (global symbiont install, scrub, migration
-  // pass, version stamp) ABOVE the per-project loop. Each block was
-  // running N times — the migration pass itself iterates every project,
-  // so an N-project --all-projects pass was N×N for the worst block.
-  // /code-review finding C7.
-  console.log('=== Machine-wide refresh ===');
-  const allManifests = loadManifests();
-  const currentVersion = getPluginVersion();
-  const stampPath = resolveLastUpdateVersionPath();
-  const machineWideErrors: string[] = [];
-  try {
-    machineWideErrors.push(...(await runMachineWideUpdate(allManifests, currentVersion, stampPath)).errors);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`  ✗ Machine-wide refresh failed: ${message}`);
-    machineWideErrors.push(`machine-wide refresh: ${message}`);
-  }
-
-  const failures: { target: typeof targets[number]; error: unknown }[] = [];
-  for (const target of targets) {
-    console.log(`\n=== ${target.groveSlug}/${target.projectName} (${target.root}) ===`);
-    try {
-      await runForProject(target.root, { skipMachineWide: true });
-    } catch (error) {
-      failures.push({ target, error });
-      console.error(`  ✗ Failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  console.log('');
-  if (failures.length === 0 && machineWideErrors.length === 0) {
-    console.log(`✓ Updated all ${targets.length} project${targets.length === 1 ? '' : 's'}.`);
-    return;
-  }
-
-  if (machineWideErrors.length > 0) {
-    reportMachineWideErrors(machineWideErrors);
-  }
-  if (failures.length > 0) {
-    console.error(`⚠ ${failures.length} of ${targets.length} project${targets.length === 1 ? '' : 's'} failed:`);
-    for (const { target, error } of failures) {
-      console.error(`  - ${target.groveSlug}/${target.projectName}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  process.exit(1);
 }
 
-async function httpMcpEndpointMissing(vaultDir: string): Promise<boolean> {
-  const port = readDaemonPort(vaultDir, { env: process.env });
-  if (port === null) return false;
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
-      signal: AbortSignal.timeout(DAEMON_CLIENT_TIMEOUT_MS),
-    });
-    if (response.status === 404) return true;
-    if (response.ok) return false;
-    // 5xx/4xx-not-404 — daemon is responding but /mcp is degraded
-    // (router half-registered, auth busted, internal error). Treat as
-    // missing so the caller triggers a restart to re-bind the route
-    // table from a clean boot.
-    return true;
-  } catch {
-    // Network failure (ECONNREFUSED / ETIMEDOUT / abort): the caller
-    // already confirmed the daemon is "running" via ensureRunning's
-    // pid check, so an unreachable TCP socket is the wedged-shutdown
-    // shape this whole `myco update` finalizer exists to recover from.
-    // The previous `return false` here silently kept the wedge alive
-    // and the user had to `kill -9` manually. Restart it.
-    return true;
+// ---------------------------------------------------------------------------
+// Asset ref resolution: channel-latest vs. exact-version
+// ---------------------------------------------------------------------------
+
+/** Resolve a named release or the newest eligible release for this machine. */
+async function resolveAssetRefsForTarget(
+  targetVersionArg: string | null,
+  channel: ReleaseChannel,
+  deps: UpgradeDeps,
+): Promise<AssetRefs | null> {
+  if (targetVersionArg) {
+    const fetchReleasesFn = deps.fetchReleases ?? defaultFetchReleases;
+    const releases = await fetchReleasesFn();
+    const release = releases.find((r) => r.tag_name === `myco/v${targetVersionArg}`);
+    if (!release) return null;
+    const triple = deps.targetTriple ? deps.targetTriple() : resolveTargetTriple();
+    return resolveAssetRefs(release, triple);
   }
+
+  const resolveRefsFn = deps.resolveRefs ?? ((ch: ReleaseChannel) => resolveMycoBinaryUpdateRefs(ch, undefined, deps.currentVersion ?? getPluginVersion()));
+  return resolveRefsFn(channel);
+}
+
+async function defaultFetchReleases(): Promise<GitHubRelease[]> {
+  return fetchMycoReleases();
 }

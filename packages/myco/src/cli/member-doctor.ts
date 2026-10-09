@@ -13,6 +13,7 @@
  * A `fail` row sets a non-zero exit. Nothing here repairs: each row names the
  * command that does.
  */
+import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
@@ -148,6 +149,8 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   const root = rootOf(deps);
   const mycoHome = homeOf(deps);
+  const notice = readUpdateNotice(mycoHome, getPluginVersion());
+  if (notice !== null) console.log(notice);
   const now = (deps.now ?? Date.now)();
   const checks: DoctorCheck[] = [];
 

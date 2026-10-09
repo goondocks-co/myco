@@ -1991,7 +1991,7 @@ function doctorLogger(): StateMutationLogger {
 
 // --- CLI entry point ---
 
-const USAGE = `Usage: myco doctor [--fix]
+export const USAGE = `Usage: myco doctor [--fix]
 
 Check vault and machine install health.
 

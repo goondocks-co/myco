@@ -1,3 +1,5 @@
+import { isMemberHome } from '../member/home-role.js';
+import { refreshMemberSetup } from '../member/refresh-setup.js';
 /** Detached runner update handoff and authenticated-contact health rollback. */
 import path from 'node:path';
 import semver from 'semver';
@@ -18,6 +20,7 @@ class HealthRollback extends Error {}
 class HandoffCanceled extends Error {}
 
 export interface RunnerUpdateHelperDeps {
+  refreshMember?: typeof refreshMemberSetup;
   now?: () => number;
   wait?: (ms: number) => Promise<void>;
   alive?: (pid: number) => boolean;
@@ -164,7 +167,13 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
         ((observed.completedClaimAt !== undefined && observed.completedClaimAt >= (observed.contactAt ?? 0))
           || (observed.firstClaimAt === undefined && now() - (observed.contactAt ?? healthStart) >= PROBATION_WAIT_MS)))) {
         writeInstallMarker(tx.home, { ...tx.installMarker, bin: tx.binaryPath, prerelease: semver.prerelease(tx.toVersion) !== null });
-        finish(tx, 'updated', undefined, now());
+        let refreshResult = 'Agents refreshed: no (this home is not a member machine).';
+        if (isMemberHome(tx.home)) {
+          try { await (deps.refreshMember ?? refreshMemberSetup)(tx.binaryPath, tx.home); refreshResult = 'Agents refreshed: yes.'; }
+          catch (error) { refreshResult = `Agents refreshed: no (${String(error)}). Next: myco member provision --refresh`; }
+        }
+        console.log(refreshResult);
+        finish(tx, 'updated', refreshResult, now());
         finished = true;
         cleanupRunnerUpdateGuardian(tx.home, tx.platform, deps);
         return;

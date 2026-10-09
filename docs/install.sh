@@ -750,6 +750,9 @@ main() {
 
   echo ""
   success "Myco ${VERSION} installed to ${BIN_DIR}/myco"
+  if [ "$LEGACY_INSTALL" != "1" ]; then
+    echo "  For future updates, run: myco update (check only: myco update --check)"
+  fi
   if [ "$APPENDED_RC" -gt 0 ]; then
     warn "Added ${BIN_DIR} to PATH in ${APPENDED_RC} shell rc file(s); open a new shell, or run: export PATH=\"${BIN_DIR}:\$PATH\""
   fi

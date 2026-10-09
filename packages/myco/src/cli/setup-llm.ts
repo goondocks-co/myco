@@ -5,7 +5,7 @@ import type { EmbeddingProviderConfig } from '../config/schema.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { resolveDaemonServiceState } from '../daemon/service-state.js';
 
-const USAGE = `Usage: myco setup-llm [options]
+export const USAGE = `Usage: myco setup-llm [options]
 
 Configure embedding provider settings.
 

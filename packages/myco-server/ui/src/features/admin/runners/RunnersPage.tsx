@@ -37,6 +37,7 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
       <div className="flex min-w-0 flex-col gap-s2">
         <h3 className="t-h3 text-ink">{runner.name}</h3>
         <p className="t-small text-muted">{runner.state === 'removed' ? 'Removed' : runner.connected ? runner.busy === null ? 'Connected · idle' : 'Connected · running' : 'Offline'} · {runner.version ?? 'Version unknown'} · {runner.channel ?? 'Channel unknown'}</p>
+        <p className="t-small text-muted">{runner.offers == null ? 'Agents offered: unknown (no service offer reported).' : `Agents offered: ${runner.offers.filter(offer => offer.authenticated).map(offer => offer.id).join(', ') || 'none'} · observed ${runner.offersObservedAt == null ? 'unknown' : new Date(runner.offersObservedAt).toLocaleString()}.`}</p>
         {runner.latestVersion !== null && runner.latestVersion !== runner.version && <p className="t-small text-ink">Update available: {runner.latestVersion}</p>}
         <p className="t-small text-muted">{runner.lastCheckAt === null ? 'No update check reported.' : `Last checked ${formatRelative(runner.lastCheckAt)}.`}</p>
         <p className="t-small text-muted">{resultWords}</p>

@@ -34,7 +34,8 @@ const MAX_VERSION_ATTEMPTS = 20;
 export type RunnerUpdateResult = UpdateReceipt['result'];
 export type RunnerUpdateReceipt = UpdateReceipt;
 export type RunnerUpdateContact = RunnerUpdateReport;
-export interface RunnerUpdateRequest { id: string; requestedAt: number; clearBlock?: boolean }
+export interface RunnerUpdateSelection { channel?: ReleaseChannel; targetVersion?: string }
+export interface RunnerUpdateRequest extends RunnerUpdateSelection { id: string; requestedAt: number; clearBlock?: boolean }
 interface RunnerUpdateTransaction {
   id: string;
   serverUrl: string;
@@ -163,7 +164,9 @@ function decodeState(home: string): RunnerUpdateState {
       guardian.unit?.args?.[2] !== file || guardian.unit.args.length !== 3 ||
       guardian.binaryPath !== runnerUpdateGuardianBinary(home, tx?.platform ?? cleanup?.platform ?? process.platform)))
     || (state.requests !== undefined && (typeof state.requests !== 'object' || state.requests === null || Object.values(state.requests).some(request =>
-      typeof request?.id !== 'string' || !Number.isFinite(request.requestedAt))))
+      typeof request?.id !== 'string' || !Number.isFinite(request.requestedAt)
+      || (request.channel !== undefined && !RELEASE_CHANNELS.includes(request.channel))
+      || (request.targetVersion !== undefined && !semver.valid(request.targetVersion)))))
     || (state.lastResults !== undefined && (typeof state.lastResults !== 'object' || state.lastResults === null || Object.values(state.lastResults).some(result =>
       typeof result?.fromVersion !== 'string' || typeof result.toVersion !== 'string' || !Number.isFinite(result.at)
       || !['updated', 'no_update', 'refused', 'rolled_back', 'failed'].includes(result.result)
@@ -234,7 +237,7 @@ export function blockRunnerUpdateVersion(state: RunnerUpdateState, version: stri
   state.blockedVersions = Object.fromEntries(Object.entries(state.blockedVersions).filter(([, value]) => value.until > now).slice(-MAX_VERSION_ATTEMPTS));
 }
 
-async function releases(channel: ReleaseChannel, currentVersion: string, etag: string | undefined, deps: RunnerUpdateDeps): Promise<{ refs: AssetRefs | null; etag?: string; unchanged: boolean }> {
+async function releases(channel: ReleaseChannel, currentVersion: string, etag: string | undefined, deps: RunnerUpdateDeps, targetVersion?: string): Promise<{ refs: AssetRefs | null; etag?: string; unchanged: boolean }> {
   const fetchFn = deps.fetch ?? fetch;
   const triple = (deps.targetTriple ?? resolveTargetTriple)();
   const all: GitHubRelease[] = [];
@@ -252,7 +255,8 @@ async function releases(channel: ReleaseChannel, currentVersion: string, etag: s
     if (!Array.isArray(batch)) throw new Error('GitHub releases response must be an array');
     all.push(...batch as GitHubRelease[]);
     if (batch.length < 100) {
-      const release = pickRelease(all, channel, { asset: assetName(triple), currentVersion, minimumMajor: 2 });
+      const eligible = targetVersion === undefined ? all : all.filter(release => release.tag_name === `myco/v${targetVersion}`);
+      const release = pickRelease(eligible, channel, { asset: assetName(triple), currentVersion, minimumMajor: 2 });
       return { refs: release === null ? null : resolveAssetRefs(release, triple), etag: firstEtag, unchanged: false };
     }
   }
@@ -331,8 +335,8 @@ export interface RunnerUpdateController {
   acknowledgeHealthy(): void;
   recordClaim(completed?: boolean): void;
   recordHealthRefusal(reason: string): void;
-  queueManual(): void;
-  check(): Promise<RunnerUpdateContact>;
+  queueManual(selection?: RunnerUpdateSelection): void;
+  check(selection?: RunnerUpdateSelection): Promise<RunnerUpdateContact>;
   /** Called only between runs; the from-version program holds claims for its bounded handoff. */
   idle(): Promise<'continue' | 'restart' | 'hold'>;
 }
@@ -487,13 +491,13 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       if (ownsTransaction(tx)) tx.healthRefusal = sanitizeRunnerUpdateReason(reason);
     });
   };
-  const queueManual = (): void => {
-    withState(home, state => { (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true, clearBlock: true }; state.nextCheckAt = 0; });
+  const queueManual = (selection: RunnerUpdateSelection = {}): void => {
+    withState(home, state => { (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true, clearBlock: true, ...selection }; state.nextCheckAt = 0; });
   };
-  const check = async (): Promise<RunnerUpdateContact> => {
-    const releaseChannel = channel();
+  const check = async (selection: RunnerUpdateSelection = {}): Promise<RunnerUpdateContact> => {
+    const releaseChannel = selection.channel ?? channel();
     if (releaseChannel === null) return contactPayload();
-    const checked = await releases(releaseChannel, currentVersion, undefined, deps);
+    const checked = await releases(releaseChannel, currentVersion, undefined, deps, selection.targetVersion);
     withState(home, state => {
       state.lastCheckAt = now(); schedule(state, now() + jitter()); state.failures = 0; state.releaseChannel = releaseChannel;
       if (!checked.unchanged) {
@@ -549,7 +553,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     if (!cleanupGuardian()) return 'continue';
     const request = state.requests?.[serverUrl];
     if (now() < state.nextCheckAt) return 'continue';
-    const releaseChannel = channel();
+    const releaseChannel = request?.channel ?? channel();
     const installed = releaseChannel !== null && (deps.serviceInstalled ?? ((spec, targetPlatform) => fs.existsSync(servicePaths(spec, targetPlatform).unitFile)))(options.serviceSpec, platform);
     if (releaseChannel === null || !installed) {
       withState(home, next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
@@ -565,8 +569,8 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       let refs: AssetRefs | null = null;
       try {
         const cached = state.candidate?.channel === releaseChannel ? state.candidate.refs : null;
-        const etag = state.releaseChannel === releaseChannel && !request?.clearBlock ? state.etag : undefined;
-        const found = await releases(releaseChannel, currentVersion, etag, deps);
+        const etag = state.releaseChannel === releaseChannel && !request?.clearBlock && !request?.targetVersion ? state.etag : undefined;
+        const found = await releases(releaseChannel, currentVersion, etag, deps, request?.targetVersion);
         refs = found.unchanged ? cached : found.refs;
         withState(home, next => {
           next.lastCheckAt = now(); schedule(next, now() + jitter(), request); next.failures = 0; next.releaseChannel = releaseChannel;
@@ -642,8 +646,8 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     contactPayload: guard(contactPayload, () => payload(freshState())),
     onContact: guard(onContact, () => undefined), startup: guard(startup, () => undefined),
     acknowledgeHealthy: guard(acknowledgeHealthy, () => undefined), recordClaim: guard(recordClaim, () => undefined),
-    recordHealthRefusal: guard(recordHealthRefusal, () => undefined), queueManual: guard(queueManual, () => undefined),
-    check: guard(check, async () => payload(freshState())), idle: guard(idle, async () => 'continue' as const),
+    recordHealthRefusal: guard(recordHealthRefusal, () => undefined), queueManual,
+    check, idle: guard(idle, async () => 'continue' as const),
   };
 }
 

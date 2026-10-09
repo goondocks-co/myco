@@ -213,16 +213,6 @@ dev-link: dev-build
 	@echo "✓ myco-dev → $(HOME)/.myco-dev/bin/myco (standalone, mirrors prod ~/.myco/bin/myco)"
 	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
 	@echo "✓ $(PWD)/.myco/runtime.command set to $(HOME)/.myco-dev/bin/myco"
-	@# Regenerate symbiont configs across every registered project so any
-	@# that opt into `substituteRuntimeCommand` (opencode today) get the
-	@# runtime.command alias baked into their MCP command. Symbionts that
-	@# rely on `bin/myco-run` to read runtime.command at spawn time are
-	@# unaffected — `myco update` is a no-op for them.
-	@if command -v myco-dev >/dev/null 2>&1; then \
-		myco-dev update --all-projects || echo "⚠ 'myco-dev update --all-projects' failed — symbiont configs may not reflect runtime.command=myco-dev"; \
-	else \
-		echo "⚠ myco-dev not on PATH — skipping symbiont config refresh"; \
-	fi
 
 # Build, deploy, AND restart the dogfood daemon in one step. `dev-link` only
 # COPIES the fresh binary into ~/.myco-dev/bin; a daemon already running keeps
