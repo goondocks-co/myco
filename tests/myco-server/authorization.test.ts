@@ -45,7 +45,7 @@ const MEMBER_ACTIONS: Readonly<Partial<Record<ResourceKind, readonly Action[]>>>
 const PRIVILEGED_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
   settings: ['admin'], secret: ['admin'], credential: ['admin'],
   project: ['admin'], processed: ['admin'], grant: ['admin'], enrollment: ['admin'], backup: ['admin'], run: ['admin'], member: ['admin', 'bootstrap'],
-  queue: ['claim', 'lease'], runner: ['admin'], 'legacy-worker': ['read'],
+  queue: ['claim', 'lease'], runner: ['admin'], 'legacy-worker': ['read', 'admin'],
 };
 /** A runner reaches the run queue and its own runner record over HTTP, and nothing else but the protocol. */
 const RUNNER_HTTP: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> = {
@@ -112,6 +112,9 @@ describe('Deployment authorization policy', () => {
       ['POST', '/api/device/approve-runner', 'runner', 'admin', 'deployment', ['member'], ['owner', 'admin']],
       ['GET', '/api/workers/legacy', 'legacy-worker', 'read', 'deployment', ['member'], ['owner', 'admin']],
       ['GET', '/api/runners', 'runner', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
+      ['POST', '/api/runners/{runnerId}/rename', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
+      ['POST', '/api/runners/{runnerId}/recredential', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
+      ['POST', '/api/workers/legacy/{credentialId}/forget', 'legacy-worker', 'admin', 'deployment', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/pause', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/resume', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/remove', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],

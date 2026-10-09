@@ -141,7 +141,7 @@ export interface RunToolCallRow {
 
 /** One claim of a run, and what its worker's step log holds. */
 /** Who took an attempt: a runner by its id and name, or a legacy worker by the member its credential belongs to. */
-export type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'member'; memberId: string | null };
+export type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'legacy-worker'; memberId: string | null };
 
 export interface RunAttemptRow {
   attemptId: string;
@@ -474,7 +474,7 @@ type AttemptRecord = {
 
 const attemptOf = (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
-  executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'member', memberId: row.memberId },
+  executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'legacy-worker', memberId: row.memberId },
   steps: row.total === null ? null : { total: Number(row.total), received: Number(row.received), overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
 });
 

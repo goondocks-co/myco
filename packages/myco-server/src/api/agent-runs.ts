@@ -1,3 +1,9 @@
+import { emit, classify } from '../telemetry.js';
+import { readWorkerFleet } from '../core/worker-contacts.js';
+import { fleetTaskReason } from '../read/fleet.js';
+import { claimSettings } from '../core/worker-selection.js';
+import { readDispatchLimits } from '../core/limits.js';
+import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
 /**
  * Agent runs, read through the product surface.
  *
@@ -61,7 +67,9 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   const until = instantParam(ctx.url, 'until');
   if (until instanceof Response) return until;
   if (since !== undefined && until !== undefined && since >= until) return badRequest('since must be before until');
-  return ok(await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until }));
+  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until });
+  const waits = await fleetWaits(env, answer.rows.filter(row => row.status === 'queued').map(row => row.task), ctx.now);
+  return ok({ ...answer, rows: answer.rows.map(row => row.status === 'queued' ? { ...row, fleetWait: waits.get(row.task) } : row) });
 }
 
 /** One run with its phases and reports, the sessions it read and the spores it wrote. A run under another project answers 404, the same as one that never existed. */
@@ -82,7 +90,8 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (detail === null) return notFound();
   const subject = await memberSubject(env.db, ctx.member.id, 'http');
   const canCancel = await authorizeHttp(env, RUN_CANCEL_POLICY, subject, { params: { projectId: scope.projectId, runId } });
-  const answer: DashboardRunDetail = { ...detail, run: { ...detail.run, canCancel,
+  const waits = await fleetWaits(env, detail.run.status === 'queued' ? [detail.run.task] : [], ctx.now);
+  const answer: DashboardRunDetail = { ...detail, run: { ...detail.run, ...(detail.run.status === 'queued' ? { fleetWait: waits.get(detail.run.task) } : {}), canCancel,
     cancelReason: canCancel ? null : 'Only the member who requested this run or an administrator can cancel it.' } };
   return ok({ ...answer, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
 }
@@ -111,4 +120,18 @@ export async function handleProjectRunSteps(env: ServerEnv, ctx: OwnerContext): 
   if (attempt instanceof Response) return attempt;
   const answer = await getRunSteps(env.db, scope, runId, attempt, steps);
   return answer === null ? notFound() : ok(answer);
+}
+
+/** One read supplies the current wait for all queued tasks on a page. */
+async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)[], now: number) {
+  const waits = new Map<string | null, { reason: QueueReason; observedAt: number }>();
+  if (tasks.length === 0) return waits;
+  try {
+  const [fleet, settings, limits] = await Promise.all([readWorkerFleet(env.db, now), claimSettings(env), readDispatchLimits(env)]);
+  for (const task of new Set(tasks)) waits.set(task, { reason: task === null ? 'unavailable' : await fleetTaskReason(env, task, fleet, now, settings, limits), observedAt: now });
+  } catch (error) {
+    emit({ kind: 'fleet_read_failed', errorClass: classify(error) });
+    for (const task of new Set(tasks)) waits.set(task, { reason: 'unavailable', observedAt: now });
+  }
+  return waits;
 }

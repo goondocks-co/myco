@@ -1,0 +1,112 @@
+[
+  {
+    "mutation": "stale-stopped",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > retains every registered display state and names a lease even without any contact [15.79ms]",
+      "(fail) shared runner fleet projection > keeps last completed, failed and attempted work after credential replacement and contact pruning [10.92ms]",
+      "(fail) shared runner fleet projection > replacement invalidates transient reports and the old assignment while retaining attempt history [7.65ms]"
+    ]
+  },
+  {
+    "mutation": "lease-suppression",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > retains every registered display state and names a lease even without any contact [12.04ms]"
+    ]
+  },
+  {
+    "mutation": "empty-on-error",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > surfaces failed reads as unavailable, never an empty fleet or zero queue [4.21ms]"
+    ]
+  },
+  {
+    "mutation": "admin-guard",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) the guards that decide a runner's authority > commits a registration only for a pending runner request and a live owner or administrator, whoever calls it [3.38ms]",
+      "(fail) shared runner fleet projection > gives every control only to owner/admin and refuses revoked dashboard sessions [4.55ms]"
+    ]
+  },
+  {
+    "mutation": "queue-reason",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > names whole-fleet queue reasons and retains queue age across capacity, readiness and limits [7.04ms]"
+    ]
+  },
+  {
+    "mutation": "forget-revokes-membership",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) forgetting a retired legacy worker > forgets only an offline contact, audits the owner, preserves membership/capture and reappears on contact [3.83ms]"
+    ]
+  },
+  {
+    "mutation": "correction-replace-name",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > reviews replacement requests and keeps the same identity through the CLI device approval path [5.60ms]"
+    ]
+  },
+  {
+    "mutation": "correction-replace-id",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > reviews replacement requests and keeps the same identity through the CLI device approval path [5.57ms]",
+      "(fail) shared runner fleet projection > binds a renamed machine by identity and refuses another machine with the requested name [6.01ms]"
+    ]
+  },
+  {
+    "mutation": "correction-member-recredential",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) the guards that decide a runner's authority > commits a registration only for a pending runner request and a live owner or administrator, whoever calls it [3.41ms]",
+      "(fail) shared runner fleet projection > gives every control only to owner/admin and refuses revoked dashboard sessions [5.39ms]"
+    ]
+  },
+  {
+    "mutation": "empty-on-error-full",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) shared runner fleet projection > surfaces failed reads as unavailable, never an empty fleet or zero queue [5.41ms]"
+    ]
+  },
+  {
+    "mutation": "correction-drop_durable_contact_and_attempt_fallback",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) fleet corrections > retains contact history across pruning and replacement until a new machine reports [142.37ms]",
+      "(fail) fleet corrections > uses a durable attempt when there is no retained contact [2.86ms]"
+    ]
+  },
+  {
+    "mutation": "correction-throw_on_malformed_update_metadata",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) fleet corrections > degrades malformed update metadata on one runner and keeps claims on the light read [2.92ms]"
+    ]
+  },
+  {
+    "mutation": "correction-restore_old_or_join_fleet_inventory",
+    "exit": 1,
+    "result": "killed",
+    "failures": [
+      "(fail) [cloudflare] runner fleet: D1 rows read stay bounded as member credentials accumulate > runner fleet: D1 rows read stay bounded as member credentials accumulate [8506.62ms]"
+    ]
+  }
+]

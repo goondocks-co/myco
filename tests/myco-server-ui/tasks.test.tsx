@@ -31,13 +31,13 @@ const PREVIEW = (url: URL): TaskStartPreview => ({
   readiness: { condition: 'has-unprocessed-prompts', met: false }, live: false, capability: null, allowance: null,
 });
 
-function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PROJECTS; failProjects?: boolean; sent?: Array<{ path: string; body: unknown }>; week?: Promise<void>; preview?: Promise<void> } = {}) {
+function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PROJECTS; failProjects?: boolean; sent?: Array<{ path: string; body: unknown }>; week?: Promise<void>; preview?: Promise<void>; fleetWait?: TaskStartPreview['fleetWait'] } = {}) {
   const asked: URL[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
     asked.push(url);
     if ((init?.method ?? 'GET') !== 'GET') options.sent?.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    if (url.pathname === '/api/tasks/start') { await options.preview; return Response.json(PREVIEW(url)); }
+    if (url.pathname === '/api/tasks/start') { await options.preview; return Response.json({ ...PREVIEW(url), ...(options.fleetWait === undefined ? {} : { fleetWait: options.fleetWait }) }); }
     if (url.pathname === '/api/harness/dispatch') return Response.json({ runId: 'run_hand0000001', projectId: JSON.parse(String(init!.body)).projectId, queued: true });
     if (url.pathname === '/api/work') { await options.week; } if (url.pathname === '/api/work') return Response.json({ outcomes: [], runs: [], upkeep: { lastSuccessAt: null, unrecovered: null }, totals: null });
     if (url.pathname.endsWith('/capabilities')) return Response.json({ capabilities: { vault_evolution: true, canopy: true, cortex: true } });
@@ -105,6 +105,16 @@ describe('the Tasks view reads the registry', () => {
     fireEvent.click(within(document.getElementById(TASKS[0]!.task)!).getByRole('link', { name: 'Recent runs →' }));
     await screen.findByText('This task has no recorded runs in this project.');
     expect(asked.find((url) => url.pathname === `/api/projects/${P}/runs`)?.searchParams.get('task')).toBe(TASKS[0]!.task);
+  });
+
+  it('shows the shared dispatch ceiling even when a compatible agent is available', async () => {
+    server(TASK_DESCRIPTIONS, { fleetWait: { reason: 'dispatch_ceiling', observedAt: Date.now() } });
+    mount(`/p/${P}/work/tasks`);
+    const learning = TASK_DESCRIPTIONS.find(task => task.task === 'extract-curate')!;
+    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${learning.name}` }));
+    await screen.findByText(/The work limit is holding this work/);
+    expect(screen.getByText(/Starting now queues this run/)).toBeTruthy();
+    expect(screen.queryByText(/It will run on/)).toBeNull();
   });
 
   it('changing a task tier through Settings refreshes its current model', async () => {
