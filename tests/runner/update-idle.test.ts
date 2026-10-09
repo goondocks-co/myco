@@ -39,6 +39,8 @@ describe('runner update idle admission', () => {
           signal: stopping.signal, pollIdleMs: 1, log: () => {},
           contactBody: () => ({ update: { currentVersion: '2.0.0-alpha.2', channel: 'alpha' } }),
           onContact: async body => { if (body.updateRequest) events.push('delivered'); },
+          onClaim: () => { expect(active).toBe(true); events.push('claim-started'); },
+          onClaimCompleted: () => { expect(ended).toBe(true); events.push('claim-completed'); },
           onIdle: async () => {
             idleCalls++;
             expect(active).toBe(false);
@@ -73,7 +75,7 @@ describe('runner update idle admission', () => {
         });
         expect(outcome).toMatchObject({ driven: 1, refused: null, replaced: true });
         expect(contacts).toBe(2);
-        expect(events).toEqual(['requested', 'ended', 'delivered', 'restart']);
+        expect(events).toEqual(['claim-started', 'requested', 'ended', 'claim-completed', 'delivered', 'restart']);
       } finally { clearInterval(timer); stopping.abort(); }
     } finally {
       restore();

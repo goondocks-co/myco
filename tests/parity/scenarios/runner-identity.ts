@@ -58,8 +58,12 @@ export const runnerIdentity: ParityScenario = {
     expect(await answer(post(target, '/auth/device/poll', { device_code: first.device_code }))).toEqual({ error: 'invalid_grant' });
     expect(await answer(asRunner(target, token, '/runners/contact', { machineId: 'parity-mini' }))).toMatchObject({ persisted: true, runner: { id: runnerId, state: 'enabled' } });
 
+    expect(await answer(asRunner(target, token, '/runners/contact', { update: { channel: 'invalid' } }))).toMatchObject({ persisted: true });
     const update = { channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: now };
-    expect(await answer(asRunner(target, token, '/runners/contact', { update }))).toMatchObject({ persisted: true, updateRequest: null });
+    const blockedVersion = { version: update.latestVersion, until: now + 3600000, reason: 'Launch failed' };
+    expect(await answer(asRunner(target, token, '/runners/contact', { update: { ...update, blockedVersion } }))).toMatchObject({ persisted: true, updateRequest: null });
+    const blockedFleet = await (await fetch(`${target.url}/api/runners`, { headers: admin })).json() as { runners: Array<Record<string, unknown>> };
+    expect(blockedFleet.runners.find(runner => runner.id === runnerId)).toMatchObject({ blockedVersion, updateState: null });
     await target.sql(`UPDATE members SET role = 'member' WHERE id = ${lit(ADMIN)}`);
     expect((await post(target, `/api/runners/${runnerId}/update`, {}, admin)).status).toBe(403);
     await target.sql(`UPDATE members SET role = 'admin' WHERE id = ${lit(ADMIN)}`);
@@ -67,13 +71,22 @@ export const runnerIdentity: ParityScenario = {
     expect(accepted.every((reply) => reply.requested === true)).toBe(true);
     const updateRequest = accepted[0]!.updateRequest as { id: string; requestedAt: number };
     expect(accepted[1]!.updateRequest).toEqual(updateRequest);
+    expect(updateRequest).toMatchObject({ clearBlock: true });
     expect(await target.sql(`SELECT actor_member, COUNT(*) AS n FROM runner_update_audit
       WHERE action = 'requested' AND request_id = ${lit(updateRequest.id)} GROUP BY actor_member ORDER BY actor_member`))
       .toEqual([ADMIN, MEMBER_ID].sort().map(actor_member => ({ actor_member, n: 1 })));
     expect(await answer(asRunner(target, token, '/runners/contact', { update }))).toMatchObject({ updateRequest });
-    const lastResult = { requestId: updateRequest.id, fromVersion: update.currentVersion, toVersion: update.latestVersion, result: 'updated', at: now };
-    const updated = { update: { ...update, currentVersion: update.latestVersion, lastResult } };
-    for (let retry = 0; retry < 2; retry++) expect(await answer(asRunner(target, token, '/runners/contact', updated))).toMatchObject({ updateRequest: null });
+    const lastResult = { requestId: updateRequest.id, attemptId: 'parity_update_attempt', fromVersion: update.currentVersion, toVersion: update.latestVersion, result: 'updated', at: now };
+    const updateState = { phase: 'probation', since: now, reason: 'Waiting for health' };
+    const updated = { update: { ...update, currentVersion: update.latestVersion, lastResult, updateState } };
+    for (let retry = 0; retry < 2; retry++) expect(await answer(asRunner(target, token, '/runners/contact', { update: { ...updated.update, lastResult: { ...lastResult, at: now + retry, reason: 'probe\u0085failed\u200bto\u2028launch ' + '😀'.repeat(512) } } }))).toMatchObject({ persisted: true, updateRequest: null });
+    expect(await answer(asRunner(target, token, '/runners/contact', { update: { ...updated.update, lastResult: { ...lastResult, at: 'invalid' } } }))).toMatchObject({ persisted: true });
+    const updatedFleet = await (await fetch(`${target.url}/api/runners`, { headers: admin })).json() as { runners: Array<Record<string, unknown>> };
+    const projected = updatedFleet.runners.find(runner => runner.id === runnerId)!;
+    expect(projected).toMatchObject({ blockedVersion: null, updateState, lastResult: { attemptId: 'parity_update_attempt' } });
+    const reason = (projected.lastResult as { reason: string }).reason;
+    expect(Array.from(reason)).toHaveLength(512);
+    expect(reason).not.toMatch(/[\p{C}\p{Zl}\p{Zp}]/u);
     expect(await target.sql(`SELECT COUNT(*) AS n FROM runner_update_audit WHERE request_id = ${lit(updateRequest.id)}`)).toEqual([{ n: 3 }]);
     expect(await target.sql(`SELECT current_version, channel FROM runner_update_reports WHERE runner_id = ${lit(runnerId)}`)).toEqual([{ current_version: update.latestVersion, channel: 'alpha' }]);
 

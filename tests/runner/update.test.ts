@@ -214,11 +214,13 @@ describe('runner release handoff', () => {
     expect(readRunnerUpdateState(f.home).transaction?.requestId).toBe('request-1');
     expect(fs.existsSync(versionBinaryPath(f.home, process.platform, from))).toBe(true);
     expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
+    let running = true;
     await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
       now: (() => { let tick = 0; return () => tick += 1000; })(), alive: () => false, wait: async () => {},
-      stop: () => {}, stopped: () => true,
+      stop: () => { running = false; }, stopped: () => !running,
       start: () => {
-        withRunnerUpdateState(f.home, (state) => { if (state.transaction?.phase === 'adopted') state.transaction.phase = 'healthy'; });
+        running = true;
+        withRunnerUpdateState(f.home, (state) => { if (state.transaction?.phase === 'adopted') { state.transaction.phase = 'probation'; state.transaction.contactAt = 1000; state.transaction.completedClaimAt = 1000; } });
         return { unitFile: 'fixture', loaded: true, running: true, changed: true };
       },
       probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'),
@@ -254,10 +256,11 @@ describe('runner release handoff', () => {
     expect(await controller.idle()).toBe('restart');
     const previousMarker = JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'));
     writeInstallMarker(f.home, { channel: 'stable', source: 'npm', bin: path.join(f.home, 'other-bin'), prerelease: false });
+    let running = true;
     await expect(runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
       now: (() => { let tick = 0; return () => tick += 5000; })(), alive: () => false, wait: async () => {},
-      stop: () => {}, stopped: () => true,
-      start: () => ({ unitFile: 'fixture', loaded: true, running: true, changed: true }),
+      stop: () => { running = false; }, stopped: () => !running,
+      start: () => { running = true; return { unitFile: 'fixture', loaded: true, running: true, changed: true }; },
       probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'),
       removeGuardian: retryRemoveGuardian,
     })).rejects.toThrow('guardian removal temporarily failed');
@@ -266,16 +269,16 @@ describe('runner release handoff', () => {
     controller.startup();
     expect(removals).toBe(2);
     expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
-    expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.result).toBe('rolled_back');
-    expect(readRunnerUpdateState(f.home).failedVersions).toContain(to);
+    expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.result).toBe('failed');
+    expect(readRunnerUpdateState(f.home).blockedVersions?.[to]).toBeUndefined();
     expect(fs.readdirSync(path.join(f.home, 'bin', 'versions')).sort()).toEqual([priorGood, from]);
     expect(readRunnerUpdateState(f.home).cleanup).toBeUndefined();
     expect(JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'))).toEqual(previousMarker);
     expect((await controller.check()).latestVersion).toBe(to);
-    expect(readRunnerUpdateState(f.home).failedVersions).toContain(to);
-    controller.onContact({ updateRequest: { id: 'retry-failed-release', requestedAt: 1100 } });
-    expect(await controller.idle()).toBe('continue');
-    expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toMatchObject({ requestId: 'retry-failed-release', result: 'refused' });
+    expect(readRunnerUpdateState(f.home).blockedVersions?.[to]).toBeUndefined();
+    controller.onContact({ updateRequest: { id: 'retry-failed-release', requestedAt: 1100, clearBlock: true } });
+    expect(await controller.idle()).toBe('restart');
+    expect(readRunnerUpdateState(f.home).transaction?.requestId).toBe('retry-failed-release');
     expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(from);
   });
 
@@ -351,7 +354,7 @@ describe('runner release handoff', () => {
         installGuardian: (spec) => { guardian = spec; return installGuardian(); },
       } });
     expect(await controller.idle()).toBe('restart');
-    expect(guardian?.binaryPath).toBe(versionBinaryPath(f.home, process.platform, to));
+    expect(guardian?.binaryPath).toBe(path.join(f.home, 'runner', 'guardian', 'myco'));
     expect(guardian?.binaryPath).not.toBe(f.binaryPath);
     expect(fs.readFileSync(versionBinaryPath(f.home, process.platform, from), 'utf8')).toContain(from);
     expect(guardian?.unit.args).toEqual(['runner', '__apply-update', path.join(f.home, 'runner', 'update.json')]);
@@ -359,16 +362,16 @@ describe('runner release handoff', () => {
     const script = path.join(f.home, 'crash-helper.ts');
     const helperSource = path.resolve('packages/myco/src/runner/update-helper.ts');
     const stateFile = path.join(f.home, 'runner', 'update.json');
-    fs.writeFileSync(script, `import fs from 'node:fs';\nimport { runRunnerUpdateHelper } from ${JSON.stringify(helperSource)};\nawait runRunnerUpdateHelper(${JSON.stringify(stateFile)}, { alive: () => false, stop: () => { fs.writeFileSync(${JSON.stringify(sentinel)}, 'stopped'); process.kill(process.pid, 'SIGKILL'); }, stopped: () => true, removeGuardian: () => {} });\n`);
+    fs.writeFileSync(script, `import fs from 'node:fs';\nimport { runRunnerUpdateHelper } from ${JSON.stringify(helperSource)};\nawait runRunnerUpdateHelper(${JSON.stringify(stateFile)}, { now: () => 2000, alive: () => false, probe: () => ({ runs: true }), stop: () => { fs.writeFileSync(${JSON.stringify(sentinel)}, 'stopped'); process.kill(process.pid, 'SIGKILL'); }, stopped: () => true, removeGuardian: () => {} });\n`);
     const first = spawnSync(process.execPath, [script], { cwd: f.home, env: process.env, timeout: 5000 });
     expect(first.signal).toBe('SIGKILL');
     expect(fs.readFileSync(sentinel, 'utf8')).toBe('stopped');
     expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('waiting');
-    let starts = 0;
+    let starts = 0, running = false;
     await runRunnerUpdateHelper(stateFile, {
-      alive: () => false, stop: () => {}, stopped: () => true,
+      now: () => 3000, alive: () => false, stop: () => { running = false; }, stopped: () => !running,
       start: () => {
-        starts++;
+        starts++; running = true;
         withRunnerUpdateState(f.home, (state) => { if (state.transaction?.phase === 'adopted') state.transaction.phase = 'healthy'; });
         return { unitFile: 'fixture', loaded: true, running: true, changed: true };
       },

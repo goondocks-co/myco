@@ -130,6 +130,10 @@ export interface WorkerOptions {
   contactBody?: () => Record<string, unknown>;
   /** Runs under the instance lock between attempts, before another claim. */
   onIdle?: () => Promise<'restart' | 'hold' | void>;
+  /** The run is admitted under this executor's lease. */
+  onClaim?: () => void;
+  /** A driven attempt's terminal outcome was accepted by the Deployment. */
+  onClaimCompleted?: () => void;
   /** What a harness probe reads of a credential file. Defaults to reading it. */
   detection?: DetectionMode;
 }
@@ -976,6 +980,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       try {
         let outcome: Awaited<ReturnType<typeof drive>>;
         try {
+          options.onClaim?.();
           outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps);
         } catch (error) {
           const coded = workerFailedError('worker_error');
@@ -1004,6 +1009,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
             options.log(`the Deployment did not record the outcome of ${run.id}: ${typeof ended.body.reason === 'string' ? ended.body.reason : 'no reason given'}`);
           }
           if (ended.kind === 'answered') {
+            if (ended.body.ended !== false) options.onClaimCompleted?.();
             const recorded = ended.body.status;
             if (typeof recorded === 'string' && recorded !== outcome.status) {
               options.log(`reported ${run.id} as ${outcome.status}; the Deployment recorded it ${recorded}`);

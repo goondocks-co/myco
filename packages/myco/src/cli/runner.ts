@@ -137,6 +137,8 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
       updater.acknowledgeHealthy();
     },
     onIdle: async () => { const outcome = await updater.idle(); return outcome === 'continue' ? undefined : outcome; },
+    onClaim: () => updater.recordClaim(),
+    onClaimCompleted: () => updater.recordClaim(true),
     runRoot: path.join(dir, RUNS_DIRNAME),
     stepRoot: path.join(dir, STEPS_DIRNAME),
     diagnosticRoot: path.join(dir, DIAGNOSTICS_DIRNAME),
@@ -151,6 +153,7 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   log(`drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`);
   if (outcome.replaced === true) return false;
   if (outcome.refused === null) return true;
+  updater.recordHealthRefusal(outcome.refused);
   if (outcome.refused === 'unauthorized' || outcome.refused === 'no_membership') {
     return fail(`${serverUrl} does not accept this runner's credential; register it afresh with \`myco runner register ${serverUrl} --replace\``);
   }

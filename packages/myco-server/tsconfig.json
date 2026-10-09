@@ -4,6 +4,7 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "paths": {
+      "@goondocks/myco-shared/runner-update": ["../myco-shared/src/runner-update.ts"],
       "@goondocks/myco-shared/raw-claims": ["../myco-shared/src/raw-claims.ts"],
       "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"],
       "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"],

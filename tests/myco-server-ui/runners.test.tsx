@@ -12,7 +12,7 @@ const clients: QueryClient[] = [];
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()); globalThis.fetch = originalFetch; });
 const NOW = Date.now();
 const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', connected: true, version: '2.0.0-alpha.2', channel: 'alpha', latestVersion: '2.0.0-alpha.3', lastSeenAt: NOW, lastCheckAt: NOW,
-  lastResult: { fromVersion: '2.0.0-alpha.1', toVersion: '2.0.0-alpha.2', result: 'updated', at: NOW }, updateRequest: null, busy: null };
+  lastResult: { fromVersion: '2.0.0-alpha.1', toVersion: '2.0.0-alpha.2', result: 'updated', at: NOW }, blockedVersion: null, updateState: null, updateRequest: null, busy: null };
 
 function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER) {
   let runner = initial;
@@ -26,7 +26,7 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER) {
     if (path === '/api/runners') return Response.json({ runners: [runner] });
     if (path === '/api/runners/rn_mini/update') {
       writes.push(`${init?.method} ${path}`);
-      runner = { ...runner, updateRequest: { id: 'request_1', requestedAt: NOW } };
+      runner = { ...runner, updateRequest: { id: 'request_1', requestedAt: NOW, clearBlock: true } };
       return Response.json({ requested: true, updateRequest: runner.updateRequest });
     }
     return new Response(null, { status: 404 });
@@ -60,6 +60,33 @@ describe('Runners page', () => {
     expect(screen.queryByRole('button', { name: 'Update now' })).toBeNull();
     expect(screen.getByRole('link', { name: 'Runners' })).toBeTruthy();
     expect(writes).toEqual([]);
+  });
+
+  it('shows a failed release block, expiry and cleanup state and lets administrators explicitly retry', async () => {
+    const blocked = { ...RUNNER, lastResult: { fromVersion: RUNNER.version!, toVersion: RUNNER.latestVersion!, result: 'rolled_back' as const, reason: 'Health check failed', at: NOW },
+      blockedVersion: { version: RUNNER.latestVersion!, until: NOW + 3600000, reason: 'Launch failed' }, updateState: { phase: 'cleanup_pending' as const, since: NOW, reason: 'Guardian cleanup failed' } };
+    const writes = mount('admin', blocked);
+    const article = (await screen.findByText('homelab-mini')).closest('article');
+    expect(article?.textContent).toContain('Rolled back');
+    expect(article?.textContent).toContain('Health check failed');
+    expect(article?.textContent).toContain('Blocked release: 2.0.0-alpha.3');
+    expect(article?.textContent).toContain(new Date(blocked.blockedVersion.until).toLocaleString());
+    expect(article?.textContent).toContain('Cleanup pending · execution continues');
+    expect(article?.textContent).not.toContain('execution held');
+    expect(article?.textContent).toContain('Guardian cleanup failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear block and update' }));
+    await waitFor(() => expect(writes.length).toBe(1));
+  });
+
+  it('shows updating and probation holds to members without a retry control', async () => {
+    for (const [phase, words] of [['updating', 'Updating'], ['probation', 'Health probation']] as const) {
+      mount('member', { ...RUNNER, updateState: { phase, since: NOW, reason: 'Waiting for service health' } });
+      const article = (await screen.findByText('homelab-mini')).closest('article');
+      expect(article?.textContent).toContain(words);
+      expect(article?.textContent).toContain('Waiting for service health');
+      expect(screen.queryByRole('button', { name: 'Clear block and update' })).toBeNull();
+      cleanup(); clients.splice(0).forEach(client => client.clear());
+    }
   });
 
   it('disables update for an offline runner or one that cannot report its installed release channel', async () => {

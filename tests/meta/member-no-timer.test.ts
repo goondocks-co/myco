@@ -70,7 +70,7 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
     calls: 1, form: 'awaited', bound: "the waits while a stopped harness's process group ends, bounded by the stop's grace",
   },
   'packages/myco/src/runner/update-helper.ts': {
-    calls: 1, form: 'awaited', bound: 'one supervised update waits for the old process to exit and for authenticated contact, within finite handoff and health deadlines',
+    calls: 1, form: 'awaited', bound: 'one supervised update waits within finite handoff, contact and probation deadlines',
   },
   'packages/myco/src/utils/git.ts': {
     calls: 1, form: 'cleared', bound: 'a one-shot Git child deadline, cleared on exit or spawn failure',
@@ -84,7 +84,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
  * A deadline is a timer the runtime keeps. It is allowed only as the deadline of
  * a request or a child: every site must be the signal a call is given, alone or
  * joined to the caller's own (`AbortSignal.any([signal, AbortSignal.timeout(…)])`),
- * so it cannot fire on anything but the call it bounds.
+ * so it cannot fire on anything but the call it bounds. Like the list above, this
+ * only shrinks. The runner idle-loop release request and its finite handoff
+ * watcher are the explicit exception; member updates remain on-demand.
  */
 const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string }>> = {
   'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },

@@ -29,6 +29,8 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
   const client = useQueryClient();
   const update = useMutation({ mutationFn: () => postJson(`/api/runners/${encodeURIComponent(runner.id)}/update`, {}), onSuccess: async () => { await client.invalidateQueries({ queryKey: RUNNERS_KEY }); } });
   const result = runner.lastResult;
+  const blocked = runner.blockedVersion;
+  const state = runner.updateState;
   const resultWords = result === null ? 'No update result reported.' : `${result.result === 'updated' ? 'Updated' : result.result === 'no_update' ? 'Already current' : result.result === 'rolled_back' ? 'Rolled back' : result.result === 'refused' ? 'Update refused' : 'Update failed'} · ${result.fromVersion} → ${result.toVersion} · ${formatRelative(result.at)}${result.reason ? ` · ${result.reason}` : ''}`;
   return (
     <article className="flex flex-col gap-s3 p-s4 sm:flex-row sm:items-start sm:justify-between" data-runner={runner.id}>
@@ -38,11 +40,13 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
         {runner.latestVersion !== null && runner.latestVersion !== runner.version && <p className="t-small text-ink">Update available: {runner.latestVersion}</p>}
         <p className="t-small text-muted">{runner.lastCheckAt === null ? 'No update check reported.' : `Last checked ${formatRelative(runner.lastCheckAt)}.`}</p>
         <p className="t-small text-muted">{resultWords}</p>
+        {blocked != null && <p className="t-small text-ink">Blocked release: {blocked.version} · {blocked.until > Date.now() ? 'retry after' : 'block expired'} {new Date(blocked.until).toLocaleString()} · {blocked.reason}</p>}
+        {state != null && <p role="status" className="t-small text-ink">{state.phase === 'updating' ? 'Updating · execution held' : state.phase === 'probation' ? 'Health probation' : 'Cleanup pending · execution continues'} · since {formatRelative(state.since)}{state.reason ? ` · ${state.reason}` : ''}</p>}
         {runner.channel === null && runner.state !== 'removed' && <p className="t-small text-muted">Dashboard updates require a runner that reports its installed release channel.</p>}
         {runner.updateRequest !== null && <p role="status" className="t-small text-muted">Update requested · {runner.busy === null ? 'waiting for the runner' : 'waiting for the current run to finish'}.</p>}
         {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
       </div>
-      {allowed && runner.state !== 'removed' && <Button disabled={!runner.connected || runner.channel === null || runner.updateRequest !== null || update.isPending} onClick={() => update.mutate()}>{update.isPending ? 'Requesting…' : 'Update now'}</Button>}
+      {allowed && runner.state !== 'removed' && <Button disabled={!runner.connected || runner.channel === null || runner.updateRequest !== null || update.isPending} onClick={() => update.mutate()}>{update.isPending ? 'Requesting…' : blocked != null ? 'Clear block and update' : 'Update now'}</Button>}
     </article>
   );
 }

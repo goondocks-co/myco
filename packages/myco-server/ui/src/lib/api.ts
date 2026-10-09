@@ -1,3 +1,4 @@
+import type { RunnerUpdateResult, RunnerBlockedVersion, RunnerUpdateState, RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
 import type { CaptureRow } from '../features/today/wire';
 
 /**
@@ -158,7 +159,9 @@ export interface RunnerRow {
   id: string; name: string; state: 'enabled' | 'paused' | 'removed'; connected: boolean;
   version: string | null; channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null;
   lastSeenAt: number | null; lastCheckAt: number | null;
-  lastResult: { fromVersion: string; toVersion: string; result: 'updated' | 'no_update' | 'refused' | 'rolled_back' | 'failed'; reason?: string; at: number } | null;
-  updateRequest: { id: string; requestedAt: number } | null;
+  lastResult: RunnerUpdateResult | null;
+  blockedVersion: RunnerBlockedVersion | null;
+  updateState: RunnerUpdateState | null;
+  updateRequest: RunnerUpdateRequest | null;
   busy: { projectId: string; runId: string; leaseExpiresAt: number } | null;
 }

@@ -6,6 +6,7 @@ import { run } from '@myco/cli/runner.js';
 import { setPluginVersion } from '@myco/version.js';
 import { installService, uninstallService, startService, statusOfService, stopService } from '@myco/server/service.js';
 import { recordingPlatform } from '../../helpers/fake-service-manager.js';
+import { readRunnerUpdateState } from '@myco/runner/update.js';
 
 declare const MYCO_UPDATE_FIXTURE_VERSION: string;
 setPluginVersion(MYCO_UPDATE_FIXTURE_VERSION);
@@ -32,6 +33,7 @@ if (process.argv[2] === '--version') {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => stopped.abort());
   const timeout = setTimeout(() => stopped.abort(), 4000);
   const originalFetch = globalThis.fetch;
+  let probationTime = 0;
   const serverUrl = process.env.MYCO_UPDATE_FIXTURE_SERVER!;
   const ok = await run(process.argv.slice(3), {
     mycoHome: home, home: process.env.HOME!, platform: 'darwin', binaryPath,
@@ -53,6 +55,11 @@ if (process.argv[2] === '--version') {
       },
     },
     updateHelper: {
+      now: () => Date.now() + probationTime,
+      wait: async () => {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        if (readRunnerUpdateState(home).transaction?.phase === 'probation') probationTime += 60_000;
+      },
       removeGuardian: spec => { uninstallService(spec, { platform: 'darwin', runner: platform.runner }); save(); },
       stop: spec => { stopService(spec, { platform: 'darwin', runner: platform.runner }); save(); },
       stopped: spec => !statusOfService(spec, { platform: 'darwin', runner: platform.runner }).running,

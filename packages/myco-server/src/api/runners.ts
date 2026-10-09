@@ -9,6 +9,7 @@ import { deploymentIdentity } from '../auth/authorization.js';
 import { controlRunner, listRunners, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
 import { runnerContactStatement, readWorkerFleet } from '../core/worker-contacts.js';
 import { parseRunnerUpdateReport, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
+import { emit } from '../telemetry.js';
 import { ok, parseJsonObject } from './scope.js';
 
 const REPORTED_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -30,11 +31,11 @@ function reported(value: unknown, shape: 'id' | 'text'): string | null {
 export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): Promise<Response> {
   const body = parseJsonObject(ctx.body);
   if (body === null) return ok({ persisted: false, code: 'parse', reason: 'body must be a JSON object' });
-  const update = body.update === undefined ? undefined : parseRunnerUpdateReport(body.update);
-  if (update === null) return ok({ persisted: false, code: 'parse', reason: 'update report is invalid' });
+  const update = body.update === undefined ? null : parseRunnerUpdateReport(body.update, ({ field, disposition }) =>
+    emit({ kind: 'runner_update_metadata', reason: 'invalid_field', runnerId: ctx.auth.runnerId, field, disposition }));
   await env.db.batch([runnerContactStatement(env.db, {
     runnerId: ctx.auth.runnerId, machineId: reported(body.machineId, 'id'), os: reported(body.os, 'text'), version: reported(body.version, 'id'), now: ctx.now,
-  }), ...(update === undefined ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
+  }), ...(update === null ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
   return ok({

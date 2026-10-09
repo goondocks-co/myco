@@ -22,7 +22,14 @@ export interface RunnerUpdateCliDeps extends RunnerServiceDeps {
 export function runnerUpdater(serverUrl: string, deps: RunnerUpdateCliDeps, log: (line: string) => void, running = false): RunnerUpdateController {
   const home = deps.mycoHome ?? resolveMycoHome();
   const caller = executorServiceTarget(serverUrl, { ...deps, mycoHome: home }, 'runner');
-  const installed = installedRunnerTarget(caller);
+  let unavailable = false;
+  let installed = caller;
+  try { installed = installedRunnerTarget(caller); }
+  catch (error) {
+    if (!running) throw error;
+    unavailable = true;
+    log('runner update service metadata unavailable: ' + String(error));
+  }
   const foreground = running && path.resolve(caller.binaryPath) !== path.resolve(installed.binaryPath);
   const target = foreground ? caller : installed;
   if (foreground) log('foreground runner uses another program; service updates require the installed runner');
@@ -35,7 +42,7 @@ export function runnerUpdater(serverUrl: string, deps: RunnerUpdateCliDeps, log:
   return createRunnerUpdateController({
     serverUrl, home, binaryPath: target.binaryPath, currentVersion,
     serviceSpec: workerServiceSpec(target, []), platform: deps.platform, log,
-    deps: { ...deps.update, ...(foreground ? { serviceInstalled: () => false } : {}), ...(deps.now === undefined ? {} : { now: deps.now }) },
+    deps: { ...deps.update, ...(foreground || unavailable ? { serviceInstalled: () => false } : {}), ...(deps.now === undefined ? {} : { now: deps.now }) },
   });
 }
 
