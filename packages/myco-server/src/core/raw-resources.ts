@@ -23,7 +23,9 @@ export const rawMemberResourceSql = (project: string, kind: RawResource['kind'],
   : `EXISTS (SELECT 1 FROM raw_resources r JOIN members m ON m.id = ${effectiveRawOwnerSql('r.owner_member_id', 'r.provenance', 'r.revision', 'r.claim_member_id')}
       WHERE r.project_id = ${project} AND r.kind = '${kind}' AND r.resource_id = ${id} AND r.classification = 'raw'
         AND NOT EXISTS (SELECT 1 FROM archive_bundles a WHERE '${kind}'='blob' AND a.project_id=r.project_id
-          AND (a.archive_key=r.resource_id OR a.receipt_key=r.resource_id))
+          AND a.archive_key=r.resource_id)
+        AND NOT EXISTS (SELECT 1 FROM archive_bundles a WHERE '${kind}'='blob' AND a.project_id=r.project_id
+          AND a.receipt_key=r.resource_id)
         AND NOT EXISTS (SELECT 1 FROM registered_content_proofs p WHERE '${kind}'='blob' AND p.project_id=r.project_id
           AND p.key=r.resource_id AND (p.source_kind='bundle' OR (p.source_kind='receipt' AND p.source_id LIKE 'bundle:%')))
         AND m.id = ${member} AND m.revoked_at IS NULL

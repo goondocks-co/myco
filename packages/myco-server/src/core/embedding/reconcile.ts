@@ -1,9 +1,12 @@
 import type { BlobStore, RelationalStore } from '../adapters.js';
-import { EMBEDDING_TEXT_CHARS, VECTOR_DELETE_CONFIRM_MS, VECTOR_DELETE_RETRY_MS, VECTOR_WRITE_TIMEOUT_MS, inputRefusal, type EmbeddingProvider } from './provider.js';
+import { EMBEDDING_TEXT_CHARS, VECTOR_WRITE_TIMEOUT_MS, inputRefusal, type EmbeddingProvider } from './provider.js';
 import { VECTOR_TYPES, vectorId, type VectorMetadata, type VectorStore, type VectorType } from './vectors.js';
 import type { EmbeddingSource } from '../../read/embedding.js';
 import { reconcileHubness } from './hubness.js';
 import { registeredObjectKeySql } from '../blob-objects.js';
+import { retiringReceipt, sourceSelectionQuery } from './selection.js';
+import { RECEIPT } from './receipt-state.js';
+export { RECEIPT } from './receipt-state.js';
 
 /**
  * `provider` writes every source and, unless `calibrate` names another model, calibrates spores. While an embedding
@@ -34,8 +37,10 @@ export const INPUT_REFUSAL_RETRY_MS = 24 * 60 * 60_000;
  * Source `s`'s current revision is one embedding passes over under a model: its stored text cannot be read, or the model
  * refused it as input within `INPUT_REFUSAL_RETRY_MS`. Binds: `passedOverBinds(modelKey, now)`.
  */
-export const PASSED_OVER = `EXISTS (SELECT 1 FROM embedding_source_failures f WHERE f.project_id = s.project_id AND f.type = s.type
-  AND f.record_id = s.record_id AND f.revision = s.revision AND (f.model_key = '${ANY_MODEL}' OR (f.model_key = ? AND f.recorded_at > ?)))`;
+export const PASSED_OVER = `(EXISTS (SELECT 1 FROM embedding_source_failures f WHERE f.project_id = s.project_id AND f.type = s.type
+  AND f.record_id = s.record_id AND f.revision = s.revision AND f.model_key = '${ANY_MODEL}') OR EXISTS (
+  SELECT 1 FROM embedding_source_failures f WHERE f.project_id = s.project_id AND f.type = s.type AND f.record_id = s.record_id
+    AND f.revision = s.revision AND f.model_key = ? AND f.recorded_at > ?))`;
 export const passedOverBinds = (modelKey: string, now: number): [string, number] => [modelKey, now - INPUT_REFUSAL_RETRY_MS];
 
 /** A source embedding passes over, as Health and a switch list it: where it is, what it is, and why. */
@@ -121,25 +126,6 @@ const metadataOf = (s: EmbeddingSource): VectorMetadata => ({ type: s.type, reco
   status: s.status, session_id: s.session_id, created_at: s.created_at, observation_type: s.observation_type,
   release_state: s.release_state, release_confidence: s.release_confidence });
 
-/**
- * A receipt's `ready`: 0 while its write is journaled, 1 once indexed, and negative once its vector's deletion has begun.
- * Spore calibration returns an indexed spore receipt whose vector the store never returns to 0, counting it in
- * `rewrites`, and never moves a negative one.
- */
-export const RECEIPT = { journaled: 0, ready: 1, deletionSent: -1, deletionFailed: -2 } as const;
-
-/**
- * A receipt claimed for deletion stays claimed until it is retired: it is due again `VECTOR_DELETE_CONFIRM_MS` after a
- * delete is sent and `VECTOR_DELETE_RETRY_MS` after a delete fails or its confirmation finds the vector still stored,
- * whether or not its source is current. An unclaimed receipt is due at once when its vector no longer belongs to a current
- * source, or when it is under a model no longer retained. Binds: `deletionDueBinds(retained, now)`.
- */
-export const DELETION_DUE = `((r.ready >= ${RECEIPT.journaled} AND (r.model_key NOT IN (SELECT value FROM json_each(?)) OR NOT EXISTS
-  (SELECT 1 FROM embedding_sources s WHERE s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision)))
-  OR (r.ready = ${RECEIPT.deletionSent} AND r.updated_at <= ?) OR (r.ready = ${RECEIPT.deletionFailed} AND r.updated_at <= ?))`;
-export const deletionDueBinds = (retained: string | readonly string[], now: number): [string, number, number] =>
-  [JSON.stringify(typeof retained === 'string' ? [retained] : [...new Set(retained)]), now - VECTOR_DELETE_CONFIRM_MS, now - VECTOR_DELETE_RETRY_MS];
-
 /** Every model whose vectors a step keeps. */
 export const retainedModels = (context: Pick<EmbeddingContext, 'provider' | 'building' | 'retain'>): string[] =>
   [...new Set([context.provider.modelKey, ...(context.building === undefined ? [] : [context.building.modelKey]), ...(context.retain ?? [])])];
@@ -180,9 +166,7 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
       ?? (context.building === undefined ? null : await writeSource(context, context.building, projectId, now));
     if (written !== null) return written;
   }
-  const orphan = await db.prepare(`SELECT r.* FROM embedding_receipts r WHERE r.project_id = ? AND ${DELETION_DUE}
-    ORDER BY r.updated_at, r.id LIMIT 1`).bind(projectId, ...deletionDueBinds(retainedModels(context), now))
-    .first<{ id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number }>();
+  const orphan = await retiringReceipt(db, projectId, retainedModels(context), now);
   if (orphan !== null) {
     const partition = { projectId, modelKey: orphan.model_key };
     const receipt = [projectId, orphan.model_key, orphan.id] as const;
@@ -220,10 +204,17 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
   for (let offset = 0; offset < VECTOR_TYPES.length; offset++) {
     const index = ((cursor?.next_type ?? 0) + offset) % VECTOR_TYPES.length;
     const type = VECTOR_TYPES[index];
-    const source = await db.prepare(`SELECT s.*, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key, EXISTS(SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type AND r.record_id = s.record_id) AS stale
-      FROM embedding_sources s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id
-      WHERE s.project_id = ? AND s.type = ? AND NOT ${SOURCE_HELD} AND NOT ${PASSED_OVER}
-      ORDER BY stale, v.attempted_at, s.record_id LIMIT 1`).bind(projectId, type, provider.modelKey, ...passedOverBinds(provider.modelKey, now)).first<EmbeddingSource & { object_key: string | null; stale: number }>();
+    let selected: { record_id: string; revision: string } | null = null;
+    let stale = false;
+    for (const arm of [false, true]) {
+      const { sql, binds } = sourceSelectionQuery(projectId, type!, provider.modelKey, now, arm);
+      selected = await db.prepare(sql).bind(...binds).first<{ record_id: string; revision: string }>();
+      if (selected !== null) { stale = arm; break; }
+    }
+    if (selected === null) continue;
+    const source = await db.prepare(`SELECT s.*, ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
+      FROM embedding_sources s WHERE s.project_id = ? AND s.type = ? AND s.record_id = ? AND s.revision = ?`)
+      .bind(projectId, type, selected.record_id, selected.revision).first<EmbeddingSource & { object_key: string | null }>();
     if (source === null) continue;
     const id = await vectorId(scope, source.type, source.record_id, source.revision);
     const receipt = [projectId, provider.modelKey, id] as const;
@@ -234,7 +225,7 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
         ON CONFLICT(project_id, model_key, id) DO UPDATE SET updated_at = excluded.updated_at`)
         .bind(...receipt, type, source.record_id, source.revision, now),
     ]);
-    const phase = provider === context.building ? 'switch' : source.stale ? 'stale' : 'missing';
+    const phase = provider === context.building ? 'switch' : stale ? 'stale' : 'missing';
     const passOver = (modelKey: string, reason: string) => db.prepare(`INSERT INTO embedding_source_failures (project_id, type, record_id, model_key, revision, reason, recorded_at)
       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, type, record_id, model_key) DO UPDATE SET revision = excluded.revision, reason = excluded.reason, recorded_at = excluded.recorded_at`)
       .bind(projectId, type, source.record_id, modelKey, source.revision, reason, now).run().then((): EmbeddingStep => ({ phase: 'passed-over', processed: 1 }));
@@ -246,9 +237,9 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
       if (refused !== null) return passOver(provider.modelKey, refused);
       throw error;
     }
-    const rejournaled = await db.prepare(`UPDATE embedding_receipts SET updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled}`)
-      .bind(now, ...receipt).run();
-    if (rejournaled.meta.changes !== 1) return { phase, processed: 0 };
+    const rejournaled = await db.prepare(`UPDATE embedding_receipts SET updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ${RECEIPT.journaled} RETURNING id`)
+      .bind(now, ...receipt).all();
+    if (rejournaled.results.length !== 1) return { phase, processed: 0 };
     const landed = async () => {
       await db.prepare(`DELETE FROM embedding_source_failures WHERE project_id = ? AND type = ? AND record_id = ? AND model_key IN ('${ANY_MODEL}', ?)`)
         .bind(projectId, type, source.record_id, provider.modelKey).run();
@@ -262,4 +253,12 @@ async function writeSource(context: EmbeddingContext, provider: EmbeddingProvide
     return { phase, processed: 1 };
   }
   return null;
+}
+
+/** The earliest source refusal expiry under a model, read through its retry index. */
+export async function embeddingFailureWakeAt(db: RelationalStore, projectId: string, model: string, now: number): Promise<number | null> {
+  const row = await db.prepare(`SELECT recorded_at AS at FROM embedding_source_failures
+    WHERE project_id = ? AND model_key = ? AND recorded_at > ? ORDER BY recorded_at LIMIT 1`)
+    .bind(projectId, model, now - INPUT_REFUSAL_RETRY_MS).first<{ at: number }>();
+  return row === null ? null : row.at + INPUT_REFUSAL_RETRY_MS;
 }

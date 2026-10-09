@@ -312,7 +312,7 @@ export async function embeddingWorkPlan(env: ServerEnv, now: number): Promise<Em
  * The model a Project's spores are calibrated under: a standing switch's, whose spores join calibration as their vectors
  * land, else `model`. Spores written under the current model meanwhile keep the statistics they hold.
  */
-export const calibrationModel = (model: string, switching: string | null): string => switching ?? model;
+export { calibrationModel } from './policy.js';
 
 /** What one embedding step's context writes with: the provider search uses, a switch's provider while it is asked, and the models kept. */
 export interface EmbeddingStepProviders {

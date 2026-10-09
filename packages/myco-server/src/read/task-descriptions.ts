@@ -10,7 +10,7 @@ import { readMapSettings } from '../core/canopy.js';
 import { resolveExecutionProfile, taskOverride, taskTierRefusal } from '../core/execution-profile.js';
 import { capabilityOf, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS } from '../core/worker-selection.js';
 import { EMBEDDING_RETRY_MS } from '../core/embedding/task.js';
-import { SERVER_JOBS, TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE, type TaskSchedule } from '../core/jobs.js';
+import { jobDispatchesAt, SERVER_JOBS, TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE, type TaskSchedule } from '../core/jobs.js';
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
@@ -142,7 +142,7 @@ export async function readTaskDescriptions(env: ServerEnv, set: ProjectSet): Pro
     else if (task === 'embedding-reconcile') {
       const job = SERVER_JOBS.find((job) => job.name === task);
       if (job === undefined) throw new Error(`No upkeep job for ${task}`);
-      const states = Object.keys(POWER_STATE_DEPTH).filter((state) => POWER_STATE_DEPTH[state as PowerState] <= POWER_STATE_DEPTH[job.runsThrough]).reverse().map((state) => STATE_WORDS[state as PowerState]);
+      const states = Object.keys(POWER_STATE_DEPTH).filter((state) => jobDispatchesAt(task, state as PowerState)).reverse().map((state) => STATE_WORDS[state as PowerState]);
       triggers.push(`When the search index has pending work and Myco is ${states.join(' or ')}. At least ${unitWords(EMBEDDING_RETRY_MS / 1000, 'second')} between runs.`);
     } else triggers.push('When a person requests this task.');
     const allowlist = runAllowlist(TASK_TOOLS[task], { dryRun: false });
