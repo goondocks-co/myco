@@ -1,4 +1,5 @@
 /** Runner update commands share the supervisor's release and binary handoff capability. */
+import { recordUpdateCheck } from '../upgrade/check-cache.js';
 import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import { holdWorkerInstance, workerLockDir } from '../runner/instance.js';
 import { isLiveRunner, readRunnerRecord } from '../runner/runner-registry.js';
 import { workerServiceSpec, installedRunnerTarget } from '../runner/service.js';
 import { runnerProgramVersion } from '../runner/program.js';
-import { createRunnerUpdateController, type RunnerUpdateController, type RunnerUpdateDeps } from '../runner/update.js';
+import { createRunnerUpdateController, readRunnerUpdateState, type RunnerUpdateController, type RunnerUpdateDeps, type RunnerUpdateSelection } from '../runner/update.js';
 import type { RunnerUpdateHelperDeps } from '../runner/update-helper.js';
 import { executorServiceTarget, executionDeploymentUrls } from './worker-service.js';
 import type { RunnerServiceDeps } from './runner-service.js';
@@ -47,30 +48,47 @@ export function runnerUpdater(serverUrl: string, deps: RunnerUpdateCliDeps, log:
 }
 
 /** Check immediately, or queue the same idle operation the running supervisor executes. */
-export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: RunnerUpdateCliDeps): Promise<boolean> {
+export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: RunnerUpdateCliDeps, selection: RunnerUpdateSelection = {}): Promise<boolean> {
   const out = deps.stdout ?? console.log;
   const home = deps.mycoHome ?? resolveMycoHome();
   const record = readRunnerRecord(serverUrl, home);
   if (!isLiveRunner(record)) throw new Error(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\` first`);
   const update = runnerUpdater(serverUrl, deps, out);
+  const summary = (suffix: string, checked?: ReturnType<RunnerUpdateController['contactPayload']>): void => {
+    const status = checked ?? update.contactPayload();
+    const transaction = readRunnerUpdateState(home).transaction;
+    const target = checked ? checked.latestVersion ?? checked.currentVersion
+      : transaction?.toVersion ?? status.currentVersion;
+    const channel = checked?.channel ?? selection.channel ?? transaction?.installMarker.channel ?? status.channel ?? 'unavailable';
+    out(`Myco: from ${status.currentVersion} to ${target} on channel ${channel} (${suffix}).`);
+  };
   if (checkOnly) {
-    const status = await update.check();
+    const status = await update.check(selection);
+    const recordedChannel = update.contactPayload().channel;
+    if (recordedChannel !== null && selection.targetVersion === undefined
+      && (selection.channel === undefined || selection.channel === recordedChannel)) {
+      recordUpdateCheck(home, recordedChannel, status.currentVersion, status.latestVersion);
+    }
     out(`${status.currentVersion} (${status.channel ?? 'channel unavailable'}): ${status.latestVersion === null || status.latestVersion === status.currentVersion ? 'no newer release' : `update available: ${status.latestVersion}`}`);
+    summary('check only', status);
     return status.channel !== null;
   }
-  update.queueManual();
+  update.queueManual(selection);
   const instance = holdWorkerInstance(deps.lockDir ?? workerLockDir(deps.home), await executionDeploymentUrls(serverUrl, deps), record.deploymentId);
   if (!instance.held) {
-    out('Update requested; the running runner applies it between runs. Check runner status for the result.');
+    summary('queued; binary unchanged until the runner is idle');
+    out(`Runner is busy; the update is queued for between runs. Next: myco runner status --server ${serverUrl}`);
     return true;
   }
   let result: Awaited<ReturnType<RunnerUpdateController['idle']>>;
   try { result = await update.idle(); } finally { instance.release(); }
   if (result === 'restart') {
+    summary('verified and staged; awaiting idle service handoff');
     out('Verified update staged; the service restarts after this command exits.');
     return true;
   }
-  if (result === 'hold') { out('A runner update is already awaiting restart or health verification.'); return true; }
+  if (result === 'hold') { summary('awaiting restart or health verification'); out('A runner update is already awaiting restart or health verification.'); return true; }
+  summary('runner update result');
   const status = update.contactPayload();
   const receipt = status.lastResult;
   out(receipt === undefined ? 'Update check deferred; check runner status for the next check.' : `${receipt.result}: ${receipt.fromVersion} → ${receipt.toVersion}${receipt.reason === undefined ? '' : ` (${receipt.reason})`}`);

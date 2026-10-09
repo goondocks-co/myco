@@ -126,6 +126,8 @@ export interface WorkerOptions {
   /** The enrolled Deployment; a different authenticated contact refuses execution. */
   deploymentId?: string;
   onContact?: (body: Record<string, unknown>) => Promise<void>;
+  /** The offer sent on a claim whose reply the Deployment acknowledged. */
+  onOfferAcknowledged?: (offer: { offered: string[]; withheld: string[] }, observedAt: number) => Promise<void>;
   /** Metadata published with the runner's next authenticated contact. */
   contactBody?: () => Record<string, unknown>;
   /** Runs under the instance lock between attempts, before another claim. */
@@ -953,6 +955,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         await pause(options.pollIdleMs);
         continue;
       }
+      await options.onOfferAcknowledged?.({ offered: ready, withheld }, (options.clock ?? Date.now)());
       if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
       if (!attached) { attached = true; options.onAttached?.(); }
 

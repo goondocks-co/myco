@@ -90,10 +90,10 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
       if (named === undefined) {
         for (const record of listRunnerRecords(mycoHome)) {
           if (verb === 'install') continue;
-          ok = await runRunnerCli([verb, '--server', record.serverUrl], deps) && ok;
+          ok = await runRunnerCli([verb, '--server', record.serverUrl], { ...deps, silentAbsentUninstall: verb === 'uninstall' }) && ok;
         }
       } else if (verb !== 'install' && readRunnerRecord(named!, mycoHome) !== null) {
-        ok = await runRunnerCli([verb, '--server', named!], deps) && ok;
+        ok = await runRunnerCli([verb, '--server', named!], { ...deps, silentAbsentUninstall: verb === 'uninstall' }) && ok;
       }
       return ok;
     }

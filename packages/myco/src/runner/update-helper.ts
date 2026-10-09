@@ -1,4 +1,5 @@
 /** Detached runner update handoff and authenticated-contact health rollback. */
+import { isMemberHome } from '../member/home-role.js';
 import path from 'node:path';
 import semver from 'semver';
 import { placeExecutable } from '../install/place-binary.js';
@@ -164,7 +165,11 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
         ((observed.completedClaimAt !== undefined && observed.completedClaimAt >= (observed.contactAt ?? 0))
           || (observed.firstClaimAt === undefined && now() - (observed.contactAt ?? healthStart) >= PROBATION_WAIT_MS)))) {
         writeInstallMarker(tx.home, { ...tx.installMarker, bin: tx.binaryPath, prerelease: semver.prerelease(tx.toVersion) !== null });
-        finish(tx, 'updated', undefined, now());
+        const refreshPending = isMemberHome(tx.home);
+        console.log(refreshPending
+          ? 'Agents refreshed: no (interactive refresh pending). Next: myco update or myco member provision --refresh'
+          : 'Agents refreshed: no (this home is not a member machine).');
+        finish(tx, 'updated', refreshPending ? 'agents_refresh_pending' : undefined, now());
         finished = true;
         cleanupRunnerUpdateGuardian(tx.home, tx.platform, deps);
         return;

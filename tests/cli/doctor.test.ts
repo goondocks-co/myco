@@ -14,6 +14,7 @@ import { resolveDaemonServiceState } from '@myco/daemon/service-state.js';
 import { recordMigrationPass, listMigrationErrors } from '@myco/db/queries/migration-log.js';
 import { clearGroveRegistryCaches, createGrove, registerProjectInGrove } from '@myco/grove/registry.js';
 import { ensureProjectManifest } from '@myco/config/project-manifest.js';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 
 function findManifest(name: string) {
@@ -61,6 +62,40 @@ describe('runChecks', () => {
     expect(names).toContain('Agents');
     expect(names).toContain('Daemon');
   });
+
+  it('offers a working global refresh for an enabled local agent with no registration', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-agent-refresh-'));
+    const home = path.join(root, 'home');
+    const mycoHome = path.join(root, 'myco');
+    const vaultDir = path.join(root, 'project', '.myco');
+    const restoreHome = bindSandboxChildHome(root, { HOME: home, MYCO_HOME: mycoHome });
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.mkdirSync(path.join(path.dirname(vaultDir), '.claude'));
+    fs.writeFileSync(path.join(vaultDir, 'myco.yaml'), 'version: 3\nsymbionts:\n  claude-code:\n    enabled: true\n');
+    try {
+      const grove = createGrove('doctor-agent', mycoHome);
+      const manifest = ensureProjectManifest(vaultDir, {
+        projectName: 'doctor-agent', groveId: grove.id, groveSlug: grove.slug, groveName: grove.name,
+      });
+      registerProjectInGrove(grove.id, {
+        projectId: manifest.project.id, projectName: 'doctor-agent', projectRoot: path.dirname(vaultDir),
+        bindingId: manifest.grove?.binding_id,
+      }, mycoHome);
+      const checks = await runChecks(vaultDir, testPerUserLockNamespace);
+      const agent = checks.find((check) => check.detail.includes('enabled but not registered'));
+      expect(agent?.fixId).toBe('symbiont-global-refresh');
+      expect(agent?.fixable).toBe(true);
+      await fix(vaultDir, [agent!]);
+      const repaired = await runChecks(vaultDir, testPerUserLockNamespace);
+      expect(repaired.some((check) => check.detail.includes('enabled, registered globally'))).toBe(true);
+    } finally {
+      closeDatabase();
+      clearGroveRegistryCaches();
+      restoreHome();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('doctor exit codes', () => {
@@ -95,6 +130,23 @@ describe('doctor exit codes', () => {
   it('exits 0 from a non-project directory (healthy machine, warn rows only)', async () => {
     await runDoctorQuietly([]);
     expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  it('removes this home\'s retired launcher residue with doctor --fix outside a project', async () => {
+    const restoreHome = bindSandboxChildHome(mycoHome, { MYCO_HOME: mycoHome });
+    try {
+      const launcher = path.join(mycoHome, 'launcher.cjs');
+      fs.writeFileSync(launcher, '// retired launcher\n');
+      const before = await runChecks(vaultDir, testPerUserLockNamespace);
+      expect(before.find((check) => check.name === 'Launchers')?.fixId).toBe('retired-launcher-cleanup');
+
+      await runDoctorQuietly(['--fix']);
+
+      expect(fs.existsSync(launcher)).toBe(false);
+      expect(fs.existsSync(path.join(mycoHome, 'groves'))).toBe(false);
+      const after = await runChecks(vaultDir, testPerUserLockNamespace);
+      expect(after.find((check) => check.name === 'Launchers')?.status).toBe('ok');
+    } finally { restoreHome(); }
   });
 
   it('sets exit code 1 when a check fails', async () => {
@@ -304,7 +356,7 @@ describe('Edge-case detector (R4.7)', () => {
       expect(row).toBeDefined();
       expect(row!.fixable).toBe(false);
       expect(row!.fixId).toBeUndefined();
-      expect(row!.detail).not.toContain('--fix');
+      expect(row!.detail).toContain('doctor --fix');
       expect(row!.detail).toContain('legacy file — current installs use hooks.json');
     });
   });
@@ -325,7 +377,7 @@ describe('Edge-case detector (R4.7)', () => {
     });
   });
 
-  it('keeps the hybrid-TOML codex row non-fixable and no longer suggests doctor --fix', async () => {
+  it('keeps the hybrid-TOML codex row non-fixable until manual repair', async () => {
     await withFakeHome(async (home) => {
       const codex = path.join(home, '.codex', 'config.toml');
       fs.mkdirSync(path.dirname(codex), { recursive: true });
@@ -335,7 +387,7 @@ describe('Edge-case detector (R4.7)', () => {
       expect(row).toBeDefined();
       expect(row!.fixable).toBe(false);
       expect(row!.fixId).toBeUndefined();
-      expect(row!.detail).not.toContain('doctor --fix');
+      expect(row!.detail).toContain('doctor --fix');
       expect(row!.detail).toContain('Restore valid TOML by hand');
     });
   });

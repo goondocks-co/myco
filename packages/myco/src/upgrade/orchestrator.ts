@@ -13,7 +13,6 @@
  *   OPERATOR-CLI PATH (no myco binary swap — only operator npm packages):
  *   1. sleep UPDATE_SCRIPT_DELAY_SECONDS
  *   2. `npm install -g` the operator specs
- *   3. fan out `<myco> update --all-projects` (non-fatal)
  *   4. write the error / restart-reason side-channel files
  *   5. readiness guard — skip restart if the daemon is already on target
  *   6. restart via the platform ServiceManager (or a direct daemon spawn)
@@ -61,7 +60,7 @@ export interface ApplyUpdateParams {
   packageSpecs: string[];
   projectRoot: string;
   vaultDir: string;
-  /** Literal myco binary used for the project fan-out and direct respawn. */
+  /** Literal myco binary used for direct respawn. */
   mycoBinary: string;
   /** Service label to restart through, or null when not service-managed. */
   serviceManagedLabel?: string | null;
@@ -151,9 +150,6 @@ export interface ApplyUpdateDeps {
   runNpm: (args: string[], cwd?: string) => Promise<{ ok: boolean; output: string }>;
   /** Spawn `<bin> <args>` detached + unref (the direct daemon respawn). */
   spawnDetached: (bin: string, args: string[], cwd?: string) => void;
-  /** Run `<bin> update --all-projects`, capturing output to `logPath`. Awaited
-   *  but non-fatal — never throws and never blocks the restart. */
-  runFanout: (mycoBinary: string, logPath: string) => Promise<void>;
   /** Probe the daemon /health endpoint; null on any failure. */
   probeHealth: (daemonPort: number) => Promise<{ version?: string } | null>;
   /** Read the daemon's recorded version from daemon.json, gated on a live pid;
@@ -283,29 +279,6 @@ export function spawnDetached(bin: string, args: string[], cwd?: string): void {
   child.unref();
 }
 
-/**
- * Fan out `<bin> update --all-projects`, capturing combined output to a log so
- * a failure is diagnosable instead of silently discarded. Non-fatal — never
- * throws and never blocks the restart (the `|| echo …` discipline).
- * Not detached: the orchestrator awaits the sync before it restarts the daemon.
- */
-function runFanout(mycoBinary: string, logPath: string): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const child = spawnShellSafe(mycoBinary, ['update', '--all-projects'], { stdio: 'pipe' });
-    let out = '';
-    child.stdout?.on('data', (d) => { out += String(d); });
-    child.stderr?.on('data', (d) => { out += String(d); });
-    child.on('error', (err) => {
-      writeFileSafe(logPath, `${out}[update] project fan-out failed — ${err.message}\n`);
-      resolve();
-    });
-    child.on('close', (code) => {
-      writeFileSafe(logPath, code !== 0 ? `${out}[update] project fan-out failed — exit ${code}\n` : out);
-      resolve();
-    });
-  });
-}
-
 /** Probe /health; returns the parsed body or null. `Connection: close` forces a
  *  FRESH connection every probe so a pooled/keep-alive socket left dead by the
  *  daemon's restart can never poison the whole health-watch. */
@@ -352,7 +325,6 @@ const DEFAULT_DEPS: ApplyUpdateDeps = {
   getServiceManager,
   runNpm,
   spawnDetached,
-  runFanout,
   probeHealth,
   probeDaemonState,
   sleep,
@@ -442,7 +414,7 @@ async function runUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Promise<v
   await deps.sleep(UPDATE_SCRIPT_DELAY_SECONDS * 1000);
 
   // Operator-CLI-only update (no myco binary swap): `npm install -g` the
-  // operator specs, fan out the per-project sync, then restart.
+  // operator specs, then restart.
   let updateFailed = false;
   const failedSpecs = p.packageSpecs.join(', ');
 
@@ -451,10 +423,8 @@ async function runUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Promise<v
     if (!ok) updateFailed = true;
   }
 
-  // Side-channel: fan-out on success, error file on failure.
+  // Clear the error file on success; retain the failed package list on failure.
   if (!updateFailed) {
-    const fanoutLog = path.join(path.dirname(UPDATE_ERROR_PATH), 'update-fanout.log');
-    await deps.runFanout(p.mycoBinary, fanoutLog);
     try { fs.rmSync(UPDATE_ERROR_PATH, { force: true }); } catch { /* best-effort */ }
   } else {
     writeFileSafe(UPDATE_ERROR_PATH, JSON.stringify({ error: `npm install failed for ${failedSpecs}` }));
@@ -468,10 +438,7 @@ async function runUpdate(p: ApplyUpdateParams, deps: ApplyUpdateDeps): Promise<v
 async function runRestart(p: ApplyRestartParams, deps: ApplyUpdateDeps): Promise<void> {
   await deps.sleep(UPDATE_SCRIPT_DELAY_SECONDS * 1000);
 
-  if (p.runLocalUpdate) {
-    const fanoutLog = path.join(path.dirname(p.restartReasonPath), 'update-fanout.log');
-    await deps.runFanout(p.mycoBinary, fanoutLog);
-  }
+
 
   writeFileSafe(
     p.restartReasonPath,
@@ -479,7 +446,7 @@ async function runRestart(p: ApplyRestartParams, deps: ApplyUpdateDeps): Promise
       reason: 'version_sync',
       from_version: p.fromVersion,
       to_version: p.toVersion,
-      local_update_ran: p.runLocalUpdate,
+      local_update_ran: false,
     }),
   );
 

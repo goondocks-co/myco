@@ -2,7 +2,7 @@
  * Tests for the cross-platform update/restart orchestrator (apply-update.ts).
  *
  * The orchestrator replaces the old generated `#!/bin/sh` scripts. Its job:
- * sleep → npm install (update only) → project fan-out → readiness guard →
+ * sleep → npm install (update only) → readiness guard →
  * restart. The overriding invariant is that the daemon ALWAYS comes back, even
  * when npm fails or an unexpected error is thrown.
  *
@@ -43,7 +43,6 @@ interface Recorder {
   npmCalls: string[][];
   npmCwds: Array<string | undefined>;
   detachedSpawns: Array<{ bin: string; args: string[]; cwd?: string }>;
-  fanoutCalls: Array<{ bin: string; logPath: string }>;
   npmOk: boolean;
   healthVersion: string | null;
 }
@@ -55,7 +54,6 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {})
     npmCalls: [],
     npmCwds: [],
     detachedSpawns: [],
-    fanoutCalls: [],
     npmOk: opts.npmOk ?? true,
     healthVersion: opts.healthVersion ?? null,
     mgr,
@@ -71,9 +69,6 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {})
     spawnDetached: vi.fn((bin: string, args: string[], cwd?: string) => {
       rec.detachedSpawns.push({ bin, args, cwd });
     }),
-    runFanout: vi.fn(async (bin: string, logPath: string) => {
-      rec.fanoutCalls.push({ bin, logPath });
-    }),
     probeHealth: vi.fn(async () => (rec.healthVersion === null ? null : { version: rec.healthVersion })),
     probeDaemonState: vi.fn(() => (rec.healthVersion === null ? null : { version: rec.healthVersion })),
     // No real waiting in tests.
@@ -84,7 +79,7 @@ function makeDeps(opts: { npmOk?: boolean; healthVersion?: string | null } = {})
 
 // The operator-CLI-only update path: no myco binary swap. The myco self-update
 // always travels the binary-swap path (covered below); this base exercises the
-// remaining `npm install -g` (operator CLIs) + fan-out + restart flow.
+// remaining `npm install -g` (operator CLIs) + restart flow.
 const UPDATE_PARAMS: ApplyUpdateParams = {
   kind: 'update',
   packageSpecs: ['@goondocks/myco-team@1.1.0'],
@@ -103,9 +98,6 @@ describe('run() — kind:update', () => {
 
     expect(rec.deps.sleep).toHaveBeenCalled();
     expect(rec.npmCalls).toContainEqual(['install', '-g', '@goondocks/myco-team@1.1.0']);
-    // Successful install fans the per-project sync out before restarting.
-    expect(rec.fanoutCalls.length).toBe(1);
-    expect(rec.fanoutCalls[0].bin).toBe('myco');
     // No service label → direct daemon respawn.
     expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/project' }]);
     expect(rec.mgr.restartCalls).toEqual([]);
@@ -140,8 +132,6 @@ describe('run() — kind:update', () => {
 
     // Daemon still comes back (the whole point — never strand).
     expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/project' }]);
-    // On failure the per-project fan-out is skipped (the install never landed).
-    expect(rec.fanoutCalls).toEqual([]);
     expect(rec.npmCalls).toEqual([['install', '-g', '@goondocks/myco-team@1.1.0']]);
   });
 
@@ -174,7 +164,6 @@ describe('run() — kind:restart', () => {
     await run([writeParams({ ...RESTART_PARAMS, restartReasonPath: reasonPath })], rec.deps);
 
     expect(rec.npmCalls).toEqual([]); // restart path never installs
-    expect(rec.fanoutCalls).toEqual([]); // runLocalUpdate:false → no fan-out
     expect(rec.detachedSpawns).toEqual([{ bin: 'myco', args: ['daemon'], cwd: '/home/user/project' }]);
 
     const reason = JSON.parse(fs.readFileSync(reasonPath, 'utf-8'));
@@ -199,15 +188,13 @@ describe('run() — kind:restart', () => {
     expect(rec.detachedSpawns).toEqual([]);
   });
 
-  it('runLocalUpdate:true fans the per-project sync out before restarting', async () => {
+  it('ignores the retired project refresh request and reports no local update', async () => {
     const rec = makeDeps();
     const reasonPath = path.join(tmpDir, 'restart-reason.json');
     await run([writeParams({ ...RESTART_PARAMS, restartReasonPath: reasonPath, runLocalUpdate: true })], rec.deps);
 
-    expect(rec.fanoutCalls.length).toBe(1);
-    expect(rec.fanoutCalls[0].bin).toBe('myco');
     const reason = JSON.parse(fs.readFileSync(reasonPath, 'utf-8'));
-    expect(reason.local_update_ran).toBe(true);
+    expect(reason.local_update_ran).toBe(false);
   });
 
   it('readiness guard skips restart when already on toVersion', async () => {

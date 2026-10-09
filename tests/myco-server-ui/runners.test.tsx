@@ -11,7 +11,7 @@ const originalFetch = globalThis.fetch;
 const clients: QueryClient[] = [];
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()); globalThis.fetch = originalFetch; });
 const NOW = Date.now();
-const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', connected: true, version: '2.0.0-alpha.2', channel: 'alpha', latestVersion: '2.0.0-alpha.3', lastSeenAt: NOW, lastCheckAt: NOW,
+const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', connected: true, version: '2.0.0-alpha.2', channel: 'alpha', latestVersion: '2.0.0-alpha.3', lastSeenAt: NOW, lastCheckAt: NOW, offers: [{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }], offersObservedAt: NOW,
   lastResult: { fromVersion: '2.0.0-alpha.1', toVersion: '2.0.0-alpha.2', result: 'updated', at: NOW }, blockedVersion: null, updateState: null, updateRequest: null, busy: null };
 
 function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER) {

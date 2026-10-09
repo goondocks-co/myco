@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { runProvision } from '@myco/cli/member.js';
 import { run } from '@myco/cli/update.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
@@ -37,7 +38,7 @@ afterEach(() => {
 async function update(): Promise<string> {
   const lines: string[] = [];
   const log = spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; });
-  try { await run([]); } finally { log.mockRestore(); }
+  try { await run([], { resolveRefs: async () => null, refreshMember: async () => { if (!runProvision(['--refresh'], { mycoHome: home, cwd: agentHome })) throw new Error('refresh failed'); } }); } finally { log.mockRestore(); }
   return lines.join('');
 }
 
@@ -46,7 +47,7 @@ it('sets up again the agents provisioning recorded, with this build, and writes 
   expect(await update()).toContain('Capture is set up for Claude Code.');
   expect(fs.readFileSync(settings(), 'utf8')).toContain('--credential registry');
   expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code'] });
-  expect(fs.readdirSync(home).filter((name) => name.includes('last-update'))).toEqual([]);
+  expect(fs.existsSync(path.join(home, 'last-update-version'))).toBe(false);
 });
 
 it('sets up nothing where no provisioning is recorded, and says how, once', async () => {

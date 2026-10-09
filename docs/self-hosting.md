@@ -6,6 +6,8 @@ It needs no container runtime, no Node.js, and no source checkout. The `myco` bi
 
 There is one exception, and it is on your own computer rather than the server: putting a server on Cloudflare uses Cloudflare's own command-line tool, which needs Node.js. Nothing is installed on the server itself.
 
+To update an installed machine, run `myco update` (or `myco update --check` to report only). It follows that machine's recorded channel and refreshes member agent setup. Runner services update only between runs. Cloudflare Deployments then use `myco server update --target cloudflare` to deploy the server bundled in the updated binary; updating this machine alone does not deploy it.
+
 ## On your laptop
 
 ```bash
@@ -148,7 +150,7 @@ Either way your server stays where it is and keeps its data locally. Only the ad
 
 ## Keeping it current
 
-`myco upgrade` replaces the binary. Then bring the server's storage up to date and restart it:
+`myco update` replaces the binary. Then bring the server's storage up to date and restart it:
 
 ```bash
 myco server update --target local
@@ -161,7 +163,7 @@ Native storage has no D1 Time Travel. Before a native schema advance, make and v
 
 Installed runner services check for releases within their `install.json` channel every six to ten hours, between runs. On the dashboard's **Runners** page, an owner or administrator can select **Update now** for a connected runner. The page shows its version, channel, available release, and last update result. A request waits for the current run to finish; it does not interrupt that run.
 
-The secondary command is `myco runner update --server <url>`; add `--check` to check without applying. `myco runner status` shows the last check and result. Both paths verify the checksum, the macOS signature, and the staged program's exact `--version` before replacement. macOS accepts valid ad hoc signatures; signer identity is not pinned. The running binary is trusted for backup and is copied to a temporary guardian slot to watch the restart. The new runner must make authenticated contact, then complete its first claim or stay healthy for five minutes before beginning one. An active first claim stays under probation until it completes. A crash or refused contact restores the previous binary. An unreachable Deployment records a failure and restores the previous binary for a later retry. Current and previous versions are retained. A foreground runner using another executable refuses service updates. Member machines continue to update on demand with `myco upgrade`.
+The secondary command is `myco update` on the runner machine; add `--check` to check without applying. `myco runner status` shows the last check and result. Both paths verify the checksum, the macOS signature, and the staged program's exact `--version` before replacement. macOS accepts valid ad hoc signatures; signer identity is not pinned. The running binary is trusted for backup and is copied to a temporary guardian slot to watch the restart. The new runner must make authenticated contact, then complete its first claim or stay healthy for five minutes before beginning one. An active first claim stays under probation until it completes. A crash or refused contact restores the previous binary. An unreachable Deployment records a failure and restores the previous binary for a later retry. Current and previous versions are retained. A foreground runner using another executable refuses service updates. Member machines update on demand with `myco update`.
 
 An older runner must first install a version that reports update support before the dashboard can request its updates. A restore clears pending update requests and reported availability; connected runners report their current state again. A release that crashes or is refused is blocked for 24 hours. The dashboard shows the reason and expiry; **Clear block and update** or `myco runner update` retries immediately. Staging refusals back off per release up to 24 hours. A stuck handoff gives up within three minutes, and cleanup failures retry with backoff while the runner continues claiming work. Unreadable update metadata is quarantined and reported without preventing execution.
 

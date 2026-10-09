@@ -1,9 +1,8 @@
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
-import { isLiveRunner, listRunnerRecords, readRunnerRecord, recordRunnerContact } from '../runner/runner-registry.js';
+import { isLiveRunner, listRunnerRecords, readRunnerRecord } from '../runner/runner-registry.js';
 import { unclassifiedWorkerHolders, workerLockDir } from '../runner/instance.js';
 import { runnerRenewer } from '../runner/runner-rotation.js';
 import { contactRunner, parseContact } from '../runner/runner-routes.js';
-import { detectHarnessesAsync, offerOf } from '../runner/detect.js';
 import { listWorkerUnits, harnessDirectories, installWorkerService, uninstallWorkerService, workerServiceStatus } from '../runner/service.js';
 import { ServicePathUnsupported, ServicePlatformUnsupported, ServiceStopFailed } from '../server/service.js';
 import { binaryRefusal, executorServiceTarget, describeWorkerService, executionDeploymentUrls, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
@@ -11,7 +10,7 @@ import { RUNNER_ADDRESS_RULE, runnerServerUrl, type RunnerCliDeps } from './runn
 import { parseFlags } from './flags.js';
 import { runnerUpdater, type RunnerUpdateCliDeps } from './runner-update.js';
 
-export type RunnerServiceDeps = RunnerCliDeps & WorkerServiceDeps;
+export type RunnerServiceDeps = RunnerCliDeps & WorkerServiceDeps & { silentAbsentUninstall?: boolean };
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
 export const RUNNER_IDENTITY_REMAINS = 'The Deployment identity remains; remove it on the dashboard.';
 
@@ -57,7 +56,7 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
     try {
       if (verb === 'uninstall') {
         const removed = uninstallWorkerService(target, options);
-        out(`${url}: ${removed.removed ? 'runner service stopped and removed' : 'no runner service was installed'}. ${RUNNER_IDENTITY_REMAINS}`);
+        if (removed.removed || !deps.silentAbsentUninstall) out(`${url}: ${removed.removed ? 'runner service stopped and removed' : 'no runner service was installed'}. ${RUNNER_IDENTITY_REMAINS}`);
         continue;
       }
       if (verb === 'install') {
@@ -93,10 +92,12 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
       if (blocked !== null) out(`  execution refused: ${blocked}`);
       const legacy = describeWorkerService(url, scoped);
       if (legacy?.installed === true) out(`  ${LEGACY_WORKER_WORDS}: ${workerServiceWords(legacy).line}`);
-      const offered = offerOf(await (deps.detect ?? (() => detectHarnessesAsync(undefined, undefined, { credentialBytes: false })))());
-      out(`  harnesses offered: ${offered.offered.filter((h) => h.installed && h.authenticated).map((h) => h.id).join(', ') || 'none'}; withheld: ${offered.withheld.join(', ') || 'none'}`);
-      if (!isLiveRunner(record)) { out('  last contact: unknown (no enrolled credential)'); ok = false; continue; }
-      out(`  last contact: ${record.lastContactAt === undefined ? 'never recorded locally' : new Date(record.lastContactAt).toISOString()}`);
+      const offer = record?.lastOffer;
+      out(offer === undefined
+        ? '  harnesses offered: unknown (no acknowledged service offer); observation time: unknown'
+        : `  harnesses offered: ${offer.offered.join(', ') || 'none'}; withheld: ${offer.withheld.join(', ') || 'none'}; observed: ${new Date(offer.observedAt).toISOString()}`);
+      out(`  last contact: ${record?.lastContactAt === undefined ? 'never recorded by the service' : new Date(record.lastContactAt).toISOString()}`);
+      if (!isLiveRunner(record)) { ok = false; continue; }
       const renew = runnerRenewer(url, { ...deps, mycoHome, notify: (line) => out(`  ${line}`) });
       await renew(false);
       const contact = () => contactRunner(url, readRunnerRecord(url, mycoHome)?.token ?? record.token, { update: updateStatus }, deps.fetch);
@@ -105,8 +106,6 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
       if (answer.class === 'acked') {
         const contact = parseContact(answer.body);
         if (contact === null) { ok = fail('unreadable contact response'); continue; }
-        if (!await recordRunnerContact(url, { runnerId: contact.runner.id, deploymentId: contact.runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) out('  runner record busy; contact timestamp was not saved');
-        out(`  contact acknowledged: ${new Date((deps.now ?? Date.now)()).toISOString()}`);
         const runner = answer.body.runner as { state?: unknown } | undefined;
         out(`  Deployment state: ${String(runner?.state ?? 'unknown')}`);
       } else {

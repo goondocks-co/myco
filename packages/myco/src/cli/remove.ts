@@ -23,7 +23,7 @@ function uninstallLabels(result: ReturnType<SymbiontInstaller['uninstall']>): st
   ].filter(Boolean) as string[];
 }
 
-const USAGE = `Usage: myco remove [options]
+export const USAGE = `Usage: myco remove [options]
 
 With no flags, removes Myco's global install: unregisters the OS service,
 deletes the global launchers, strips Myco's blocks from each detected

@@ -8,7 +8,7 @@
 import { connectToDaemon } from './shared.js';
 import { printHelpIfRequested } from './flags.js';
 
-const AGENT_USAGE = `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
+export const AGENT_USAGE = `Usage: myco agent [--task NAME] [--instruction TEXT] [--dry-run]
 
 Options:
   --task NAME          Run a specific agent task. Defaults to the configured default task.

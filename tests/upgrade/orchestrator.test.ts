@@ -97,7 +97,6 @@ function makeAdoptDeps(opts: AdoptRecorderOpts = {}): AdoptRecorder {
     spawnDetached: vi.fn((bin: string, args: string[], cwd?: string) => {
       rec.restartCount += 1;
     }),
-    runFanout: vi.fn(async () => {}),
     probeHealth: vi.fn(async () => {
       return healthQueue.length > 0 ? healthQueue.shift()! : null;
     }),

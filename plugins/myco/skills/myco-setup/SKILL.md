@@ -70,10 +70,10 @@ A join code and an invite link are single-use and expire. If one is refused, the
 ## 4. Wire the agent up
 
 ```bash
-myco update
+myco member provision --refresh
 ```
 
-This is the reconcile: it detects installed agents, writes their hooks with the binary's absolute path, and refreshes the managed files. It is safe to run repeatedly.
+This refreshes the member's hooks, remote MCP registration and managed skills. It works without fetching a release and is safe to repeat. To update the binary within its recorded channel and then refresh setup, run `myco update` (`myco upgrade` is an alias). Installed runners hand off the update only between runs; combined member and runner homes finish agent refresh with an interactive `myco update` after the handoff.
 
 ## 5. Optional: the owner opts a machine into agent work
 

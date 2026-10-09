@@ -47,6 +47,7 @@ export type DoctorFixerId =
   | 'daemon-stale'
   | 'daemon-malformed'
   | 'smoke-launcher-scrub'
+  | 'retired-launcher-cleanup'
   | 'migration-retry'
   | 'service-reinstall'
   | 'symbiont-global-refresh'
@@ -114,6 +115,18 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
       actions.push(`Smoke-launcher scrub failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     return actions;
+  },
+
+  'retired-launcher-cleanup': async () => {
+    const { runSymbiontDetection } = await import('./bootstrap.js');
+    const { runGlobalConfigMigration } = await import('../grove/global-config-migration.js');
+    const { removeRetiredGlobalLaunchers } = await import('../grove/launcher-cleanup.js');
+    runSymbiontDetection();
+    runGlobalConfigMigration();
+    const result = removeRetiredGlobalLaunchers();
+    return [result.removed.length > 0
+      ? `Removed ${result.removed.length} retired launcher file(s)`
+      : 'Retired launcher cleanup deferred or already complete'];
   },
 
   // Migration retry — re-run the project-local → global walker. The

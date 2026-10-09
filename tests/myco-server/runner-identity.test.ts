@@ -883,3 +883,20 @@ describe('runner update commands', () => {
     }
   });
 });
+
+it('runner inventory reports acknowledged offers and their observation time, preserving them across contact-only updates', async () => {
+  const r = rig();
+  try {
+    const { token, runnerId } = await r.register();
+    expect(await r.claim(token)).toMatchObject({ persisted: true, claimed: false });
+    const observed = r.now();
+    const listed = async () => (await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners.find((row: Json) => row.id === runnerId);
+    expect(await listed()).toMatchObject({ offers: [{ id: 'claude-code', authenticated: true }], offersObservedAt: observed });
+    r.advance(60_000);
+    await r.asRunner(token, '/runners/contact');
+    expect(await listed()).toMatchObject({ offers: [{ id: 'claude-code', authenticated: true }], offersObservedAt: observed, lastSeenAt: r.now() });
+    r.advance(60_000);
+    await r.claim(token);
+    expect(await listed()).toMatchObject({ offers: [{ id: 'claude-code', authenticated: true }], offersObservedAt: r.now() });
+  } finally { r.e.sqlite.close(); }
+});

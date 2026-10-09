@@ -9,17 +9,16 @@
  */
 
 import fs from 'node:fs';
+import { CACHE_FILENAME, effectiveUpdateChannel } from '../upgrade/check-cache.js';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import semver from 'semver';
-import { readExplicitMachineUpdateChannel } from '../config/loader.js';
 import { readInstallMarker, writeInstallMarker } from '../install/managed-binary.js';
 import { loadMachineConfig, updateTierConfigRaw } from '../config/loader.js';
 import { setAtPath } from '../utils/dot-path.js';
 
 import {
   NPM_PACKAGE_NAME,
-  UPDATE_CHECK_CACHE_PATH,
   MS_PER_HOUR,
   DEFAULT_RELEASE_CHANNEL,
   RELEASE_CHANNELS,
@@ -110,9 +109,7 @@ export function projectRuntimeIsForeign(
 
 /** The install marker owns installed channels; unmarked machines use machine config. */
 export function readProjectReleaseChannel(_vaultDir?: string): ReleaseChannel {
-  const explicit = readExplicitMachineUpdateChannel();
-  const channel = readInstallMarker(resolveMycoHome(), true)?.channel ?? explicit;
-  return RELEASE_CHANNELS.includes(channel as ReleaseChannel) ? (channel as ReleaseChannel) : DEFAULT_RELEASE_CHANNEL;
+  return effectiveUpdateChannel();
 }
 
 /** Persist a machine's channel through the authority used by its reader. */
@@ -184,7 +181,7 @@ export function readUpdateConfig(): UpdateConfig {
  */
 export function readCachedCheck(): CachedCheck | null {
   try {
-    const raw = fs.readFileSync(UPDATE_CHECK_CACHE_PATH, 'utf-8');
+    const raw = fs.readFileSync(path.join(resolveMycoHome(), CACHE_FILENAME), 'utf-8');
     const parsed = JSON.parse(raw) as CachedCheck | Record<string, unknown>;
 
     if (parsed && typeof parsed === 'object' && 'packages' in parsed && parsed.packages) {
@@ -229,7 +226,7 @@ export function readCachedCheck(): CachedCheck | null {
  */
 export function clearCachedCheck(): void {
   try {
-    fs.unlinkSync(UPDATE_CHECK_CACHE_PATH);
+    fs.unlinkSync(path.join(resolveMycoHome(), CACHE_FILENAME));
   } catch {
     // File not present — that's fine.
   }

@@ -226,9 +226,8 @@ describe('the 2.0 member entry graph', () => {
  */
 const SURVIVOR_VERBS: ReadonlyArray<{ need: string; verb: string; imports: string; names: string }> = [
   { need: 'symbiont detection', verb: 'cli/doctor.ts', imports: '../symbionts/detect.js', names: 'detectSymbionts' },
-  { need: 'managed-files reconcile', verb: 'cli/update.ts', imports: '../symbionts/reconcile.js', names: 'reconcileRegisteredManagedProjectFiles' },
-  { need: 'symbiont registration', verb: 'cli/update.ts', imports: './bootstrap.js', names: 'runSymbiontDetection' },
-  { need: 'the upgrade check', verb: 'cli/upgrade.ts', imports: '../upgrade/release-resolver.js', names: 'resolveMycoBinaryUpdateRefs' },
+  { need: 'member setup refresh', verb: 'cli/update.ts', imports: '../member/refresh-setup.js', names: 'refreshMemberSetup' },
+  { need: 'the release check', verb: 'cli/update.ts', imports: '../upgrade/release-resolver.js', names: 'resolveMycoBinaryUpdateRefs' },
 ];
 
 describe('the machine-side survivors are on-demand verbs', () => {
@@ -245,6 +244,6 @@ describe('the machine-side survivors are on-demand verbs', () => {
   }
 
   it('offers the upgrade check as a flag rather than a cadence', () => {
-    expect(fs.readFileSync(path.join(SRC, 'cli', 'upgrade.ts'), 'utf-8')).toContain("{ name: '--check' }");
+    expect(fs.readFileSync(path.join(SRC, 'cli', 'update.ts'), 'utf-8')).toContain("{ name: '--check' }");
   });
 });
