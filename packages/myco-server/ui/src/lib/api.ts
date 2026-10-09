@@ -152,3 +152,13 @@ export const isArchived = (p: Pick<ProjectSummary, 'archivedAt'>): boolean => p.
 export interface ProjectsResponse {
   projects: ProjectSummary[];
 }
+
+/** One registered runner, its reported update state, and its pending command. */
+export interface RunnerRow {
+  id: string; name: string; state: 'enabled' | 'paused' | 'removed'; connected: boolean;
+  version: string | null; channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null;
+  lastSeenAt: number | null; lastCheckAt: number | null;
+  lastResult: { fromVersion: string; toVersion: string; result: 'updated' | 'no_update' | 'refused' | 'rolled_back' | 'failed'; reason?: string; at: number } | null;
+  updateRequest: { id: string; requestedAt: number } | null;
+  busy: { projectId: string; runId: string; leaseExpiresAt: number } | null;
+}

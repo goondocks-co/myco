@@ -159,6 +159,12 @@ It stops the server, brings its storage up to date, and starts it again. Running
 Native storage has no D1 Time Travel. Before a native schema advance, make and verify a full backup with
 `myco server backup --target local --to <dir>`; a hosted bookmark cannot protect a native volume.
 
+Installed runner services check for releases within their `install.json` channel every six to ten hours, between runs. On the dashboard's **Runners** page, an owner or administrator can select **Update now** for a connected runner. The page shows its version, channel, available release, and last update result. A request waits for the current run to finish; it does not interrupt that run.
+
+The secondary command is `myco runner update --server <url>`; add `--check` to check without applying. `myco runner status` shows the last check and result. Both paths verify the checksum, the macOS signature, and the staged program's exact `--version` before replacement. A temporary service watches the restart and restores the previous binary if authenticated contact does not return. Current and previous versions are retained. A foreground runner using another executable refuses service updates. Member machines continue to update on demand with `myco update`.
+
+An older runner must first install a version that reports update support before the dashboard can request its updates. A restore clears pending update requests and reported availability; connected runners report their current state again. A release that failed its health check remains refused on that machine so automatic checks cannot repeatedly adopt it.
+
 ## Backing it up
 
 Everything the server holds is in one directory. Stop it, copy `~/.myco/server/local/`, and start it again. Restoring is the same in reverse.

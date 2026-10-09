@@ -21,6 +21,8 @@
 import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
+import type { RunnerUpdateResult } from '../core/runner-updates.js';
+import { CONTACT_RECENT_MS } from '../core/worker-contacts.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { sha256Hex } from '../hash.js';
@@ -346,13 +348,33 @@ export async function controlRunner(db: RelationalStore, actorId: string, runner
   return { changed: results[0]!.meta.changes === 1, runner: runner! };
 }
 
+export interface RunnerFleetRecord extends RunnerRecord {
+  lastSeenAt: number | null;
+  busy: { projectId: string; runId: string; leaseExpiresAt: number } | null;
+  version: string | null;
+  channel: 'stable' | 'beta' | 'alpha' | null;
+  latestVersion: string | null;
+  lastCheckAt: number | null;
+  lastResult: RunnerUpdateResult | null;
+  updateRequest: { id: string; requestedAt: number } | null;
+  connected: boolean;
+}
+
 /** Every runner, newest first, with its last contact and any live lease: the read-only projection members share. */
-export async function listRunners(db: RelationalStore, now: number): Promise<Array<RunnerRecord & { lastSeenAt: number | null; busy: { projectId: string; runId: string; leaseExpiresAt: number } | null }>> {
+export async function listRunners(db: RelationalStore, now: number): Promise<RunnerFleetRecord[]> {
   const { results } = await db.prepare(`SELECT r.id, r.name, r.state, r.revision, r.created_at AS createdAt, r.created_by_member AS createdBy,
-      r.removed_at AS removedAt, c.last_seen_at AS lastSeenAt,
+      r.removed_at AS removedAt, c.last_seen_at AS lastSeenAt, COALESCE(u.current_version, c.version) AS version,
+      u.channel, u.latest_version AS latestVersion, u.last_check_at AS lastCheckAt, u.last_result AS lastResult,
+      CASE WHEN q.id IS NULL THEN NULL ELSE json_object('id', q.id, 'requestedAt', q.requested_at) END AS updateRequest,
       (SELECT json_object('projectId', a.project_id, 'runId', a.id, 'leaseExpiresAt', a.lease_expires_at) FROM agent_runs a
         INDEXED BY idx_agent_runs_runner_lease WHERE a.leased_runner_id = r.id AND a.status = 'running' AND a.lease_expires_at > ? LIMIT 1) AS busy
-    FROM runners r LEFT JOIN runner_contacts c ON c.runner_id = r.id ORDER BY r.created_at DESC, r.id`)
-    .bind(now).all<RunnerRecord & { lastSeenAt: number | null; busy: string | null }>();
-  return results.map((row) => ({ ...row, busy: row.busy === null ? null : JSON.parse(row.busy) as { projectId: string; runId: string; leaseExpiresAt: number } }));
+    FROM runners r LEFT JOIN runner_contacts c ON c.runner_id = r.id
+      LEFT JOIN runner_update_reports u ON u.runner_id = r.id LEFT JOIN runner_update_requests q ON q.runner_id = r.id ORDER BY r.created_at DESC, r.id`)
+    .bind(now).all<Omit<RunnerFleetRecord, 'busy' | 'lastResult' | 'updateRequest' | 'connected'> & { busy: string | null; lastResult: string | null; updateRequest: string | null }>();
+  return results.map((row) => ({ ...row,
+    connected: row.state !== 'removed' && row.lastSeenAt !== null && row.lastSeenAt >= now - CONTACT_RECENT_MS,
+    lastResult: row.lastResult === null ? null : JSON.parse(row.lastResult) as RunnerUpdateResult,
+    updateRequest: row.updateRequest === null ? null : JSON.parse(row.updateRequest) as RunnerFleetRecord['updateRequest'],
+    busy: row.busy === null ? null : JSON.parse(row.busy) as RunnerFleetRecord['busy'],
+  }));
 }

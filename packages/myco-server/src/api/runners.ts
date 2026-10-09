@@ -8,6 +8,7 @@ import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { controlRunner, listRunners, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
 import { runnerContactStatement, readWorkerFleet } from '../core/worker-contacts.js';
+import { parseRunnerUpdateReport, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
 import { ok, parseJsonObject } from './scope.js';
 
 const REPORTED_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -29,15 +30,18 @@ function reported(value: unknown, shape: 'id' | 'text'): string | null {
 export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): Promise<Response> {
   const body = parseJsonObject(ctx.body);
   if (body === null) return ok({ persisted: false, code: 'parse', reason: 'body must be a JSON object' });
-  await runnerContactStatement(env.db, {
+  const update = body.update === undefined ? undefined : parseRunnerUpdateReport(body.update);
+  if (update === null) return ok({ persisted: false, code: 'parse', reason: 'update report is invalid' });
+  await env.db.batch([runnerContactStatement(env.db, {
     runnerId: ctx.auth.runnerId, machineId: reported(body.machineId, 'id'), os: reported(body.os, 'text'), version: reported(body.version, 'id'), now: ctx.now,
-  }).run();
+  }), ...(update === undefined ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
   return ok({
     persisted: true,
     runner: { id: runner.id, name: runner.name, state: runner.state, deploymentId: await deploymentIdentity(env.db) },
     credential: { id: ctx.auth.credentialId, expiresAt: ctx.auth.expiresAt, refreshAfter: runnerWindowOpensAt(ctx.auth.expiresAt) },
+    updateRequest: await readRunnerUpdateRequest(env.db, ctx.auth.runnerId),
     heartbeatMs: WORKER_HEARTBEAT_MS, pollIdleMs: WORKER_POLL_IDLE_MS,
   });
 }
@@ -70,3 +74,10 @@ export const handleControlRunner = (control: RunnerControl) => async (env: Serve
   if (outcome === null) return Response.json({ error: 'not_found' }, { status: 404 });
   return ok(outcome);
 };
+
+/** An attributed request to check and update at the runner's next idle point. */
+export async function handleRequestRunnerUpdate(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const outcome = await requestRunnerUpdate(env.db, ctx.member.id, ctx.params.runnerId ?? '', ctx.now);
+  if (!outcome.requested) return Response.json({ error: outcome.code }, { status: outcome.code === 'not_found' ? 404 : (outcome.code === 'disconnected' || outcome.code === 'unsupported_channel') ? 409 : 403 });
+  return ok(outcome);
+}

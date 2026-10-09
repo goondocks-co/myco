@@ -10,6 +10,8 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { keepMachineAwake } from '../runner/keep-awake.js';
 import { CLAIM_IDLE_POLL_MS, runWorker } from '../runner/loop.js';
+import { sameProgram } from '../runner/program.js';
+import { getPluginVersion } from '../version.js';
 import { workerLogLine } from '../runner/log.js';
 import { workerLockDir } from '../runner/instance.js';
 import { isLiveRunner, listRunnerRecords, readRunnerRecord, recordRunnerContact, runnerDir } from '../runner/runner-registry.js';
@@ -18,8 +20,10 @@ import { RUNNER_CONTACT_PATH } from '../runner/runner-routes.js';
 import { harnessesNamed, parseFlags } from './flags.js';
 import { RUNNER_ADDRESS_RULE, runnerServerUrl } from './runner-deps.js';
 import { registerRunner } from './runner-register.js';
-import { runRunnerService, runnerExecutionRefusal, type RunnerServiceDeps } from './runner-service.js';
+import { runRunnerService, runnerExecutionRefusal } from './runner-service.js';
 import { executionDeploymentUrls } from './worker-service.js';
+import { runnerUpdater, updateRunner, type RunnerUpdateCliDeps } from './runner-update.js';
+import { runRunnerUpdateHelper } from '../runner/update-helper.js';
 
 export const RUNNER_HELP = `myco runner — run a Deployment's queued tasks on this machine's harnesses
 
@@ -30,6 +34,8 @@ Usage:
                                   Claim and drive the Deployment's runs in this terminal.
   myco runner rotate [--server <url>]
                                   Rotate this runner's credential now.
+  myco runner update [--check] [--server <url>]
+                                  Update within the installed channel between runs.
   myco runner status [--server <url>]
                                   Show registration, service, contact and harnesses.
   myco runner doctor [--server <url>]
@@ -57,7 +63,7 @@ const STEPS_DIRNAME = 'steps';
 const DIAGNOSTICS_DIRNAME = 'diagnostics';
 const SERVER_NEEDED = '--server needs the Deployment\'s address';
 
-interface RunnerRunDeps extends RunnerServiceDeps {
+interface RunnerRunDeps extends RunnerUpdateCliDeps {
   /** Stops a running runner; defaults to SIGINT and SIGTERM. */
   signal?: AbortSignal;
 }
@@ -106,6 +112,8 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
 
   const log = (line: string): void => { (deps.stdout ?? console.log)(workerLogLine(line)); };
   const dir = runnerDir(serverUrl, mycoHome);
+  const updater = runnerUpdater(serverUrl, { ...deps, mycoHome, binaryPath: deps.binaryPath ?? process.execPath }, log, true);
+  updater.startup();
   const only = harnessesNamed([...args]);
   const stopping = deps.signal === undefined ? new AbortController() : null;
   if (stopping !== null) for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopping.abort(); });
@@ -119,10 +127,16 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
     lockDir: deps.lockDir ?? workerLockDir(deps.home),
     deploymentId: record.deploymentId,
     deploymentUrls: await executionDeploymentUrls(serverUrl, { ...deps, mycoHome }),
+    stillCurrent: sameProgram(deps.binaryPath ?? process.execPath, undefined, undefined, log),
+    contactBody: () => ({ version: deps.version ?? getPluginVersion(), os: process.platform, update: updater.contactPayload() }),
     onContact: async (body) => {
       const runner = body.runner as { id: string; deploymentId: string };
+      if (runner.id !== record.runnerId) throw new Error('authenticated contact names a different runner');
       if (!await recordRunnerContact(serverUrl, { runnerId: runner.id, deploymentId: runner.deploymentId }, (deps.now ?? Date.now)(), mycoHome)) log('runner record busy; contact timestamp was not saved');
+      updater.onContact(body);
+      updater.acknowledgeHealthy();
     },
+    onIdle: async () => { const outcome = await updater.idle(); return outcome === 'continue' ? undefined : outcome; },
     runRoot: path.join(dir, RUNS_DIRNAME),
     stepRoot: path.join(dir, STEPS_DIRNAME),
     diagnosticRoot: path.join(dir, DIAGNOSTICS_DIRNAME),
@@ -135,6 +149,7 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
     log,
   });
   log(`drove ${outcome.driven} run${outcome.driven === 1 ? '' : 's'}`);
+  if (outcome.replaced === true) return false;
   if (outcome.refused === null) return true;
   if (outcome.refused === 'unauthorized' || outcome.refused === 'no_membership') {
     return fail(`${serverUrl} does not accept this runner's credential; register it afresh with \`myco runner register ${serverUrl} --replace\``);
@@ -182,9 +197,21 @@ export async function run(args: readonly string[], deps: RunnerRunDeps = {}): Pr
   const [verb, ...rest] = args;
   const err = deps.stderr ?? ((line) => process.stderr.write(`${line}\n`));
   switch (verb) {
+    case '__apply-update':
+      if (rest.length !== 1 || !path.isAbsolute(rest[0]!)) throw new Error('runner update helper requires one absolute handoff path');
+      await runRunnerUpdateHelper(rest[0]!, deps.updateHelper);
+      return true;
     case 'register': return registerRunner(rest, deps);
     case 'run': return runVerb(rest, deps);
     case 'rotate': return rotateVerb(rest, deps);
+    case 'update': {
+      const { flags } = parseFlags(rest);
+      const mycoHome = deps.mycoHome ?? resolveMycoHome();
+      const target = resolveServer(flags, mycoHome);
+      if ('error' in target) { err(`myco runner update: ${target.error}`); return false; }
+      try { return await updateRunner(target.serverUrl, flags.get('check') === 'true', { ...deps, mycoHome }); }
+      catch (error) { err(`myco runner update: ${error instanceof Error ? error.message : String(error)}`); return false; }
+    }
     case 'status':
     case 'doctor':
     case 'install':

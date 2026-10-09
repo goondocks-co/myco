@@ -58,6 +58,25 @@ export const runnerIdentity: ParityScenario = {
     expect(await answer(post(target, '/auth/device/poll', { device_code: first.device_code }))).toEqual({ error: 'invalid_grant' });
     expect(await answer(asRunner(target, token, '/runners/contact', { machineId: 'parity-mini' }))).toMatchObject({ persisted: true, runner: { id: runnerId, state: 'enabled' } });
 
+    const update = { channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: now };
+    expect(await answer(asRunner(target, token, '/runners/contact', { update }))).toMatchObject({ persisted: true, updateRequest: null });
+    await target.sql(`UPDATE members SET role = 'member' WHERE id = ${lit(ADMIN)}`);
+    expect((await post(target, `/api/runners/${runnerId}/update`, {}, admin)).status).toBe(403);
+    await target.sql(`UPDATE members SET role = 'admin' WHERE id = ${lit(ADMIN)}`);
+    const accepted = await Promise.all([admin, target.ownerHeaders()].map((headers) => answer(post(target, `/api/runners/${runnerId}/update`, {}, headers))));
+    expect(accepted.every((reply) => reply.requested === true)).toBe(true);
+    const updateRequest = accepted[0]!.updateRequest as { id: string; requestedAt: number };
+    expect(accepted[1]!.updateRequest).toEqual(updateRequest);
+    expect(await target.sql(`SELECT actor_member, COUNT(*) AS n FROM runner_update_audit
+      WHERE action = 'requested' AND request_id = ${lit(updateRequest.id)} GROUP BY actor_member ORDER BY actor_member`))
+      .toEqual([ADMIN, MEMBER_ID].sort().map(actor_member => ({ actor_member, n: 1 })));
+    expect(await answer(asRunner(target, token, '/runners/contact', { update }))).toMatchObject({ updateRequest });
+    const lastResult = { requestId: updateRequest.id, fromVersion: update.currentVersion, toVersion: update.latestVersion, result: 'updated', at: now };
+    const updated = { update: { ...update, currentVersion: update.latestVersion, lastResult } };
+    for (let retry = 0; retry < 2; retry++) expect(await answer(asRunner(target, token, '/runners/contact', updated))).toMatchObject({ updateRequest: null });
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM runner_update_audit WHERE request_id = ${lit(updateRequest.id)}`)).toEqual([{ n: 3 }]);
+    expect(await target.sql(`SELECT current_version, channel FROM runner_update_reports WHERE runner_id = ${lit(runnerId)}`)).toEqual([{ current_version: update.latestVersion, channel: 'alpha' }]);
+
     const legacyId = 'mt_runner_inventory_parity';
     const legacyToken = 'runner-inventory-parity-member'.padEnd(43, 'x');
     await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, lineage_root, lineage_started_at)

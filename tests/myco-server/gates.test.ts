@@ -1521,6 +1521,7 @@ describe('gates', () => {
       'session:admin POST /api/runners/{runnerId}/pause',
       'session:admin POST /api/runners/{runnerId}/resume',
       'session:admin POST /api/runners/{runnerId}/remove',
+      'session:admin POST /api/runners/{runnerId}/update',
       'session:member POST /api/harness/dispatch',
       'session:member POST /api/projects/{projectId}/runs/{runId}/cancel',
       'session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status',

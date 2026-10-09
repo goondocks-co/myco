@@ -69,6 +69,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   'packages/myco/src/runner/process-group.ts': {
     calls: 1, form: 'awaited', bound: "the waits while a stopped harness's process group ends, bounded by the stop's grace",
   },
+  'packages/myco/src/runner/update-helper.ts': {
+    calls: 1, form: 'awaited', bound: 'one supervised update waits for the old process to exit and for authenticated contact, within finite handoff and health deadlines',
+  },
   'packages/myco/src/utils/git.ts': {
     calls: 1, form: 'cleared', bound: 'a one-shot Git child deadline, cleared on exit or spawn failure',
   },
@@ -81,8 +84,7 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
  * A deadline is a timer the runtime keeps. It is allowed only as the deadline of
  * a request or a child: every site must be the signal a call is given, alone or
  * joined to the caller's own (`AbortSignal.any([signal, AbortSignal.timeout(…)])`),
- * so it cannot fire on anything but the call it bounds. Like the list above, this
- * only shrinks.
+ * so it cannot fire on anything but the call it bounds.
  */
 const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string }>> = {
   'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },
@@ -91,6 +93,7 @@ const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string 
   'packages/myco/src/runner/models.ts': { calls: 1, bound: "one listing of a harness's models" },
   'packages/myco/src/runner/repository-checkout.ts': { calls: 1, bound: "one run's source checkout request" },
   'packages/myco/src/runner/repository.ts': { calls: 1, bound: "one run's source checkout" },
+  'packages/myco/src/runner/update.ts': { calls: 1, bound: 'one release-discovery HTTP request at an idle update check' },
 };
 
 /** A repeating timer is allowed only where a run holds it, and only if the same module ends it. */

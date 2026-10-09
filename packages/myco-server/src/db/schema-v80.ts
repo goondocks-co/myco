@@ -1,0 +1,29 @@
+/** Runner update commands are transient; their attributed receipts are portable history. */
+export const V80_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS runner_update_requests (
+    runner_id TEXT PRIMARY KEY REFERENCES runners(id),
+    id TEXT NOT NULL UNIQUE,
+    requested_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS runner_update_reports (
+    runner_id TEXT PRIMARY KEY REFERENCES runners(id),
+    channel TEXT CHECK (channel IN ('stable', 'beta', 'alpha')),
+    current_version TEXT NOT NULL,
+    latest_version TEXT,
+    last_check_at INTEGER,
+    last_result TEXT CHECK (last_result IS NULL OR json_valid(last_result))
+  )`,
+  `CREATE TABLE IF NOT EXISTS runner_update_audit (
+    id TEXT PRIMARY KEY,
+    runner_id TEXT NOT NULL REFERENCES runners(id),
+    actor_member TEXT REFERENCES members(id),
+    action TEXT NOT NULL CHECK (action IN ('requested', 'reported')),
+    request_id TEXT,
+    detail TEXT NOT NULL CHECK (json_valid(detail)),
+    at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_update_audit_runner ON runner_update_audit(runner_id, at)`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_update_audit_actor ON runner_update_audit(actor_member)`,
+  `CREATE TRIGGER IF NOT EXISTS runner_update_audit_immutable BEFORE UPDATE ON runner_update_audit BEGIN
+    SELECT RAISE(ABORT, 'runner update audit is immutable'); END`,
+];

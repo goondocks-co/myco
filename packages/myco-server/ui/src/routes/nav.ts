@@ -95,6 +95,8 @@ export interface ServerPage {
 
 /** Who is a member, and the machines that write here. */
 export const PEOPLE_PATH = '/people';
+export const RUNNERS_PATH = '/runners';
+export const RUNNERS_PAGE: ServerPage = { label: 'Runners', icon: Bot, to: RUNNERS_PATH };
 /** The server's settings, in five sections. */
 export const SETTINGS_PATH = '/settings';
 /**
@@ -131,6 +133,7 @@ export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 export const PEOPLE_PAGE: ServerPage = { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH };
 export const ADMIN_PAGES: readonly ServerPage[] = [
   PEOPLE_PAGE,
+  RUNNERS_PAGE,
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },
 ];
@@ -254,6 +257,7 @@ const SERVER_TITLES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), pageOf(suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
   [MY_MACHINES_PATH]: 'My machines',
+  [RUNNERS_PATH]: 'Runners',
   ...Object.fromEntries(ADMIN_PAGES.map((page) => [page.to, page.label])),
   ...Object.fromEntries(SETTINGS_SECTIONS.map((section) => [section.to, 'Settings'])),
 };

@@ -21,6 +21,21 @@ const environment = (root: string) => sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT
 const sqliteExecutable = resolveTestTool('sqlite3') ?? (fs.existsSync('/usr/bin/sqlite3') ? '/usr/bin/sqlite3' : null);
 
 describe('service-manager process containment', () => {
+  for (const operation of ['restart', 'rollback', 'guardian']) for (const stub of [true, false]) {
+    it(`runner update ${operation} ${stub ? 'uses its stub' : 'fails before real service execution'}`, () => {
+      const root = fresh();
+      const env: NodeJS.ProcessEnv = { ...environment(root), ...(stub ? { MYCO_RUNNER_SERVICE_STUB: '1' } : {}), ...(operation === 'rollback' ? { MYCO_RUNNER_UPDATE_ROLLBACK: '1' } : {}), ...(operation === 'guardian' ? { MYCO_RUNNER_UPDATE_GUARDIAN: '1' } : {}) };
+      const child = spawnSync(process.execPath, ['test', './tests/fixtures/runner/runner_update_boundary_test.ts'], { env, cwd: process.cwd(), encoding: 'utf8', timeout: 30000 });
+      if (stub) {
+        expect({ status: child.status, denied: child.stderr.includes('TEST SAFETY') }).toEqual({ status: 0, denied: false });
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).not.toThrow();
+      } else {
+        expect(child.status).not.toBe(0);
+        expect(child.stderr).toContain('TEST SAFETY');
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toThrow('TEST SAFETY');
+      }
+    });
+  }
   for (const stub of [true, false]) {
     it(`runner service installation ${stub ? 'uses its stub' : 'fails before real service execution without its stub'}`, () => {
       const root = fresh();
