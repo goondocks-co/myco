@@ -1,3 +1,5 @@
+import { readTaskStartPreview } from '@myco-server-worker/read/task-start.js';
+import { readFleetProjection } from '@myco-server-worker/read/fleet.js';
 /**
  * Runners: a Deployment-owned execution identity, registered through the device flow, that claims and drives the
  * Deployment's queued work on its own credential and nothing else.
@@ -19,11 +21,11 @@ import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { RUNNER_TOKEN_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/runners.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { workerLiveness } from '@myco-server-worker/core/runs.js';
-import { readWorkerFleet } from '@myco-server-worker/core/worker-contacts.js';
+import { runnerObservationStatement, readWorkerFleet, pruneWorkerContacts, recordWorkerContact, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { prepareRecoveredTenant } from '@myco-server-worker/core/recovered-tenant.js';
-import { controlRunner, registerRunner, runnerWriteStore, RunnerWriteRefused, RUNNER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/runners.js';
+import { renameRunner, controlRunner, registerRunner, runnerWriteStore, RunnerWriteRefused, RUNNER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/runners.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
@@ -67,7 +69,7 @@ function rig(options: { onSql?: (sql: string) => void; deploymentId?: string } =
   };
   const asRunner = (token: string, path: string, body: unknown = {}) => post(path, body, { authorization: `Bearer ${token}`, ...PROTOCOL });
   const json = async (res: Response | Promise<Response>): Promise<Json> => await (await res).json() as Json;
-  const start = async (name = 'mini', candidate = bearer()): Promise<Json> => ({ candidate, ...await json(post('/auth/runner/start', { name, machineId: `rm_${crypto.randomUUID()}`, machineName: 'Mac mini', os: 'darwin', candidate })) });
+  const start = async (name = 'mini', candidate = bearer(), replace = false): Promise<Json> => ({ candidate, ...await json(post('/auth/runner/start', { name, machineId: `rm_${crypto.randomUUID()}`, machineName: 'Mac mini', os: 'darwin', candidate, ...(replace ? { replace: true } : {}) })) });
   const poll = (deviceCode: string) => json(post('/auth/runner/poll', { device_code: deviceCode }));
   /** Start, approve as the owner and poll: a registered runner and its bearer. */
   const register = async (name = 'mini') => {
@@ -710,7 +712,7 @@ describe('the review corrections', () => {
       expect(detail.attempts.map((attempt) => attempt.executor)).toEqual([
         { kind: 'runner', runnerId: a.runnerId, name: 'first-runner' },
         { kind: 'runner', runnerId: b.runnerId, name: 'second-runner' },
-        { kind: 'member', memberId: ADMIN },
+        { kind: 'legacy-worker', memberId: ADMIN },
       ]);
     } finally { r.e.sqlite.close(); }
   });
@@ -899,4 +901,307 @@ it('runner inventory reports acknowledged offers and their observation time, pre
     await r.claim(token);
     expect(await listed()).toMatchObject({ offers: [{ id: 'claude-code', authenticated: true }], offersObservedAt: r.now() });
   } finally { r.e.sqlite.close(); }
+});
+
+describe('shared runner fleet projection', () => {
+  it('retains every registered display state and names a lease even without any contact', async () => {
+    const r = rig();
+    try {
+      const never = await r.register('never-contacted');
+      const idle = await r.register('idle');
+      await r.asRunner(idle.token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES });
+      const empty = await r.register('no-agent');
+      await r.asRunner(empty.token, '/worker/claim', { harnesses: [], capabilities: WORKER_CAPABILITIES });
+      const unknown = await r.register('unknown');
+      await r.asRunner(unknown.token, '/runners/contact', {});
+      const stale = await r.register('stale');
+      await r.asRunner(stale.token, '/runners/contact', {});
+      r.e.sqlite.run('UPDATE runner_contacts SET last_seen_at = ? WHERE runner_id = ?', [r.now() - WORKER_LEASE_MS - 1, stale.runnerId]);
+      const settling = await r.register('settling');
+      await r.asRunner(settling.token, '/runners/contact', { arch: 'arm64', availability: 'settling', readinessReason: 'Waiting to settle after waking.' });
+      const removed = await r.register('removed');
+      await r.asSession(`/api/runners/${removed.runnerId}/remove`, {});
+      const busy = await r.register('busy');
+      await r.queueTitling();
+      const run = (await r.claim(busy.token)).run;
+      r.e.sqlite.run('DELETE FROM runner_contacts WHERE runner_id = ?', [busy.runnerId]);
+      const project = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
+      expect(project.runners).toHaveLength(8);
+      const by = (id: string) => project.runners.find((row: Json) => row.id === id);
+      for (const [runner, display] of [[never, 'Never contacted'], [idle, 'Online'], [empty, 'Not ready'], [unknown, 'Not ready'], [stale, 'Offline'], [settling, 'Not ready'], [removed, 'Removed'], [busy, 'Busy']] as const) expect(by(runner.runnerId).display).toBe(display);
+      expect(by(busy.runnerId)).toMatchObject({ busy: { runId: run.id, task: 'title-summary', projectId: 'proj_1', leaseExpiresAt: run.leaseExpiresAt ?? r.now() + WORKER_LEASE_MS } });
+      expect(by(settling.runnerId)).toMatchObject({ arch: 'arm64', readiness: { state: 'settling', observedAt: r.now() - 10000 } });
+      expect(by(unknown.runnerId).offers).toBeNull();
+      await r.asSession(`/api/runners/${busy.runnerId}/pause`, {});
+      const paused = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
+      expect(paused.runners.find((row: Json) => row.id === busy.runnerId)).toMatchObject({ display: 'Paused', busy: { runId: run.id } });
+      expect((await r.asRunner(busy.token, '/worker/lease', { projectId: 'proj_1', runId: run.id, attemptId: run.attemptId })).status).toBe(200);
+      const status = await r.json(r.asSession('/api/status', {}, MEMBER_SUB, 'GET'));
+      expect(status.workers.fleet.find((row: Json) => row.runner?.id === busy.runnerId).runnerDetails.display).toBe('Paused');
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('keeps last completed, failed and attempted work after credential replacement and contact pruning', async () => {
+    const r = rig();
+    try {
+      const runner = await r.register();
+      await r.queueTitling();
+      const completed = (await r.claim(runner.token)).run;
+      r.e.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?`, [r.now(), completed.id]);
+      r.advance(1);
+      await r.queueTitling();
+      const failed = (await r.claim(runner.token)).run;
+      r.e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ?, lease_expires_at = NULL WHERE id = ?`, [r.now(), failed.id]);
+      const candidate = await r.start('mini', bearer(), true);
+      expect(await r.json(r.asSession(`/api/runners/${runner.runnerId}/recredential`, { user_code: candidate.user_code }))).toEqual({ approved: true, runnerId: runner.runnerId });
+      expect(await r.poll(candidate.device_code)).toMatchObject({ registered: true, runnerId: runner.runnerId, name: 'mini' });
+      expect((await r.asRunner(runner.token, '/runners/contact')).status).toBe(401);
+      r.advance(WORKER_CONTACT_RETENTION_MS + 1);
+      await pruneWorkerContacts(r.e.db, r.now(), WORKER_CONTACT_RETENTION_MS, 100);
+      const projection = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(projection.runners).toHaveLength(1);
+      expect(projection.runners[0]).toMatchObject({ display: 'Offline', awaitingReplacement: true, lastCompleted: { runId: completed.id }, lastFailed: { runId: failed.id }, lastAttempted: { runId: failed.id } });
+      expect(r.row(`SELECT action, actor_member FROM runner_metadata_audit WHERE runner_id = ?`, runner.runnerId)).toEqual({ action: 'recredentialed', actor_member: OWNER });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('replacement invalidates transient reports and the old assignment while retaining attempt history', async () => {
+    const r = rig();
+    try {
+      const runner = await r.register();
+      await r.asRunner(runner.token, '/runners/contact', { arch: 'arm64', availability: 'ready', update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
+      await r.queueTitling();
+      const run = (await r.claim(runner.token)).run;
+      const replacement = await r.start('mini', bearer(), true);
+      expect((await r.asSession(`/api/runners/${runner.runnerId}/recredential`, { user_code: replacement.user_code })).status).toBe(200);
+      const listed = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(listed.runners[0]).toMatchObject({ display: 'Offline', awaitingReplacement: true, busy: null, offers: null, arch: null, version: null, channel: null, models: [], lastAttempted: { runId: run.id } });
+      expect((await r.asRunner(runner.token, '/worker/lease', { projectId: 'proj_1', runId: run.id, attemptId: run.attemptId })).status).toBe(401);
+      await r.asRunner(replacement.candidate, '/runners/contact', { availability: 'ready', arch: 'arm64', update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
+      expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Not ready', readiness: { state: 'unknown' } });
+      await r.asSession(`/api/runners/${runner.runnerId}/remove`, {});
+      expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Removed', busy: null, lastAttempted: { runId: run.id } });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('reviews replacement requests and keeps the same identity through the CLI device approval path', async () => {
+    const r = rig();
+    try {
+      const runner = await r.register();
+      const generic = await r.start('mini');
+      expect((await r.asSession(`/api/runners/${runner.runnerId}/recredential`, { user_code: generic.user_code })).status).toBe(409);
+      const wrong = await r.start('another-machine');
+      expect((await r.asSession(`/api/runners/${runner.runnerId}/recredential`, { user_code: wrong.user_code })).status).toBe(409);
+      expect(r.row('SELECT decision FROM device_requests WHERE user_hash = ?', await sha256Hex(wrong.user_code.replace('-', '')))).toEqual({ decision: null });
+      const renamedRequest = await r.start('mini', bearer(), true);
+      await r.asSession(`/api/runners/${runner.runnerId}/rename`, { name: 'renamed-mini' });
+      expect((await r.asSession(`/api/runners/${runner.runnerId}/recredential`, { user_code: renamedRequest.user_code })).status).toBe(409);
+      await r.asSession(`/api/runners/${runner.runnerId}/rename`, { name: 'mini' });
+      const token = bearer();
+      const pending = await r.json(r.post('/auth/runner/start', { name: 'mini', replace: true, machineId: 'replacement-mini', machineName: 'New mini', os: 'darwin', candidate: token }));
+      expect(await r.json(r.asSession('/api/device/preview', { user_code: pending.user_code }))).toMatchObject({
+        subject: 'runner', runnerName: 'mini', replacingRunnerId: runner.runnerId, machineName: 'New mini', os: 'darwin', ip: '192.0.2.10',
+      });
+      expect((await r.asSession('/api/device/approve-runner', { user_code: pending.user_code }, MEMBER_SUB)).status).toBe(403);
+      expect(await r.json(r.asSession('/api/device/approve-runner', { user_code: pending.user_code }))).toMatchObject({ runnerId: runner.runnerId });
+      r.advance(5000);
+      expect(await r.poll(pending.device_code)).toMatchObject({ runnerId: runner.runnerId, name: 'mini' });
+      expect(r.row('SELECT COUNT(*) AS n FROM runners')).toEqual({ n: 1 });
+      expect((await r.asRunner(runner.token, '/runners/contact')).status).toBe(401);
+      expect((await r.asRunner(token, '/runners/contact')).status).toBe(200);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('binds a renamed machine by identity and refuses another machine with the requested name', async () => {
+    const r = rig();
+    try {
+      const runner = await r.register();
+      const other = await r.register('other');
+      await r.asSession(`/api/runners/${runner.runnerId}/rename`, { name: 'renamed-mini' });
+      const body = { name: 'renamed-mini', replace: true, runnerId: runner.runnerId, machineId: 'renamed-machine', machineName: 'Mini', os: 'darwin', candidate: bearer() };
+      expect((await r.post('/auth/runner/start', { ...body, name: 'other' })).status).toBe(409);
+      expect((await r.post('/auth/runner/start', { ...body, runnerId: other.runnerId })).status).toBe(409);
+      await r.asSession(`/api/runners/${other.runnerId}/rename`, { name: 'renamed-mini' });
+      expect((await r.post('/auth/runner/start', { ...body, runnerId: undefined })).status).toBe(409);
+      const pending = await r.json(r.post('/auth/runner/start', body));
+      expect(await r.json(r.asSession('/api/device/approve-runner', { user_code: pending.user_code }))).toMatchObject({ runnerId: runner.runnerId });
+      r.advance(5000);
+      expect(await r.poll(pending.device_code)).toMatchObject({ runnerId: runner.runnerId, name: 'renamed-mini' });
+      expect(r.row('SELECT COUNT(*) AS n FROM runners')).toEqual({ n: 2 });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('restores replacement request targets after their runner parents and expires carried approval', async () => {
+    const source = rig();
+    const destination = rig({ deploymentId: 'restored-deployment' });
+    try {
+      const runner = await source.register();
+      const pending = await source.start('mini', bearer(), true);
+      source.e.sqlite.run('UPDATE deployment_ownership SET member_id = NULL, revision = 0 WHERE id = 1');
+      const saved = await createBackup(source.e.db, source.e.bucket, { producer: 'replacement-target', now: source.now() });
+      const artifact = (await backupArtifact(source.e.db, source.e.bucket, saved.id))!;
+      await restoreArtifact(destination.e.db, { text: artifact.text, authorization: { kind: 'recovery' }, allowForeignLineage: true, now: source.now() });
+      expect(destination.row('SELECT replacing_runner_id,expires_at FROM device_requests WHERE user_hash = ?', await sha256Hex(pending.user_code.replace('-', ''))))
+        .toEqual({ replacing_runner_id: runner.runnerId, expires_at: source.now() });
+      expect(destination.row('SELECT id FROM runners WHERE id = ?', runner.runnerId)).toEqual({ id: runner.runnerId });
+      destination.at(source.now());
+      expect((await destination.asSession('/api/device/approve-runner', { user_code: pending.user_code })).status).toBe(409);
+    } finally { source.e.sqlite.close(); destination.e.sqlite.close(); }
+  });
+
+  it('keeps both runners claiming through malformed auxiliary update metadata over HTTP', async () => {
+    const r = rig();
+    try {
+      const bad = await r.register('bad-update');
+      await r.asRunner(bad.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
+      r.e.sqlite.run(`UPDATE runner_update_reports SET last_result = '[1]' WHERE runner_id = ?`, [bad.runnerId]);
+      await r.queueTitling();
+      expect((await r.claim(bad.token)).claimed).toBe(true);
+      const good = await r.register('good-update');
+      await r.queueTitling();
+      expect((await r.claim(good.token)).claimed).toBe(true);
+      const runners = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(runners.runners.find((row: Json) => row.id === bad.runnerId)).toMatchObject({ updateMetadataUnavailable: true, updateState: null, display: 'Busy' });
+      const status = await r.json(r.asSession('/api/status', {}, OWNER_SUB, 'GET'));
+      expect(status.workers.available).toBe(true);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('keeps readiness observations monotonic and run history readable when fleet reads fail', async () => {
+    const r = rig();
+    try {
+      const runner = await r.register();
+      await r.e.db.batch([runnerObservationStatement(r.e.db, runner.runnerId, { arch: 'arm64', state: 'ready', reason: 'Awake.' }, r.now())]);
+      await r.e.db.batch([runnerObservationStatement(r.e.db, runner.runnerId, { arch: 'arm64', state: 'settling', reason: 'Waiting.' }, r.now() - 1)]);
+      expect(r.row('SELECT availability,observed_at FROM runner_observations WHERE runner_id = ?', runner.runnerId)).toEqual({ availability: 'ready', observed_at: r.now() });
+      await r.queueTitling();
+      const id = String(r.row("SELECT id FROM agent_runs WHERE status = 'queued'")!.id);
+      r.arm(sql => { if (sql.includes('LEFT JOIN runner_observations')) throw new Error('fleet read failed'); });
+      const runs = await r.json(r.asSession('/api/projects/proj_1/runs', {}, OWNER_SUB, 'GET'));
+      expect(JSON.stringify(runs)).toContain('"rows"');
+      expect(runs.rows.find((row: Json) => row.id === id)).toMatchObject({ fleetWait: { reason: 'unavailable', observedAt: r.now() } });
+      const detail = await r.json(r.asSession(`/api/projects/proj_1/runs/${id}`, {}, OWNER_SUB, 'GET'));
+      expect(detail.run).toMatchObject({ id, fleetWait: { reason: 'unavailable' } });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('gives every control only to owner/admin and refuses revoked dashboard sessions', async () => {
+    const r = rig();
+    try {
+      const runner = await r.register();
+      await r.asRunner(runner.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
+      const pending = await r.start('mini', bearer(), true);
+      for (const action of ['rename', 'pause', 'resume', 'remove', 'recredential', 'update']) {
+        const res = await r.asSession(`/api/runners/${runner.runnerId}/${action}`, action === 'rename' ? { name: 'renamed' } : action === 'recredential' ? { user_code: pending.user_code } : {}, MEMBER_SUB);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ error: 'not_admin' });
+      }
+      await expect(renameRunner(r.e.db, MEMBER, runner.runnerId, 'forbidden', r.now())).rejects.toThrow();
+      for (const sub of [OWNER_SUB, ADMIN_SUB]) {
+        expect((await r.asSession(`/api/runners/${runner.runnerId}/rename`, { name: `name-${sub}` }, sub)).status).toBe(200);
+        expect((await r.asSession(`/api/runners/${runner.runnerId}/pause`, {}, sub)).status).toBe(200);
+        expect((await r.asSession(`/api/runners/${runner.runnerId}/resume`, {}, sub)).status).toBe(200);
+      }
+      expect(r.row(`SELECT COUNT(*) AS n FROM runner_metadata_audit WHERE action = 'renamed'`)).toEqual({ n: 2 });
+      expect((await r.asSession(`/api/runners/${runner.runnerId}/rename`, { name: `name-${ADMIN_SUB}` }, ADMIN_SUB)).status).toBe(200);
+      expect(r.row(`SELECT COUNT(*) AS n FROM runner_metadata_audit WHERE action = 'renamed'`)).toEqual({ n: 2 });
+      r.e.sqlite.run('UPDATE members SET revoked_at = ? WHERE id = ?', [r.now(), MEMBER]);
+      expect((await r.asSession('/api/runners', {}, MEMBER_SUB, 'GET')).status).toBeGreaterThanOrEqual(400);
+      expect(r.row('SELECT name FROM runners WHERE id = ?', runner.runnerId)?.name).toBe(`name-${ADMIN_SUB}`);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('names whole-fleet queue reasons and retains queue age across capacity, readiness and limits', async () => {
+    const r = rig();
+    try {
+      await r.queueTitling();
+      const oldest = r.now();
+      const read = () => readFleetProjection({ ...r.env, platform: { ...r.env.platform, name: 'bun' } }, r.now());
+      expect((await read()).queue).toMatchObject({ count: 1, oldestAt: oldest, reasons: [{ reason: 'no_runner', count: 1 }] });
+      const runner = await r.register();
+      const first = (await r.claim(runner.token)).run;
+      await r.queueTitling();
+      expect((await read()).queue.reasons).toEqual([{ reason: 'capacity', count: 1 }]);
+      const preview = await readTaskStartPreview(r.env, 'proj_1', 'title-summary', MEMBER, r.now());
+      expect(preview.executions).toHaveLength(0);
+      r.e.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ?, lease_expires_at = NULL WHERE id = ?`, [r.now(), first.id]);
+      await r.asRunner(runner.token, '/runners/contact', { availability: 'settling', readinessReason: 'Waiting after waking.' });
+      expect((await read()).queue.reasons).toEqual([{ reason: 'settling', count: 1 }]);
+      await r.asRunner(runner.token, '/runners/contact', { availability: 'ready', readinessReason: 'Awake.' });
+      await r.asSession(`/api/runners/${runner.runnerId}/pause`, {});
+      expect((await read()).queue).toMatchObject({ reasons: [{ reason: 'paused', count: 1 }], nativeNeedsRunner: true });
+      await r.asSession(`/api/runners/${runner.runnerId}/resume`, {});
+      await r.asRunner(runner.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
+      expect((await read()).queue.reasons).toEqual([{ reason: 'updating', count: 1 }]);
+      await r.asRunner(runner.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: null } });
+      r.e.sqlite.run(`UPDATE runner_contacts SET offers = '[]' WHERE runner_id = ?`, [runner.runnerId]);
+      expect((await read()).queue.reasons).toEqual([{ reason: 'not_signed_in', count: 1 }]);
+      r.e.sqlite.run(`UPDATE agent_runs SET task = 'canopy-map' WHERE status = 'queued'`);
+      r.e.sqlite.run(`UPDATE runner_contacts SET capabilities = '[]' WHERE runner_id = ?`, [runner.runnerId]);
+      expect((await read()).queue.reasons).toEqual([{ reason: 'model_profile', count: 1 }]);
+      r.e.sqlite.run(`UPDATE runner_contacts SET capabilities = 'invalid' WHERE runner_id = ?`, [runner.runnerId]);
+      expect((await read()).queue.reasons).toEqual([{ reason: 'unavailable', count: 1 }]);
+      r.e.sqlite.run(`UPDATE agent_runs SET task = 'title-summary' WHERE status = 'queued'`);
+      r.e.sqlite.run(`UPDATE runner_contacts SET capabilities = ? WHERE runner_id = ?`, [JSON.stringify(WORKER_CAPABILITIES), runner.runnerId]);
+      r.e.sqlite.run(`UPDATE runner_contacts SET offers = 'invalid' WHERE runner_id = ?`, [runner.runnerId]);
+      expect((await read()).queue.reasons).toEqual([{ reason: 'unavailable', count: 1 }]);
+      r.e.sqlite.run(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES ('agent.limits.task_runs_per_hour','1',?,'test')`, [r.now()]);
+      expect((await read()).queue.reasons).toEqual([{ reason: 'dispatch_ceiling', count: 1 }]);
+      const plan = r.e.sqlite.query(`EXPLAIN QUERY PLAN SELECT task,held_by,COUNT(*),MIN(queued_at),MIN(id) FROM agent_runs INDEXED BY idx_fleet_queue WHERE status = 'queued' GROUP BY task,held_by`).all();
+      expect(JSON.stringify(plan)).toContain('COVERING INDEX idx_fleet_queue');
+      expect(JSON.stringify(plan)).not.toContain('TEMP B-TREE');
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('surfaces failed reads as unavailable, never an empty fleet or zero queue', async () => {
+    const r = rig();
+    try {
+      await r.register();
+      r.arm(sql => { if (sql.includes('LEFT JOIN runner_observations')) throw new Error('fleet read failed'); });
+      expect((await r.asSession('/api/runners', {}, OWNER_SUB, 'GET')).status).toBe(503);
+      const status = await r.json(r.asSession('/api/status', {}, OWNER_SUB, 'GET'));
+      expect(status.workers).toMatchObject({ available: false, fleet: null, runsQueued: null, workersBusy: null });
+      expect(status.unavailable).toContain('workers');
+    } finally { r.e.sqlite.close(); }
+  });
+});
+
+describe('forgetting a retired legacy worker', () => {
+  it('forgets only an offline contact, audits the owner, preserves membership/capture and reappears on contact', async () => {
+    const r = rig();
+    try {
+      const legacy = await issueMemberToken(r.e.db, { memberId: ADMIN, machineId: 'retired-laptop' }, r.now());
+      const contact = () => recordWorkerContact(r.e.db, { credentialId: legacy.tokenId, machineId: 'retired-laptop', offers: OFFERED, capabilities: WORKER_CAPABILITIES, reason: 'no_work', now: r.now() });
+      await contact();
+      const path = `/api/workers/legacy/${legacy.tokenId}/forget`;
+      expect((await r.asSession(path, {})).status).toBe(409);
+      r.advance(WORKER_LEASE_MS + 1);
+      expect((await r.asSession(path, {}, MEMBER_SUB)).status).toBeGreaterThanOrEqual(400);
+      const before = r.row('SELECT * FROM member_credentials WHERE id = ?', legacy.tokenId);
+      const member = r.row('SELECT * FROM members WHERE id = ?', ADMIN);
+      expect(await r.json(r.asSession(path, {}))).toEqual({ forgotten: true });
+      expect(r.row('SELECT * FROM member_credentials WHERE id = ?', legacy.tokenId)).toEqual(before);
+      expect(r.row('SELECT * FROM members WHERE id = ?', ADMIN)).toEqual(member);
+      for (const endpoint of ['/api/status', '/api/runners']) {
+        const data = await r.json(r.asSession(endpoint, {}, OWNER_SUB, 'GET'));
+        expect((endpoint === '/api/status' ? data.workers.fleet : data.legacyWorkers).some((row: Json) => row.credentialId === legacy.tokenId)).toBe(false);
+      }
+      expect(r.row('SELECT credential_id,actor_member,action FROM legacy_worker_audit')).toEqual({ credential_id: legacy.tokenId, actor_member: OWNER, action: 'forgotten' });
+      expect((await r.asRunner(legacy.token, '/members/status', {})).status).toBe(200);
+      await contact();
+      expect((await readWorkerFleet(r.e.db, r.now())).some(row => row.credentialId === legacy.tokenId)).toBe(true);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('refuses forget under a live lease even if the contact is stale', async () => {
+    const r = rig();
+    try {
+      const legacy = await issueMemberToken(r.e.db, { memberId: ADMIN, machineId: 'working-laptop' }, r.now());
+      await r.queueTitling();
+      await r.json(r.asRunner(legacy.token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES }));
+      r.e.sqlite.run('UPDATE worker_contacts SET last_seen_at = ? WHERE credential_id = ?', [r.now() - WORKER_LEASE_MS - 1, legacy.tokenId]);
+      expect((await r.asSession(`/api/workers/legacy/${legacy.tokenId}/forget`, {}, ADMIN_SUB)).status).toBe(409);
+      expect(r.row('SELECT COUNT(*) AS n FROM legacy_worker_audit')).toEqual({ n: 0 });
+    } finally { r.e.sqlite.close(); }
+  });
 });

@@ -1,3 +1,5 @@
+import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
+import { formatRelative } from '../../lib/format';
 import { Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
 import { useTaskNames } from '../../hooks/use-tasks';
@@ -90,7 +92,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
-        {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{capitalize(queuedWords(run))}.</p>}
+        {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{(run.fleetWait === undefined ? capitalize(queuedWords(run)) : QUEUE_REASON_WORDS[run.fleetWait.reason]).replace(/\.$/, '')}. Waiting since {run.queuedAt === null ? 'an unavailable time' : formatRelative(run.queuedAt)}.</p>}
         {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
         {live && (canCancel
           ? <Button size="sm" onClick={() => { setCancelError(null); setConfirmCancel(true); }}>Cancel run</Button>

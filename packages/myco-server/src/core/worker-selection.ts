@@ -180,7 +180,7 @@ export async function fleetSelection<L>(env: Pick<ServerEnv, 'harnessCredentialS
   const reasons: string[] = [];
   for (const report of reports) {
     if (!required.every((capability) => report.capabilities.includes(capability))) continue;
-    const result = await selectExecution(env, task, report.offers, settings, login(report));
+    const result = await selectExecution(report.runner ? { ...env, harnessCredentialSource: 'worker-login' } : env, task, report.offers, settings, login(report));
     if (result.selected !== null) return { selected: result.selected, holder: 'worker' };
     if (result.reason !== null) reasons.push(result.reason);
   }
@@ -213,7 +213,7 @@ export async function previewSelection(env: Pick<ServerEnv, 'harnessCredentialSo
   const executions = new Map<string, PreviewExecution>();
   const reasons: string[] = [];
   for (const report of able) {
-    const { selected, reason } = await selectExecution(env, task, report.offers, settings, login(report));
+    const { selected, reason } = await selectExecution(report.runner ? { ...env, harnessCredentialSource: 'worker-login' } : env, task, report.offers, settings, login(report));
     if (selected === null) { if (reason !== null) reasons.push(reason); continue; }
     const { tier, model, effort } = selected.profile;
     const key = JSON.stringify([selected.harness, tier, model, effort]);

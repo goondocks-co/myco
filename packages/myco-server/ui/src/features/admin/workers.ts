@@ -27,11 +27,12 @@ export const REASON_WORDS: Record<NonNullable<WorkerRow['lastReason']>, string> 
   no_harness: 'the work waiting needs an agent it doesn’t have',
   at_limit: 'a limit was already reached',
   lost_race: 'another machine took it first',
+  paused: 'paused; assigned work may finish',
 };
 
 /** How a person sets a machine to run Myco's work, said wherever none is: the words around the command, and the command. */
 export const ATTACH_WORDS = {
-  before: 'Explicitly enroll this machine with myco runner register <address>. Running',
+  before: 'On a machine you want to use, run myco runner register <address>. After approval, running',
   command: 'myco runner install',
   after: 'starts the enrolled runner at login.',
 } as const;
@@ -57,6 +58,11 @@ export interface WorkerNames {
 
 /** One worker's state in one line without its name, and the tone of its dot: for a row that already names its machine. */
 export function workerState(worker: WorkerRow, now: number, project: WorkerNames['project']): { tone: HealthTone; line: string } {
+  if (worker.runnerDetails !== undefined) {
+    const runner = worker.runnerDetails;
+    return { tone: runner.display === 'Busy' || runner.display === 'Online' ? 'ok' : runner.display === 'Not ready' ? 'bad' : 'faint',
+      line: `${runner.display} · ${runner.busy === null ? runner.readiness.reason : `Run assigned; lease valid until ${new Date(runner.busy.leaseExpiresAt).toLocaleString()}`}${runner.lastSeenAt === null ? ' · Never contacted' : ` · ${runner.connected ? 'Seen' : 'Not seen recently; last seen'} ${sinceWords(runner.lastSeenAt, now)}`}` };
+  }
   if (worker.busy !== null) {
     const name = project(worker.busy.projectId);
     return {
@@ -75,9 +81,11 @@ export function workerState(worker: WorkerRow, now: number, project: WorkerNames
   return { tone: ready ? 'ok' : 'bad', line: `${polling} · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
 }
 
+export const LEGACY_WORKER_LABEL = 'Legacy worker — uses member credential';
+
 /** The credential class the executor reports. */
 export function workerKindWords(worker: Pick<WorkerRow, 'runner'>): string {
-  return worker.runner ? 'Registered runner' : 'Legacy worker — uses member credential';
+  return worker.runner ? 'Registered runner' : LEGACY_WORKER_LABEL;
 }
 
 /** One worker's state in one line, led by its machine's name, and the tone of its dot. */
@@ -112,6 +120,7 @@ export function isAttached(worker: WorkerRow): boolean {
 
 /** The fleet in one line, and its tone: how many machines run Myco's work, and what waits. */
 export function fleetLine(workers: WorkerStatus, now: number): { tone: HealthTone; attached: number; line: string } {
+  if (!workers.available || workers.fleet === null || workers.runsQueued === null) return { tone: 'bad', attached: 0, line: 'Machine and queue information is unavailable.' };
   const attached = workers.fleet.filter(isAttached);
   const queued = workers.runsQueued;
   const waiting = queued === 0 ? 'Nothing is waiting.' : `${queued} ${queued === 1 ? 'task is' : 'tasks are'} waiting.`;

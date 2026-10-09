@@ -141,6 +141,10 @@
     "./runner-update": {
       "import": "./dist/runner-update.js",
       "types": "./dist/runner-update.d.ts"
+    },
+    "./runner-fleet": {
+      "import": "./dist/runner-fleet.js",
+      "types": "./dist/runner-fleet.d.ts"
     }
   },
   "files": [

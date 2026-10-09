@@ -38,8 +38,9 @@ const CONTACT_RECORD_INTERVAL_MS = 5 * 60 * 1000;
 export interface PendingRegister {
   kind: 'register';
   candidate: string;
-  /** The name the registration asks for; a replacement differs from the acknowledged record's own name until it commits. */
+  /** The name the registration asks for. */
   name?: string;
+  replace?: boolean;
   deviceCode?: string;
   userCode?: string;
   /** Epoch milliseconds at which the device grant lapses. */
@@ -119,6 +120,7 @@ function parsePending(file: string, value: unknown): RunnerPending {
     return pending as unknown as PendingRotate;
   }
   if (pending.kind !== 'register') throw new RunnerRecordError(file, 'pending kind is neither register nor rotate');
+  if (pending.replace !== undefined && typeof pending.replace !== 'boolean') throw new RunnerRecordError(file, 'pending replace is not a boolean');
   for (const field of ['deviceCode', 'userCode'] as const) {
     if (pending[field] !== undefined && !isString(pending[field])) throw new RunnerRecordError(file, `pending ${field} is not a string`);
   }

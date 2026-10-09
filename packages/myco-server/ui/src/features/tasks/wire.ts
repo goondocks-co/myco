@@ -41,6 +41,7 @@ export interface TaskNamesAnswer { tasks: { task: string; name: string }[] }
 
 /** `GET /api/tasks/start`: what starting a task by hand in one project would do now. */
 export interface TaskStartPreview {
+  fleetWait?: { reason: import('@goondocks/myco-shared/runner-fleet').QueueReason; observedAt: number };
   task: string;
   projectId: string;
   /**

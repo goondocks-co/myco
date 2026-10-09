@@ -1,3 +1,5 @@
+import { invalidateRunnerUpdates } from '../core/runner-updates.js';
+import { invalidateRunnerCatalogs } from '../core/model-catalogs.js';
 /**
  * Runners: the Deployment's own execution identities, and the one module that issues, rotates, revokes and
  * controls them.
@@ -21,8 +23,9 @@
 import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
-import type { RunnerUpdateResult, RunnerBlockedVersion, RunnerUpdateState, RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
-import { CONTACT_RECENT_MS, parseOffers } from '../core/worker-contacts.js';
+import type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
+export type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
+import { readWorkerFleet, invalidateRunnerContacts } from '../core/worker-contacts.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { sha256Hex } from '../hash.js';
@@ -259,21 +262,30 @@ const PENDING_RUNNER_REQUEST = `EXISTS (SELECT 1 FROM device_requests d WHERE d.
  * audit, the decision and its receipt commit together or not at all, while the request is pending and the approver is
  * a live owner or administrator at the write.
  */
-export async function registerRunner(db: RelationalStore, approverId: string, requestId: string, sourceHash: string, now: number): Promise<{ runnerId: string } | null> {
-  const runnerId = newId(RUNNER_ID_PREFIX);
+export async function registerRunner(db: RelationalStore, approverId: string, requestId: string, sourceHash: string, now: number, replacingId?: string): Promise<{ runnerId: string } | null> {
+  const runnerId = replacingId ?? newId(RUNNER_ID_PREFIX);
+  const replacing = replacingId === undefined ? null : await readRunner(db, replacingId);
+  if (replacingId !== undefined && (replacing === null || replacing.state === 'removed')) return null;
+  const epoch = replacing === null ? 1 : (await db.prepare(`SELECT credential_epoch AS epoch FROM runners WHERE id = ?`).bind(runnerId).first<{ epoch: number }>())!.epoch + 1;
   const credentialId = newId(RUNNER_CREDENTIAL_ID_PREFIX);
-  const assertion = (): PreparedStatement => db.prepare(`SELECT CASE WHEN ${PENDING_RUNNER_REQUEST} AND ${LIVE_RUNNER_ADMIN}
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(requestId, now, approverId, REGISTRATION_REFUSED);
+  const assertion = (): PreparedStatement => db.prepare(`SELECT CASE WHEN ${PENDING_RUNNER_REQUEST} AND ${LIVE_RUNNER_ADMIN}${replacing === null ? ` AND EXISTS (SELECT 1 FROM device_requests WHERE id = ? AND replacing_runner_id IS NULL)` : ` AND EXISTS (SELECT 1 FROM runners r JOIN device_requests d ON d.id = ? AND d.runner_name = r.name
+      WHERE r.id = ? AND r.revision = ? AND r.state <> 'removed' AND d.replacing_runner_id = r.id)`}
+    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(requestId, now, approverId, ...(replacing === null ? [requestId] : [requestId, runnerId, replacing.revision]), REGISTRATION_REFUSED);
   try {
     await writeGuardBatch(db, assertion, (error) => { throw error; }, [
-      db.prepare(`INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id)
+      ...(replacing === null ? [db.prepare(`INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id)
         SELECT ?, d.runner_name, 'enabled', 1, 1, '[]', ?, ?, d.id FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'`)
-        .bind(runnerId, now, approverId, requestId),
+        .bind(runnerId, now, approverId, requestId)] : [
+        db.prepare(`UPDATE runners SET credential_epoch = ?, revision = revision + 1, registration_id = ? WHERE id = ?`).bind(epoch, requestId, runnerId),
+        db.prepare(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'runner-recredentialed' WHERE runner_id = ? AND revoked_at IS NULL`).bind(now, runnerId),
+        ...invalidateRunnerContacts(db, runnerId), invalidateRunnerCatalogs(db, runnerId), ...invalidateRunnerUpdates(db, runnerId),
+      ]),
       db.prepare(`INSERT INTO runner_credentials (id, runner_id, token_hash, epoch, issued_at, expires_at, predecessor_id, lineage_root)
-        SELECT ?, ?, d.candidate_hash, 1, ?, ?, NULL, ? FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'`)
-        .bind(credentialId, runnerId, now, now + RUNNER_TOKEN_TTL_MS, credentialId, requestId),
-      db.prepare(`INSERT INTO runner_audit (id, runner_id, actor_member, action, revision, at) VALUES (?, ?, ?, 'registered', 1, ?)`)
-        .bind(crypto.randomUUID(), runnerId, approverId, now),
+        SELECT ?, ?, d.candidate_hash, ?, ?, ?, NULL, ? FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'`)
+        .bind(credentialId, runnerId, epoch, now, now + RUNNER_TOKEN_TTL_MS, credentialId, requestId),
+      ...(replacing === null ? [db.prepare(`INSERT INTO runner_audit (id, runner_id, actor_member, action, revision, at) VALUES (?, ?, ?, 'registered', 1, ?)`)
+        .bind(crypto.randomUUID(), runnerId, approverId, now)] : [db.prepare(`INSERT INTO runner_metadata_audit(id,runner_id,actor_member,action,revision,detail,at)
+          VALUES (?,?,?,'recredentialed',?,'{}',?)`).bind(crypto.randomUUID(), runnerId, approverId, replacing.revision + 1, now)]),
       db.prepare(`UPDATE device_requests SET decision = 'approved', decided_by = ?, decided_at = ? WHERE id = ? AND subject = 'runner' AND decision IS NULL`)
         .bind(approverId, now, requestId),
       db.prepare(`INSERT INTO device_decision_audit (request_id, member_id, machine_id, machine_name, os, source_hash, decision, decided_at, subject)
@@ -348,42 +360,23 @@ export async function controlRunner(db: RelationalStore, actorId: string, runner
   return { changed: results[0]!.meta.changes === 1, runner: runner! };
 }
 
-export interface RunnerFleetRecord extends RunnerRecord {
-  lastSeenAt: number | null;
-  offers: ReturnType<typeof parseOffers>;
-  offersObservedAt: number | null;
-  busy: { projectId: string; runId: string; leaseExpiresAt: number } | null;
-  version: string | null;
-  channel: 'stable' | 'beta' | 'alpha' | null;
-  latestVersion: string | null;
-  lastCheckAt: number | null;
-  lastResult: RunnerUpdateResult | null;
-  blockedVersion: RunnerBlockedVersion | null;
-  updateState: RunnerUpdateState | null;
-  updateRequest: RunnerUpdateRequest | null;
-  connected: boolean;
+/** Every registered machine, from the same fleet read used by Status and task previews. */
+export async function listRunners(db: RelationalStore, now: number): Promise<RunnerFleetRecord[]> {
+  return (await readWorkerFleet(db, now)).flatMap((row) => row.runnerDetails === undefined ? [] : [row.runnerDetails]);
 }
 
-/** Every runner, newest first, with its last contact and any live lease: the read-only projection members share. */
-export async function listRunners(db: RelationalStore, now: number): Promise<RunnerFleetRecord[]> {
-  const { results } = await db.prepare(`SELECT r.id, r.name, r.state, r.revision, r.created_at AS createdAt, r.created_by_member AS createdBy,
-      r.removed_at AS removedAt, c.last_seen_at AS lastSeenAt, c.offers, CASE WHEN c.offers IS NULL THEN NULL ELSE c.updated_at END AS offersObservedAt, COALESCE(u.current_version, c.version) AS version,
-      u.channel, u.latest_version AS latestVersion, u.last_check_at AS lastCheckAt, u.last_result AS lastResult,
-      CASE WHEN q.id IS NULL THEN NULL ELSE json_object('id', q.id, 'requestedAt', q.requested_at, 'clearBlock', json('true')) END AS updateRequest,
-      (SELECT json_object('projectId', a.project_id, 'runId', a.id, 'leaseExpiresAt', a.lease_expires_at) FROM agent_runs a
-        INDEXED BY idx_agent_runs_runner_lease WHERE a.leased_runner_id = r.id AND a.status = 'running' AND a.lease_expires_at > ? LIMIT 1) AS busy
-    FROM runners r LEFT JOIN runner_contacts c ON c.runner_id = r.id
-      LEFT JOIN runner_update_reports u ON u.runner_id = r.id LEFT JOIN runner_update_requests q ON q.runner_id = r.id ORDER BY r.created_at DESC, r.id`)
-    .bind(now).all<Omit<RunnerFleetRecord, 'busy' | 'lastResult' | 'blockedVersion' | 'updateState' | 'updateRequest' | 'connected' | 'offers'> & { offers: string | null; busy: string | null; lastResult: string | null; updateRequest: string | null }>();
-  return results.map((row) => {
-    const stored = row.lastResult === null ? null : JSON.parse(row.lastResult) as RunnerUpdateResult | Pick<RunnerFleetRecord, 'lastResult' | 'blockedVersion' | 'updateState'>;
-    const metadata = stored !== null && 'lastResult' in stored
-      ? { lastResult: stored.lastResult, blockedVersion: stored.blockedVersion, updateState: stored.updateState }
-      : { lastResult: stored, blockedVersion: null, updateState: null };
-    return { ...row, ...metadata, offers: parseOffers(row.offers),
-      connected: row.state !== 'removed' && row.lastSeenAt !== null && row.lastSeenAt >= now - CONTACT_RECENT_MS,
-      updateRequest: row.updateRequest === null ? null : JSON.parse(row.updateRequest) as RunnerFleetRecord['updateRequest'],
-      busy: row.busy === null ? null : JSON.parse(row.busy) as RunnerFleetRecord['busy'],
-    };
-  });
+/** A name change commits with its live actor guard and immutable receipt. */
+export async function renameRunner(db: RelationalStore, actorId: string, runnerId: string, name: string, now: number): Promise<RunnerRecord | null> {
+  if (!RUNNER_NAME_PATTERN.test(name)) throw new Error('invalid runner name');
+  const before = await readRunner(db, runnerId);
+  if (before === null || before.state === 'removed') return null;
+  const assertion = () => db.prepare(`SELECT CASE WHEN ${LIVE_RUNNER_ADMIN}
+    AND EXISTS (SELECT 1 FROM runners WHERE id = ? AND revision = ? AND state <> 'removed')
+    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(actorId, runnerId, before.revision, REGISTRATION_REFUSED);
+  await writeGuardBatch(db, assertion, (error) => { throw error; }, before.name === name ? [] : [
+    db.prepare(`UPDATE runners SET name = ?, revision = revision + 1 WHERE id = ?`).bind(name, runnerId),
+    db.prepare(`INSERT INTO runner_metadata_audit(id,runner_id,actor_member,action,revision,detail,at)
+      VALUES (?,?,?,'renamed',?,?,?)`).bind(crypto.randomUUID(), runnerId, actorId, before.revision + 1, JSON.stringify({ name }), now),
+  ]);
+  return readRunner(db, runnerId);
 }

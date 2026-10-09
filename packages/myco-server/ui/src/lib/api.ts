@@ -1,4 +1,4 @@
-import type { RunnerUpdateResult, RunnerBlockedVersion, RunnerUpdateState, RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
+import type { FleetQueue, RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import type { CaptureRow } from '../features/today/wire';
 
 /**
@@ -101,7 +101,8 @@ export interface WorkerRow {
   /** Null when the stored report could not be read; an empty list is a worker reporting none. */
   offers: ReportedHarness[] | null;
   capabilities: string[] | null;
-  lastReason: 'claimed' | 'no_work' | 'no_harness' | 'at_limit' | 'lost_race' | null;
+  lastReason: 'claimed' | 'no_work' | 'no_harness' | 'at_limit' | 'lost_race' | 'paused' | null;
+  runnerDetails?: RunnerFleetRecord;
   /** 0 when this worker has never been recorded — a lease holder from before contacts were kept. */
   lastSeenAt: number;
   busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
@@ -115,11 +116,13 @@ export interface WorkerRow {
  * "none attached".
  */
 export interface WorkerStatus {
+  queue?: FleetQueue;
+  observedAt?: number;
   available: boolean;
-  workersBusy: number;
-  runsQueued: number;
+  workersBusy: number | null;
+  runsQueued: number | null;
   recentWithinMs: number;
-  fleet: WorkerRow[];
+  fleet: WorkerRow[] | null;
 }
 
 export interface Capability {
@@ -155,14 +158,4 @@ export interface ProjectsResponse {
 }
 
 /** One registered runner, its reported update state, and its pending command. */
-export interface RunnerRow {
-  id: string; name: string; state: 'enabled' | 'paused' | 'removed'; connected: boolean;
-  version: string | null; channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null;
-  lastSeenAt: number | null; lastCheckAt: number | null;
-  offers: ReportedHarness[] | null; offersObservedAt: number | null;
-  lastResult: RunnerUpdateResult | null;
-  blockedVersion: RunnerBlockedVersion | null;
-  updateState: RunnerUpdateState | null;
-  updateRequest: RunnerUpdateRequest | null;
-  busy: { projectId: string; runId: string; leaseExpiresAt: number } | null;
-}
+export type RunnerRow = RunnerFleetRecord;

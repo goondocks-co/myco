@@ -1,3 +1,4 @@
+import { LegacyWorker } from '../runners/LegacyWorker';
 import { Card, CommandBlock, ErrorState, HealthDot, ReadState } from '../../../design';
 import type { useStatus } from '../../../hooks/use-status';
 import type { WorkerStatus } from '../../../lib/api';
@@ -33,7 +34,7 @@ export function WorkersSection({ status, now, projectName }: WorkersSectionProps
 }
 
 function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus; machines: readonly Machine[]; now: number; projectName: WorkersSectionProps['projectName'] }) {
-  if (!workers.available) {
+  if (!workers.available || workers.fleet === null || workers.runsQueued === null) {
     return (
       <Card className="flex items-start gap-s2" data-health-fleet="unknown">
         <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone="warn" label="Unknown" /></span>
@@ -48,9 +49,6 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
         <span className="flex h-lh shrink-0 items-center"><HealthDot tone={headline.tone} label={headline.attached > 0 ? 'Running' : 'None running'} /></span>
         <span>{headline.line}</span>
       </p>
-      {workers.runsQueued > 0 && !workers.fleet.some((worker) => worker.lastSeenAt > 0 || worker.busy !== null) && (
-        <Card><p className="t-body text-ink-2">Work is waiting, but no machine has checked in to run it. Running this server does not run agent work. Its owner must explicitly enroll a runner on this machine or another.</p></Card>
-      )}
       {headline.attached === 0 && (
         <CommandBlock caption={`${ATTACH_WORDS.before} this command ${ATTACH_WORDS.after}`} command={ATTACH_WORDS.command} />
       )}
@@ -59,6 +57,7 @@ function Fleet({ workers, machines, now, projectName }: { workers: WorkerStatus;
         {([{ label: 'Registered runners', rows: workers.fleet.filter((w) => w.runner != null) }, { label: 'Legacy workers', rows: workers.fleet.filter((w) => w.runner == null) }]).filter((group) => group.rows.length > 0).map((group) => <RowCard key={group.label} label={group.label}>
           {group.rows.map((worker) => {
             const machine = machineOfWorker(machines, worker)?.name ?? 'A machine';
+            if (worker.runner == null) return <LegacyWorker key={worker.credentialId} worker={worker} name={machine} />;
             const state = workerLine(worker, now, { machine, project: projectName });
             const claim = lastClaimWords(worker);
             return (

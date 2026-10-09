@@ -18,7 +18,12 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
 import { asMemberRole, isAdmin } from '../auth/roles.js';
+import { runParentLive } from '../auth/runners.js';
 import { renewingLeaseAuthority, type LeaseHolder } from './worker-lease.js';
+import { runnerDisplay, type RunnerFleetRecord, type FleetRun, type RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
+import { MODEL_CATALOG_FRESH_MS, parseModelCatalog } from '@goondocks/myco-shared/execution-profile';
+import { isRunnerUpdateText, RUNNER_UPDATE_RESULTS } from '@goondocks/myco-shared/runner-update';
+import semver from 'semver';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 
 /** A harness a worker reports, as it reports it. `authenticated` is the worker's own probe, not a provider check. */
@@ -79,6 +84,7 @@ export interface WorkerContact {
 /** One attached-or-remembered worker, as the status surface reports it. `credentialId` is a legacy worker's member credential, or a runner's id. */
 export interface WorkerFleetRow extends WorkerContact {
   /** The runner this row reports, or null for a legacy worker presenting a member credential. */
+  runnerDetails?: RunnerFleetRecord;
   runner: { id: string; name: string; state: 'enabled' | 'paused' | 'removed' } | null;
   /** Held from a live lease, which decides busy; a stored claim reason never does. */
   busy: { runId: string; projectId: string; task: string | null; leaseExpiresAt: number } | null;
@@ -284,16 +290,21 @@ export async function recordWorkerContact(db: RelationalStore, contact: Paramete
  */
 export async function readWorkerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
   const { results: memberRows } = await db.prepare(
-    `SELECT c.id AS credential_id, c.machine_id AS credential_machine_id, c.revoked_at, c.expires_at,
+    `WITH inventory AS (
+       SELECT credential_id FROM worker_contacts
+       UNION SELECT leased_by AS credential_id FROM agent_runs INDEXED BY idx_fleet_legacy_leases
+         WHERE status = 'running' AND lease_expires_at > ? AND leased_by IS NOT NULL
+     )
+     SELECT c.id AS credential_id, c.machine_id AS credential_machine_id, c.revoked_at, c.expires_at,
             m.role AS member_role, m.revoked_at AS member_revoked_at,
             w.machine_id AS contact_machine_id, w.offers, w.capabilities, w.last_reason, w.last_seen_at,
             r.id AS run_id, r.project_id, r.task, r.lease_expires_at
-       FROM member_credentials c
+       FROM inventory i
+       CROSS JOIN member_credentials c ON c.id = i.credential_id
        LEFT JOIN members m ON m.id = c.member_id
        LEFT JOIN worker_contacts w ON w.credential_id = c.id
-       LEFT JOIN agent_runs r ON r.leased_by = c.id AND r.status = 'running' AND r.lease_expires_at > ?
-      WHERE w.credential_id IS NOT NULL OR r.id IS NOT NULL`,
-  ).bind(now).all<Record<string, unknown>>();
+       LEFT JOIN agent_runs r INDEXED BY idx_agent_runs_lease ON r.leased_by = c.id AND r.status = 'running' AND r.lease_expires_at > ?`,
+  ).bind(now, now).all<Record<string, unknown>>();
   const members = (memberRows ?? []).map((row): WorkerFleetRow => {
     const lastSeenAt = row.last_seen_at == null ? 0 : Number(row.last_seen_at);
     const revoked = row.revoked_at != null;
@@ -324,40 +335,169 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
   return [...members, ...await readRunnerFleet(db, now)].sort((left, right) => heardAt(right) - heardAt(left));
 }
 
+type UpdateMetadata = Pick<RunnerFleetRecord, 'lastResult' | 'blockedVersion' | 'updateState'>;
+const emptyUpdateMetadata = (): UpdateMetadata => ({ lastResult: null, blockedVersion: null, updateState: null });
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** One unreadable update report affects only its runner; all other fleet facts remain readable. */
+function storedUpdateMetadata(raw: unknown): { metadata: UpdateMetadata; unavailable: boolean } {
+  if (raw == null) return { metadata: emptyUpdateMetadata(), unavailable: false };
+  let parsed: unknown;
+  try { parsed = JSON.parse(String(raw)); } catch { return { metadata: emptyUpdateMetadata(), unavailable: true }; }
+  if (!isRecord(parsed)) return { metadata: emptyUpdateMetadata(), unavailable: true };
+  const wrapped = 'lastResult' in parsed || 'updateState' in parsed || 'blockedVersion' in parsed;
+  const result = wrapped ? parsed.lastResult : parsed;
+  const block = wrapped ? parsed.blockedVersion : null;
+  const state = wrapped ? parsed.updateState : null;
+  if ((result != null && (!isRecord(result) || !isRunnerUpdateText(result.fromVersion, 64) || !isRunnerUpdateText(result.toVersion, 64)
+      || !RUNNER_UPDATE_RESULTS.includes(result.result as typeof RUNNER_UPDATE_RESULTS[number]) || !Number.isSafeInteger(result.at)
+      || (result.requestId !== undefined && !isRunnerUpdateText(result.requestId, 64))
+      || (result.attemptId !== undefined && !isRunnerUpdateText(result.attemptId, 64))
+      || (result.reason !== undefined && typeof result.reason !== 'string')))
+    || (block != null && (!isRecord(block) || !isRunnerUpdateText(block.version, 64) || !Number.isSafeInteger(block.until)
+      || typeof block.reason !== 'string')) || (state != null && !isRecord(state))
+    || (state != null && (state.phase !== 'updating' && state.phase !== 'probation' && state.phase !== 'cleanup_pending'))
+    || (state != null && (typeof state.since !== 'number' || !Number.isSafeInteger(state.since)))) {
+    return { metadata: emptyUpdateMetadata(), unavailable: true };
+  }
+  return { metadata: { lastResult: result as UpdateMetadata['lastResult'], blockedVersion: block as UpdateMetadata['blockedVersion'],
+    updateState: state as UpdateMetadata['updateState'] }, unavailable: false };
+}
+
+/** The claim path and fleet view use the same readiness admission without reading run history. */
+function runnerReadiness(row: Record<string, unknown>, offers: ReportedHarness[] | null, credentialed: boolean,
+  updateState: UpdateMetadata['updateState'], now: number): RunnerFleetRecord['readiness'] {
+  if (!credentialed) return { state: 'unknown', code: 'registration', reason: 'No current authority to take new work. Approve replacement registration on this machine.', observedAt: now };
+  if (updateState?.phase === 'updating' || updateState?.phase === 'probation')
+    return { state: 'unknown', code: 'updating', reason: 'An update is holding new work until machine health is confirmed.', observedAt: updateState.since };
+  const explicit = row.availability == null ? null : String(row.availability) as RunnerAvailability;
+  if (explicit !== null && explicit !== 'ready')
+    return { state: explicit, code: explicit, reason: String(row.readiness_reason), observedAt: Number(row.observed_at) };
+  if (offers === null) return { state: 'unknown', code: 'unknown', reason: 'Agent sign-in and execution profiles are unavailable.',
+    observedAt: row.updated_at == null ? null : Number(row.updated_at) };
+  if (!offers.some(offer => offer.authenticated)) return { state: 'unknown', code: 'not_signed_in', reason: 'Reported no signed-in eligible agent.',
+    observedAt: row.updated_at == null ? null : Number(row.updated_at) };
+  return { state: 'ready', code: 'ready', reason: 'Reports a signed-in agent; provider access is untested.',
+    observedAt: row.updated_at == null ? null : Number(row.updated_at) };
+}
+
 /**
- * Every runner heard from, or holding a live lease, keyed by its stable id: a rotation never makes a second row. A
+ * Every registered runner, keyed by its stable id: a rotation never makes a second row. A
  * runner is eligible while it is enabled and holds a credential of its current epoch.
  */
 async function readRunnerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
+  const latestAttempt = (condition: string, order: string) => `(SELECT json_object('runId', h.run_id, 'projectId', h.project_id,
+    'projectName', (SELECT name FROM projects WHERE project_id = h.project_id),
+    'task', (SELECT task FROM agent_runs WHERE project_id = h.project_id AND id = h.run_id),
+    'at', ${order}, 'status', 'attempted') FROM agent_run_attempts h
+    WHERE h.runner_id = r.id ${condition} ORDER BY ${order} DESC, h.attempt_id DESC LIMIT 1)`;
+  const latestTerminal = (status: string) => `(SELECT json_object('runId', h.id, 'projectId', h.project_id,
+    'projectName', (SELECT name FROM projects WHERE project_id = h.project_id), 'task', h.task,
+    'at', h.completed_at, 'status', h.status) FROM agent_runs h INDEXED BY idx_runner_run_terminal
+    WHERE h.leased_runner_id = r.id AND h.status = '${status}'
+      AND EXISTS (SELECT 1 FROM agent_run_attempts t WHERE t.project_id = h.project_id AND t.run_id = h.id AND t.attempt_id = h.dispatched_by AND t.runner_id = r.id)
+    ORDER BY h.completed_at DESC, h.id DESC LIMIT 1)`;
   const { results } = await db.prepare(
-    `SELECT r.id, r.name, r.state, w.machine_id, w.offers, w.capabilities, w.last_reason, w.last_seen_at,
-            a.id AS run_id, a.project_id, a.task, a.lease_expires_at,
+    `SELECT r.id, r.name, r.state, r.revision, r.created_at, r.created_by_member, r.removed_at, r.labels,
+            r.last_contact_at, r.replacement_pending,
+            w.machine_id, w.os, COALESCE(u.current_version, w.version) AS version,
+            w.offers, w.capabilities, w.last_reason, w.last_seen_at, w.updated_at,
+            o.arch, o.availability, o.reason AS readiness_reason, o.observed_at,
+            a.id AS run_id, a.project_id, (SELECT name FROM projects WHERE project_id = a.project_id) AS project_name,
+            a.task, a.started_at, a.lease_expires_at,
+            u.channel, u.latest_version, u.last_check_at, u.last_result,
+            q.id AS update_request_id, q.requested_at,
+            ${latestAttempt('', 'h.claimed_at')} AS last_attempted,
+            ${latestTerminal('completed')} AS last_completed,
+            ${latestTerminal('failed')} AS last_failed,
+            (SELECT json_group_array(json_object('harness', mc.harness, 'catalog', mc.catalog,
+              'fetchedAt', mc.fetched_at, 'receivedAt', mc.received_at)) FROM runner_model_catalogs mc WHERE mc.runner_id = r.id) AS models,
             EXISTS (SELECT 1 FROM runner_credentials c WHERE c.runner_id = r.id AND c.epoch = r.credential_epoch
               AND c.revoked_at IS NULL AND c.expires_at > ?) AS credentialed
        FROM runners r
        LEFT JOIN runner_contacts w ON w.runner_id = r.id
+       LEFT JOIN runner_observations o ON o.runner_id = r.id
+       LEFT JOIN runner_update_reports u ON u.runner_id = r.id
+       LEFT JOIN runner_update_requests q ON q.runner_id = r.id
        LEFT JOIN agent_runs a INDEXED BY idx_agent_runs_runner_lease ON a.leased_runner_id = r.id AND a.status = 'running' AND a.lease_expires_at > ?
-      WHERE w.runner_id IS NOT NULL OR a.id IS NOT NULL`,
+         AND ${runParentLive('a')}
+       ORDER BY r.created_at DESC, r.id`,
   ).bind(now, now).all<Record<string, unknown>>();
-  return (results ?? []).map((row) => {
+  return results.map((row) => {
     const lastSeenAt = row.last_seen_at == null ? 0 : Number(row.last_seen_at);
-    const state = String(row.state) as 'enabled' | 'paused' | 'removed';
+    const historicalContactAt = row.last_contact_at == null ? 0 : Number(row.last_contact_at);
+    const state = String(row.state) as RunnerFleetRecord['state'];
+    const offers = parseOffers(row.offers);
+    const capabilities = parseCapabilities(row.capabilities);
+    const busy = row.run_id == null ? null : {
+      runId: String(row.run_id), projectId: String(row.project_id), projectName: row.project_name == null ? null : String(row.project_name),
+      task: row.task == null ? null : String(row.task), at: Number(row.started_at), status: 'running', leaseExpiresAt: Number(row.lease_expires_at),
+    };
+    const { metadata, unavailable: updateMetadataUnavailable } = storedUpdateMetadata(row.last_result);
+    const readiness = runnerReadiness(row, offers, Number(row.credentialed) === 1, metadata.updateState, now);
+    const terminal = (value: unknown): FleetRun | null => value == null ? null : JSON.parse(String(value)) as FleetRun;
+    const lastAttempted = terminal(row.last_attempted);
+    const displaySeenAt = Math.max(lastSeenAt, historicalContactAt, lastAttempted?.at ?? 0);
+    const connected = state !== 'removed' && lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS;
+    const details: RunnerFleetRecord = {
+      id: String(row.id), name: String(row.name), state, revision: Number(row.revision),
+      createdAt: Number(row.created_at), createdBy: row.created_by_member == null ? null : String(row.created_by_member),
+      removedAt: row.removed_at == null ? null : Number(row.removed_at),
+      lastSeenAt: displaySeenAt || null, connected, busy, display: 'Never contacted',
+      awaitingReplacement: Number(row.replacement_pending) === 1, updateMetadataUnavailable,
+      lastAttempted, lastCompleted: terminal(row.last_completed), lastFailed: terminal(row.last_failed),
+      offers, offersObservedAt: offers === null || row.updated_at == null ? null : Number(row.updated_at),
+      capabilities, labels: parseCapabilities(row.labels), preference: null,
+      os: row.os == null ? null : String(row.os), arch: row.arch == null ? null : String(row.arch),
+      version: row.version == null ? null : String(row.version), readiness,
+      lastReason: row.last_reason == null ? null : String(row.last_reason),
+      models: (JSON.parse(String(row.models)) as Array<{ harness: string; catalog: string; fetchedAt: number; receivedAt: number }>).map(model => {
+        let value: unknown;
+        try { value = JSON.parse(model.catalog); } catch { value = null; }
+        const catalog = parseModelCatalog(value);
+        return { harness: model.harness, source: catalog?.source.command ?? null,
+          fetchedAt: model.fetchedAt, receivedAt: model.receivedAt, fresh: model.receivedAt >= now - MODEL_CATALOG_FRESH_MS,
+          available: catalog !== null };
+      }),
+      channel: row.channel == null ? null : row.channel as RunnerFleetRecord['channel'],
+      latestVersion: row.latest_version == null ? null : String(row.latest_version),
+      updateAvailable: typeof row.version === 'string' && typeof row.latest_version === 'string'
+        && semver.valid(row.version) !== null && semver.valid(row.latest_version) !== null
+        && semver.gt(row.latest_version, row.version),
+      lastCheckAt: row.last_check_at == null ? null : Number(row.last_check_at), ...metadata,
+      updateRequest: row.update_request_id == null ? null : { id: String(row.update_request_id), requestedAt: Number(row.requested_at), clearBlock: true },
+    };
+    details.display = runnerDisplay(details);
     return {
-      credentialId: String(row.id),
-      machineId: row.machine_id == null ? null : String(row.machine_id),
-      offers: parseOffers(row.offers),
-      capabilities: parseCapabilities(row.capabilities),
-      lastReason: row.last_reason == null ? null : String(row.last_reason) as ContactOutcome,
-      lastSeenAt,
-      busy: row.run_id == null ? null : {
-        runId: String(row.run_id), projectId: String(row.project_id),
-        task: row.task == null ? null : String(row.task), leaseExpiresAt: Number(row.lease_expires_at ?? 0),
-      },
+      credentialId: details.id, machineId: row.machine_id == null ? null : String(row.machine_id), offers, capabilities,
+      lastReason: details.lastReason as ContactOutcome | null, lastSeenAt: displaySeenAt, busy,
       eligible: state === 'enabled' && Number(row.credentialed) === 1,
-      recent: lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS,
-      runner: { id: String(row.id), name: String(row.name), state },
+      recent: connected, runner: { id: details.id, name: details.name, state }, runnerDetails: details,
     };
   });
+}
+
+/** Record bounded, non-secret machine readiness from the supervisor's own contact loop. */
+export function runnerObservationStatement(db: RelationalStore, runnerId: string, observation: { arch: string | null; state: RunnerAvailability; reason: string }, now: number): PreparedStatement {
+  return db.prepare(`INSERT INTO runner_observations(runner_id,arch,availability,reason,observed_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(runner_id) DO UPDATE SET arch = COALESCE(excluded.arch, runner_observations.arch),
+      availability = excluded.availability, reason = excluded.reason, observed_at = excluded.observed_at
+    WHERE excluded.observed_at >= runner_observations.observed_at AND (runner_observations.availability <> excluded.availability OR runner_observations.reason <> excluded.reason
+      OR runner_observations.arch IS NOT COALESCE(excluded.arch, runner_observations.arch)
+      OR runner_observations.observed_at <= excluded.observed_at - ${CONTACT_THROTTLE_MS})`)
+    .bind(runnerId, observation.arch, observation.state, observation.reason, now);
+}
+
+/** A replacement must report its own contact and readiness before it is considered connected. */
+export function invalidateRunnerContacts(db: RelationalStore, runnerId: string): PreparedStatement[] {
+  return ['runner_contacts', 'runner_observations'].map(table => db.prepare(`DELETE FROM ${table} WHERE runner_id = ?`).bind(runnerId));
+}
+
+/** Fresh reports share control, capacity and readiness admission across every preview. */
+export function fleetReports(fleet: readonly WorkerFleetRow[], includeBusy = false) {
+  return fleet.filter(row => row.recent && row.eligible && (includeBusy || row.busy === null)
+    && (row.runnerDetails === undefined || row.runnerDetails.readiness.state === 'ready'))
+    .map(row => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [], runner: row.runner !== null }));
 }
 
 /** A machine's latest explicit offers, contact and run. */
@@ -456,9 +596,36 @@ export async function recentWorkerCapabilities(db: RelationalStore, now: number)
 
 /** Recent offers and repository capabilities describe a task's fleet profile gap. */
 export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[]; runner: boolean }>> {
-  const fleet = await readWorkerFleet(db, now);
-  return fleet.filter((row) => row.recent && row.eligible)
-    .map((row) => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [], runner: row.runner !== null }));
+  const since = now - CONTACT_RECENT_MS;
+  const [{ results: members }, { results: runners }] = await Promise.all([
+    db.prepare(`SELECT w.credential_id, COALESCE(w.machine_id, c.machine_id) AS machine_id, w.offers, w.capabilities
+      FROM worker_contacts w INDEXED BY idx_worker_contacts_seen
+      JOIN member_credentials c ON c.id = w.credential_id
+      JOIN members m ON m.id = c.member_id
+      WHERE w.last_seen_at >= ? AND c.revoked_at IS NULL AND c.expires_at > ? AND m.revoked_at IS NULL AND m.role = 'admin'`)
+      .bind(since, now).all<Record<string, unknown>>(),
+    db.prepare(`SELECT w.runner_id, w.machine_id, w.offers, w.capabilities, w.updated_at,
+        o.availability, o.reason AS readiness_reason, o.observed_at, u.last_result
+      FROM runner_contacts w INDEXED BY idx_runner_contacts_seen
+      JOIN runners r ON r.id = w.runner_id
+      LEFT JOIN runner_observations o ON o.runner_id = r.id
+      LEFT JOIN runner_update_reports u ON u.runner_id = r.id
+      WHERE w.last_seen_at >= ? AND r.state = 'enabled' AND EXISTS (
+        SELECT 1 FROM runner_credentials c WHERE c.runner_id = r.id AND c.epoch = r.credential_epoch
+          AND c.revoked_at IS NULL AND c.expires_at > ?)`)
+      .bind(since, now).all<Record<string, unknown>>(),
+  ]);
+  const memberReports = members.map(row => ({ credentialId: String(row.credential_id),
+    machineId: row.machine_id == null ? null : String(row.machine_id), offers: parseOffers(row.offers) ?? [],
+    capabilities: parseCapabilities(row.capabilities) ?? [], runner: false }));
+  const runnerReports = runners.flatMap(row => {
+    const offers = parseOffers(row.offers);
+    const { metadata } = storedUpdateMetadata(row.last_result);
+    if (runnerReadiness(row, offers, true, metadata.updateState, now).state !== 'ready') return [];
+    return [{ credentialId: String(row.runner_id), machineId: row.machine_id == null ? null : String(row.machine_id),
+      offers: offers ?? [], capabilities: parseCapabilities(row.capabilities) ?? [], runner: true }];
+  });
+  return [...memberReports, ...runnerReports];
 }
 
 /**

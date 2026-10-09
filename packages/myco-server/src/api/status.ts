@@ -8,8 +8,8 @@ import { storedBytes } from '../ingest/live-credential.js';
 import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention.js';
 import { schemaVersion } from '../read/meta.js';
 import { listVisibleProjects } from './scope.js';
-import { workerLiveness } from '../core/runs.js';
-import { CONTACT_RECENT_MS, readWorkerFleet } from '../core/worker-contacts.js';
+import { readFleetProjection } from '../read/fleet.js';
+import { CONTACT_RECENT_MS } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
 import { captureRecency } from '../read/capture.js';
 import { machinesOf } from '../read/machines.js';
@@ -66,14 +66,14 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     readFact('transcriptBacklog', () => pendingTranscripts(env.db)),
     readFact('projects', () => listVisibleProjects(env.db, ctx.member, { includeArchived: true })),
     readFact('workers', async () => {
-      const [counts, fleet] = await Promise.all([workerLiveness(env.db, ctx.now), readWorkerFleet(env.db, ctx.now)]);
-      return { available: true, ...counts, recentWithinMs: CONTACT_RECENT_MS, fleet: visibleMachines(fleet) };
+      const projection = await readFleetProjection(env, ctx.now);
+      return { available: true, workersBusy: projection.fleet.filter(row => row.busy !== null).length, runsQueued: projection.queue.count, recentWithinMs: CONTACT_RECENT_MS, ...projection, fleet: projection.fleet.filter(row => row.runner !== null || visibleMachines([row]).length > 0), legacyWorkers: visibleMachines(projection.legacyWorkers) };
     }),
     readFact('capture', async () => visibleMachines(await captureRecency(env.db, ctx.now, ctx.member.id))),
   ]);
   return ok({
     schema: schemaCheck(found ?? null), target, capabilities,
-    workers: workerFacts ?? { available: false, workersBusy: 0, runsQueued: 0, recentWithinMs: CONTACT_RECENT_MS, fleet: [] },
+    workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,
     projects: (projects ?? []).map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
     capture: capture ?? [], unavailable,

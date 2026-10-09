@@ -80,7 +80,7 @@ describe('dashboard status and scope honesty on both store adapters', () => {
         expect(body.unavailable).toEqual(expect.arrayContaining(['machines', 'workers', 'capture']));
         expect(body.schema.matches).toBe(true);
         expect(body.workers.available).toBe(false);
-        expect(body.workers.fleet).toEqual([]);
+        expect(body.workers.fleet).toBeNull();
         expect(body.capture).toEqual([]);
       } finally { f.sqlite.close(); }
     });

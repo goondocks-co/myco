@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { LEGACY_WORKER_LABEL } from '../admin/workers';
 import { Disclosure, ErrorState, FactRow, FactsPanel, LoadingState, ShowMore } from '../../design';
 import { useAllRunCalls, useAttemptSteps, type Loaded } from '../../hooks/use-work';
 import { cn } from '../../lib/cn';
@@ -184,7 +185,7 @@ export function ActivitySection({ projectId, answer, calls, latest, live }: { pr
           {answer.attemptCount > attempts.length && <li className="t-small text-muted">Showing the latest {attempts.length.toLocaleString()} of {count(answer.attemptCount, 'attempt')}.</li>}
           {attempts.map((attempt, index) => {
             const last = index === attempts.length - 1;
-            const runner = attempt.executor.kind === 'runner' && attempt.executor.name !== null ? ` · on ${attempt.executor.name}` : '';
+            const runner = attempt.executor.kind === 'runner' ? ` · runner ${attempt.executor.name ?? attempt.executor.runnerId}` : ` · ${LEGACY_WORKER_LABEL}`;
             const heading = `Attempt ${(answer.attemptCount - attempts.length + index + 1).toLocaleString()} of ${answer.attemptCount.toLocaleString()} · started ${timeWords(attempt.claimedAt)}${runner}`;
             return (
               <li key={attempt.attemptId} className="flex flex-col gap-s2" data-attempt={last ? 'latest' : 'replaced'}>

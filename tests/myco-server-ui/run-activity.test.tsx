@@ -83,7 +83,7 @@ const call = (id: number, tool: string, op: string, at: number, failure?: string
   id, tool, op, recordedAt: at, durationMs: 20, status: failure === undefined ? 'success' : 'failed',
   ...(failure === undefined ? {} : { failure: { code: 'tool_failure', message: failure } }),
 });
-const attempt = (attemptId: string, claimedAt: number, steps: RunStep[] | null, over: Partial<NonNullable<RunAttempt['steps']>> = {}, executor: RunAttempt['executor'] = { kind: 'member', memberId: 'mem_1' }): RunAttempt => ({
+const attempt = (attemptId: string, claimedAt: number, steps: RunStep[] | null, over: Partial<NonNullable<RunAttempt['steps']>> = {}, executor: RunAttempt['executor'] = { kind: 'legacy-worker', memberId: 'mem_1' }): RunAttempt => ({
   attemptId, claimedAt, executor,
   steps: steps === null ? null : { total: steps.length, received: steps.length, overflow: 0, unrecognized: { total: 0, shapes: {} }, ...over },
 });
@@ -357,8 +357,8 @@ describe('a reclaimed run', () => {
     expect(items.map((li) => li.getAttribute('data-attempt'))).toEqual(['replaced', 'latest']);
     expect(items[0]!.querySelector('[data-attempt-replaced]')!.textContent).toContain('It stopped checking in, so Myco gave the run to a new attempt');
     expect(items[1]!.textContent).toContain('Attempt 2 of 2');
-    expect(within(items[0]!).getByRole('button', { name: /Attempt 1 of 2/ }).textContent).toContain('on homelab-mini');
-    expect(items[1]!.textContent).not.toContain(' · on ');
+    expect(within(items[0]!).getByRole('button', { name: /Attempt 1 of 2/ }).textContent).toContain('runner homelab-mini');
+    expect(items[1]!.textContent).toContain('Legacy worker — uses member credential');
     expect(items[1]!.textContent).toContain('Read new/second.ts');
     expect(items[1]!.textContent).not.toContain('old/first.ts');
     fireEvent.click(within(items[0]!).getByRole('button', { name: /Attempt 1 of 2/ }));
