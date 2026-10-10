@@ -7,37 +7,16 @@ import { commitAttributedWrite, type RunWrite } from '../core/runs.js';
  * reader would need a second column and this module would be the place to add
  * it.
  *
- * Which origins extraction reads is declared here as a map over the whole
- * vocabulary rather than a filter, so a new origin fails the completeness gate
- * until someone decides whether extraction wants it.
+ * Extraction origins are shared with the session read model.
  */
 import type { RelationalStore } from '../core/adapters.js';
 import { MATERIAL_EXCERPT_CHARS } from '../constants.js';
-import { PROMPT_ORIGINS } from '../ingest/kinds.js';
+import { READ_ORIGINS } from './extraction-origins.js';
+export { EXTRACTION_ORIGINS, READ_ORIGINS } from './extraction-origins.js';
+import { EXTRACTION_CANDIDATE_SQL } from '../db/session-read-model.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 import { clampLimit, decodeCursor, encodeCursor, keyset, page, type Page, type ReadScope } from './scope.js';
 import { sessionMaterialReadySql } from './material-readiness.js';
-
-/**
- * Whether extraction reads a prompt of each origin.
- *
- * `system` carries harness-injected envelopes, `agent_dispatch` a subagent's
- * return prompt and `hook_injected` Myco's own injection: none is a person
- * speaking, and reasoning over them spends turns on text nobody wrote.
- * `unknown` IS read — it is a parse fallback that may hold a real prompt, and
- * excluding it would drop that prompt from extraction for good, which is the
- * costlier direction of the two.
- */
-export const EXTRACTION_ORIGINS: Readonly<Record<(typeof PROMPT_ORIGINS)[number], boolean>> = {
-  user: true,
-  unknown: true,
-  system: false,
-  agent_dispatch: false,
-  hook_injected: false,
-};
-
-/** The origins an extraction page carries. */
-export const READ_ORIGINS: readonly string[] = PROMPT_ORIGINS.filter((origin) => EXTRACTION_ORIGINS[origin]);
 
 /** The captured session supporting an extraction finding, within the run's Project. */
 export async function extractionSourceSession(db: RelationalStore, scope: ReadScope, promptId: string): Promise<string | null> {
@@ -133,15 +112,18 @@ function advancePartition(before: PartitionCursor, result: Page<UnprocessedPromp
   return last === undefined ? before : encodeCursor(last.createdAt, last.promptId);
 }
 
+/** The indexed primary extraction selection, with its Project binding. */
+export function newestUnprocessedSessionQuery(scope: ReadScope): { sql: string; binds: unknown[] } {
+  return { sql: `SELECT session_id AS id, ended_at AS endedAt, (live_transcripts > 0) AS liveCapture
+    FROM session_read_facts
+    WHERE project_id = ? AND ${EXTRACTION_CANDIDATE_SQL}
+    ORDER BY (live_transcripts > 0) DESC, ended_at DESC, session_id DESC LIMIT 1`, binds: [scope.projectId] };
+}
+
 /** The primary extraction session, preferring completed live capture over imports. */
 export async function newestUnprocessedSession(db: RelationalStore, scope: ReadScope): Promise<{ id: string; endedAt: number; liveCapture: number } | null> {
-  return db.prepare(`SELECT s.session_id AS id, s.ended_at AS endedAt,
-    EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = s.project_id AND t.session_id = s.session_id AND t.imported_at IS NULL) AS liveCapture
-    FROM (SELECT DISTINCT p.session_id FROM prompt_batches p WHERE p.project_id = ? AND ${ELIGIBLE_PROMPT_SQL}) candidates
-    JOIN sessions s ON s.session_id = candidates.session_id
-    WHERE s.project_id = ? AND s.ended_at IS NOT NULL AND ${notTombstonedSql('s')} AND ${sessionMaterialReadySql('s')}
-    ORDER BY liveCapture DESC, s.ended_at DESC, s.session_id DESC LIMIT 1`)
-    .bind(scope.projectId, ...READ_ORIGINS, scope.projectId).first<{ id: string; endedAt: number; liveCapture: number }>();
+  const { sql, binds } = newestUnprocessedSessionQuery(scope);
+  return db.prepare(sql).bind(...binds).first<{ id: string; endedAt: number; liveCapture: number }>();
 }
 
 /**
@@ -159,7 +141,7 @@ export async function listUnprocessedPrompts(
     if (cursor === null) throw new Error('Invalid extraction cursor');
   } else {
     const newest = await newestUnprocessedSession(db, scope);
-    if (newest === null) return readUnprocessedPrompts(db, scope, opts);
+    if (newest === null) return opts.includeActive === true ? readUnprocessedPrompts(db, scope, opts) : { rows: [], cursor: null };
     cursor = [newest.id, null, null];
   }
   const [sessionId, freshAfter, historyAfter] = cursor;
@@ -184,5 +166,5 @@ export async function markPromptProcessed(db: RelationalStore, scope: ReadScope,
     .prepare('UPDATE prompt_batches SET processed = 1 WHERE project_id = ? AND prompt_id = ?')
     .bind(scope.projectId, promptId);
   const result = await commitAttributedWrite(db, scope, statement, attribution);
-  return result.meta.changes === 1;
+  return result.meta.changes > 0;
 }

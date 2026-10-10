@@ -136,7 +136,7 @@ export async function releaseBlobs(db: RelationalStore, pairs: readonly BlobRef[
 }
 
 /** The statements that decide a page of recorded blob candidates, ending with the count of the page's candidates still held. */
-function blobDecisionStatements(db: RelationalStore, page: string, now: number): PreparedStatement[] {
+export function blobDecisionStatements(db: RelationalStore, page: string, now: number): PreparedStatement[] {
   const candidate = (alias: string) => `EXISTS (SELECT 1 FROM blob_release_candidates rc WHERE rc.project_id = ${alias}.project_id AND rc.key = ${alias}.key)`;
   return [
     db.prepare(`INSERT INTO object_releases (physical, kind, created_at)
@@ -145,13 +145,13 @@ function blobDecisionStatements(db: RelationalStore, page: string, now: number):
                    WHERE NOT ${HOLD_OPEN} AND ${candidate('b')} AND NOT (${blobHeld('c.p', 'c.k')})
                   ON CONFLICT (physical) DO NOTHING`).bind(now, page),
     db.prepare(`DELETE FROM blobs
-                 WHERE EXISTS (SELECT 1 FROM ${blobPage} c WHERE c.p = blobs.project_id AND c.k = blobs.key)
+                 WHERE (project_id, key) IN (SELECT c.p, c.k FROM ${blobPage} c)
                    AND EXISTS (SELECT 1 FROM object_releases r WHERE r.physical = ${registeredPhysical('blobs')})`).bind(page),
     db.prepare(`DELETE FROM blob_release_candidates
                  WHERE NOT ${HOLD_OPEN}
-                   AND EXISTS (SELECT 1 FROM ${blobPage} c WHERE c.p = blob_release_candidates.project_id AND c.k = blob_release_candidates.key)`).bind(page),
+                   AND (project_id, key) IN (SELECT c.p, c.k FROM ${blobPage} c)`).bind(page),
     db.prepare(`SELECT COUNT(*) AS held FROM blob_release_candidates rc
-                 WHERE EXISTS (SELECT 1 FROM ${blobPage} c WHERE c.p = rc.project_id AND c.k = rc.key)`).bind(page),
+                 WHERE (rc.project_id, rc.key) IN (SELECT c.p, c.k FROM ${blobPage} c)`).bind(page),
   ];
 }
 

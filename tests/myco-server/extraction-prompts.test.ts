@@ -17,6 +17,23 @@ function setup() {
 }
 
 describe('extraction prompt selection', () => {
+  it('returns an empty default page when no completed material is ready while retaining explicit active reads', async () => {
+    const e = setup();
+    e.session('active', null);
+    e.prompt('active', 'active', 1);
+    expect(await e.read()).toEqual({ rows: [], cursor: null });
+    expect((await listUnprocessedPrompts(e.db, { projectId: 'proj_1' }, { includeActive: true })).rows.map((p) => p.promptId)).toEqual(['active']);
+    e.sqlite.run("UPDATE sessions SET ended_at=100 WHERE session_id='active'");
+    e.sqlite.run(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id)
+      VALUES ('proj_1','pending','active','m',10,0,1,1,'t')`);
+    expect(await e.read()).toEqual({ rows: [], cursor: null });
+    expect((await listUnprocessedPrompts(e.db, { projectId: 'proj_1' }, { includeActive: true })).rows).toEqual([]);
+    e.sqlite.run("UPDATE transcripts SET parsed_offset=size WHERE transcript_id='pending'");
+    expect((await e.read()).rows.map((p) => p.promptId)).toEqual(['active']);
+    await markPromptProcessed(e.db, { projectId: 'proj_1' }, 'active');
+    expect(await e.read()).toEqual({ rows: [], cursor: null });
+  });
+
   it('waits for every known transcript before selecting a completed session', async () => {
     const e = setup();
     e.session('old', 100);
