@@ -303,7 +303,7 @@ test.describe('dashboard shell', () => {
       const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('strangerCookie') });
       try {
         await expect(page.getByRole('heading', { level: 1 })).toBeInViewport();
-        await expect(page.getByText('myco login', { exact: false }).first()).toBeVisible();
+        await expect(page.getByText('Ask an owner or admin to connect it from People & machines, then open the link they send while signed in to this account.', { exact: false })).toBeVisible();
         await expect(page.getByRole('navigation', { name: 'Pages' })).toHaveCount(0);
         await expectFits(page, viewport);
         await expectNoRawIds(page);
