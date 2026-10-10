@@ -11,13 +11,14 @@
  * install marker, starts nothing, and points at `myco login`; on a machine
  * already joined to a Deployment it refreshes the agents' Myco setup with the
  * build it installed, and says how to do it by hand if that fails; on a machine
- * with Myco 1.4 it installs nothing unless asked with --replace-1.4, says how
- * to move over, and never moves or deletes anything of 1.4; a dry run says
+ * with positive 1.x evidence it keeps 1.x updates unless replacement is explicit;
+ * an explicit channel with a 2.x candidate requires --replace-1.4; an unknown
+ * binary is preserved and refused; a dry run says
  * which it would do and changes nothing; a binary that fails its checksum,
  * is missing from SHA256SUMS or does not run is never installed; only a
  * well-formed, non-draft Myco 2.x tag is chosen, in semver order, a
- * prerelease only on its eligible preview channel, and stable keeps the public
- * 1.4 flow until a 2.x release exists; every request is
+ * prerelease only on its eligible preview channel; fresh defaults choose stable
+ * 2.x, then beta, then alpha, and never 1.x; every request is
  * HTTPS-only; a script cut short runs nothing; `--serve` remains available
  * for 1.4 installs and is refused for 2.0 installs.
  */
@@ -100,7 +101,7 @@ let offlineTools: string;
  * does not run, and two builds that record every other command they are given in `$MYCO_HOME/commands.log`, one
  * answering it and one failing it.
  */
-const sources = { tampered: '', unlisted: '', broken: '', recording: '', refusing: '', slow: '', stalling: '', legacyRecording: '', stable: '', newerBeta: '', alpha: '' };
+const sources = { tampered: '', unlisted: '', broken: '', invalidVersion: '', recording: '', refusing: '', slow: '', stalling: '', legacyRecording: '', stable: '', newerBeta: '', alpha: '', probeRecording: '' };
 beforeAll(() => {
   offlineTools = toolbox(tmp('myco-install-offline-tools-'), { jq: false });
   artifacts = tmp('myco-install-artifacts-');
@@ -134,6 +135,8 @@ beforeAll(() => {
   sums(build(sources.unlisted, 'puts("2.0.0-beta.1"); return 0;'), 'myco-plan9-x64');
   sources.broken = path.join(artifacts, 'broken');
   sums(build(sources.broken, 'return 1;'));
+  sources.invalidVersion = path.join(artifacts, 'invalid-version');
+  sums(build(sources.invalidVersion, 'puts("not-a-version"); return 0;'));
   const recorder = (dir: string, exit: number, version = '2.0.0-beta.2'): string => {
     fs.mkdirSync(dir, { recursive: true });
     const source = path.join(dir, 'recorder.c');
@@ -172,7 +175,18 @@ int main(int argc, char **argv) {
     fs.rmSync(source);
     return binary;
   };
-  // A build whose run check takes a while, so an install can be interrupted part way through.
+  sources.probeRecording = path.join(artifacts, 'probe-recording');
+  sums(compiled(sources.probeRecording, `#include <stdio.h>
+#include <stdlib.h>
+int main(void) {
+  FILE *log = fopen(getenv("MYCO_PROBE_LOG"), "w");
+  const char *keys[] = {"HOME", "MYCO_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"};
+  if (!log) return 1;
+  for (int i=0;i<5;i++) fprintf(log, "%s=%s\\n", keys[i], getenv(keys[i]) ? getenv(keys[i]) : "");
+  fclose(log); puts("2.0.0-beta.1"); return 0;
+}
+`));
+  // The launch check stays active long enough for an interrupted install.
   sources.slow = path.join(artifacts, 'slow');
   sums(compiled(sources.slow, '#include <stdio.h>\n#include <unistd.h>\nint main(void) { sleep(6); puts("2.0.0-beta.1"); return 0; }\n'));
   // A build whose agent refresh never finishes, and ignores TERM, so only the watchdog's KILL stops it.
@@ -414,6 +428,31 @@ exec '${mv}' "$@"
     expect(fs.readFileSync(path.join(home, '.bash_profile'), 'utf8')).toContain(`export PATH="${path.join(home, '.myco', 'bin')}:$PATH"`);
   });
 
+  it.skipIf(!HAS_CC)('launch checks isolate every configuration home under the probe home', () => {
+    const home = freshHome();
+    const log = path.join(home, 'probe-env.log');
+    const run = install(home, { MYCO_INSTALL_FROM: sources.probeRecording, MYCO_INSTALL_VERSION: '2.0.0-beta.1', MYCO_PROBE_LOG: log });
+    expect(run.status).toBe(0);
+    const homes = Object.fromEntries(fs.readFileSync(log, 'utf8').trim().split('\n').map(line => line.split('=')));
+    expect(homes.HOME).toStartWith(path.join(home, '.myco/bin/.myco-install-'));
+    expect(path.basename(homes.HOME!)).toBe('probe-home');
+    for (const key of ['HOME', 'MYCO_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']) {
+      const relative = path.relative(homes.HOME!, homes[key]!);
+      expect(homes[key]).not.toBe('');
+      expect(relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))).toBe(true);
+    }
+  });
+
+  it.skipIf(!HAS_CC)('local artifacts use their valid reported version when no version is supplied', () => {
+    const home = freshHome();
+    expect(install(home, { MYCO_INSTALL_FROM: artifacts }).status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(home, '.myco/install.json'), 'utf8')).version).toBe('2.0.0-beta.1');
+    expect(fs.existsSync(path.join(home, '.myco/bin/versions/2.0.0-beta.1/myco'))).toBe(true);
+    const invalid = freshHome();
+    expect(install(invalid, { MYCO_INSTALL_FROM: sources.invalidVersion }).status).toBe(1);
+    expect(fs.existsSync(path.join(invalid, '.myco/bin/myco'))).toBe(false);
+  });
+
   describe('on a machine with Myco 1.4', () => {
     it('keeps the preview channel in its explicit replacement command', () => {
       const legacy = legacyHome({ binary: true });
@@ -464,8 +503,8 @@ exec '${mv}' "$@"
       expect(files(path.join(legacy.home, '.myco', 'bin'))).toEqual(['myco', 'versions/2.0.0-beta.1/myco']);
     });
 
-    it('classifies metadata, identical version slots and unknown legacy without executing the installed binary', () => {
-      for (const evidence of ['marker', 'slot', 'unknown']) {
+    it('classifies positive metadata and identical version slots without executing the installed binary', () => {
+      for (const evidence of ['marker', 'slot']) {
         const home = freshHome();
         const binary = path.join(home, '.myco/bin/myco');
         const marker = path.join(home, 'executed-existing');
@@ -480,7 +519,7 @@ exec '${mv}' "$@"
         const run = install(home, FROM(), ['--dry-run']);
         expect(fs.existsSync(marker)).toBe(false);
         expect(run.status).toBe(0);
-        expect(run.out).toContain(evidence === 'unknown' ? 'unknown legacy binary' : '1.4.8');
+        expect(run.out).toContain('1.4.8');
         expect(run.out).toContain('so it would install nothing');
         expect(fs.existsSync(marker)).toBe(false);
       }
@@ -553,13 +592,16 @@ exec '${mv}' "$@"
     const afterGa = [...beforeGa, release('myco/v2.0.0'), release('myco/v2.1.0-beta.1', true)];
     for (const jq of [true, false]) {
       describe(jq ? 'with jq' : 'without jq', () => {
-        const pick = (releases: unknown[], channel: string | undefined, opts: { pretty?: boolean; log?: string; args?: string[]; serve?: string; pages?: unknown[][]; current?: string; unknown?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string } = {}): Run => {
+        const pick = (releases: unknown[], channel: string | undefined, opts: { pretty?: boolean; log?: string; args?: string[]; serve?: string; pages?: unknown[][]; current?: string; unknown?: boolean; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; stale?: boolean; staleVersion?: string; staleChannel?: string } = {}): Run => {
           const dir = tmp('myco-install-tools-');
           const tools = toolbox(path.join(dir, 'bin'), { jq, curl: releasesCurl(releases, path.join(dir, 'releases.json'), opts) });
           const home = freshHome();
           if (opts.current) {
             const bin = path.join(home, '.myco', 'bin'); fs.mkdirSync(bin, { recursive: true });
-            fs.writeFileSync(path.join(bin, 'myco'), `#!/bin/sh\necho ${opts.current}\n`, { mode: 0o755 });
+            const binary = path.join(bin, 'myco');
+            const target = opts.state === 'symlink' ? path.join(home, 'existing-2.x') : binary;
+            fs.writeFileSync(target, opts.state === 'empty' ? '' : `#!/bin/sh\n${opts.unknown ? `echo executed > '${path.join(home, 'executed-existing')}'\n` : ''}echo ${opts.current}\n`, { mode: 0o755 });
+            if (opts.state === 'symlink') fs.symlinkSync(target, binary, 'file');
             if (!opts.unknown) fs.writeFileSync(path.join(home, '.myco/install.json'), JSON.stringify({ channel: channel ?? 'stable', version: opts.current, bin: path.join(bin, 'myco'), binary_sha256: digest(path.join(bin, 'myco')) }));
             if (opts.stale) {
               const slot = path.join(bin, 'versions', opts.current, 'myco');
@@ -567,6 +609,14 @@ exec '${mv}' "$@"
               fs.copyFileSync(path.join(bin, 'myco'), slot);
               fs.writeFileSync(path.join(home, '.myco/install.json'), JSON.stringify({ channel: opts.staleChannel ?? 'stable', version: opts.staleVersion ?? '1.4.8', bin: path.join(bin, 'myco'), binary_sha256: '0'.repeat(64) }));
             }
+          }
+          if (opts.state === 'member' || opts.state === 'cutover') {
+            const marker = path.join(home, '.myco/member', opts.state === 'member' ? 'deployments/d.json' : 'cutover.json');
+            fs.mkdirSync(path.dirname(marker), { recursive: true }); fs.writeFileSync(marker, '{}');
+          }
+          if (opts.state === 'vault') {
+            const vault = path.join(home, '.myco/groves/g/myco.db');
+            fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'legacy vault');
           }
           return install(home, channel ? { MYCO_CHANNEL: channel } : {}, opts.args ?? ['--dry-run'], tools);
         };
@@ -592,9 +642,58 @@ exec '${mv}' "$@"
         });
         it('keeps existing 1.4 on its recorded channel even after 2.x GA, until replacement is explicit', () => {
           expect(pick(afterGa, undefined, { current: '1.4.7' }).out).toContain('Found: myco/v1.4.8');
-          expect(pick(beforeGa, 'beta', { current: '1.4.7' }).out).toContain('Found: myco/v1.4.9-beta.1');
+          expect(pick(beforeGa, 'beta', { current: '1.4.7', args: [] }).status).toBe(1);
           expect(pick(beforeGa, undefined, { current: '1.4.7', args: ['--dry-run', '--replace-1.4'] }).out).toContain('Found: myco/v2.0.0-beta.1');
-          expect(pick(beforeGa, undefined, { current: 'unknown', unknown: true }).out).toContain('Found: myco/v1.4.8');
+        });
+        it('preserves unclassifiable files and links without selecting any 1.x release', () => {
+          for (const state of [undefined, 'member', 'cutover', 'symlink', 'empty', 'vault'] as const) {
+            const run = pick(beforeGa, undefined, { current: '2.0.0-alpha.1', unknown: true, state, args: [], serve: sources.legacyRecording });
+            const binary = path.join(run.home, '.myco/bin/myco');
+            expect(run.status).toBe(1);
+            expect(run.out).toContain(`unclassifiable binary ${binary}`);
+            expect(run.out).toContain('--replace-1.4');
+            expect(run.out).toContain('npm install -g @goondocks/myco@1');
+            expect(run.out).not.toContain('Found: myco/v1.');
+            expect(fs.readFileSync(binary)).toEqual(Buffer.from(state === 'empty' ? '' : `#!/bin/sh\necho executed > '${path.join(run.home, 'executed-existing')}'\necho 2.0.0-alpha.1\n`));
+            expect(fs.existsSync(path.join(run.home, 'executed-existing'))).toBe(false);
+            expect(fs.lstatSync(binary).isSymbolicLink()).toBe(state === 'symlink');
+            if (state === 'symlink') expect(fs.readlinkSync(binary)).toBe(path.join(run.home, 'existing-2.x'));
+          }
+        });
+        it('never selects 1.x in a member or cutover home, even with positive 1.x evidence', () => {
+          for (const state of ['member', 'cutover'] as const) {
+            const run = pick(beforeGa, undefined, { current: '1.4.7', state, args: [] });
+            expect(run.status).toBe(1);
+            expect(run.out).not.toContain('Found: myco/v1.');
+            expect(fs.readFileSync(path.join(run.home, '.myco/bin/myco'), 'utf8')).toBe('#!/bin/sh\necho 1.4.7\n');
+          }
+        });
+        it('refuses an explicit 2.x channel over the network without replacement consent', () => {
+          const run = pick(beforeGa, 'alpha', { current: '1.4.7', args: [] });
+          expect(run.status).toBe(1);
+          expect(run.out).toContain('Nothing was installed');
+          expect(run.out).toContain('| MYCO_CHANNEL=alpha sh -s -- --replace-1.4');
+          expect(run.out).toContain('myco cutover --dry-run');
+          expect(run.out).not.toContain('Found: myco/v1.');
+          expect(fs.readFileSync(path.join(run.home, '.myco/bin/myco'), 'utf8')).toBe('#!/bin/sh\necho 1.4.7\n');
+        });
+        it.skipIf(!HAS_CC)('replaces an unknown binary only with explicit consent and updates vault-only 1.4 homes', () => {
+          const replaced = pick(beforeGa, undefined, { current: 'unknown', unknown: true, args: ['--replace-1.4'], serve: artifacts });
+          expect(replaced.status).toBe(0);
+          expect(replaced.out).toContain('Found: myco/v2.');
+          expect(replaced.out).not.toContain('Found: myco/v1.');
+          const legacy = pick(beforeGa, undefined, { state: 'vault', args: [], serve: sources.legacyRecording });
+          expect(legacy.status).toBe(0);
+          expect(legacy.out).toContain('Myco 1.4 was updated');
+        });
+        it.skipIf(!HAS_CC)('names 1.4 updates accurately and prints the route to 2.0', () => {
+          const dry = pick(beforeGa, undefined, { current: '1.4.7' });
+          expect(dry.out).toContain('Would update Myco 1.4');
+          expect(dry.out).not.toContain("Myco 1.4's vaults are on this machine");
+          const run = pick(beforeGa, undefined, { current: '1.4.7', args: [], serve: sources.legacyRecording });
+          expect(run.status).toBe(0);
+          expect(run.out).toContain('To move to 2.0:');
+          expect(run.out).toContain('--replace-1.4');
         });
         it('a stale 1.4 marker after replacement cannot downgrade the live 2.x binary', () => {
           const run = pick(afterGa, undefined, { current: '2.0.0-beta.2', stale: true });
@@ -664,12 +763,14 @@ exec '${mv}' "$@"
           expect(onlyOld.out).toContain('myco/v1.5.0-beta.1');
           const alpha = pick([release('myco/v1.4.8')], 'alpha');
           expect(alpha.status).toBe(1);
-          expect(alpha.out).toContain('No Myco 2.x release found: Myco 2.0 has not been released yet, so there is nothing to install.');
+          expect(alpha.out).toContain('No eligible Myco 2.x release found on channel alpha');
           expect(alpha.out).toContain('https://github.com/goondocks-co/myco/releases');
           for (const channel of [undefined, 'stable', 'beta']) {
             const fresh = pick([release('myco/v1.4.9')], channel);
             expect(fresh.status).toBe(1);
             expect(fresh.out).not.toContain('Found: myco/v1.');
+            expect(fresh.out).toContain(`channel ${channel ?? 'alpha'}`);
+            expect(fresh.out).toContain('MYCO_CHANNEL=alpha');
           }
         });
         it('reaches GitHub over HTTPS and TLS 1.2 or newer only', () => {

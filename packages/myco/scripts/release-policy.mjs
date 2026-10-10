@@ -126,6 +126,11 @@ function Get-MycoReleaseKey {
     return [PSCustomObject]@{ Phase = $phase; Key = $key }
 }
 
+function Test-MycoInstalledVersion {
+    param([string]$Version)
+    return ($null -ne (Get-MycoReleaseKey $Version)) -or $Version -cmatch '${p.developmentPattern}'
+}
+
 function Compare-MycoReleaseKeys {
     param($Left, $Right)
     for ($i = 0; $i -lt ${p.order.length}; $i++) {

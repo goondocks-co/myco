@@ -21,6 +21,7 @@ $Exe = Join-Path $BinDir 'myco.exe'
 $Asset = "myco-windows-x64.exe"
 $Marker = Join-Path $MycoHome 'install.json'
 $SelfHostingGuide = "https://github.com/$Repo/blob/main/docs/self-hosting.md"
+$ReplaceCommand = '$env:MYCO_REPLACE_LEGACY="1"; irm https://myco.sh/install.ps1 | iex'
 $Replace14 = $Replace14 -or $env:MYCO_REPLACE_LEGACY -eq '1'
 $ChannelExplicit = $Channel -ne "" -or $null -ne $env:MYCO_CHANNEL
 $ChannelAuto = $false
@@ -124,6 +125,11 @@ function Get-MycoReleaseKey {
     return [PSCustomObject]@{ Phase = $phase; Key = $key }
 }
 
+function Test-MycoInstalledVersion {
+    param([string]$Version)
+    return ($null -ne (Get-MycoReleaseKey $Version)) -or $Version -cmatch '^0[.]0[.]0(-dev)?([+][0-9A-Za-z.-]+)?$'
+}
+
 function Compare-MycoReleaseKeys {
     param($Left, $Right)
     for ($i = 0; $i -lt 5; $i++) {
@@ -184,32 +190,37 @@ function Get-MycoFiles {
 }
 
 # Classification order: hash-bound recorded version, then an identical versioned slot.
-# Unversioned binaries are unknown legacy; dependency strings are not identity.
+# Unversioned binaries require explicit replacement; dependency strings are not identity.
 $CurrentVersion = ''
 $Legacy = $false
-if (Test-Path $Exe) {
+$HasBinary = $null -ne (Get-MycoFiles $Exe | Select-Object -First 1)
+if ($HasBinary) {
     $hash = (Get-FileHash $Exe -Algorithm SHA256).Hash
     if ($InstallMarker.version -and $InstallMarker.bin -eq $Exe -and $InstallMarker.binary_sha256 -eq $hash) { $CurrentVersion = $InstallMarker.version }
     if (-not $CurrentVersion) {
         foreach ($slot in Get-MycoFiles (Join-Path $BinDir 'versions/*/myco.exe')) {
             $candidate = Split-Path (Split-Path $slot.FullName) -Leaf
-            if ((Get-MycoReleaseKey $candidate) -and (Get-FileHash $slot.FullName -Algorithm SHA256).Hash -eq $hash) {
+            if ((Test-MycoInstalledVersion $candidate) -and (Get-FileHash $slot.FullName -Algorithm SHA256).Hash -eq $hash) {
                 $CurrentVersion = $candidate
                 break
             }
         }
     }
-    if ($CurrentVersion -and -not (Get-MycoReleaseKey $CurrentVersion) -and $CurrentVersion -cnotmatch '^0[.]0[.]0(-dev)?([+][0-9A-Za-z.-]+)?$') {
+    if ($CurrentVersion -and -not (Test-MycoInstalledVersion $CurrentVersion)) {
         throw 'Invalid installed version; nothing was installed.'
     }
-    $Legacy = -not $CurrentVersion -or $CurrentVersion.StartsWith('1.')
+    $Legacy = $CurrentVersion.StartsWith('1.')
 }
 if (-not $ChannelExplicit -and $CurrentVersion -and $InstallMarker.version -and $InstallMarker.version.StartsWith('1.') -and -not $CurrentVersion.StartsWith('1.')) {
     $Channel = if ($CurrentVersion -match '-alpha[.]') { 'alpha' } elseif ($CurrentVersion -match '-beta[.]') { 'beta' } else { 'stable' }
 }
 $MemberHome = (Test-Path (Join-Path $MycoHome 'member/cutover.json')) -or @(Get-MycoFiles (Join-Path $MycoHome 'member/deployments/*.json')).Count -gt 0
 $LegacyVault = @(Get-MycoFiles (Join-Path $MycoHome 'groves/*/myco.db')).Count -gt 0 -or (Test-Path (Join-Path $MycoHome 'myco.db')) -or (Test-Path (Join-Path $MycoHome 'vault/myco.db'))
-if (-not $CurrentVersion -and $LegacyVault -and -not $MemberHome) { $Legacy = $true }
+if (-not $HasBinary -and $LegacyVault -and -not $MemberHome) { $Legacy = $true }
+$UnknownBinary = $HasBinary -and -not $CurrentVersion
+if (-not $Replace14 -and ($UnknownBinary -or ($MemberHome -and $Legacy))) {
+    throw "Found $(if ($UnknownBinary) { 'an unclassifiable binary' } else { 'a 1.x binary in a joined member home' }) at $Exe. Nothing was installed; the binary was preserved. To install 2.0 explicitly: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script). For an intentional 1.x update, use: npm install -g @goondocks/myco@1"
+}
 
 Write-Host "Resolving $Channel release..." -ForegroundColor Cyan
 $releases = @()
@@ -221,11 +232,13 @@ for ($page = 1; $page -le $MaxReleasePages; $page++) {
     if ($rows.Count -lt 100) { break }
     if ($page -eq $MaxReleasePages) { throw "GitHub release discovery exceeded $MaxReleasePages pages." }
 }
-$LegacyInstall = $Legacy -and -not $Replace14
+$LegacyInstall = $Legacy -and -not $Replace14 -and -not $MemberHome
 if ($LegacyInstall) {
-    $tag = Select-MycoRelease $releases $Channel $CurrentVersion 1 1
+    $tag = if ($ChannelExplicit) { Select-MycoRelease $releases $Channel $CurrentVersion } else { $null }
+    if ($tag) { $LegacyInstall = $false }
+    else { $tag = Select-MycoRelease $releases $Channel $CurrentVersion 1 1 }
 } else {
-    if (-not $ChannelExplicit -and ($ChannelAuto -or $Legacy)) {
+    if (-not $ChannelExplicit -and ($ChannelAuto -or $Legacy -or $UnknownBinary)) {
         foreach ($candidateChannel in @('stable', 'beta', 'alpha')) {
             $Channel = $candidateChannel
             $tag = Select-MycoRelease $releases $Channel $CurrentVersion
@@ -234,8 +247,11 @@ if ($LegacyInstall) {
     } else { $tag = Select-MycoRelease $releases $Channel $CurrentVersion }
 }
 if ($tag -eq 'stay-put') { Write-Host "Newest eligible release is older than installed $CurrentVersion; staying put."; exit 0 }
-if (-not $tag) { throw "No eligible Myco release found; nothing was installed. Check https://github.com/$Repo/releases" }
+if (-not $tag) { throw "No eligible Myco release found on channel $Channel; nothing was installed. For published alpha builds, retry with MYCO_CHANNEL=alpha. Check https://github.com/$Repo/releases" }
 Write-Host "Found: $tag" -ForegroundColor Cyan
+if ($Legacy -and -not $Replace14 -and -not $LegacyInstall) {
+    throw "Myco 1.4 is on this machine. Nothing was installed. To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script), then run myco login <your-myco-address> and myco cutover --dry-run. Guide: https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14"
+}
 
 # ---------------------------------------------------------------------------
 # Download binary + SHA256SUMS to a temp dir under LOCALAPPDATA\Myco\bin
@@ -251,6 +267,7 @@ $VersionDir = Join-Path $BinDir (Join-Path "versions" $Version)
 
 if ($DryRun) {
     Write-Host "Dry run: would install $Asset ($Version) to $Exe; nothing was changed."
+    if ($LegacyInstall) { Write-Host "Would update Myco 1.4; its existing service and capture configuration would be preserved. To move to 2.0: $ReplaceCommand" }
     exit 0
 }
 
@@ -403,6 +420,7 @@ Write-Host ""
 Write-Host "Myco $Version installed to $Exe" -ForegroundColor Green
 if ($LegacyInstall) {
     Write-Host "  Myco 1.4 was updated; its existing service and capture configuration were preserved."
+    Write-Host "  To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4)."
     Write-Host "  To install its managed service explicitly: myco service install"
     Write-Host "  Next, sign this machine in with the invite link an admin gave you:"
     Write-Host "    myco login <link>"

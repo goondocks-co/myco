@@ -2,7 +2,7 @@
 # First-time member onboarding, end to end, in a sandboxed HOME (#1499).
 #
 # Drives only the documented user commands against a Deployment that is already serving:
-#   install.sh from a local release, `myco login <invite link>`, `myco member join --new` in two repositories,
+#   install.sh from a local 2.x release, `myco login <invite link>`, `myco member join --new --no-worker` in two repositories,
 #   then one Claude Code session in each through the hooks provisioning wrote (a real agent cannot sign in under a
 #   sandboxed HOME, so the hook commands provisioning wrote into ~/.claude/settings.json are run with the payloads
 #   it sends). It checks each session landed in its own
@@ -34,14 +34,18 @@ case "$T" in "$HOME"/*|"$HOME") echo "refusing: the sandbox $T is inside the rea
 
 rm -rf "$T"; mkdir -p "$U/.claude" "$U/.codex" "$U/code/alpha" "$U/code/beta"
 for r in alpha beta; do (cd "$U/code/$r" && git init -q && echo "# $r" > README.md); done
-run() { env -i HOME="$U" PATH="$U/.myco/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" MYCO_LAUNCH_AGENTS_DIR="$T/blocked-launch" "$@"; }
+run() { env -i HOME="$U" CODEX_HOME="$U/.codex" CLAUDE_CONFIG_DIR="$U/.claude" XDG_CONFIG_HOME="$U/.config" MYCO_HOME="$U/.myco" TMPDIR="$T/tmp" PATH="$U/.myco/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" MYCO_LAUNCH_AGENTS_DIR="$T/blocked-launch" "$@"; }
+mkdir -p "$T/tmp"
+target="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+case "$target" in *-x86_64) target="${target%-x86_64}-x64" ;; *-aarch64) target="${target%-aarch64}-arm64" ;; esac
+version=$(cd "$U" && run "$REL/myco-$target" --version)
 
-echo "== install"; run MYCO_INSTALL_FROM="$REL" MYCO_INSTALL_VERSION=2.0.0-smoke sh "$REL/install.sh" | tail -3
+echo "== install"; (cd "$U" && run MYCO_INSTALL_FROM="$REL" MYCO_INSTALL_VERSION="$version" sh "$REL/install.sh") | tail -3
 # An installer that ignores MYCO_INSTALL_FROM fetches a published release instead; nothing below may run on that.
 installed=$(shasum -a 256 "$U/.myco/bin/myco" | cut -d' ' -f1)
 grep -q "^$installed " "$REL/SHA256SUMS" || { echo "FAIL: $U/.myco/bin/myco is not the build in $REL" >&2; exit 1; }
 echo "== login"; (cd "$U/code/alpha" && run myco login "$INVITE")
-for r in alpha beta; do echo "== join --new ($r)"; (cd "$U/code/$r" && run myco member join --new); done
+for r in alpha beta; do echo "== join --new ($r)"; (cd "$U/code/$r" && run myco member join --new --no-worker); done
 
 hook_command() {
   python3 - "$U/.claude/settings.json" "$1" <<'PY'

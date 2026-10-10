@@ -18,16 +18,18 @@ const release = (version: string, extra = {}) => ({
 });
 const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
 
-function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; replace?: boolean; install?: string; joined?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean } = {}) {
+function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean } = {}) {
   const home = fs.mkdtempSync(path.join(root, 'home-'));
   const mycoHome = path.join(home, '.myco');
   const bin = path.join(home, 'bin');
   const executed = path.join(home, 'executed-existing');
   fs.mkdirSync(mycoHome);
   fs.mkdirSync(bin);
+  const exe = path.join(bin, 'myco.exe');
   if (opts.current) {
-    const exe = path.join(bin, 'myco.exe');
-    fs.writeFileSync(exe, `#!/bin/sh\necho executed > '${executed}'\necho ${opts.current}\n`, { mode: 0o755 });
+    const target = opts.state === 'symlink' ? path.join(home, 'existing-2.x') : exe;
+    fs.writeFileSync(target, opts.state === 'empty' ? '' : `#!/bin/sh\necho executed > '${executed}'\necho ${opts.current}\n`, { mode: 0o755 });
+    if (opts.state === 'symlink') fs.symlinkSync(target, exe, 'file');
     if ((opts.evidence ?? 'marker') === 'marker') fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({ channel: opts.channel ?? 'stable', version: opts.current, bin: exe, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex') }));
     if (opts.evidence === 'slot' || opts.stale) {
       const slot = path.join(bin, 'versions', opts.current, 'myco.exe');
@@ -44,7 +46,17 @@ function select(releases: unknown[], opts: { channel?: string; current?: string;
 #include <stdlib.h>
 #include <string.h>
 int main(int argc, char **argv) {
-  if (argc > 1 && strcmp(argv[1], "--version") == 0) { puts("${opts.install}"); return 0; }
+  if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+    const char *probe = getenv("MYCO_PROBE_LOG");
+    if (probe) {
+      FILE *log = fopen(probe, "w");
+      const char *keys[] = {"HOME", "MYCO_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"};
+      if (!log) return 1;
+      for (int i=0;i<5;i++) fprintf(log, "%s=%s\\n", keys[i], getenv(keys[i]) ? getenv(keys[i]) : "");
+      fclose(log);
+    }
+    puts("${opts.install}"); return 0;
+  }
   char file[4096]; snprintf(file, sizeof file, "%s/commands.log", getenv("MYCO_HOME"));
   FILE *log = fopen(file, "a");
   if (log) { for (int i=1;i<argc;i++) fprintf(log, "%s%s", i>1 ? " " : "", argv[i]); fputc('\\n', log); fclose(log); }
@@ -57,11 +69,17 @@ int main(int argc, char **argv) {
     fs.writeFileSync(sums, `${crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex')}  myco-windows-x64.exe\n`);
     download = `if ($OutFile) { Copy-Item $(if ($Uri.EndsWith('SHA256SUMS')) { ${quote(sums)} } else { ${quote(artifact)} }) $OutFile; return }`;
   }
-  if (opts.joined) {
-    const membership = path.join(mycoHome, 'member/deployments/dep.json');
+  if (opts.joined || opts.state === 'member' || opts.state === 'cutover') {
+    const membership = path.join(mycoHome, 'member', opts.state === 'cutover' ? 'cutover.json' : 'deployments/dep.json');
     fs.mkdirSync(path.dirname(membership), { recursive: true });
     fs.writeFileSync(membership, '{}');
   }
+  if (opts.state === 'vault') {
+    const vault = path.join(mycoHome, 'groves/g/myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'legacy vault');
+  }
+  const before = opts.current ? fs.readFileSync(exe) : undefined;
+  const linkBefore = opts.state === 'symlink' ? fs.readlinkSync(exe) : undefined;
   const file = path.join(home, 'install.ps1');
   fs.writeFileSync(file, SCRIPT);
   const program = `function Invoke-WebRequest { param($Uri, $Headers, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
@@ -72,12 +90,12 @@ int main(int argc, char **argv) {
   `;
   const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', program], {
     cwd: home, env: sandboxChildEnv(home, { PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
-      MYCO_BIN_DIR: bin, ...(opts.channel ? { MYCO_CHANNEL: opts.channel } : {}) }),
+      MYCO_BIN_DIR: bin, ...(opts.probe ? { MYCO_PROBE_LOG: path.join(home, 'probe-env.log') } : {}), ...(opts.channel ? { MYCO_CHANNEL: opts.channel } : {}) }),
     encoding: 'utf8', timeout: 60_000,
   });
   if (run.error) throw run.error;
   expect(fs.existsSync(executed)).toBe(false);
-  return { status: run.status, mycoHome, out: `${run.stdout}${run.stderr}`, home };
+  return { status: run.status, mycoHome, out: `${run.stdout}${run.stderr}`, home, exe, before, linkBefore };
 }
 
 describe('the Windows installer', () => {
@@ -101,10 +119,76 @@ describe('the Windows installer', () => {
   it.skipIf(PWSH === '')('existing 1.x stays on 1.x after GA; explicit replacement selects 2.x', () => {
     const releases = [...beforeGa, release('2.0.0')];
     expect(select(releases, { current: '1.4.8' }).out).toContain('Found: myco/v1.4.9');
-    expect(select(releases, { current: '1.4.8', channel: 'beta' }).out).toContain('Found: myco/v1.4.10-beta.1');
+    expect(select(releases, { current: '1.4.8', channel: 'beta' }).status).not.toBe(0);
     expect(select(beforeGa, { current: '1.4.8', replace: true }).out).toContain('Found: myco/v2.0.0-beta.2');
-    for (const evidence of ['marker', 'slot', 'unknown'] as const) {
+    for (const evidence of ['marker', 'slot'] as const) {
       expect(select(releases, { current: '1.4.8', evidence }).out).toContain('Found: myco/v1.4.9');
+    }
+  });
+
+  it.skipIf(PWSH === '')('preserves unknown binaries, member homes, cutovers, links and empty files without selecting 1.x', () => {
+    for (const state of [undefined, 'member', 'cutover', 'symlink', 'empty', 'vault'] as const) {
+      const run = select(beforeGa, { current: '2.0.0-alpha.1', evidence: 'unknown', state, install: process.platform === 'win32' ? undefined : '1.4.9' });
+      expect(run.status).not.toBe(0);
+      expect(run.out).toContain(`unclassifiable binary`);
+      expect(run.out).toContain(run.exe);
+      expect(run.out).toContain('--replace-1.4');
+      expect(run.out).toContain('npm install -g @goondocks/myco@1');
+      expect(run.out).not.toContain('Found: myco/v1.');
+      expect(fs.readFileSync(run.exe)).toEqual(run.before!);
+      expect(fs.lstatSync(run.exe).isSymbolicLink()).toBe(state === 'symlink');
+      if (state === 'symlink') expect(fs.readlinkSync(run.exe)).toBe(run.linkBefore!);
+    }
+  });
+
+  it.skipIf(PWSH === '')('never selects 1.x in a member or cutover home even with positive 1.x evidence', () => {
+    for (const state of ['member', 'cutover'] as const) {
+      const run = select(beforeGa, { current: '1.4.8', state });
+      expect(run.status).not.toBe(0);
+      expect(run.out).not.toContain('Found: myco/v1.');
+      expect(fs.readFileSync(run.exe)).toEqual(run.before!);
+    }
+  });
+
+  it.skipIf(PWSH === '' || process.platform === 'win32')('replaces an unknown binary only with explicit consent and updates vault-only 1.4 homes', () => {
+    const replaced = select(beforeGa, { current: 'unknown', evidence: 'unknown', replace: true, install: '2.0.0-beta.2' });
+    expect(replaced.status).toBe(0);
+    expect(replaced.out).toContain('Found: myco/v2.');
+    expect(replaced.out).not.toContain('Found: myco/v1.');
+    const legacy = select(beforeGa, { state: 'vault', install: '1.4.9' });
+    expect(legacy.status).toBe(0);
+    expect(legacy.out).toContain('Myco 1.4 was updated');
+    expect(fs.existsSync(path.join(legacy.mycoHome, 'commands.log'))).toBe(false);
+  });
+
+  it.skipIf(PWSH === '')('classifies development-version slots without executing them', () => {
+    for (const current of ['0.0.0-dev', '0.0.0-dev+abc123']) {
+      const run = select(beforeGa, { current, evidence: 'slot', channel: 'alpha' });
+      expect(run.status).toBe(0);
+      expect(run.out).toContain('Found: myco/v2.0.0-beta.2');
+    }
+  });
+
+  it.skipIf(PWSH === '')('refuses explicit 2.x network selection over 1.4 with replacement guidance', () => {
+    const run = select(beforeGa, { current: '1.4.8', channel: 'alpha' });
+    expect(run.status).not.toBe(0);
+    expect(run.out).toContain('Nothing was installed');
+    expect(run.out).toContain('-Replace14');
+    expect(run.out).toContain('myco cutover --dry-run');
+    expect(run.out).not.toContain('Found: myco/v1.');
+    expect(fs.readFileSync(run.exe)).toEqual(run.before!);
+  });
+
+  it.skipIf(PWSH === '' || process.platform === 'win32')('launch checks isolate every configuration home under the probe home', () => {
+    const run = select(beforeGa, { install: '2.0.0-beta.2', probe: true });
+    expect(run.status).toBe(0);
+    const homes = Object.fromEntries(fs.readFileSync(path.join(run.home, 'probe-env.log'), 'utf8').trim().split('\n').map(line => line.split('=')));
+    expect(homes.HOME).toStartWith(path.join(run.home, 'bin/.myco-install-'));
+    expect(path.basename(homes.HOME!)).toBe('probe-home');
+    for (const key of ['HOME', 'MYCO_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']) {
+      const relative = path.relative(homes.HOME!, homes[key]!);
+      expect(homes[key]).not.toBe('');
+      expect(relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))).toBe(true);
     }
   });
 
@@ -153,6 +237,10 @@ describe('the Windows installer', () => {
       const commands = path.join(run.mycoHome, 'commands.log');
       if (scenario.joined) expect(fs.readFileSync(commands, 'utf8')).toBe('member provision --refresh\n');
       else expect(fs.existsSync(commands)).toBe(false);
+      if (scenario.install.startsWith('1.')) {
+        expect(run.out).toContain('To move to 2.0:');
+        expect(run.out).toContain('--replace-1.4');
+      }
       if (!scenario.current && !scenario.joined) {
         expect(run.out).toContain('myco login <your-myco-address>');
         expect(run.out).toContain('docs/self-hosting.md');

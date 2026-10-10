@@ -12,10 +12,10 @@
 # Fresh defaults select 2.x stable, then beta, then alpha. Existing legacy
 # machines keep 1.x updates until --replace-1.4; legacy binaries are never run.
 #
-# On a machine with Myco 1.4 it installs nothing unless asked to: 2.0 takes
-# 1.4's place, and 1.4 stops capturing until the machine is moved over with
-# `myco cutover`. --replace-1.4 (or MYCO_REPLACE_LEGACY=1) installs it anyway;
-# nothing of 1.4 is moved or deleted either way.
+# Positive 1.x evidence keeps updates on 1.x. An explicit channel with a 2.x
+# candidate requires --replace-1.4 (or MYCO_REPLACE_LEGACY=1): 2.0 takes 1.4's
+# place until `myco cutover` moves the machine over. Unclassifiable binaries
+# are preserved and refused unless replacement is explicit. Vaults are never moved.
 #
 # Options:
 #   --dry-run          Say what it would install and where, and change nothing
@@ -521,10 +521,13 @@ main() {
   # -------------------------------------------------------------------------
   LEGACY=""
   BLOCKS_INSTALL=0
+  HAS_BINARY=0
+  UNKNOWN_BINARY=0
   CURRENT_MAJOR=""
   # Classification order: hash-bound recorded version, then an identical versioned slot.
-  # Unversioned binaries are unknown legacy; dependency strings are not identity.
+  # Unversioned binaries require explicit replacement; dependency strings are not identity.
   if [ -e "${BIN_DIR}/myco" ] || [ -L "${BIN_DIR}/myco" ]; then
+    HAS_BINARY=1
     if [ -f "$MYCO_HOME_DIR/install.json" ] && [ "$(decode_json "$MYCO_HOME_DIR/install.json" bin)" = "${BIN_DIR}/myco" ]; then
       _recorded_version="$(decode_json "$MYCO_HOME_DIR/install.json" version)" || { error "Cannot read the installed version."; exit 1; }
       _recorded_sha="$(decode_json "$MYCO_HOME_DIR/install.json" binary_sha256)" || { error "Cannot read the installed binary hash."; exit 1; }
@@ -561,7 +564,7 @@ main() {
     if is_development_version "$CURRENT_VERSION"; then CURRENT_MAJOR="$MIN_MAJOR"; fi
     case "$CURRENT_MAJOR" in
       1) LEGACY="its binary ${BIN_DIR}/myco, ${CURRENT_VERSION}"; BLOCKS_INSTALL=1 ;;
-      '') LEGACY="unknown legacy binary ${BIN_DIR}/myco"; BLOCKS_INSTALL=1 ;;
+      '') LEGACY="unclassifiable binary ${BIN_DIR}/myco"; UNKNOWN_BINARY=1; BLOCKS_INSTALL=1 ;;
     esac
   fi
   MEMBER_HOME=0
@@ -570,7 +573,7 @@ main() {
     if [ -f "$membership" ]; then MEMBER_HOME=1; break; fi
   done
   for vault in "${MYCO_HOME_DIR}"/groves/*/myco.db "${MYCO_HOME_DIR}/myco.db" "${MYCO_HOME_DIR}/vault/myco.db"; do
-    if [ -s "$vault" ] && [ "$MEMBER_HOME" = "0" ]; then
+    if [ -s "$vault" ] && [ "$MEMBER_HOME" = "0" ] && [ "$HAS_BINARY" = 0 ]; then
       if [ -z "$LEGACY" ]; then LEGACY="its vaults in ${MYCO_HOME_DIR}/groves"; fi
       case "$CURRENT_MAJOR" in
         ''|0|1) BLOCKS_INSTALL=1 ;;
@@ -578,6 +581,13 @@ main() {
       break
     fi
   done
+
+  if [ "$REPLACE_LEGACY" = 0 ] && { [ "$UNKNOWN_BINARY" = 1 ] || { [ "$MEMBER_HOME" = 1 ] && [ "$CURRENT_MAJOR" = 1 ]; }; }; then
+    error "Found ${LEGACY}. Nothing was installed; the binary was preserved."
+    printf '  To install 2.0 explicitly: %s -s -- --replace-1.4\n' "$ONE_LINER" >&2
+    printf '  For an intentional 1.x update, use: npm install -g @goondocks/myco@1\n' >&2
+    exit 1
+  fi
 
   # -------------------------------------------------------------------------
   # What to install: a local directory, or a GitHub release of Myco 2.x
@@ -587,7 +597,7 @@ main() {
     SOURCE="${INSTALL_FROM}"
     case "$VERSION" in
       1.*)
-        if [ "$BLOCKS_INSTALL" = 0 ] || [ "$REPLACE_LEGACY" = 1 ]; then
+        if [ "$BLOCKS_INSTALL" = 0 ] || [ "$REPLACE_LEGACY" = 1 ] || [ "$MEMBER_HOME" = 1 ] || [ "$UNKNOWN_BINARY" = 1 ]; then
           error "Myco 1.x is only eligible for an existing legacy installation; nothing was installed."
           exit 1
         fi
@@ -619,9 +629,13 @@ main() {
       PAGE=$((PAGE + 1))
     done
 
-    if [ "$BLOCKS_INSTALL" = 1 ] && [ "$REPLACE_LEGACY" = 0 ]; then
-      TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}" 1 1)"
-      LEGACY_INSTALL=1
+    if [ "$BLOCKS_INSTALL" = 1 ] && [ "$REPLACE_LEGACY" = 0 ] && [ "$MEMBER_HOME" = 0 ]; then
+      TAG=""
+      if [ "$CHANNEL_EXPLICIT" = 1 ]; then TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
+      if [ -z "$TAG" ]; then
+        TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}" 1 1)"
+        LEGACY_INSTALL=1
+      fi
     else
       if [ "$CHANNEL_EXPLICIT" = 0 ] && { [ "$CHANNEL_AUTO" = 1 ] || [ "$BLOCKS_INSTALL" = 1 ]; }; then
         CHANNEL=stable
@@ -638,7 +652,8 @@ main() {
     fi
     if [ -z "$TAG" ]; then
       if [ "$LEGACY_INSTALL" = 1 ]; then error "No eligible Myco 1.x release found; nothing was installed."; exit 1; fi
-      error "No Myco ${MIN_MAJOR}.x release found: Myco 2.0 has not been released yet, so there is nothing to install."
+      error "No eligible Myco ${MIN_MAJOR}.x release found on channel ${CHANNEL}; nothing was installed."
+      printf '  For published alpha builds, retry with MYCO_CHANNEL=alpha.\n' >&2
       if [ -n "$LEGACY" ]; then
         printf "  Myco 1.4 on this machine (%s) keeps working as it is.\n" "$LEGACY" >&2
       fi
@@ -669,10 +684,13 @@ main() {
     fi
     echo "  Would install ${ASSET} (${VERSION}) from ${SOURCE}"
     echo "  to ${BIN_DIR}/myco (and ${VERSION_DIR}/myco), after checking it against SHA256SUMS."
-    if [ "$BLOCKS_INSTALL" = "1" ] && [ "$LEGACY_INSTALL" = 0 ]; then
+    if [ "$UNKNOWN_BINARY" = 1 ]; then
+      echo "  The unclassifiable binary ($LEGACY) would be replaced explicitly with 2.0; existing vaults would be preserved."
+    elif [ "$BLOCKS_INSTALL" = "1" ] && [ "$LEGACY_INSTALL" = 0 ]; then
       echo "  Myco 1.4 is on this machine (${LEGACY}); --replace-1.4 was given, so 2.0 would take its place and 1.4 would stop capturing until you run myco cutover. Nothing of 1.4 would be moved or deleted."
-    elif [ -n "$LEGACY" ]; then
-      echo "  Myco 1.4's vaults are on this machine (${LEGACY}); nothing of 1.4 would be moved or deleted."
+    elif [ "$LEGACY_INSTALL" = 1 ]; then
+      echo "  Would update Myco 1.4 (${LEGACY}); its existing service and capture configuration would be preserved."
+      echo "  To move to 2.0: ${ONE_LINER} -s -- --replace-1.4"
     fi
     exit 0
   fi
@@ -758,9 +776,17 @@ main() {
     exit 1
   fi
 
-  if [ "$LEGACY_INSTALL" = 0 ] && { ! valid_version "$PROBE_OUT" || [ "$PROBE_OUT" != "$VERSION" ]; }; then
+  EXPECTED_VERSION="$VERSION"
+  if [ -n "$INSTALL_FROM" ]; then EXPECTED_VERSION="${MYCO_INSTALL_VERSION:-}"; fi
+  if [ "$LEGACY_INSTALL" = 0 ] && { ! valid_version "$PROBE_OUT" || { [ -n "$EXPECTED_VERSION" ] && [ "$PROBE_OUT" != "$EXPECTED_VERSION" ]; }; }; then
     error "The downloaded binary did not report the selected version; nothing was installed."
     exit 1
+  fi
+
+  if [ "$LEGACY_INSTALL" = 0 ] && [ -n "$INSTALL_FROM" ]; then
+    case "$PROBE_OUT" in 1.*) error "A local 1.x artifact requires an explicit version and positive 1.x evidence; nothing was installed."; exit 1 ;; esac
+    VERSION="$PROBE_OUT"
+    VERSION_DIR="${BIN_DIR}/versions/${VERSION}"
   fi
 
   # Versioned slot, then the stable path by temp+rename on the same filesystem:
@@ -827,6 +853,7 @@ main() {
   echo ""
   if [ "$LEGACY_INSTALL" = "1" ]; then
     echo "  Myco 1.4 was updated; its existing service and capture configuration were preserved."
+    echo "  To move to 2.0: ${ONE_LINER} -s -- --replace-1.4"
     echo "  To install its managed service explicitly: myco service install"
     echo "  Next, sign this machine in with the invite link an admin gave you:"
     echo "    myco login <link>"
@@ -835,6 +862,9 @@ main() {
       echo "  To enable Team Host explicitly:"
       echo "    myco host enable ${SERVE_HOSTNAME:+--hostname $SERVE_HOSTNAME }--designate-default --emit-join"
     fi
+  elif [ "$UNKNOWN_BINARY" = 1 ]; then
+    echo "  The unclassifiable binary was replaced explicitly; existing vaults were preserved."
+    if [ "$MEMBER_HOME" = 1 ]; then refresh_member_setup; else login_hand_off; fi
   elif [ -n "$LEGACY" ]; then
     warn "Myco 1.4 is on this machine (${LEGACY})."
     if [ "$BLOCKS_INSTALL" = "1" ]; then
