@@ -57,36 +57,81 @@ export interface CloudflareOptions {
 function resolved(options: CloudflareOptions): { runner: CommandRunner; env: NodeJS.ProcessEnv } {
   if (!options.accountId) throw new AccountNotSelected([]);
   return {
-    runner: credentialRunner(options.runner ?? systemRunner(), process.env, options.accountId),
+    runner: credentialRunner(options.runner ?? systemRunner(), process.env, options.accountId, () => {
+      const file = path.resolve(options.configDir, options.configFile ?? 'wrangler.toml');
+      if (!existsSync(file)) return false;
+      const config = readFileSync(file, 'utf8');
+      return /^\s*(?:routes?\s*=|\[\[routes\]\])/m.test(config);
+    }),
     // Pinned per invocation rather than exported once: a command that outlives
     // this process must not inherit an account selection it never asked for.
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: options.accountId },
   };
 }
 
+/** Canonical environment names suppress their deprecated aliases even when empty. */
+function cloudflareCredentialVariables(env: NodeJS.ProcessEnv) {
+  const variable = (canonical: string, alias: string) => {
+    const name = canonical in env || !(alias in env) ? canonical : alias;
+    return { name, value: env[name] };
+  };
+  return {
+    key: variable('CLOUDFLARE_API_KEY', 'CF_API_KEY'),
+    email: variable('CLOUDFLARE_EMAIL', 'CF_EMAIL'),
+    token: variable('CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN'),
+  };
+}
+
 /** Wrangler's credential precedence, with no credential values in diagnostics. */
 export function cloudflareCredentialSource(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.CLOUDFLARE_API_KEY && env.CLOUDFLARE_EMAIL) return 'CLOUDFLARE_API_KEY in the environment';
-  if (env.CLOUDFLARE_API_TOKEN) return 'CLOUDFLARE_API_TOKEN in the environment';
+  const { key, email, token } = cloudflareCredentialVariables(env);
+  if (key.value && email.value) return `${key.name} in the environment`;
+  if (token.value) return `${token.name} in the environment`;
   return 'OAuth login';
 }
+
+const OAUTH_ENV_FIX = 'unset CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_KEY, plus deprecated aliases CF_API_TOKEN and CF_API_KEY';
 
 /** Credential source and recovery guidance shared by CLI verbs and lifecycle preflight. */
 export function cloudflareCredentialLines(env: NodeJS.ProcessEnv = process.env): string[] {
   const source = cloudflareCredentialSource(env);
+  const { key, email } = cloudflareCredentialVariables(env);
   return [
     `Wrangler credential: ${source}.`,
-    ...(env.CLOUDFLARE_API_KEY && !env.CLOUDFLARE_EMAIL
-      ? ['CLOUDFLARE_API_KEY is set without CLOUDFLARE_EMAIL; Wrangler cannot use that key. Set both for API-key authentication, or unset the key to use OAuth.'] : []),
-    ...(source === 'OAuth login' ? [] : ['Warning: this environment credential overrides the OAuth login. It must reach the deployment account and every required resource. To use that account\'s login, unset CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_KEY in this shell; CI may keep a credential with the required permissions.']),
+    ...(key.value && !email.value
+      ? [`${key.name} is set without ${email.name}; Wrangler cannot use that key. Set both for API-key authentication, or unset the key to use OAuth.`] : []),
+    ...(source === 'OAuth login' ? [] : [`Warning: this environment credential overrides the OAuth login. It must reach the deployment account and every required resource. To use that account's login, ${OAUTH_ENV_FIX} in this shell; CI may keep a credential with the required permissions.`]),
   ];
 }
 
 const AUTHENTICATION_ERROR = /(?:\[code:\s*10000\]|"code"\s*:\s*10000\b)/;
 
-/** An authentication refusal names the resource and a likely permission, never provider output. */
+/** Code 10000 is an explicit provider refusal, not an unacknowledged mutation. */
+export function isCloudflareAuthenticationRefusal(result: CommandResult): boolean {
+  return result.code !== 0 && AUTHENTICATION_ERROR.test(result.stdout + result.stderr);
+}
+
+/** Only endpoint paths and structured permission hints survive provider diagnostics. */
+function authenticationDiagnostic(result: CommandResult, env: NodeJS.ProcessEnv): string {
+  const output = result.stdout + '\n' + result.stderr;
+  const endpoint = /A request to the Cloudflare API \((\/[^\s)?]+)(?:\?[^)]*)?\) failed/.exec(output)?.[1];
+  const hints = [...output.matchAll(/(?:User|Account|Zone)(?:->[A-Za-z -]+)+->(?:Read|Edit|Write)\b/g)].map((match) => match[0]);
+  let diagnostic = [
+    ...(endpoint === undefined ? [] : [`Endpoint: ${endpoint}.`]),
+    ...[...new Set(hints)].map((hint) => `Wrangler permission hint: ${hint}.`),
+  ].join(' ');
+  for (const name of ['CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_KEY', 'CLOUDFLARE_EMAIL', 'CF_EMAIL']) {
+    const value = env[name];
+    if (!value) continue;
+    const fragments = value.length < 4 ? [value] : Array.from({ length: value.length - 3 }, (_, index) => value.slice(index, index + 4));
+    for (const fragment of fragments) diagnostic = diagnostic.split(fragment).join('[redacted]');
+  }
+  return diagnostic;
+}
+
+/** An authentication refusal retains diagnostic fields without private provider output. */
 export class CloudflareAuthenticationError extends CommandFailed {
-  constructor(command: string, args: readonly string[], result: CommandResult, env: NodeJS.ProcessEnv, accountId?: string) {
+  constructor(command: string, args: readonly string[], result: CommandResult, env: NodeJS.ProcessEnv, accountId?: string, routes = false) {
     super(command, args.slice(0, 3), { code: result.code, stdout: '', stderr: 'Authentication error [code: 10000]' });
     this.name = 'CloudflareAuthenticationError';
     const product = args[2];
@@ -100,26 +145,27 @@ export class CloudflareAuthenticationError extends CommandFailed {
     const resource = product !== undefined && product in permissions ? product : 'Worker';
     const permission = permissions[product ?? ''] ?? 'Workers Scripts Read for reads, or Workers Scripts Edit for changes';
     this.message = `Cloudflare Authentication error [code: 10000] on ${resource}${accountId === undefined ? '' : ` in account ${accountId}`}. `
-      + `Wrangler is using ${cloudflareCredentialSource(env)}. Likely missing permission: ${permission}, or access to this account/resource. `
-      + 'For the deployment account OAuth login, unset CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_KEY in this shell and retry; '
-      + 'for CI, grant the environment credential access to the deployment account and the named resource.';
+      + `Wrangler is using ${cloudflareCredentialSource(env)}. Likely missing permission: ${permission}${routes && product === 'deploy' ? ', plus Zone / Workers Routes Edit for configured routes or custom domains' : ''}, or access to this account/resource. `
+      + `For the deployment account OAuth login, ${OAUTH_ENV_FIX} in this shell and retry; `
+      + 'for CI, grant the environment credential access to the deployment account and the named resource. '
+      + authenticationDiagnostic(result, env);
   }
 }
 
 /** Every management command reports authentication refusals before callers interpret resource-specific failures. */
-function credentialRunner(runner: CommandRunner, env: NodeJS.ProcessEnv, accountId?: string): CommandRunner {
+function credentialRunner(runner: CommandRunner, env: NodeJS.ProcessEnv, accountId?: string, hasRoutes?: () => boolean): CommandRunner {
   return {
     async run(command, args, options) {
       const result = await runner.run(command, args, options);
-      if (result.code !== 0 && AUTHENTICATION_ERROR.test(result.stdout + result.stderr)) {
-        throw new CloudflareAuthenticationError(command, args, result, env, accountId);
+      if (isCloudflareAuthenticationRefusal(result)) {
+        throw new CloudflareAuthenticationError(command, args, result, env, accountId, args[2] === 'deploy' && hasRoutes?.());
       }
       return result;
     },
   };
 }
 
-/** Commands carrying private data suppress provider output and debug files on every failure path. */
+/** Commands carrying private data withhold raw provider output and debug files on every failure path. */
 async function privateCommand(options: CloudflareOptions, args: string[], input: string | undefined, operation: string, timeoutMs = 120_000): Promise<void> {
   const { runner, env } = resolved(options);
   let code: number;

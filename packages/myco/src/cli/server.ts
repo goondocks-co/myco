@@ -468,7 +468,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner } = {})
       }
       const lastSchema = status.record.schemaUpdates?.at(-1);
       if (lastSchema !== undefined) {
-        console.log(`  Last schema update (${lastSchema.appliedAt === undefined ? 'attempted; completion not recorded' : 'applied'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
+        console.log(`  Last schema update (${lastSchema.appliedAt === undefined ? 'recovery point recorded; migration not confirmed' : 'applied'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
       }
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;

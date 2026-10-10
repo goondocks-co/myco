@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   assertWranglerReady,
+  CloudflareAuthenticationError,
+  isCloudflareAuthenticationRefusal,
   ensureCommandDir,
   cloudflareStatus,
   cloudflareSchemaVersion,
@@ -265,9 +267,10 @@ export interface CloudflareUpdateSummary {
   releaseTarget: string;
   schemaBefore: number | null;
   schemaTarget: number;
-  schema: 'not attempted' | 'attempted; outcome unknown' | 'applied' | 'unchanged';
-  worker: 'not attempted' | 'attempted; outcome unknown' | 'applied';
-  resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'applied' | 'already exists' }>;
+  schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'unchanged';
+  worker: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied';
+  record: 'updated' | 'not updated';
+  resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'already exists' }>;
   recordPath: string;
   bookmark?: string;
 }
@@ -275,21 +278,25 @@ export interface CloudflareUpdateSummary {
 /** The same summary is printed for successful and interrupted hosted updates. */
 export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[] {
   const resultingRelease = summary.worker === 'applied' ? summary.releaseTarget
-    : summary.worker === 'not attempted' ? summary.releaseBefore ?? 'unknown' : 'unknown';
+    : ['not attempted', 'refused: not applied'].includes(summary.worker) ? summary.releaseBefore ?? 'unknown' : 'unknown';
   const resultingSchema = summary.schema === 'applied' ? summary.schemaTarget
     : summary.schema === 'attempted; outcome unknown' ? 'unknown' : summary.schemaBefore ?? 'unknown';
   const lines = [
-    `Cloudflare update (releases recorded locally; schemas observed or acknowledged): from ${summary.releaseBefore ?? 'unknown'}/${summary.schemaBefore ?? 'unknown'} to ${resultingRelease}/${resultingSchema}.`,
+    `Cloudflare update (releases recorded before update or acknowledged by deploy; schemas observed or acknowledged): from ${summary.releaseBefore ?? 'unknown'}/${summary.schemaBefore ?? 'unknown'} to ${resultingRelease}/${resultingSchema}.`,
     `  Schema: ${summary.schema} (target ${summary.schemaTarget}).`,
     `  Worker: ${summary.worker} (target release ${summary.releaseTarget}).`,
+    `  Local deployment record: ${summary.record}.`,
     `  Resources: ${summary.resources.length === 0 ? 'no changes attempted' : summary.resources.map((r) => `${r.operation}: ${r.state}`).join('; ')}.`,
     summary.bookmark === undefined ? '  No new recovery bookmark recorded.' : `  Bookmark ${summary.bookmark} recorded in ${summary.recordPath}.`,
   ];
-  if (summary.worker === 'not attempted' && ['not attempted', 'unchanged'].includes(summary.schema)
-    && summary.resources.every((r) => r.state === 'already exists')) {
+  if (['not attempted', 'refused: not applied'].includes(summary.worker) && ['not attempted', 'unchanged', 'refused: not applied'].includes(summary.schema)
+    && summary.resources.every((r) => ['already exists', 'refused: not applied'].includes(r.state))) {
     lines.push('Nothing changed in Cloudflare; a rerun is safe. A recorded bookmark is a recovery point, not an applied migration.');
   } else if (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown'))) {
     lines.push('An attempted change has an unknown outcome; run myco server status --target cloudflare before retrying.');
+  }
+  if (summary.worker === 'applied' && summary.record === 'not updated') {
+    lines.push('The Worker is live; the local record was not updated; rerun myco server update --target cloudflare or check myco server status --target cloudflare.');
   }
   return lines;
 }
@@ -297,7 +304,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
 export const updateCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
   const summary: CloudflareUpdateSummary = {
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
-    schema: 'not attempted', worker: 'not attempted', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
+    schema: 'not attempted', worker: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
   };
   const runner = options.runner ?? systemRunner();
   options = { ...options, runner: {
@@ -313,6 +320,7 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
       const result = await runner.run(command, args, runOptions);
       if (entry !== undefined) {
         if (result.code === 0) entry.state = 'applied';
+        else if (isCloudflareAuthenticationRefusal(result)) entry.state = 'refused: not applied';
         else if (/already (exists|owned)/i.test(result.stdout + result.stderr)) entry.state = 'already exists';
       }
       return result;
@@ -350,8 +358,13 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
       ...record, recoveryBucketName: resources.recoveryBucketName,
       release: summary.releaseTarget, versionId: deployed.versionId, deployedAt: new Date().toISOString(),
     }, options.mycoHome);
+    summary.record = 'updated';
     return { versionId: deployed.versionId, summary };
   } catch (cause) {
+    if (cause instanceof CloudflareAuthenticationError) {
+      if (summary.schema === 'attempted; outcome unknown') summary.schema = 'refused: not applied';
+      if (summary.worker === 'attempted; outcome unknown') summary.worker = 'refused: not applied';
+    }
     for (const line of cloudflareUpdateLines(summary)) options.report?.(line);
     throw cause;
   }
