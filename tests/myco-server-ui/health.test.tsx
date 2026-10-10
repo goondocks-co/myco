@@ -111,6 +111,22 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 const PARTS = [['needs-you', 'Needs you'], ['status', 'Status'], ['workers', 'Workers'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
 
 describe('Health', () => {
+  it('shows the latest stopping reason and position at the Open Health destination', async () => {
+    server(routes({
+      '/api/attention': () => Response.json({ items: [{
+        kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 2, latestAt: NOW,
+        reasons: { parse: 2 }, latestDiagnostic: { branch: 'no_progress', offset: 12345, lineKind: 'tool_result' },
+      }], unavailable: [] }),
+    }));
+    mount('/status/health#status');
+    const section = await screen.findByRole('region', { name: 'Status' });
+    await waitFor(() => expect(within(section).getByText(/Latest stop:/).textContent)
+      .toContain('Reading could not move past a record at byte 12345 (tool result).'));
+    expect(within(section).getByText('2 transcripts in Myco')).toBeTruthy();
+    expect(seen.hash).toBe('#status');
+    expect(rawIdsIn(section)).toEqual([]);
+  });
+
   it('lists its parts in order, each at its anchor, with a jump to each', async () => {
     server(routes());
     mount();

@@ -2,16 +2,18 @@ import { expect } from 'bun:test';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { AWAITING_BYTES, PARSER_VERSION, PENDING_TRANSCRIPTS } from '@myco-server-worker/ingest/parse.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { verifyTranscriptParserStop } from './transcript-parser-stop.ts';
 
 const cursorLine = (role: string, text: string): string => `${JSON.stringify({ role, message: { content: [{ type: 'text', text }] } })}\n`;
 
 /**
- * A Cursor transcript on both targets (#1461): a segment that ends inside a
+ * Transcript rereading on both targets: a segment that ends inside a
  * record waits without staying in the parse queue, the segment that finishes
  * it puts it back, its rows are dated at the time their segment was sent, and
  * an owner's re-read, by session or by agent, reads it again without landing a
  * row twice. The queue is read through the parse's own predicate, so both
- * stores are held to the one SQL.
+ * stores are held to the one SQL. A parser upgrade resumes stopped recordings,
+ * and a stopping record is identified without its content.
  */
 export const transcriptReread: ParityScenario = {
   name: 'Cursor transcript: a wait keyed on bytes, segment-dated rows, and an owner re-read, identical on both targets',
@@ -96,5 +98,6 @@ export const transcriptReread: ParityScenario = {
     await settle();
     expect(await state()).toMatchObject({ parsed_offset: fileSize, parse_error: null });
     expect(await rows()).toEqual([{ prompt: 'parity prompt', prompt_at: sentAt, response: 'parity reply\n\nparity follow-up' }]);
+    await verifyTranscriptParserStop(target);
   },
 };

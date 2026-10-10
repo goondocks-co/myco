@@ -39,9 +39,10 @@ const encoder = new TextEncoder();
  * A line that is not JSON at all is reported through `malformed` so the caller
  * can stop the transcript loudly rather than silently dropping rows.
  */
-export function splitCompleteLines(bytes: Uint8Array, baseOffset: number): SplitResult & { malformed: number } {
+export function splitCompleteLines(bytes: Uint8Array, baseOffset: number): SplitResult & { malformed: number; malformedOffset: number | null } {
   const lines: ParsedLine[] = [];
   let malformed = 0;
+  let malformedOffset: number | null = null;
   let offset = baseOffset;
   let start = 0;
 
@@ -55,13 +56,14 @@ export function splitCompleteLines(bytes: Uint8Array, baseOffset: number): Split
         if (value !== null && typeof value === 'object' && !Array.isArray(value)) lines.push({ value: value as Record<string, unknown>, offset });
       } catch {
         malformed += 1;
+        malformedOffset ??= offset;
       }
     }
     offset += raw.length + 1;
     start = i + 1;
   }
 
-  return { lines, nextOffset: offset, pending: bytes.length - start, malformed };
+  return { lines, nextOffset: offset, pending: bytes.length - start, malformed, malformedOffset };
 }
 
 /** The byte length of a string as the transcript stores it, for a caller sizing a read against `transcripts.size`. */

@@ -4,7 +4,8 @@ import type { useStatus } from '../../../hooks/use-status';
 import type { StatusResponse } from '../../../lib/api';
 import { formatCount } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
-import { ago } from '../../today/words';
+import { useAttention } from '../../../hooks/use-attention';
+import { ago, transcriptStopWords } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
@@ -82,6 +83,7 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         {backlog !== null && <p className="t-small text-muted" data-testid="transcript-backlog">{backlog}</p>}
       </Card>
 
+      <StoppedRecordings projectName={projectName} />
       <QueueWarning queue={data.workers.available ? data.workers.queue : undefined} />
       <SearchByMeaning now={now} />
 
@@ -124,4 +126,19 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
       </div>
     </div>
   );
+}
+
+function StoppedRecordings({ projectName }: Pick<StatusSectionProps, 'projectName'>) {
+  const attention = useAttention({ enabled: true });
+  const stopped = attention.data?.items.filter((item) => item.kind === 'transcripts_stopped') ?? [];
+  if (attention.error) return <ReadUnavailable label="transcripts that couldn’t be read" onRetry={() => void attention.refetch()} />;
+  if (attention.data?.unavailable.includes('transcripts_stopped')) return <ReadUnavailable label="transcripts that couldn’t be read" onRetry={() => void attention.refetch()} />;
+  if (stopped.length === 0) return null;
+  return <div className="flex flex-col gap-s2" data-health-transcripts="">
+    <h3 className="t-h3 text-ink">Transcripts that couldn’t be read</h3>
+    {stopped.map((item) => <Card key={item.projectId} className="flex flex-col gap-s2">
+      <p className="t-body text-ink">{formatCount(item.transcripts, 'transcript')} in {projectName(item.projectId) ?? 'a project'}</p>
+      <p className="t-small text-ink-2">Latest stop: {transcriptStopWords(item)}</p>
+    </Card>)}
+  </div>;
 }
