@@ -93,7 +93,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   fs.writeFileSync(telemetry, `import { classify as original } from ${JSON.stringify(originalTelemetry)};\nimport { observeHandledException } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(originalTelemetry)};\nexport function classify(...args: Parameters<typeof original>) { observeHandledException(args[0]); return original(...args); }\n`);
   fs.writeFileSync(entryPath, `import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport default observedWorker(worker);\n`);
   const derived = parityWranglerConfig();
-  // Async context belongs to the diagnostic wrapper; the shipped config is unchanged.
+  // Request diagnostics require asynchronous context propagation.
   const observed = /^compatibility_flags = /m.test(derived)
     ? derived.replace(/^(compatibility_flags = \[)(.*)(\])$/m, '$1$2, "nodejs_als"$3')
     : `compatibility_flags = ["nodejs_als"]\n${derived}`;
@@ -200,7 +200,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
         if (!response.ok) throw new Error(`cloudflare parity health answered ${response.status}`);
       },
       requestFailure: async (failure) => {
-        // Console output and the inspector's exception event can arrive after the HTTP response.
+        // Runtime console output can arrive after the HTTP response.
         await Bun.sleep(100);
         const diagnostic = { scenarioRequest: failure, runtime: runtime.runtime(), output: runtime.runtime().tail };
         fs.appendFileSync(path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-requests.log`), JSON.stringify(diagnostic) + '\n');
