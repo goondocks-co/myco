@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { readTestProcessRssKiB, readTestProcessTable, readTestProcessGroupId } from '../../scripts/test-process-tree.mjs';
 import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 import { assertServiceCommand, sandboxServiceChild, assertNoServiceExecutions, assertAllServiceExecutions, consumeServiceExecDenials } from '../../scripts/test-service-exec.mjs';
@@ -21,6 +22,30 @@ const environment = (root: string) => sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT
 const sqliteExecutable = resolveTestTool('sqlite3') ?? (fs.existsSync('/usr/bin/sqlite3') ? '/usr/bin/sqlite3' : null);
 
 describe('service-manager process containment', () => {
+  for (const platform of ['darwin', 'linux']) for (const operation of ['install', 'start', 'stop', 'uninstall', 'status', ...(platform === 'darwin' ? ['reload'] : [])]) for (const stub of [true, false]) {
+    it(`native ${platform} ${operation} ${stub ? 'uses its stub' : 'fails before real service execution'}`, () => {
+      const root = fresh();
+      const env: NodeJS.ProcessEnv = {
+        ...environment(root), MYCO_NATIVE_SERVICE_PLATFORM: platform,
+        MYCO_NATIVE_SERVICE_OPERATION: operation, ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}),
+      };
+      const repo = fileURLToPath(new URL('../../', import.meta.url));
+      const child = spawnSync(process.execPath, [
+        'test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+        '--tsconfig-override', path.join(repo, 'tsconfig.json'),
+        path.join(repo, 'tests/setup/fixtures/native_service_boundary_test.ts'),
+      ], { env, cwd: root, encoding: 'utf8', timeout: 30000 });
+      if (stub) {
+        expect({ status: child.status, denied: child.stderr.includes('TEST SAFETY'), stderr: child.stderr }).toMatchObject({ status: 0, denied: false });
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).not.toThrow();
+      } else {
+        expect(child.status).not.toBe(0);
+        expect(child.stderr).toContain('TEST SAFETY');
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toThrow('TEST SAFETY');
+      }
+    });
+  }
+
   for (const operation of ['restart', 'rollback', 'guardian']) for (const stub of [true, false]) {
     it(`runner update ${operation} ${stub ? 'uses its stub' : 'fails before real service execution'}`, () => {
       const root = fresh();
