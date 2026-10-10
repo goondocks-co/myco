@@ -86,7 +86,8 @@ CREATE TRIGGER IF NOT EXISTS prompt_batches_session_read_insert
     ON CONFLICT(project_id,session_id) DO UPDATE SET eligible_prompts = eligible_prompts + excluded.eligible_prompts; END;
 
 CREATE TRIGGER IF NOT EXISTS prompt_batches_session_read_update
-    AFTER UPDATE OF project_id,session_id,processed,origin ON prompt_batches BEGIN
+    AFTER UPDATE OF project_id,session_id,processed,origin ON prompt_batches
+    WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR ((OLD.processed = 0 AND OLD.origin IN ('user','unknown'))) IS NOT ((NEW.processed = 0 AND NEW.origin IN ('user','unknown'))) BEGIN
     INSERT INTO session_read_facts(project_id,session_id,eligible_prompts)
     VALUES(OLD.project_id,OLD.session_id,-1 * (OLD.processed = 0 AND OLD.origin IN ('user','unknown')))
     ON CONFLICT(project_id,session_id) DO UPDATE SET eligible_prompts = eligible_prompts + excluded.eligible_prompts;
@@ -108,7 +109,8 @@ CREATE TRIGGER IF NOT EXISTS transcripts_session_read_insert
     ON CONFLICT(project_id,session_id) DO UPDATE SET pending_transcripts = pending_transcripts + excluded.pending_transcripts,live_transcripts = live_transcripts + excluded.live_transcripts; END;
 
 CREATE TRIGGER IF NOT EXISTS transcripts_session_read_update
-    AFTER UPDATE OF project_id,session_id,parsed_offset,size,parse_error,imported_at ON transcripts BEGIN
+    AFTER UPDATE OF project_id,session_id,parsed_offset,size,parse_error,imported_at ON transcripts
+    WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR ((OLD.parsed_offset < OLD.size OR OLD.parse_error IS NOT NULL)) IS NOT ((NEW.parsed_offset < NEW.size OR NEW.parse_error IS NOT NULL)) OR ((OLD.imported_at IS NULL)) IS NOT ((NEW.imported_at IS NULL)) BEGIN
     INSERT INTO session_read_facts(project_id,session_id,pending_transcripts,live_transcripts)
     VALUES(OLD.project_id,OLD.session_id,-1 * (OLD.parsed_offset < OLD.size OR OLD.parse_error IS NOT NULL),-1 * (OLD.imported_at IS NULL))
     ON CONFLICT(project_id,session_id) DO UPDATE SET pending_transcripts = pending_transcripts + excluded.pending_transcripts,live_transcripts = live_transcripts + excluded.live_transcripts;
@@ -130,7 +132,8 @@ CREATE TRIGGER IF NOT EXISTS session_tombstones_session_read_insert
     ON CONFLICT(project_id,session_id) DO UPDATE SET tombstoned = tombstoned + excluded.tombstoned; END;
 
 CREATE TRIGGER IF NOT EXISTS session_tombstones_session_read_update
-    AFTER UPDATE OF project_id,session_id ON session_tombstones BEGIN
+    AFTER UPDATE OF project_id,session_id ON session_tombstones
+    WHEN OLD.project_id IS NOT NEW.project_id OR OLD.session_id IS NOT NEW.session_id OR (1) IS NOT (1) BEGIN
     INSERT INTO session_read_facts(project_id,session_id,tombstoned)
     VALUES(OLD.project_id,OLD.session_id,-1 * 1)
     ON CONFLICT(project_id,session_id) DO UPDATE SET tombstoned = tombstoned + excluded.tombstoned;

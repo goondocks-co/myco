@@ -8,7 +8,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { LAST_ACTIVITY_SQL, LAST_REQUEST_KEY, lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker/core/runs.js';
-import { listUnprocessedPrompts, newestUnprocessedSession, newestUnprocessedSessionQuery, READ_ORIGINS } from '@myco-server-worker/read/prompts.js';
+import { listUnprocessedPrompts, markPromptProcessed, newestUnprocessedSession, newestUnprocessedSessionQuery, READ_ORIGINS } from '@myco-server-worker/read/prompts.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
 import { sessionMaterialReadySql } from '@myco-server-worker/read/material-readiness.js';
@@ -23,6 +23,12 @@ const BLOB = '0'.repeat(64);
 const CONTEXT = { projectId: PROJECT, machineId: 'machine', tokenId: 'credential', bodyBytes: 100, now: 2_000 };
 const ROW_READ_LIMIT = 64;
 const CORPUS_SIZES = [1_000, 10_000] as const;
+const CAPTURE_WRITE_LIMITS = {
+  'session.start': 38, prompt: 30, notification: 16, 'transcripts insert': 14,
+  'parse-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 4,
+} as const;
+type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
+const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
 
 it('D1 event admission reads stay bounded as unrelated archive bundles and events grow', async () => {
   const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
@@ -249,4 +255,74 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
       if (ordered) expect(details).not.toContain('TEMP B-TREE');
     }
   } finally { native.close(); await mf.dispose(); }
+}, 120_000);
+
+it('D1 capture writes stay within their rows-written ceilings at both corpus sizes', async () => {
+  const captureWrites = new Map<CaptureWrite, number[][]>(CAPTURE_WRITE_NAMES.map(name => [name, []]));
+  for (const size of CORPUS_SIZES) {
+    const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+      compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+    try {
+      const db = await mf.getD1Database('DB');
+      for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+      await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?, ?, 1)').bind(PROJECT, PROJECT).run();
+      await db.prepare("INSERT INTO members(id,label,created_at) VALUES('member','member',1)").run();
+      await db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)").run();
+      await db.prepare(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
+        VALUES('credential','member','machine','hash',1,99999999,'credential',1)`).run();
+      await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_history','history',1)").run();
+      const seq = `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<${size})`;
+      await db.prepare(`${seq} INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+        SELECT 'proj_history','session-'||i,'machine','credential',1,1 FROM n`).run();
+      await db.prepare(`${seq} INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,content_hash,created_at,updated_at,token_id,received_at,origin)
+        SELECT 'proj_history','prompt-'||i,'session-'||i,'event','hash',1,1,'credential',1,'user' FROM n`).run();
+      await db.prepare(`${seq} INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id)
+        SELECT 'proj_history','transcript-'||i,'session-'||i,'machine',100,0,1,1,'credential' FROM n`).run();
+      const measured = measuredStore(db);
+      const sessionId = `capture-${size}`;
+      const promptIds: string[] = [];
+      const writes = new Map<CaptureWrite, number[]>(CAPTURE_WRITE_NAMES.map(name => [name, []]));
+      const capture = async (name: CaptureWrite, run: () => Promise<unknown>) => {
+        measured.reset();
+        await run();
+        writes.get(name)!.push(measured.writes());
+      };
+      let now = CONTEXT.now;
+      const event = async (kind: 'session.start' | 'prompt' | 'notification' | 'session.end', payload: Record<string, unknown>) => {
+        now += 10;
+        const planned = await planEventWrite(measured.db, { ...CONTEXT, now }, {
+          eventId: crypto.randomUUID(), sessionId, kind, createdAt: now, channel: 'cli',
+          producer: { adapter: 'claude-code', version: '1' }, payload,
+        });
+        if (!planned.ok) throw new Error(JSON.stringify(planned));
+        await capture(kind, async () => {
+          expect(planned.write.interpret(await measured.db.batch(planned.write.statements)))
+            .toEqual(kind === 'notification' ? { persisted: true } : { persisted: true, projected: true });
+        });
+      };
+      await event('session.start', { agent: 'claude-code' });
+      for (let i = 0; i < 5; i++) {
+        const promptId = crypto.randomUUID();
+        promptIds.push(promptId);
+        await event('prompt', { promptId, text: `hello ${i}`, origin: 'user' });
+      }
+      for (let i = 0; i < 5; i++) await event('notification', { message: `n${i}` });
+      await capture('transcripts insert', () => measured.db.prepare(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,size,parsed_offset,first_received_at,last_received_at,token_id)
+        VALUES(?,?,?,'machine',100,0,1,1,'credential')`).bind(PROJECT, sessionId, sessionId).run());
+      for (let i = 1; i <= 5; i++) await capture('parse-progress UPDATE', () => measured.db.prepare(
+        'UPDATE transcripts SET parsed_offset=?,size=size+10 WHERE project_id=? AND transcript_id=?').bind(i * 10, PROJECT, sessionId).run());
+      await event('session.end', { endedAt: now });
+      await capture('markPromptProcessed', async () => {
+        expect(await markPromptProcessed(measured.db, { projectId: PROJECT }, promptIds[0]!)).toBe(true);
+      });
+      for (const name of CAPTURE_WRITE_NAMES) captureWrites.get(name)!.push(writes.get(name)!);
+    } finally { await mf.dispose(); }
+  }
+  for (const [name, rowsWritten] of captureWrites) {
+    console.info('CAPTURE_WRITE_BUDGET ' + JSON.stringify({ name, sizes: CORPUS_SIZES, rowsWritten, ceiling: CAPTURE_WRITE_LIMITS[name] }));
+  }
+  for (const [name, callsBySize] of captureWrites) {
+    for (const calls of callsBySize) for (const rows of calls) expect(rows, name).toBeLessThanOrEqual(CAPTURE_WRITE_LIMITS[name]);
+    expect(callsBySize[1], name).toEqual(callsBySize[0]);
+  }
 }, 120_000);

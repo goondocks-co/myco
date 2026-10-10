@@ -5,6 +5,7 @@ type D1 = Awaited<ReturnType<Miniflare['getD1Database']>>;
 
 export function measuredStore(d1: D1) {
   let reads = 0;
+  let writes = 0;
   let historyQueries = 0;
   const originals = new WeakMap<PreparedStatement, ReturnType<D1['prepare']>>();
   const observe = (statement: ReturnType<D1['prepare']>): PreparedStatement => {
@@ -13,16 +14,19 @@ export function measuredStore(d1: D1) {
     first: async <T,>() => {
       const result = await statement.all<T>();
       reads += result.meta.rows_read;
+      writes += result.meta.rows_written;
       return result.results[0] ?? null;
     },
     all: async <T,>() => {
       const result = await statement.all<T>();
       reads += result.meta.rows_read;
+      writes += result.meta.rows_written;
       return result;
     },
     run: async () => {
       const result = await statement.run();
       reads += result.meta.rows_read;
+      writes += result.meta.rows_written;
       return result;
     },
     };
@@ -41,8 +45,9 @@ export function measuredStore(d1: D1) {
         return original;
       }));
       reads += results.reduce((sum, result) => sum + result.meta.rows_read, 0);
+      writes += results.reduce((sum, result) => sum + result.meta.rows_written, 0);
       return results;
     },
   };
-  return { db, reset: () => { reads = 0; historyQueries = 0; }, reads: () => reads, historyQueries: () => historyQueries };
+  return { db, reset: () => { reads = 0; writes = 0; historyQueries = 0; }, reads: () => reads, writes: () => writes, historyQueries: () => historyQueries };
 }

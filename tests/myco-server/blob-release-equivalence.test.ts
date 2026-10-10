@@ -90,6 +90,7 @@ async function seed(db: RelationalStore): Promise<void> {
     db.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,blob_key,created_at,received_at)
       VALUES(?,'projected-tool','deleted','credential','tool.use','cli','{}','hash',?,1,1)`).bind(P, key(14)),
     db.prepare(`INSERT INTO object_releases(physical,kind,created_at) VALUES(?,'blob',0)`).bind(blobObjectKey(P, key(0), OLD_GENERATION)),
+    db.prepare(`INSERT INTO object_releases(physical,kind,created_at) VALUES(?,'blob',0)`).bind(blobObjectKey(P, key(16), GENERATION)),
     db.prepare(`INSERT INTO recovery_holds(token,acquired_at,holder) VALUES('producer',1,'producer'),('operator',1,'operator')`),
   ]);
   expect(holderInserts).toHaveLength(BLOB_REFERENCES.length);
@@ -119,10 +120,12 @@ async function exercise(db: RelationalStore, decision: typeof blobDecisionStatem
   expect(outcomes[2]!.state.candidates).toEqual([]);
   expect(outcomes[2]!.state.journal.map(row => row.physical)).toEqual([
     blobObjectKey(P, key(0), OLD_GENERATION), blobObjectKey(P, key(13), GENERATION), blobObjectKey(P, key(14), GENERATION),
+    blobObjectKey(P, key(16), GENERATION),
   ]);
   expect((await db.prepare(`SELECT key FROM blobs WHERE project_id=? AND key IN (?,?) ORDER BY key`).bind(P, key(1), key(2)).all()).results)
     .toEqual([{ key: key(1) }, { key: key(2) }]);
   expect(await db.prepare('SELECT key FROM blobs WHERE project_id=? AND key=?').bind(P, key(15)).first<{ key: string }>()).toEqual({ key: key(15) });
+  expect(await db.prepare('SELECT key FROM blobs WHERE project_id=? AND key=?').bind(P, key(16)).first<{ key: string }>()).toEqual({ key: key(16) });
   await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
     VALUES(?,?,1,'text/plain','credential',1,?)`).bind(P, key(13), OLD_GENERATION).run();
   outcomes.push({ result: await db.batch(decision(db, page, 5)), state: await snapshot(db) });
@@ -132,21 +135,18 @@ async function exercise(db: RelationalStore, decision: typeof blobDecisionStatem
 }
 
 describe('blob release decision contract on native SQLite and local D1', () => {
-  it('preserves deletion sets, all catalogue holders, holds, duplicate pairs and physical generations', async () => {
-    const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-      compatibilityDate: '2026-07-01', d1Databases: ['OLD', 'NEW'] });
+  it.each(['native', 'D1'] as const)('preserves deletion sets, all catalogue holders, holds, duplicate pairs and physical generations on %s', async (target) => {
+    const mf = target === 'D1' ? new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+      compatibilityDate: '2026-07-01', d1Databases: ['OLD', 'NEW'] }) : null;
     const oldNative = new Database(':memory:');
     const newNative = new Database(':memory:');
     try {
-      const oldD1 = await mf.getD1Database('OLD');
-      const newD1 = await mf.getD1Database('NEW');
-      const stores = [sqliteRelationalStore(oldNative), sqliteRelationalStore(newNative), oldD1 as unknown as RelationalStore, newD1 as unknown as RelationalStore];
+      const stores = mf === null ? [sqliteRelationalStore(oldNative), sqliteRelationalStore(newNative)]
+        : [await mf.getD1Database('OLD') as unknown as RelationalStore, await mf.getD1Database('NEW') as unknown as RelationalStore];
       for (const store of stores) await seed(store);
       const baseline = await exercise(stores[0]!, legacyDecision);
       expect(await exercise(stores[1]!, blobDecisionStatements)).toEqual(baseline);
-      expect(await exercise(stores[2]!, legacyDecision)).toEqual(baseline);
-      expect(await exercise(stores[3]!, blobDecisionStatements)).toEqual(baseline);
-    } finally { oldNative.close(); newNative.close(); await mf.dispose(); }
+    } finally { oldNative.close(); newNative.close(); await mf?.dispose(); }
   }, 120_000);
 
   it('seeks blob and candidate primary keys for every decision and blob-presence read on both targets', async () => {

@@ -15,10 +15,15 @@ function contribution(row: string, values: Record<string, string>, sign: 1 | -1)
 }
 
 function childTriggers(table: string, updateColumns: string, values: (row: string) => Record<string, string>): string[] {
+  const oldValues = values('OLD');
+  const newValues = values('NEW');
+  const changed = ['OLD.project_id IS NOT NEW.project_id', 'OLD.session_id IS NOT NEW.session_id',
+    ...Object.keys(oldValues).map(column => `(${oldValues[column]}) IS NOT (${newValues[column]})`)].join(' OR ');
   return ['INSERT', 'UPDATE', 'DELETE'].map((operation) => `CREATE TRIGGER IF NOT EXISTS ${table}_session_read_${operation.toLowerCase()}
-    AFTER ${operation === 'UPDATE' ? `UPDATE OF ${updateColumns}` : operation} ON ${table} BEGIN${operation === 'INSERT' ? '' : `
-    ${contribution('OLD', values('OLD'), -1)}`}
-    ${operation === 'DELETE' ? '' : contribution('NEW', values('NEW'), 1)} END`);
+    AFTER ${operation === 'UPDATE' ? `UPDATE OF ${updateColumns}` : operation} ON ${table}${operation === 'UPDATE' ? `
+    WHEN ${changed}` : ''} BEGIN${operation === 'INSERT' ? '' : `
+    ${contribution('OLD', oldValues, -1)}`}
+    ${operation === 'DELETE' ? '' : contribution('NEW', newValues, 1)} END`);
 }
 
 function sessionPresent(row: string): string {

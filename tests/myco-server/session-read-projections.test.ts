@@ -71,6 +71,20 @@ async function verify(db: RelationalStore) {
   for (const sql of initial) await db.prepare(sql).run();
   await db.batch(READ_BUDGET_SESSION_STATEMENTS.map((sql) => db.prepare(sql)));
   await assertProjection(db);
+  await db.batch([
+    db.prepare('UPDATE session_read_facts SET eligible_prompts=99'),
+    db.prepare("INSERT INTO session_read_facts(project_id,session_id,has_session) VALUES('proj_stale','stale',1)"),
+    db.prepare('UPDATE project_session_counts SET session_count=99'),
+  ]);
+  const backfill = READ_BUDGET_SESSION_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO'));
+  expect(backfill).toHaveLength(5);
+  await db.batch([
+    db.prepare('DELETE FROM session_read_facts'), db.prepare('DELETE FROM project_session_counts'),
+    ...backfill.map(sql => db.prepare(sql)),
+  ]);
+  await assertProjection(db);
+  expect(await db.prepare("SELECT session_id FROM session_read_facts WHERE project_id='proj_stale'").first()).toBeNull();
+  expect(await db.prepare("SELECT project_id FROM project_session_counts WHERE project_id='proj_stale'").first()).toBeNull();
   expect(await newestUnprocessedSession(db, { projectId: 'proj_1' })).toEqual({ id: 'old', endedAt: 10, liveCapture: 1 });
   expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'old')).toBe(true);
   expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'absent')).toBe(false);
