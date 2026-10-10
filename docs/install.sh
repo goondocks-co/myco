@@ -5,12 +5,12 @@
 #
 # Myco 2.0 installs the binary without starting a service. On a
 # first-time machine no agent is changed, and the next step it prints is
-# `myco login <invite link>` to join your team's Deployment, or the
+# `myco login <your-myco-address>` to join your team's Deployment, or the
 # self-hosting guide to run your own. On a machine already joined to a
 # Deployment it is the upgrade: it then runs `myco member provision --refresh`
 # so the agents' hooks and MCP entries run the build it installed.
-# Stable and beta retain the 1.4 installer when no eligible 2.x release exists,
-# including its service install, login handoff and --serve/--hostname options.
+# Fresh defaults select 2.x stable, then beta, then alpha. Existing legacy
+# machines keep 1.x updates until --replace-1.4; legacy binaries are never run.
 #
 # On a machine with Myco 1.4 it installs nothing unless asked to: 2.0 takes
 # 1.4's place, and 1.4 stops capturing until the machine is moved over with
@@ -27,8 +27,8 @@
 #
 # Env overrides:
 #   MYCO_CHANNEL        "stable", "beta" or "alpha"; keeps the recorded channel
-#                       unless explicit (stable on a fresh install). Stable installs
-#                       releases only (1.4 until 2.x is released); beta admits
+#                       unless explicit. Fresh defaults choose stable 2.x, beta,
+#                       then alpha. Explicit stable installs releases only; beta admits
 #                       beta and stable; alpha admits alpha, beta and stable.
 #   MYCO_HOME           Myco's home (default: ~/.myco)
 #   MYCO_BIN_DIR        Where the binary goes (default: $MYCO_HOME/bin)
@@ -69,7 +69,7 @@ usage() {
 Usage: curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh [-s -- <options>]
 
 Installs the selected Myco binary to $MYCO_HOME/bin (default ~/.myco/bin).
-Stable and beta retain Myco 1.4 until an eligible 2.x release exists.
+Fresh defaults choose 2.x stable, then beta, then alpha; existing 1.4 stays on 1.x.
   --dry-run       say what it would install and change nothing
   --replace-1.4   install over Myco 1.4 (then run `myco cutover`)
   --channel NAME  select alpha, beta or stable
@@ -118,11 +118,12 @@ gh_curl_status() {
   HTTP_STATUS="$(gh_request --proto '=https' --tlsv1.2 -sSL -w '%{http_code}' -o "$_out" "$@" 2>/dev/null)" || true
 }
 
-# Run "$@" with a 30-second watchdog (macOS has no timeout(1)); its stdout goes to $PROBE_OUT.
+# Run "$@" in $1 with a 30-second watchdog; its stdout goes to $PROBE_OUT.
 PROBE_OUT=""
 probe() {
+  _probe_dir="$1"; shift
   _probe_file="$(mktemp)"
-  "$@" >"$_probe_file" 2>/dev/null &
+  (cd "$_probe_dir" && "$@") >"$_probe_file" 2>/dev/null &
   _probe=$!
   ( sleep 30; kill -9 "$_probe" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
 
@@ -196,11 +197,11 @@ agents_binary_words() {
   fi
 }
 
-# A first-time machine joins a Deployment through an administrator's invite link.
+# A first-time machine signs in to its Deployment address.
 login_hand_off() {
-  echo "  Next, join your team's Deployment with the invite link its administrator sent you:"
+  echo "  Next, join your team's Deployment at its Myco address:"
   echo ""
-  echo "    myco login <invite link>"
+  echo "    myco login <your-myco-address>"
   echo ""
   echo "  Or run your own server: ${SELF_HOSTING_GUIDE}"
 }
@@ -220,9 +221,11 @@ cleanup() {
 
 # Decode a page once; ignored strings never accumulate in the tokenizer.
 decode_json() {
+  _json_mode="$2"; _json_key="channel"
+  case "$2" in version|bin|binary_sha256) _json_mode=marker; _json_key="$2" ;; esac
   if command -v jq >/dev/null 2>&1; then
-    if [ "$2" = marker ]; then
-      jq -esr 'if length == 1 and (.[0] | type) == "object" then .[0].channel | select(type == "string") else error("Invalid install marker") end' "$1"
+    if [ "$_json_mode" = marker ]; then
+      jq -esr --arg key "$_json_key" 'if length == 1 and (.[0] | type) == "object" then (.[0][$key] // "") | select(type == "string") else error("Invalid install marker") end' "$1"
     else
       jq -sr --arg asset "$ASSET" '
         def truth: . != null and . != false and . != 0 and . != "";
@@ -234,7 +237,7 @@ decode_json() {
     fi
     return
   fi
-  LC_ALL=C awk -v asset="${ASSET:-}" -v mode="$2" '
+  LC_ALL=C awk -v asset="${ASSET:-}" -v mode="$_json_mode" -v marker_key="$_json_key" '
     function fail() { bad=1; exit 1 }
     function take() {
       if (state[depth]!="value" && state[depth]!="empty-array") fail()
@@ -251,7 +254,7 @@ decode_json() {
     }
     function append(c) {
       if (capture) {
-        if (length(token)<128) token=token c
+        if (length(token)<token_limit) token=token c
         else overflow=1
       }
     }
@@ -263,7 +266,7 @@ decode_json() {
     function start_string() {
       is_key=kind[depth]=="{" && (state[depth]=="key" || state[depth]=="empty-object")
       if (!is_key) take()
-      capture=is_key || (mode=="marker" && depth==1 && key[depth]=="channel") ||
+      capture=is_key || (mode=="marker" && depth==1 && key[depth]==marker_key) ||
         (depth==2 && key[depth]~/^(tag_name|prerelease|draft)$/) || (asset_depth && depth==4 && key[depth]=="name")
       token=""; overflow=0; quoted=1
     }
@@ -271,7 +274,7 @@ decode_json() {
       quoted=0
       if (is_key) { key[depth]=overflow ? "" : token; state[depth]="colon" }
       else {
-        if (mode=="marker" && depth==1 && key[depth]=="channel") channel=overflow ? "" : token
+        if (mode=="marker" && depth==1 && key[depth]==marker_key) channel=overflow ? "" : token
         if (mode=="releases" && depth==2 && key[depth]=="tag_name") tag=overflow ? "" : token
         if (asset_depth && depth==4 && key[depth]=="name" && !overflow) {
           if (token==asset) binary=1
@@ -291,7 +294,7 @@ decode_json() {
         gsub(/\\(u[[:xdigit:]][[:xdigit:]][[:xdigit:]][[:xdigit:]]|[\\\/bfnrt])/ ,"",check)
         if (check~/\\/ || piece~/[[:cntrl:]]/) fail()
         if (capture && !overflow) {
-          if (length(token)+n>128) overflow=1
+          if (length(token)+n>token_limit) overflow=1
           else for (i=1;i<=n;i++) {
             c=substr(piece,i,1)
             if (c=="\\") {
@@ -338,7 +341,7 @@ decode_json() {
       literal()
       if (has_quote) start_string()
     }
-    BEGIN { RS="\""; depth=0; seen=0; bad=0; asset_depth=0 }
+    BEGIN { token_limit=marker_key=="bin" ? 4096 : 128; RS="\""; depth=0; seen=0; bad=0; asset_depth=0 }
     { if (have_piece) record(previous,1); previous=$0; have_piece=1 }
     END {
       if (bad) exit 1
@@ -372,6 +375,14 @@ release_rows() { decode_json "$PAGE_FILE" releases; }
 # Generated by packages/myco/scripts/gen-release-selector.mjs from release-policy.mjs.
 is_development_version() {
   awk -v version="$1" 'BEGIN { exit !(version ~ /^0[.]0[.]0(-dev)?([+][0-9A-Za-z.-]+)?$/) }'
+}
+valid_version() {
+  is_development_version "$1" || awk -v version="$1" 'BEGIN {
+    if (version !~ /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(alpha|beta|rc)[.](0|[1-9][0-9]*))?$/) exit 1
+    gsub(/[.-]/," ",version); n=split(version,parts," ")
+    for (i=1;i<=n;i++) if (parts[i]+0>9007199254740991) exit 1
+    exit 0
+  }'
 }
 pick_tag() {
   awk -F '\t' -v channel="$1" -v current="$2" -v min="${3:-2}" -v max="${4:-0}" '
@@ -411,6 +422,7 @@ pick_tag() {
 main() {
   CHANNEL="${MYCO_CHANNEL:-}"
   CHANNEL_EXPLICIT=0
+  CHANNEL_AUTO=0
   if [ "${MYCO_CHANNEL+x}" = x ]; then CHANNEL_EXPLICIT=1; fi
   MYCO_HOME_DIR="${MYCO_HOME:-$HOME/.myco}"
   BIN_DIR="${MYCO_BIN_DIR:-$MYCO_HOME_DIR/bin}"
@@ -446,7 +458,7 @@ main() {
   if [ "$CHANNEL_EXPLICIT" = 0 ]; then
     if [ -e "$MYCO_HOME_DIR/install.json" ] || [ -L "$MYCO_HOME_DIR/install.json" ]; then
       CHANNEL="$(decode_json "$MYCO_HOME_DIR/install.json" marker)" || { error "Cannot read the installed release channel."; exit 1; }
-    else CHANNEL=stable
+    else CHANNEL=stable; CHANNEL_AUTO=1
     fi
   fi
   case "$CHANNEL" in
@@ -510,21 +522,54 @@ main() {
   LEGACY=""
   BLOCKS_INSTALL=0
   CURRENT_MAJOR=""
-  if [ -x "${BIN_DIR}/myco" ] && probe "${BIN_DIR}/myco" --version; then
-    CURRENT_VERSION="$(printf '%s\n' "$PROBE_OUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^ ]*' | head -n 1 || true)"
+  # Classification order: hash-bound recorded version, then an identical versioned slot.
+  # Unversioned binaries are unknown legacy; dependency strings are not identity.
+  if [ -e "${BIN_DIR}/myco" ] || [ -L "${BIN_DIR}/myco" ]; then
+    if [ -f "$MYCO_HOME_DIR/install.json" ] && [ "$(decode_json "$MYCO_HOME_DIR/install.json" bin)" = "${BIN_DIR}/myco" ]; then
+      _recorded_version="$(decode_json "$MYCO_HOME_DIR/install.json" version)" || { error "Cannot read the installed version."; exit 1; }
+      _recorded_sha="$(decode_json "$MYCO_HOME_DIR/install.json" binary_sha256)" || { error "Cannot read the installed binary hash."; exit 1; }
+      if valid_version "$_recorded_version"; then
+        _live_sha="$($SHA_CMD "${BIN_DIR}/myco" | awk '{print $1}')"
+        if [ -n "$_recorded_sha" ] && [ "$_recorded_sha" = "$_live_sha" ]; then CURRENT_VERSION="$_recorded_version"; fi
+      fi
+    fi
+    if [ -z "$CURRENT_VERSION" ]; then
+      for slot in "${BIN_DIR}"/versions/*/myco; do
+        [ -f "$slot" ] || continue
+        _version="${slot%/myco}"; _version="${_version##*/}"
+        if valid_version "$_version" && cmp -s "${BIN_DIR}/myco" "$slot"; then
+          CURRENT_VERSION="$_version"
+          break
+        fi
+      done
+    fi
+    if [ -n "$CURRENT_VERSION" ] && ! valid_version "$CURRENT_VERSION"; then
+      error "Invalid installed version; nothing was installed."
+      exit 1
+    fi
+    if [ "$CHANNEL_EXPLICIT" = 0 ] && [ -n "$CURRENT_VERSION" ] && [ -f "$MYCO_HOME_DIR/install.json" ]; then
+      _marker_version="$(decode_json "$MYCO_HOME_DIR/install.json" version)" || { error "Cannot read the installed version."; exit 1; }
+      if [ "${_marker_version%%.*}" = 1 ] && [ "${CURRENT_VERSION%%.*}" != 1 ]; then
+        case "$CURRENT_VERSION" in
+          *-alpha.*) CHANNEL=alpha ;;
+          *-beta.*) CHANNEL=beta ;;
+          *) CHANNEL=stable ;;
+        esac
+      fi
+    fi
     CURRENT_MAJOR="${CURRENT_VERSION%%.*}"
     if is_development_version "$CURRENT_VERSION"; then CURRENT_MAJOR="$MIN_MAJOR"; fi
-    if [ "$CURRENT_MAJOR" = "1" ]; then
-      LEGACY="its binary ${BIN_DIR}/myco, ${CURRENT_VERSION}"
-      BLOCKS_INSTALL=1
-    fi
+    case "$CURRENT_MAJOR" in
+      1) LEGACY="its binary ${BIN_DIR}/myco, ${CURRENT_VERSION}"; BLOCKS_INSTALL=1 ;;
+      '') LEGACY="unknown legacy binary ${BIN_DIR}/myco"; BLOCKS_INSTALL=1 ;;
+    esac
   fi
   MEMBER_HOME=0
   if [ -f "${MYCO_HOME_DIR}/member/cutover.json" ]; then MEMBER_HOME=1; fi
   for membership in "${MYCO_HOME_DIR}"/member/deployments/*.json; do
     if [ -f "$membership" ]; then MEMBER_HOME=1; break; fi
   done
-  for vault in "${MYCO_HOME_DIR}"/groves/*/myco.db; do
+  for vault in "${MYCO_HOME_DIR}"/groves/*/myco.db "${MYCO_HOME_DIR}/myco.db" "${MYCO_HOME_DIR}/vault/myco.db"; do
     if [ -s "$vault" ] && [ "$MEMBER_HOME" = "0" ]; then
       if [ -z "$LEGACY" ]; then LEGACY="its vaults in ${MYCO_HOME_DIR}/groves"; fi
       case "$CURRENT_MAJOR" in
@@ -540,7 +585,15 @@ main() {
   if [ -n "$INSTALL_FROM" ]; then
     VERSION="${MYCO_INSTALL_VERSION:-local}"
     SOURCE="${INSTALL_FROM}"
-    case "$VERSION" in 1.*) LEGACY_INSTALL=1; BLOCKS_INSTALL=0 ;; esac
+    case "$VERSION" in
+      1.*)
+        if [ "$BLOCKS_INSTALL" = 0 ] || [ "$REPLACE_LEGACY" = 1 ]; then
+          error "Myco 1.x is only eligible for an existing legacy installation; nothing was installed."
+          exit 1
+        fi
+        LEGACY_INSTALL=1
+        ;;
+    esac
   else
     info "Resolving the ${CHANNEL} release..."
     RELEASES_FILE="$(mktemp)"
@@ -566,20 +619,25 @@ main() {
       PAGE=$((PAGE + 1))
     done
 
-    TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"
+    if [ "$BLOCKS_INSTALL" = 1 ] && [ "$REPLACE_LEGACY" = 0 ]; then
+      TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}" 1 1)"
+      LEGACY_INSTALL=1
+    else
+      if [ "$CHANNEL_EXPLICIT" = 0 ] && { [ "$CHANNEL_AUTO" = 1 ] || [ "$BLOCKS_INSTALL" = 1 ]; }; then
+        CHANNEL=stable
+        TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"
+        if [ -z "$TAG" ]; then CHANNEL=beta; TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
+        if [ -z "$TAG" ]; then CHANNEL=alpha; TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
+      else
+        TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"
+      fi
+    fi
     if [ "$TAG" = "stay-put" ]; then
       warn "The newest eligible ${CHANNEL} release is older than installed ${CURRENT_VERSION}; staying put."
       exit 0
     fi
-    if [ -z "$TAG" ] && [ "$CHANNEL" != "alpha" ] && [ "${CURRENT_MAJOR:-0}" -lt 2 ]; then
-      TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}" 1 1)"
-      if [ "$TAG" = "stay-put" ]; then
-        warn "The newest eligible stable release is older than installed ${CURRENT_VERSION}; staying put."
-        exit 0
-      fi
-      if [ -n "$TAG" ]; then LEGACY_INSTALL=1; BLOCKS_INSTALL=0; fi
-    fi
     if [ -z "$TAG" ]; then
+      if [ "$LEGACY_INSTALL" = 1 ]; then error "No eligible Myco 1.x release found; nothing was installed."; exit 1; fi
       error "No Myco ${MIN_MAJOR}.x release found: Myco 2.0 has not been released yet, so there is nothing to install."
       if [ -n "$LEGACY" ]; then
         printf "  Myco 1.4 on this machine (%s) keeps working as it is.\n" "$LEGACY" >&2
@@ -604,14 +662,14 @@ main() {
   if [ "$DRY_RUN" = "1" ]; then
     echo ""
     info "Dry run: nothing was downloaded or changed."
-    if [ "$BLOCKS_INSTALL" = "1" ] && [ "$REPLACE_LEGACY" = "0" ]; then
+    if [ "$BLOCKS_INSTALL" = "1" ] && [ "$REPLACE_LEGACY" = "0" ] && [ "$LEGACY_INSTALL" = 0 ]; then
       echo "  Myco 1.4 is on this machine (${LEGACY}), so it would install nothing."
       echo "  With --replace-1.4 it would install ${ASSET} (${VERSION}) in 1.4's place, and 1.4 would stop capturing until you run myco cutover."
       exit 0
     fi
     echo "  Would install ${ASSET} (${VERSION}) from ${SOURCE}"
     echo "  to ${BIN_DIR}/myco (and ${VERSION_DIR}/myco), after checking it against SHA256SUMS."
-    if [ "$BLOCKS_INSTALL" = "1" ]; then
+    if [ "$BLOCKS_INSTALL" = "1" ] && [ "$LEGACY_INSTALL" = 0 ]; then
       echo "  Myco 1.4 is on this machine (${LEGACY}); --replace-1.4 was given, so 2.0 would take its place and 1.4 would stop capturing until you run myco cutover. Nothing of 1.4 would be moved or deleted."
     elif [ -n "$LEGACY" ]; then
       echo "  Myco 1.4's vaults are on this machine (${LEGACY}); nothing of 1.4 would be moved or deleted."
@@ -619,7 +677,7 @@ main() {
     exit 0
   fi
 
-  if [ "$BLOCKS_INSTALL" = "1" ] && [ "$REPLACE_LEGACY" = "0" ]; then
+  if [ "$BLOCKS_INSTALL" = "1" ] && [ "$REPLACE_LEGACY" = "0" ] && [ "$LEGACY_INSTALL" = 0 ]; then
     error "Myco 1.4 is on this machine (${LEGACY}). Nothing was installed."
     {
       echo "  Installing Myco 2.0 here takes 1.4's place, and 1.4 stops capturing from that"
@@ -627,7 +685,7 @@ main() {
       echo "  your Deployment's administrator, then run these one after another:"
       echo ""
       echo "    ${ONE_LINER} -s -- --replace-1.4"
-      echo "    myco login <invite link>"
+      echo "    myco login <your-myco-address>"
       echo "    myco cutover --dry-run"
       echo "    myco cutover"
       echo ""
@@ -690,8 +748,18 @@ main() {
     fi
   fi
 
-  if ! probe "${TMP_DIR}/myco" --version; then
+  mkdir -p "${TMP_DIR}/probe-home"
+  if [ "$LEGACY_INSTALL" = 0 ] && ! probe "${TMP_DIR}/probe-home" env HOME="${TMP_DIR}/probe-home" USERPROFILE="${TMP_DIR}/probe-home" \
+    MYCO_LAUNCH_AGENTS_DIR="${TMP_DIR}/probe-home/service-units" MYCO_TEAM_HOME="${TMP_DIR}/probe-home/.myco-team" \
+    CODEX_HOME="${TMP_DIR}/probe-home/.codex" CLAUDE_CONFIG_DIR="${TMP_DIR}/probe-home/.claude" \
+    XDG_CONFIG_HOME="${TMP_DIR}/probe-home/.config" MYCO_HOME="${TMP_DIR}/probe-home/.myco" \
+    TMPDIR="${TMP_DIR}/probe-home" "${TMP_DIR}/myco" --version; then
     error "The downloaded binary does not run on this machine; nothing was installed."
+    exit 1
+  fi
+
+  if [ "$LEGACY_INSTALL" = 0 ] && { ! valid_version "$PROBE_OUT" || [ "$PROBE_OUT" != "$VERSION" ]; }; then
+    error "The downloaded binary did not report the selected version; nothing was installed."
     exit 1
   fi
 
@@ -705,7 +773,7 @@ main() {
   # A 1.4 daemon still running here adopts any newer versions/<v> slot that
   # carries no adopt-failed marker, and would put 1.4 back at bin/myco before
   # the cutover runs. The marker keeps it from adopting this one.
-  if [ "$BLOCKS_INSTALL" = "1" ]; then
+  if [ "$BLOCKS_INSTALL" = "1" ] && [ "$LEGACY_INSTALL" = 0 ]; then
     date -u +%Y-%m-%dT%H:%M:%SZ > "${VERSION_DIR}/.adopt-failed"
   fi
 
@@ -720,8 +788,8 @@ main() {
   case "$VERSION" in *-*) PRERELEASE=true ;; esac
   if [ "$PICKED_PRERELEASE" = "1" ]; then PRERELEASE=true; fi
   MARKER_FILE="$(mktemp "${MYCO_HOME_DIR}/.install.json-XXXXXX")"
-  printf '{\n  "channel": "%s",\n  "source": "curl",\n  "bin": %s,\n  "prerelease": %s\n}\n' \
-    "$CHANNEL" "$(json_string "${BIN_DIR}/myco")" "$PRERELEASE" > "$MARKER_FILE"
+  printf '{\n  "channel": "%s",\n  "source": "curl",\n  "version": %s,\n  "binary_sha256": "%s",\n  "bin": %s,\n  "prerelease": %s\n}\n' \
+    "$CHANNEL" "$(json_string "$VERSION")" "$($SHA_CMD "${BIN_DIR}/myco" | awk '{print $1}')" "$(json_string "${BIN_DIR}/myco")" "$PRERELEASE" > "$MARKER_FILE"
   mv -f "$MARKER_FILE" "$MYCO_HOME_DIR/install.json"
   MARKER_FILE=""
 
@@ -758,27 +826,14 @@ main() {
   fi
   echo ""
   if [ "$LEGACY_INSTALL" = "1" ]; then
-    if "${BIN_DIR}/myco" service install >/dev/null 2>&1; then
-      success "The Myco 1.4 managed service is installed."
-      echo "  Next, sign this machine in with the invite link an admin gave you:"
-      echo ""
-      echo "    myco login <link>"
-      echo ""
-      echo "  Or run your own Deployment with: myco server create"
-    else
-      warn "Could not start the Myco service automatically. Bring it up with:"
-      echo "    myco service install"
-      echo "    myco open"
-    fi
+    echo "  Myco 1.4 was updated; its existing service and capture configuration were preserved."
+    echo "  To install its managed service explicitly: myco service install"
+    echo "  Next, sign this machine in with the invite link an admin gave you:"
+    echo "    myco login <link>"
+    echo "  Or run your own Deployment with: myco server create"
     if [ "$SERVE" = 1 ]; then
-      info "Setting up Team Host serving (--serve)..."
-      if [ -n "$SERVE_HOSTNAME" ]; then
-        if ! "${BIN_DIR}/myco" host enable --hostname "$SERVE_HOSTNAME" --designate-default --emit-join; then
-          warn "Team Host enable did not complete. Re-run manually: myco host enable --hostname ${SERVE_HOSTNAME} --designate-default --emit-join"
-        fi
-      elif ! "${BIN_DIR}/myco" host enable --designate-default --emit-join; then
-        warn "Team Host enable did not complete. Re-run manually: myco host enable --designate-default --emit-join"
-      fi
+      echo "  To enable Team Host explicitly:"
+      echo "    myco host enable ${SERVE_HOSTNAME:+--hostname $SERVE_HOSTNAME }--designate-default --emit-join"
     fi
   elif [ -n "$LEGACY" ]; then
     warn "Myco 1.4 is on this machine (${LEGACY})."
@@ -787,7 +842,7 @@ main() {
     fi
     echo "  Nothing was moved over. To move it to 2.0:"
     echo ""
-    echo "    myco login <invite link>     # the link your Deployment's administrator sent you"
+    echo "    myco login <your-myco-address>     # your Deployment's address"
     echo "    myco cutover --dry-run       # shows every change it would make; changes nothing"
     echo "    myco cutover"
     echo ""

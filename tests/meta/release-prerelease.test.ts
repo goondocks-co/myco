@@ -71,8 +71,9 @@ describe('a Myco 2.0 prerelease', () => {
   it('carries release notes that install Myco 2.0, not 1.4', () => {
     const notes = step('create-release', 'Generate release notes');
     expect(notes).toContain("curl --proto '\"'\"'=https'\"'\"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.npm_tag }} sh");
-    expect(notes).toContain('myco login <invite link>');
-    expect(notes).toContain('Stable selects releases only');
+    expect(notes).toContain('myco login <your-myco-address>');
+    expect(notes).toContain('Fresh default installs choose 2.x stable, then beta, then alpha, never 1.4');
+    expect(notes).toContain('Explicit stable selects releases only');
     expect(notes).toContain('Cut the stable/next tag first');
     expect(notes).not.toContain('stable channel only while');
     expect(notes).toContain('docs/upgrade.md#upgrading-from-myco-14');

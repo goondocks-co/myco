@@ -683,7 +683,7 @@ jobs:
             if [ "$IS_PRERELEASE" = "true" ]; then
               INSTALL_BLOCK='```bash
           curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.npm_tag }} sh
-          myco login <invite link>
+          myco login <your-myco-address>
           ```
 
           Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
@@ -693,7 +693,7 @@ jobs:
             else
               INSTALL_BLOCK='```bash
           curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
-          myco login <invite link>
+          myco login <your-myco-address>
           ```
 
           Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
@@ -716,7 +716,7 @@ jobs:
             cat > release-notes.md <<NOTES_EOF
           \`${PACKAGE_NAME}\` · ${RANGE_BLURB} · **Pre-release**
 
-          > Pre-release. May contain bugs or incomplete features. Install alpha with \`MYCO_CHANNEL=alpha\`, or beta with \`MYCO_CHANNEL=beta\`. Stable selects releases only and stays on 1.4 until 2.x GA. Alpha admits alpha, beta and stable; beta admits beta and stable. Updates stay within the recorded channel and never downgrade. Cut the stable/next tag first; delete old prerelease tags only after its release is published.
+          > Pre-release. May contain bugs or incomplete features. Install alpha with \`MYCO_CHANNEL=alpha\`, or beta with \`MYCO_CHANNEL=beta\`. Fresh default installs choose 2.x stable, then beta, then alpha, never 1.4. Explicit stable selects releases only. Existing 1.4 machines keep 1.x updates until --replace-1.4. Alpha admits alpha, beta and stable; beta admits beta and stable. Updates stay within the recorded channel and never downgrade. Cut the stable/next tag first; delete old prerelease tags only after its release is published.
 
           ## Install
 
