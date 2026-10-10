@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createBunHandler, type BunHandler } from '@myco-server-worker/entry/bun.js';
+import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
@@ -22,22 +23,26 @@ afterEach(async () => {
 });
 
 const bindings = { GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret, SESSION_SECRET };
-async function native(fetchImpl?: ReturnType<typeof fakeGitHub>['fetchImpl']) {
+function nativeDatabase() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-oauth-'));
   roots.push(root);
   const databasePath = path.join(root, 'myco.sqlite');
   const sqlite = seededSqlite();
   try { fs.writeFileSync(databasePath, sqlite.serialize()); } finally { sqlite.close(); }
-  const handler = await createBunHandler({ databasePath, blobDir: path.join(root, 'blobs'), header: 'x-forwarded-for', wakeLoop: false, ...bindings, fetchImpl });
+  return { databasePath, blobDir: path.join(root, 'blobs') };
+}
+
+async function native(fetchImpl?: ReturnType<typeof fakeGitHub>['fetchImpl']) {
+  const handler = await createBunHandler({ ...nativeDatabase(), header: 'x-forwarded-for', wakeLoop: false, ...bindings, fetchImpl });
   handlers.push(handler);
   return handler;
 }
 
-async function signIn(handle: (request: Request) => Promise<Response>, identity: keyof typeof SETUP_IDENTITIES) {
-  const login = await handle(new Request('https://s/auth/login', { headers: { 'x-forwarded-for': '192.0.2.1' } }));
+async function signIn(handle: (request: Request) => Promise<Response>, identity: keyof typeof SETUP_IDENTITIES, origin = 'https://s') {
+  const login = await handle(new Request(`${origin}/auth/login`, { headers: { 'x-forwarded-for': '192.0.2.1' } }));
   expect(login.status).toBe(302);
   const state = new URL(login.headers.get('location')!).searchParams.get('state')!;
-  const response = await handle(new Request(`https://s/auth/callback?code=${identity}&state=${encodeURIComponent(state)}`, {
+  const response = await handle(new Request(`${origin}/auth/callback?code=${identity}&state=${encodeURIComponent(state)}`, {
     headers: { 'x-forwarded-for': '192.0.2.1', cookie: `${OAUTH_STATE_COOKIE}=${state}` },
   }));
   expect(response.status).toBe(302);
@@ -46,6 +51,29 @@ async function signIn(handle: (request: Request) => Promise<Response>, identity:
 }
 
 describe('native server OAuth fetch seam', () => {
+  it('startDeployment uses runtime fetch for production OAuth', async () => {
+    const github = fakeGitHub();
+    const loopbackFetch = globalThis.fetch;
+    const runtimeFetch = spyOn(globalThis, 'fetch').mockImplementation(github.registrationFetch);
+    const signals = ['SIGTERM', 'SIGINT'] as const;
+    const listeners = new Map(signals.map((signal) => [signal, new Set(process.listeners(signal))]));
+    let deployment: Awaited<ReturnType<typeof startDeployment>> | undefined;
+    try {
+      deployment = await startDeployment({ ...nativeDatabase(), port: 0, sourceFrom: 'proxy', header: 'x-forwarded-for', ...bindings });
+      const cookie = await signIn((request) => loopbackFetch(request, { redirect: 'manual' }), 'owner', `http://127.0.0.1:${deployment.port}`);
+      expect(await verifySession(SESSION_SECRET, cookie, Date.now(), await deploymentIdentity(deployment.env.db)))
+        .toMatchObject({ sub: String(SETUP_IDENTITIES.owner.id), login: SETUP_IDENTITIES.owner.login });
+      expect(runtimeFetch).toHaveBeenCalledTimes(2);
+      expect(github.calls.map((call) => call.url)).toEqual(['https://github.com/login/oauth/access_token', 'https://api.github.com/user']);
+    } finally {
+      await deployment?.stop();
+      for (const signal of signals) for (const listener of process.listeners(signal)) {
+        if (!listeners.get(signal)!.has(listener)) process.removeListener(signal, listener);
+      }
+      runtimeFetch.mockRestore();
+    }
+  });
+
   it('uses runtime fetch when the seam is omitted', async () => {
     const github = fakeGitHub();
     const runtimeFetch = spyOn(globalThis, 'fetch').mockImplementation(github.registrationFetch);

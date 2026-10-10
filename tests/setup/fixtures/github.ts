@@ -7,7 +7,7 @@ export const SETUP_APP: RegisteredApp = {
   name: 'Myco (setup.invalid)', ownerLogin: 'setup-owner',
 };
 export const SETUP_IDENTITIES = {
-  owner: { id: 583231, login: 'setup-owner' },
+  owner: { id: 900000000001, login: 'setup-owner' },
   teammate: { id: 770001, login: 'setup-teammate' },
 } as const;
 

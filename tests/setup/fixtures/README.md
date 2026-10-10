@@ -21,6 +21,8 @@ not implement setup or claim the later journeys pass.
   it seeds the design's future recovery state under `LocalVolume` ownership.
   Current registration does not persist or consume that artifact. The future
   sign-in recovery operation owns producing, consuming and removing it.
+  E5 must replace this hand-written fixture with its production writer so journey
+  tests use the persisted shape that sign-in recovery actually reads.
 - `cutover.ts` seeds membership for one or two fake destinations, records the
   first project's accepted history through `LegacyLedger`, and leaves the next
   project unrecorded. It also supplies a third legacy project with an explicit

@@ -22,7 +22,7 @@ const environment = (root: string) => sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT
 const sqliteExecutable = resolveTestTool('sqlite3') ?? (fs.existsSync('/usr/bin/sqlite3') ? '/usr/bin/sqlite3' : null);
 
 describe('service-manager process containment', () => {
-  for (const platform of ['darwin', 'linux']) for (const operation of ['install', 'start', 'stop', 'uninstall', 'status', ...(platform === 'darwin' ? ['reload'] : [])]) for (const stub of [true, false]) {
+  for (const platform of ['darwin', 'linux', 'win32']) for (const operation of ['install', 'start', 'stop', 'uninstall', 'status', ...(platform === 'darwin' ? ['reload'] : [])]) for (const stub of [true, false]) {
     it(`native ${platform} ${operation} ${stub ? 'uses its stub' : 'fails before real service execution'}`, () => {
       const root = fresh();
       const env: NodeJS.ProcessEnv = {
@@ -121,7 +121,7 @@ process.stdout.write(fs.readFileSync(path.join(first, 'link'), 'utf8'));`;
     expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
     expect(child.stdout).toBe('owned');
   });
-  for (const command of ['launchctl', '/bin/launchctl', 'systemctl', '/usr/bin/systemctl']) {
+  for (const command of ['launchctl', '/bin/launchctl', 'systemctl', '/usr/bin/systemctl', 'schtasks', 'schtasks.exe']) {
     it(`fails a test phase that swallows ${command}`, () => {
       const root = fresh();
       const env: NodeJS.ProcessEnv = { ...environment(root), MYCO_SERVICE_EXEC_FIXTURE: command };
@@ -132,10 +132,10 @@ process.stdout.write(fs.readFileSync(path.join(first, 'link'), 'utf8'));`;
     });
   }
 
-  it.skipIf(process.platform === 'win32')('a shell descendant reaches a failing PATH shim even with an override PATH', () => {
+  for (const manager of ['launchctl', 'schtasks']) it.skipIf(process.platform === 'win32')(`a shell descendant reaches a failing ${manager} PATH shim even with an override PATH`, () => {
     const root = fresh();
     const script = path.join(root, 'attempt.sh');
-    fs.writeFileSync(script, '#!/bin/sh\nmanager=launchctl\n"$manager" version >/dev/null 2>&1 || true\n');
+    fs.writeFileSync(script, `#!/bin/sh\nmanager=${manager}\n"$manager" version >/dev/null 2>&1 || true\n`);
     const env: NodeJS.ProcessEnv = sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root, PATH: '/usr/bin:/bin' });
     const child = spawnSync('/bin/sh', [script], { env, encoding: 'utf8' });
     expect(child.status).toBe(0);
