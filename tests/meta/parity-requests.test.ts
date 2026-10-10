@@ -1,13 +1,14 @@
-import { expect, test } from 'bun:test';
-import { PARITY_REQUEST_HEADER, PARITY_WORKER_HEADER, withParityRequests, type RequestFailure } from '../parity/requests.ts';
+import { expect, spyOn, test } from 'bun:test';
+import { connectRequest, PARITY_REQUEST_HEADER, PARITY_WORKER_HEADER, withParityRequests, type RequestFailure } from '../parity/requests.ts';
 import type { ParityTarget } from '../parity/harness.ts';
-import { observedWorker } from '../parity/observed-worker.ts';
+import { observedWorker, observeHandledException } from '../parity/observed-worker.ts';
 
 test('records a 5xx body and Worker identity without consuming or retrying the response', async () => {
   const failures: RequestFailure[] = [];
   let calls = 0;
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
     calls++;
+    expect(request.headers.get('connection')).toBe('close');
     return new Response('D1 exploded', { status: 503, headers: { [PARITY_WORKER_HEADER]: request.headers.get(PARITY_REQUEST_HEADER)! } });
   } });
   const target = { url: server.url.origin, requestFailure: async (failure: RequestFailure) => { failures.push(failure); } } as ParityTarget;
@@ -24,6 +25,24 @@ test('records a 5xx body and Worker identity without consuming or retrying the r
     expect(failures[0]).toMatchObject({ method: 'PUT', path: '/api/settings', status: 503, body: 'D1 exploded' });
     expect(failures[0]!.worker).toBe(failures[0]!.id);
   } finally { server.stop(true); }
+});
+
+test('retries only a refused TCP connect once; resets, responses and assertions are never replayed', async () => {
+  let calls = 0;
+  const refused = Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' });
+  expect(await connectRequest(async () => { if (++calls === 1) throw refused; return 'connected'; })).toBe('connected');
+  expect(calls).toBe(2);
+  calls = 0;
+  await expect(connectRequest(async () => { calls++; throw refused; })).rejects.toBe(refused);
+  expect(calls).toBe(2);
+  for (const error of [Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }), new Error('assertion')]) {
+    calls = 0;
+    await expect(connectRequest(async () => { calls++; throw error; })).rejects.toBe(error);
+    expect(calls).toBe(1);
+  }
+  calls = 0;
+  expect((await connectRequest(async () => { calls++; return new Response('handler failed', { status: 500 }); })).status).toBe(500);
+  expect(calls).toBe(1);
 });
 
 test('a dropped connection and an assertion each propagate once and restore fetch', async () => {
@@ -47,4 +66,33 @@ test('only Worker responses carry the trace, including a handler 500', async () 
   expect(response.status).toBe(500);
   expect(response.headers.get(PARITY_WORKER_HEADER)).toBe('trace');
   expect(await response.text()).toBe('handler error');
+});
+
+test('handled Worker exceptions retain their stack and the matching request identity', async () => {
+  const logs = spyOn(console, 'error').mockImplementation(() => {});
+  const error = new Error('D1 refusal probe');
+  try {
+    const worker = observedWorker({ fetch: async () => {
+      await Promise.resolve();
+      observeHandledException(error);
+      return new Response('unavailable', { status: 503 });
+    } });
+    await worker.fetch(new Request('http://local/api/settings', { headers: { [PARITY_REQUEST_HEADER]: 'handled-trace' } }), {} as Parameters<typeof worker.fetch>[1]);
+    expect(JSON.parse(logs.mock.calls[0]![0] as string)).toMatchObject({
+      kind: 'parity_handled_exception', id: 'handled-trace', path: '/api/settings', error: error.stack,
+    });
+  } finally { logs.mockRestore(); }
+});
+
+test('diagnostic recording failure retains the dropped request as its cause', async () => {
+  const target = { url: 'http://127.0.0.1:1', requestFailure: async (_failure: RequestFailure): Promise<void> => { throw new Error('diagnostic disk full'); } } as ParityTarget;
+  try {
+    await withParityRequests([target], async () => { await fetch(target.url); });
+    throw new Error('request unexpectedly succeeded');
+  } catch (error) {
+    expect(error).toBeInstanceOf(AggregateError);
+    const failure = error as AggregateError;
+    expect(failure.cause).toBe(failure.errors[0]);
+    expect(failure.errors[1].message).toBe('diagnostic disk full');
+  }
 });

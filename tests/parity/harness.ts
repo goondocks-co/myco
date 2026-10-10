@@ -36,6 +36,7 @@ export interface ParityTarget {
   /** Whether the runtime serving this target is up, its exit status, its last output, and any failure writing that output. */
   runtime?(): { alive: boolean; exitCode: number | null; tail: string; logFailure?: string };
   requestFailure?(failure: RequestFailure): Promise<void>;
+  transportHeaders?: Record<string, string>;
   healthy?(): Promise<void>;
   stop(): Promise<void>;
 }

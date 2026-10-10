@@ -44,6 +44,8 @@ export const titlingIdleRefresh: ParityScenario = {
       await target.sql(`UPDATE sessions SET last_received_at = ${stamp - 3 * HOUR} WHERE session_id = ${lit(idle)}`);
       await wakeUntilRun(idle);
       expect(await runsOf(idle)).toEqual([{ mode: 'claim', actor: 'backfill' }]);
+      expect(await target.sql(`SELECT json_extract(dispatch_spec, '$.serverUrl') AS url FROM agent_runs
+        WHERE task = 'title-summary' AND json_extract(run_context, '$.session_id') = ${lit(idle)}`)).toEqual([{ url: target.url }]);
       expect(await target.sql(`SELECT ended_at IS NULL AS open, titled_at IS NOT NULL AS attempted FROM sessions WHERE session_id = ${lit(idle)}`)).toEqual([{ open: 1, attempted: 1 }]);
 
       // A session still open that took twelve prompts after its last titling is refreshed once.
