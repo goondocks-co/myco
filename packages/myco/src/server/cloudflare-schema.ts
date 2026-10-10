@@ -11,6 +11,7 @@ interface SchemaOptions extends CloudflareOptions {
   /** A database created by this operation, verified empty before its first migration. */
   freshDatabase?: boolean;
   report?: (line: string) => void;
+  observe?: (event: { phase: 'observed' | 'applying' | 'applied'; before: number; after: number }) => void;
   /** Resource preparation and recovery-ledger writes run only after admission. */
   prepare?: (record: DeploymentRecord) => Promise<DeploymentRecord>;
 }
@@ -21,6 +22,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
   const database = { ...options, databaseName: record.databaseName };
   const before = await cloudflareSchemaVersion(database);
+  options.observe?.({ phase: 'observed', before, after: SERVER_SCHEMA_VERSION });
   if (before > SERVER_SCHEMA_VERSION) throw new Error(`schema update refused: D1 schema ${before} is newer than this binary's ${SERVER_SCHEMA_VERSION}`);
   if (options.freshDatabase && before !== 0) throw new Error('fresh D1 provisioning refused: the destination is not empty');
   if (before < SERVER_SCHEMA_VERSION) {
@@ -56,7 +58,14 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   }
   record = await options.prepare?.(record) ?? record;
   if (before < SERVER_SCHEMA_VERSION) {
+    options.observe?.({ phase: 'applying', before, after: SERVER_SCHEMA_VERSION });
     await runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote']);
+    options.observe?.({ phase: 'applied', before, after: SERVER_SCHEMA_VERSION });
+    if (!options.freshDatabase) {
+      record = { ...record, schemaUpdates: record.schemaUpdates!.map((entry, index, entries) =>
+        index === entries.length - 1 ? { ...entry, appliedAt: new Date().toISOString() } : entry) };
+      await options.persist(record);
+    }
   }
   return record;
 });

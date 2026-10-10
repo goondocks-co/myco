@@ -57,10 +57,65 @@ export interface CloudflareOptions {
 function resolved(options: CloudflareOptions): { runner: CommandRunner; env: NodeJS.ProcessEnv } {
   if (!options.accountId) throw new AccountNotSelected([]);
   return {
-    runner: options.runner ?? systemRunner(),
+    runner: credentialRunner(options.runner ?? systemRunner(), process.env, options.accountId),
     // Pinned per invocation rather than exported once: a command that outlives
     // this process must not inherit an account selection it never asked for.
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: options.accountId },
+  };
+}
+
+/** Wrangler's credential precedence, with no credential values in diagnostics. */
+export function cloudflareCredentialSource(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.CLOUDFLARE_API_KEY && env.CLOUDFLARE_EMAIL) return 'CLOUDFLARE_API_KEY in the environment';
+  if (env.CLOUDFLARE_API_TOKEN) return 'CLOUDFLARE_API_TOKEN in the environment';
+  return 'OAuth login';
+}
+
+/** Credential source and recovery guidance shared by CLI verbs and lifecycle preflight. */
+export function cloudflareCredentialLines(env: NodeJS.ProcessEnv = process.env): string[] {
+  const source = cloudflareCredentialSource(env);
+  return [
+    `Wrangler credential: ${source}.`,
+    ...(env.CLOUDFLARE_API_KEY && !env.CLOUDFLARE_EMAIL
+      ? ['CLOUDFLARE_API_KEY is set without CLOUDFLARE_EMAIL; Wrangler cannot use that key. Set both for API-key authentication, or unset the key to use OAuth.'] : []),
+    ...(source === 'OAuth login' ? [] : ['Warning: this environment credential overrides the OAuth login. It must reach the deployment account and every required resource. To use that account\'s login, unset CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_KEY in this shell; CI may keep a credential with the required permissions.']),
+  ];
+}
+
+const AUTHENTICATION_ERROR = /(?:\[code:\s*10000\]|"code"\s*:\s*10000\b)/;
+
+/** An authentication refusal names the resource and a likely permission, never provider output. */
+export class CloudflareAuthenticationError extends CommandFailed {
+  constructor(command: string, args: readonly string[], result: CommandResult, env: NodeJS.ProcessEnv, accountId?: string) {
+    super(command, args.slice(0, 3), { code: result.code, stdout: '', stderr: 'Authentication error [code: 10000]' });
+    this.name = 'CloudflareAuthenticationError';
+    const product = args[2];
+    const permissions: Record<string, string> = {
+      vectorize: 'Vectorize Read for reads, or Vectorize Edit for changes',
+      d1: 'D1 Read for reads, or D1 Edit for migrations and writes',
+      r2: 'Workers R2 Storage Read for reads, or Workers R2 Storage Write for changes',
+      'secrets-store': 'Secrets Store Read for reads, or Secrets Store Edit for changes',
+      whoami: 'User Memberships Read',
+    };
+    const resource = product !== undefined && product in permissions ? product : 'Worker';
+    const permission = permissions[product ?? ''] ?? 'Workers Scripts Read for reads, or Workers Scripts Edit for changes';
+    this.message = `Cloudflare Authentication error [code: 10000] on ${resource}${accountId === undefined ? '' : ` in account ${accountId}`}. `
+      + `Wrangler is using ${cloudflareCredentialSource(env)}. Likely missing permission: ${permission}, or access to this account/resource. `
+      + 'For the deployment account OAuth login, unset CLOUDFLARE_API_TOKEN and CLOUDFLARE_API_KEY in this shell and retry; '
+      + 'for CI, grant the environment credential access to the deployment account and the named resource.';
+  }
+}
+
+/** Every management command reports authentication refusals before callers interpret resource-specific failures. */
+function credentialRunner(runner: CommandRunner, env: NodeJS.ProcessEnv, accountId?: string): CommandRunner {
+  return {
+    async run(command, args, options) {
+      const result = await runner.run(command, args, options);
+      if (result.code !== 0 && AUTHENTICATION_ERROR.test(result.stdout + result.stderr)) {
+        throw new CloudflareAuthenticationError(command, args, result, env, accountId);
+      }
+      return result;
+    },
   };
 }
 
@@ -75,7 +130,8 @@ async function privateCommand(options: CloudflareOptions, args: string[], input:
       ...(input === undefined ? {} : { input }), timeoutMs,
     });
     code = result.code;
-  } catch {
+  } catch (error) {
+    if (error instanceof CloudflareAuthenticationError) throw error;
     throw new Error(`${operation} did not finish; provider output was withheld because it may contain private data`);
   }
   if (code !== 0) throw new Error(`${operation} failed (exit ${code}); provider output was withheld because it may contain private data`);
@@ -104,7 +160,7 @@ export interface AccountRef { name: string; id: string }
 
 /** Accounts this login can reach, for a caller that has to choose one. */
 export async function listAccounts(runner: CommandRunner = systemRunner(), mycoHome?: string): Promise<AccountRef[]> {
-  const result = await runner.run('npx', wrangler('whoami'), { cwd: ensureCommandDir(mycoHome) });
+  const result = await runOrThrow(credentialRunner(runner, process.env), 'npx', wrangler('whoami'), { cwd: ensureCommandDir(mycoHome) });
   const rows: AccountRef[] = [];
   for (const line of result.stdout.split('\n')) {
     // `whoami` prints a table; the id is the 32-hex cell.
@@ -407,6 +463,10 @@ export async function cloudflareStatus(options: CloudflareOptions & { workerName
   const result = await runner.run('npx',
     wrangler('deployments', 'list', '--name', options.workerName),
     { cwd: options.configDir, env });
+
+  if (result.code !== 0 && !/\b10007\b/.test(result.stdout + result.stderr)) {
+    throw new CommandFailed('npx', wrangler('deployments', 'list', '--name', options.workerName), result);
+  }
 
   // The list prints OLDEST first, and a version line takes one of two shapes
   // depending on the wrangler release; the current version is the last match.
@@ -738,6 +798,8 @@ export interface DeploymentRecord {
   bucketName: string;
   versionId: string | null;
   deployedAt: string;
+  /** Binary release recorded after a successful Worker deployment; absent on older records. */
+  release?: string;
   /** The Deployment's public URL — the custom domain or the workers.dev host — once an operator has named it. */
   url?: string;
   /** The D1 database UUID; the deploy config carries it where the committed file holds a placeholder. */
@@ -762,6 +824,7 @@ export const cloudflareSchemaUpdateSchema = z.object({
   schemaAfter: z.number().int().positive(),
   recordedAt: z.string().datetime(),
   workerVersionBefore: z.string().nullable(),
+  appliedAt: z.string().datetime().optional(),
 });
 export type CloudflareSchemaUpdate = z.infer<typeof cloudflareSchemaUpdateSchema>;
 
@@ -805,9 +868,6 @@ export class WranglerNotSignedIn extends WranglerNotReady {
   }
 }
 
-/** The environment variable wrangler authenticates with where no browser can open. */
-const API_TOKEN_ENV = 'CLOUDFLARE_API_TOKEN';
-
 /** True when `npx` resolves wrangler without fetching it. */
 export async function wranglerPresent(runner: CommandRunner = systemRunner(), cwd?: string): Promise<boolean> {
   const result = await runner.run('npx', wrangler('--version'), { ...(cwd === undefined ? {} : { cwd }) });
@@ -850,8 +910,9 @@ function versionOf(printed: string): string | null {
  * rules, which is worth saying out loud before an operator reads a config error.
  */
 export async function assertWranglerReady(readiness: WranglerReadiness = {}): Promise<void> {
-  const runner = readiness.runner ?? systemRunner();
-  const where = readiness.cwd === undefined ? {} : { cwd: readiness.cwd };
+  const env = readiness.env ?? process.env;
+  const runner = credentialRunner(readiness.runner ?? systemRunner(), env);
+  const where = { ...(readiness.cwd === undefined ? {} : { cwd: readiness.cwd }), env };
   const version = await runner.run('npx', wrangler('--version'), where);
   if (version.code !== 0) throw new WranglerAbsent();
 
@@ -860,8 +921,9 @@ export async function assertWranglerReady(readiness: WranglerReadiness = {}): Pr
     readiness.report?.(`wrangler ${installed} is a major version away from the ${BUNDLED_WORKER_WRANGLER} this binary's Worker was built with; a deploy config error is the first place that shows.`);
   }
 
-  const env = readiness.env ?? process.env;
-  if ((env[API_TOKEN_ENV] ?? '').trim() !== '') return;
+  const source = cloudflareCredentialSource(env);
+  for (const line of cloudflareCredentialLines(env)) readiness.report?.(line);
+  if (source !== 'OAuth login') return;
   const who = await runner.run('npx', wrangler('whoami'), where);
   if (who.code !== 0) throw new WranglerNotSignedIn();
 }
