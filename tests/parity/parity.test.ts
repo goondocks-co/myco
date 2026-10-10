@@ -11,7 +11,7 @@ import { skillCandidates } from './scenarios/skill-candidates.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
 import { runScenario, type ParityScenario, type ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
-import { bootCloudflare } from './targets/cloudflare.ts';
+import { bootCloudflare, stopCloudflareRuntime } from './targets/cloudflare.ts';
 import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
 import { sessionsTitling } from './scenarios/sessions-titling.ts';
 import { sessionTurns } from './scenarios/session-turns.ts';
@@ -86,6 +86,7 @@ if (!process.env.MYCO_PARITY) {
     // before the first connection in this process opens; a no-op wherever the runtime's own library already loads
     // extensions. A host that has none fails only the scenarios that need one, and says why.
     let sqliteVecRefusal: string | null = null;
+    afterAll(stopCloudflareRuntime);
     try { configureSqliteLibrary(); } catch (error) { sqliteVecRefusal = error instanceof Error ? error.message : String(error); }
     const boots = [
       { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ stopRace: scenario?.dedicated?.stopRace === true }) },

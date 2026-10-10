@@ -1,11 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { createRequire } from 'node:module';
+import { devSession } from './dev-session.ts';
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
 
 const SERVER_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'packages', 'myco-server');
-const WRANGLER = path.resolve(SERVER_DIR, '..', '..', 'node_modules', '.bin', 'wrangler');
+const require = createRequire(path.join(SERVER_DIR, 'package.json'));
+const WRANGLER = path.resolve(path.dirname(require.resolve('wrangler')), '..', 'bin', 'wrangler.js');
+export const PARITY_TELEMETRY_ALIASES = ['./telemetry.js', '../telemetry.js', '../../telemetry.js', '../../../telemetry.js'] as const;
+let session: ReturnType<typeof devSession> | undefined;
+export async function stopCloudflareRuntime(): Promise<void> {
+  try { await session?.close(); }
+  finally { session = undefined; }
+}
 
 // Every spawned process, killed at exit: a beforeAll timeout aborts the hook
 // without running the target's stop(), and a live wrangler dev with piped
@@ -18,16 +28,18 @@ process.on('exit', () => {
 });
 
 async function wrangler(args: string[], env: Record<string, string | undefined> = {}): Promise<string> {
-  const proc = Bun.spawn(['npx', '--no-install', 'wrangler', ...args], {
-    cwd: SERVER_DIR,
+  const proc = Bun.spawn(['node', WRANGLER, ...args], {
+    cwd: os.tmpdir(),
     stdout: 'pipe',
     stderr: 'pipe',
     env: { ...process.env, ...env },
   });
   SPAWNED.add(proc);
-  const timeout = Bun.sleep(120_000).then(() => { proc.kill(); return -1; });
-  const [code, out, err] = await Promise.all([Promise.race([proc.exited, timeout]), new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  SPAWNED.delete(proc);
+  const timer = setTimeout(() => { proc.kill(); }, 120_000);
+  let code: number, out: string, err: string;
+  try {
+    [code, out, err] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  } finally { clearTimeout(timer); SPAWNED.delete(proc); }
   if (code !== 0) throw new Error(`wrangler ${args.slice(0, 3).join(' ')} exited ${code}: ${[err, out].filter(Boolean).join('\n').slice(-4000)}`);
   return out;
 }
@@ -69,14 +81,36 @@ export interface CloudflareBootOptions {
 export async function bootCloudflare(options: CloudflareBootOptions = {}): Promise<ParityTarget> {
   const tag = Math.random().toString(36).slice(2, 8);
   const storeId = `parity-store-${tag}`;
-  const configName = `wrangler.parity-${tag}.toml`;
-  const configPath = path.join(SERVER_DIR, configName);
-  const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
-  fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), options.main) + `\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-cloudflare-'));
+  const configPath = path.join(root, 'wrangler.toml');
+  const configName = configPath;
+  const persistDir = path.join(root, 'state');
+  const entryPath = path.join(root, 'entry.ts');
+  fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+  const main = path.resolve(SERVER_DIR, options.main ?? 'src/index.ts');
+  const observer = path.resolve(import.meta.dir, '..', 'observed-worker.ts');
+  const telemetry = path.join(root, 'telemetry.ts');
+  const originalTelemetry = path.join(SERVER_DIR, 'src', 'telemetry.ts');
+  fs.writeFileSync(telemetry, `import { classify as original } from ${JSON.stringify(originalTelemetry)};\nimport { observeHandledException } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(originalTelemetry)};\nexport function classify(...args: Parameters<typeof original>) { observeHandledException(args[0]); return original(...args); }\n`);
+  fs.writeFileSync(entryPath, `import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport default observedWorker(worker);\n`);
+  const derived = parityWranglerConfig();
+  // Request diagnostics require asynchronous context propagation.
+  const observed = /^compatibility_flags = /m.test(derived)
+    ? derived.replace(/^(compatibility_flags = \[)(.*)(\])$/m, '$1$2, "nodejs_als"$3')
+    : `compatibility_flags = ["nodejs_als"]\n${derived}`;
+  const config = entryConfig(observed, entryPath).replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(path.join(SERVER_DIR, 'migrations'))}`);
+  const aliases = PARITY_TELEMETRY_ALIASES
+    .map(key => `${JSON.stringify(key)} = ${JSON.stringify(telemetry)}`).join('\n');
+  fs.writeFileSync(configPath, config + `\n[alias]\n${aliases}\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`);
 
   let completedSqlCommands = 0;
   let lastSqlProgress = performance.now();
   const d1 = async (command: string): Promise<string> => {
+    if (started) {
+      const reply = await runtime.command({ op: 'sql', tag, sql: command });
+      if (!reply.results) throw new Error('local D1 returned no SQL results');
+      return JSON.stringify(reply.results);
+    }
     const args = ['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command];
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -97,11 +131,11 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   };
 
   const cleanup = () => {
-    fs.rmSync(configPath, { force: true });
-    fs.rmSync(persistDir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   };
 
-  let proc: ReturnType<typeof Bun.spawn> | null = null;
+  let started = false;
+  const runtime = session ??= devSession(SERVER_DIR);
   try {
     await wrangler(['secrets-store', 'secret', 'create', storeId, '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))), '-c', configName, '--persist-to', persistDir]);
     await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
@@ -110,8 +144,10 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     if (d1Files.length !== 1) throw new Error(`Cloudflare parity target has ${d1Files.length} local D1 database files`);
     const databaseFile = path.join(persistDir, 'v3', 'd1', 'miniflare-D1DatabaseObject', d1Files[0]!);
 
-    const mint = Bun.spawn(['bun', 'scripts/mint-local.ts', MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe' });
+    const mint = Bun.spawn(['bun', path.join(SERVER_DIR, 'scripts', 'mint-local.ts'), MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
+    SPAWNED.add(mint);
     const [mintCode, mintSql, mintEnv] = await Promise.all([mint.exited, new Response(mint.stdout).text(), new Response(mint.stderr).text()]);
+    SPAWNED.delete(mint);
     if (mintCode !== 0) throw new Error(`mint-local exited ${mintCode}: ${mintEnv}`);
     const token = /MYCO_MEMBER_TOKEN=(\S+)/.exec(mintEnv)?.[1];
     if (token === undefined) throw new Error('mint-local printed no token');
@@ -124,79 +160,22 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     const deploymentId = deploymentRows[0]?.results[0]?.value;
     if (!deploymentId) throw new Error('Cloudflare parity target has no Deployment identity');
 
-    const probe = Bun.serve({ port: 0, fetch: () => new Response('') });
-    const port = probe.port;
-    probe.stop(true);
-    const logPath = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}.log`);
-    // The provider's own detailed log, beside the piped one and under the same artifact glob. Only this process
-    // carries the variable; the `d1 execute --json` calls do not.
-    const providerLog = path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-provider.log`);
-    proc = Bun.spawn([
-      WRANGLER, 'dev', '-c', configName, '--port', String(port), '--inspector-port', '0', '--persist-to', persistDir, '--test-scheduled',
-      '--var', `SESSION_SECRET:${SESSION_SECRET}`, '--var', 'GITHUB_CLIENT_ID:parity-client', '--var', 'GITHUB_CLIENT_SECRET:parity-secret', '--var', 'HARNESS_LAUNCH_MODE:record', '--var', 'CLOCK_MODE:manual', '--var', `MYCO_ORIGIN:http://127.0.0.1:${port}`,
-    ], {
-      cwd: SERVER_DIR, stdout: 'pipe', stderr: 'pipe',
-      env: { ...process.env, WRANGLER_LOG_PATH: providerLog },
-    });
-    SPAWNED.add(proc);
-    let logText = '';
-    /** The first failure writing the log. Draining continues; `runtime()` reports it. */
-    let logFailure: string | null = null;
-    const append = (text: string): void => {
-      if (text === '') return;
-      try {
-        fs.appendFileSync(logPath, text);
-      } catch (error) {
-        logFailure ??= `${logPath}: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    };
-    // Drain both streams continuously: wrangler stalls on backpressure. Each stream decodes once and appends as it
-    // arrives, so a character split across chunks is preserved.
-    const drain = async (stream: ReadableStream<Uint8Array>) => {
-      const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        const text = decoder.decode(chunk, { stream: true });
-        logText += text;
-        append(text);
-      }
-      const rest = decoder.decode();
-      logText += rest;
-      append(rest);
-    };
-    try {
-      fs.writeFileSync(logPath, '');
-    } catch (error) {
-      logFailure = `${logPath}: ${error instanceof Error ? error.message : String(error)}`;
-    }
-    const drained = Promise.all([drain(proc.stdout as ReadableStream<Uint8Array>), drain(proc.stderr as ReadableStream<Uint8Array>)])
-      .catch((error: unknown) => { logFailure ??= error instanceof Error ? error.message : String(error); });
-    /** The runtime's own exit status; a stop from this harness records none. */
-    let exited: number | null = null;
-    let stopping = false;
-    void proc.exited.then((code) => { if (!stopping) exited = code; });
-
-    const url = `http://127.0.0.1:${port}`;
-    const deadline = Date.now() + 120_000;
-    let healthy = false;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${url}/health`);
-        if (res.ok) { healthy = true; break; }
-      } catch { /* not listening yet */ }
-      await Bun.sleep(500);
-    }
-    if (!healthy) {
-      throw new Error(
-        `wrangler dev never answered /health on ${port}; log tail:\n${logText.slice(-2_000)}`
-        + (logFailure === null ? '' : `\nlog sink failed: ${logFailure}`),
-      );
-    }
+    const reply = await runtime.command({ op: 'start', tag, config: configPath, persist: persistDir, vars: {
+      SESSION_SECRET, GITHUB_CLIENT_ID: 'parity-client', GITHUB_CLIENT_SECRET: 'parity-secret',
+      HARNESS_LAUNCH_MODE: 'record', CLOCK_MODE: 'manual',
+    } });
+    started = true;
+    if (!reply.url) throw new Error('Wrangler dev provided no local HTTP listener');
+    const url = reply.url;
+    const health = await fetch(url + '/health', { headers: reply.headers, signal: AbortSignal.timeout(10_000), keepalive: false });
+    const healthBody = await health.text();
+    if (!health.ok) throw new Error('Wrangler UserWorker health answered ' + health.status + ': ' + healthBody + '\n' + runtime.runtime().tail);
 
     const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
-    const devProc = proc;
     return {
       name: 'cloudflare',
       url,
+      transportHeaders: reply.headers,
       deploymentId,
       bindings: { database: databaseFile, blob: path.join(persistDir, 'v3', 'r2'), secret: path.join(persistDir, 'v3', 'secrets-store', storeId), vector: null },
       memberToken: token,
@@ -215,24 +194,28 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
         if (!res.ok) throw new Error(`the scheduled wake answered ${res.status}`);
         await res.body?.cancel();
       },
-      runtime: () => ({
-        alive: exited === null, exitCode: exited, tail: logText.slice(-4_000),
-        ...(logFailure === null ? {} : { logFailure }),
-      }),
+      runtime: runtime.runtime,
+      healthy: async () => {
+        const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(10_000) });
+        await response.body?.cancel();
+        if (!response.ok) throw new Error(`cloudflare parity health answered ${response.status}`);
+      },
+      requestFailure: async (failure) => {
+        // Runtime console output can arrive after the HTTP response.
+        await Bun.sleep(100);
+        const diagnostic = { scenarioRequest: failure, runtime: runtime.runtime(), output: runtime.runtime().tail };
+        fs.appendFileSync(path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-requests.log`), JSON.stringify(diagnostic) + '\n');
+        console.error(`cloudflare parity request failed: ${JSON.stringify(failure)}\nwrangler output:\n${diagnostic.output}`);
+      },
       stop: async () => {
-        stopping = true;
-        devProc.kill();
-        await Promise.race([devProc.exited, Bun.sleep(5_000)]);
-        SPAWNED.delete(devProc);
-        await Promise.race([drained, Bun.sleep(1_000)]);
-        // A log sink that failed while every scenario passed is reported here, once.
-        if (logFailure !== null) console.error(`the cloudflare runtime log sink failed: ${logFailure}`);
-        cleanup();
+        try { await runtime.command({ op: 'stop', tag }); }
+        finally { cleanup(); }
       },
     };
   } catch (error) {
-    proc?.kill();
-    if (proc !== null) SPAWNED.delete(proc);
+    try { await runtime.command({ op: 'stop', tag }); }
+    catch (stopError) { console.error('cloudflare parity cleanup failed: ' + String(stopError)); }
+    if (!started) console.error('cloudflare parity startup failed:\n' + runtime.runtime().tail);
     cleanup();
     throw error;
   }
