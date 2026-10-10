@@ -134,16 +134,22 @@ If a machine had **external agent access** enabled (Team page) and is moved to a
 
 ## Upgrading from Myco 1.4
 
-Installing 2.0 over 1.4 replaces the binary immediately. Its old hooks stop capturing until you finish joining a Deployment and cut over. The installer refuses this by default; the public stable installer continues installing 1.4 until a 2.x stable release is available.
+Installing 2.0 over 1.4 replaces the binary immediately. Its old hooks stop capturing until you finish joining a Deployment and cut over. The installer keeps an existing 1.4 machine on 1.x updates unless you pass `--replace-1.4`, including after 2.x becomes stable. A fresh machine gets 2.x stable when available, otherwise the newest beta, or the newest alpha before any beta exists; it never falls back to 1.4. The selected channel is recorded in `install.json`. Explicit `MYCO_CHANNEL=stable` selects stable releases only.
 
-Choose a Deployment and obtain its invite link before replacing 1.4. Keep a backup of the 1.4 home. To preview the install and then opt in to alpha:
+Choose a Deployment and obtain its Myco address before replacing 1.4. Keep a backup of the 1.4 home. To preview the install and then opt in to alpha:
 
 ```sh
 curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh -s -- --dry-run --replace-1.4
 curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh -s -- --replace-1.4
-myco login <invite-link>
+myco login <your-myco-address>
 myco cutover --dry-run
 myco cutover
 ```
 
-Use `MYCO_CHANNEL=beta` for beta or stable builds, or omit the channel once 2.0 is stable. Review the cutover preview before proceeding. Cutover copies and imports the 1.4 data; the installer does not move or delete vaults. Verify the imported projects, sessions, spores and plans in the Deployment and confirm that new sessions are captured before retiring any 1.4 data.
+Use `MYCO_CHANNEL=beta` for beta or stable builds, or omit the channel with `--replace-1.4` to select the current 2.x default. Review the cutover preview before proceeding. Cutover copies and imports the 1.4 data; the installer does not move or delete vaults. Verify the imported projects, sessions, spores and plans in the Deployment and confirm that new sessions are captured before retiring any 1.4 data.
+
+### Installer classification and execution
+
+Both installers read the installed version from `install.json` first when its recorded binary hash matches the live file, then look for a byte-identical binary in `bin/versions/<version>/`. They never execute an existing binary to classify it. An unversioned binary, or legacy vault/groves markers without a known 2.x binary or completed member cutover, is treated as unknown legacy and kept on the 1.x path. Strings embedded in an executable can belong to dependencies, so they are not used as version evidence.
+
+New installs record the version and binary hash alongside the channel. A stale marker after an interrupted replacement cannot override the live binary's matching versioned slot; when the recorded version is 1.x and the live binary is 2.x, the slot's release phase recovers the channel. Existing channel records are preserved unless a channel is explicitly selected; opting into replacement of 1.4 without an explicit channel selects the 2.x default. Neither installer executes downloaded 1.x artifacts, starts services, or changes agent configuration for fresh installs or replacements. Existing 1.4 services retain their configuration; service installation and Team Host commands are printed for the operator to run explicitly. Downloaded 2.x artifacts retain checksum and launch admission (and macOS signature verification), with the launch check using private configuration homes. Only an already joined 2.x machine receives the documented `myco member provision --refresh` after installation.
