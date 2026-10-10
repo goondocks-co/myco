@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { expect } from 'bun:test';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { withParityRequests, type RequestFailure } from './requests.ts';
 
 /**
  * One booted server target. A scenario receives this and nothing else, so a
@@ -34,6 +35,8 @@ export interface ParityTarget {
   clockWake(): Promise<void>;
   /** Whether the runtime serving this target is up, its exit status, its last output, and any failure writing that output. */
   runtime?(): { alive: boolean; exitCode: number | null; tail: string; logFailure?: string };
+  requestFailure?(failure: RequestFailure): Promise<void>;
+  healthy?(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -43,7 +46,11 @@ export interface ParityTarget {
  */
 export async function runScenario(target: ParityTarget, scenario: ParityScenario, peer?: ParityTarget): Promise<void> {
   try {
-    await scenario.run(target, peer);
+    await withParityRequests(peer === undefined ? [target] : [target, peer], async () => {
+      await target.healthy?.();
+      await peer?.healthy?.();
+      await scenario.run(target, peer);
+    });
   } catch (error) {
     const runtime = target.runtime?.();
     if (runtime === undefined) throw error;
@@ -57,6 +64,7 @@ export async function runScenario(target: ParityTarget, scenario: ParityScenario
       );
     }
     if (sink !== '') throw new Error(`${raised}${sink}`, { cause: error });
+    if (runtime.tail !== '') throw new Error(`${raised}\nruntime output:\n${runtime.tail}`, { cause: error });
     throw error;
   }
 }

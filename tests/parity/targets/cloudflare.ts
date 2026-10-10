@@ -72,7 +72,12 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const configName = `wrangler.parity-${tag}.toml`;
   const configPath = path.join(SERVER_DIR, configName);
   const persistDir = path.join(SERVER_DIR, '.wrangler', `parity-state-${tag}`);
-  fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), options.main) + `\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`);
+  const entryPath = path.join(SERVER_DIR, '.wrangler', `parity-entry-${tag}.ts`);
+  fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+  const main = path.resolve(SERVER_DIR, options.main ?? 'src/index.ts');
+  const observer = path.resolve(import.meta.dir, '..', 'observed-worker.ts');
+  fs.writeFileSync(entryPath, `import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport default observedWorker(worker);\n`);
+  fs.writeFileSync(configPath, entryConfig(parityWranglerConfig(), entryPath) + `\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`);
 
   let completedSqlCommands = 0;
   let lastSqlProgress = performance.now();
@@ -98,6 +103,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
 
   const cleanup = () => {
     fs.rmSync(configPath, { force: true });
+    fs.rmSync(entryPath, { force: true });
     fs.rmSync(persistDir, { recursive: true, force: true });
   };
 
@@ -219,6 +225,18 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
         alive: exited === null, exitCode: exited, tail: logText.slice(-4_000),
         ...(logFailure === null ? {} : { logFailure }),
       }),
+      healthy: async () => {
+        const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(10_000) });
+        await response.body?.cancel();
+        if (!response.ok) throw new Error(`cloudflare parity health answered ${response.status}`);
+      },
+      requestFailure: async (failure) => {
+        // Console output and the inspector's exception event can arrive after the HTTP response.
+        await Bun.sleep(100);
+        const diagnostic = { scenarioRequest: failure, runtime: { alive: exited === null, exitCode: exited }, output: logText.slice(-16_000), providerLog };
+        fs.appendFileSync(path.join(SERVER_DIR, '.wrangler', `parity-dev-${tag}-requests.log`), JSON.stringify(diagnostic) + '\n');
+        console.error(`cloudflare parity request failed: ${JSON.stringify(failure)}\nwrangler output:\n${diagnostic.output}`);
+      },
       stop: async () => {
         stopping = true;
         devProc.kill();
