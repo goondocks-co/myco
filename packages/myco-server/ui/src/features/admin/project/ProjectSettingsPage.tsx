@@ -1,3 +1,6 @@
+import { useState } from 'react';
+import { Button } from '../../../design';
+import { RenameProjectDialog } from './RenameProjectDialog';
 import { useGrants } from './access-keys';
 import { AccessKeys } from './AccessKeys';
 import { Capabilities } from './Capabilities';
@@ -14,6 +17,7 @@ import { AdminPage, useAnchorScroll } from '../AdminFrame';
  * part above it has been read.
  */
 export function ProjectSettingsPage({ projectId, projectName }: { projectId: string; projectName: string | null }) {
+  const [renaming, setRenaming] = useState(false);
   const settled = [useCapabilities(projectId), useRepository(projectId), useGrants(projectId), useReleaseProvenance(projectId)].every((q) => !q.isPending);
   useAnchorScroll(settled);
   return (
@@ -21,8 +25,13 @@ export function ProjectSettingsPage({ projectId, projectName }: { projectId: str
       name="project-settings"
       scope="project"
       title="Project settings"
+      actions={<Button size="sm" disabled={projectName === null} onClick={() => setRenaming(true)}>Rename project</Button>}
       lede={`How Myco works in ${projectName ?? 'this project'}: what it does there, the repository it reads, who outside this server may read it, and whether its work has shipped.`}
     >
+      <RenameProjectDialog
+        project={renaming && projectName !== null ? { projectId, name: projectName } : null}
+        onClose={() => setRenaming(false)}
+      />
       <Capabilities projectId={projectId} />
       <Repository projectId={projectId} />
       <AccessKeys projectId={projectId} />

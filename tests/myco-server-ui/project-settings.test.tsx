@@ -109,6 +109,37 @@ describe('a project\'s settings', () => {
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
+  it('renames through the shared project mutation, refreshes the name and shows refusals in the dialog', async () => {
+    let name = 'Myco';
+    let refuse = true;
+    const { sent } = server(base({
+      '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], name }] }),
+      [`PATCH ${api}`]: (init) => {
+        if (refuse) return Response.json({ error: 'refused', reason: 'Try again later.' }, { status: 409 });
+        name = JSON.parse(String(init?.body)).name;
+        return Response.json({ projectId: P, name });
+      },
+    }));
+    mount(`/p/${P}/settings`);
+    await waitFor(() => expect(document.body.textContent).toContain('How Myco works in Myco:'));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename project' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Rename Myco' });
+    expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('Myco');
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: '  My project  ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename', exact: true }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (409).');
+    refuse = false;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename', exact: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(sent).toEqual([
+      { method: 'PATCH', path: api, body: { name: 'My project' } },
+      { method: 'PATCH', path: api, body: { name: 'My project' } },
+    ]);
+    await waitFor(() => expect(document.body.textContent).toContain('How Myco works in My project:'));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename project' }));
+    expect((within(await screen.findByRole('dialog')).getByLabelText('Name') as HTMLInputElement).value).toBe('My project');
+  });
+
   it('offers no generated-skill switch even with stored historical admission', async () => {
     server(base());
     mount(`/p/${P}/settings`);
