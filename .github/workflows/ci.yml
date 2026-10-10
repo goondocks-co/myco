@@ -295,6 +295,8 @@ jobs:
         with:
           name: parity-wrangler-logs-${{ matrix.shard }}
           path: packages/myco-server/.wrangler/parity-dev-*.log
+          retention-days: 7
+          overwrite: true
           include-hidden-files: true
           if-no-files-found: ignore
 

@@ -10,6 +10,7 @@ import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHea
 const SERVER_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'packages', 'myco-server');
 const require = createRequire(path.join(SERVER_DIR, 'package.json'));
 const WRANGLER = path.resolve(path.dirname(require.resolve('wrangler')), '..', 'bin', 'wrangler.js');
+export const PARITY_TELEMETRY_ALIASES = ['./telemetry.js', '../telemetry.js', '../../telemetry.js', '../../../telemetry.js'] as const;
 let session: ReturnType<typeof devSession> | undefined;
 export async function stopCloudflareRuntime(): Promise<void> {
   try { await session?.close(); }
@@ -98,7 +99,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     ? derived.replace(/^(compatibility_flags = \[)(.*)(\])$/m, '$1$2, "nodejs_als"$3')
     : `compatibility_flags = ["nodejs_als"]\n${derived}`;
   const config = entryConfig(observed, entryPath).replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(path.join(SERVER_DIR, 'migrations'))}`);
-  const aliases = ['./telemetry.js', '../telemetry.js', '../../telemetry.js', '../../../telemetry.js']
+  const aliases = PARITY_TELEMETRY_ALIASES
     .map(key => `${JSON.stringify(key)} = ${JSON.stringify(telemetry)}`).join('\n');
   fs.writeFileSync(configPath, config + `\n[alias]\n${aliases}\n[[secrets_store_secrets]]\nbinding = "SECRET_WRAP_KEY"\nstore_id = "${storeId}"\nsecret_name = "parity-wrap-key"\n`);
 

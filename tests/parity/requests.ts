@@ -3,6 +3,19 @@ import type { ParityTarget } from './harness.ts';
 export const PARITY_REQUEST_HEADER = 'x-myco-parity-request';
 export const PARITY_WORKER_HEADER = 'x-myco-parity-worker';
 const CONNECTION_RETRY_DELAY_MS = 100;
+const MAX_DIAGNOSTIC_BODY_BYTES = 8 * 1024;
+const BODY_TRUNCATION_MARKER = '\n... response body truncated ...\n';
+
+function diagnosticBody(body: string): string {
+  const encoded = Buffer.from(body);
+  if (encoded.length <= MAX_DIAGNOSTIC_BODY_BYTES) return body;
+  const excerptBytes = Math.floor((MAX_DIAGNOSTIC_BODY_BYTES - Buffer.byteLength(BODY_TRUNCATION_MARKER)) / 2);
+  const head = new TextDecoder().decode(encoded.subarray(0, excerptBytes), { stream: true });
+  let tailStart = encoded.length - excerptBytes;
+  // UTF-8 continuation bytes cannot begin the retained tail.
+  while ((encoded[tailStart]! & 0xc0) === 0x80) tailStart++;
+  return head + BODY_TRUNCATION_MARKER + encoded.subarray(tailStart).toString('utf8');
+}
 
 /** A refused TCP connect sent no request; a reset, HTTP error or assertion can follow a committed write. */
 export async function connectRequest<T>(send: () => Promise<T>): Promise<T> {
@@ -53,7 +66,7 @@ export async function withParityRequests(targets: ParityTarget[], run: () => Pro
       let body: string;
       try { body = await response.clone().text(); }
       catch (error) { body = `response body failed: ${String(error)}`; }
-      await target.requestFailure({ ...failure, status: response.status, worker: response.headers.get(PARITY_WORKER_HEADER), body });
+      await target.requestFailure({ ...failure, status: response.status, worker: response.headers.get(PARITY_WORKER_HEADER), body: diagnosticBody(body) });
     }
     return response;
   }, { preconnect: original.preconnect });
