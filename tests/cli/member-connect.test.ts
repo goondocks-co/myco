@@ -65,6 +65,17 @@ describe('myco member join inside a repository', () => {
     expect(err).toEqual([]);
   });
 
+  it.each(['--new', 'interactive'])('names a new Project for the main checkout from a linked worktree (%s)', async (mode) => {
+    const rig = await signedIn();
+    const main = repo('whisker-sites');
+    const linked = path.join(repos, 'w9-task-5-terraform-alerts');
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture'], { cwd: main });
+    execFileSync('git', ['worktree', 'add', '-qb', 'worker', linked], { cwd: main, stdio: 'pipe' });
+    const entry = await runJoin(mode === '--new' ? ['--new', '--no-worker'] : ['--no-worker'], deps(rig, linked, { ask: async () => 'n' }));
+    expect(entry).not.toBeNull();
+    expect(projects(rig).find((p) => p.project_id === entry!.projectId)?.name).toBe('whisker-sites');
+  });
+
   it('reads a server URL after --new as the Deployment, and names the project for the folder', async () => {
     const rig = await signedIn();
     const dir = repo('ledger');

@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 /**
  * Per-project vault provisioning.
  *
@@ -53,7 +54,7 @@ const MINIMAL_MYCO_YAML = 'version: 3\n';
 
 export interface EnsureProjectVaultOptions {
   /**
-   * Override the project's display name. Defaults to `basename(projectRoot)`.
+   * Override the project's display name. Defaults to the repository name.
    * Symbiont metadata may pass a richer label when one is available.
    */
   projectName?: string;
@@ -94,7 +95,7 @@ export function ensureProjectVault(
 
   // Hot path: vault already exists, re-resolve identity and return.
   if (fs.existsSync(mycoYamlPath)) {
-    const projectName = options.projectName ?? path.basename(projectRoot);
+    const projectName = options.projectName ?? repositoryName(projectRoot);
     const manifest = ensureProjectManifest(vaultDir, { projectName });
     if (options.force) reseedCaptureOnly(vaultDir);
     return { vaultDir, created: false, projectId: manifest.project.id };
@@ -115,7 +116,7 @@ export function ensureProjectVault(
   // that need a non-default Grove can pass `options.groveSlug` (test
   // fixtures and future "claim" operations).
   const defaultGrove = resolveDefaultGrove(undefined);
-  const projectName = options.projectName ?? path.basename(projectRoot);
+  const projectName = options.projectName ?? repositoryName(projectRoot);
 
   const manifest = ensureProjectManifest(vaultDir, {
     projectName,

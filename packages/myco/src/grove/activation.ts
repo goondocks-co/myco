@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -471,7 +472,7 @@ function resolveActivationGrove(input: {
     if (local) return local;
     const fallbackName = input.existingManifest?.grove?.name
       ?? input.existingManifest?.project.name
-      ?? path.basename(input.projectRoot);
+      ?? repositoryName(input.projectRoot);
     const fallbackSlug = input.existingManifest?.grove?.slug
       ?? slugifyGroveName(fallbackName);
     return ensureGroveExistsLocally(
@@ -530,7 +531,7 @@ function prepareIdentity(input: {
   const projectName = input.existingManifest?.project.name
     ?? input.existingMarker?.project_name
     ?? input.projectName
-    ?? path.basename(input.projectRoot);
+    ?? repositoryName(input.projectRoot);
   const bindingId = input.existingManifest?.grove?.binding_id
     ?? input.existingMarker?.grove_binding_id
     ?? createGroveBindingId();

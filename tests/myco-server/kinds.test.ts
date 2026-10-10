@@ -674,7 +674,7 @@ describe('kind catalogue', () => {
     const start = async (project: string, session: string, n: number, payload: Record<string, unknown>) =>
       (await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n), sessionId: session, kind: 'session.start', createdAt: n, payload }), '/events', { [PROJECT_HEADER]: project }), e.env))).persisted;
 
-    expect(await start('proj_fresh', 'sess_a', 3000, { agent: 'a', startedAt: 100, originPath: '~/Repos/myco' })).toBe(true);
+    expect(await start('proj_fresh', 'sess_a', 3000, { agent: 'a', startedAt: 100, originPath: '~/worktrees/w9-task-5', projectName: 'myco' })).toBe(true);
     expect(nameOf('proj_fresh')).toBe('myco');
     expect(await start('proj_fresh', 'sess_b', 3001, { agent: 'a', startedAt: 50, originPath: '/elsewhere/other' })).toBe(true);
     expect(nameOf('proj_fresh')).toBe('myco');
@@ -690,7 +690,7 @@ describe('kind catalogue', () => {
     }
 
     e.sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_named', 'Chosen by hand', 0)`);
-    expect(await start('proj_named', 'sess_e', 3100, { agent: 'a', startedAt: 100, originPath: '/repo/ignored' })).toBe(true);
+    expect(await start('proj_named', 'sess_e', 3100, { agent: 'a', startedAt: 100, originPath: '/repo/ignored', projectName: 'Ignored repository' })).toBe(true);
     expect(nameOf('proj_named')).toBe('Chosen by hand');
 
     expect([basenameOf('/a/b/c'), basenameOf('a\\b\\c '), basenameOf('~/x/'), basenameOf('~'), basenameOf('..'), basenameOf(''), basenameOf(undefined), basenameOf(7), basenameOf(`/r/${'n'.repeat(201)}`), basenameOf(`/r/${'n'.repeat(200)}`)])

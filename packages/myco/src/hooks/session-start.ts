@@ -1,6 +1,6 @@
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
-import { gitHead } from '../member/git-facts.js';
+import { gitHead, sessionRepositoryName } from '../member/git-facts.js';
 import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
@@ -44,6 +44,7 @@ export async function main(opts: HookMainOptions = {}) {
 
     const lineage = sessionLineage(agent, sessionId, transcriptPath);
     const events: OutboundEvent[] = [sessionStartEvent(ctx, {
+      projectName: sessionRepositoryName(cwd, run.budget, run.now()),
       branch: git.branch,
       headSha: git.headSha,
       startedAt: run.now(),
