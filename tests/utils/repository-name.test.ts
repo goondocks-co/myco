@@ -3,7 +3,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { repositoryName, repositoryRemote, __resetGitBinaryCacheForTest } from '@myco/utils/git.js';
+import { sessionRepositoryName } from '@myco/member/git-facts.js';
+import { resolveHookBudget } from '@myco/member/budget.js';
+import { repositoryName, repositoryRemote, memoizedRepositoryName, __resetGitBinaryCacheForTest } from '@myco/utils/git.js';
 import { repositoryAt } from '@myco/member/auto-join.js';
 
 const roots: string[] = [];
@@ -30,6 +32,50 @@ describe('repository display name', () => {
     fs.mkdirSync(nested);
     expect([main, linked, nested].map((root) => repositoryName(root))).toEqual(['whisker-sites', 'whisker-sites', 'whisker-sites']);
     expect(repositoryAt(linked, path.join(base, 'home')).label).toBe('whisker-sites');
+  });
+
+  it('walks missing session paths to their existing repository ancestor', () => {
+    const root = fixture();
+    git(root, 'init', '-q');
+    expect(repositoryName(path.join(root, 'removed-worktree', 'src'))).toBe(path.basename(root));
+  });
+
+  it('uses the real main checkout name through a symlink on the hook path', () => {
+    const base = fixture();
+    const main = path.join(base, 'whisker-sites');
+    const link = path.join(base, 'linkroot');
+    fs.mkdirSync(main);
+    git(main, 'init', '-q');
+    fs.symlinkSync(main, link, 'dir');
+    expect(repositoryName(link)).toBe('whisker-sites');
+    expect(sessionRepositoryName(link, resolveHookBudget('claude-code', 'session-start', { startedAt: Date.now() }))).toBe('whisker-sites');
+  });
+
+  it('names a bare repository through its linked worktree without a remote', () => {
+    const base = fixture();
+    const main = path.join(base, 'whisker-sites.git');
+    const linked = path.join(base, 'worker-folder');
+    git(base, 'init', '--bare', '-q', main);
+    git(base, 'clone', '-q', main, linked);
+    git(linked, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture');
+    git(linked, 'push', '-q', 'origin', 'HEAD');
+    fs.rmSync(linked, { recursive: true, force: true });
+    git(main, 'worktree', 'add', '-q', linked);
+    expect(repositoryName(linked)).toBe('whisker-sites');
+  });
+
+  it('uses core.worktree for separate metadata and memoizes names within an import', () => {
+    const base = fixture();
+    const main = path.join(base, 'whisker-sites');
+    const metadata = path.join(base, 'metadata');
+    fs.mkdirSync(main);
+    git(main, 'init', '-q', '--separate-git-dir', metadata);
+    git(main, 'config', 'core.worktree', main);
+    const names = new Map<string, string>();
+    expect(memoizedRepositoryName(main, names)).toBe('whisker-sites');
+    git(main, 'config', 'core.worktree', path.join(base, 'renamed'));
+    expect(memoizedRepositoryName(main, names)).toBe('whisker-sites');
+    expect(names.size).toBe(1);
   });
 
   it.skipIf(process.platform === 'win32')('falls back within the caller deadline when Git stalls', () => {

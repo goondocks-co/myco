@@ -4,6 +4,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { watchingFeatures } from '@myco/member/prefetch.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { unboundedBudget } from '@myco/member/budget.js';
 import { repositoryName } from '@myco/utils/git.js';
 import { sessionStartEvent } from '@myco/member/envelope.js';
 import { runLegacyImport } from '@myco/member/legacy-import.js';
@@ -41,6 +45,10 @@ export const projectNaming: ParityScenario = {
           request.headers.set('cf-connecting-ip', '1.2.3.4');
           return fetch(request);
         };
+        const spool = new MemberSpool({ serverUrl: target.url, projectId: project });
+        const advertised = watchingFeatures(fetchMember, { serverUrl: target.url, spoolDir: spool.dir, mycoHome: spool.mycoHome, now: Date.now });
+        const client = new ServerClient({ serverUrl: target.url, token: target.memberToken, projectId: project }, advertised, { credentialSource: 'env' });
+        expect((await client.importPlan({ candidates: [] }, unboundedBudget())).class).toBe('acked');
         const sessionId = crypto.randomUUID();
         const transcript = path.join(base, sessionId + '.jsonl');
         fs.writeFileSync(transcript, JSON.stringify({ type: 'user', cwd: linked, message: { role: 'user', content: 'worktree session' } }) + '\n');
@@ -69,8 +77,11 @@ export const projectNaming: ParityScenario = {
       await start('proj_old_client_name', '/repos/older-client');
       expect(await nameOf('proj_old_client_name')).toBe('older-client');
 
+      git('worktree', 'remove', '--force', linked);
       const imported = 'proj_legacy_worktree_name';
-      const vault = path.join(base, 'myco.db');
+      const vaultDir = path.join(main, '.myco');
+      fs.mkdirSync(vaultDir);
+      const vault = path.join(vaultDir, 'myco.db');
       const db = new Database(vault);
       try {
         db.exec(fs.readFileSync(new URL('../../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8'));

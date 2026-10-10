@@ -13,6 +13,7 @@
  * alone (`git-verdict.ts`), and git is asked only where neither does. Whether tracked files changed is git's to say, since it means
  * comparing the index and the working tree: its two questions run at once.
  */
+import fs from 'node:fs';
 import { gitExitStatusAsync, repositoryName, runGit, runGitAnswer, type GitQueryBudget } from '@myco/utils/git.js';
 import { subRequestBudget, type HookBudget } from './budget.js';
 import { readRepoHead, UNUSUAL } from '../utils/git-files.js';
@@ -89,7 +90,7 @@ export function sessionRepositoryName(cwd: string, budget: HookBudget, now: numb
   const verdict = repoVerdict(cwd, process.env, { askGit });
   if (verdict === UNUSUAL) return repositoryName(cwd, queryBudget);
   if (verdict === null) return repositoryName(cwd, { ...queryBudget, commonDir: null, remote: null });
-  const commonDir = verdict.from === 'files' ? verdict.layout.commonDir : verdict.commonDir;
+  const commonDir = verdict.from === 'files' ? fs.realpathSync(verdict.layout.commonDir) : verdict.commonDir;
   return repositoryName(cwd, { ...queryBudget, commonDir });
 }
 

@@ -10,6 +10,8 @@
  * (`_memberProtocol`, `_blobSource`) that never reach the wire; blob bytes are
  * never spooled — the drain re-reads them from the staged source.
  */
+import { PROJECT_NAME_FEATURE } from '@goondocks/myco-shared/member-protocol';
+import { featureAdvertised } from './context-cache.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1087,7 +1089,12 @@ export class MemberSpool {
             break;
           }
         }
-        const outcome = await activeClient.postEvent(toWire(record), clippedRequestBudget(budget, now()));
+        const wire = toWire(record);
+        if (wire.kind === 'session.start' && !featureAdvertised({ serverUrl: activeClient.serverUrl, projectId: this.projectId }, this.mycoHome, PROJECT_NAME_FEATURE)) {
+          const { projectName: _projectName, ...payload } = wire.payload;
+          wire.payload = payload;
+        }
+        const outcome = await activeClient.postEvent(wire, clippedRequestBudget(budget, now()));
         result.sent += 1;
         switch (outcome.class) {
           case 'acked':

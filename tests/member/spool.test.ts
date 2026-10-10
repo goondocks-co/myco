@@ -7,12 +7,14 @@
  * content and cap.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { cacheDeploymentFeatures } from '@myco/member/context-cache.js';
+import { FEATURES_HEADER, PROTOCOL_HEADER, PROJECT_NAME_FEATURE } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RETIRED_BYTE_CEILING } from '../myco-server/helpers/fixtures.js';
 import { unboundedBudget, resolveHookBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, PROJECT_HEADER, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
-import { mintId, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
+import { mintId, promptEvent, sessionStartEvent, type MemberEnvelope, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
@@ -42,6 +44,30 @@ const ctxFor = (spool: MemberSpool, sessionId: string): EnvelopeContext => ({ ag
 const prompts = (ctx: EnvelopeContext, n: number) => Array.from({ length: n }, (_, i) => promptEvent(ctx, { promptId: mintId(), text: `p${i}` }));
 
 describe('member spool', () => {
+  it.each([false, true])('ships projectName only to an advertising Deployment (advertised: %s)', async (advertised) => {
+    const rig = await memberRig();
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
+    rig.env.sqlite.run(`UPDATE projects SET name = project_id WHERE project_id = 'proj_1'`);
+    const features = advertised ? ['turn', PROJECT_NAME_FEATURE] as const : ['turn'] as const;
+    cacheDeploymentFeatures('https://s', [...features], mycoHome);
+    const payloads: Record<string, unknown>[] = [];
+    const fetch: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      const payload = (await request.clone().json() as MemberEnvelope).payload;
+      payloads.push(payload);
+      if (!advertised && 'projectName' in payload) return Response.json({ code: 'unknown_field', reason: 'projectName' }, { status: 400, headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } });
+      const response = await rig.fetch(request);
+      response.headers.set(FEATURES_HEADER, features.join(','));
+      return response;
+    };
+    spool.append('sess-name', sessionStartEvent(ctxFor(spool, 'sess-name'), { originPath: '/worktrees/agent', projectName: 'whisker-sites' }));
+    const result = await spool.drainSession('sess-name', clientFor(rig, fetch), unboundedBudget());
+    expect(result).toMatchObject({ acked: 1, refused: 0, remaining: 0, endedBy: 'drained' });
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].projectName).toBe(advertised ? 'whisker-sites' : undefined);
+    expect(rig.env.sqlite.query('SELECT name FROM projects WHERE project_id = ?').get('proj_1')).toMatchObject({ name: advertised ? 'whisker-sites' : 'agent' });
+  });
+
   it('appends before sending and the wire carries only the seven envelope fields — never a sidecar or the buffer timestamp', async () => {
     const rig = await memberRig();
     const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });

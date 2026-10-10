@@ -48,7 +48,9 @@ export type MemberKind = (typeof MEMBER_KINDS)[number];
  * Deployment says it can take it, and a Deployment that takes it refuses nothing it took before.
  */
 export const FEATURES_HEADER = 'x-myco-features';
-export const MEMBER_FEATURES = ['turn'] as const;
+/** Repository labels in session.start require this advertised optional field. */
+export const PROJECT_NAME_FEATURE = 'project-name';
+export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE] as const;
 export type MemberFeature = (typeof MEMBER_FEATURES)[number];
 
 /** Machine settings revisions are exchanged only by members and Deployments advertising this feature. */
@@ -101,9 +103,9 @@ export function resolveMachineSetting(leaf: MachineSettingLeaf, value: unknown):
  */
 export const TURN_KIND = 'turn';
 
-/** The kind each feature lets a member ship. */
-export const FEATURE_KINDS = { turn: TURN_KIND } as const satisfies Readonly<Record<MemberFeature, string>>;
-export type FeatureKind = (typeof FEATURE_KINDS)[MemberFeature];
+/** The event kinds enabled by features that introduce a kind. */
+export const FEATURE_KINDS = { turn: TURN_KIND } as const satisfies Readonly<Partial<Record<MemberFeature, string>>>;
+export type FeatureKind = (typeof FEATURE_KINDS)[keyof typeof FEATURE_KINDS];
 
 /** Every kind a member's envelope may name: one it ships to any Deployment, or one a Deployment advertises. */
 export type WireKind = MemberKind | FeatureKind;

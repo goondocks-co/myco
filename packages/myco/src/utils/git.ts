@@ -182,13 +182,38 @@ export function repositoryRemote(root: string, budget: GitQueryBudget = {}): str
   return remote === null ? null : normalizeRemote(remote);
 }
 
+/** A display name resolved at most once per root in one import. */
+export function memoizedRepositoryName(root: string, names: Map<string, string> = new Map()): string {
+  const held = names.get(root);
+  if (held !== undefined) return held;
+  const name = repositoryName(root);
+  names.set(root, name);
+  return name;
+}
+
+/** The nearest directory that exists, for Git queries about retained session paths. */
+export function existingRepositoryAncestor(root: string): string {
+  let current = path.resolve(root);
+  while (!fs.existsSync(current) && path.dirname(current) !== current) current = path.dirname(current);
+  return current;
+}
+
 /** A repository's main checkout folder, then its remote name, then the supplied root's folder. */
 export function repositoryName(root: string, options: GitQueryBudget & { remote?: string | null; commonDir?: string | null } = {}): string {
   const resolved = path.resolve(root);
+  const queryRoot = existingRepositoryAncestor(resolved);
   const common = options.commonDir === undefined
-    ? gitAnswer(resolved, ['rev-parse', '--path-format=absolute', '--git-common-dir'], options)
+    ? gitAnswer(queryRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'], options)
     : options.commonDir;
   if (common !== null && path.basename(common) === '.git') return path.basename(path.dirname(common));
-  const repository = options.remote === undefined ? repositoryRemote(resolved, options) : options.remote;
+  if (common !== null) {
+    if (gitAnswer(common, ['rev-parse', '--is-bare-repository'], options) === 'true' || path.basename(common).endsWith('.git')) {
+      return path.basename(common).replace(/\.git$/, '');
+    }
+    const worktree = gitAnswer(queryRoot, ['config', '--get', 'core.worktree'], options);
+    if (worktree !== null) return path.basename(path.resolve(common, worktree));
+    // Separate git directories with no checkout pointer use the remote or supplied root.
+  }
+  const repository = options.remote === undefined ? repositoryRemote(queryRoot, options) : options.remote;
   return repository?.split('/').at(-1) || path.basename(resolved);
 }
