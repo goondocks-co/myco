@@ -19,7 +19,7 @@ for (const viewport of ['desktop', 'phone'] as const) {
         });
         await page.reload();
         const stopped = page.locator('[data-health-transcripts]');
-        await expect(stopped).toContainText('Reading could not move past a record at byte 12345 (tool result).');
+        await expect(stopped).toContainText('Reading could not move past a record (tool result).');
         await stopped.scrollIntoViewIfNeeded();
         await expect(stopped).toBeInViewport();
         await expectFits(page, viewport);

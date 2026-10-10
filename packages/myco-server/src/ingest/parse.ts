@@ -109,16 +109,11 @@ export const TRANSCRIPT_PARSE_CONCURRENT_BYTES = 8 * 1024 * 1024;
 /** Maximum bytes retained while completing the first record across segments. */
 export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
-/**
- * The parse's own version.
- *
- * A transcript records the version that read it, and a transcript stopped by a
- * failure is offered again once this moves. The transcript format is
- * version-unstable by its vendors' own documentation, so a break is expected to
- * be answered by a deploy — and a failure nothing can clear would mean one bad
- * line silences a transcript permanently, which no later fix could undo.
- */
-export const PARSER_VERSION = 6;
+/** Bump when derived output changes; older retained recordings are read again. */
+export const PARSER_VERSION = 5;
+
+/** Bump when only stop conditions change; older failures resume from their cursor, leaving intact recordings alone. */
+export const PARSE_STOP_GENERATION = 1;
 
 /** An unanswered live turn closes after ten minutes without new transcript bytes. */
 export const TRANSCRIPT_IDLE_MS = 600_000;
@@ -151,9 +146,11 @@ export const TRANSCRIPT_PRODUCER = { adapter: TRANSCRIPT_PARSE_ADAPTER, version:
  */
 export const AWAITING_BYTES = 'awaiting_bytes';
 
+const RETRY_STOPPED = `parse_error <> '${AWAITING_BYTES}' AND COALESCE(json_extract(parser_context, '$.mycoParserFailure.generation'), 0) < ${PARSE_STOP_GENERATION}`;
+
 /**
  * Which transcripts still owe a pass: bytes unread, and either no failure, a
- * failure recorded against an older parser, or a wait (`AWAITING_BYTES`) on a
+ * failure recorded against an older parser or stop generation, or a wait (`AWAITING_BYTES`) on a
  * transcript that has grown past the size it waited at.
  *
  * `nextTarget` and `pendingTranscripts` share it, with the same tombstone
@@ -161,7 +158,7 @@ export const AWAITING_BYTES = 'awaiting_bytes';
  * for nothing; counting less than it takes leaves a transcript a newer parser
  * has reopened unread until something else wakes the tick.
  */
-export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
+export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (${RETRY_STOPPED}) OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
 
 /** A member's turn end covers the retained reply's source instants. */
 const TURN_ENDED = `EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = transcripts.project_id
@@ -366,7 +363,7 @@ function lineKind(line: ParsedLine | undefined): string {
 async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number, refused?: { eventKind: string; refusal: Classifier }, diagnostic: ParseDiagnostic = { branch: classifier === 'parse' ? 'no_progress' : classifier, offset: target.parsedOffset, lineKind: 'unknown' }): Promise<void> {
   const statement = db
     .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ?, parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserFailure', json(?)) WHERE project_id = ? AND transcript_id = ?`)
-    .bind(classifier, now, PARSER_VERSION, JSON.stringify(diagnostic), target.projectId, target.transcriptId);
+    .bind(classifier, now, PARSER_VERSION, JSON.stringify({ ...diagnostic, generation: PARSE_STOP_GENERATION }), target.projectId, target.transcriptId);
   await finalizePass(db, target, statement);
   emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, failure: classifier, ...diagnostic, ...(refused ?? {}) });
 }
@@ -618,7 +615,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let calls = 0;
   const terminalOnly = target.parsedOffset === target.size && terminalRule(target, now, limits) !== undefined;
   const failureOnlyContext = target.parserContext?.mycoParserFailure !== undefined
-    && target.parserContext.mycoParserMeta === undefined && target.parserContext.mycoParserState === undefined;
+    && Object.keys(target.parserContext).length === 1;
   const needsHeader = parser.headerContext !== undefined && (target.parserContext == null || failureOnlyContext);
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
@@ -1018,7 +1015,11 @@ async function prepareParserRepairs(db: RelationalStore): Promise<number> {
     const mutations = status === 'replaying'
       ? `parsed_offset = 0, parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL,
           parse_awaited_size = NULL, parser_context = json_set(${REREAD_CONTEXT}, '$.mycoParserRepair', json(?))`
-      : `parser_version = ${PARSER_VERSION}, parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?))`;
+      : `parser_version = ${PARSER_VERSION},
+          parse_failed_at = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_failed_at END,
+          parse_awaited_size = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_awaited_size END,
+          parse_error = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_error END,
+          parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?))`;
     return db.prepare(`UPDATE transcripts SET ${mutations} WHERE project_id = ? AND transcript_id = ?
       AND parser_version = ? AND parsed_offset = ? AND parser_context IS ?`)
       .bind(repair, row.project_id, row.transcript_id, row.parser_version, row.parsed_offset, row.parser_context);
@@ -1108,7 +1109,7 @@ export interface StoppedTranscripts {
 
 /**
  * Transcripts the current parser stopped on a fault and will not read on from, per Project that accepts capture: bytes remain past the
- * cursor, and the failure recorded is not a wait for bytes still to arrive. A failure an older parser recorded is not
+ * cursor, and the failure recorded is not a wait for bytes still to arrive. A failure an older parser or stop generation recorded is not
  * counted: the parse offers that transcript again (`PENDING_TRANSCRIPTS`). Read over the backlog index, whose
  * predicate every stopped transcript satisfies.
  */
@@ -1117,7 +1118,7 @@ export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTr
   // where the rows wanted all sit in the backlog index.
   const { results } = await db
     .prepare(`SELECT project_id, parse_error, parse_failed_at, CASE WHEN json_type(parser_context, '$.mycoParserFailure') = 'object' THEN json_extract(parser_context, '$.mycoParserFailure') END AS diagnostic FROM transcripts INDEXED BY idx_transcripts_backlog
-                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND parser_version >= ? AND NOT ${TOMBSTONED}
+                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND NOT (${RETRY_STOPPED}) AND parser_version >= ? AND NOT ${TOMBSTONED}
                   AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = transcripts.project_id AND p.archived_at IS NULL)`)
     .bind(PARSER_VERSION)
     .all<{ project_id: string; parse_error: string; parse_failed_at: number | null; diagnostic: string | null }>();

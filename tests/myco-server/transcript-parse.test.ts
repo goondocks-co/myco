@@ -21,7 +21,7 @@ import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, eventGroups, TRANSCRIPT_PRODUCER, PARSER_VERSION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, laneSelectionSql, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  AWAITING_BYTES, eventGroups, TRANSCRIPT_PRODUCER, PARSER_VERSION, PARSE_STOP_GENERATION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, laneSelectionSql, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
   TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_REPAIRS_PER_WAKE,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES, TRANSCRIPT_IDLE_MS,
 } from '@myco-server-worker/ingest/parse.js';
@@ -106,6 +106,66 @@ const PASS_CALLS = 12;
 const LIMITS = { calls: PASS_CALLS, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true };
 /** How many transcripts still owe a pass. */
 const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0], now = NOW): Promise<number> => (await pendingTranscripts(db, now)).transcripts;
+
+describe('stop generation recovery', () => {
+  it('resumes a stopped v5 recording once from its cursor without reading its intact prefix', async () => {
+    const text = body(2);
+    const cursor = Buffer.byteLength(body(1));
+    const r = await rig(text, cursor);
+    try {
+      r.sqlite.run("UPDATE transcripts SET parsed_offset=?, parser_version=5, parse_error='parse', parse_failed_at=?, parser_context=NULL",
+        [cursor, NOW]);
+      expect(r.sqlite.query(laneSelectionSql('live', 1, NOW)).get(PARSER_VERSION)).toMatchObject({ parsed_offset: cursor });
+      const prefix = r.sqlite.query('SELECT blob_key FROM transcript_segments WHERE base_offset=0').get() as { blob_key: string };
+      const prefixKey = registeredObject(r.sqlite, PROJECT, prefix.blob_key);
+      const reads: string[] = [];
+      const get = r.serverEnv.blobs.get.bind(r.serverEnv.blobs);
+      r.serverEnv.blobs.get = async (key, range) => { reads.push(key); return get(key, range); };
+      expect(await pendingCount(r.env.db)).toBe(1);
+      await parseTranscripts(r.serverEnv, NOW);
+      expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+      expect(reads).not.toContain(prefixKey);
+      expect(r.sqlite.query('SELECT text FROM prompt_batches').all()).toEqual([{ text: 'prompt 1' }]);
+      expect(await pendingCount(r.env.db)).toBe(0);
+      const after = r.sqlite.query('SELECT * FROM transcripts').get();
+      const readCount = reads.length;
+      await parseTranscripts(r.serverEnv, NOW);
+      expect(r.sqlite.query('SELECT * FROM transcripts').get()).toEqual(after);
+      expect(reads.length).toBe(readCount);
+    } finally { r.sqlite.close(); }
+  });
+
+  it('leaves an intact completed v5 recording untouched', async () => {
+    const r = await rig(body(1));
+    try {
+      await parseTranscripts(r.serverEnv, NOW);
+      const before = r.sqlite.query('SELECT * FROM transcripts').get();
+      expect(before).toMatchObject({ parsed_offset: Buffer.byteLength(body(1)), parser_version: 5, parse_error: null });
+      expect(await pendingCount(r.env.db)).toBe(0);
+      await parseTranscripts(r.serverEnv, NOW);
+      expect(r.sqlite.query('SELECT * FROM transcripts').get()).toEqual(before);
+    } finally { r.sqlite.close(); }
+  });
+
+  it('keeps a newly stopped row stopped until its stop generation moves', async () => {
+    const r = await rig('not-json\n'.repeat(TRANSCRIPT_PARSE_MALFORMED_LIMIT + 1));
+    try {
+      await parseTranscripts(r.serverEnv, NOW);
+      const before = r.sqlite.query('SELECT * FROM transcripts').get();
+      expect(target(r.sqlite).parse_error).toBe('parse');
+      expect(await pendingCount(r.env.db)).toBe(0);
+      await parseTranscripts(r.serverEnv, NOW + 1);
+      expect(r.sqlite.query('SELECT * FROM transcripts').get()).toEqual(before);
+      r.sqlite.run("UPDATE transcripts SET parser_context=json_set(parser_context,'$.mycoParserFailure.generation',?)",
+        [PARSE_STOP_GENERATION - 1]);
+      expect(await pendingCount(r.env.db)).toBe(1);
+      await parseTranscripts(r.serverEnv, NOW + 2);
+      expect(await pendingCount(r.env.db)).toBe(0);
+      expect(r.sqlite.query("SELECT parse_failed_at,json_extract(parser_context,'$.mycoParserFailure.generation') AS generation FROM transcripts").get())
+        .toEqual({ parse_failed_at: NOW + 2, generation: PARSE_STOP_GENERATION });
+    } finally { r.sqlite.close(); }
+  });
+});
 
 describe('budgeted transcript continuation', () => {
   it('retains the open prompt when replay absorbs its already recorded first row', async () => {
@@ -658,6 +718,48 @@ describe('repair lane priority', () => {
 });
 
 describe('bounded parser upgrade repair', () => {
+it.each(['parse', AWAITING_BYTES])('preserves the cursor of a pruned-prefix upgrade while clearing only failures: %s', async (error) => {
+    const text = body(2);
+    const cursor = Buffer.byteLength(body(1));
+    const r = await rig(text, cursor);
+    try {
+      r.sqlite.run('DELETE FROM transcript_segments WHERE base_offset=0');
+      r.sqlite.run('UPDATE transcripts SET parsed_offset=?, parser_version=?, parse_error=?, parse_failed_at=?, parse_awaited_size=?',
+        [cursor, PARSER_VERSION - 1, error, NOW, Buffer.byteLength(text)]);
+      await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 2, wallMs: 1000 }, clock: () => 0 });
+      const row = r.sqlite.query('SELECT parsed_offset,parser_version,parse_error,parse_failed_at,parse_awaited_size,parser_context FROM transcripts').get() as {
+        parsed_offset: number; parser_version: number; parse_error: string | null; parse_failed_at: number | null;
+        parse_awaited_size: number | null; parser_context: string;
+      };
+      expect(row).toMatchObject({ parsed_offset: cursor, parser_version: PARSER_VERSION,
+        parse_error: error === AWAITING_BYTES ? error : null, parse_failed_at: error === AWAITING_BYTES ? NOW : null,
+        parse_awaited_size: error === AWAITING_BYTES ? Buffer.byteLength(text) : null });
+      expect(JSON.parse(row.parser_context).mycoParserRepair.status).toBe('raw_prefix_pruned');
+      if (error !== AWAITING_BYTES) {
+        for (let pass = 0; pass < 6; pass += 1) await parseTranscripts(r.serverEnv, NOW);
+        expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+        expect(r.sqlite.query('SELECT text FROM prompt_batches').all()).toEqual([{ text: 'prompt 1' }]);
+      }
+      expect(await pendingCount(r.env.db)).toBe(0);
+    } finally { r.sqlite.close(); }
+  });
+
+  it('keeps repair metadata beside a failure instead of treating the context as only a failure', async () => {
+    const header = line({ type: 'session_meta', payload: { source: 'cli' } });
+    const tail = line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'synthetic request' }] } });
+    const r = await rig(header + tail, Buffer.byteLength(header), { agent: 'codex' });
+    try {
+      const repair = { version: PARSER_VERSION, fromVersion: PARSER_VERSION - 1, status: 'raw_prefix_pruned' };
+      r.sqlite.run('DELETE FROM transcript_segments WHERE base_offset=0');
+      r.sqlite.run("UPDATE transcripts SET parsed_offset=?, parser_version=?, parse_error='parse', parser_context=?",
+        [Buffer.byteLength(header), PARSER_VERSION, JSON.stringify({ mycoParserFailure: { branch: 'no_progress' }, mycoParserRepair: repair })]);
+      await parseTranscripts(r.serverEnv, NOW);
+      expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(header + tail), parse_error: null });
+      const row = r.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+      expect(JSON.parse(row.parser_context).mycoParserRepair).toEqual(repair);
+    } finally { r.sqlite.close(); }
+  });
+
   it('wakes for an older flat-context EOF cursor, resumes after rewind, and repairs plans and failed calls once', async () => {
     const text = line({ type: 'user', promptId: uuid(1), message: { content: 'start' } })
       + line({ type: 'assistant', message: { content: [{ type: 'text', text: '<ultraplan># First</ultraplan>' }, { type: 'tool_use', id: 'old-call', name: 'Read', input: { path: 'a' } }] } })
@@ -1327,7 +1429,7 @@ describe('parsing a held transcript', () => {
     expect(target(sqlite).parse_error).toBe('parse');
     const context = sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
     expect(JSON.parse(context.parser_context).mycoParserFailure).toEqual({
-      branch: 'malformed_lines', offset: Buffer.byteLength(body(1)), lineKind: 'unknown',
+      branch: 'malformed_lines', offset: Buffer.byteLength(body(1)), lineKind: 'unknown', generation: PARSE_STOP_GENERATION,
     });
     sqlite.close();
   });
@@ -2046,7 +2148,8 @@ describe('reading a stored transcript again', () => {
 
   it('clears a recorded failure, so a transcript a parser stopped on is read again under the fixed one', async () => {
     const { sqlite, serverEnv } = await rig(cursorBytes(), 1 << 20, { agent: 'cursor' });
-    sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = ?", [PARSER_VERSION]);
+    sqlite.run("UPDATE transcripts SET parse_error = 'parse', parse_failed_at = 1, parser_version = ?, parser_context = ?",
+      [PARSER_VERSION, JSON.stringify({ mycoParserFailure: { generation: PARSE_STOP_GENERATION } })]);
     expect(await pendingCount(serverEnv.db)).toBe(0);
     await rereadTranscripts(serverEnv.db, { agent: 'cursor' });
     await parseTranscripts(serverEnv, NOW);
