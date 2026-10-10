@@ -111,7 +111,22 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 const PARTS = [['needs-you', 'Needs you'], ['status', 'Status'], ['workers', 'Workers'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
 
 describe('Health', () => {
-  it('shows the latest stopping reason and position at the Open Health destination', async () => {
+  it('gives a next step for an older stop without promising an automatic retry', async () => {
+    server(routes({
+      '/api/attention': () => Response.json({ items: [{
+        kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 1, latestAt: NOW,
+        reasons: { parse: 1 },
+      }], unavailable: [] }),
+    }));
+    mount('/status/health#status');
+    const section = await screen.findByRole('region', { name: 'Status' });
+    await waitFor(() => expect(within(section).getByText(/Latest stop:/).textContent)
+      .toContain('The reason was not recorded. Update Myco'));
+    expect(section.textContent).toContain('If reading stays stopped, report this problem.');
+    expect(section.textContent).not.toContain('will try again');
+  });
+
+  it('shows the stopping reason and next step at the Open Health destination', async () => {
     server(routes({
       '/api/attention': () => Response.json({ items: [{
         kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 2, latestAt: NOW,
@@ -121,7 +136,9 @@ describe('Health', () => {
     mount('/status/health#status');
     const section = await screen.findByRole('region', { name: 'Status' });
     await waitFor(() => expect(within(section).getByText(/Latest stop:/).textContent)
-      .toContain('Reading could not move past a record at byte 12345 (tool result).'));
+      .toContain('Reading could not move past a record (tool result).'));
+    expect(within(section).getByText(/Latest stop:/).textContent).toContain('Update Myco');
+    expect(section.textContent).not.toContain('12345');
     expect(within(section).getByText('2 transcripts in Myco')).toBeTruthy();
     expect(seen.hash).toBe('#status');
     expect(rawIdsIn(section)).toEqual([]);

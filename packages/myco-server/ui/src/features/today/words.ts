@@ -415,6 +415,7 @@ function inDays(at: number, now: number): string {
 /** A stopped recording's latest known cause, with no transcript content. */
 export function transcriptStopWords(item: Extract<AttentionItem, { kind: 'transcripts_stopped' }>): string {
   const diagnostic = item.latestDiagnostic;
+  const nextStep = 'Update Myco to get the latest transcript fixes. If reading stays stopped, report this problem.';
   const causes: Record<string, string> = {
     malformed_lines: 'Several records could not be read',
     event_not_stored: 'A record could not be saved',
@@ -424,10 +425,8 @@ export function transcriptStopWords(item: Extract<AttentionItem, { kind: 'transc
     record_too_large: 'A record is too large to read',
   };
   if (diagnostic === undefined) {
-    if (item.reasons.blob_absent) return 'Part of the stored transcript is missing. The stopping position was not recorded.';
-    if (item.reasons.record_too_large) return 'A record is too large to read. The stopping position was not recorded.';
-    if (item.reasons.event_refused) return 'A record was not accepted. The stopping position was not recorded.';
-    return 'The reason and stopping position were not recorded. A newer Myco version will try again.';
+    const reason = ['blob_absent', 'record_too_large', 'event_refused'].find((key) => item.reasons[key]);
+    return `${reason === undefined ? 'The reason was not recorded' : causes[reason]}. ${nextStep}`;
   }
   const kinds: Record<string, string> = {
     user: 'user message', assistant: 'assistant message', attachment: 'attachment', tool_result: 'tool result',
@@ -436,5 +435,5 @@ export function transcriptStopWords(item: Extract<AttentionItem, { kind: 'transc
     prompt: 'prompt', response: 'reply', 'tool.use': 'tool call', 'tool.failure': 'failed tool call', 'plan.snapshot': 'plan',
   };
   const kind = kinds[diagnostic.lineKind];
-  return `${causes[diagnostic.branch] ?? 'The transcript could not be read'} at byte ${diagnostic.offset}${kind === undefined ? '' : ` (${kind})`}. The stored transcript is kept.`;
+  return `${causes[diagnostic.branch] ?? 'The transcript could not be read'}${kind === undefined ? '' : ` (${kind})`}. The stored transcript is kept. ${nextStep}`;
 }
