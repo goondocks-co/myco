@@ -9,7 +9,6 @@
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
   ['idx_agent_runs_retention', 'run retention seeks eligible terminal runs across the Deployment by cutoff and id'],
-  ['idx_sessions_activity', 'power resolution seeks the newest capture receipt across the Deployment'],
   ['idx_agent_runs_activity', 'power resolution seeks the newest run start across the Deployment'],
   ['idx_agent_runs_task_live', 'embedding dispatch checks live runs by task and status across every Project'],
   ['idx_device_requests_pending_expiry', 'the enrollment sweep seeks expired undecided requests across the Deployment'],

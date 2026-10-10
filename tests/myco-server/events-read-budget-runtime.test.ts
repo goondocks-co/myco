@@ -156,7 +156,6 @@ const OLD_PROJECTS_SQL = `SELECT p.project_id, p.name, p.created_at, p.archived_
 const HISTORY_INDEXES = [
   ['idx_agent_runs_retention', `CREATE INDEX idx_agent_runs_retention ON agent_runs(resumable, COALESCE(completed_at, started_at), id)
     WHERE status IN ('completed', 'failed', 'skipped') AND resumable = 0`],
-  ['idx_sessions_activity', 'CREATE INDEX idx_sessions_activity ON sessions(last_received_at)'],
   ['idx_agent_runs_activity', 'CREATE INDEX idx_agent_runs_activity ON agent_runs(started_at)'],
 ] as const;
 
@@ -229,7 +228,7 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
         [selection.sql, selection.binds, ['idx_session_read_extraction']],
         [listProjectsSql(), [], ['idx_session_read_activity']],
         [RETENTION_CANDIDATES_SQL, [0, 500], ['idx_agent_runs_retention']],
-        [LAST_ACTIVITY_SQL, [LAST_REQUEST_KEY], ['idx_sessions_activity', 'idx_agent_runs_activity']],
+        [LAST_ACTIVITY_SQL, [LAST_REQUEST_KEY], ['idx_sessions_capture', 'idx_agent_runs_activity']],
       ] as const) {
         const details = (await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...binds).all<{ detail: string }>()).results.map(row => row.detail).join('\n');
         plans.push({ details, indexes, ordered: sql === selection.sql || sql === RETENTION_CANDIDATES_SQL });
