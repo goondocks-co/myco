@@ -17,8 +17,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   assertWranglerReady,
+  CloudflareAuthenticationError,
+  isCloudflareAuthenticationRefusal,
   ensureCommandDir,
   cloudflareStatus,
+  cloudflareSchemaVersion,
+  deploymentRecordPath,
   deleteWorker,
   deployWorker,
   rollbackWorker,
@@ -44,6 +48,9 @@ import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
+import { getPluginVersion } from '../version.js';
+import { systemRunner } from './runner.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
@@ -194,6 +201,7 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
     bucketName: resources.bucketName, vectorIndexName: resources.vectorIndexName,
     wrapKeySecretName: resources.wrapKeySecretName, recoveryBucketName: resources.recoveryBucketName,
     versionId: existing?.versionId ?? null, deployedAt: existing?.deployedAt ?? new Date().toISOString(),
+    ...(existing?.release === undefined ? {} : { release: existing.release }),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
     ...(url === undefined ? {} : { url }), databaseId: database.databaseId,
     ...(existing?.storeId === undefined ? {} : { storeId: existing.storeId }),
@@ -240,7 +248,7 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
     createdResources.push('worker secret SESSION_SECRET');
   }
 
-  record = { ...record, versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
+  record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
   writeDeploymentRecord(record, options.mycoHome);
   return { record, createdResources, versionId: deployed.versionId };
 });
@@ -254,28 +262,112 @@ export const createCloudflareDeployment = cloudflareOperation(async (options: Li
  * took it, and a run executes on a worker attached from elsewhere that this
  * command never touches.
  */
-export const updateCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ versionId: string | null }> => {
-  await preflight(options);
-  let record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
-  if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
-  const resources = cloudflareResources(record);
-  const withConfig = staged(record, options);
-  record = await applyCloudflareSchema({ ...withConfig, record,
-    persist: (next) => writeDeploymentRecord(next, options.mycoHome),
-    prepare: async (admitted) => {
-      await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
-      await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
-      return admitted;
-    },
-  });
-  const deployed = await deployWorker(withConfig);
+export interface CloudflareUpdateSummary {
+  releaseBefore: string | undefined;
+  releaseTarget: string;
+  schemaBefore: number | null;
+  schemaTarget: number;
+  schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'unchanged';
+  worker: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied';
+  record: 'updated' | 'not updated';
+  resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'already exists' }>;
+  recordPath: string;
+  bookmark?: string;
+}
 
-  writeDeploymentRecord({
-    ...record, recoveryBucketName: resources.recoveryBucketName,
-    versionId: deployed.versionId, deployedAt: new Date().toISOString(),
-  }, options.mycoHome);
-  return { versionId: deployed.versionId };
+/** The same summary is printed for successful and interrupted hosted updates. */
+export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[] {
+  const resultingRelease = summary.worker === 'applied' ? summary.releaseTarget
+    : ['not attempted', 'refused: not applied'].includes(summary.worker) ? summary.releaseBefore ?? 'unknown' : 'unknown';
+  const resultingSchema = summary.schema === 'applied' ? summary.schemaTarget
+    : summary.schema === 'attempted; outcome unknown' ? 'unknown' : summary.schemaBefore ?? 'unknown';
+  const lines = [
+    `Cloudflare update (releases recorded before update or acknowledged by deploy; schemas observed or acknowledged): from ${summary.releaseBefore ?? 'unknown'}/${summary.schemaBefore ?? 'unknown'} to ${resultingRelease}/${resultingSchema}.`,
+    `  Schema: ${summary.schema} (target ${summary.schemaTarget}).`,
+    `  Worker: ${summary.worker} (target release ${summary.releaseTarget}).`,
+    `  Local deployment record: ${summary.record}.`,
+    `  Resources: ${summary.resources.length === 0 ? 'no changes attempted' : summary.resources.map((r) => `${r.operation}: ${r.state}`).join('; ')}.`,
+    summary.bookmark === undefined ? '  No new recovery bookmark recorded.' : `  Bookmark ${summary.bookmark} recorded in ${summary.recordPath}.`,
+  ];
+  if (['not attempted', 'refused: not applied'].includes(summary.worker) && ['not attempted', 'unchanged', 'refused: not applied'].includes(summary.schema)
+    && summary.resources.every((r) => ['already exists', 'refused: not applied'].includes(r.state))) {
+    lines.push('Nothing changed in Cloudflare; a rerun is safe. A recorded bookmark is a recovery point, not an applied migration.');
+  } else if (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown'))) {
+    lines.push('An attempted change has an unknown outcome; run myco server status --target cloudflare before retrying.');
+  }
+  if (summary.worker === 'applied' && summary.record === 'not updated') {
+    lines.push('The Worker is live; the local record was not updated; rerun myco server update --target cloudflare or check myco server status --target cloudflare.');
+  }
+  return lines;
+}
+
+export const updateCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
+  const summary: CloudflareUpdateSummary = {
+    releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
+    schema: 'not attempted', worker: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
+  };
+  const runner = options.runner ?? systemRunner();
+  options = { ...options, runner: {
+    async run(command, args, runOptions) {
+      const [product, action] = args.slice(2);
+      const operation = product === 'r2' && args[4] === 'create' ? `r2 bucket ${args[5]}`
+        : product === 'vectorize' && action === 'create' ? `vectorize index ${args[4]}`
+        : product === 'vectorize' && action === 'create-metadata-index'
+          ? `vectorize filter ${args[args.indexOf('--propertyName') + 1]} on ${args[4]}` : undefined;
+      const entry: CloudflareUpdateSummary['resources'][number] | undefined = operation === undefined
+        ? undefined : { operation, state: 'attempted; outcome unknown' };
+      if (entry !== undefined) summary.resources.push(entry);
+      const result = await runner.run(command, args, runOptions);
+      if (entry !== undefined) {
+        if (result.code === 0) entry.state = 'applied';
+        else if (isCloudflareAuthenticationRefusal(result)) entry.state = 'refused: not applied';
+        else if (/already (exists|owned)/i.test(result.stdout + result.stderr)) entry.state = 'already exists';
+      }
+      return result;
+    },
+  } };
+  try {
+    let record = readDeploymentRecord(options.mycoHome);
+    if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
+    summary.releaseBefore = record.release;
+    await preflight(options);
+    if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
+    const resources = cloudflareResources(record);
+    const withConfig = staged(record, options);
+    record = await applyCloudflareSchema({ ...withConfig, record,
+      persist: (next) => {
+        writeDeploymentRecord(next, options.mycoHome);
+        if ((next.schemaUpdates?.length ?? 0) > (record!.schemaUpdates?.length ?? 0)) summary.bookmark = next.schemaUpdates!.at(-1)!.bookmark;
+      },
+      observe: ({ phase, before, after }) => {
+        summary.schemaBefore = before;
+        if (phase === 'observed') summary.schema = before === after ? 'unchanged' : 'not attempted';
+        else summary.schema = phase === 'applied' ? 'applied' : 'attempted; outcome unknown';
+      },
+      prepare: async (admitted) => {
+        await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
+        await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
+        return admitted;
+      },
+    });
+    summary.worker = 'attempted; outcome unknown';
+    const deployed = await deployWorker(withConfig);
+    summary.worker = 'applied';
+
+    writeDeploymentRecord({
+      ...record, recoveryBucketName: resources.recoveryBucketName,
+      release: summary.releaseTarget, versionId: deployed.versionId, deployedAt: new Date().toISOString(),
+    }, options.mycoHome);
+    summary.record = 'updated';
+    return { versionId: deployed.versionId, summary };
+  } catch (cause) {
+    if (cause instanceof CloudflareAuthenticationError) {
+      if (summary.schema === 'attempted; outcome unknown') summary.schema = 'refused: not applied';
+      if (summary.worker === 'attempted; outcome unknown') summary.worker = 'refused: not applied';
+    }
+    for (const line of cloudflareUpdateLines(summary)) options.report?.(line);
+    throw cause;
+  }
 });
 
 /**
@@ -294,7 +386,7 @@ export const rollbackCloudflareDeployment = cloudflareOperation(async (options: 
   const target = options.versionId ?? record.versionId ?? '';
   if (target === '') throw new Error('no version to roll back to: pass --version <id> (`wrangler deployments list` names them)');
   await rollbackWorker({ ...bareCommand(options), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
-  writeDeploymentRecord({ ...record, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
+  writeDeploymentRecord({ ...record, release: undefined, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: target };
 });
 
@@ -302,14 +394,26 @@ export interface CloudflareDeploymentStatus {
   record: DeploymentRecord;
   deployed: boolean;
   versionId: string | null;
+  schema: number | null;
+  workerError: string | null;
+  schemaError: string | null;
 }
 
 export async function cloudflareDeploymentStatus(options: LifecycleOptions): Promise<CloudflareDeploymentStatus | null> {
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) return null;
-  const status = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName });
-  return { record, deployed: status.deployed, versionId: status.versionId };
+  if (options.accountId !== record.accountId) throw new Error('status refused: selected account does not match the deployment record');
+  const [worker, schema] = await Promise.allSettled([
+    cloudflareStatus({ ...bareCommand(options), workerName: record.workerName }),
+    cloudflareSchemaVersion({ ...bareCommand(options), databaseName: record.databaseName }),
+  ]);
+  const detail = (error: unknown): string => error instanceof Error ? error.message : String(error);
+  return { record, deployed: worker.status === 'fulfilled' && worker.value.deployed,
+    versionId: worker.status === 'fulfilled' ? worker.value.versionId : null,
+    schema: schema.status === 'fulfilled' ? schema.value : null,
+    workerError: worker.status === 'rejected' ? detail(worker.reason) : null,
+    schemaError: schema.status === 'rejected' ? detail(schema.reason) : null };
 }
 
 /**

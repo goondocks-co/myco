@@ -133,7 +133,7 @@ describe('deploy', () => {
 
 describe('status', () => {
   it('reports not-deployed when wrangler finds nothing', async () => {
-    const status = await cloudflareStatus({ ...base(), runner: runner({ code: 1 }), workerName: 'myco-server' });
+    const status = await cloudflareStatus({ ...base(), runner: runner({ code: 1, stderr: 'Worker not found [code: 10007]' }), workerName: 'myco-server' });
     expect(status.deployed).toBe(false);
   });
 

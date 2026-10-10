@@ -21,12 +21,12 @@ import {
   rotateSecrets,
   adoptDeployment,
 } from '../server/deployment.js';
-import { CommandFailed } from '../server/runner.js';
+import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
 import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerNotReady, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
+import { WranglerNotReady, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
-import { type CreatePlan, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
+import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { existsSync } from 'node:fs';
 import { parseFlags } from './flags.js';
 import path from 'node:path';
@@ -254,7 +254,7 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[]): Promise<void> {
+export async function run(args: string[], deps: { runner?: CommandRunner } = {}): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -262,6 +262,15 @@ export async function run(args: string[]): Promise<void> {
   }
 
   const { flags } = parseFlags(rest);
+  const credentialLines = cloudflareCredentialLines();
+  const emittedCredentials = new Set<string>();
+  const report = (line: string): void => {
+    if (credentialLines.includes(line)) {
+      if (emittedCredentials.has(line)) return;
+      emittedCredentials.add(line);
+    }
+    console.log(line);
+  };
 
   /** Which target a lifecycle verb acts on: named, else the one this machine holds. */
   const target = (): 'cloudflare' | 'compose' | 'local' => {
@@ -289,7 +298,8 @@ export async function run(args: string[]): Promise<void> {
     const record = flags.has('dry-run') ? peekDeploymentRecord() : readDeploymentRecord();
     const accountId = flags.get('account-id') ?? record?.accountId;
     if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
-    return { accountId, report: (line: string) => { console.log(line); } };
+    for (const line of credentialLines) report(line);
+    return { accountId, ...(deps.runner === undefined ? {} : { runner: deps.runner }), report };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
@@ -447,9 +457,19 @@ export async function run(args: string[]): Promise<void> {
       const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
-      console.log(`  Deployed:   ${status.deployed ? status.versionId ?? 'yes' : 'no'}`);
-      console.log(`  Recorded:   ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
-      if (status.record.url !== undefined) console.log(`  URL:        ${status.record.url}`);
+      console.log(`  Worker (live): ${status.workerError === null ? status.deployed ? status.versionId ?? 'version unavailable' : 'not deployed' : `unavailable — ${status.workerError}`}`);
+      console.log(`  Worker (recorded): ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
+      console.log(`  Release (recorded at last deploy): ${status.record.release ?? 'unknown (not recorded)'}`);
+      console.log(`  Schema (live): ${status.schema ?? `unavailable — ${status.schemaError}`}`);
+      console.log(`  URL (recorded): ${status.record.url ?? 'unknown'}`);
+      console.log('  URL (live): routing not checked.');
+      if (status.workerError === null && status.deployed && status.versionId !== null && status.versionId !== status.record.versionId) {
+        console.log(`The live Worker is version ${status.versionId}, not the one recorded; run myco server status --target cloudflare after the deploy settles. The recorded release does not identify the live Worker.`);
+      }
+      const lastSchema = status.record.schemaUpdates?.at(-1);
+      if (lastSchema !== undefined) {
+        console.log(`  Last schema update (${lastSchema.appliedAt === undefined ? 'recovery point recorded; migration not confirmed' : 'applied'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
+      }
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;
     }
@@ -473,7 +493,8 @@ export async function run(args: string[]): Promise<void> {
 
     if (command === 'update' && target() === 'cloudflare') {
       const updated = await updateCloudflareDeployment(cloudflareOptions());
-      console.log(`Cloudflare Deployment updated to version ${updated.versionId ?? 'unknown'} (migrations first, then the Worker).`);
+      for (const line of cloudflareUpdateLines(updated.summary)) console.log(line);
+      console.log(`  Worker version applied: ${updated.versionId ?? 'unknown'}.`);
       return;
     }
 
@@ -706,6 +727,7 @@ export async function run(args: string[]): Promise<void> {
       const url = flags.get('url');
       if (url === undefined || url === 'true' || url === '') fail('github-app needs --url <https://…>, the address members open the dashboard at.');
       const target = resolveSignInTarget(flags.get('target'));
+      if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({
         url: url!,
         org: flags.get('org'),
