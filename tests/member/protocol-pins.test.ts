@@ -17,7 +17,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-work
 import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
 import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { KINDS, kindSpec, PLAN_SOURCES as SERVER_PLAN_SOURCES, PLAN_STATUSES as SERVER_PLAN_STATUSES, PROMPT_ORIGINS as SERVER_PROMPT_ORIGINS, TRANSCRIPT_ROLES as SERVER_TRANSCRIPT_ROLES } from '@myco-server-worker/ingest/kinds.js';
-import { FEATURE_KINDS, MEMBER_FEATURES, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
+import { FEATURE_KINDS, PROJECT_NAME_FEATURE, featuresNamed, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { LINEAGE_REPLAYED_CODE as SERVER_LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
@@ -34,6 +34,7 @@ import { getPluginVersion } from '@myco/version.js';
 const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, string, 'item']> = {
   agent: ['session.start', 'agent'],
   branch: ['session.start', 'branch'],
+  projectName: ['session.start', 'projectName'],
   originPath: ['session.start', 'originPath'],
   parentReason: ['session.start', 'parentReason'],
   toolName: ['tool.use', 'toolName'],
@@ -137,7 +138,8 @@ describe('member ↔ worker pins', () => {
   });
 
   it('catalogues every advertised kind, ships none of them unasked, and changes the advertised set only in the protocol\'s own row', () => {
-    const advertised: readonly string[] = MEMBER_FEATURES.map((feature) => FEATURE_KINDS[feature]).sort();
+    expect(featuresNamed(PROJECT_NAME_FEATURE)).toEqual(['project-name']);
+    const advertised: readonly string[] = Object.values(FEATURE_KINDS).sort();
     expect({ protocol: MEMBER_PROTOCOL, featureKinds: advertised }).toEqual({ protocol: MEMBER_PROTOCOL, featureKinds: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL]?.featureKinds });
     expect(advertised.filter((kind) => kindSpec(kind) === null)).toEqual([]);
     expect(advertised.filter((kind) => (MEMBER_KINDS as readonly string[]).includes(kind))).toEqual([]);
@@ -263,6 +265,10 @@ describe('member ↔ worker pins', () => {
     expect(longest).toBeGreaterThan(0);
     expect({ grace: LINEAGE_REPLAY_GRACE_MS, longest, outlasts: LINEAGE_REPLAY_GRACE_MS > longest })
       .toEqual({ grace: LINEAGE_REPLAY_GRACE_MS, longest, outlasts: true });
+  });
+
+  it('accepts a repository name as an additive optional session-start field', () => {
+    expect(kindSpec('session.start')!.fields.projectName).toEqual({ bound: { type: 'string', max: BOUNDS.projectName }, required: false, column: undefined });
   });
 
   it('every member string bound equals the worker bound on the field it truncates for', () => {

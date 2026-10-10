@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -762,7 +763,7 @@ function attachedRegistration(
     },
     project: {
       project_id: ref.project_id,
-      name: path.basename(root),
+      name: repositoryName(root),
       root,
       status: 'active',
       created_at: epoch,
@@ -802,7 +803,7 @@ function resolveResidencyDivert(projectRoot: string): ResolvedRegisteredProject 
     },
     project: {
       project_id: journal.project_id,
-      name: journal.project_name || path.basename(root),
+      name: journal.project_name || repositoryName(root),
       root,
       status: 'active',
       created_at: epoch,
@@ -872,7 +873,7 @@ export function ensureProjectRegistered(
   const grove = resolveDefaultGrove(mycoHome);
   if (!grove) return null;
 
-  const projectName = path.basename(path.resolve(projectRoot));
+  const projectName = repositoryName(projectRoot);
   let manifest = loadProjectManifest(resolveProjectVaultDir(projectRoot));
   // Team Host affiliation hint (prompt-only, see host/hint.ts): `attach` was
   // already confirmed null above, so a project whose manifest carries a

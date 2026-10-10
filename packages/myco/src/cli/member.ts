@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 /**
  * `myco member <op>` — the member's own CLI: `join`/`leave` record and forget
@@ -415,9 +416,9 @@ async function connectFolder(
     if (!made.ok) { fail(`${deploymentUrl(serverUrl)} did not create the project (${made.error.code}): ${made.error.message}`); return null; }
     return { projectId: String(made.value.projectId), name: String(made.value.name), sessionCount: 0 };
   };
-  const folderName = path.basename(root);
+  const defaultProjectName = repositoryName(root);
   if (parsed.create !== undefined) {
-    const made = await create(parsed.create.name ?? folderName);
+    const made = await create(parsed.create.name ?? defaultProjectName);
     if (made === null) return null;
     project = made;
   } else {
@@ -432,14 +433,14 @@ async function connectFolder(
       project = matches[0];
     } else {
       const lines = [`Projects on ${deploymentUrl(serverUrl)}:`, ...projects.map((p, n) => `  ${n + 1}) ${p.name} (${p.projectId}, ${p.sessionCount} session${p.sessionCount === 1 ? '' : 's'})`)];
-      const answer = await (deps.ask ?? askOnTerminal)([...lines, `  n) a new project named "${folderName}"`, `Connect ${root} to which? `].join('\n'));
+      const answer = await (deps.ask ?? askOnTerminal)([...lines, `  n) a new project named "${defaultProjectName}"`, `Connect ${root} to which? `].join('\n'));
       if (answer === null) {
         for (const line of lines) out(line);
         return fail(`name the project to connect ${root} to: \`myco member join --project <id or name>\`, or \`myco member join --new [name]\` to create one`);
       }
       const picked = answer.trim().toLowerCase();
       if (picked === 'n' || picked === 'new') {
-        const made = await create(folderName);
+        const made = await create(defaultProjectName);
         if (made === null) return null;
         project = made;
       } else {

@@ -1,3 +1,4 @@
+import { memoizedRepositoryName } from '@myco/utils/git.js';
 import { defaultMembership } from './default-deployment.js';
 import { assertMemberTranscriptDestination, TranscriptDestinationError } from './transcript-routing.js';
 /**
@@ -49,6 +50,7 @@ import { MemberSpool } from './spool.js';
 import { legacySessionsToLeaveOut } from './legacy-ledger.js';
 import { readSessionState } from './session-state.js';
 import { shipTranscriptSegments, transcriptHeadHash, transcriptPointerFor } from './transcript.js';
+import { watchingFeatures } from './prefetch.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
 /** Candidates one plan request carries. The newest this many by modification time are offered; the Deployment applies its own bounds to them. */
@@ -347,6 +349,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   });
   const { candidates, unattributable, active } = collected;
 
+  const repositoryNames = new Map<string, string>();
   const byProject = new Map<string, Candidate[]>();
   // Projects this machine holds history for that `--project` excluded. Named
   // rather than dropped: "nothing to import" and "you asked for one of three"
@@ -392,7 +395,8 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     const offered = forProject.slice(0, limit);
     for (const candidate of forProject.slice(limit)) tally(candidate.agent).trimmed += 1;
 
-    const client = new ServerClient(entry, fetchImpl);
+    const spool = new MemberSpool(entry, { mycoHome });
+    const client = new ServerClient(entry, watchingFeatures(fetchImpl, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now }));
     const answer = await client.importPlan({
       windowDays: opts.windowDays,
       maxPerAgent: opts.maxPerAgent,
@@ -409,7 +413,6 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
 
     const answers = Array.isArray(answer.body.candidates) ? answer.body.candidates as Array<Record<string, unknown>> : [];
     const decisions = new Map(answers.map((a) => [String(a.transcriptId), a]));
-    const spool = new MemberSpool(entry, { mycoHome });
     let endedBy: string | undefined;
 
     for (const candidate of offered) {
@@ -424,7 +427,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       if (opts.dryRun === true) { held.imported += 1; continue; }
       if (opts.until !== undefined && now() >= opts.until) { endedBy = IMPORT_DEADLINE; break; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now);
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames });
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -450,7 +453,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
  */
 export async function shipSession(
   candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
-  opts: { facts?: boolean } = {},
+  opts: { facts?: boolean; repositoryNames?: Map<string, string> } = {},
 ): Promise<string> {
   spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
@@ -471,7 +474,7 @@ export async function shipSession(
   // a session whose transcript is known is a session whose facts were sent.
   const known = opts.facts === false || readSessionState(spool.dir, sessionId).transcript?.transcriptId === pointer.transcriptId;
   const facts = known ? [] : [
-    sessionStartEvent(ctx, { startedAt: candidate.modifiedAt, originPath: filePath }),
+    sessionStartEvent(ctx, { startedAt: candidate.modifiedAt, originPath: filePath, projectName: memoizedRepositoryName(candidate.root, opts.repositoryNames) }),
     sessionEndEvent(ctx, { endedAt: candidate.modifiedAt }),
   ];
   // Committed with the pointer so a killed import leaves no receipt for an

@@ -14,6 +14,7 @@
  * Homebrew / system paths. Falls back to the bare name so a non-standard install
  * still works through whatever PATH does survive.
  */
+import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -165,4 +166,54 @@ export function gitExitStatusAsync(args: string[], cwd: string, budget: GitQuery
     child.on('error', () => { if (timer !== undefined) clearTimeout(timer); resolve(null); });
     child.on('close', (code, signal) => { if (timer !== undefined) clearTimeout(timer); resolve(signal !== null ? null : code); });
   });
+}
+
+function gitAnswer(root: string, args: string[], budget: GitQueryBudget): string | null {
+  try { return runGitAnswer(args, root, (args, cwd) => runGit(args, cwd, budget)); } catch { return null; }
+}
+
+/** The normalized origin, or first remote, when Git can read one. */
+export function repositoryRemote(root: string, budget: GitQueryBudget = {}): string | null {
+  let remote = gitAnswer(root, ['remote', 'get-url', 'origin'], budget);
+  if (remote === null) {
+    const first = gitAnswer(root, ['remote'], budget)?.split('\n').find((name) => name.trim().length > 0);
+    if (first !== undefined) remote = gitAnswer(root, ['remote', 'get-url', first.trim()], budget);
+  }
+  return remote === null ? null : normalizeRemote(remote);
+}
+
+/** A display name resolved at most once per root in one import. */
+export function memoizedRepositoryName(root: string, names: Map<string, string> = new Map()): string {
+  const held = names.get(root);
+  if (held !== undefined) return held;
+  const name = repositoryName(root);
+  names.set(root, name);
+  return name;
+}
+
+/** The nearest directory that exists, for Git queries about retained session paths. */
+export function existingRepositoryAncestor(root: string): string {
+  let current = path.resolve(root);
+  while (!fs.existsSync(current) && path.dirname(current) !== current) current = path.dirname(current);
+  return current;
+}
+
+/** A repository's main checkout folder, then its remote name, then the supplied root's folder. */
+export function repositoryName(root: string, options: GitQueryBudget & { remote?: string | null; commonDir?: string | null } = {}): string {
+  const resolved = path.resolve(root);
+  const queryRoot = existingRepositoryAncestor(resolved);
+  const common = options.commonDir === undefined
+    ? gitAnswer(queryRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'], options)
+    : options.commonDir;
+  if (common !== null && path.basename(common) === '.git') return path.basename(path.dirname(common));
+  if (common !== null) {
+    if (gitAnswer(common, ['rev-parse', '--is-bare-repository'], options) === 'true' || path.basename(common).endsWith('.git')) {
+      return path.basename(common).replace(/\.git$/, '');
+    }
+    const worktree = gitAnswer(queryRoot, ['config', '--get', 'core.worktree'], options);
+    if (worktree !== null) return path.basename(path.resolve(common, worktree));
+    // Separate git directories with no checkout pointer use the remote or supplied root.
+  }
+  const repository = options.remote === undefined ? repositoryRemote(queryRoot, options) : options.remote;
+  return repository?.split('/').at(-1) || path.basename(resolved);
 }

@@ -1,3 +1,4 @@
+import { memoizedRepositoryName } from '@myco/utils/git.js';
 import { defaultMembership } from './default-deployment.js';
 import { assertMemberTranscriptDestination, isMemberOwnedTranscriptPath, TranscriptDestinationError } from './transcript-routing.js';
 import type { MemberRoutingIdentity } from './routing.js';
@@ -58,7 +59,8 @@ import {
 import { LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
 import { deploymentUrl, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
-import { MemberSpool, type RefusedEntry } from './spool.js';
+import { MemberSpool, spoolDirFor, type RefusedEntry } from './spool.js';
+import { watchingFeatures } from './prefetch.js';
 import { ServerClient, type FetchLike, type Outcome } from './transport.js';
 import { REFUSAL_SUBJECT } from './constants.js';
 import { LEGACY_IMPORT_ADAPTER, PLAN_STATUSES, type PlanStatus } from '@goondocks/myco-shared/member-protocol';
@@ -641,6 +643,7 @@ function prepare(opts: LegacyImportOptions, machineId: string, mycoHome: string)
  */
 export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImportDeps): Promise<LegacyImportReport> {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
+  const repositoryNames = new Map<string, string>();
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? pause;
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
@@ -679,7 +682,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   const clientFor = (projectId: string): ServerClient => {
     const fresh = membershipFor(mycoHome, serverUrl);
     const record = typeof fresh === 'string' ? membership : fresh;
-    return new ServerClient({ serverUrl: record.serverUrl, token: record.token, projectId }, fetchImpl);
+    return new ServerClient({ serverUrl: record.serverUrl, token: record.token, projectId }, watchingFeatures(fetchImpl, { serverUrl, spoolDir: spoolDirFor({ serverUrl, projectId }, mycoHome), mycoHome, now }));
   };
 
   /** Session phases already appended this run, so a retried drain never appends them twice. */
@@ -741,6 +744,9 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   /** One project. Answers the class a step could not get past, or undefined when it finished. */
   async function importProject(g: Prepared, r: LegacyProjectReport): Promise<string | undefined> {
     const { project, root } = g;
+    const vaultRoot = path.dirname(path.dirname(project.vault));
+    const projectRoot = fs.existsSync(path.join(vaultRoot, '.git')) ? vaultRoot
+      : [...project.sessions].reverse().find((session) => session.projectRoot !== null && fs.existsSync(session.projectRoot))?.projectRoot ?? root;
     const projectId = project.projectId;
     const ledger = new LegacyLedger(mycoHome, serverUrl, projectId);
     const done = ledger.read();
@@ -880,6 +886,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
         startedAt: s.startedAt ?? undefined,
         branch: s.branch ?? undefined,
         originPath: root ?? s.projectRoot ?? undefined,
+        projectName: projectRoot === null ? undefined : memoizedRepositoryName(projectRoot, repositoryNames),
         parentSessionId: s.parentSessionId === null ? undefined : g.idOf.get(s.parentSessionId),
         parentReason: s.parentReason ?? undefined,
       }), 'session.start', group.sessionId)];
@@ -889,7 +896,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
 
       let transcript: 'shipped' | 'held' | null = source === 'transcript' ? 'held' : null;
       if (plan !== null && plan.decision === 'take' && candidate !== null && candidate !== 'active') {
-        const shipped = await shipSession(candidate, plan.fromOffset, client, spool, deps.machineId, now, { facts: false });
+        const shipped = await shipSession(candidate, plan.fromOffset, client, spool, deps.machineId, now, { facts: false, repositoryNames });
         if (shipped === 'done') { shippedThisRun.add(group.sessionId); transcript = 'shipped'; }
         else if (shipped !== 'absent') return { endedBy: shipped };
       }

@@ -68,6 +68,7 @@ describe('git\'s verdict on a repository whose owner the files cannot match', ()
         from: 'git',
         top: git(cwd, 'rev-parse', '--show-toplevel'),
         root: path.resolve(cwd, git(cwd, 'rev-parse', '--git-common-dir'), '..'),
+        commonDir: path.resolve(cwd, git(cwd, 'rev-parse', '--git-common-dir')),
         layout: { top: r, gitDir: path.join(r, '.git'), commonDir: path.join(r, '.git') },
       });
       expect(verdict(cwd)).toEqual(first);
@@ -185,7 +186,8 @@ describe('git\'s verdict on a repository whose owner the files cannot match', ()
       ['not an object', () => fs.writeFileSync(file, 'null', { mode: 0o600 })],
       ['another cwd\'s', () => fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(JSON.stringify(r), JSON.stringify(`${r}-other`)), { mode: 0o600 })],
       ['a stale key', () => fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(/"key":"[0-9a-f]+"/, `"key":"${'0'.repeat(64)}"`), { mode: 0o600 })],
-      ['another version', () => fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace('"version":1', '"version":0'), { mode: 0o600 })],
+      ['another version', () => fs.writeFileSync(file, fs.readFileSync(file, 'utf-8').replace(`"version":${GIT_VERDICT_VERSION}`, '"version":0'), { mode: 0o600 })],
+      ['missing the common directory', () => fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf-8')), commonDir: undefined }), { mode: 0o600 })],
       ['missing an answer', () => fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf-8')), top: '' }), { mode: 0o600 })],
       ['a directory', () => { fs.rmSync(file); fs.mkdirSync(file); }],
     ];
@@ -244,7 +246,7 @@ describe('git\'s verdict on a repository whose config changes what its files say
     const { r, asked, env, deps } = setup((repo) => git(repo, 'config', 'extensions.worktreeConfig', 'true'));
     const owned: GitVerdictDeps = { ...deps, uid: undefined };
     const first = repoVerdict(r, env, owned);
-    expect(first).toEqual({ from: 'git', top: git(r, 'rev-parse', '--show-toplevel'), root: r, layout: null });
+    expect(first).toEqual({ from: 'git', top: git(r, 'rev-parse', '--show-toplevel'), root: r, commonDir: path.join(r, '.git'), layout: null });
     expect(repoVerdict(r, env, owned)).toEqual(first);
     expect(asked.length).toBe(1);
   });
@@ -341,6 +343,7 @@ describe('a kept verdict\'s shape', () => {
   /** Every shape a kept verdict has had, by version: a change to the fields needs a new version. */
   const SHAPES: Record<number, string[]> = {
     1: ['confirmed', 'cwd', 'key', 'layout', 'root', 'sources', 'top', 'unverified', 'version'],
+    2: ['commonDir', 'confirmed', 'cwd', 'key', 'layout', 'root', 'sources', 'top', 'unverified', 'version'],
   };
 
   it('is the one its version names', () => {
