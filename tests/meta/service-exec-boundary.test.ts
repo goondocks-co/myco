@@ -52,6 +52,24 @@ describe('service-manager process containment', () => {
     });
   }
 
+  for (const operation of ['install', 'start', 'stop', 'uninstall']) for (const stub of [true, false]) {
+    it(`native service ${operation} ${stub ? 'uses its stub' : 'refuses real service execution'}`, () => {
+      const root = fresh();
+      const env: NodeJS.ProcessEnv = { ...environment(root), MYCO_NATIVE_SERVICE_OPERATION: operation, ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}) };
+      const child = spawnSync(process.execPath, ['test', './tests/fixtures/install/native_service_boundary_test.ts'], {
+        cwd: process.cwd(), env, encoding: 'utf8', timeout: 30_000,
+      });
+      if (stub) {
+        expect({ status: child.status, denied: child.stderr.includes('TEST SAFETY') }).toEqual({ status: 0, denied: false });
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).not.toThrow();
+      } else {
+        expect(child.status).not.toBe(0);
+        expect(child.stderr).toContain('TEST SAFETY');
+        expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toThrow('TEST SAFETY');
+      }
+    });
+  }
+
   it.skipIf(!sqliteExecutable)('nested native SQLite probes remain admitted', () => {
     const root = fresh(), env = environment(root);
     const sqlite = sqliteExecutable!;

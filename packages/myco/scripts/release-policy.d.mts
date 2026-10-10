@@ -22,6 +22,7 @@ export function selectChannelRelease<T extends GitHubRelease>(releases: T[], cha
   maximumMajor?: number;
 }): T | null;
 export function renderReleaseSelector(): string;
+export function renderPowerShellReleaseSelector(): string;
 
 export function isDevelopmentVersion(version: string): boolean;
 export function isV2Version(version: string): boolean;
