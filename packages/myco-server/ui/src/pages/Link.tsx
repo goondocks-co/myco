@@ -1,7 +1,8 @@
+import { LINK_REFUSALS, OWNER_UNCLAIMED } from '@goondocks/myco-shared/setup-guidance';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
-import { Button, buttonVariants, Card, CommandBlock } from '../design';
+import { Button, buttonVariants, Card } from '../design';
 import { useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
 import { memberLabel } from '../lib/member-name';
@@ -11,14 +12,6 @@ import { PROJECTS_PATH } from '../routes/nav';
 type Member = { id: string; label: string | null };
 type Preview = { preview: { member: Member } };
 type Linked = { linked: true; member: Member };
-
-const REFUSALS: Record<string, string> = {
-  link_denied: 'This link has expired or was already used. Ask whoever gave it to you for a fresh one.',
-  identity_taken: 'This GitHub account is already connected to another member.',
-  member_linked: 'That member already has a GitHub account connected. Changing it needs the server operator.',
-  member_revoked: 'That member has been removed from this server.',
-  link_requires_admin: `This link can no longer connect an account: this server already has an admin. Ask an admin to connect your GitHub account from the ${INVITE_CONTROLS.page} page.`,
-};
 
 /** Reads the key from the URL fragment once, holds it for this tab, and clears it from the address bar. */
 function takeKeyFromFragment(): string | null {
@@ -72,8 +65,8 @@ export function LinkPage() {
   if (key === null) {
     body = (
       <>
-        <p className="t-body text-muted">There is no link to complete here. Ask an admin of this server for a link from the {INVITE_CONTROLS.page} page.</p>
-        <CommandBlock caption="Setting up a new server? On a machine that has joined it, run:" command="myco member link-github" />
+        <p className="t-body text-muted">There is no link to complete here.</p>
+        <p className="t-body text-muted">{me.data?.membership?.state === 'unclaimed' ? OWNER_UNCLAIMED : <>Ask an admin of this server for a link from the {INVITE_CONTROLS.page} page.</>}</p>
       </>
     );
   } else if (outcome?.kind === 'linked') {
@@ -94,6 +87,8 @@ export function LinkPage() {
     );
   } else if (me.isPending) {
     body = <p role="status" className="t-body text-muted">Checking your sign-in…</p>;
+  } else if (me.error) {
+    body = <p role="alert" className="t-body text-bad">{'Could not check your sign-in. Reload this page to try again.'}</p>;
   } else if (preview === null) {
     body = <p role="status" className="t-body text-muted">Checking the link…</p>;
   } else {
@@ -121,8 +116,8 @@ export function LinkPage() {
 function refusalText(err: unknown): string {
   if (err instanceof ApiError) {
     const code = (err.body as { error?: unknown } | null)?.error;
-    if (typeof code === 'string' && REFUSALS[code]) return REFUSALS[code];
-    return `The server refused (${err.status}).`;
+    if (typeof code === 'string' && LINK_REFUSALS[code]) return LINK_REFUSALS[code];
+    return `The server refused (${err.status}). Ask whoever gave you the link for a fresh one, then open it.`;
   }
-  return 'Could not reach the server.';
+  return 'Could not reach the server. Reload this page to try again.';
 }

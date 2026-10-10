@@ -4,6 +4,11 @@ import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import type { MemberRole } from '../auth/roles.js';
 import { memberWriteOutcome } from '../auth/member-write-refusal.js';
 
+/** The schema_meta receipt naming the member a first-owner setup made. */
+export const FIRST_MEMBER_KEY = 'first_member_setup';
+/** The provisional name of an owner whose GitHub account is not linked yet. */
+export const FIRST_OWNER_MEMBER_LABEL = 'Deployment administrator';
+
 export class OwnershipRefusal extends Error {
   constructor(readonly code: 'not_owner' | 'owner_pending' | 'invalid_owner' | 'invalid_member' | 'active_owner' | 'last_admin' | 'revision_conflict' | 'not_admin' | 'owner_already_recorded' | 'backfill_pending') { super(code); }
 }

@@ -1,3 +1,4 @@
+import type { JoinedMemberIdentity } from '@goondocks/myco-shared/member-protocol';
 /**
  * Join codes — the one string that carries a Deployment and an invitation
  * together, and the exchange that turns it into a member credential.
@@ -56,7 +57,7 @@ export interface JoinCode {
 export const ADMIN_ROLE = 'admin';
 
 /** What the Deployment answers a spent code with. */
-export interface JoinAnswer {
+export interface JoinAnswer extends JoinedMemberIdentity {
   memberId: string;
   token: string;
   tokenId: string;
@@ -175,6 +176,8 @@ export async function exchangeJoinCode(
       memberId: String(answer.memberId), token: String(answer.token), tokenId: String(answer.tokenId),
       expiresAt: Number(answer.expiresAt), role: String(answer.role),
       projectId: typeof answer.projectId === 'string' ? answer.projectId : null,
+      ...(typeof answer.memberLabel === 'string' || answer.memberLabel === null ? { memberLabel: answer.memberLabel } : {}),
+      ...(typeof answer.owner === 'boolean' ? { owner: answer.owner } : {}),
     },
   };
 }

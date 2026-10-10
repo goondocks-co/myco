@@ -145,6 +145,10 @@
     "./runner-fleet": {
       "import": "./dist/runner-fleet.js",
       "types": "./dist/runner-fleet.d.ts"
+    },
+    "./setup-guidance": {
+      "import": "./dist/setup-guidance.js",
+      "types": "./dist/setup-guidance.d.ts"
     }
   },
   "files": [

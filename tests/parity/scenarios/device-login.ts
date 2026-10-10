@@ -142,6 +142,7 @@ export const deviceLoginFlow: ParityScenario = {
 
     const output: string[] = [];
     let terminalSecret = '';
+    let terminalCode = '';
     const terminal = await deviceLogin(target.url, { machineId: 'terminal_device', machineName: 'SSH machine', os: 'linux' }, {
       stdout: line => output.push(line),
       fetch: Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -150,14 +151,15 @@ export const deviceLoginFlow: ParityScenario = {
         if (new URL(String(input)).pathname === '/auth/device/start') {
           const requested = await response.clone().json() as Started;
           terminalSecret = requested.device_code;
+          terminalCode = requested.user_code;
           expect((await decide(requested)).status).toBe(200);
         }
         return response;
       }, { preconnect: fetch.preconnect }),
     });
     expect(terminal.ok).toBe(true);
-    expect(output.join('\n')).toContain(`${target.url}/device on a machine`)
-    expect(output.join('\n')).not.toContain('?code=');
+    expect(output.join('\n')).toContain(`${target.url}/device?code=${encodeURIComponent(terminalCode)} on a machine`);
+    expect(output.join('\n')).toContain(`Code: ${terminalCode}`);
     expect(output.join('\n')).not.toContain(terminalSecret);
     if (terminal.ok) expect(output.join('\n')).not.toContain(terminal.answer.token);
 

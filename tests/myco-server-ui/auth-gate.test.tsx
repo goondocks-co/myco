@@ -53,6 +53,22 @@ function mount(path: string) {
 }
 
 describe('the auth gate', () => {
+  it('names the sign-in configuration command without mounting protected pages', async () => {
+    const { asked } = server({ '/auth/me': () => Response.json({ error: 'sign_in_unconfigured' }, { status: 401 }) });
+    mount('/projects');
+    expect(await screen.findByRole('heading', { name: 'Set up GitHub sign-in' })).toBeTruthy();
+    expect(screen.getByText(new RegExp(`myco server github-app --url ${window.location.origin}`))).toBeTruthy();
+    expect(screen.queryByText('Sign in with GitHub')).toBeNull();
+    expect(asked).toEqual(['/auth/me']);
+  });
+
+  it('names owner linking when the Deployment is unclaimed', async () => {
+    server({ '/auth/me': () => Response.json({ sub: '9', login: 'octocat', member: null, membership: { state: 'unclaimed', reason: null } }) });
+    mount('/projects');
+    expect(await screen.findByRole('heading', { name: 'Finish linking the owner' })).toBeTruthy();
+    expect(screen.getByText(/myco server setup-owner/)).toBeTruthy();
+  });
+
   for (const path of ['/', '/projects', '/p/proj_1/sessions']) {
     it(`paints only the splash on ${path} while the session is unknown, and asks for nothing but /auth/me`, async () => {
       const { asked } = server({ '/auth/me': never, '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
@@ -124,6 +140,13 @@ describe('the auth gate', () => {
     mount('/link');
     await waitFor(() => expect(screen.queryByLabelText('Loading')).toBeNull());
     expect(screen.queryByText('Sign in to Myco')).toBeNull();
+  });
+
+  it('an unclaimed link page with no key names the owner recovery without asking for an admin', async () => {
+    server({ '/auth/me': () => Response.json(dashboardMe({ ...ME, member: null, membership: { state: 'unclaimed' as const, reason: null } })) });
+    mount('/link');
+    expect(await screen.findByText(/myco server setup-owner/)).toBeTruthy();
+    expect(screen.queryByText(/Ask an admin of this server/)).toBeNull();
   });
 
   it('/join renders whatever the session and asks the server nothing, not even who is signed in', async () => {

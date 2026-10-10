@@ -1,3 +1,5 @@
+import { START_SLOW_DOWN } from '@goondocks/myco-shared/setup-guidance';
+
 const REQUEST_TIMEOUT_MS = 30_000;
 const SLOW_DOWN_SECONDS = 5;
 const MAX_TRANSIENT_POLL_FAILURES = 1;
@@ -24,6 +26,8 @@ export interface DeviceFlowSpec<T> {
   accept: (response: Response, answer: Record<string, unknown>) => T | null;
   /** The poll errors the person is told about by name, each with its words. */
   refusals: Readonly<Record<string, string>>;
+  /** Named failures when opening the approval. */
+  startRefusals: Readonly<Record<string, string>>;
   /** Words for a poll error not named in `refusals`. */
   otherRefusal: string;
 }
@@ -82,7 +86,12 @@ export async function runDeviceFlow<T>(serverUrl: string, spec: DeviceFlowSpec<T
     if (grant === undefined) {
       const started = await post(spec.startPath, startBody);
       const { device_code: deviceCode, user_code: userCode, expires_in: expiresIn, interval: initialInterval } = started.answer;
-      if (!started.response.ok) return failure('refused', `the Deployment refused to start ${spec.noun}`);
+      if (!started.response.ok) {
+        const code = started.answer.error;
+        if (typeof code === 'string' && Object.hasOwn(spec.startRefusals, code)) return failure(code, spec.startRefusals[code]!);
+        if (started.response.status === 429) return failure('slow_down', START_SLOW_DOWN);
+        return failure('refused', `the Deployment refused to start ${spec.noun}`);
+      }
       if (typeof deviceCode !== 'string' || !DEVICE_SECRET.test(deviceCode)
         || typeof userCode !== 'string' || !USER_CODE.test(userCode)
         || typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > MAX_DEVICE_LIFETIME_SECONDS

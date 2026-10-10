@@ -2,7 +2,7 @@ import { useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { Button } from '../design';
 import { useMe } from '../hooks/use-me';
-import { SignedOutError } from '../lib/api';
+import { ApiError, SignedOutError } from '../lib/api';
 import { readPendingLink } from '../lib/pending-link';
 import { SignedOut } from '../pages/SignedOut';
 
@@ -41,6 +41,7 @@ export function Unreachable({ retry }: { retry: () => void }) {
 export function AuthGate({ children }: { children: ReactNode }) {
   const location = useLocation();
   const me = useMe({ enabled: !SESSIONLESS_PATHS.has(location.pathname) });
+  if (me.error instanceof ApiError && me.error.code === 'sign_in_unconfigured') return <SignedOut unconfigured />;
   if (PUBLIC_PATHS.has(location.pathname) || (location.pathname === '/' && readPendingLink() !== null)) return <>{children}</>;
   if (me.isPending) return <Splash />;
   if (me.error instanceof SignedOutError) return <SignedOut />;

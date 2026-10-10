@@ -8,7 +8,7 @@ export interface Me {
   login: string;
   owner: boolean;
   member: { id: string; label: string | null; role: 'admin' | 'member' } | null;
-  membership: { state: 'active' | 'inactive' | 'unlinked'; reason: string | null };
+  membership: { state: 'active' | 'inactive' | 'unlinked' | 'unclaimed'; reason: string | null };
   permissions: DashboardPermissions;
 }
 

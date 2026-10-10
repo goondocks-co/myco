@@ -7,7 +7,7 @@ import {
   enrollmentTarget, explainEnrollment, machineClaimable, spendStatement,
   type EnrollmentRefusal, type Fragment,
 } from './enrollment.js';
-import { roleBehindCredentialStatement } from './members-admin.js';
+import { identityBehindCredentialStatement } from './members-admin.js';
 import { asMemberRole } from './roles.js';
 import { mintInsert } from './tokens.js';
 import { stampRequestStatement } from '../core/activity.js';
@@ -84,7 +84,7 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
   };
   const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, { gate: admitted });
   const minted: Fragment = { sql: `EXISTS (SELECT 1 FROM member_credentials WHERE id = ?)`, params: [issued.tokenId] };
-  const roleRead = roleBehindCredentialStatement(env.db, issued.tokenId);
+  const identityRead = identityBehindCredentialStatement(env.db, issued.tokenId);
 
   const statements = [
     ensureMemberStatement(env.db, memberId, now, invitation?.role ?? 'member', admitted),
@@ -93,7 +93,7 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
     spendStatement(env.db, admission, now, machineId, minted),
     // Only a committed credential advances the activity clock.
     stampRequestStatement(env.db, now, minted),
-    roleRead,
+    identityRead,
   ];
   const credentialAt = statements.indexOf(credential);
   const results = await env.db.batch(statements);
@@ -109,12 +109,13 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
       : `enrollment key ${explained.reason.replace('_', ' ')}`);
   }
 
-  const roleRow = results[statements.indexOf(roleRead)]!.results[0] as { role?: unknown } | undefined;
-  const committedRole = asMemberRole(roleRow?.role);
+  const identityRow = results[statements.indexOf(identityRead)]!.results[0] as { role?: unknown; memberLabel?: string | null; owner?: number } | undefined;
+  const committedRole = asMemberRole(identityRow?.role);
   if (committedRole === null) throw new StorageContractError(`credential ${issued.tokenId} inserted but names no member`);
 
   emit({ kind: 'member_joined', memberId, tokenId: issued.tokenId, machineId, enrollmentId: invitation?.id });
   return Response.json({
+    memberLabel: identityRow?.memberLabel ?? null, owner: identityRow?.owner === 1,
     joined: true, memberId, token: issued.token, tokenId: issued.tokenId, expiresAt: issued.expiresAt,
     role: committedRole, projectId: invitation?.projectId ?? null,
   });

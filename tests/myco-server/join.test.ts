@@ -358,7 +358,7 @@ describe('a refused join leaves no trace', () => {
     const key = await r.key({ role: 'admin' });
     const answer = await json(await r.join({ key: key.key, machineId: 'admin_machine' }));
 
-    expect(answer).toMatchObject({ joined: true, role: 'admin' });
+    expect(answer).toMatchObject({ joined: true, role: 'admin', memberLabel: null, owner: false });
     const recorded = r.e.sqlite.query(`SELECT role FROM members WHERE id = ?`).get(answer.memberId as string) as { role: string };
     expect(recorded.role).toBe('admin');
   });
@@ -379,7 +379,7 @@ describe('a refused join leaves no trace', () => {
       },
     };
     const response = await handleJoin({ ...r.e.env, db }, joinRequest({ key: key.key, machineId: 'admin_machine' }), r.now);
-    expect(await json(response)).toMatchObject({ joined: true, role: 'admin' });
+    expect(await json(response)).toMatchObject({ joined: true, role: 'admin', memberLabel: null, owner: false });
     expect(committed).toBe(true);
   });
 
