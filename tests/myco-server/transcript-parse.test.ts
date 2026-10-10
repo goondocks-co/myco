@@ -27,6 +27,7 @@ import {
 } from '@myco-server-worker/ingest/parse.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { MAX_PENDING_CALLS } from '@myco-server-worker/ingest/parsers/incremental.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { freeOrphanedBlobs, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { blobHeld } from '@myco-server-worker/core/blob-references.js';
@@ -105,6 +106,116 @@ const PASS_CALLS = 12;
 const LIMITS = { calls: PASS_CALLS, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true };
 /** How many transcripts still owe a pass. */
 const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0], now = NOW): Promise<number> => (await pendingTranscripts(db, now)).transcripts;
+
+describe('budgeted transcript continuation', () => {
+  it('retains the open prompt when replay absorbs its already recorded first row', async () => {
+    const r = await rig(body(1));
+    try {
+      await parseTranscripts(r.serverEnv, NOW);
+      const prompt = r.sqlite.query('SELECT prompt_id FROM prompt_batches').get() as { prompt_id: string };
+      r.sqlite.run("UPDATE transcripts SET parsed_offset=0,open_prompt_id=NULL,parse_segment_lines=0,parser_version=5,parse_error='parse',parser_context=?",
+        [JSON.stringify({ mycoParserFailure: { branch: 'no_progress', offset: 0, lineKind: 'user' } })]);
+      const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240 });
+      await parseTranscripts(measured.env, NOW, { budget: { calls: 100, wallMs: 10_000 }, clock: () => 0 });
+      expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(body(1)), parse_error: null });
+      expect(r.sqlite.query('SELECT open_prompt_id FROM transcripts').get()).toEqual({ open_prompt_id: prompt.prompt_id });
+      expect(count(r.sqlite, 'prompt_batches')).toBe(1);
+    } finally { r.sqlite.close(); }
+  });
+
+  it('keeps the cursor at its starting record while budgeting failures for retained calls', async () => {
+    const calls = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => ({
+      type: 'tool_use', id: `${prefix}-${i}`, name: 'Read', input: {},
+    }));
+    const prior = { type: 'assistant', message: { content: calls('prior', MAX_PENDING_CALLS) } };
+    const prefix = line(prior);
+    const text = prefix + line({ type: 'assistant', message: { content: calls('next', MAX_PENDING_CALLS + 1) } });
+    const r = await rig(text);
+    try {
+      const state = {};
+      await PARSERS['claude-code'].parse({ lines: [{ value: prior, offset: 0 }], sessionId: SESSION, now: NOW, state });
+      const start = Buffer.byteLength(prefix);
+      r.sqlite.run('UPDATE transcripts SET parsed_offset=?,parser_context=?', [start, JSON.stringify({ mycoParserState: state })]);
+      let partial = false;
+      for (let pass = 0; pass < MAX_PENDING_CALLS; pass += 1) {
+        const current = r.sqlite.query('SELECT parsed_offset,parser_context,parse_segment_lines FROM transcripts').get() as {
+          parsed_offset: number; parser_context: string; parse_segment_lines: number | null;
+        };
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240 });
+        const report = await parseOnce(measured.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION,
+          machineId: MACHINE, tokenId: r.tokenId, agent: 'claude-code', size: Buffer.byteLength(text),
+          parsedOffset: current.parsed_offset, openPromptId: null, fidelity: null,
+          parserContext: JSON.parse(current.parser_context), segmentLines: current.parse_segment_lines,
+          lastReceivedAt: NOW, imported: false }, NOW, { ...LIMITS, completeFile: false, statementBudget: 125 });
+        expect(report.failure).toBeNull();
+        expect(report.nextOffset).not.toBeNull();
+        expect(report.nextOffset!).toBeGreaterThanOrEqual(current.parsed_offset);
+        if (report.nextOffset === start) partial = true;
+        if (report.nextOffset === Buffer.byteLength(text)) break;
+      }
+      expect(partial).toBe(true);
+      expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+      expect(count(r.sqlite, 'tool_calls')).toBe(MAX_PENDING_CALLS + 1);
+    } finally { r.sqlite.close(); }
+  });
+
+  for (const agent of ['claude-code', 'codex']) {
+    it(`resumes ${agent} when a retained reply and a result exhaust admission at the same cursor`, async () => {
+      const promptId = uuid(91000);
+      const records = agent === 'claude-code' ? [
+        { type: 'user', promptId, message: { content: 'first prompt' } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'retained reply' }, { type: 'tool_use', id: 'call', name: 'Read', input: { path: 'x'.repeat(5000) } }] } },
+        { type: 'user', promptId, toolUseResult: {}, sourceToolAssistantUUID: uuid(91001), permissionDecision: 'allow',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'call', content: 'result' }] } },
+        { type: 'user', promptId: uuid(91002), message: { content: 'next prompt' } },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'last reply' }] } },
+      ] : [
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first prompt' }] } },
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'retained reply' }] } },
+        { type: 'response_item', payload: { type: 'function_call', call_id: 'call', name: 'Read', arguments: JSON.stringify({ path: 'x'.repeat(5000) }) } },
+        { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call', output: 'result' } },
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next prompt' }] } },
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'last reply' }] } },
+      ];
+      const resultIndex = agent === 'claude-code' ? 2 : 3;
+      const prefix = records.slice(0, resultIndex).map(line).join('');
+      const text = records.map(line).join('');
+      const r = await rig(text, Buffer.byteLength(text), { agent });
+      try {
+        const state = {};
+        const parsed = await PARSERS[agent].parse({ lines: records.slice(0, resultIndex).map((value, i) => ({
+          value, offset: Buffer.byteLength(records.slice(0, i).map(line).join('')),
+        })), sessionId: SESSION, now: NOW, state });
+        const prompt = parsed.find((event) => event.kind === 'prompt')?.payload.promptId;
+        const openPrompt = typeof prompt === 'string' ? prompt : null;
+        const start = Buffer.byteLength(prefix);
+        r.sqlite.run("UPDATE transcripts SET parsed_offset=?, open_prompt_id=?, parser_context=?, parser_version=?, parse_error='parse'",
+          [start, openPrompt, JSON.stringify({ mycoParserState: state }), PARSER_VERSION - 1]);
+        expect(await pendingCount(r.env.db)).toBe(1);
+        let partial = false;
+        for (let pass = 0; pass < 30; pass += 1) {
+          const current = r.sqlite.query('SELECT * FROM transcripts').get() as {
+            parsed_offset: number; open_prompt_id: string | null; parser_context: string; parse_segment_lines: number | null;
+          };
+          const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240 });
+          const report = await parseOnce(measured.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION,
+            machineId: MACHINE, tokenId: r.tokenId, agent, size: Buffer.byteLength(text), parsedOffset: current.parsed_offset,
+            fidelity: null, openPromptId: current.open_prompt_id, parserContext: JSON.parse(current.parser_context),
+            segmentLines: current.parse_segment_lines, lastReceivedAt: NOW, imported: false }, NOW,
+          { ...LIMITS, completeFile: true, statementBudget: 125 });
+          expect(report.failure).toBeNull();
+          expect(measured.usage.statements).toBeLessThanOrEqual(125);
+          if (report.nextOffset === start) partial = true;
+          if (report.nextOffset === Buffer.byteLength(text)) break;
+        }
+        expect(partial).toBe(true);
+        expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+        expect(r.sqlite.query('SELECT output_preview AS output FROM tool_calls').all()).toEqual([{ output: 'result' }]);
+        expect(r.sqlite.query('SELECT text FROM responses ORDER BY rowid').all()).toEqual([{ text: 'retained reply' }, { text: 'last reply' }]);
+      } finally { r.sqlite.close(); }
+    });
+  }
+});
 
 describe('repair lane priority', () => {
   const selected = (sqlite: Database, lane: 'live' | 'imported' | 'repair') =>
@@ -1214,6 +1325,25 @@ describe('parsing a held transcript', () => {
     const { sqlite, env } = await rig(body(1) + junk);
     await drain(env, sqlite);
     expect(target(sqlite).parse_error).toBe('parse');
+    const context = sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+    expect(JSON.parse(context.parser_context).mycoParserFailure).toEqual({
+      branch: 'malformed_lines', offset: Buffer.byteLength(body(1)), lineKind: 'unknown',
+    });
+    sqlite.close();
+  });
+
+  it('automatically reads a well-formed recording stopped by the previous parser', async () => {
+    const r = await rig(body(2));
+    try {
+      r.sqlite.run("UPDATE transcripts SET parse_error='parse', parser_version=?, parser_context=?",
+        [5, JSON.stringify({ mycoParserFailure: { branch: 'no_progress', offset: 0, lineKind: 'user' } })]);
+      expect(await pendingCount(r.env.db)).toBe(1);
+      await parseTranscripts(r.serverEnv, NOW);
+      expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(body(2)), parse_error: null });
+      expect(count(r.sqlite, 'prompt_batches')).toBe(2);
+      const row = r.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
+      expect(JSON.parse(row.parser_context).mycoParserFailure).toBeUndefined();
+    } finally { r.sqlite.close(); }
   });
 
   it('offers a stopped transcript again once the parser moves, so no line silences a file forever', async () => {

@@ -115,6 +115,19 @@ describe('Needs you', () => {
     expect((await read()).items).toEqual([{ kind: 'transcripts_stopped', tone: 'warn', projectId: 'proj_1', transcripts: 2, latestAt: NOW - HOUR, reasons: { parse: 1, event_refused: 1 } }]);
   });
 
+  it('only exposes bounded stop diagnostics from the latest failure', async () => {
+    const { sqlite, read } = harness();
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size,
+      first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version, parser_context)
+      VALUES ('proj_1','tx_diagnostic','s1','m1',100,1,1,'t',10,'parse',?,?,?)`,
+    [NOW, PARSER_VERSION, JSON.stringify({ mycoParserFailure: { branch: 'no_progress', offset: 10, lineKind: 'private arbitrary value' } })]);
+    const item = (await read()).items.find((item) => item.kind === 'transcripts_stopped');
+    expect(item).toMatchObject({ latestDiagnostic: { branch: 'no_progress', offset: 10, lineKind: 'unknown' } });
+    sqlite.run('UPDATE transcripts SET parser_context=?', [JSON.stringify({ mycoParserFailure: { branch: 'private arbitrary value', offset: 10, lineKind: 'user' } })]);
+    expect((await read()).items.find((item) => item.kind === 'transcripts_stopped')).not.toHaveProperty('latestDiagnostic');
+    sqlite.close();
+  });
+
   it('names runs held past the bound for a capability no worker reports', async () => {
     const { run, read } = harness();
     const capability = CAPABILITY_HOLDS[0]!;
