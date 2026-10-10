@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
-import { renderReleaseSelector, selectChannelRelease } from '../../packages/myco/scripts/release-policy.mjs';
+import { renderReleaseSelector, renderPowerShellReleaseSelector, selectChannelRelease } from '../../packages/myco/scripts/release-policy.mjs';
 import { fetchMycoReleases, resolveMycoBinaryUpdateRefs } from '../../packages/myco/src/upgrade/release-resolver.js';
 import { resolveMycoPackageCheck } from '../../packages/myco/src/upgrade/checker.js';
 import { resolveNewestStagedVersion, checkAndStage } from '../../packages/myco/src/upgrade/auto-check.js';
@@ -44,6 +44,7 @@ const table: Array<[ReleaseChannel, string]> = [['stable', '2.0.0'], ['beta', '2
 describe('one channel policy for install and update', () => {
   it('commits the generated selector without drift', () => {
     expect(source).toContain(renderReleaseSelector());
+    expect(fs.readFileSync(path.join(import.meta.dir, '../../docs/install.ps1'), 'utf8')).toContain(renderPowerShellReleaseSelector());
   });
   for (const [channel, expected] of table) {
     it(`${channel} selects ${expected} across mixed tags and input order`, async () => {

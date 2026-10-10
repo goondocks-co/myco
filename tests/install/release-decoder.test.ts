@@ -24,7 +24,7 @@ function tools(name: string, jq: boolean): string {
 }
 
 async function boundedInstaller(env: NodeJS.ProcessEnv): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const child = spawn('sh', [script, '--dry-run'], { env, detached: true });
+  const child = spawn('sh', [script, '--dry-run'], { cwd: env.HOME, env, detached: true });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => { stdout += chunk.toString(); });
   child.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -45,7 +45,7 @@ for (const jq of modes) {
   it(`decodes 213 releases over three real-sized pages within five seconds (${jq ? 'jq' : 'native awk'})`, async () => {
     const bin = tools(`perf-${jq}`, jq);
     const pages = [100, 100, 13].map((count, page) => Array.from({ length: count }, (_, n) => ({
-      tag_name: 'myco/v1.4.8', prerelease: false, draft: false,
+      tag_name: 'myco/v2.0.0', prerelease: false, draft: false,
       body: 'Release notes: "quoted", \\ paths,\nUnicode λ. '.padEnd(page === 0 ? 14000 : 2000, 'x'),
       assets: [asset, 'SHA256SUMS'].map(name => ({ name, browser_download_url: `https://example.test/${name}` })),
       id: page * 100 + n,
@@ -71,7 +71,7 @@ printf 200
     const started = performance.now();
     const result = await boundedInstaller(sandboxChildEnv(root, { PATH: bin, HOME: home, MYCO_HOME: path.join(home, 'myco'), TMPDIR: root }));
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
-    expect(result.stdout).toContain('myco/v1.4.8');
+    expect(result.stdout).toContain('myco/v2.0.0');
     expect(performance.now() - started).toBeLessThan(5000);
   }, 10_000);
 

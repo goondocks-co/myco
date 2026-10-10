@@ -11,7 +11,7 @@ import { assertPrivate, assertTokenFree } from '../support/installer-token-gate.
 
 const SHELLS = ['/bin/sh', '/bin/bash', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])];
 const FAKE_TOKEN = 'ghp_fake_installer_1644';
-const BINARY = '#!/bin/sh\nexit 0\n';
+const BINARY = '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.0.0; fi\nexit 0\n';
 const CHECKSUM = createHash('sha256').update(BINARY).digest('hex');
 const INSTALLER = resolve('docs/install.sh');
 
@@ -53,7 +53,7 @@ if (argv.includes('-w')) {
 `);
   try {
     const result = spawnSync(shell, [...(trace ? ['-x'] : []), INSTALLER], {
-      encoding: 'utf8',
+      encoding: 'utf8', cwd: root,
       env: sandboxChildEnv(root, {
         HOME: home, CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'),
         MYCO_CHANNEL: 'stable', MYCO_HOME: join(home, '.myco'), MYCO_BIN_DIR: join(home, '.myco/bin'), TMPDIR: temp,
