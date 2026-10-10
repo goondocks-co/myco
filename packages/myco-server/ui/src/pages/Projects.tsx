@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import {
-  Button, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, EmptyState, ErrorState, focusRing, HealthDot, Input, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
+  Button, CommandBlock, ConfirmDialog, EmptyState, ErrorState, focusRing, HealthDot, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
 } from '../design';
 import { AdminPage, RowCard } from '../features/admin/AdminFrame';
+import { RenameProjectDialog } from '../features/admin/project/RenameProjectDialog';
 import { useMemberNames } from '../features/admin/members';
 import { refusalText } from '../hooks/use-access';
 import { permissionOf, useMe } from '../hooks/use-me';
@@ -102,13 +103,7 @@ export function Projects() {
           </RowCard>
         </section>
       )}
-      <RenameDialog
-        project={renaming}
-        pending={actions.rename.isPending}
-        error={actions.rename.error ? refusalText(actions.rename.error) : null}
-        onClose={() => { setRenaming(null); actions.rename.reset(); }}
-        onRename={(name) => { if (renaming) actions.rename.mutate({ projectId: renaming.projectId, name }, { onSuccess: () => setRenaming(null) }); }}
-      />
+      <RenameProjectDialog project={renaming} onClose={() => setRenaming(null)} />
       <ConfirmDialog
         open={archiving !== null}
         onOpenChange={(open) => { if (!open) { setArchiving(null); actions.archive.reset(); } }}
@@ -155,37 +150,5 @@ function ProjectRow({ project, now, note, menu, action }: {
       {action}
       {menu !== undefined && <MoreMenu items={menu} label={`Actions for ${project.name}`} />}
     </li>
-  );
-}
-
-/** One input and one action: the name a project shows everywhere it is listed. */
-function RenameDialog({ project, pending, error, onClose, onRename }: {
-  project: ProjectSummary | null;
-  pending: boolean;
-  error: string | null;
-  onClose: () => void;
-  onRename: (name: string) => void;
-}) {
-  const [name, setName] = useState('');
-  const [openedFor, setOpenedFor] = useState<string | null>(null);
-  if (project !== null && openedFor !== project.projectId) { setOpenedFor(project.projectId); setName(project.name); }
-  if (project === null && openedFor !== null) setOpenedFor(null);
-  const trimmed = name.trim();
-  return (
-    <Dialog open={project !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent title={`Rename ${project?.name ?? ''}`} description="The new name shows everywhere this project is listed.">
-        <form className="flex flex-col gap-s3" onSubmit={(e) => { e.preventDefault(); if (trimmed !== '' && !pending) onRename(trimmed); }}>
-          <label className="flex flex-col gap-s1 t-small text-muted" htmlFor="project-rename">
-            Name
-            <Input id="project-rename" value={name} maxLength={200} autoFocus onChange={(e) => setName(e.target.value)} />
-          </label>
-          {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
-          <DialogFooter>
-            <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant="primary" disabled={trimmed === ''} pending={pending}>Rename</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
