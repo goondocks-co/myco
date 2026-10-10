@@ -31,7 +31,7 @@ const ROLES = [
 ] as const;
 
 /** Health's name carries the count of what needs an admin, so it is matched by its start. */
-const ADMIN_PAGES = ['Settings', /^Health/] as const;
+const ADMIN_PAGES = ['Projects', 'Settings', /^Health/] as const;
 const PAGES_NAV = ['Today', 'Sessions', 'Knowledge', 'Myco’s work'];
 
 /** The project the checks open: the fixture's first, or on a real deployment the first the Projects page lists. */
@@ -78,6 +78,7 @@ async function expectNavInView(scope: ReturnType<Page['locator']>, role: 'admin'
     await expect(scope.getByRole('navigation', { name: 'People' })).toHaveCount(0);
   } else {
     await expect(admin).toHaveCount(0);
+    await expect(scope.getByRole('link', { name: 'Projects', exact: true })).toHaveCount(0);
     await expect(scope.getByRole('navigation', { name: 'People' }).getByRole('link', { name: INVITE_CONTROLS.page })).toBeInViewport();
   }
   await expect(scope.getByRole('button', { name: /^Account and appearance for / })).toBeInViewport();

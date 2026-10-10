@@ -1,6 +1,6 @@
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -126,20 +126,22 @@ export const SETTINGS_SECTIONS = [
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
+/** Who is a member, and the machines that write here. */
+export const PEOPLE_PAGE: ServerPage = { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH };
+/** Every project, listed with its session count. */
+export const PROJECTS_PATH = '/projects';
+
 /**
  * The nav foot: People is readable by every member; other pages require an
  * admin. Health carries the count of what needs an admin.
  */
-export const PEOPLE_PAGE: ServerPage = { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH };
 export const ADMIN_PAGES: readonly ServerPage[] = [
+  { label: 'Projects', icon: FolderKanban, to: PROJECTS_PATH },
   PEOPLE_PAGE,
   RUNNERS_PAGE,
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },
 ];
-
-/** Every project, listed with its session count. */
-export const PROJECTS_PATH = '/projects';
 
 /** The page every member's own machines are listed on. */
 export const MY_MACHINES_PATH = '/me/machines';

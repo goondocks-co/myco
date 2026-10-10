@@ -183,7 +183,7 @@ describe('the nav', () => {
     expect(nav.textContent).not.toContain('All projects');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
     expect(within(admin).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      [INVITE_CONTROLS.page, '/people'], ['Runners', '/runners'], ['Settings', '/settings'], ['Health', '/status/health'],
+      ['Projects', '/projects'], [INVITE_CONTROLS.page, '/people'], ['Runners', '/runners'], ['Settings', '/settings'], ['Health', '/status/health'],
     ]);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1' })).toBeTruthy();
@@ -238,7 +238,7 @@ describe('the nav', () => {
     const people = await screen.findByRole('navigation', { name: 'People' });
     expect(within(people).getByRole('link', { name: INVITE_CONTROLS.page }).getAttribute('href')).toBe('/people');
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    for (const name of ['Project settings', 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    for (const name of ['Projects', 'Project settings', 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
   });
 
   it('keeps the last project in the page links on a page that spans the server', async () => {
@@ -456,7 +456,7 @@ describe('on a phone', () => {
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     fireEvent.click(within(bar).getByRole('button', { name: 'More' }));
     const drawer = await screen.findByRole('dialog', { name: 'Navigation' });
-    expect(within(drawer).getByRole('navigation', { name: 'Admin' })).toBeTruthy();
+    expect(within(within(drawer).getByRole('navigation', { name: 'Admin' })).getByRole('link', { name: 'Projects' }).getAttribute('href')).toBe('/projects');
     expect(within(drawer).queryByRole('navigation', { name: 'Projects' })).toBeNull();
     // Following a link closes the drawer.
     fireEvent.click(within(within(drawer).getByRole('navigation', { name: 'Pages' })).getByRole('link', { name: 'Knowledge' }));
