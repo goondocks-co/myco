@@ -225,10 +225,11 @@ const sessionCommit = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelop
     .bind(ctx.projectId, `session:${e.sessionId}:${point}`, e.sessionId, point, at, ctx.projectId, e.sessionId, headSha, dirty, error, ctx.now, ...rawGateParams(ctx, e))];
 };
 
-/** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the basename of the first start that carries a usable origin path; a renamed or onboarded Project keeps its name. */
+/** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the repository name of the first start that carries one, falling back to its origin path's basename; a renamed or onboarded Project keeps its name. */
 const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   const startedAt = orderingTime(spec, p, 'startedAt', e.createdAt);
-  const projectName = basenameOf(p.originPath);
+  const repositoryName = typeof p.projectName === 'string' ? p.projectName.trim() : '';
+  const projectName = repositoryName || basenameOf(p.originPath);
   const nameProject = projectName === null ? [] : [
     db.prepare(`UPDATE projects SET name = ? WHERE project_id = ? AND name = project_id AND ${RAW_ROW_GATE}`)
       .bind(projectName, ctx.projectId, ...rawGateParams(ctx, e)),

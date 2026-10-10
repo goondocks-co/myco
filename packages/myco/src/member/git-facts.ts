@@ -13,7 +13,7 @@
  * alone (`git-verdict.ts`), and git is asked only where neither does. Whether tracked files changed is git's to say, since it means
  * comparing the index and the working tree: its two questions run at once.
  */
-import { gitExitStatusAsync, runGit, runGitAnswer, type GitQueryBudget } from '../utils/git.js';
+import { gitExitStatusAsync, repositoryName, runGit, runGitAnswer, type GitQueryBudget } from '@myco/utils/git.js';
 import { subRequestBudget, type HookBudget } from './budget.js';
 import { readRepoHead, UNUSUAL } from '../utils/git-files.js';
 import { repoVerdict, type GitVerdictDeps } from './git-verdict.js';
@@ -74,13 +74,31 @@ export async function trackedChanges(cwd: string, budget: GitQueryBudget = {}): 
 /** Optional provenance receives at most this much hook time. */
 export const GIT_ENRICHMENT_CAP_MS = 500;
 
+function enrichmentBudget(budget: HookBudget, now: number): GitQueryBudget & { deadline: number } {
+  const deliveryReserve = Math.max(budget.connectTimeoutMs, budget.requestTimeoutMs);
+  return { deadline: Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs) };
+}
+
+const askWithin = (budget: GitQueryBudget) => (args: string[], cwd: string): string =>
+  runGitAnswer(args, cwd, (args, cwd) => runGit(args, cwd, budget));
+
+/** Repository naming shares the hook's enrichment allowance and preserves delivery time. */
+export function sessionRepositoryName(cwd: string, budget: HookBudget, now: number = Date.now()): string {
+  const queryBudget = enrichmentBudget(budget, now);
+  const askGit = askWithin(queryBudget);
+  const verdict = repoVerdict(cwd, process.env, { askGit });
+  if (verdict === UNUSUAL) return repositoryName(cwd, queryBudget);
+  if (verdict === null) return repositoryName(cwd, { ...queryBudget, commonDir: null, remote: null });
+  const commonDir = verdict.from === 'files' ? verdict.layout.commonDir : verdict.commonDir;
+  return repositoryName(cwd, { ...queryBudget, commonDir });
+}
+
 /** Discovery fallback and dirty queries share a deadline that reserves a full request's headroom for delivery. */
 export async function sessionEndGitFacts(cwd: string, budget: HookBudget, now: number = Date.now()): Promise<Pick<GitFacts, 'headSha' | 'dirty'>> {
-  const deliveryReserve = Math.max(budget.connectTimeoutMs, budget.requestTimeoutMs);
-  const deadline = Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs);
+  const { deadline } = enrichmentBudget(budget, now);
   if (deadline <= now) return { headSha: undefined, dirty: undefined };
   const queryBudget = { deadline };
-  const askGit = (args: string[], cwd: string): string => runGitAnswer(args, cwd, (args, cwd) => runGit(args, cwd, queryBudget));
+  const askGit = askWithin(queryBudget);
   const head = gitHead(cwd, { askGit });
   const dirty = head.headSha === undefined ? undefined : await trackedChanges(cwd, queryBudget);
   return { headSha: head.headSha, dirty };

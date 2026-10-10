@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 /**
  * Vault statistics — gathered from SQLite.
  */
@@ -224,7 +225,7 @@ export function gatherStats(vaultDir: string, options: GatherStatsOptions): V2St
       },
       vault: {
         path: vaultDir,
-        name: path.basename(resolveProjectRoot(vaultDir)),
+        name: repositoryName(resolveProjectRoot(vaultDir)),
         session_count: counts.sessions ?? 0,
         batch_count: counts.prompt_batches ?? 0,
         spore_count: counts.spores ?? 0,

@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 import { defaultMembership } from './default-deployment.js';
 import { assertMemberTranscriptDestination, isMemberOwnedTranscriptPath, TranscriptDestinationError } from './transcript-routing.js';
 import type { MemberRoutingIdentity } from './routing.js';
@@ -874,12 +875,14 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       });
       const withId = (out: OutboundEvent, ...key: string[]): OutboundEvent => ({ ...out, envelope: { ...out.envelope, eventId: legacyId(projectId, ...key) } });
       const alreadyHeld = held.held.has(group.sessionId);
+      const projectRoot = root ?? s.projectRoot;
 
       // A session the Deployment already holds keeps the facts it was captured with.
       const facts = alreadyHeld ? [] : [withId(sessionStartEvent(ctx(s.startedAt), {
         startedAt: s.startedAt ?? undefined,
         branch: s.branch ?? undefined,
         originPath: root ?? s.projectRoot ?? undefined,
+        projectName: projectRoot === null ? undefined : repositoryName(projectRoot),
         parentSessionId: s.parentSessionId === null ? undefined : g.idOf.get(s.parentSessionId),
         parentReason: s.parentReason ?? undefined,
       }), 'session.start', group.sessionId)];

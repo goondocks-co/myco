@@ -33,7 +33,7 @@ import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } 
 
 export const GIT_VERDICTS_DIRNAME = 'git-verdicts';
 /** The shape of a kept verdict: bumped whenever its fields or what they mean change (the shape is pinned by test). */
-export const GIT_VERDICT_VERSION = 1;
+export const GIT_VERDICT_VERSION = 2;
 /** A kept verdict not written again in this long is removed when another is written. */
 export const GIT_VERDICT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -46,6 +46,8 @@ export type RepoVerdict =
     top: string;
     /** The main checkout: the common directory's parent. */
     root: string;
+    /** The absolute common directory Git confirmed. */
+    commonDir: string;
     /** The layout read from the files, when git confirmed it: `HEAD` and refs are read from these files. */
     layout: RepoLayout | null;
   };
@@ -60,6 +62,7 @@ interface KeptVerdict {
   key: string;
   top: string;
   root: string;
+  commonDir: string;
   confirmed: boolean;
 }
 
@@ -109,6 +112,7 @@ export function repoVerdict(cwd: string, env: NodeJS.ProcessEnv = process.env, d
     key: key ?? '',
     top,
     root: path.resolve(cwd, commonDir, '..'),
+    commonDir: path.resolve(cwd, commonDir),
     confirmed: found.unverified === 'owner'
       && sameDir(top, found.layout.top) && sameDir(path.resolve(cwd, gitDir), found.layout.gitDir) && sameDir(path.resolve(cwd, commonDir), found.layout.commonDir),
   };
@@ -132,7 +136,7 @@ function systemConfigOf(ask: (args: string[], cwd: string) => string, cwd: strin
 }
 
 function answer(verdict: KeptVerdict): RepoVerdict {
-  return { from: 'git', top: verdict.top, root: verdict.root, layout: verdict.confirmed ? verdict.layout : null };
+  return { from: 'git', top: verdict.top, root: verdict.root, commonDir: verdict.commonDir, layout: verdict.confirmed ? verdict.layout : null };
 }
 
 function holds(kept: KeptVerdict, cwd: string, layout: RepoLayout, unverified: Unverified, env: NodeJS.ProcessEnv): boolean {
@@ -145,6 +149,7 @@ function holds(kept: KeptVerdict, cwd: string, layout: RepoLayout, unverified: U
     || !Array.isArray(kept.sources) || !kept.sources.every((source) => typeof source === 'string')
     || typeof kept.top !== 'string' || kept.top === ''
     || typeof kept.root !== 'string' || kept.root === ''
+    || typeof kept.commonDir !== 'string' || !path.isAbsolute(kept.commonDir) || path.dirname(kept.commonDir) !== kept.root
     || typeof kept.confirmed !== 'boolean') return false;
   const key = verdictKey(layout, env, kept.sources);
   return key !== null && kept.key === key;

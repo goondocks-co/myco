@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -94,7 +95,7 @@ export function resolveStatsContext(
   const { manifest, state } = readProjectManifestForStats(vaultDir);
   const projectRoot = requestContext?.projectRoot ?? resolveProjectRoot(vaultDir);
   const projectId = manifest?.project.id ?? requestContext?.projectId ?? projectRoot;
-  const projectName = manifest?.project.name ?? path.basename(projectRoot);
+  const projectName = manifest?.project.name ?? repositoryName(projectRoot);
   const groves = readGrovesForStats();
   const grove = resolveStatsGrove(groves, manifest, requestContext);
   const manifestGrove = manifest?.grove ?? null;

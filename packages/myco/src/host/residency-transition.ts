@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 /**
  * Member-side residency transition — the daemon-only orchestrator that moves a
  * project WITH local history onto a Team Host (Phase F, attach direction).
@@ -157,7 +158,7 @@ export function beginAttachResidency(
   }
 
   const local = findRegisteredProjectById(ctx.projectId, deps.mycoHome);
-  const projectName = local?.project.name ?? path.basename(path.resolve(ctx.root));
+  const projectName = local?.project.name ?? repositoryName(ctx.root);
 
   // Step 0 — take the write lease BEFORE anything durable happens. Every gate
   // that keeps other writers out of this project keys on the lease, so it has
@@ -441,8 +442,6 @@ export function beginDetachResidency(ctx: ResidencyDetachContext, deps: Residenc
 
   acquireResidencyLease(ctx.projectId, RESIDENCY_DETACH_OP, 'detaching from a Team Host', deps);
 
-  // project_name: the attach-era journal is gone and the AttachRef carries no
-  // name, so basename(root) is the honest fallback (see the T4 report flag).
   const root = path.resolve(ctx.ref.root);
   startResidencyJournal({
     direction: 'detach',
@@ -452,7 +451,7 @@ export function beginDetachResidency(ctx: ResidencyDetachContext, deps: Residenc
     divert_grove_id: divertGroveId,
     source_grove_id: divertGroveId,
     target_grove_id: targetGroveId,
-    project_name: path.basename(root),
+    project_name: repositoryName(root),
     root,
     local_grove_id: ctx.ref.local_grove_id,
     backup_ref: null,

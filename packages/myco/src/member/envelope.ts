@@ -76,7 +76,7 @@ export const JSON_MEDIA_TYPE = 'application/json';
 
 /** Server-side string bounds the builders truncate to (pinned against the worker catalogue by `tests/member/protocol-pins.test.ts`). */
 export const BOUNDS = {
-  agent: 64, branch: 256, originPath: 1024, parentReason: 64, toolName: 64, output: 4096, errorMessage: 4096,
+  agent: 64, branch: 256, projectName: 200, originPath: 1024, parentReason: 64, toolName: 64, output: 4096, errorMessage: 4096,
   mycoTool: 64, mycoOp: 64, agentType: 64, trigger: 64, message: 4096, level: 64, threadLabel: 256, title: 256,
   description: 4096, fileItem: 1024, tagItem: 64, sessionTitle: 256, sessionSummary: 4096,
 } as const;
@@ -243,13 +243,14 @@ function toolCallPayload(ctx: EnvelopeContext, input: NormalizedHookInput, opts:
 // ---------------------------------------------------------------------------
 
 export function sessionStartEvent(ctx: EnvelopeContext, facts: {
-  branch?: string; headSha?: string; startedAt?: number; originPath?: string; parentSessionId?: string; parentReason?: string;
+  branch?: string; headSha?: string; startedAt?: number; originPath?: string; projectName?: string; parentSessionId?: string; parentReason?: string;
 }): OutboundEvent {
   return envelope(ctx, 'session.start', {
     agent: trunc(ctx.agent, BOUNDS.agent),
     branch: trunc(facts.branch, BOUNDS.branch),
     headSha: facts.headSha,
     startedAt: facts.startedAt,
+    projectName: trunc(facts.projectName, BOUNDS.projectName),
     originPath: facts.originPath === undefined ? undefined : trunc(homeRelativePath(facts.originPath), BOUNDS.originPath),
     parentSessionId: facts.parentSessionId,
     parentReason: trunc(facts.parentReason, BOUNDS.parentReason),
