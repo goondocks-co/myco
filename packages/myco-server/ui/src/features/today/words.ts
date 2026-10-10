@@ -266,7 +266,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     case 'transcripts_stopped':
       return {
         title: `${count(item.transcripts, 'transcript')} couldn’t be read`,
-        detail: `${inProject(item.projectId)} Their sessions are missing what the transcript held.`,
+        detail: `${inProject(item.projectId)} ${transcriptStopWords(item)} Their sessions are missing what the transcript held.`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
     case 'runs_held_for_capability':
@@ -410,4 +410,30 @@ function inDays(at: number, now: number): string {
   if (days <= 0) return 'today';
   if (days === 1) return 'tomorrow';
   return `in ${days} days`;
+}
+
+/** A stopped recording's latest known cause, with no transcript content. */
+export function transcriptStopWords(item: Extract<AttentionItem, { kind: 'transcripts_stopped' }>): string {
+  const diagnostic = item.latestDiagnostic;
+  const nextStep = 'Update Myco to get the latest transcript fixes. If reading stays stopped, report this problem.';
+  const causes: Record<string, string> = {
+    malformed_lines: 'Several records could not be read',
+    event_not_stored: 'A record could not be saved',
+    no_progress: 'Reading could not move past a record',
+    event_refused: 'A record was not accepted',
+    blob_absent: 'Part of the stored transcript is missing',
+    record_too_large: 'A record is too large to read',
+  };
+  if (diagnostic === undefined) {
+    const reason = ['blob_absent', 'record_too_large', 'event_refused'].find((key) => item.reasons[key]);
+    return `${reason === undefined ? 'The reason was not recorded' : causes[reason]}. ${nextStep}`;
+  }
+  const kinds: Record<string, string> = {
+    user: 'user message', assistant: 'assistant message', attachment: 'attachment', tool_result: 'tool result',
+    response_item: 'conversation record', event_msg: 'conversation event', session_meta: 'session details',
+    turn_context: 'turn details', system: 'system message', progress: 'progress record',
+    prompt: 'prompt', response: 'reply', 'tool.use': 'tool call', 'tool.failure': 'failed tool call', 'plan.snapshot': 'plan',
+  };
+  const kind = kinds[diagnostic.lineKind];
+  return `${causes[diagnostic.branch] ?? 'The transcript could not be read'}${kind === undefined ? '' : ` (${kind})`}. The stored transcript is kept. ${nextStep}`;
 }

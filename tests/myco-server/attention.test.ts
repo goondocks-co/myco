@@ -11,7 +11,7 @@ import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { readAttention, SEARCH_BEHIND_MS, CAPABILITY_HOLD_MS, ACCESS_KEY_NOTICE_MS } from '@myco-server-worker/core/attention.js';
-import { PARSER_VERSION } from '@myco-server-worker/ingest/parse.js';
+import { PARSER_VERSION, PARSE_STOP_GENERATION } from '@myco-server-worker/ingest/parse.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 
 const NOW = 1_700_000_000_000;
@@ -106,13 +106,28 @@ describe('Needs you', () => {
   it('names transcripts the current parser stopped, and not ones waiting for bytes or stopped by an older parser', async () => {
     const { sqlite, read } = harness();
     const transcript = (id: string, error: string, version: number) =>
-      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version)
-                  VALUES ('proj_1', ?, 's1', 'm1', 100, 1, 1, 't', 10, ?, ?, ?)`, [id, error, NOW - HOUR, version]);
+      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version, parser_context)
+                  VALUES ('proj_1', ?, 's1', 'm1', 100, 1, 1, 't', 10, ?, ?, ?, ?)`, [id, error, NOW - HOUR, version, JSON.stringify({ mycoParserFailure: { generation: PARSE_STOP_GENERATION } })]);
     transcript('tx_parse', 'parse', PARSER_VERSION);
     transcript('tx_refused', 'event_refused', PARSER_VERSION);
     transcript('tx_wait', 'awaiting_bytes', PARSER_VERSION);
     transcript('tx_old', 'parse', PARSER_VERSION - 1);
+    transcript('tx_legacy', 'parse', PARSER_VERSION);
+    sqlite.run("UPDATE transcripts SET parser_context=NULL WHERE transcript_id='tx_legacy'");
     expect((await read()).items).toEqual([{ kind: 'transcripts_stopped', tone: 'warn', projectId: 'proj_1', transcripts: 2, latestAt: NOW - HOUR, reasons: { parse: 1, event_refused: 1 } }]);
+  });
+
+  it('only exposes bounded stop diagnostics from the latest failure', async () => {
+    const { sqlite, read } = harness();
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size,
+      first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version, parser_context)
+      VALUES ('proj_1','tx_diagnostic','s1','m1',100,1,1,'t',10,'parse',?,?,?)`,
+    [NOW, PARSER_VERSION, JSON.stringify({ mycoParserFailure: { branch: 'no_progress', offset: 10, lineKind: 'private arbitrary value', generation: PARSE_STOP_GENERATION } })]);
+    const item = (await read()).items.find((item) => item.kind === 'transcripts_stopped');
+    expect(item).toMatchObject({ latestDiagnostic: { branch: 'no_progress', offset: 10, lineKind: 'unknown' } });
+    sqlite.run('UPDATE transcripts SET parser_context=?', [JSON.stringify({ mycoParserFailure: { branch: 'private arbitrary value', offset: 10, lineKind: 'user', generation: PARSE_STOP_GENERATION } })]);
+    expect((await read()).items.find((item) => item.kind === 'transcripts_stopped')).not.toHaveProperty('latestDiagnostic');
+    sqlite.close();
   });
 
   it('names runs held past the bound for a capability no worker reports', async () => {
@@ -151,6 +166,7 @@ describe('Needs you', () => {
     run('proj_2', 'run_held', 'canopy-map', 'queued', NOW - CAPABILITY_HOLD_MS - 1, { heldBy: CAPABILITY_HOLDS[0]! });
     sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, first_received_at, last_received_at, token_id, parsed_offset, parse_error, parse_failed_at, parser_version)
                 VALUES ('proj_2', 'tx_1', 's1', 'm1', 100, 1, 1, 't', 10, 'parse', ?, ?)`, [NOW - HOUR, PARSER_VERSION]);
+    sqlite.run('UPDATE transcripts SET parser_context=?', [JSON.stringify({ mycoParserFailure: { generation: PARSE_STOP_GENERATION } })]);
     expect((await read()).items.map((i) => i.kind).sort()).toEqual(['no_worker', 'outcome_failed', 'runs_held_for_capability', 'transcripts_stopped']);
     sqlite.run(`UPDATE projects SET archived_at = ?, archived_by = 'mem_machine_1' WHERE project_id = 'proj_2'`, [NOW]);
     expect(await read()).toEqual({ items: [], unavailable: [] });

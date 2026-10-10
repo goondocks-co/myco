@@ -109,16 +109,11 @@ export const TRANSCRIPT_PARSE_CONCURRENT_BYTES = 8 * 1024 * 1024;
 /** Maximum bytes retained while completing the first record across segments. */
 export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
-/**
- * The parse's own version.
- *
- * A transcript records the version that read it, and a transcript stopped by a
- * failure is offered again once this moves. The transcript format is
- * version-unstable by its vendors' own documentation, so a break is expected to
- * be answered by a deploy — and a failure nothing can clear would mean one bad
- * line silences a transcript permanently, which no later fix could undo.
- */
+/** Bump when derived output changes; older retained recordings are read again. */
 export const PARSER_VERSION = 5;
+
+/** Bump when only stop conditions change; older failures resume from their cursor, leaving intact recordings alone. */
+export const PARSE_STOP_GENERATION = 1;
 
 /** An unanswered live turn closes after ten minutes without new transcript bytes. */
 export const TRANSCRIPT_IDLE_MS = 600_000;
@@ -151,9 +146,11 @@ export const TRANSCRIPT_PRODUCER = { adapter: TRANSCRIPT_PARSE_ADAPTER, version:
  */
 export const AWAITING_BYTES = 'awaiting_bytes';
 
+const RETRY_STOPPED = `parse_error <> '${AWAITING_BYTES}' AND COALESCE(json_extract(parser_context, '$.mycoParserFailure.generation'), 0) < ${PARSE_STOP_GENERATION}`;
+
 /**
  * Which transcripts still owe a pass: bytes unread, and either no failure, a
- * failure recorded against an older parser, or a wait (`AWAITING_BYTES`) on a
+ * failure recorded against an older parser or stop generation, or a wait (`AWAITING_BYTES`) on a
  * transcript that has grown past the size it waited at.
  *
  * `nextTarget` and `pendingTranscripts` share it, with the same tombstone
@@ -161,7 +158,7 @@ export const AWAITING_BYTES = 'awaiting_bytes';
  * for nothing; counting less than it takes leaves a transcript a newer parser
  * has reopened unread until something else wakes the tick.
  */
-export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
+export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (${RETRY_STOPPED}) OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
 
 /** A member's turn end covers the retained reply's source instants. */
 const TURN_ENDED = `EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = transcripts.project_id
@@ -345,13 +342,30 @@ async function finalizePass(db: RelationalStore, target: ParseTarget, statement:
   await db.batch([...(Array.isArray(statement) ? statement : [statement]), ...(target.imported ? [resolvePresentedDates(db, target.projectId, target.sessionId)] : [])]);
 }
 
-/** Stop this transcript where it stands and say why. Its rows to this point are kept; later passes skip it until the failure is cleared. */
-async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number, refused?: { eventKind: string; refusal: Classifier }): Promise<void> {
+/** A content-free description of the record where reading stopped. */
+export interface ParseDiagnostic {
+  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large';
+  offset: number;
+  lineKind: string;
+}
+
+const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large']);
+const LINE_KINDS = new Set(['user', 'assistant', 'attachment', 'session_meta', 'turn_context', 'event_msg', 'response_item', 'system', 'progress']);
+function lineKind(line: ParsedLine | undefined): string {
+  if (line === undefined) return 'unknown';
+  const value = line.value;
+  if (isBlock(value.message) && Array.isArray(value.message.content)
+    && value.message.content.some((block: unknown) => isBlock(block) && block.type === 'tool_result')) return 'tool_result';
+  return typeof value.type === 'string' && LINE_KINDS.has(value.type) ? value.type : 'unknown';
+}
+
+/** Stop this transcript where it stands and keep its recorded rows. */
+async function stop(db: RelationalStore, target: ParseTarget, classifier: ParseFailure, now: number, refused?: { eventKind: string; refusal: Classifier }, diagnostic: ParseDiagnostic = { branch: classifier === 'parse' ? 'no_progress' : classifier, offset: target.parsedOffset, lineKind: 'unknown' }): Promise<void> {
   const statement = db
-    .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ? WHERE project_id = ? AND transcript_id = ?`)
-    .bind(classifier, now, PARSER_VERSION, target.projectId, target.transcriptId);
+    .prepare(`UPDATE transcripts SET parse_error = ?, parse_failed_at = ?, parser_version = ?, parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserFailure', json(?)) WHERE project_id = ? AND transcript_id = ?`)
+    .bind(classifier, now, PARSER_VERSION, JSON.stringify({ ...diagnostic, generation: PARSE_STOP_GENERATION }), target.projectId, target.transcriptId);
   await finalizePass(db, target, statement);
-  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, failure: classifier, offset: target.parsedOffset, ...(refused ?? {}) });
+  emit({ kind: 'transcript_parse_failed', projectId: target.projectId, transcriptId: target.transcriptId, failure: classifier, ...diagnostic, ...(refused ?? {}) });
 }
 
 /**
@@ -533,9 +547,13 @@ async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Re
 function landed(result: IngestResult, target: ParseTarget, event: DerivedEvent): boolean {
   if (result.persisted === true) return true;
   if (result.code !== 'event_id_conflict') return false;
-  emit({ kind: 'transcript_row_conflict', projectId: target.projectId, transcriptId: target.transcriptId, eventKind: event.kind });
+  rowConflict(target, event);
   return true;
 }
+function rowConflict(target: ParseTarget, event: DerivedEvent): void {
+  emit({ kind: 'transcript_row_conflict', projectId: target.projectId, transcriptId: target.transcriptId, eventKind: event.kind });
+}
+
 
 
 /** What one pass may spend: store and blob calls, and the instant (on `clock`) past which it starts no more work. */
@@ -596,7 +614,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // `calls` counts what THIS pass spends; the caller adds its own selection.
   let calls = 0;
   const terminalOnly = target.parsedOffset === target.size && terminalRule(target, now, limits) !== undefined;
-  const needsHeader = parser.headerContext !== undefined && target.parserContext == null;
+  const failureOnlyContext = target.parserContext?.mycoParserFailure !== undefined
+    && Object.keys(target.parserContext).length === 1;
+  const needsHeader = parser.headerContext !== undefined && (target.parserContext == null || failureOnlyContext);
   const recoveringHeader = needsHeader && target.parsedOffset > 0;
   const readOffset = recoveringHeader ? 0 : target.parsedOffset;
   // The selection read the segments past the cursor with the transcript; a pass reading from elsewhere reads its own.
@@ -656,7 +676,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let split: ReturnType<typeof splitCompleteLines> | null = splitCompleteLines(joined, readOffset);
 
   if (split.malformed > TRANSCRIPT_PARSE_MALFORMED_LIMIT) {
-    await stop(env.db, target, 'parse', now);
+    await stop(env.db, target, 'parse', now, undefined, { branch: 'malformed_lines', offset: split.malformedOffset ?? readOffset, lineKind: 'unknown' });
     return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'parse' };
   }
   if (split.malformed > 0) emit({ kind: 'transcript_lines_unreadable', projectId: target.projectId, transcriptId: target.transcriptId, lines: split.malformed });
@@ -692,7 +712,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   if (continued !== undefined && !isBlock(continued)) throw new Error('Stored parser continuation is not an object');
   const transcriptMeta = stored?.mycoParserMeta !== undefined
     ? (isBlock(stored.mycoParserMeta) ? stored.mycoParserMeta : undefined)
-    : stored === null || stored === undefined ? parser.headerContext?.(windowLines) : continued === undefined ? stored : undefined;
+    : stored === null || stored === undefined || failureOnlyContext ? parser.headerContext?.(windowLines) : continued === undefined ? stored : undefined;
   if (recoveringHeader) {
     await env.db.prepare('UPDATE transcripts SET parser_context = ? WHERE project_id = ? AND transcript_id = ?')
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
@@ -720,7 +740,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     for (const event of events) {
       const parsed = parseEnvelope(await envelopeFor(target, event), now);
       if (!parsed.ok) {
-        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: parsed.classifier });
+        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: parsed.classifier }, { branch: 'event_refused', offset: event.offset, lineKind: event.kind });
         return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
       }
       terminalProofs.push({ eventId: parsed.value.eventId, hash: await envelopeHash(parsed.value) });
@@ -740,12 +760,38 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       const proof = expected.get(row.event_id);
       if (proof === undefined || row.envelope_hash !== proof.hash || row.session_id !== target.sessionId
         || row.producer_adapter !== TRANSCRIPT_PARSE_ADAPTER) {
-        await stop(env.db, target, 'event_refused', now, { eventKind: proof?.kind ?? 'unknown', refusal: 'event_id_conflict' });
+        await stop(env.db, target, 'event_refused', now, { eventKind: proof?.kind ?? 'unknown', refusal: 'event_id_conflict' },
+          { branch: 'event_refused', offset: target.parsedOffset, lineKind: proof?.kind ?? 'unknown' });
         return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
       }
     }
     const landedIds = new Set(results.map((row) => row.event_id));
     remainingEvents = events.filter((_, index) => !landedIds.has(terminalIds[index]));
+  }
+  // Events retained across reads may precede the cursor; their stored identities absorb replay before budget admission.
+  const cursorEvents = startingStatements === undefined ? [] : remainingEvents.filter((event) => event.offset <= target.parsedOffset);
+  const recorded = new Set<string>();
+  let recordedTurn: string | null = null;
+  for (const group of eventGroups(cursorEvents)) {
+    const ids = await Promise.all(group.map(async (event) => (await envelopeFor(target, event)).eventId as string));
+    const held = await env.db.prepare(`SELECT event_id, envelope_hash FROM events WHERE project_id = ? AND event_id IN (${ids.map(() => '?').join(',')})`)
+      .bind(target.projectId, ...ids).all<{ event_id: string; envelope_hash: string }>();
+    calls += 1;
+    for (const row of held.results) {
+      const event = group[ids.indexOf(row.event_id)];
+      const parsed = parseEnvelope(await envelopeFor(target, event), now);
+      if (!parsed.ok) continue;
+      recorded.add(row.event_id);
+      if (await envelopeHash(parsed.value) !== row.envelope_hash) rowConflict(target, event);
+    }
+  }
+  if (recorded.size > 0) {
+    const unrecorded: DerivedEvent[] = [];
+    for (const event of remainingEvents) {
+      if (event.offset > target.parsedOffset || !recorded.has((await envelopeFor(target, event)).eventId as string)) unrecorded.push(event);
+      else recordedTurn = turnOf(event) ?? recordedTurn;
+    }
+    remainingEvents = unrecorded;
   }
   const stateAt = async (to: number): Promise<ParserState> => {
     const checkpoint = to === windowEnd ? state : structuredClone(initialState);
@@ -766,7 +812,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   // pass takes the first segment whole, so an ordinary boundary lands inside a
   // turn under either bound. Tracking it here rather than at the break is what
   // makes the two ends behave alike.
-  let lastTurn: string | null = target.openPromptId;
+  let lastTurn: string | null = recordedTurn ?? target.openPromptId;
   /**
    * The cursor's advance to `to`, with the turn open there. With `landedIds`, it applies only once every one of those
    * events is in the store, so it can ride the batch that writes them: a pass whose last group did not land whole
@@ -799,7 +845,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const groups = terminalOnly && !budgeted ? (events.length === 0 ? [] : [events]) : eventGroups(remainingEvents,groupSize);
   // The line counts every cursor this pass can end at needs, read before the writes so the segment bytes they are
   // counted in are let go first. Parsed records remain available for a cursor's continuation checkpoint.
-  const linesAt = new Map<number, number>([windowEnd, ...events.map((event) => event.offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
+  const linesAt = new Map<number, number>([target.parsedOffset, windowEnd, ...events.map((event) => event.offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
   held = [];
   let fallbackCheckpoint: PreparedStatement[] | null = null;
   let completedGroups = 0;
@@ -813,7 +859,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     const group = groups[g];
     const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
     const next = groups[g + 1];
-    const checkpoint = budgeted && !terminalOnly && next !== undefined ? await advanceTo(next[0]!.offset, turnAfter) : null;
+    const checkpoint = budgeted && !terminalOnly && next !== undefined ? await advanceTo(Math.max(target.parsedOffset, next[0]!.offset), turnAfter) : null;
     const preparationReserve = group.some(oversizedToolInput) ? CONTENT_PREPARATION_CALL_RESERVE : 0;
     const checkpointCost = terminalOnly && next !== undefined ? 0 : checkpoint?.length ?? (budgeted ? (await advanceTo(cursor, turnAfter)).length : 0);
     if (budgeted && group.length * EVENT_STATEMENT_ADMISSION + checkpointCost + preparationReserve + PARSER_CLOSE_HEADROOM > statementRoom()) {
@@ -823,17 +869,17 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
         continue;
       }
       if (g === 0) return { derived: 0, calls, nextOffset: null, failure: null };
-      cursor = group[0].offset;
+      cursor = Math.max(target.parsedOffset, group[0].offset);
       break;
     }
     // A pass can end mid-turn; the cursor and its open prompt travel together to the next pass.
     if (budgeted && statementRoom() < preparationReserve + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM) {
       if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
-      cursor=group[0].offset;
+      cursor=Math.max(target.parsedOffset, group[0].offset);
       break;
     }
     if (g > 0 && spentAll(limits, calls + preparationReserve) && (terminalOnly || group[0].offset > target.parsedOffset)) {
-      cursor = group[0].offset;
+      cursor = Math.max(target.parsedOffset, group[0].offset);
       break;
     }
     const writes: EventWrite[] = [];
@@ -850,7 +896,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       if (!planned.ok) {
         await releaseUnlinked(writes);
         // The catalogue refused an event this parser derived: telemetry names its kind and the refusal's classifier.
-        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier });
+        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier }, { branch: 'event_refused', offset: event.offset, lineKind: event.kind });
         return { derived, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
       }
       calls += planned.write.preparationCalls ?? 0;
@@ -872,7 +918,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
         continue;
       }
       if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
-      cursor=group[0].offset;
+      cursor=Math.max(target.parsedOffset, group[0].offset);
       break;
     }
     let results: Awaited<ReturnType<typeof env.db.batch>> | null;
@@ -902,7 +948,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       }
       // The cursor stops at the byte of the event that did not land, never past it.
       await releaseUnlinked(writes.slice(n + 1));
-      await stop(env.db, target, 'parse', now);
+      await stop(env.db, target, 'parse', now, undefined, { branch: 'event_not_stored', offset: group[n].offset, lineKind: group[n].kind });
       return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
     }
     fallbackCheckpoint=checkpoint;
@@ -911,11 +957,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 
   if (terminalOnly && completedGroups < groups.length) return { derived, calls, nextOffset: null, failure: null };
 
-  // Every path above either advances the cursor or returns. A cursor that did
-  // not move would leave the transcript pending and every wake re-deriving the
-  // same events, so it stops the transcript rather than spinning on it.
-  if (cursor <= target.parsedOffset && !terminalOnly) {
-    await stop(env.db, target, 'parse', now);
+  // A partial line may store events before its cursor advances; replay absorbs those identities on the next pass.
+  if (cursor <= target.parsedOffset && derived === 0 && !terminalOnly) {
+    await stop(env.db, target, 'parse', now, undefined, { branch: 'no_progress', offset: cursor, lineKind: lineKind(input.lines.find((line) => line.offset === cursor)) });
     return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
   }
 
@@ -971,7 +1015,11 @@ async function prepareParserRepairs(db: RelationalStore): Promise<number> {
     const mutations = status === 'replaying'
       ? `parsed_offset = 0, parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL,
           parse_awaited_size = NULL, parser_context = json_set(${REREAD_CONTEXT}, '$.mycoParserRepair', json(?))`
-      : `parser_version = ${PARSER_VERSION}, parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?))`;
+      : `parser_version = ${PARSER_VERSION},
+          parse_failed_at = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_failed_at END,
+          parse_awaited_size = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_awaited_size END,
+          parse_error = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_error END,
+          parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?))`;
     return db.prepare(`UPDATE transcripts SET ${mutations} WHERE project_id = ? AND transcript_id = ?
       AND parser_version = ? AND parsed_offset = ? AND parser_context IS ?`)
       .bind(repair, row.project_id, row.transcript_id, row.parser_version, row.parsed_offset, row.parser_context);
@@ -1056,11 +1104,12 @@ export interface StoppedTranscripts {
   latestAt: number | null;
   /** How many stopped for each classifier (`ParseFailure`). */
   reasons: Record<string, number>;
+  latestDiagnostic?: ParseDiagnostic;
 }
 
 /**
  * Transcripts the current parser stopped on a fault and will not read on from, per Project that accepts capture: bytes remain past the
- * cursor, and the failure recorded is not a wait for bytes still to arrive. A failure an older parser recorded is not
+ * cursor, and the failure recorded is not a wait for bytes still to arrive. A failure an older parser or stop generation recorded is not
  * counted: the parse offers that transcript again (`PENDING_TRANSCRIPTS`). Read over the backlog index, whose
  * predicate every stopped transcript satisfies.
  */
@@ -1068,17 +1117,29 @@ export async function stoppedTranscripts(db: RelationalStore): Promise<StoppedTr
   // Counted here rather than grouped in SQL: a GROUP BY leads the planner to walk every transcript in Project order,
   // where the rows wanted all sit in the backlog index.
   const { results } = await db
-    .prepare(`SELECT project_id, parse_error, parse_failed_at FROM transcripts INDEXED BY idx_transcripts_backlog
-                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND parser_version >= ? AND NOT ${TOMBSTONED}
+    .prepare(`SELECT project_id, parse_error, parse_failed_at, CASE WHEN json_type(parser_context, '$.mycoParserFailure') = 'object' THEN json_extract(parser_context, '$.mycoParserFailure') END AS diagnostic FROM transcripts INDEXED BY idx_transcripts_backlog
+                WHERE parsed_offset < size AND parse_error IS NOT NULL AND parse_error <> '${AWAITING_BYTES}' AND NOT (${RETRY_STOPPED}) AND parser_version >= ? AND NOT ${TOMBSTONED}
                   AND EXISTS (SELECT 1 FROM projects p WHERE p.project_id = transcripts.project_id AND p.archived_at IS NULL)`)
     .bind(PARSER_VERSION)
-    .all<{ project_id: string; parse_error: string; parse_failed_at: number | null }>();
+    .all<{ project_id: string; parse_error: string; parse_failed_at: number | null; diagnostic: string | null }>();
   const byProject = new Map<string, StoppedTranscripts>();
   for (const row of results) {
     const held = byProject.get(row.project_id) ?? { projectId: row.project_id, transcripts: 0, latestAt: null, reasons: {} };
     held.transcripts += 1;
     held.reasons[row.parse_error] = (held.reasons[row.parse_error] ?? 0) + 1;
-    if (row.parse_failed_at !== null && (held.latestAt === null || row.parse_failed_at > held.latestAt)) held.latestAt = row.parse_failed_at;
+    if (row.parse_failed_at !== null && (held.latestAt === null || row.parse_failed_at > held.latestAt)) {
+      held.latestAt = row.parse_failed_at;
+      delete held.latestDiagnostic;
+      if (row.diagnostic !== null) {
+        const diagnostic = JSON.parse(row.diagnostic) as Record<string, unknown>;
+        if (typeof diagnostic.branch === 'string' && FAILURE_BRANCHES.has(diagnostic.branch)
+          && typeof diagnostic.offset === 'number' && Number.isSafeInteger(diagnostic.offset) && diagnostic.offset >= 0) {
+          held.latestDiagnostic = { branch: diagnostic.branch as ParseDiagnostic['branch'], offset: diagnostic.offset,
+            lineKind: typeof diagnostic.lineKind === 'string' && (LINE_KINDS.has(diagnostic.lineKind)
+              || diagnostic.lineKind === 'tool_result' || kindSpec(diagnostic.lineKind) !== null) ? diagnostic.lineKind : 'unknown' };
+        }
+      }
+    }
     byProject.set(row.project_id, held);
   }
   return [...byProject.values()].sort((a, b) => (b.latestAt ?? 0) - (a.latestAt ?? 0) || a.projectId.localeCompare(b.projectId));
