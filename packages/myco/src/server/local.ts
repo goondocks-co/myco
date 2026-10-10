@@ -63,6 +63,11 @@ export class LocalRecordUnreadable extends Error {}
 
 export function resolveLocalPaths(mycoHome = resolveMycoHome()): LocalDeploymentPaths {
   ensureServerLayout(mycoHome);
+  return peekLocalPaths(mycoHome);
+}
+
+/** Resolve native paths without migrating the layout or creating files. */
+export function peekLocalPaths(mycoHome = resolveMycoHome()): LocalDeploymentPaths {
   const root = path.join(mycoHome, 'server', 'local');
   return {
     root,
@@ -148,18 +153,25 @@ const GENERATED: readonly LocalSecretName[] = ['SECRET_WRAP_KEY', 'SESSION_SECRE
 
 const base64Random = (bytes: number): string => Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString('base64');
 
-export function readLocalSecrets(paths: Pick<LocalDeploymentPaths, 'secretsFile'> = resolveLocalPaths()): Partial<Record<LocalSecretName, string>> {
-  if (!existsSync(paths.secretsFile)) return {};
-  const out: Partial<Record<LocalSecretName, string>> = {};
-  for (const line of readFileSync(paths.secretsFile, 'utf8').split('\n')) {
+function localSecretEntries(paths: Pick<LocalDeploymentPaths, 'secretsFile'>): [LocalSecretName, string][] {
+  if (!existsSync(paths.secretsFile)) return [];
+  return readFileSync(paths.secretsFile, 'utf8').split('\n').flatMap(line => {
     const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (trimmed === '' || trimmed.startsWith('#')) return [];
     const at = trimmed.indexOf('=');
-    if (at < 1) continue;
+    if (at < 1) return [];
     const name = trimmed.slice(0, at) as LocalSecretName;
-    if ((LOCAL_SECRET_NAMES as readonly string[]).includes(name)) out[name] = trimmed.slice(at + 1);
-  }
-  return out;
+    return (LOCAL_SECRET_NAMES as readonly string[]).includes(name) ? [[name, trimmed.slice(at + 1)] as [LocalSecretName, string]] : [];
+  });
+}
+
+export function readLocalSecrets(paths: Pick<LocalDeploymentPaths, 'secretsFile'> = resolveLocalPaths()): Partial<Record<LocalSecretName, string>> {
+  return Object.fromEntries(localSecretEntries(paths));
+}
+
+/** Nonempty credential names, using the runtime's secrets-file grammar. */
+export function localSecretNames(paths: Pick<LocalDeploymentPaths, 'secretsFile'>): Set<LocalSecretName> {
+  return new Set([...new Map(localSecretEntries(paths))].filter(([, value]) => value !== '').map(([name]) => name));
 }
 
 export function writeLocalSecrets(values: Partial<Record<LocalSecretName, string>>, paths = resolveLocalPaths()): void {
@@ -235,12 +247,23 @@ export function removeLocalDeployment(paths = resolveLocalPaths()): void {
 }
 
 /** Provision configuration, credentials and schema while the volume is exclusively held. */
-export function createLocalDeployment(record: LocalDeploymentRecord, native: NativeSqlite, paths = resolveLocalPaths()) {
+export type LocalCreateStep = 'directory' | 'secrets' | 'schema' | 'record';
+
+export function createLocalDeployment(
+  record: LocalDeploymentRecord, native: NativeSqlite, paths = resolveLocalPaths(),
+  onProgress?: (step: LocalCreateStep) => void,
+) {
   return new LocalVolume(paths).exclusive(() => {
     assertRecordServable(record);
-    writeRecord(record, paths);
+    mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+    onProgress?.('directory');
     const generated = ensureSecrets(paths);
-    return { generated, applied: migrateOnly(paths.databasePath, native) };
+    onProgress?.('secrets');
+    const applied = migrateOnly(paths.databasePath, native);
+    onProgress?.('schema');
+    writeRecord(record, paths);
+    onProgress?.('record');
+    return { generated, applied };
   });
 }
 

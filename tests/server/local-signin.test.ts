@@ -65,7 +65,8 @@ describe('native sign-in registration', () => {
     const state = /state=([A-Za-z0-9_%-]+)/.exec(html)![1];
     await fetch(`${new URL(pageUrl).origin}/callback?code=native&state=${state}`);
     const result = await pending;
-    expect(result.verified).toMatchObject({ ok: false, pendingStart: true });
+    expect(result.verified).toMatchObject({ ok: false, pendingStart: true,
+      reason: "Next, while it's stopped: myco server setup-owner --target local. Then start it: myco server install --target local." });
     expect(requests).toEqual(['https://api.github.com/app-manifests/native/conversions']);
     expect(readLocalSecrets(f.paths)).toEqual({ ...before, GITHUB_CLIENT_ID: 'Iv1.native', GITHUB_CLIENT_SECRET: 'native-secret' });
     expect(statSync(f.paths.secretsFile).mode & 0o777).toBe(0o600);

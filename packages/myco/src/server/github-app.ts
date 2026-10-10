@@ -337,7 +337,7 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Re
     writeDeploymentRecord({ ...options.target.record, url: new URL(options.url).origin }, options.target.mycoHome);
   }
   const verified: VerifyResult = options.target.kind === 'local'
-    ? { ok: false, pendingStart: true, reason: 'Start the native Deployment with `myco server run --target local` or `myco server install --target local`, then open its dashboard and sign in. Sign-in has not been verified.' }
+    ? { ok: false, pendingStart: true, reason: 'Next, while it\'s stopped: myco server setup-owner --target local. Then start it: myco server install --target local.' }
     : await verifySignIn(options.url, app.clientId, { fetchImpl });
   return { app: { slug: app.slug, htmlUrl: app.htmlUrl, name: app.name, clientId: app.clientId, ownerLogin: app.ownerLogin }, callbackUrl: `${new URL(options.url).origin}/auth/callback`, verified };
 }
