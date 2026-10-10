@@ -8,6 +8,7 @@
  * declared once and judged the same way by both.
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
+  ['idx_agent_runs_task_live', 'embedding dispatch checks live runs by task and status across every Project'],
   ['idx_device_requests_pending_expiry', 'the enrollment sweep seeks expired undecided requests across the Deployment'],
   ['idx_device_requests_decided_expiry', 'the enrollment sweep seeks decided requests past retention across the Deployment'],
   ['idx_device_requests_source_pending', 'device admission counts live pending requests per trusted source across the Deployment'],

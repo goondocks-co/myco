@@ -1697,11 +1697,23 @@ export async function cancelRun(
  * a skip costs nothing, so it spends nothing of the day.
  */
 export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, task: string, actor?: string): Promise<number | null> {
-  const row = await db.prepare(
-    `SELECT MAX(COALESCE(queued_at, started_at)) AS at FROM agent_runs
-      WHERE project_id = ? AND task = ? AND (status != 'skipped' OR run_context = ?) ${ACTOR_FILTER_SQL}`,
-  ).bind(scope.projectId, task, skipContext(INPUT_UNCHANGED), ...actorParams(actor)).first<{ at: number | null }>();
-  return row?.at ?? null;
+  const times = await Promise.all(lastTaskEntryQueries(scope, task, actor).map(async ({ sql, binds }) =>
+    (await db.prepare(sql).bind(...binds).first<{ at: number }>())?.at ?? null));
+  const entries = times.filter((at): at is number => at !== null);
+  return entries.length === 0 ? null : Math.max(...entries);
+}
+
+/** The newest admitted and unchanged-input entries, each ordered by its index. */
+export function lastTaskEntryQueries(scope: ReadScope, task: string, actor?: string): Array<{ sql: string; binds: unknown[] }> {
+  return [
+    { predicate: "status != 'skipped'", values: [] },
+    { predicate: "status = 'skipped' AND run_context = ?", values: [skipContext(INPUT_UNCHANGED)] },
+  ].map(({ predicate, values }) => ({
+    sql: `SELECT COALESCE(queued_at, started_at) AS at FROM agent_runs
+      WHERE project_id = ? AND task = ? AND ${predicate} ${ACTOR_FILTER_SQL}
+      ORDER BY COALESCE(queued_at, started_at) DESC LIMIT 1`,
+    binds: [scope.projectId, task, ...values, ...actorParams(actor)],
+  }));
 }
 
 /** Entries of `task` by `actor` from `sinceMs` on, across every Project: the count a Deployment-wide daily ceiling reads. Skipped and replaced rows are not entries. */

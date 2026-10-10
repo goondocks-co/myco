@@ -30,7 +30,7 @@ import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
 import { holdSettlementDue } from './recovery-hold.js';
 import { pendingTranscripts, type TranscriptBacklog } from '../ingest/parse.js';
-import { embeddingKeepsAwake } from './embedding/jobs.js';
+import { embeddingKeepsAwake, embeddingSweepPending, EMBEDDING_SWEEP_ASSERTION } from './embedding/jobs.js';
 import { anyMaintenanceDue } from './store-maintenance.js';
 
 /** Inactivity before each depth: the same thresholds the 1.4 daemon applies on a machine. */
@@ -45,6 +45,8 @@ export interface JobReport {
   failed: string | null;
   /** Whether the job left work another pass would take, which chains the next wake. */
   more: boolean;
+  /** A job may pace its continuation more slowly than the default drain cadence. */
+  continueAfterMs?: number;
 }
 
 /**
@@ -89,6 +91,8 @@ export interface TickPacer {
   idleMs: number | null;
   /** The jobs the last wake ran that left work. */
   draining: string[];
+  /** The earliest continuation for each draining job. */
+  drainAt?: Record<string, number>;
 }
 
 /** A clock's pacer before its first wake: that wake runs every job due. */
@@ -104,7 +108,7 @@ function drainOnlyAt(pacer: TickPacer | undefined, now: number): pacer is TickPa
 }
 
 /** Runs `jobs` at `state`, reporting each as it ends. */
-async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: readonly string[]): Promise<JobReport[]> {
+async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: readonly string[], drainOnly = false): Promise<JobReport[]> {
   const reports: JobReport[] = [];
   const started = Date.now();
   const measured = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT,wallMs:CONTENT_WALL_MS });
@@ -124,10 +128,10 @@ async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: rea
       continue;
     }
     try {
-      const answered = await run(measured.env, now, state);
+      const answered = await run(measured.env, now, state, { drainOnly });
       const { changed, more } = typeof answered === 'number' ? { changed: answered, more: false } : answered;
       emit({ kind: 'job_ran', job: name, state, changed, more });
-      reports.push({ name, changed, failed: null, more });
+      reports.push({ name, changed, failed: null, more, ...(typeof answered !== 'number' && answered.continueAfterMs !== undefined ? { continueAfterMs: answered.continueAfterMs } : {}) });
     } catch (err) {
       const failed = classify(err, env.platform?.classifyError);
       emit({ kind: 'job_failed', job: name, state, error_class: failed });
@@ -160,6 +164,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   if (backlog.transcripts - backlog.imported.transcripts > 0) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
   if (backlog.imported.transcripts > 0) assertions.push({ name: 'import:pending', maxDepth: 'idle' });
   if (await embeddingKeepsAwake(env, now)) assertions.push({ name: 'embedding:pending', maxDepth: 'idle' });
+  else if (await embeddingSweepPending(env, now)) assertions.push({ name: EMBEDDING_SWEEP_ASSERTION, maxDepth: 'sleep' });
   // Requested work that waits keeps the Deployment awake until it runs.
   if (queued) assertions.push({ name: 'queue:pending', maxDepth: 'active' });
   if (inside) assertions.push({ name: 'run:live', maxDepth: 'idle' });
@@ -182,19 +187,33 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   return assertions;
 }
 
+function continuedJobs(now: number, reports: readonly JobReport[], retained: readonly string[] = [], previous: Record<string, number> = {}) {
+  const drainAt = Object.fromEntries([
+    ...retained.map((name) => [name, previous[name] ?? now]),
+    ...reports.filter((job) => job.more).map((job) => [job.name, now + Math.max(CHAINED_WAKE_MS, job.continueAfterMs ?? CHAINED_WAKE_MS)]),
+  ]);
+  return { draining: Object.keys(drainAt), drainAt };
+}
+
+function continuationDelay(now: number, cadence: number, drainAt: Record<string, number>): number {
+  return Math.max(0, Math.min(cadence, ...Object.values(drainAt).map((at) => at - now)));
+}
+
 /**
  * `wake` names which wake this tick is: a target's own clock passes `'clock'`; a tick an owner requests is `'request'`.
  * A clock also passes its `pacer`, which this tick reads to decide whether it drains only, and updates.
  */
 export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake; pacer?: TickPacer } = {}): Promise<TickReport> {
   const pacer = options.pacer;
-  if (drainOnlyAt(pacer, now)) {
-    const jobs = await runJobs(env, now, pacer.state, pacer.draining);
+  if (drainOnlyAt(pacer, now) && !(pacer.heldBy === EMBEDDING_SWEEP_ASSERTION && await embeddingKeepsAwake(env, now))) {
+    const due = pacer.draining.filter((name) => (pacer.drainAt?.[name] ?? 0) <= now);
+    const jobs = await runJobs(env, now, pacer.state, due, true);
     // A queued run waits on no cadence: an owner's dispatch during a drain starts as it would at any other wake.
     const drained = await drainAfterJobs(env, now, pacer.state);
-    pacer.draining = jobs.filter((j) => j.more).map((j) => j.name);
+    const continuation = continuedJobs(now, jobs, pacer.draining.filter((name) => !due.includes(name)), pacer.drainAt);
+    Object.assign(pacer, continuation);
     const untilFull = Math.max(0, pacer.fullAt + nextWakeDelayMs(pacer.state, WAKE_INTERVALS)! - now);
-    const nextWakeMs = pacer.draining.length > 0 ? Math.min(untilFull, CHAINED_WAKE_MS) : untilFull;
+    const nextWakeMs = continuationDelay(now, untilFull, pacer.drainAt ?? {});
     const backlog = await pendingTranscripts(env.db, now);
     return { state: pacer.state, heldBy: pacer.heldBy, drained, scheduled: { dispatched: 0, skipped: 0 }, idleMs: pacer.idleMs, jobs, nextWakeMs, backlog, drainOnly: true };
   }
@@ -225,8 +244,9 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
 
   // Work a job left is taken by a wake soon after this one; the cadence is the longest the next wake waits.
   const cadence = nextWakeDelayMs(resolved.state, WAKE_INTERVALS);
-  const nextWakeMs = cadence !== null && jobs.some((j) => j.more) ? Math.min(cadence, CHAINED_WAKE_MS) : cadence;
+  const continuation = continuedJobs(now, jobs);
+  const nextWakeMs = cadence === null ? null : continuationDelay(now, cadence, continuation.drainAt);
   const backlog = await pendingTranscripts(env.db, now);
-  if (pacer !== undefined) Object.assign(pacer, { fullAt: now, state: resolved.state, heldBy: resolved.heldBy, idleMs, draining: jobs.filter((j) => j.more).map((j) => j.name) });
+  if (pacer !== undefined) Object.assign(pacer, { fullAt: now, state: resolved.state, heldBy: resolved.heldBy, idleMs, ...continuation });
   return { state: resolved.state, heldBy: resolved.heldBy, drained, scheduled, idleMs, jobs, nextWakeMs, backlog, drainOnly: false };
 }

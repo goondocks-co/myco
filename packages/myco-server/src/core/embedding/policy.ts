@@ -211,3 +211,6 @@ export function selectionChangeRefusal(current: EmbeddingSelection | null, candi
   if (current === null && held.some((partition) => partition.modelKey === candidate.modelKey)) return null;
   return SWITCH_REFUSAL;
 }
+
+/** A standing switch's model owns calibration. */
+export const calibrationModel = (model: string, switching: string | null): string => switching ?? model;
