@@ -131,7 +131,7 @@ describe('runner registration through the device flow', () => {
     const r = rig();
     try {
       const started = await r.start('homelab-mini');
-      expect(started).toMatchObject({ verification_uri: 'https://s/device', interval: 5 });
+      expect(started).toMatchObject({ verification_uri: 'https://s/device', verification_uri_complete: `https://s/device?code=${started.user_code}`, interval: 5 });
       const stored = JSON.stringify(r.e.sqlite.query('SELECT * FROM device_requests').all());
       for (const secret of [started.candidate, started.device_code, started.user_code]) expect(stored).not.toContain(secret);
       expect(r.row('SELECT subject, runner_name, candidate_hash FROM device_requests')).toEqual({ subject: 'runner', runner_name: 'homelab-mini', candidate_hash: await sha256Hex(started.candidate) });

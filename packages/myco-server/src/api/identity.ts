@@ -4,7 +4,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { SessionContext } from '../context.js';
 import { accountMembership, hasLinkedAdmin, IDENTITY_LINK_KEY_PATTERN, previewIdentityLinkAuthority, spendIdentityLinkAuthority, type IdentityLinkRefusal } from '../auth/identity-link.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
-import { nameMemberFromLogin } from '../auth/members-admin.js';
+import { tryNameMemberFromLogin } from '../auth/members-admin.js';
 import { deploymentIdentity, memberSubject } from '../auth/authorization.js';
 import { dashboardPermissions } from '../auth/dashboard-permissions.js';
 
@@ -16,13 +16,8 @@ import { dashboardPermissions } from '../auth/dashboard-permissions.js';
 export async function handleMe(env: ServerEnv, ctx: SessionContext): Promise<Response> {
   let member = ctx.member;
   if (member !== null) {
-    // Naming is a courtesy of the sign-in, never a condition of it: a write that fails leaves the member as it was.
-    try {
-      const named = await nameMemberFromLogin(env.db, member.id, ctx.session.sub, ctx.session.login);
-      if (named !== null) member = { ...member, label: named };
-    } catch {
-      member = ctx.member;
-    }
+    const named = await tryNameMemberFromLogin(env.db, member.id, ctx.session.sub, ctx.session.login);
+    if (named !== null) member = { ...member, label: named };
   }
   const subject = member === null
     ? { kind: 'account' as const, deploymentId: await deploymentIdentity(env.db), transport: 'http' as const, live: true }
@@ -51,7 +46,7 @@ export async function handleLink(env: ServerEnv, ctx: SessionContext): Promise<R
   const result = await spendIdentityLinkAuthority(env.db, body.key, ctx.session.sub, ctx.now);
   if (result.ok) {
     // Record the linked GitHub login and fill an unnamed member's display name.
-    const named = await nameMemberFromLogin(env.db, result.member.id, ctx.session.sub, ctx.session.login);
+    const named = await tryNameMemberFromLogin(env.db, result.member.id, ctx.session.sub, ctx.session.login);
     return ok({ linked: true, member: named === null ? result.member : { ...result.member, label: named } });
   }
   return linkRefusal(env, result.reason);

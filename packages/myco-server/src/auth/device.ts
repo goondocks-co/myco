@@ -1,4 +1,4 @@
-import { nameMemberFromLogin } from './members-admin.js';
+import { tryNameMemberFromLogin } from './members-admin.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { hasLinkedAdmin } from './identity-link.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
@@ -121,7 +121,7 @@ async function startDeviceRequest(env: ServerEnv, request: Request, now: number,
       source, now, DEVICE_PENDING_PER_SOURCE - 1, source, now - DEVICE_START_WINDOW_MS, DEVICE_STARTS_PER_MINUTE - 1).run();
   if (inserted.meta.changes !== 1) return deviceError('slow_down', 429, DEVICE_START_WINDOW_MS / 1000);
   const verificationUri = `${new URL(request.url).origin}/device`;
-  return Response.json({ device_code: deviceCode, user_code: userCode, verification_uri: verificationUri,
+  return Response.json({ device_code: deviceCode, user_code: userCode, verification_uri: verificationUri, verification_uri_complete: `${verificationUri}?code=${encodeURIComponent(userCode)}`,
     expires_in: DEVICE_TTL_MS / 1000, interval: DEVICE_POLL_SECONDS });
 }
 
@@ -227,7 +227,7 @@ async function decideDevice(env: ServerEnv, ctx: OwnerContext, row: DeviceRow, d
 export async function handleDeviceApprove(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
-  await nameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login);
+  await tryNameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login);
   const pending = pendingDevice(row.id, ctx.now, 'member');
   const roleRow = await env.db.prepare('SELECT role FROM members WHERE id = ?').bind(ctx.member.id).first<{ role: string }>();
   const role = asMemberRole(roleRow?.role);

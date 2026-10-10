@@ -54,12 +54,12 @@ function mount(path: string) {
 
 describe('the auth gate', () => {
   it('names the sign-in configuration command without mounting protected pages', async () => {
-    const { asked } = server({ '/auth/me': () => Response.json({ error: 'sign_in_unconfigured' }, { status: 503 }) });
+    const { asked } = server({ '/auth/me': () => Response.json({ error: 'sign_in_unconfigured' }, { status: 401 }) });
     mount('/projects');
     expect(await screen.findByRole('heading', { name: 'Set up GitHub sign-in' })).toBeTruthy();
-    expect(screen.getByText(/myco server github-app/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`myco server github-app --url ${window.location.origin}`))).toBeTruthy();
     expect(screen.queryByText('Sign in with GitHub')).toBeNull();
-    expect(new Set(asked)).toEqual(new Set(['/auth/me']));
+    expect(asked).toEqual(['/auth/me']);
   });
 
   it('names owner linking when the Deployment is unclaimed', async () => {

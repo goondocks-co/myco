@@ -85,7 +85,7 @@ describe('myco runner register', () => {
     expect(callsTo('/auth/runner/poll')[0]!.body).toEqual({ device_code: DEVICE });
 
     const text = out.join('\n');
-    expect(text).toContain(`Open ${SERVER}/device`);
+    expect(text).toContain(`Open ${SERVER}/device?code=${encodeURIComponent(CODE)}`);
     expect(text).toContain(`Code: ${CODE}`);
     expect(text).toContain(`Register a runner named ${NAME}`);
     expect(text).toContain(`myco runner run --server ${SERVER}`);

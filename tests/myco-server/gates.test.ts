@@ -213,7 +213,7 @@ describe('gates', () => {
     for (const r of ROUTES.filter((x) => x.auth !== 'public' && x.auth !== 'enroll')) {
       const res = await worker.fetch(withSource(r.path, { method: r.method, body: r.method === 'GET' ? undefined : '{}' }), env());
       if (r.path === '/auth/me' || r.path === '/auth/login') {
-        expect(res.status).toBe(503);
+        expect(res.status).toBe(401);
         expect(await res.json() as Record<string, unknown>).toMatchObject({ error: 'sign_in_unconfigured' });
       } else expect(res.status).toBe(401);
     }

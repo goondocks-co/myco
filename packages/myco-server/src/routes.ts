@@ -114,11 +114,11 @@ export type Route = { authorization: AuthorizationDeclaration } & (
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; mintsAuthority?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
-  | { method: string; path: string; auth: 'auth'; handler: AuthHandler }
+  | { method: string; path: string; auth: 'auth'; unconfiguredSignIn?: 'json' | 'browser'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; subject?: 'enrollment' | 'runner-registration'; handler: EnrollHandler }
   | { method: string; path: string; auth: 'runner'; bodyMode: 'json'; shape: 'persisted'; admitsLapsed?: true; runner: RunnerHandler }
   | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'admin' | 'member'; raw?: { resource: RawResource['kind']; action: RawAction }; maxBodyBytes?: number; handler: OwnerHandler }
-  | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'account'; handler: SessionHandler });
+  | { method: string; path: string; pattern?: RegExp; auth: 'session'; authority: 'account'; unconfiguredSignIn?: 'json' | 'browser'; handler: SessionHandler });
 
 /**
  * Who a dashboard session route admits, declared on the route and enforced by the pipeline alone:
@@ -243,7 +243,7 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('raw', 'owner', 'deployment', ['member']), method: 'POST', path: '/api/raw-claims', auth: 'session', authority: 'admin', handler: handleRawClaim },
   { authorization: httpPolicy('member', 'read', 'deployment', ['member']), method: 'GET', path: '/api/ownership', auth: 'session', authority: 'member', handler: handleOwnershipPreview },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/ownership', auth: 'session', authority: 'admin', handler: handleOwnership },
-  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'GET', path: '/auth/me', auth: 'session', authority: 'account', handler: handleMe },
+  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'GET', path: '/auth/me', auth: 'session', authority: 'account', unconfiguredSignIn: 'json', handler: handleMe },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'POST', path: '/auth/link', auth: 'session', authority: 'account', handler: handleLink },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/status', auth: 'session', authority: 'member', handler: handleStatus },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/diagnostics', auth: 'session', authority: 'admin', handler: handleDiagnostics },
@@ -352,7 +352,7 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('machine', 'edit', 'machine', ['member']), method: 'PATCH', path: '/api/machines/{machineId}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'member', handler: handleRenameMachine },
   { authorization: httpPolicy('machine-settings', 'claimant.read', 'machine', ['member']), method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'session', authority: 'member', handler: handleMachineSettings },
   { authorization: httpPolicy('machine-settings', 'claimant.edit', 'machine', ['member']), method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'member', handler: handleSetMachineSetting },
-  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['public']), method: 'GET', path: '/auth/login', auth: 'auth', handler: handleLogin },
+  { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['public']), method: 'GET', path: '/auth/login', auth: 'auth', unconfiguredSignIn: 'browser', handler: handleLogin },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['public']), method: 'GET', path: '/auth/callback', auth: 'auth', handler: handleCallback },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['account', 'member']), method: 'POST', path: '/auth/logout', auth: 'session', authority: 'account', handler: async () => new Response(null, { status: 204, headers: { 'set-cookie': clearCookie() } }) },
 ];

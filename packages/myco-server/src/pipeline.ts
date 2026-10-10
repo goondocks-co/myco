@@ -348,12 +348,12 @@ export function createServer(deps: ServerDeps) {
     if (matched?.route.auth === 'auth' || matched?.route.auth === 'session') {
       const config = ownerConfig(env);
       if (config === null) {
-        if (matched.route.path === '/auth/me' || matched.route.path === '/auth/login') {
+        if ('unconfiguredSignIn' in matched.route && matched.route.unconfiguredSignIn !== undefined) {
           if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
-          if (matched.route.path === '/auth/login' && request.headers.get('accept')?.includes('text/html')) {
-            return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Set up GitHub sign-in</title><style>:root{color-scheme:light dark}body{font:1.1rem system-ui;max-width:40rem;margin:15vh auto;padding:1.5rem}</style><main><h1>Set up GitHub sign-in</h1><p>${SIGN_IN_UNCONFIGURED}</p><a href="/">Return to Myco</a></main></html>`, { status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+          if (matched.route.unconfiguredSignIn === 'browser' && request.headers.get('accept')?.includes('text/html')) {
+            return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Set up GitHub sign-in</title><style>:root{color-scheme:light dark}body{font:1.1rem system-ui;max-width:40rem;margin:15vh auto;padding:1.5rem}</style><main><h1>Set up GitHub sign-in</h1><p>${SIGN_IN_UNCONFIGURED(url.origin)}</p><a href="/">Return to Myco</a></main></html>`, { status: 401, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
           }
-          return Response.json({ error: AUTH_SETUP_CODES.signInUnconfigured, reason: SIGN_IN_UNCONFIGURED }, { status: 503 });
+          return Response.json({ error: AUTH_SETUP_CODES.signInUnconfigured, reason: SIGN_IN_UNCONFIGURED(url.origin) }, { status: 401 });
         }
         return anonymous();
       }

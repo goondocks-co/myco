@@ -1,3 +1,5 @@
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { AUTH_SETUP_CODES, type JoinedMemberIdentity } from '@goondocks/myco-shared/member-protocol';
 /**
  * Cross-package pins between the member and the worker. The two live under
@@ -277,6 +279,18 @@ describe('member ↔ worker pins', () => {
 });
 
 describe('additive auth setup protocol', () => {
+  it('keeps unconfigured sign-in absent to old probes: 401 with an additive code on both routes', async () => {
+    const e = sqliteEnv();
+    try {
+      const server = createServer({ now: Date.now, sourceOf: () => '192.0.2.44', fetchImpl: () => { throw new Error('no OAuth'); } });
+      for (const path of ['/auth/me', '/auth/login']) {
+        const response = await server.handleRequest(new Request('https://s' + path), e.serverEnv);
+        const body = await response.json() as Record<string, unknown>;
+        expect({ status: response.status, error: body.error }).toEqual({ status: 401, error: 'sign_in_unconfigured' });
+      }
+    } finally { e.sqlite.close(); }
+  });
+
   it('pins refusal names and keeps identity fields optional for older Deployments', () => {
     expect(AUTH_SETUP_CODES).toEqual({ noOwner: 'no_owner', unclaimed: 'unclaimed', ownerLinkDenied: 'owner_link_denied', signInUnconfigured: 'sign_in_unconfigured' });
     const older: JoinedMemberIdentity = {};

@@ -63,8 +63,8 @@ describe('terminal device sign-in', () => {
       fetch: fetchImpl, stdout: line => out.push(line), sleep: async ms => { sleeps.push(ms); },
     })).toMatchObject({ ok: true, answer: ANSWER });
     expect(sleeps).toEqual([5000, 5000, 10000]);
-    expect(out.join('\n')).toContain('https://s/device on a machine')
-    expect(out.join('\n')).not.toContain('?code=');
+    expect(out.join('\n')).toContain(`https://s/device?code=${CODE} on a machine`);
+    expect(out.join('\n')).toContain(`/device?code=${encodeURIComponent(CODE)}`);
     expect(out.join('\n')).not.toContain(SECRET);
     expect(out.join('\n')).not.toContain(ANSWER.token);
     for (const request of requests) {

@@ -3,7 +3,7 @@ export const OWNER_SETUP_COMMAND = 'myco server setup-owner';
 export const SIGN_IN_SETUP_COMMAND = 'myco server github-app';
 export const OWNER_UNCLAIMED = `This Myco has no owner yet, so nobody can approve this machine. Whoever created it must run ${OWNER_SETUP_COMMAND} on the machine that created it, then open and complete the fresh owner link.`;
 export const OWNER_LINK_DENIED = `This owner link has expired or was already used. On the machine that created this Myco, run ${OWNER_SETUP_COMMAND} again for a fresh link, then open and complete it.`;
-export const SIGN_IN_UNCONFIGURED = `GitHub sign-in is not set up for this Myco. Whoever created it must run ${SIGN_IN_SETUP_COMMAND} on the machine that created it, then reload this page.`;
+export const SIGN_IN_UNCONFIGURED = (origin: string): string => `GitHub sign-in is not set up for this Myco. Whoever created it must run ${SIGN_IN_SETUP_COMMAND} --url ${origin} on the machine that created it, then reload this page.`;
 export const ACCOUNT_UNLINKED = 'Your GitHub account is not connected to a member of this Myco. Ask an owner or admin to connect it from People & machines, then open the link they send while signed in to this account.';
 export const SIGN_IN_WAIT = 'If nobody approves within 10 minutes, this stops; the approval page says what is missing.';
 export const START_SLOW_DOWN = 'Too many requests. Wait a minute, then run the command again.';

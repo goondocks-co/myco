@@ -31,7 +31,7 @@ for (const mode of ['light', 'dark'] as const) {
           const url = new URL(route.request().url());
           if (url.origin !== origin) return route.abort();
           if (url.pathname === '/auth/me') {
-            if (scenario.state === 'unconfigured') return route.fulfill({ status: 503, json: { error: 'sign_in_unconfigured' } });
+            if (scenario.state === 'unconfigured') return route.fulfill({ status: 401, json: { error: 'sign_in_unconfigured' } });
             if (scenario.state === 'signed-out') return route.fulfill({ status: 401, json: { error: 'unauthorized' } });
             return route.fulfill({ json: dashboardMe({ sub: '9001', login: 'octocat',
               member: scenario.state === 'active' ? { id: 'mem_screen', label: 'octocat', role: 'admin' } : null,
@@ -48,7 +48,10 @@ for (const mode of ['light', 'dark'] as const) {
           await expect(page.getByLabel('Code from your terminal')).toHaveValue('BCDF-2345');
           await expect(page.getByText('Approve this machine')).toHaveCount(0);
         }
-        if (scenario.state === 'unconfigured') await expect(page.getByText('Sign in with GitHub')).toHaveCount(0);
+        if (scenario.state === 'unconfigured') {
+          await expect(page.getByText('Sign in with GitHub')).toHaveCount(0);
+          await expect(page.getByText(`myco server github-app --url ${origin}`, { exact: false })).toBeVisible();
+        }
         if (scenario.name === 'owner-link-missing') await expect(page.getByText('Ask an admin of this server', { exact: false })).toHaveCount(0);
         await expect(page.locator('body')).not.toContainText('myco setup');
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

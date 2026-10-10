@@ -70,6 +70,7 @@ describe('device authorization', () => {
       const start = await r.start('new_device');
       expect(start).toMatchObject({ interval: 5, expires_in: 600, verification_uri: 'https://s/device' });
       expect(start.user_code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+      expect(start.verification_uri_complete).toBe(`https://s/device?code=${start.user_code}`);
       const stored = r.e.sqlite.query('SELECT * FROM device_requests').all();
       expect(JSON.stringify(stored)).not.toContain(start.device_code);
       expect(JSON.stringify(stored)).not.toContain(start.user_code);

@@ -29,7 +29,7 @@ const runnerRegistration = (serverUrl: string, name: string, replace: boolean): 
   startPath: '/auth/runner/start',
   pollPath: '/auth/runner/poll',
   announce: (userCode) => [
-    `Open ${serverUrl}/device on a machine signed in to the dashboard.`,
+    `Open ${serverUrl}/device?code=${encodeURIComponent(userCode)} on a machine signed in to the dashboard.`,
     `Code: ${userCode}`,
     SIGN_IN_WAIT,
     replace ? `Review the request to replace registration for ${name}. Approval keeps the same machine and history, and ends its previous access. Waiting for approval…` : `The approver is asked to "Register a runner named ${name}". Check the details and approve it there. Waiting for approval…`,

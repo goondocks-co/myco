@@ -21,8 +21,8 @@ export class ApiError extends Error {
 
 /** The server answered 401: there is no dashboard session. */
 export class SignedOutError extends ApiError {
-  constructor() {
-    super(401, null);
+  constructor(body: unknown = null) {
+    super(401, body);
     this.name = 'SignedOutError';
   }
 }
@@ -40,8 +40,8 @@ async function bodyOf(res: Response): Promise<unknown> {
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: 'same-origin' });
-  if (res.status === 401) throw new SignedOutError();
   const body = await bodyOf(res);
+  if (res.status === 401) throw new SignedOutError(body);
   if (!res.ok) throw new ApiError(res.status, body);
   return body as T;
 }
