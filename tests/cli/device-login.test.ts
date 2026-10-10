@@ -17,6 +17,33 @@ const START = { device_code: SECRET, user_code: CODE, expires_in: 600, interval:
 const ANSWER = { joined: true, memberId: 'mem_device', token: 'test-machine-credential', tokenId: 'mt_device', expiresAt: Date.now() + 100000, role: 'member', projectId: null };
 
 describe('terminal device sign-in', () => {
+  for (const [status, error, code, words] of [
+    [409, 'no_owner', 'no_owner', 'myco server setup-owner'],
+    [429, 'limited', 'slow_down', 'Wait a minute'],
+    [403, 'future_code', 'refused', 'refused to start'],
+    [503, 'no_owner', 'unreachable', 'could not complete'],
+  ] as const) {
+    it(`decodes start refusal ${status}/${error} before announcing or polling`, async () => {
+      let calls = 0;
+      const lines: string[] = [];
+      const result = await deviceLogin('https://s', { machineId: 'fresh', machineName: 'Laptop', os: 'linux' }, {
+        stdout: line => lines.push(line), sleep: async () => { throw new Error('must not poll'); },
+        fetch: async () => { calls++; return Response.json({ error }, { status }); },
+      });
+      expect(result).toMatchObject({ ok: false, code, reason: expect.stringContaining(words) });
+      expect(calls).toBe(1);
+      expect(lines).toEqual([]);
+      if (status === 409) {
+        const errors: string[] = [];
+        expect(await run(['https://s', '--no-agents'], { machineId: 'fresh', hostname: () => 'Laptop',
+          stderr: line => errors.push(line), stdout: line => lines.push(line),
+          fetch: async () => Response.json({ error }, { status }),
+        })).toBe(false);
+        expect(errors).toEqual(['myco login: https://s has no owner yet, so nobody can approve this machine. Whoever created it finishes with myco server setup-owner on the machine that created it, then run myco login https://s again. (no_owner)']);
+      }
+    });
+  }
+
   it('normalizes bare domain and IP:port to HTTPS, preserves loopback HTTP, and refuses public HTTP', () => {
     for (const [input, expected] of [
       ['myco.goondocks.co', 'https://myco.goondocks.co'], ['10.0.0.5:8080', 'https://10.0.0.5:8080'],
@@ -36,8 +63,8 @@ describe('terminal device sign-in', () => {
       fetch: fetchImpl, stdout: line => out.push(line), sleep: async ms => { sleeps.push(ms); },
     })).toMatchObject({ ok: true, answer: ANSWER });
     expect(sleeps).toEqual([5000, 5000, 10000]);
-    expect(out.join('\n')).toContain('https://s/device on a machine')
-    expect(out.join('\n')).not.toContain('?code=');
+    expect(out.join('\n')).toContain(`https://s/device?code=${CODE} on a machine`);
+    expect(out.join('\n')).toContain(`/device?code=${encodeURIComponent(CODE)}`);
     expect(out.join('\n')).not.toContain(SECRET);
     expect(out.join('\n')).not.toContain(ANSWER.token);
     for (const request of requests) {
@@ -143,7 +170,7 @@ describe('terminal device sign-in', () => {
           fetch: fetchImpl, sleep: async ms => { now += ms; }, clock: () => now, stdout: line => out.push(line), stderr: line => err.push(line), agents: () => { throw new Error('no-agents must skip installer'); } })).toBe(true);
         expect(readDeploymentMembership(serverUrl, home)?.memberId).toBe('mem_machine_2');
         expect(readRegistryEntry(home, home)).toBeNull();
-        expect(out.join('\n')).toContain(`Signed in to ${serverUrl}`);
+        expect(out.join('\n')).toContain(`Signed in to ${serverUrl} as octocat (admin)`);
         expect(err).toEqual([]);
         expect(platform.commands).toEqual([]);
         expect(out.join('\n')).not.toContain('a worker now runs');

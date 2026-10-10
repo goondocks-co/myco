@@ -344,3 +344,13 @@ export function normalizeRemote(value: string): string | null {
   return tidy(host, path);
 }
 
+
+/** Additive refusal codes on the device and dashboard sign-in protocols. */
+export const AUTH_SETUP_CODES = {
+  noOwner: 'no_owner', unclaimed: 'unclaimed', ownerLinkDenied: 'owner_link_denied', signInUnconfigured: 'sign_in_unconfigured',
+} as const;
+/** Optional identity fields on successful join and member device-poll answers. */
+export interface JoinedMemberIdentity {
+  memberLabel?: string | null;
+  owner?: boolean;
+}

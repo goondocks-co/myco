@@ -1,3 +1,5 @@
+import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
+import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
 import { RETIRED_RUN_ROUTES } from './api/runs.js';
 import { authorizeDeclaration, deploymentIdentity, memberSubject, type AuthorizationSubject } from './auth/authorization.js';
@@ -345,7 +347,16 @@ export function createServer(deps: ServerDeps) {
 
     if (matched?.route.auth === 'auth' || matched?.route.auth === 'session') {
       const config = ownerConfig(env);
-      if (config === null) return anonymous();
+      if (config === null) {
+        if ('unconfiguredSignIn' in matched.route && matched.route.unconfiguredSignIn !== undefined) {
+          if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
+          if (matched.route.unconfiguredSignIn === 'browser' && request.headers.get('accept')?.includes('text/html')) {
+            return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Set up GitHub sign-in</title><style>:root{color-scheme:light dark}body{font:1.1rem system-ui;max-width:40rem;margin:15vh auto;padding:1.5rem}</style><main><h1>Set up GitHub sign-in</h1><p>${SIGN_IN_UNCONFIGURED(url.origin)}</p><a href="/">Return to Myco</a></main></html>`, { status: 401, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+          }
+          return Response.json({ error: AUTH_SETUP_CODES.signInUnconfigured, reason: SIGN_IN_UNCONFIGURED(url.origin) }, { status: 401 });
+        }
+        return anonymous();
+      }
       if (matched.route.auth === 'auth' && !(await env.sourceLimit.limit({ key: source })).success) return limited();
       const presented = readCookie(request.headers.get('cookie'));
       if (matched.route.auth === 'session' && presented === null) return anonymous();

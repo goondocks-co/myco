@@ -19,6 +19,25 @@ function mount(path = '/device') {
 }
 
 describe('device approval page', () => {
+  it('prefills a valid URL code but still requires checking before approval', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async input => { calls.push(String(input)); return Response.json(ME); }) as typeof fetch;
+    mount('/device?code=bcdf-2345');
+    expect(await screen.findByText('Check machine')).toBeTruthy();
+    expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('BCDF-2345');
+    expect(new Set(calls)).toEqual(new Set(['/auth/me']));
+    expect(screen.queryByText('Approve this machine')).toBeNull();
+  });
+
+  for (const state of ['unclaimed', 'unlinked'] as const) {
+    it(`names the recovery for ${state} without offering device actions`, async () => {
+      globalThis.fetch = (async () => Response.json({ ...ME, member: null, membership: { state, reason: null } })) as typeof fetch;
+      mount();
+      expect(await screen.findByText(state === 'unclaimed' ? /myco server setup-owner/ : /Ask an owner or admin/)).toBeTruthy();
+      expect(screen.queryByText('Check machine')).toBeNull();
+    });
+  }
+
   it('shows the server reason for inactive membership and offers no device actions', async () => {
     const calls: string[] = [];
     globalThis.fetch = (async input => {
@@ -101,7 +120,7 @@ describe('device approval page', () => {
     await screen.findByText('Approve this machine');
     pendingDeviceCode('BCDF-2345');
     fireEvent.click(screen.getByText('Approve this machine'));
-    await screen.findByText(/This code has expired/);
+    expect((await screen.findByText(/This code has expired/)).textContent).toContain('myco runner register');
     await waitFor(() => expect(pendingDeviceCode()).toBeNull());
   });
 

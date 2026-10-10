@@ -251,10 +251,15 @@ export async function previewIdentityLinkAuthority(db: RelationalStore, presente
   return { ok: true, member: { id: row.id, label: row.label, role } };
 }
 
+/** Whether anyone can sign in as a live administrator. */
+export async function hasLinkedAdmin(db: RelationalStore): Promise<boolean> {
+  return await db.prepare(`SELECT 1 AS one FROM members la WHERE ${linkedAdmin('la')} LIMIT 1`).first() !== null;
+}
+
 /** The signed-in account's own membership state, including inactive access. */
 export async function accountMembership(db: RelationalStore, githubId: string) {
   const row = await db.prepare('SELECT revoked_at FROM members WHERE github_id = ?').bind(githubId).first<{ revoked_at: number | null }>();
-  const state = row === null ? 'unlinked' as const : row.revoked_at === null ? 'active' as const : 'inactive' as const;
+  const state = row === null ? await hasLinkedAdmin(db) ? 'unlinked' as const : 'unclaimed' as const : row.revoked_at === null ? 'active' as const : 'inactive' as const;
   return { state, reason: state === 'inactive' ? 'Your access to this server is inactive. Ask an administrator to restore your access.' : null };
 }
 

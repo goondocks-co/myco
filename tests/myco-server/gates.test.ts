@@ -212,7 +212,10 @@ describe('gates', () => {
   it('refuses credential-free access to protected routes; public enrollment grants nothing without admitted evidence', async () => {
     for (const r of ROUTES.filter((x) => x.auth !== 'public' && x.auth !== 'enroll')) {
       const res = await worker.fetch(withSource(r.path, { method: r.method, body: r.method === 'GET' ? undefined : '{}' }), env());
-      expect(res.status).toBe(401);
+      if (r.path === '/auth/me' || r.path === '/auth/login') {
+        expect(res.status).toBe(401);
+        expect(await res.json() as Record<string, unknown>).toMatchObject({ error: 'sign_in_unconfigured' });
+      } else expect(res.status).toBe(401);
     }
     // Enrollment accepts protocol evidence in place of a member credential.
     const enroll = ROUTES.filter((x) => x.auth === 'enroll');

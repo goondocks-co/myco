@@ -13,10 +13,8 @@ import type { RelationalStore } from './adapters.js';
 import { ensureMemberStatement } from '../auth/enrollment.js';
 import { identityLinkStatements } from '../auth/identity-link.js';
 import { MEMBER_ID_PREFIX, SERVER_SCHEMA_VERSION } from '../constants.js';
-
-/** The schema_meta receipt naming the member a first-owner setup made. */
-export const FIRST_MEMBER_KEY = 'first_member_setup';
-const FIRST_MEMBER_LABEL = 'Deployment administrator';
+import { FIRST_MEMBER_KEY, FIRST_OWNER_MEMBER_LABEL } from './ownership.js';
+export { FIRST_MEMBER_KEY } from './ownership.js';
 
 /** A first-owner setup the Deployment's state refuses, in words its operator acts on. */
 export class FirstOwnerRefused extends Error {}
@@ -57,7 +55,7 @@ export async function setupFirstOwner(db: RelationalStore, nowMs: number, schema
     receipt = claimed;
   }
   const memberId = receipt;
-  await ensureMemberStatement(db, memberId, nowMs, 'admin', { sql: '(SELECT value FROM schema_meta WHERE key = ?) = ?', params: [FIRST_MEMBER_KEY, memberId] }, FIRST_MEMBER_LABEL).run();
+  await ensureMemberStatement(db, memberId, nowMs, 'admin', { sql: '(SELECT value FROM schema_meta WHERE key = ?) = ?', params: [FIRST_MEMBER_KEY, memberId] }, FIRST_OWNER_MEMBER_LABEL).run();
   const issue = await identityLinkStatements(db, memberId, nowMs, { replaceUnspent: true });
   const [insert, ...rest] = issue.statements;
   if ((await insert.run()).meta.changes !== 1) throw new FirstOwnerRefused(FIRST_OWNER_LINKED);

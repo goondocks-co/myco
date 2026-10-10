@@ -31,6 +31,7 @@
       "@goondocks/myco-shared/resume-commands-data": ["../myco-shared/src/resume-commands.generated.ts"],
       "@goondocks/myco-shared/session-ids": ["../myco-shared/src/session-ids.ts"],
       "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"],
+      "@goondocks/myco-shared/setup-guidance": ["../myco-shared/src/setup-guidance.ts"],
       "@goondocks/myco-shared/member-protocol": ["../myco-shared/src/member-protocol.ts"],
       "@goondocks/myco-shared/run-control": ["../myco-shared/src/run-control.ts"],
       "@goondocks/myco-shared/d1-export": ["../myco-shared/src/d1-export.ts"],

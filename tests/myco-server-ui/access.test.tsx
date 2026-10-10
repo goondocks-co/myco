@@ -619,7 +619,7 @@ describe('Connecting a GitHub account', () => {
       '/auth/link': () => Response.json({ error: 'link_requires_admin' }, { status: 403 }),
     });
     mount('/link');
-    expect(await screen.findByText(/this server already has an admin/)).toBeTruthy();
+    expect(await screen.findByText(/Ask an owner or admin to connect it from People & machines/)).toBeTruthy();
   });
 });
 

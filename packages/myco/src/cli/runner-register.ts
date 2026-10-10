@@ -1,3 +1,4 @@
+import { OWNER_UNCLAIMED, RUNNER_NEEDS_ADMIN, SIGN_IN_WAIT } from '@goondocks/myco-shared/setup-guidance';
 import { hostname as osHostname, platform } from 'node:os';
 import { getMachineId } from '../machine-id.js';
 import { getPluginVersion } from '../version.js';
@@ -28,15 +29,17 @@ const runnerRegistration = (serverUrl: string, name: string, replace: boolean): 
   startPath: '/auth/runner/start',
   pollPath: '/auth/runner/poll',
   announce: (userCode) => [
-    `Open ${serverUrl}/device on a machine signed in to the dashboard.`,
+    `Open ${serverUrl}/device?code=${encodeURIComponent(userCode)} on a machine signed in to the dashboard.`,
     `Code: ${userCode}`,
+    SIGN_IN_WAIT,
     replace ? `Review the request to replace registration for ${name}. Approval keeps the same machine and history, and ends its previous access. Waiting for approval…` : `The approver is asked to "Register a runner named ${name}". Check the details and approve it there. Waiting for approval…`,
   ],
   accept: (response, answer) => response.ok && answer.registered === true && typeof answer.runnerId === 'string'
     && typeof answer.name === 'string' && typeof answer.deploymentId === 'string'
     ? { runnerId: answer.runnerId, name: answer.name, deploymentId: answer.deploymentId } : null,
+  startRefusals: { no_owner: OWNER_UNCLAIMED + ' Then run myco runner register again.', not_admin: RUNNER_NEEDS_ADMIN },
   refusals: {
-    access_denied: 'registration was denied in the dashboard',
+    access_denied: 'registration was denied in the dashboard; ask the owner or an admin to approve your code, then run myco runner register again',
     expired_token: `registration expired; run myco runner register ${serverUrl} --name ${name}${replace ? ' --replace' : ''} again`,
     invalid_grant: `registration has expired or was already used; run myco runner register ${serverUrl} --name ${name}${replace ? ' --replace' : ''} again`,
   },
