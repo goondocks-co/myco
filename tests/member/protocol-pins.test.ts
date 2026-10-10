@@ -31,6 +31,7 @@ import { getPluginVersion } from '@myco/version.js';
 const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, string, 'item']> = {
   agent: ['session.start', 'agent'],
   branch: ['session.start', 'branch'],
+  projectName: ['session.start', 'projectName'],
   originPath: ['session.start', 'originPath'],
   parentReason: ['session.start', 'parentReason'],
   toolName: ['tool.use', 'toolName'],
@@ -260,6 +261,10 @@ describe('member ↔ worker pins', () => {
     expect(longest).toBeGreaterThan(0);
     expect({ grace: LINEAGE_REPLAY_GRACE_MS, longest, outlasts: LINEAGE_REPLAY_GRACE_MS > longest })
       .toEqual({ grace: LINEAGE_REPLAY_GRACE_MS, longest, outlasts: true });
+  });
+
+  it('accepts a repository name as an additive optional session-start field', () => {
+    expect(kindSpec('session.start')!.fields.projectName).toEqual({ bound: { type: 'string', max: BOUNDS.projectName }, required: false, column: undefined });
   });
 
   it('every member string bound equals the worker bound on the field it truncates for', () => {

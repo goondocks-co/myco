@@ -23,10 +23,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { HELD_CAPTURE_TTL_DAYS, normalizeRemote, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
+import { HELD_CAPTURE_TTL_DAYS, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { isSafeProjectRoot } from '../project-root.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
-import { runGitAnswer } from '../utils/git.js';
+import { repositoryName, repositoryRemote } from '@myco/utils/git.js';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
@@ -247,18 +247,13 @@ const statePath = (rootKey: string, mycoHome: string, serverUrl?: string): strin
 const lockPath = (rootKey: string, mycoHome: string): string => path.join(autoJoinDir(mycoHome), `${rootKey}.lock`);
 
 /**
- * The repository at `root`: its key and folder name, and the remote `origin` names, or the first remote it has, as one
+ * The repository at `root`: its key and repository name, and the remote `origin` names, or the first remote it has, as one
  * name with no credentials, port or scheme in it (`normalizeRemote`). A remote that is not one is none.
  */
 export function repositoryAt(root: string, mycoHome: string): Repository {
   const resolved = path.resolve(root);
-  const read = (args: string[]): string | null => { try { return runGitAnswer(args, resolved) || null; } catch { return null; } };
-  let remote = read(['remote', 'get-url', 'origin']);
-  if (remote === null) {
-    const first = read(['remote'])?.split('\n').map((name) => name.trim()).find((name) => name.length > 0);
-    if (first !== undefined) remote = read(['remote', 'get-url', first]);
-  }
-  return { root: resolved, rootKey: rootKeyFor(resolved, mycoHome), label: path.basename(resolved), remote: remote === null ? null : normalizeRemote(remote) };
+  const remote = repositoryRemote(resolved);
+  return { root: resolved, rootKey: rootKeyFor(resolved, mycoHome), label: repositoryName(resolved, { remote }), remote };
 }
 
 /** `target` with its links read, where it can be; as given where it cannot. */

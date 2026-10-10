@@ -1,3 +1,4 @@
+import { repositoryName } from '@myco/utils/git.js';
 import { defaultMembership } from './default-deployment.js';
 import { assertMemberTranscriptDestination, TranscriptDestinationError } from './transcript-routing.js';
 /**
@@ -471,7 +472,7 @@ export async function shipSession(
   // a session whose transcript is known is a session whose facts were sent.
   const known = opts.facts === false || readSessionState(spool.dir, sessionId).transcript?.transcriptId === pointer.transcriptId;
   const facts = known ? [] : [
-    sessionStartEvent(ctx, { startedAt: candidate.modifiedAt, originPath: filePath }),
+    sessionStartEvent(ctx, { startedAt: candidate.modifiedAt, originPath: filePath, projectName: repositoryName(candidate.root) }),
     sessionEndEvent(ctx, { endedAt: candidate.modifiedAt }),
   ];
   // Committed with the pointer so a killed import leaves no receipt for an

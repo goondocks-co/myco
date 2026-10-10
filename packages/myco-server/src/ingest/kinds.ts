@@ -98,6 +98,7 @@ export const KINDS: readonly KindSpec[] = [
       headSha: str(40),
       startedAt: time('started_at'),
       originPath: str(1024, 'origin_path'),
+      projectName: str(200),
       parentSessionId: { bound: { type: 'sessionId' }, column: 'parent_session_id' },
       parentReason: str(64, 'parent_reason'),
     },
