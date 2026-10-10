@@ -31,6 +31,8 @@ export interface ServerJob {
   name: string;
   /** The deepest power state this job still runs at. */
   runsThrough: PowerState;
+  /** The deepest state that admits a task dispatch, when upkeep also runs deeper. */
+  dispatchThrough?: PowerState;
   /** What the job converges toward, stated so the idempotence is checkable rather than asserted. */
   converges: string;
   /**
@@ -93,7 +95,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     converges: 'no External Agent grant past its expiry is left live: each is ended at the instant it expired and named as expired, and every row, agent and attribution survives',
   },
   { name: 'search-index', runsThrough: 'idle', converges: 'every referenced text blob has a complete full-text index' },
-  { name: 'embedding-reconcile', runsThrough: 'idle', converges: 'every eligible project memory record has a current vector and settled spore hubness' },
+  { name: 'embedding-reconcile', runsThrough: 'sleep', dispatchThrough: 'idle', converges: 'every eligible project memory record has a current vector and settled spore hubness' },
   // #1158 join UX
   {
     name: 'invite-expiry',
@@ -196,6 +198,12 @@ export function jobRunsAt(jobName: string, state: PowerState): boolean {
   const job = JOB_BY_NAME.get(jobName);
   if (job === undefined) return false;
   return POWER_STATE_DEPTH[state] <= POWER_STATE_DEPTH[job.runsThrough];
+}
+
+/** Whether a job may dispatch a task at this state. */
+export function jobDispatchesAt(jobName: string, state: PowerState): boolean {
+  const job = JOB_BY_NAME.get(jobName);
+  return job !== undefined && POWER_STATE_DEPTH[state] <= POWER_STATE_DEPTH[job.dispatchThrough ?? job.runsThrough];
 }
 
 /** Every job due at this state on this wake, in declaration order. A job that names its wake runs on that wake alone. */

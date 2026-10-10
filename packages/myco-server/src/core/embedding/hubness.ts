@@ -1,27 +1,23 @@
 import type { PreparedStatement, RelationalStore } from '../adapters.js';
 import type { EmbeddingContext, EmbeddingStep } from './reconcile.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from './provider.js';
+import { currentSource, currentHubnessMember as currentMember } from './source-state.js';
+import { HUBNESS_MEMBER as MEMBER } from './receipt-state.js';
+import { recordedWork, WORK_PREDICATE_VERSION } from './work-state.js';
+import { hubnessSweep } from './work-sweep.js';
+import type { EmbeddingQuery } from './selection.js';
 
 /** Settled members one step reads. */
 const HUBNESS_PAGE = 50;
 /** The most spore vectors one operation adds or removes, which bounds one step to about a thousand distances. */
 const HUBNESS_SUBJECTS = 20;
 /** Indexed spore receipts under the model whose source revision is current. Binds: project id, model key. */
-const sporeVectors = (columns: string) => `SELECT ${columns} FROM embedding_receipts r JOIN embedding_sources s
-  ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-  WHERE r.project_id = ? AND r.model_key = ? AND r.type = 'spore' AND r.ready = 1`;
+const sporeVectors = (columns: string) => `SELECT ${columns} FROM embedding_receipts r INDEXED BY idx_embedding_receipts_spore
+  WHERE r.project_id = ? AND r.model_key = ? AND r.type = 'spore' AND r.ready = 1 AND ${currentSource('r')}`;
 /** Every current spore vector, including one left out of calibration while the vector store does not return it. */
 export const SPORE_VECTORS = sporeVectors('r.id');
 /** The spore vectors calibration covers: current, and not left out while the vector store does not return them. */
 export const CURRENT_SPORE_VECTORS = `${SPORE_VECTORS} AND r.rewrites = 0`;
-
-/** A member row's state: covered by every other member's moments, joining the set, or leaving it. */
-const MEMBER = { settled: 0, joining: 1, leaving: 2 } as const;
-
-/** Member row `m` names a current spore vector under its model. */
-const currentMember = (m: string) => `EXISTS (SELECT 1 FROM embedding_receipts r JOIN embedding_sources s
-  ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-  WHERE r.project_id = ${m}.project_id AND r.model_key = ${m}.model_key AND r.id = ${m}.id AND r.type = 'spore' AND r.ready = 1 AND r.rewrites = 0)`;
 
 const NOT_MEMBER = `NOT EXISTS (SELECT 1 FROM embedding_hubness_members m
   WHERE m.project_id = r.project_id AND m.model_key = r.model_key AND m.id = r.id)`;
@@ -127,21 +123,32 @@ export async function missingSporeVectors(db: RelationalStore, projectId: string
 /**
  * Calibration work is pending: a member of another model, an operation in progress, a member whose vector is no longer
  * current, a current vector no member covers, a left-out vector that is still looked for or due to be written again,
- * statistics still to publish, or settled moments that do not count the other members.
+ * statistics still to publish, or settled moments that do not count the other members. Each probe starts at an indexed partition.
  */
-export async function hubnessPending(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
-  const row = await db.prepare(`SELECT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ?
-      AND (m.model_key <> ? OR m.state <> ${MEMBER.settled} OR NOT ${currentMember('m')}))
-    OR EXISTS (${UNCOVERED}) OR EXISTS (${MISSING} AND NOT ${ABANDONED})
-    OR EXISTS (SELECT 1 FROM embedding_cursors c WHERE c.project_id = ? AND c.hubness_cursor IS NOT NULL) OR (${MISCOUNTED}) AS pending`)
-    .bind(projectId, model, projectId, model, projectId, model, now - VECTOR_LOST_MS, projectId, projectId, model).first<{ pending: number }>();
-  return row?.pending === 1;
+export function hubnessQueries(projectId: string, model: string, now: number): EmbeddingQuery[] {
+  return [
+    ...['<', '>'].map((op) => ({ sql: `SELECT 1 FROM embedding_hubness_members WHERE project_id = ? AND model_key ${op} ? LIMIT 1`, binds: [projectId, model] })),
+    { sql: 'SELECT 1 FROM embedding_hubness_members WHERE project_id = ? AND model_key = ? AND state > 0 LIMIT 1', binds: [projectId, model] },
+    { sql: `SELECT 1 FROM embedding_hubness_members m WHERE m.project_id = ? AND m.model_key = ? AND m.state = 0 AND NOT ${currentMember('m')} LIMIT 1`, binds: [projectId, model] },
+    { sql: `${UNCOVERED} LIMIT 1`, binds: [projectId, model] },
+    { sql: `${MISSING} AND NOT ${ABANDONED} LIMIT 1`, binds: [projectId, model, now - VECTOR_LOST_MS] },
+    { sql: 'SELECT 1 FROM embedding_cursors WHERE project_id = ? AND hubness_cursor IS NOT NULL', binds: [projectId] },
+    { sql: `SELECT 1 FROM (${MISCOUNTED}) WHERE miscounted = 1`, binds: [projectId, model] },
+  ];
 }
 
-/** Calibration of a Project's spores under a model has work to do: it holds at least two current spore vectors and calibration is pending. */
+async function recordedHubness(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
+  const hasPair = async () => (await db.prepare(`${SPORE_VECTORS} LIMIT 2`).bind(projectId, model).all()).results.length === 2;
+  return recordedWork(db, projectId, model, 'hubness', JSON.stringify({ predicate: WORK_PREDICATE_VERSION }), now, async () => {
+    if (!(await hasPair())) return { pending: false };
+    for (const { sql, binds } of hubnessQueries(projectId, model, now)) if (await db.prepare(sql).bind(...binds).first() !== null) return { pending: true };
+    return { pending: false };
+  }, (cursor) => hubnessSweep(db, projectId, model, now, cursor, true));
+}
+
+/** Calibration has work only with at least two current spore vectors. */
 export async function calibrationPending(db: RelationalStore, projectId: string, model: string, now: number): Promise<boolean> {
-  const count = (await db.prepare(`SELECT COUNT(*) AS n FROM (${SPORE_VECTORS})`).bind(projectId, model).first<{ n: number }>())!.n;
-  return count >= 2 && hubnessPending(db, projectId, model, now);
+  return recordedHubness(db, projectId, model, now);
 }
 
 /**
@@ -167,9 +174,9 @@ export async function reconcileHubness(context: EmbeddingContext, projectId: str
   let token = await cursorToken(db, projectId);
   const commit = async (statements: PreparedStatement[], set = '', binds: unknown[] = []): Promise<boolean> => {
     const results = await db.batch([...statements,
-      db.prepare(`UPDATE embedding_cursors SET hubness_token = lower(hex(randomblob(8)))${set} WHERE project_id = ? AND hubness_token IS ?`)
+      db.prepare(`UPDATE embedding_cursors SET hubness_token = lower(hex(randomblob(8)))${set} WHERE project_id = ? AND hubness_token IS ? RETURNING project_id`)
         .bind(...binds, projectId, token)]);
-    return results[results.length - 1]!.meta.changes === 1;
+    return results[results.length - 1]!.results.length === 1;
   };
   const stale = await db.prepare('SELECT 1 AS found FROM embedding_hubness_members WHERE project_id = ? AND model_key <> ? LIMIT 1').bind(projectId, model).first();
   if (stale !== null) {

@@ -1,4 +1,4 @@
-export const SERVER_SCHEMA_VERSION = 81;
+export const SERVER_SCHEMA_VERSION = 82;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';

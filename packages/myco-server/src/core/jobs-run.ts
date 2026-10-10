@@ -20,7 +20,8 @@ import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pru
 import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
 import { pendingSearchBlobs, reconcileSearchIndex } from './search-index.js';
-import { dispatchEmbeddingWork } from './embedding/jobs.js';
+import { jobDispatchesAt } from './jobs.js';
+import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { parseTranscripts } from '../ingest/parse.js';
 import { transcriptRetention } from '../ingest/retention.js';
@@ -49,12 +50,14 @@ export const JOB_BATCH = 500;
  * tick asks for its next wake soon rather than at the depth's cadence. The tick reports both per job. It is told the
  * power state the wake resolved, for a job whose block names the states it dispatches in.
  */
-export type JobRun = (env: ServerEnv, now: number, state: PowerState) => Promise<number | JobOutcome>;
+export type JobRun = (env: ServerEnv, now: number, state: PowerState, context?: { drainOnly: boolean }) => Promise<number | JobOutcome>;
 
 /** What a draining job answers: rows it changed, and whether work remains for another pass. */
 export interface JobOutcome {
   changed: number;
   more: boolean;
+  /** Delay before another bounded pass, or the default drain cadence. */
+  continueAfterMs?: number;
 }
 
 /**
@@ -211,7 +214,10 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
-  'embedding-reconcile': dispatchEmbeddingWork,
+  'embedding-reconcile': (env, now, state, context) => {
+    const allowDispatch = jobDispatchesAt('embedding-reconcile', state);
+    return runEmbeddingJob(env, now, { sweepOnly: context?.drainOnly === true || !allowDispatch, allowDispatch });
+  },
   'search-index': async (env, now) => {
     const changed = await reconcileSearchIndex(env.db, env.blobs, now);
     return { changed, more: changed > 0 && (await pendingSearchBlobs(env.db)) > 0 };

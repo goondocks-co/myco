@@ -276,15 +276,15 @@ jobs:
           if-no-files-found: error
 
   parity:
-    name: parity (${{ matrix.shard }}/6)
+    name: parity (${{ matrix.shard }}/7)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     env:
-      MYCO_PARITY_SHARD: ${{ matrix.shard }}/6
+      MYCO_PARITY_SHARD: ${{ matrix.shard }}/7
       MYCO_RUNNER_GROUP_BUDGET_MS: 780000
     steps:
       - uses: actions/checkout@v7

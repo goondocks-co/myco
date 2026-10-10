@@ -114,7 +114,7 @@ describe('search under the statistics a Deployment plans from', () => {
     }
     const release = await plans((db) => getReleaseStatesAcross(db, [{ projectId: 'proj_0', namespace: 'spore', recordIds: ['a'] }, { projectId: 'proj_1', namespace: 'plan', recordIds: ['b'] }]));
     expect(release).toHaveLength(2 * 3);
-    for (const { store, plan } of release) expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH knowledge_release_state USING INDEX \w+ \(project_id=\?\)/) });
+    for (const { store, plan } of release) expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH knowledge_release_state USING INDEX \w+ \(project_id=\? AND namespace=\? AND record_id=\?\)/) });
   });
 
   it('ranks every match without a snippet, and reads snippets for the kept page alone', async () => {

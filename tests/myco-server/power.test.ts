@@ -5,7 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   naturalState, nextWakeDelayMs, resolvePowerState, type PowerAssertion,
 } from '@myco-server-worker/core/power.js';
-import { jobRunsAt, jobsDueAt, SCHEDULE_JOB, SERVER_JOBS, STAGING_RETENTION_JOB, DEFERRED_JOBS } from '@myco-server-worker/core/jobs.js';
+import { jobDispatchesAt, jobRunsAt, jobsDueAt, SCHEDULE_JOB, SERVER_JOBS, STAGING_RETENTION_JOB, DEFERRED_JOBS } from '@myco-server-worker/core/jobs.js';
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 
 const THRESHOLDS = { idleMs: 60_000, sleepMs: 300_000, deepSleepMs: 3_600_000 };
@@ -110,10 +110,15 @@ describe('what runs at each depth', () => {
     expect(SERVER_JOBS.filter((j) => j.runsThrough === 'deep_sleep')).toEqual([]);
   });
 
-  it('holds the model-calling job back to a Deployment in use, once its owner gives it work', () => {
+  it('admits query-only embedding safety sweeps while sleeping', () => {
     const embedding = SERVER_JOBS.find((j) => j.name === 'embedding-reconcile');
-    expect(embedding?.runsThrough).toBe('idle');
+    expect(embedding?.runsThrough).toBe('sleep');
     expect(jobRunsAt('embedding-reconcile', 'idle')).toBe(true);
+    expect(jobRunsAt('embedding-reconcile', 'sleep')).toBe(true);
+    expect(jobRunsAt('embedding-reconcile', 'deep_sleep')).toBe(false);
+    expect(jobDispatchesAt('embedding-reconcile', 'idle')).toBe(true);
+    expect(jobDispatchesAt('embedding-reconcile', 'sleep')).toBe(false);
+    expect(jobDispatchesAt('embedding-reconcile', 'deep_sleep')).toBe(false);
   });
 
   it('still runs query-only housekeeping while sleeping: every job declared to run through sleep, and no other', () => {

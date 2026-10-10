@@ -116,7 +116,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
   it('leaves every revision as it was when any column of any embeddable row is written back unchanged', () => {
     const f = seededSources();
     const tables = (f.sqlite.query(`SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type = 'trigger'
-      AND sql LIKE '%embedding_versions%' AND sql LIKE '%AFTER UPDATE%' ORDER BY tbl_name`).all() as { t: string }[]).map((r) => r.t);
+      AND (sql LIKE '%INSERT INTO embedding_versions(%' OR sql LIKE '%UPDATE embedding_versions SET%') AND sql LIKE '%AFTER UPDATE%' ORDER BY tbl_name`).all() as { t: string }[]).map((r) => r.t);
     // A new table whose updates re-revision a record is seeded here before this passes.
     expect(tables).toEqual(['knowledge_release_state', 'plans', 'sessions', 'skill_records', 'spores']);
     const before = f.revisions();
@@ -213,7 +213,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
   it('fires each revision trigger on an UPDATE only when a column it names holds a different value', () => {
     const f = fixture();
     const triggers = f.sqlite.query(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger'
-      AND sql LIKE '%embedding_versions%' AND sql LIKE '%AFTER UPDATE%' ORDER BY name`).all() as { name: string; sql: string }[];
+      AND (sql LIKE '%INSERT INTO embedding_versions(%' OR sql LIKE '%UPDATE embedding_versions SET%') AND sql LIKE '%AFTER UPDATE%' ORDER BY name`).all() as { name: string; sql: string }[];
     expect(triggers.length).toBeGreaterThan(0);
     for (const { name, sql } of triggers) {
       const named = /AFTER UPDATE OF ([\w\s,]+?) ON /.exec(sql)?.[1].split(',').map((c) => c.trim()) ?? [];
