@@ -11,7 +11,7 @@ import { PassThrough } from 'node:stream';
 const nativeSpawnSync = globalThis.Bun ? Bun.spawnSync.bind(Bun) : cp.spawnSync.bind(cp);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(HERE);
-const MANAGERS = new Set(['launchctl', 'systemctl']);
+const MANAGERS = new Set(['launchctl', 'systemctl', 'schtasks']);
 const GUARD_ENV = 'MYCO_TEST_SERVICE_GUARD_DIR';
 const GUARD_STATUS = 97;
 const EXECUTION_BOUNDARY_PROBE = '/usr/bin/true';
@@ -136,7 +136,7 @@ export function assertServiceCommand(cmd, env, cwd = process.cwd()) {
   if (!dir || !cmd.length) return;
   const check = command => {
     const target = executable(command, env, cwd);
-    const name = path.basename(target ?? command);
+    const name = path.basename(target ?? command).replace(/\.exe$/i, '').toLowerCase();
     if (!MANAGERS.has(name)) return;
     if (target && !inside(dir, target) && inside(env.MYCO_TEST_RUN_ROOT, target)) return;
     refuse(dir, name);

@@ -130,14 +130,14 @@ export function servicePathEnv(binaryPath: string, home: string, platform: NodeJ
 }
 
 /** The native Deployment's service, run by `binaryPath` for the user at `home`. */
-export function defaultSpec(binaryPath: string, home = homedir(), platform = process.platform): ServiceSpec {
+export function defaultSpec(binaryPath: string, home = homedir(), platform = process.platform, mycoHome?: string): ServiceSpec {
   return {
     unit: SERVER_UNIT,
     binaryPath,
     home,
     pathEnv: servicePathEnv(binaryPath, home, platform),
-    logDir: path.join(home, '.myco', 'logs'),
-    env: {},
+    logDir: path.join(mycoHome ?? path.join(home, '.myco'), 'logs'),
+    env: mycoHome === undefined ? {} : { MYCO_HOME: mycoHome },
   };
 }
 

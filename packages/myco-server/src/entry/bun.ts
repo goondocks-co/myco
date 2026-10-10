@@ -10,7 +10,7 @@
  * requests against one.
  */
 import type { Database } from 'bun:sqlite';
-import { createServer } from '../pipeline.js';
+import { createServer, type ServerDeps } from '../pipeline.js';
 import { assertSchemaCurrent, openDatabase } from '../platform/bun/database.js';
 import { sweepPartialObjects } from '../platform/bun/blobs.js';
 import { serverEnvFromBunConfig, type BunServerConfig, type BunServerEnv } from '../platform/bun/env.js';
@@ -72,6 +72,8 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
   wakeLoop?: boolean;
   /** The origin for a listener whose port is chosen at bind, resolved once the socket is bound; a test double for `origin`. */
   originOf?: (port: number) => string;
+  /** Outbound OAuth requests; defaults to the runtime's fetch. */
+  fetchImpl?: ServerDeps['fetchImpl'];
 }
 
 export interface BunHandler {
@@ -98,7 +100,7 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   const loop = options.wakeLoop === false ? null : startBunWake(env);
   let bound: AddressableServer | null = null;
   const sourceOf = options.sourceFrom === 'socket' ? socketSourceOf(() => bound) : trustedProxySourceOf(options);
-  const server = createServer({ now: () => Date.now(), sourceOf, fetchImpl: fetch });
+  const server = createServer({ now: () => Date.now(), sourceOf, fetchImpl: options.fetchImpl ?? fetch });
   const core = (request: Request) => server.handleRequest(request, env);
   return {
     env,
