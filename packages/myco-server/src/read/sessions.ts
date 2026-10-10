@@ -179,19 +179,21 @@ function toSession(row: Record<string, unknown>, nowMs?: number): SessionRow {
   };
 }
 
+/** The Project listing reads one maintained count and at most one live activity receipt per Project. */
+export function listProjectsSql(includeArchived = false): string {
+  return `SELECT p.project_id, p.name, p.created_at, p.archived_at, p.archived_by,
+    COALESCE(c.session_count, 0) AS session_count,
+    (SELECT f.last_received_at FROM session_read_facts f
+      WHERE f.project_id = p.project_id AND f.has_session = 1 AND f.tombstoned = 0
+      ORDER BY f.last_received_at DESC LIMIT 1) AS last_activity_at
+    FROM projects p LEFT JOIN project_session_counts c ON c.project_id = p.project_id
+    ${includeArchived ? '' : 'WHERE p.archived_at IS NULL'}
+    ORDER BY last_activity_at DESC NULLS LAST, p.created_at DESC`;
+}
+
 /** Every project with its live session count and most recent live receipt, most recently active first; a project with no live session still lists with a count of zero. Unscoped: the caller decides which projects its credential may see. */
 export async function listProjects(db: RelationalStore, opts: { includeArchived?: boolean } = {}): Promise<ProjectRow[]> {
-  const { results } = await db
-    .prepare(
-      `SELECT p.project_id, p.name, p.created_at, p.archived_at, p.archived_by,
-              COUNT(s.session_id) AS session_count,
-              MAX(s.last_received_at) AS last_activity_at
-         FROM projects p LEFT JOIN sessions s ON s.project_id = p.project_id AND ${LIVE_SESSION}
-        ${opts.includeArchived === true ? '' : 'WHERE p.archived_at IS NULL'}
-        GROUP BY p.project_id, p.name, p.created_at, p.archived_at, p.archived_by
-        ORDER BY last_activity_at DESC NULLS LAST, p.created_at DESC`
-    )
-    .all<Record<string, unknown>>();
+  const { results } = await db.prepare(listProjectsSql(opts.includeArchived)).all<Record<string, unknown>>();
   return results.map((row) => ({
     projectId: row.project_id as string,
     name: row.name as string,

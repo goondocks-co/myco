@@ -144,6 +144,7 @@ it('GATE: persists the bookmark and schema transition before the first migration
     expect(reports.join('\n')).toContain(`CLOUDFLARE_ACCOUNT_ID='${ACCOUNT}' npx --no-install wrangler d1 time-travel restore 'myco-server'`);
     expect(reports.join('\n')).toContain(`--version='${OLD_WORKER}'`);
     expect(reports.join('\n')).toContain('code depends on the new schema');
+    expect(reports.join('\n')).toContain('an alpha.4 Worker on schema 83 commits prompt marks but reports marked:false');
   });
 });
 

@@ -48,6 +48,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
       const config = options.configFile === undefined ? '' : ` -c ${quote(path.join(options.configDir, options.configFile))}`;
       options.report?.(`Database rollback: CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark}${config}`);
       options.report?.('Confirm the restore prompt with y; it cancels in-flight queries and prints an undo bookmark.');
+      options.report?.('Schema 83 rollback: an alpha.4 Worker on schema 83 commits prompt marks but reports marked:false, including between migration and Worker upload. Keep a schema-83-compatible Worker or restore the recorded pre-migration database bookmark with the matching Worker; restoring the bookmark also rolls back subsequent writes.');
       options.report?.(record.versionId === null
         ? 'Roll back the Worker too if its code depends on the new schema; find the prior version with `wrangler deployments list`.'
         : `Roll back the Worker too if its code depends on the new schema: myco server rollback --target cloudflare --account-id=${quote(record.accountId)} --version=${quote(record.versionId)}`);

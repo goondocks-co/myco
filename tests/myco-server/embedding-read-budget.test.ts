@@ -12,56 +12,12 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '@myco-server-worker/platform/cloudflare/embedding.js';
-import type { ServerEnv, PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { measuredStore } from './helpers/read-budget.js';
+import type { ServerEnv, RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const NOW = 10 ** 12;
 const MODEL = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
 const TICKS = 10;
-type D1 = Awaited<ReturnType<Miniflare['getD1Database']>>;
-
-function measuredStore(d1: D1) {
-  let reads = 0;
-  let historyQueries = 0;
-  const originals = new WeakMap<PreparedStatement, ReturnType<D1['prepare']>>();
-  const observe = (statement: ReturnType<D1['prepare']>): PreparedStatement => {
-    const wrapped: PreparedStatement = {
-    bind: (...values) => observe(statement.bind(...values)),
-    first: async <T,>() => {
-      const result = await statement.all<T>();
-      reads += result.meta.rows_read;
-      return result.results[0] ?? null;
-    },
-    all: async <T,>() => {
-      const result = await statement.all<T>();
-      reads += result.meta.rows_read;
-      return result;
-    },
-    run: async () => {
-      const result = await statement.run();
-      reads += result.meta.rows_read;
-      return result;
-    },
-    };
-    originals.set(wrapped, statement);
-    return wrapped;
-  };
-  const db: RelationalStore = {
-    prepare: (sql) => {
-      if (/SELECT (?:MAX\()?COALESCE\(queued_at, started_at\)/.test(sql)) historyQueries++;
-      return observe(d1.prepare(sql));
-    },
-    batch: async (statements) => {
-      const results = await d1.batch(statements.map((statement) => {
-        const original = originals.get(statement);
-        if (original === undefined) throw new Error('batch statement did not come from the measured D1 store');
-        return original;
-      }));
-      reads += results.reduce((sum, result) => sum + result.meta.rows_read, 0);
-      return results;
-    },
-  };
-  return { db, reset: () => { reads = 0; historyQueries = 0; }, reads: () => reads, historyQueries: () => historyQueries };
-}
 
 async function seedCaughtUp(d1: RelationalStore, size: number) {
   await d1.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < ?)
