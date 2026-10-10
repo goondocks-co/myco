@@ -1,3 +1,6 @@
+import { nameMemberFromLogin } from './members-admin.js';
+import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
+import { hasLinkedAdmin } from './identity-link.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { toBase64Url } from '../base64.js';
@@ -103,6 +106,7 @@ export async function handleRunnerDeviceStart(env: ServerEnv, request: Request, 
 /** One device request of either subject, admitted under the shared per-source bounds. */
 async function startDeviceRequest(env: ServerEnv, request: Request, now: number, source: string,
   device: { machineId: string; machineName: string; os: string; runner: { name: string; candidateHash: string; replacingId: string | null } | null }): Promise<Response> {
+  if (!await hasLinkedAdmin(env.db)) return deviceError(AUTH_SETUP_CODES.noOwner, 409);
   const deviceCode = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const userCode = newUserCode();
   const id = `en_device_${crypto.randomUUID()}`;
@@ -223,6 +227,7 @@ async function decideDevice(env: ServerEnv, ctx: OwnerContext, row: DeviceRow, d
 export async function handleDeviceApprove(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
+  await nameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login);
   const pending = pendingDevice(row.id, ctx.now, 'member');
   const roleRow = await env.db.prepare('SELECT role FROM members WHERE id = ?').bind(ctx.member.id).first<{ role: string }>();
   const role = asMemberRole(roleRow?.role);

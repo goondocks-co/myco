@@ -132,7 +132,7 @@ describe('device authorization', () => {
         const response = await r.decide(start.user_code, 'approve', github);
         expect(response.status).toBe(200);
         const joined = await r.poll(start.device_code);
-        expect(joined).toMatchObject({ joined: true, memberId, role: 'admin' });
+        expect(joined).toMatchObject({ joined: true, memberId, role: 'admin', owner: memberId === OWNER, memberLabel: 'octocat' });
       }
       const start = await r.start();
       for (const extra of [{ memberId: OWNER }, { role: 'admin' }, { role: 'owner' }]) {

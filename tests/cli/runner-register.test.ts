@@ -30,6 +30,19 @@ describe('myco runner register', () => {
   let err: string[];
   let calls: Call[];
 
+  for (const [status, error, words] of [[409, 'no_owner', 'myco server setup-owner'], [403, 'not_admin', 'owner or an admin'], [429, 'limited', 'Wait a minute'], [400, 'unknown', 'refused to start']] as const) {
+    it(`explains start refusal ${error} without polling`, async () => {
+      const exit = await run(['register', SERVER, '--name', NAME], {
+        mycoHome: home, hostname: () => 'Laptop', machineId: 'new_runner', stdout: line => out.push(line), stderr: line => err.push(line),
+        fetch: async (input) => { calls.push({ path: new URL(String(input)).pathname, body: {}, authorization: null }); return Response.json({ error }, { status }); },
+      });
+      expect(exit).toBe(false);
+      expect(err.join(' ')).toContain(words);
+      if (error === 'no_owner') expect(err.join(' ').match(/\(no_owner\)/g)).toHaveLength(1);
+      expect(calls.map(call => call.path)).toEqual(['/auth/runner/start']);
+    });
+  }
+
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-register-'));
     out = [];

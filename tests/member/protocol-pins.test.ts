@@ -1,3 +1,4 @@
+import { AUTH_SETUP_CODES, type JoinedMemberIdentity } from '@goondocks/myco-shared/member-protocol';
 /**
  * Cross-package pins between the member and the worker. The two live under
  * separate npm roots and share no module, so every value both sides must agree
@@ -272,5 +273,16 @@ describe('member ↔ worker pins', () => {
       const serverMax = bound!.type === 'stringArray' ? bound!.maxItem : bound!.type === 'string' ? bound!.max : -1;
       expect({ name, max }).toEqual({ name, max: serverMax });
     }
+  });
+});
+
+describe('additive auth setup protocol', () => {
+  it('pins refusal names and keeps identity fields optional for older Deployments', () => {
+    expect(AUTH_SETUP_CODES).toEqual({ noOwner: 'no_owner', unclaimed: 'unclaimed', ownerLinkDenied: 'owner_link_denied', signInUnconfigured: 'sign_in_unconfigured' });
+    const older: JoinedMemberIdentity = {};
+    const current: JoinedMemberIdentity = { memberLabel: 'octocat', owner: true };
+    expect(older).toEqual({});
+    expect(current).toEqual({ memberLabel: 'octocat', owner: true });
+    expect(MEMBER_PROTOCOL).toBe(1);
   });
 });

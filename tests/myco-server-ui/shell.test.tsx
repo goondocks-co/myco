@@ -93,11 +93,12 @@ async function openScope(): Promise<HTMLElement> {
 const scopeOptions = (menu: HTMLElement) => [...menu.querySelectorAll<HTMLElement>('[data-scope-option]')];
 
 describe('the dashboard shell', () => {
-  it('hands a member with no projects to myco setup', async () => {
+  it('names an existing sign-in command when there are no projects', async () => {
     server({ '/auth/me': me(), '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
     mount('/projects');
     expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
-    expect(await screen.findByText('myco setup')).toBeTruthy();
+    expect(await screen.findByText(`myco login ${window.location.origin}`)).toBeTruthy();
+    expect(screen.queryByText('myco setup')).toBeNull();
   });
 
   it('shows the sign-in state when the server answers 401', async () => {
@@ -123,10 +124,7 @@ describe('the dashboard shell', () => {
     server({ '/auth/me': me({ ...ME, member: null }), '/api/projects': () => new Response(null, { status: 401 }) });
     mount('/projects');
     expect(await screen.findByText(/isn.t connected to a member yet/)).toBeTruthy();
-    // A member exists once a machine joins, so the first step is an invitation redeemed by myco login.
-    expect(screen.getByText('myco login <link>')).toBeTruthy();
-    expect(document.body.textContent).toContain(`connect your GitHub account from the ${INVITE_CONTROLS.page} page`);
-    expect(screen.getByText('myco member link-github')).toBeTruthy();
+    expect(document.body.textContent).toContain('Ask an owner or admin to connect it from People & machines');
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
     expect(screen.queryByRole('navigation')).toBeNull();
   });

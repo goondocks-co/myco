@@ -294,11 +294,11 @@ describe('a member\'s name and kind', () => {
     expect(await me()).toBe('Dana');
     expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: 'Dana' });
     // The write keeps a name however it is reached: a rename landing between the session read and the write stands.
-    expect(await nameMemberFromLogin(db, 'mem_machine_2', 'octocat')).toBeNull();
+    expect(await nameMemberFromLogin(db, 'mem_machine_2', MEMBER_SUB, 'octocat')).toBeNull();
     expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: 'Dana' });
     // A login GitHub would not grant names nobody.
     sqlite.run(`UPDATE members SET label = NULL WHERE id = 'mem_machine_2'`);
-    expect(await nameMemberFromLogin(db, 'mem_machine_2', 'not a login')).toBeNull();
+    expect(await nameMemberFromLogin(db, 'mem_machine_2', MEMBER_SUB, 'not a login')).toBeNull();
     expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: null });
   });
 

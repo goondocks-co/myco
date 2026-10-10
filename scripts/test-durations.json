@@ -757,6 +757,7 @@
     "tests/vault/worktree-detection.test.ts": 96
   },
   "parity": {
+    "auth setup: no owner, unclaimed, expired owner link and unconfigured sign-in": 15000,
     "device login: start, pending, approval, single redemption, denial, expiry, slowdown and authority cap": 79000,
     "device login: bounded source admission, printable metadata, TTL reclaim and durable audit": 65000,
     "device login: foreign-lineage hold refuses approval and issuance until owner re-admission": 69000,

@@ -18,7 +18,7 @@ import { emit } from '../telemetry.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { credentialLive, runCredential } from '../db/liveness.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
-import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
+import { FIRST_MEMBER_KEY, FIRST_OWNER_MEMBER_LABEL, removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
 import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
 import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
@@ -68,24 +68,33 @@ export async function listMembers(db: RelationalStore, nowMs: number): Promise<M
   }));
 }
 
+const GITHUB_LOGIN_KEY_PREFIX = 'github_login:';
 /** A GitHub login as GitHub grants one: letters, digits and single hyphens, at most 39. */
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 /**
- * Name a member after the GitHub login of the account linked to it, where the member has no name yet. A name an
- * admin gave is never replaced. Answers the name written, or null when nothing was.
+ * Record the linked account's GitHub login and name a member with no name or only the first-owner placeholder.
+ * A name an admin gave is never replaced. Answers the name written, or null when nothing was.
  */
-export async function nameMemberFromLogin(db: RelationalStore, memberId: string, login: string): Promise<string | null> {
+export async function nameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string): Promise<string | null> {
   if (!GITHUB_LOGIN.test(login)) return null;
-  const row = await db.prepare(`UPDATE members SET label = ? WHERE id = ? AND label IS NULL RETURNING label`).bind(login, memberId).first<{ label: string }>();
-  return row?.label ?? null;
+  const [named] = await db.batch([
+    db.prepare(`UPDATE members SET label = ? WHERE id = ? AND github_id = ? AND revoked_at IS NULL AND (label IS NULL OR (label = ? AND id = (SELECT value FROM schema_meta WHERE key = ?))) RETURNING label`).bind(login, memberId, githubId, FIRST_OWNER_MEMBER_LABEL, FIRST_MEMBER_KEY),
+    db.prepare(`INSERT INTO schema_meta (key, value)
+      SELECT ? || github_id, ? FROM members WHERE id = ? AND github_id = ? AND revoked_at IS NULL
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE schema_meta.value <> excluded.value`).bind(GITHUB_LOGIN_KEY_PREFIX, login, memberId, githubId),
+  ]);
+  return (named?.results[0] as { label: string } | undefined)?.label ?? null;
 }
 
-/** Reads the member role behind a credential within its caller's transaction. */
-export function roleBehindCredentialStatement(db: RelationalStore, tokenId: string): PreparedStatement {
+/** Reads the member's role, linked GitHub login and ownership within the credential's transaction. */
+export function identityBehindCredentialStatement(db: RelationalStore, tokenId: string): PreparedStatement {
   return db
-    .prepare(`SELECT m.role AS role FROM member_credentials c JOIN members m ON m.id = c.member_id WHERE c.id = ?`)
-    .bind(tokenId);
+    .prepare(`SELECT m.role AS role,
+      (SELECT value FROM schema_meta WHERE key = ? || m.github_id) AS memberLabel,
+      ${deploymentOwnerSql('m.id')} AS owner
+      FROM member_credentials c JOIN members m ON m.id = c.member_id WHERE c.id = ?`)
+    .bind(GITHUB_LOGIN_KEY_PREFIX, tokenId);
 }
 
 /** The role a member holds, or null when the Deployment holds no such member. */

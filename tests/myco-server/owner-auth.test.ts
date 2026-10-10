@@ -342,7 +342,8 @@ describe('no owner configured means no human surface at all', () => {
   it('issues no OAuth redirect', async () => {
     const e = sqliteEnv();
     const res = await worker.fetch(new Request('https://s/auth/login', { headers: { 'cf-connecting-ip': '1.2.3.4' } }), e.env);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ error: 'sign_in_unconfigured' });
     expect(res.headers.get('location')).toBeNull();
   });
 

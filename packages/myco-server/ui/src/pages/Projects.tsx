@@ -65,7 +65,7 @@ export function Projects() {
         : live.length === 0 && archived.length === 0 ? (
         <div className="flex flex-col gap-s3">
           <EmptyState title="No projects yet." className="py-0" />
-          <CommandBlock caption="In a repository on your machine, run this, and its sessions arrive here:" command="myco setup" className="max-w-measure" />
+          <CommandBlock caption="Sign this machine in, then start your coding agent in a repository to capture its sessions. You can also use People & machines → Add a machine:" command={`myco login ${window.location.origin}`} className="max-w-measure" />
         </div>
       ) : (
         <RowCard>

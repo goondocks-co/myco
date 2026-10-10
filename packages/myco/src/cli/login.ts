@@ -179,7 +179,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
 
   const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
   if (pinned !== null) out(pinned);
-  out(`Signed in to ${code.serverUrl} as ${answer.memberId} (${answer.role}).`);
+  out(`Signed in to ${code.serverUrl} as ${answer.memberLabel ?? answer.memberId} (${answer.owner === true ? 'owner' : answer.role}).`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
   const held = readDefaultDeployment(mycoHome);
