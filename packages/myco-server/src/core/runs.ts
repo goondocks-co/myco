@@ -1063,7 +1063,7 @@ export async function failStaleRun(db: RelationalStore, scope: ReadScope, runId:
   return result.meta.changes === 1;
 }
 
-const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM agent_runs
+export const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM agent_runs
   WHERE status IN ('completed', 'failed', 'skipped') AND resumable = 0 AND COALESCE(completed_at, started_at) < ?
   ORDER BY COALESCE(completed_at, started_at) ASC, id ASC LIMIT ?`;
 

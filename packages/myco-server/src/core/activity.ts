@@ -37,14 +37,14 @@ export function stampRequestStatement(db: RelationalStore, now: number, gate?: {
   ).bind(LAST_REQUEST_KEY, String(now), LAST_REQUEST_KEY, now - REQUEST_STAMP_INTERVAL_MS, ...(gate?.params ?? []));
 }
 
-/** When the Deployment last saw activity — a capture receipt, a run starting, an owner request, a join — or null when it never has. */
-export async function lastActivityAt(db: RelationalStore): Promise<number | null> {
-  const row = await db.prepare(
-    `SELECT MAX(at) AS at FROM (
+export const LAST_ACTIVITY_SQL = `SELECT MAX(at) AS at FROM (
        SELECT MAX(last_received_at) AS at FROM sessions
        UNION ALL SELECT MAX(started_at) FROM agent_runs
        UNION ALL SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = ?
-     )`,
-  ).bind(LAST_REQUEST_KEY).first<{ at: number | null }>();
+     )`;
+
+/** When the Deployment last saw activity — a capture receipt, a run starting, an owner request, a join — or null when it never has. */
+export async function lastActivityAt(db: RelationalStore): Promise<number | null> {
+  const row = await db.prepare(LAST_ACTIVITY_SQL).bind(LAST_REQUEST_KEY).first<{ at: number | null }>();
   return row?.at ?? null;
 }

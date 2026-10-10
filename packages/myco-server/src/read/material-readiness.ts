@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../core/adapters.js';
 import { titleRunInFlightSql } from '../core/runs.js';
 import { TITLING_MAX_ATTEMPTS } from '../constants.js';
+import { transcriptPendingSql } from '../db/session-read-model.js';
 
 /**
  * An automatic titling claim the session admits: under the attempt bound, and
@@ -11,7 +12,7 @@ import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 export const titlingClaimAvailableSql = (alias: string): string => `(${alias}.titling_attempts < ${TITLING_MAX_ATTEMPTS} AND (${alias}.titled_at IS NULL OR (
   ${alias}.title IS NULL AND ${alias}.titled_at < ? AND NOT ${titleRunInFlightSql(alias)})))`;
 
-const UNREADY_TRANSCRIPT_SQL = `t.parsed_offset < t.size OR t.parse_error IS NOT NULL`;
+const UNREADY_TRANSCRIPT_SQL = transcriptPendingSql('t');
 
 /** Every known transcript has finished parsing without a recorded failure. */
 export const sessionMaterialReadySql = (alias: string): string => `NOT EXISTS (SELECT 1 FROM transcripts t

@@ -9,7 +9,7 @@
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { DEPLOYMENT_LEAF_SPECS, isScheduleCount, settingTexts, storedSettings } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
-import { listUnprocessedPrompts, newestUnprocessedSession } from '../read/prompts.js';
+import { newestUnprocessedSession } from '../read/prompts.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { capturedSinceMap } from './canopy.js';
 
@@ -96,16 +96,9 @@ export function scheduleFor(task: string, declared: TaskSchedule, overrides: Rec
   return resolveSchedule(declared, scheduleOverride(task, overrides));
 }
 
-/**
- * Whether the Project holds a prompt extraction has not read yet.
- *
- * One row decides it: a task whose work is a backlog asks whether the backlog is
- * empty, and a page of one answers that without reading the rest. Prompts of a
- * session still in flight are not counted — the read's own default — so a live
- * session is extracted once it ends rather than while it is being written.
- */
+/** Whether a completed, undeleted session has unread extraction material with every known transcript ready. */
 export async function hasUnprocessedPrompts(db: RelationalStore, projectId: string): Promise<boolean> {
-  return (await listUnprocessedPrompts(db, { projectId }, { limit: 1 })).rows.length > 0;
+  return (await newestUnprocessedSession(db, { projectId })) !== null;
 }
 
 /**
