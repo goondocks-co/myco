@@ -145,7 +145,7 @@ export interface ProjectDiagnostics {
 /** A check's verdict without its sentence. */
 export interface CheckFacts {
   name: string;
-  status: 'ok' | 'fail' | 'warn';
+  status: 'ok' | 'fail' | 'warn' | 'not-checked';
   /** What it failed on, from a closed vocabulary; null where its name is the whole answer. */
   reason: string | null;
   /** The symbiont it names, where it names one. */

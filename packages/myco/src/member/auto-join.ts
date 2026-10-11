@@ -615,17 +615,35 @@ const leftPath = (rootKey: string, mycoHome: string): string => path.join(autoJo
  * Opt a repository out of auto-join, as `myco member leave` there does: its hooks capture nothing, hold nothing and say
  * nothing, until it is joined again. Ordinary leave markers also accept a connection from "Needs you".
  */
-export function markLeft(rootKey: string, mycoHome: string, now: number, opts: { explicitJoinOnly?: true; locked?: true } = {}): void {
+export function markLeft(rootKey: string, mycoHome: string, now: number, opts: { explicitJoinOnly?: true; locked?: true; repository?: { root: string; serverUrl?: string } } = {}): void {
   const mark = (): void => {
     const file = leftPath(rootKey, mycoHome);
-    const held = readPrivateJson<{ explicitJoinOnly?: true }>(file);
+    const held = readPrivateJson<{ explicitJoinOnly?: true; repository?: { root: string; serverUrl?: string } }>(file);
     if (!held.ok && !(held.reason === 'missing' && pathIsAbsent(file))) throw new Error('Could not read the repository opt-out; it was left in place');
     const explicitJoinOnly = opts.explicitJoinOnly === true || (held.ok && held.value?.explicitJoinOnly === true);
     ensureMemberDir(path.dirname(file), mycoHome);
-    writePrivateFileAtomic(file, `${JSON.stringify({ at: now, ...(explicitJoinOnly ? { explicitJoinOnly: true } : {}) })}\n`);
+    writePrivateFileAtomic(file, `${JSON.stringify({ at: now, repository: opts.repository ?? (held.ok ? held.value.repository : undefined), ...(explicitJoinOnly ? { explicitJoinOnly: true } : {}) })}\n`);
   };
   if (opts.locked) mark();
   else withRegistryLock(mark, mycoHome);
+}
+
+/** Local opt-outs, including older markers whose repository identity was not recorded. */
+export function listLeftRepositories(mycoHome: string): ({ key: string; root?: string; serverUrl?: string; explicitJoinOnly: boolean } | { key: string; error: string })[] {
+  const dir = path.join(autoJoinDir(mycoHome), 'left');
+  if (pathIsAbsent(dir)) return [];
+  return fs.readdirSync(dir).sort().filter(name => name.endsWith('.json')).map(name => {
+    const file = path.join(dir, name);
+    try {
+      const read = readPrivateJson<{ at: number; explicitJoinOnly?: true; repository?: { root: string; serverUrl?: string } }>(file);
+      if (!read.ok || !Number.isFinite(read.value?.at)) throw new Error(`Repository opt-out ${file} could not be read`);
+      const repository = read.value.repository;
+      if (repository !== undefined && (repository === null || typeof repository.root !== 'string' || (repository.serverUrl !== undefined && typeof repository.serverUrl !== 'string'))) throw new Error(`Invalid repository opt-out ${file}`);
+      return { key: name.slice(0, -'.json'.length), ...repository, explicitJoinOnly: read.value.explicitJoinOnly === true };
+    } catch (error) {
+      return { key: name.slice(0, -'.json'.length), error: error instanceof Error ? error.message : String(error) };
+    }
+  });
 }
 
 /** Logout opt-outs require an explicit local join; settings directives carry no proof of a new connection choice. */

@@ -730,7 +730,7 @@ export function removeDeploymentForLogout(serverUrl: string, tokenDigest: string
   for (const file of files) assertMemberPathContained(file, mycoHome);
   for (const binding of bindings) pinLegacySpoolDestinationForProject(binding.projectId, mycoHome);
   beforeRemove?.();
-  for (const binding of bindings) markLeft(rootKeyFor(binding.root, mycoHome), mycoHome, now, { explicitJoinOnly: true, locked: true });
+  for (const binding of bindings) markLeft(rootKeyFor(binding.root, mycoHome), mycoHome, now, { explicitJoinOnly: true, locked: true, repository: { root: binding.root, serverUrl } });
   for (const binding of bindings) fs.rmSync(registryEntryPath(binding.root, mycoHome), { force: true });
   afterBindingsRemoved?.();
   for (const file of files) fs.rmSync(file, { force: true });

@@ -105,9 +105,12 @@ const leaf = (rig: MemberRig, name: string, value: unknown): void => {
 };
 
 describe('a joined member with no 1.4 vault', () => {
-  it('takes the 1.4 handler only for a root with no membership', async () => {
+  it('reports the home doctor outside a joined root and retains the other local handlers', async () => {
     const rig = await memberRig();
-    for (const name of ['doctor', 'logs', 'config'] as const) expect((await verb(name, ['get'], rig.fetch)).answered).toBeNull();
+    for (const name of ['logs', 'config'] as const) expect((await verb(name, ['get'], rig.fetch)).answered).toBeNull();
+    const doctor = await verb('doctor', [], rig.fetch);
+    expect(doctor.answered).not.toBeNull();
+    expect(doctor.stdout).toContain('myco doctor (member)');
     expect(legacyArtifacts()).toEqual([]);
   });
 
@@ -236,10 +239,10 @@ describe('a joined member with no 1.4 vault', () => {
 
     expect(ran.answered).toBe(false);
     expect(ran.stdout).toContain('myco doctor (member)');
-    expect(ran.stdout).toMatch(/Membership\s+.*ok.*project proj_1 on https:\/\/member-test\.invalid/);
-    expect(ran.stdout).toMatch(/Deployment\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
+    expect(ran.stdout).toMatch(/Membership\s+.*ok.*https:\/\/member-test\.invalid/);
+    expect(ran.stdout).toMatch(/Project access\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
     expect(ran.stdout).toMatch(/Credential\s+.*ok.*expires/);
-    expect(ran.stdout).toMatch(/Spool\s+.*ok.*nothing waiting to deliver/);
+    expect(ran.stdout).toMatch(/Capture backlog\s+.*ok.*0 event/);
     expect(ran.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
     expect(ran.stdout).not.toMatch(/Vault|Database|Daemon|Grove/);
     expect(legacyArtifacts()).toEqual([]);
@@ -252,7 +255,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', [], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*ok.*Claude Code captures for the member from its global hooks/);
+    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are installed/);
     expect(ran.stdout).toMatch(/Member MCP resolution\s*.*ok.*Claude Code declares a member entry in its global configuration over http transport/);
     expect(ran.stdout).not.toMatch(/Capture\s+.*FAIL/);
   });
@@ -271,7 +274,7 @@ describe('a joined member with no 1.4 vault', () => {
     expect(config.answered).toBe(false);
     expect(config.stderr).toContain(`myco config: this project's membership could not be read: ${entry}`);
     expect(doctor.stderr + config.stderr).not.toContain('no registry entry');
-    expect(spy.requests).toEqual([]);
+    expect(spy.requests.map(request => request.path)).toEqual(['/health']);
     expect(fs.existsSync(unmemberedDir(mycoHome))).toBe(false);
     expect(legacyArtifacts()).toEqual([]);
   });
@@ -284,7 +287,7 @@ describe('a joined member with no 1.4 vault', () => {
     const ran = await verb('doctor', [], down);
 
     expect(ran.answered).toBe(false);
-    expect(ran.stdout).toMatch(/Deployment\s+.*FAIL.*https:\/\/member-test\.invalid did not answer its health route/);
+    expect(ran.stdout).toMatch(/Deployment\s+.*FAIL.*https:\/\/member-test\.invalid is unreachable or did not answer its health route/);
     expect(legacyArtifacts()).toEqual([]);
   });
 
@@ -309,7 +312,7 @@ describe('a joined member with no 1.4 vault', () => {
     const ran = await verb('doctor', [], rig.fetch);
 
     expect(ran.answered).toBe(false);
-    expect(ran.stdout).toMatch(/Deployment\s+.*FAIL.*refused this machine's tool list \(unauthorized\)/);
+    expect(ran.stdout).toMatch(/Project access\s+.*FAIL.*refused this machine's tool list \(unauthorized\)/);
     expect(ran.stdout).toMatch(/Credential\s+.*FAIL.*the Deployment will not renew this credential/);
     expect(ran.stdout).toContain(REJOIN_HINT);
   });
@@ -345,6 +348,8 @@ describe('a joined member with no 1.4 vault', () => {
     const help = (cwd: string) => helpText(LEGACY, { cwd, mycoHome });
     expect(help(checkout)).toBe(MEMBER_USAGE);
     fs.mkdirSync(path.join(mycoHome, 'groves'));
+    expect(help(checkout)).toBe(MEMBER_USAGE);
+    fs.writeFileSync(path.join(mycoHome, 'myco.db'), 'fixture');
     expect(help(checkout)).toBe(LEGACY);
     join(rig);
     expect(help(checkout)).toBe(MEMBER_USAGE);
@@ -387,7 +392,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     fs.writeFileSync(plugin, '// myco:plugin-marker\n// myco:member-plugin\nexport const MycoPlugin = async () => ({});\n');
     const member = await verb('doctor', [], rig.fetch);
-    expect(member.stdout).toMatch(/Capture\s+.*ok.*OpenCode captures for the member from its global hooks/);
+    expect(member.stdout).toMatch(/Capture\s+.*not checked.*OpenCode's global hooks .* are installed/);
   });
 
   it('doctor reads Codex member hooks from a hooks.json that carries a TOML footer', async () => {
@@ -402,7 +407,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', [], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*ok.*Codex captures for the member from its global hooks/);
+    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Codex's global hooks .* are installed/);
   });
 
   it('doctor names a member hook whose program is missing or not executable, and counts it as no capture', async () => {
@@ -423,7 +428,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     fs.chmodSync(program, 0o755);
     const runnable = await verb('doctor', [], rig.fetch);
-    expect(runnable.stdout).toMatch(/Capture\s+.*ok.*Claude Code captures for the member from its global hooks/);
+    expect(runnable.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are installed/);
   });
 
   it('config get answers before a Deployment that stops answering holds it past the request deadline', async () => {

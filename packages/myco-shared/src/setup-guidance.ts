@@ -12,6 +12,8 @@ const CODEX_INSTALLATION_REASONS: Readonly<Record<CodexInstallationRule, string>
 };
 export const codexInstallationRefusal = (directory: string, rule: CodexInstallationRule): string =>
   `Myco won't run Codex from ${directory}: that folder ${CODEX_INSTALLATION_REASONS[rule]}, so a run could reach what it must not. Install Codex somewhere narrower (for example npm install -g @openai/codex), then check myco runner status.`;
+export const DOCTOR_SIGN_IN = 'this machine has joined no Myco. Run `myco login <address>`.';
+export const DOCTOR_REFUSED_HOOK_REPAIR = 'Run `myco member provision` to rewrite the hooks Myco installed; start a new agent session to check capture.';
 export const OWNER_SETUP_COMMAND = 'myco server setup-owner';
 export const SIGN_IN_SETUP_COMMAND = 'myco server github-app';
 export const OWNER_UNCLAIMED = `This Myco has no owner yet, so nobody can approve this machine. Whoever created it must run ${OWNER_SETUP_COMMAND} on the machine that created it, then open and complete the fresh owner link.`;

@@ -10,7 +10,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { resolveMycoHome } from '../paths/home.js';
 import { deploymentUrl, readDeploymentMembership, type DeploymentMembership } from './registry.js';
-import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { ensureMemberDir, memberRoot, readPrivateJson, pathIsAbsent, writePrivateFileAtomic } from './store.js';
 
 export const DEFAULT_DEPLOYMENT_FILE = 'default.json';
 export const DEFAULT_DEPLOYMENT_VERSION = 1;
@@ -25,12 +25,17 @@ export function defaultDeploymentPath(mycoHome: string = resolveMycoHome()): str
   return path.join(memberRoot(mycoHome), DEFAULT_DEPLOYMENT_FILE);
 }
 
-/** The recorded default, or null when none is recorded or the file holds nothing readable. */
-export function readDefaultDeployment(mycoHome: string = resolveMycoHome()): DefaultDeployment | null {
+/** The recorded default; strict reads report invalid or unreadable state. */
+export function readDefaultDeployment(mycoHome: string = resolveMycoHome(), opts: { strict?: boolean } = {}): DefaultDeployment | null {
   const read = readPrivateJson<DefaultDeployment>(defaultDeploymentPath(mycoHome));
-  if (!read.ok) return null;
+  if (!read.ok) {
+    if (opts.strict && !(read.reason === 'missing' && pathIsAbsent(defaultDeploymentPath(mycoHome)))) throw new Error('Default Myco could not be read');
+    return null;
+  }
   const value = read.value;
-  return typeof value?.serverUrl === 'string' && value.serverUrl.length > 0 && value.version === DEFAULT_DEPLOYMENT_VERSION ? value : null;
+  if (typeof value?.serverUrl === 'string' && value.serverUrl.length > 0 && value.version === DEFAULT_DEPLOYMENT_VERSION) return value;
+  if (opts.strict) throw new Error('Default Myco record is malformed');
+  return null;
 }
 
 /** Record `serverUrl` as the default: always when `replace`, and without it only where no default is recorded. Whether it is the default now. */
