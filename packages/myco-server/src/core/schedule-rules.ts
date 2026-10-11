@@ -177,13 +177,15 @@ export function resolveSchedule(declared: TaskSchedule, override: unknown): Task
     return typeof r.count === 'number' && Number.isSafeInteger(r.count) && r.count >= 0 && typeof r.preCondition === 'string'
       ? { count: r.count, preCondition: r.preCondition } : undefined;
   };
+  const storedCap = num(o.maxRunsPerDay);
+  const wholeCap = storedCap === undefined ? undefined : Math.floor(storedCap);
   return {
     ...(typeof o.enabled === 'boolean' ? { enabled: o.enabled } : declared.enabled === undefined ? {} : { enabled: declared.enabled }),
     intervalSeconds: num(o.intervalSeconds) ?? declared.intervalSeconds,
     runIn: states(o.runIn) ?? declared.runIn,
     preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
     accelerator: accelerator(o.accelerator) ?? declared.accelerator,
-    maxRunsPerDay: (isScheduleCount(o.maxRunsPerDay) ? o.maxRunsPerDay : undefined) ?? declared.maxRunsPerDay,
+    maxRunsPerDay: (isScheduleCount(wholeCap) ? wholeCap : undefined) ?? declared.maxRunsPerDay,
     reservedRunsPerDay: reservedRunsPerDay(o.reservedRunsPerDay) ?? declared.reservedRunsPerDay,
     runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
     overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,

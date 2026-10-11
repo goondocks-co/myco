@@ -569,17 +569,19 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ remaining: 1, enabled: false, waiting: null });
   });
 
-  it('takes a schedule count only as a whole number of 0 or more: a fraction held already reads as the declared limit, and a write of one is refused by name', async () => {
+  it('takes a schedule count only as a whole number of 0 or more: a fraction held already reads as a floored limit, and a write of one is refused by name', async () => {
     const r = rig();
     r.setting('agent.scheduled_tasks_enabled', true);
     r.session('a', { imported: false });
     const declaredLimit = TITLING_BACKFILL_SCHEDULE.maxRunsPerDay ?? null;
-    for (const held of [2.5, -1, '3', Number.MAX_SAFE_INTEGER + 2]) {
+    for (const held of [-1, '3', Number.MAX_SAFE_INTEGER + 2]) {
       r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: held } } });
       expect({ held, runsPerDay: (await titlingBackfillPolicy(r.env)).runsPerDay }).toEqual({ held, runsPerDay: declaredLimit });
       expect((await titlingBackfillProgress(r.env, NOW)).runsPerDay).toBe(declaredLimit);
     }
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: 2.5, intervalSeconds: 0 } } });
+    expect((await titlingBackfillPolicy(r.env)).runsPerDay).toBe(2);
+    expect((await titlingBackfillProgress(r.env, NOW)).runsPerDay).toBe(2);
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
 
     const cookie = await ownerCookie(r.env.db);

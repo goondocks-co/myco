@@ -1,3 +1,4 @@
+import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
@@ -12,7 +13,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
-import { OUTCOME_TASKS, TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
+import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
 
 const ANTHROPIC = 'sk-ant-api03-ZmFrZS1rZXktZm9yLXRlc3Rpbmc';
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
@@ -537,4 +538,20 @@ it.each(['revoked','demoted'] as const)('refuses a raw-window edit when its acto
     expect(f.sqlite.query('SELECT leaf,value FROM deployment_settings').all()).toEqual([{leaf:'retention.transcripts',value:'30'}]);
     expect(f.sqlite.query('SELECT * FROM deployment_setting_resets').all()).toEqual([]);
   }finally{f.sqlite.close();}
+});
+
+it('refuses a fractional schedule cap on every retained task without storing it', async () => {
+  const e = env();
+  for (const task of RETAINED_TASKS) {
+    const response = await worker.fetch(await put(e.db, '/api/settings/agent.tasks', {
+      value: { [task]: { schedule: { maxRunsPerDay: 2.5 } } },
+    }), e.all);
+    expect({ task, status: response.status, body: await response.json() }).toEqual({
+      task, status: 400, body: { applied: false, reason: 'invalid_value', leaf: 'agent.tasks',
+        detail: task === 'title-summary' || TASK_SCHEDULE[task] != null
+          ? `${task}.schedule.maxRunsPerDay: expected a whole number of 0 or more`
+          : `${task}.schedule: field is not used by this task` },
+    });
+    expect(e.sqlite.query("SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'").get()).toBeNull();
+  }
 });

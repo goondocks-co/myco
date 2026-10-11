@@ -511,3 +511,11 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     expect({ index: details.some((d) => d.includes('idx_agent_runs_task')), scans: details.filter((d) => /^SCAN agent_runs/.test(d)) }).toEqual({ index: true, scans: [] });
   });
 });
+
+it('floors a stored fractional daily cap even when a task declares no cap', () => {
+  const { maxRunsPerDay: _cap, ...uncapped } = SMOKE;
+  for (const declared of [SMOKE, uncapped]) {
+    expect(resolveSchedule(declared, { maxRunsPerDay: 2.5 }).maxRunsPerDay).toBe(2);
+    expect(resolveSchedule(declared, { maxRunsPerDay: 0.5 }).maxRunsPerDay).toBe(0);
+  }
+});
