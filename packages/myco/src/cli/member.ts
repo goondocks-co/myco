@@ -1,4 +1,5 @@
 import { repositoryName } from '@myco/utils/git.js';
+import { askOnTerminal } from '@myco/setup/prompt.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 /**
  * `myco member <op>` — the member's own CLI: `join`/`leave` record and forget
@@ -364,14 +365,6 @@ const CONNECT_REQUEST_TIMEOUT_MS = 30_000;
 
 /** A project on the member's Deployment, as `POST /members/projects/list` answers it. */
 interface DeploymentProject { projectId: string; name: string; sessionCount: number }
-
-/** Where the connect flow asks its one question, when stdin is a terminal; null when it is not. */
-async function askOnTerminal(question: string): Promise<string | null> {
-  if (!process.stdin.isTTY) return null;
-  const readline = await import('node:readline/promises');
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try { return await rl.question(question); } finally { rl.close(); }
-}
 
 /**
  * `myco member join [<server-url>] [--project <id|name> | --new [name]] [--root <dir>] [--no-agents]`: connect the folder

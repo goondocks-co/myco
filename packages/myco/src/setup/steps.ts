@@ -55,6 +55,7 @@ interface Context {
 }
 interface SetupStep {
   id: string;
+  requires: readonly string[];
   applies: (ctx: Context) => boolean;
   act: (ctx: Context) => Promise<void>;
 }
@@ -83,7 +84,7 @@ export async function consentToPlan(input: {
   input.out(`${input.question}\n${canonicalPlan(input.plan)}`);
   if (previous !== undefined) input.out('This plan changed; its previous consent no longer applies.');
   if (!(previous === undefined && input.yes)
-    && !await confirm(input.ask, 'Approve this plan?', 'an interactive terminal (changed plans require fresh consent)')) {
+    && !await confirm(input.ask, 'Approve this plan?', previous === undefined ? '--yes or an interactive terminal' : 'an interactive terminal (changed plans require fresh consent)')) {
     throw new Error('Plan declined; run myco setup again when ready.');
   }
   input.file.consented[input.id] = fingerprint;
@@ -94,7 +95,7 @@ const consent = (ctx: Context, id: string, plan: SetupPlan, question: string, ye
 
 const STEPS: readonly SetupStep[] = [
   {
-    id: 'machine.signin', applies: isMember,
+    id: 'machine.signin', requires: ['deployment.health', 'deployment.signin', 'machine.signin', 'machine.credential'], applies: isMember,
     act: async (ctx) => {
       const answers = chosen(ctx);
       const credential = fact(ctx, 'machine.credential');
@@ -109,7 +110,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'default', applies: isMember,
+    id: 'default', requires: ['default'], applies: isMember,
     act: async (ctx) => {
       const answers = chosen(ctx);
       const previous = readDefaultDeployment(ctx.home, { strict: true });
@@ -128,7 +129,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'machine.agents', applies: isMember,
+    id: 'machine.agents', requires: ['machine.signin', 'machine.agents'], applies: isMember,
     act: async (ctx) => {
       const answers = chosen(ctx);
       if (answers.noAgents) { recordNoAgents(ctx.home, answers.url); return; }
@@ -139,7 +140,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'project', applies: isMember,
+    id: 'project', requires: ['deployment.health', 'machine.signin', 'machine.credential', 'project'], applies: isMember,
     act: async (ctx) => {
       if (fact(ctx, 'project')?.state === 'complete') {
         if (ctx.newProjectChanged) throw new Error('This repository already has a Project. Choose another --root for --new, or use myco member join to change its connection.');
@@ -154,22 +155,28 @@ const STEPS: readonly SetupStep[] = [
         ...ctx.deps.memberDeps, mycoHome: ctx.home, cwd: answers.root, fetch: ctx.deps.fetch, ask: ctx.ask,
         stdout: ctx.out, stderr: ctx.deps.stderr, now: ctx.deps.now,
       });
-      if (entry === null) throw new Error('Project connection did not finish; run myco setup with --project <id|name> or --new [name].');
+      if (entry === null) throw new Error('Project connection did not finish; run myco setup --project <id|name> or myco setup --new [name] to resume.');
     },
   },
   {
-    id: 'machine.backlog', applies: isMember,
+    id: 'machine.backlog', requires: [], applies: isMember,
     act: async (ctx) => {
       const entries = listRegistryEntriesResult(ctx.home);
-      if (!entries.readable || entries.unavailableEntries > 0) throw new Error('Repository bindings could not all be read; inspect them before running myco setup again.');
+      if (!entries.readable || entries.unavailableEntries > 0) {
+        ctx.out('Warning: some repository bindings could not be read. Inspect them and run myco member drain to retry capture delivery.');
+      }
       for (const entry of entries.entries.filter((entry) => deploymentUrl(entry.serverUrl) === chosen(ctx).url)) {
-        const results = await runDrain([], { ...ctx.deps.memberDeps, mycoHome: ctx.home, cwd: entry.root, fetch: ctx.deps.fetch, stdout: ctx.out, stderr: ctx.deps.stderr });
-        if (results.some((result) => result.endedBy !== 'drained')) ctx.out('Some capture is still waiting; myco member drain retries it.');
+        try {
+          const results = await runDrain([], { ...ctx.deps.memberDeps, mycoHome: ctx.home, cwd: entry.root, fetch: ctx.deps.fetch, stdout: ctx.out, stderr: ctx.deps.stderr });
+          if (results.some((result) => result.endedBy !== 'drained')) ctx.out('Some capture is still waiting; myco member drain retries it.');
+        } catch (error) {
+          ctx.out(`Warning: capture delivery for ${entry.root} could not finish: ${error instanceof Error ? error.message : String(error)}. Run myco member drain from that repository to retry.`);
+        }
       }
     },
   },
   {
-    id: 'runner.choice', applies: isMember,
+    id: 'runner.choice', requires: [], applies: isMember,
     act: async (ctx) => {
       if (ctx.file.answers.runWork !== undefined) return;
       ctx.file.answers.runWork = await confirm(ctx.ask, 'Make this machine a runner?', '--run-work or --no-runner');
@@ -177,7 +184,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'runner.preview', applies: isRunner,
+    id: 'runner.preview', requires: [], applies: isRunner,
     act: async (ctx) => {
       const deps = runnerDeps(ctx);
       const preview = await preflightRunnerService(executorServiceTarget(chosen(ctx).url, deps, 'runner'), (deps.harnessDirs ?? harnessDirectories)(), deps);
@@ -187,7 +194,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'runner.enrollment', applies: isRunner,
+    id: 'runner.enrollment', requires: ['deployment.health', 'runner.enrollment'], applies: isRunner,
     act: async (ctx) => {
       if (fact(ctx, 'runner.enrollment')?.state === 'complete') return;
       const answers = chosen(ctx);
@@ -197,7 +204,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'runner.authority', applies: isRunner,
+    id: 'runner.authority', requires: ['deployment.health', 'runner.enrollment'], applies: isRunner,
     act: async (ctx) => {
       const answer = await runnerServiceContact(chosen(ctx).url, { ...runnerDeps(ctx), renew: false });
       const runner = answer.class === 'acked' ? answer.body.runner : null;
@@ -208,7 +215,7 @@ const STEPS: readonly SetupStep[] = [
     },
   },
   {
-    id: 'runner.service', applies: isRunner,
+    id: 'runner.service', requires: ['runner.enrollment', 'runner.service'], applies: isRunner,
     act: async (ctx) => {
       if (ctx.file.answers.runnerService === undefined) {
         ctx.file.answers.runnerService = await confirm(ctx.ask, 'Start the runner whenever you log in?', '--runner-service install|skip', true) ? 'install' : 'skip';
@@ -248,6 +255,7 @@ const workerServiceSpecForConsent = (target: ReturnType<typeof executorServiceTa
 
 export async function conductSetup(home: string, file: SetupFile, deps: SetupDeps, options: { yes: boolean; explicitJoin: boolean; explicitDefault: boolean; explicitProject: boolean; newProjectChanged: boolean }): Promise<void> {
   const shownHints = new Set<string>();
+  let capture: Observation[] = [];
   const ctx: Context = {
     home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, facts: [],
     out: (line) => {
@@ -258,7 +266,7 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
       (deps.stdout ?? console.log)(line);
     },
   };
-  const observe = async () => {
+  const observe = async (includeCapture = false) => {
     deps.signal?.throwIfAborted();
     const legacy = await observeSetup(home, {}, deps);
     const failure = legacy.find((entry) => entry.id === 'legacy' && entry.state !== 'complete');
@@ -267,13 +275,19 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
     ctx.facts = legacy;
     const hint = fact(ctx, 'legacy')?.hint;
     if (hint !== undefined) ctx.out(hint);
-    ctx.facts = await observeSetup(home, file.answers, { ...deps, checkRemote: true });
-    const unavailable = ctx.facts.find((entry) => entry.state === 'unavailable');
-    if (unavailable) throw new Error(`${unavailable.id} (${unavailable.scope}) unavailable: ${unavailable.detail}. Restore access, then run myco setup again.`);
+    const observed = await observeSetup(home, file.answers, { ...deps, checkRemote: true, includeCapture });
+    if (includeCapture) {
+      capture = observed.filter((entry) => entry.id.startsWith('machine.') && entry.informational);
+      for (const entry of capture.filter((entry) => entry.state !== 'complete')) ctx.out(`Warning: ${entry.id} (${entry.scope}): ${entry.detail}`);
+    }
+    ctx.facts = [...observed.filter((entry) => !capture.includes(entry)), ...capture];
   };
   for (const step of STEPS) {
-    await observe();
-    if (step.applies(ctx)) await step.act(ctx);
+    if (!step.applies(ctx)) continue;
+    await observe(step.id === 'machine.backlog');
+    const unavailable = ctx.facts.find((entry) => entry.state === 'unavailable' && step.requires.includes(entry.id));
+    if (unavailable) throw new Error(`${unavailable.id} (${unavailable.scope}) unavailable: ${unavailable.detail}. Restore access, then run myco setup again.`);
+    await step.act(ctx);
   }
   await observe();
   const remaining = ctx.facts.find((entry) => !entry.informational && entry.state !== 'complete');

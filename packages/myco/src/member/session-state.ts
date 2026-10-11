@@ -315,7 +315,7 @@ export function readSessionState(spoolDir: string, sessionId: string): SessionSt
 export function readSessionStateResult(spoolDir: string, sessionId: string, options: { createLock?: boolean } = {}): SessionStateRead {
   const lock = bufferLockPath(spoolDir, sessionId);
   if (options.createLock !== false) ensurePrivateFile(lock);
-  return withFileLockSync(lock, () => readSessionStateResultUnlocked(spoolDir, sessionId), { create: options.createLock });
+  return withFileLockSync(lock, () => readSessionStateResultUnlocked(spoolDir, sessionId), { create: options.createLock, readIfMissing: options.createLock === false });
 }
 
 /** Locked read-modify-write: `mutate` sees the current state and its edits are written back before the lock is released. */

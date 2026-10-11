@@ -721,7 +721,7 @@ export class MemberSpool {
       try { raw = fs.readFileSync(file, 'utf8'); }
       catch { return fn({ readable: false, ...(pathIsAbsent(file) ? { absent: true as const } : {}) }); }
       return fn({ readable: true, records: parseSpoolLines(raw) });
-    }, { create: options.createLock });
+    }, { create: options.createLock, readIfMissing: options.createLock === false });
   }
 
   /**

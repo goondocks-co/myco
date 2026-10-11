@@ -7,8 +7,9 @@ export const askOnTerminal: Ask = async (question) => {
   if (!process.stdin.isTTY) return null;
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
   const abort = new AbortController();
-  terminal.once('SIGINT', () => abort.abort(new Error('Setup interrupted; run myco setup again to resume.')));
+  terminal.once('SIGINT', () => abort.abort(new Error('Command interrupted; run it again to resume.')));
   try { return await terminal.question(question, { signal: abort.signal }); }
+  catch (error) { if (abort.signal.aborted) throw abort.signal.reason; throw error; }
   finally { terminal.close(); }
 };
 

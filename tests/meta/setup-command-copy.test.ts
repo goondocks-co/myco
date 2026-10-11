@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseSetupOptions } from '@myco/cli/setup.js';
 
 const repo = path.resolve(import.meta.dir, '../..');
 const files = (directory: string): string[] => fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -8,18 +9,55 @@ const files = (directory: string): string[] => fs.readdirSync(directory, { withF
   return entry.isDirectory() ? files(file) : /\.(ts|tsx|md)$/.test(file) ? [file] : [];
 });
 
-it('shipped guided-setup references have an implemented CLI owner', () => {
+const flagValues: Record<string, string> = {
+  '--join': 'https://setup.invalid', '--runner': 'https://setup.invalid',
+  '--project': 'proj_fixture', '--root': '/fixture/repo', '--new': 'Fixture',
+  '--runner-name': 'fixture', '--runner-service': 'skip',
+};
+
+/** Normalize documentation placeholders while retaining actual values and flag combinations. */
+function checkReference(command: string): void {
+  for (const flag of command.match(/--[a-z][a-z0-9-]*|-h\b/g) ?? []) {
+    const context = flag === '--json' || flag === '--check-remote' ? ['--status'] : [];
+    parseSetupOptions([flag, ...(flag in flagValues ? [flagValues[flag]] : []), ...context]);
+  }
+  const tokens = command.match(/<[^>]+>|\[[^\]]+\]|[^\s]+/g) ?? [];
+  const args: string[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const flag = tokens[index];
+    if (['again', 'when', 'to', 'with', 'or', 'from', 'then', '[options]', ':'].includes(flag.replace(/[.!?;,]$/, ''))) break;
+    args.push(flag);
+    if (flag in flagValues) {
+      const value = tokens[index + 1];
+      if (value !== undefined && !value.startsWith('-') && !['or', 'to', 'when'].includes(value)) {
+        args.push(/^<.*>$|^\[.*\]$/.test(value) || value === 'install|skip' ? flagValues[flag] : value);
+        index++;
+      }
+    }
+  }
+  parseSetupOptions(args);
+}
+
+it('shipped guided-setup references name only accepted, available flags', () => {
   const candidates = ['packages/myco/src', 'packages/myco-shared/src', 'packages/myco-server/ui/src', 'packages/myco/skills', 'plugins/myco/skills']
     .flatMap(directory => files(path.join(repo, directory)));
   candidates.push(...fs.readdirSync(path.join(repo, 'docs')).filter(file => file.endsWith('.md')).map(file => path.join(repo, 'docs', file)));
   candidates.push(path.join(repo, 'README.md'));
-  const reference = /\bmyco setup\b(?!-)/;
-  const matches = candidates.flatMap(file => fs.readFileSync(file, 'utf8').split('\n')
-    .flatMap((line, index) => reference.test(line) && !/^\s*(\*|\/\/)/.test(line) ? [`${path.relative(repo, file)}:${index + 1}`] : []));
-  if (matches.length === 0) return;
-  const cli = fs.readFileSync(path.join(repo, 'packages/myco/src/cli.ts'), 'utf8');
-  expect(cli, matches.join('\n')).toMatch(/if \(cmd === 'setup'\)\s*\{\s*process\.exitCode = await \(await import\('\.\/cli\/setup\.js'\)\)\.run\(args\)/);
-  expect(fs.existsSync(path.join(repo, 'packages/myco/src/cli/setup.ts'))).toBe(true);
+  for (const file of candidates) for (const [index, line] of fs.readFileSync(file, 'utf8').split('\n').entries()) {
+    for (const reference of line.matchAll(/\bmyco setup\b(?!-)(.*?)(?=\bmyco setup\b|[`"'\n]|$)/g)) {
+      expect(() => checkReference(reference[1]), `${path.relative(repo, file)}:${index + 1}: ${reference[0]}`).not.toThrow();
+    }
+  }
+});
+
+it('the copy gate rejects unsupported journeys, values and combinations', () => {
+  for (const reference of ['--create cloudflare --account-id <id>', '--cutover', '--no-cutover', '--route <source>=<destination>', '--skip <source>', '--invented',
+    '--join <address> --runner <address>', '--status --change', '--json', '--runner-service disabled', '--runner https://setup.invalid/path', 'create cloudflare', 'migrate', '--yes invented']) {
+    expect(() => checkReference(reference)).toThrow();
+  }
+  for (const reference of ['--join <address> --no-agents --no-runner', '--runner <address> --runner-name mini --runner-service skip --yes', '--status --json --check-remote', '--help']) {
+    expect(() => checkReference(reference)).not.toThrow();
+  }
 });
 
 it('the setup skill uses address sign-in and docs let GitHub choose a unique app name', () => {

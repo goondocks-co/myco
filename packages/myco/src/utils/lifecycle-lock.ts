@@ -98,6 +98,8 @@ const WIN_FILE_ACCESS = 0x0012_019f;
 const WIN_FILE_SHARE_RW = 0x3; // FILE_SHARE_READ | FILE_SHARE_WRITE
 const WIN_OPEN_ALWAYS = 0x4;
 const WIN_OPEN_EXISTING = 0x3;
+const WIN_ERROR_FILE_NOT_FOUND = 2;
+const WIN_ERROR_PATH_NOT_FOUND = 3;
 const WIN_FILE_ATTRIBUTE_NORMAL = 0x80;
 const WIN_INVALID_HANDLE = 0xffff_ffff_ffff_ffffn;
 const WIN_LOCKFILE_FAIL_IMMEDIATELY = 0x1;
@@ -165,7 +167,10 @@ function winOpenLockHandle(k: Kernel32, lockPath: string, create = true): bigint
     k.CreateFileW(ptr(pathBuf), WIN_FILE_ACCESS, WIN_FILE_SHARE_RW, 0n, create ? WIN_OPEN_ALWAYS : WIN_OPEN_EXISTING, WIN_FILE_ATTRIBUTE_NORMAL, 0n),
   );
   if (handle === WIN_INVALID_HANDLE) {
-    throw new Error(`LifecycleLock: CreateFileW failed on ${lockPath} (GetLastError ${k.GetLastError()})`);
+    const error = k.GetLastError();
+    throw Object.assign(new Error(`LifecycleLock: CreateFileW failed on ${lockPath} (GetLastError ${error})`), {
+      ...(error === WIN_ERROR_FILE_NOT_FOUND || error === WIN_ERROR_PATH_NOT_FOUND ? { code: 'ENOENT' } : {}),
+    });
   }
   return handle;
 }
@@ -261,10 +266,15 @@ function sharedLease(flockApi: { flock: (fd: number, op: number) => number }, fd
   return { acquired: true, lock: { release, update: refuseSharedUpdate, path: lockPath, pid: process.pid } };
 }
 
-function winWithFileLockSync<T>(lockPath: string, fn: () => T, create: boolean): T {
+function winWithFileLockSync<T>(lockPath: string, fn: () => T, create: boolean, readIfMissing: boolean): T {
   const k = loadKernel32();
   if (create) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const handle = winOpenLockHandle(k, lockPath, create);
+  let handle: bigint;
+  try { handle = winOpenLockHandle(k, lockPath, create); }
+  catch (error) {
+    if (!create && readIfMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return fn();
+    throw error;
+  }
   try {
     const ov = winOverlapped();
     if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ptr(ov)) === 0) {
@@ -416,7 +426,8 @@ export const LifecycleLock = {
  *
  * Distinct primitive from `LifecycleLock.acquire`: this one BLOCKS
  * waiting for the lock (no LOCK_NB) and releases as soon as `fn`
- * returns. Used for short-lived critical sections — typically
+ * returns. With `create: false` and `readIfMissing: true`, an absent companion
+ * permits an unlocked read; callback errors still propagate. Used for short-lived critical sections — typically
  * sub-millisecond — where contention is rare and the caller wants
  * to serialize without writing its own retry loop.
  *
@@ -424,13 +435,18 @@ export const LifecycleLock = {
  * the daemon's buffer-append usage this is acceptable on the hot
  * path.
  */
-export function withFileLockSync<T>(lockPath: string, fn: () => T, options: { create?: boolean } = {}): T {
+export function withFileLockSync<T>(lockPath: string, fn: () => T, options: { create?: boolean; readIfMissing?: boolean } = {}): T {
   const create = options.create !== false;
-  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn, create);
+  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn, create, options.readIfMissing === true);
   const flockApi = loadFlock();
   if (create) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   for (let attempt = 0; ; attempt++) {
-    const fd = fs.openSync(lockPath, fs.constants.O_RDWR | (create ? fs.constants.O_CREAT : 0), 0o644);
+    let fd: number;
+    try { fd = fs.openSync(lockPath, fs.constants.O_RDWR | (create ? fs.constants.O_CREAT : 0), 0o644); }
+    catch (error) {
+      if (!create && options.readIfMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return fn();
+      throw error;
+    }
     let held = false;
     try {
       if (flockApi.flock(fd, LOCK_EX) !== 0) {

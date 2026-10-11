@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,13 +12,13 @@ import { homeReport } from '@myco/cli/member-doctor.js';
 import { consentToPlan, type SetupDeps } from '@myco/setup/steps.js';
 import { observeSetup } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
-import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath, deploymentKeyFor } from '@myco/member/registry.js';
+import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath, deploymentKeyFor, machineSettingsPath } from '@myco/member/registry.js';
 import { legacyMigrationState, type LegacyMigrationState } from '@myco/member/legacy-migration.js';
 import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
-import { bufferLockPath, updateSessionState } from '@myco/member/session-state.js';
+import { bufferLockPath, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
 import { installWorkerService } from '@myco/runner/service.js';
 import { workerLockPath } from '@myco/runner/instance.js';
 import { recordDefaultDeployment, readDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -132,6 +132,7 @@ const configuredFetch = fakeFetch(async (input) => {
   if (route === '/auth/login') return new Response(null, { status: 302, headers: { location: `https://github.com/login/oauth/authorize?client_id=fixture&redirect_uri=${encodeURIComponent(`${URL}/auth/callback`)}` } });
   if (route === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'rn_setup_enrolled', name: 'Fixture runner', deploymentId: 'fixture-deployment', state: 'enabled' }, credential: { id: 'credential', expiresAt: 9999999999999, refreshAfter: 0 } });
   if (route === '/members/status') return Response.json({ target: 'fixture' });
+  if (route === '/members/projects/list') return Response.json({ projects: [{ projectId: 'proj_capture', name: 'Capture', sessionCount: 0 }] });
   throw new Error(`unexpected route ${route}`);
 });
 
@@ -187,6 +188,8 @@ describe('teammate journey (c)', () => {
     expect(await run(args, deps)).toBe(0);
     expect(errors).toEqual([]);
     expect(readDeploymentMembership(URL, home)?.memberId).toBe('mem_machine_2');
+    expect(readDefaultDeployment(home)?.serverUrl).toBe(URL);
+    expect(fs.existsSync(machineSettingsPath(URL, home))).toBe(true);
     expect(readRegistryEntry(project, home)?.projectId).toBe('proj_1');
     expect(platform.commands).toEqual([]);
     expect(server.calls.filter((route) => route === '/auth/device/start')).toHaveLength(1);
@@ -384,20 +387,103 @@ describe('observation and consent contracts', () => {
     spool.appendRefused({ eventId: mintId(), sessionId, kind: 'prompt', code: 'clock_skew', reason: 'Fixture clock refusal', at: 1000 });
     if (missingLock) fs.unlinkSync(bufferLockPath(spool.dir, sessionId));
     const before = snapshot(root);
-    expect(await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), now: () => 2000 })).toBe(missingLock ? 4 : 0);
+    expect(await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), now: () => 2000 })).toBe(0);
     const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
     const backlog = observations.find(fact => fact.id === 'machine.backlog');
     expect(backlog?.scope).toBe(project);
-    expect(backlog?.state).toBe(missingLock ? 'unavailable' : 'incomplete');
-    if (!missingLock) {
-      expect(backlog?.detail).toContain('1 event(s) waiting');
-      expect(backlog?.detail).toContain(new Date(1000).toISOString());
-      expect(observations.find(fact => fact.id === 'machine.latch')?.state).toBe('incomplete');
-      expect(observations.find(fact => fact.id === 'machine.refusals')?.state).toBe('incomplete');
-    }
+    expect(backlog?.state).toBe('incomplete');
+    expect(backlog?.detail).toContain('1 event(s) waiting');
+    expect(backlog?.detail).toContain(new Date(1000).toISOString());
+    expect(observations.find(fact => fact.id === 'machine.latch')?.state).toBe('incomplete');
+    expect(observations.find(fact => fact.id === 'machine.refusals')?.state).toBe('incomplete');
     expect(snapshot(root)).toEqual(before);
     await homeReport(home, { mycoHome: home, cwd: project, fetch: configuredFetch, worker: { home: path.join(root, 'user'), runner: recordingPlatform().runner, lockDir: path.join(root, 'locks') } });
     expect(snapshot(root)).toEqual(before);
+  });
+
+  it('proceeds with a warning for a readable refusal log with a torn line', async () => {
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    fs.writeFileSync(path.join(spool.dir, 'refused.jsonl'), '{"torn\n', { mode: 0o600 });
+    const args = ['--join', URL, '--root', project, '--project', 'proj_capture', '--no-agents', '--no-runner'];
+    const before = snapshot(root);
+    const facts = await observeSetup(home, { role: 'join', url: URL, root: project, noAgents: true, runWork: false }, base());
+    expect(facts.find(fact => fact.id === 'machine.refusals')?.state).toBe('incomplete');
+    expect(snapshot(root)).toEqual(before);
+    expect(await run(args, { ...base(), fetch: configuredFetch })).toBe(0);
+    expect(lines.join('\n')).toContain('Warning: machine.refusals');
+    expect(lines.join('\n')).toContain('1 unreadable log lines');
+    expect(errors).toEqual([]);
+  });
+
+  it('reads each capture journal once per conductor run', async () => {
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    fs.writeFileSync(path.join(spool.dir, 'read-count.jsonl'), '', { mode: 0o600 });
+    const reads = spyOn(MemberSpool.prototype, 'readRecordsOrNull');
+    try {
+      expect(await run(['--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), fetch: configuredFetch })).toBe(0);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(reads).toHaveBeenCalledWith('read-count');
+    } finally { reads.mockRestore(); }
+  });
+
+  it('names --yes for a first plan without a terminal', async () => {
+    const file = { version: 1 as const, answers: {}, consented: {} };
+    await expect(consentToPlan({ home, file, id: 'runner', plan: { url: URL }, question: 'Register this runner?', ask: async () => null, out: () => {}, yes: false })).rejects.toThrow('pass --yes');
+    expect(readSetupFile(home).consented).toEqual({});
+  });
+
+  for (const damaged of ['latch', 'session state'] as const) it(`reports an unavailable capture ${damaged} without blocking setup`, async () => {
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    fs.writeFileSync(path.join(spool.dir, 'damaged.jsonl'), '', { mode: 0o600 });
+    fs.writeFileSync(damaged === 'latch' ? path.join(spool.dir, 'offline.json') : sessionStatePath(spool.dir, 'damaged'), '{', { mode: 0o600 });
+    expect(await run(['--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), fetch: configuredFetch })).toBe(0);
+    expect(lines.join('\n')).toContain(damaged === 'latch' ? 'Warning: machine.latch' : 'Warning: machine.backlog');
+  });
+
+  it('counts a journal with a torn final line and no lock without creating files', async () => {
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    const sessionId = 'torn-journal';
+    spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' }, { promptId: mintId(), text: 'fixture prompt' }));
+    fs.appendFileSync(path.join(spool.dir, `${sessionId}.jsonl`), '{"torn');
+    fs.unlinkSync(bufferLockPath(spool.dir, sessionId));
+    const before = snapshot(root);
+    const facts = await observeSetup(home, { role: 'join', url: URL, root: project, noAgents: true, runWork: false }, base());
+    expect(facts.find(fact => fact.id === 'machine.backlog')).toMatchObject({ state: 'incomplete', detail: expect.stringContaining('2 event(s) waiting') });
+    const report = await homeReport(home, { mycoHome: home, cwd: project, fetch: configuredFetch, worker: { home: path.join(root, 'user'), runner: recordingPlatform().runner, lockDir: path.join(root, 'locks') } });
+    expect(report.find(check => check.name === 'Capture backlog')).toMatchObject({ status: 'warn', detail: expect.stringContaining('2 event(s) waiting') });
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it('an unavailable later runner observation does not gate sign-in or Project connection', async () => {
+    const record = runnerRecordPath(URL, home);
+    fs.mkdirSync(path.dirname(record), { recursive: true });
+    fs.writeFileSync(record, '{}', { mode: 0o600 });
+    const calls: string[] = [];
+    const worker = { home: path.join(root, 'user'), mycoHome: home, runner: recordingPlatform().runner, lockDir: path.join(root, 'locks'), harnessDirs: () => [], detect: () => [] };
+    const deps: SetupDeps = { ...base(), fetch: configuredFetch, worker, runnerDeps: worker,
+      login: async () => {
+        calls.push('login');
+        writeDeploymentMembership({ serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+        return true;
+      },
+      join: async () => {
+        calls.push('join');
+        const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+        writeRegistryEntry(entry, { mycoHome: home });
+        return entry;
+      },
+    };
+    expect(await run(['--join', URL, '--root', project, '--project', 'proj_capture', '--no-agents', '--run-work', '--runner-service', 'skip'], deps)).toBe(2);
+    expect(calls).toEqual(['login', 'join']);
+    expect(errors.join('\n')).toContain('runner.enrollment');
   });
 
   it('status dates the full refusal history and only flags recent refusals', async () => {

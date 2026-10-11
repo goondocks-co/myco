@@ -31,6 +31,7 @@ export interface ObserveDeps {
   packageRoot?: string;
   worker?: WorkerServiceDeps;
   now?: () => number;
+  includeCapture?: boolean;
 }
 export const setupExitCode = (facts: readonly Observation[]): 0 | 3 | 4 => facts.some((fact) => fact.state === 'unavailable') ? 4
   : facts.some((fact) => !fact.informational && fact.state !== 'complete') ? 3 : 0;
@@ -42,9 +43,9 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   const add = (id: string, state: Observation['state'], detail: string, scope = url ?? home, informational = false): void => {
     facts.push({ id, scope, state, detail, ...(informational ? { informational } : {}) });
   };
-  const read = async (id: string, fn: () => void | Promise<void>): Promise<void> => {
+  const read = async (id: string, fn: () => void | Promise<void>, informational = false): Promise<void> => {
     try { await fn(); }
-    catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error)); }
+    catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error), url ?? home, informational); }
   };
   await read('legacy', () => {
     const migration = legacyMigrationState(home);
@@ -106,7 +107,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         : deploymentUrl(binding.entry.serverUrl) === url ? 'complete' : 'incomplete',
       binding.status !== 'present' ? binding.status : deploymentUrl(binding.entry.serverUrl) === url ? 'bound-here' : `bound-elsewhere: ${binding.entry.serverUrl}`, root);
     });
-    await read('machine.backlog', () => {
+    if (deps.includeCapture !== false) await read('machine.backlog', () => {
       const listing = listRegistryEntriesResult(home);
       if (!listing.readable || listing.unavailableEntries > 0) throw new Error('Repository routes could not all be read; capture backlog is unknown.');
       const entries = listing.entries.filter((entry) => deploymentUrl(entry.serverUrl) === url);
@@ -119,10 +120,10 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         add('machine.latch', !facts.latchReadable ? 'unavailable' : facts.latch === null ? 'complete' : 'incomplete',
           !facts.latchReadable ? 'Offline latch unavailable.' : facts.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(facts.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true);
         const refusals = facts.refusalHistory;
-        add('machine.refusals', !refusals.readable || refusals.unreadableLines > 0 ? 'unavailable' : refusals.recent > 0 ? 'incomplete' : 'complete',
+        add('machine.refusals', !refusals.readable ? 'unavailable' : refusals.unreadableLines > 0 || refusals.recent > 0 ? 'incomplete' : 'complete',
           `${refusals.readable ? `${refusals.total} refused event(s); newest ${observationInstant(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true);
       }
-    });
+    }, true);
   }
   if (answers.role === 'runner' || answers.runWork) {
     await read('runner.enrollment', async () => {

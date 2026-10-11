@@ -43,7 +43,7 @@ interface Options {
   change: boolean;
 }
 
-function parse(args: readonly string[]): Options {
+export function parseSetupOptions(args: readonly string[]): Options {
   const options: Options = { answers: {}, status: false, json: false, checkRemote: false, yes: false, change: false };
   const seen = new Set<string>();
   const exclusive = (a: string, b: string) => { if (seen.has(a) && seen.has(b)) throw new Error(`${a} and ${b} cannot be combined`); };
@@ -93,6 +93,7 @@ function parse(args: readonly string[]): Options {
       case '--check-remote': options.checkRemote = true; break;
       case '--yes': options.yes = true; break;
       case '--change': options.change = true; break;
+      case '--help': case '-h': break;
       case '--create': throw new Error('Guided Deployment creation is not available here yet; use myco server create --target cloudflare|local.');
       case '--cutover': case '--no-cutover': case '--route': case '--skip': throw new Error('Guided migration is not available here yet; use myco cutover --dry-run.');
       default: throw new Error('unknown setup option; run myco setup --help');
@@ -108,7 +109,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
   const err = deps.stderr ?? console.error;
   if (args.includes('--help') || args.includes('-h')) { out(SETUP_HELP); return 0; }
   try {
-    const options = parse(args);
+    const options = parseSetupOptions(args);
     const home = deps.mycoHome ?? resolveMycoHome();
     const file = readSetupFile(home);
     const changedTarget = options.answers.url !== undefined && (options.answers.url !== file.answers.url || options.answers.role !== file.answers.role);
@@ -131,7 +132,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     }
     if (!file.answers.url) {
       const address = await askRequired(ask, 'What is your Myco’s address?', file.answers.role === 'join' ? '--join <address>' : '--runner <address>');
-      const selected = parse([file.answers.role === 'join' ? '--join' : '--runner', address]);
+      const selected = parseSetupOptions([file.answers.role === 'join' ? '--join' : '--runner', address]);
       file.answers.url = selected.answers.url;
       options.address = address;
       options.answers.role = selected.answers.role;
