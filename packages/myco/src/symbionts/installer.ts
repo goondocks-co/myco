@@ -506,6 +506,12 @@ export function throughLink(file: string): string {
   }
 }
 
+function captureHolderNext(verdict: ReturnType<typeof commandVerdict> | null): string {
+  if (verdict === 'legacy') return 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover.';
+  if (verdict === 'member') return 'Capture stays with the other 2.0 installation. Run myco doctor to check capture before changing global hooks.';
+  return 'Run myco doctor to check which installation owns capture before changing global hooks.';
+}
+
 export class SymbiontInstaller {
   /**
    * `vaultDir` defaults to `<projectRoot>/.myco` for ordinary installs.
@@ -2525,7 +2531,7 @@ export class SymbiontInstaller {
         const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
         const replaceable = verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
         if (!replaceable) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover.`);
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. ${captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict)}`);
         }
       } else {
         const settings = this.readMcpFile(target, false);
@@ -2533,7 +2539,7 @@ export class SymbiontInstaller {
           .filter((command) => rawHasMycoOwnershipSignal(command) && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
         const foreign = commands.find((command) => parseCredentialFlag(command.split(/\s+/)) !== 'registry' || !ownBinaries.some((binary) => command.startsWith(`${binary} `)));
         if (foreign !== undefined) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover.`);
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). ${captureHolderNext(commandVerdict(foreign, this.legacyHomes))}`);
         }
       }
     }
@@ -2555,7 +2561,7 @@ export class SymbiontInstaller {
       && this.helperDeployment(existing) === this.leavingDeployment;
     if (!legacy && (!this.isMemberMcpServer(existing) || (existing.url !== desired?.url && !replacing) || !sameCredentialSource)) {
       const other = this.entryDeployment(existing);
-      if (this.isMemberMcpServer(existing) && other !== null && existing.url !== desired?.url) {
+      if (this.isMemberMcpServer(existing) && other !== null) {
         const message = toolsStayOnDeployment(this.manifest.displayName, other);
         throw new MemberMcpConflictError(message, message);
       }

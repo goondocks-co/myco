@@ -120,12 +120,12 @@ describe('global member installation', () => {
     expect(fs.existsSync(path.join(home, '.codex'))).toBe(false);
   });
 
-  it('refuses a legacy global capture installation before writing either registration', () => {
+  it('refuses an unclassified global capture installation before writing either registration', () => {
     const target = path.join(home, '.codex', 'hooks.json');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const original = JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: '/opt/myco hook stop --myco-managed' }] }] } });
     fs.writeFileSync(target, original);
-    expect(() => installer('codex').install()).toThrow(/capture cutover/);
+    expect(() => installer('codex').install()).toThrow(/Run myco doctor to check which installation owns capture/);
     expect(fs.readFileSync(target, 'utf8')).toBe(original);
     expect(fs.existsSync(path.join(home, '.codex', 'config.toml'))).toBe(false);
   });

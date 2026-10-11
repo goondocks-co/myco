@@ -76,7 +76,7 @@ describe('myco member provision', () => {
 
   it('refuses without writing on a machine with no membership and for an unknown agent, and provisions every detected agent when none is named', async () => {
     const unjoined = await provision(['codex']);
-    expect(unjoined.err.join('\n')).toContain('no membership recorded on this machine — sign in with `myco login <invite link>` first');
+    expect(unjoined.err.join('\n')).toContain('no membership recorded on this machine — sign in with `myco login <address>` first');
     expect(process.exitCode).toBe(2);
     expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
@@ -192,4 +192,23 @@ it('names the other 2.0 Myco without prescribing legacy cutover or changing its 
   expect(text).not.toContain('myco logout');
   expect(text).not.toContain('cutover');
   expect(fs.readFileSync(config, 'utf8')).toBe(before);
+});
+
+for (const holder of ['hook', 'same-url'] as const) it(`keeps another 2.0 ${holder} holder without prescribing cutover`, async () => {
+  join();
+  expect((await provision(['codex'])).err).toEqual([]);
+  const file = path.join(agentHome, '.codex', holder === 'hook' ? 'hooks.json' : 'config.toml');
+  const original = fs.readFileSync(file, 'utf8');
+  const currentBinary = holder === 'hook'
+    ? hookCommands(JSON.parse(original).hooks)[0].split(' ')[0]
+    : (parseToml(original) as { mcp_servers: { myco: { http_headers_helper: string } } }).mcp_servers.myco.http_headers_helper.split(' ')[0];
+  const encodedBinary = JSON.stringify(currentBinary).slice(1, -1);
+  fs.writeFileSync(file, original.replaceAll(encodedBinary, '/other/myco/bin/myco').replaceAll(currentBinary, '/other/myco/bin/myco'));
+  const before = fs.readFileSync(file, 'utf8');
+  const refused = await provision(['codex']);
+  expect(refused.out).toEqual([]);
+  expect(refused.err.join('\n')).toContain(holder === 'hook' ? 'Capture stays with the other 2.0 installation.' : "Codex's Myco tools stay on https://myco.example");
+  expect(refused.err.join('\n')).toContain('myco doctor');
+  expect(refused.err.join('\n')).not.toContain('myco cutover');
+  expect(fs.readFileSync(file, 'utf8')).toBe(before);
 });

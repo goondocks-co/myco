@@ -403,7 +403,7 @@ async function connectFolder(
     const known = listDeploymentMemberships(mycoHome);
     if (parsed.serverUrl === undefined && known.length > 1) return fail(`this machine is a member of ${known.length} Deployments; name one (${known.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
     if (parsed.serverUrl === undefined && known.length === 1) return fail(`no default Deployment is recorded; name ${deploymentUrl(known[0].serverUrl)} to connect this folder`);
-    return fail(parsed.serverUrl === undefined ? 'this machine is not signed in to a Deployment — run `myco login <invite link>` first' : `this machine is not signed in to ${parsed.serverUrl} — run \`myco login <invite link>\` first`);
+    return fail(parsed.serverUrl === undefined ? 'this machine is not signed in to a Deployment — run `myco login <address>` first' : `this machine is not signed in to ${parsed.serverUrl} — run \`myco login <address>\` first`);
   }
   const membership = memberships[0];
   const serverUrl = membership.serverUrl;
@@ -775,7 +775,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     const named = selected === null ? [] : [selected];
     if (serverArg === undefined && named.length === 0 && memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one with --server (${memberships.map((m) => deploymentUrl(m.serverUrl)).join(', ')})`);
     if (serverArg === undefined && named.length === 0 && memberships.length === 1) return fail(`no default Deployment is recorded; name ${deploymentUrl(memberships[0].serverUrl)} with --server`);
-    if (named.length === 0) return fail(serverArg === undefined ? 'no membership recorded on this machine — sign in with `myco login <invite link>` first' : `no membership recorded for ${serverArg}`);
+    if (named.length === 0) return fail(serverArg === undefined ? 'no membership recorded on this machine — sign in with `myco login <address>` first' : `no membership recorded for ${serverArg}`);
     serverUrl = named[0].serverUrl;
   }
   const folder = binding === null ? null : root;

@@ -378,6 +378,32 @@ describe('dated refusal and abandoned address guidance', () => {
     expect(await report()).not.toContain('--local-only');
   });
 
+  it('bounds and escapes every refusal field and restores empty kind and event labels', async () => {
+    const { MemberSpool, REFUSED_LOG_FILE } = await import('@myco/member/spool.js');
+    const { readRegistryEntry } = await import('@myco/member/registry.js');
+    join(personal, scratch);
+    const spool = new MemberSpool(readRegistryEntry(scratch, home)!, { mycoHome: home });
+    const hostile = '\x1b]0;title\x07\x1b[2J\x00\r\nFORGED\x85' + 'x'.repeat(100_000);
+    const entries = [hostile, undefined].map(serverCode => ({
+      eventId: hostile, sessionId: hostile, kind: hostile, code: hostile, serverCode, reason: hostile, at: now,
+    }));
+    fs.writeFileSync(path.join(spool.dir, REFUSED_LOG_FILE), [
+      ...entries,
+      { eventId: '', sessionId: 'unknown', kind: '', code: 'refused', reason: 'unparsable spool line', at: now },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    const lines: string[] = [];
+    expect(await runMemberVerb('logs', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
+    const printed = lines.filter(line => line.startsWith(new Date(now).toISOString()));
+    expect(printed).toHaveLength(3);
+    for (const line of printed) {
+      expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(line.length).toBeLessThanOrEqual(1_100);
+    }
+    expect(printed[0].match(/…/g)).toHaveLength(5);
+    expect(printed[1].match(/…/g)).toHaveLength(5);
+    expect(printed[2]).toContain('unknown kind unknown event session unknown: refused: unparsable spool line');
+  });
+
   it('prints the server code and reason from the persisted log while export omits free text', async () => {
     const { MemberSpool } = await import('@myco/member/spool.js');
     const { readRegistryEntry } = await import('@myco/member/registry.js');

@@ -8,6 +8,7 @@
  * logs are the dashboard's.
  */
 import fs from 'node:fs';
+import { terminalText } from '@myco/utils/terminal-text.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { MemberSpool } from '../member/spool.js';
@@ -78,7 +79,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
       const shown = tail(file, lines);
       if (shown === null) out('  (no log yet)');
       else if (shown.length === 0) out('  (empty)');
-      else for (const line of shown) out(line);
+      else for (const line of shown) out(terminalText(line));
     }
   }
 
@@ -88,7 +89,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   else if (refusals.entries.length === 0) out('  (none)');
   else {
     for (const r of refusals.entries.slice(-lines)) {
-      out(`${iso(r.at)} ${r.kind ?? 'unknown kind'} ${r.eventId ?? 'unknown event'} session ${r.sessionId ?? 'unknown'}: ${r.serverCode ?? r.code}: ${r.reason}`);
+      out(`${iso(r.at)} ${terminalText(r.kind || 'unknown kind')} ${terminalText(r.eventId || 'unknown event')} session ${terminalText(r.sessionId || 'unknown')}: ${terminalText(r.serverCode || r.code)}: ${terminalText(r.reason)}`);
     }
     if (refusals.unreadableLines > 0) out(`  ${refusals.unreadableLines} line(s) of the log could not be read`);
   }

@@ -81,7 +81,7 @@ describe('member plugins for plugin-file agents', () => {
       expect((await member(['provision', agent])).out[0]).toMatch(/^no global registration changes for /);
     });
 
-    it(`${agent}: global provisioning preserves legacy and foreign plugins until cutover`, async () => {
+    it(`${agent}: global provisioning preserves legacy and unclassified plugins`, async () => {
       join();
       const legacy = '// myco:plugin-marker — Myco owns this file\nexport default {};\n';
       const global = writeGlobal(agent, legacy);
@@ -105,7 +105,9 @@ describe('member plugins for plugin-file agents', () => {
       expect((await member(['provision', agent])).err.join('\n')).toContain('capture cutover');
 
       writeGlobal(agent, 'export default {};\n');
-      expect((await member(['provision', agent])).err.join('\n')).toContain('capture cutover');
+      const unknown = (await member(['provision', agent])).err.join('\n');
+      expect(unknown).toContain('Run myco doctor to check which installation owns capture');
+      expect(unknown).not.toContain('myco cutover');
       expect(fs.readFileSync(global, 'utf8')).toBe('export default {};\n');
     });
   }

@@ -1,4 +1,5 @@
 /** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
+import { terminalText } from '@myco/utils/terminal-text.js';
 import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -152,7 +153,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     authenticated = tools.ok;
     checks.push(tools.ok
       ? row('Project access', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
-      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${tools.error.code}): ${tools.error.message}. Run \`myco doctor\` from this repository after restoring access.`));
+      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Run \`myco doctor\` from this repository after restoring access.`));
   }
 
   // Read after the Deployment was asked: its read renews a credential whose window is open.
@@ -174,7 +175,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
 
 const HOME_HEALTH_TIMEOUT_MS = 1500;
 export const RECENT_REFUSAL_MS = 7 * 24 * 60 * 60 * 1000;
-const STALE_CREDENTIAL_MS = RECENT_REFUSAL_MS;
+const STALE_CREDENTIAL_MS = 7 * 24 * 60 * 60 * 1000;
 const CUTOVER_RECORD = path.join('member', 'cutover.json');
 const LOGOUT_DIRECTORY = path.join('member', 'logout');
 
