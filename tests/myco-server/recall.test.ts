@@ -13,6 +13,7 @@ import {
   composePromptContext, composeSessionContext, detectsPlanIntent, partsWithinBound, projectLine,
   PLAN_INTENT_NUDGE, PROMPT_CONTEXT_MAX_CHARS, recallLeaves, recordSessionInjection,
   SESSION_CONTEXT_MAX_CHARS, sessionInjectionKind, SUBAGENT_CORTEX_GUIDANCE,
+  PROMPT_ANSWER_RETENTION_DAYS, PROMPT_ANSWER_RETENTION_SQL,
   type Contribution, type RecallLeaves, type RecallSkip, type SessionContextKind,
 } from '@myco-server-worker/core/recall.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -31,7 +32,7 @@ import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js'
 import { emptyInjectionCounts, type InjectionCounts } from '@myco-server-worker/core/injection.js';
 import { EmbeddingUnavailable } from '@myco-server-worker/core/embedding/provider.js';
 import * as plans from '@myco-server-worker/read/plans.js';
-import { agentRunRetention, JOB_BATCH, PROMPT_ANSWER_RETENTION_DAYS, PROMPT_ANSWER_RETENTION_SQL } from '@myco-server-worker/core/jobs-run.js';
+import { agentRunRetention, JOB_BATCH } from '@myco-server-worker/core/jobs-run.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 

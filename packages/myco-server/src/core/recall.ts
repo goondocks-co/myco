@@ -44,6 +44,7 @@ export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
 export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
+export const PROMPT_ANSWER_RETENTION_DAYS = 30;
 
 /**
  * The most text one session start is served: the Project line beside a
@@ -235,6 +236,16 @@ async function recordPromptAnswer(
     emit({ kind: 'recall_answer_unrecorded', ...identity, error: classify(error, classifyError) });
   }
   return answer;
+}
+
+export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
+  SELECT a.rowid FROM projects p CROSS JOIN prompt_context_answers a
+  WHERE a.project_id = p.project_id AND a.created_at < ? LIMIT ?)`;
+
+/** Deletes at most one batch of prompt answer diagnostics older than the cutoff across the Deployment's Projects. */
+export async function prunePromptAnswers(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
+  const result = await db.prepare(PROMPT_ANSWER_RETENTION_SQL).bind(cutoffMs, limit).run();
+  return result.meta.changes;
 }
 
 export interface RecallSessionBlock {
